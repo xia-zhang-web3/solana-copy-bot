@@ -579,8 +579,8 @@ where
     {
         bail!("missing --confirm-decision-packet-session-dir for run/verify mode");
     }
-    let dais_receipt_session_dir = dais_receipt_session_dir
-        .ok_or_else(|| anyhow!("missing --dais-receipt-session-dir"))?;
+    let dais_receipt_session_dir =
+        dais_receipt_session_dir.ok_or_else(|| anyhow!("missing --dais-receipt-session-dir"))?;
     Ok(Some(Config {
         mode,
         dais_receipt_session_dir,
@@ -647,11 +647,10 @@ fn plan_live_package_rostrum_certificate_report(
                 (raw_contract, classification)
             }
         };
-    let session_dir = config.session_dir.clone().unwrap_or_else(|| {
-        config
-            .dais_receipt_session_dir
-            .join("rostrum-certificate")
-    });
+    let session_dir = config
+        .session_dir
+        .clone()
+        .unwrap_or_else(|| config.dais_receipt_session_dir.join("rostrum-certificate"));
     let result = serialize_enum(&classification.0);
     let rostrum_certificate_sha256 = compute_rostrum_certificate_sha256(
         &result,
@@ -1100,47 +1099,33 @@ fn run_live_package_rostrum_certificate_report(
         &verified_dais_receipt.contract.registry_entry_sha256,
         &verified_dais_receipt.contract.registry_entry_algorithm,
         &verified_dais_receipt.contract.filing_certificate_sha256,
-        &verified_dais_receipt
-            .contract
-            .filing_certificate_algorithm,
+        &verified_dais_receipt.contract.filing_certificate_algorithm,
         &verified_dais_receipt.contract.archive_receipt_sha256,
         &verified_dais_receipt.contract.archive_receipt_algorithm,
         &verified_dais_receipt.contract.closure_certificate_summary,
         &verified_dais_receipt.contract.closure_certificate_sha256,
-        &verified_dais_receipt
-            .contract
-            .closure_certificate_algorithm,
+        &verified_dais_receipt.contract.closure_certificate_algorithm,
         &verified_dais_receipt.contract.finality_receipt_sha256,
         &verified_dais_receipt.contract.finality_receipt_algorithm,
         &verified_dais_receipt.contract.consummation_record_sha256,
-        &verified_dais_receipt
-            .contract
-            .consummation_record_algorithm,
+        &verified_dais_receipt.contract.consummation_record_algorithm,
         &verified_dais_receipt
             .contract
             .completion_certificate_summary,
-        &verified_dais_receipt
-            .contract
-            .completion_certificate_sha256,
+        &verified_dais_receipt.contract.completion_certificate_sha256,
         &verified_dais_receipt
             .contract
             .completion_certificate_algorithm,
         &verified_dais_receipt.contract.summit_certificate_summary,
         &verified_dais_receipt.contract.summit_certificate_sha256,
-        &verified_dais_receipt
-            .contract
-            .summit_certificate_algorithm,
+        &verified_dais_receipt.contract.summit_certificate_algorithm,
         &verified_dais_receipt.contract.culmination_receipt_summary,
         &verified_dais_receipt.contract.culmination_receipt_sha256,
-        &verified_dais_receipt
-            .contract
-            .culmination_receipt_algorithm,
+        &verified_dais_receipt.contract.culmination_receipt_algorithm,
         &verified_dais_receipt.contract.pinnacle_receipt_summary,
         &verified_dais_receipt.contract.pinnacle_receipt_sha256,
         &verified_dais_receipt.contract.pinnacle_receipt_algorithm,
-        &verified_dais_receipt
-            .contract
-            .capstone_certificate_summary,
+        &verified_dais_receipt.contract.capstone_certificate_summary,
         &verified_dais_receipt.contract.capstone_certificate_sha256,
         &verified_dais_receipt
             .contract
@@ -1159,14 +1144,10 @@ fn run_live_package_rostrum_certificate_report(
             .cornerstone_certificate_algorithm,
         &verified_dais_receipt.contract.foundation_receipt_summary,
         &verified_dais_receipt.contract.foundation_receipt_sha256,
-        &verified_dais_receipt
-            .contract
-            .foundation_receipt_algorithm,
+        &verified_dais_receipt.contract.foundation_receipt_algorithm,
         &verified_dais_receipt.contract.bedrock_certificate_summary,
         &verified_dais_receipt.contract.bedrock_certificate_sha256,
-        &verified_dais_receipt
-            .contract
-            .bedrock_certificate_algorithm,
+        &verified_dais_receipt.contract.bedrock_certificate_algorithm,
         &verified_dais_receipt.contract.basal_receipt_summary,
         &verified_dais_receipt.contract.basal_receipt_sha256,
         &verified_dais_receipt.contract.basal_receipt_algorithm,
@@ -1184,7 +1165,9 @@ fn run_live_package_rostrum_certificate_report(
         &verified_dais_receipt.contract.plinth_receipt_algorithm,
         &verified_dais_receipt.contract.pedestal_certificate_summary,
         &verified_dais_receipt.contract.pedestal_certificate_sha256,
-        &verified_dais_receipt.contract.pedestal_certificate_algorithm,
+        &verified_dais_receipt
+            .contract
+            .pedestal_certificate_algorithm,
         &verified_dais_receipt.contract.dais_receipt_summary,
         &verified_dais_receipt.contract.dais_receipt_sha256,
         &verified_dais_receipt.contract.dais_receipt_algorithm,
@@ -1245,18 +1228,12 @@ fn run_live_package_rostrum_certificate_report(
             .to_string(),
         result,
         reason: classification.2.clone(),
-        handoff_bundle_result: verified_dais_receipt
-            .contract
-            .handoff_bundle_result
-            .clone(),
+        handoff_bundle_result: verified_dais_receipt.contract.handoff_bundle_result.clone(),
         decision_packet_result: verified_dais_receipt
             .contract
             .decision_packet_result
             .clone(),
-        execute_frozen_result: verified_dais_receipt
-            .contract
-            .execute_frozen_result
-            .clone(),
+        execute_frozen_result: verified_dais_receipt.contract.execute_frozen_result.clone(),
         current_pre_activation_gate_verdict: verified_dais_receipt
             .contract
             .current_pre_activation_gate_verdict
@@ -1299,18 +1276,12 @@ fn run_live_package_rostrum_certificate_report(
             .clone(),
         ledger_seal_summary: verified_dais_receipt.contract.ledger_seal_summary.clone(),
         ledger_seal_sha256: verified_dais_receipt.contract.ledger_seal_sha256.clone(),
-        ledger_seal_algorithm: verified_dais_receipt
-            .contract
-            .ledger_seal_algorithm
-            .clone(),
+        ledger_seal_algorithm: verified_dais_receipt.contract.ledger_seal_algorithm.clone(),
         registry_entry_summary: verified_dais_receipt
             .contract
             .registry_entry_summary
             .clone(),
-        registry_entry_sha256: verified_dais_receipt
-            .contract
-            .registry_entry_sha256
-            .clone(),
+        registry_entry_sha256: verified_dais_receipt.contract.registry_entry_sha256.clone(),
         registry_entry_algorithm: verified_dais_receipt
             .contract
             .registry_entry_algorithm
@@ -1483,14 +1454,8 @@ fn run_live_package_rostrum_certificate_report(
             .contract
             .bedrock_certificate_algorithm
             .clone(),
-        basal_receipt_summary: verified_dais_receipt
-            .contract
-            .basal_receipt_summary
-            .clone(),
-        basal_receipt_sha256: verified_dais_receipt
-            .contract
-            .basal_receipt_sha256
-            .clone(),
+        basal_receipt_summary: verified_dais_receipt.contract.basal_receipt_summary.clone(),
+        basal_receipt_sha256: verified_dais_receipt.contract.basal_receipt_sha256.clone(),
         basal_receipt_algorithm: verified_dais_receipt
             .contract
             .basal_receipt_algorithm
@@ -1511,10 +1476,7 @@ fn run_live_package_rostrum_certificate_report(
             .contract
             .plinth_receipt_summary
             .clone(),
-        plinth_receipt_sha256: verified_dais_receipt
-            .contract
-            .plinth_receipt_sha256
-            .clone(),
+        plinth_receipt_sha256: verified_dais_receipt.contract.plinth_receipt_sha256.clone(),
         plinth_receipt_algorithm: verified_dais_receipt
             .contract
             .plinth_receipt_algorithm
@@ -1531,14 +1493,8 @@ fn run_live_package_rostrum_certificate_report(
             .contract
             .pedestal_certificate_algorithm
             .clone(),
-        dais_receipt_summary: verified_dais_receipt
-            .contract
-            .dais_receipt_summary
-            .clone(),
-        dais_receipt_sha256: verified_dais_receipt
-            .contract
-            .dais_receipt_sha256
-            .clone(),
+        dais_receipt_summary: verified_dais_receipt.contract.dais_receipt_summary.clone(),
+        dais_receipt_sha256: verified_dais_receipt.contract.dais_receipt_sha256.clone(),
         dais_receipt_algorithm: verified_dais_receipt
             .contract
             .dais_receipt_algorithm
@@ -1802,47 +1758,33 @@ fn verify_live_package_rostrum_certificate_report(
         &verified_dais_receipt.contract.registry_entry_sha256,
         &verified_dais_receipt.contract.registry_entry_algorithm,
         &verified_dais_receipt.contract.filing_certificate_sha256,
-        &verified_dais_receipt
-            .contract
-            .filing_certificate_algorithm,
+        &verified_dais_receipt.contract.filing_certificate_algorithm,
         &verified_dais_receipt.contract.archive_receipt_sha256,
         &verified_dais_receipt.contract.archive_receipt_algorithm,
         &verified_dais_receipt.contract.closure_certificate_summary,
         &verified_dais_receipt.contract.closure_certificate_sha256,
-        &verified_dais_receipt
-            .contract
-            .closure_certificate_algorithm,
+        &verified_dais_receipt.contract.closure_certificate_algorithm,
         &verified_dais_receipt.contract.finality_receipt_sha256,
         &verified_dais_receipt.contract.finality_receipt_algorithm,
         &verified_dais_receipt.contract.consummation_record_sha256,
-        &verified_dais_receipt
-            .contract
-            .consummation_record_algorithm,
+        &verified_dais_receipt.contract.consummation_record_algorithm,
         &verified_dais_receipt
             .contract
             .completion_certificate_summary,
-        &verified_dais_receipt
-            .contract
-            .completion_certificate_sha256,
+        &verified_dais_receipt.contract.completion_certificate_sha256,
         &verified_dais_receipt
             .contract
             .completion_certificate_algorithm,
         &verified_dais_receipt.contract.summit_certificate_summary,
         &verified_dais_receipt.contract.summit_certificate_sha256,
-        &verified_dais_receipt
-            .contract
-            .summit_certificate_algorithm,
+        &verified_dais_receipt.contract.summit_certificate_algorithm,
         &verified_dais_receipt.contract.culmination_receipt_summary,
         &verified_dais_receipt.contract.culmination_receipt_sha256,
-        &verified_dais_receipt
-            .contract
-            .culmination_receipt_algorithm,
+        &verified_dais_receipt.contract.culmination_receipt_algorithm,
         &verified_dais_receipt.contract.pinnacle_receipt_summary,
         &verified_dais_receipt.contract.pinnacle_receipt_sha256,
         &verified_dais_receipt.contract.pinnacle_receipt_algorithm,
-        &verified_dais_receipt
-            .contract
-            .capstone_certificate_summary,
+        &verified_dais_receipt.contract.capstone_certificate_summary,
         &verified_dais_receipt.contract.capstone_certificate_sha256,
         &verified_dais_receipt
             .contract
@@ -1861,14 +1803,10 @@ fn verify_live_package_rostrum_certificate_report(
             .cornerstone_certificate_algorithm,
         &verified_dais_receipt.contract.foundation_receipt_summary,
         &verified_dais_receipt.contract.foundation_receipt_sha256,
-        &verified_dais_receipt
-            .contract
-            .foundation_receipt_algorithm,
+        &verified_dais_receipt.contract.foundation_receipt_algorithm,
         &verified_dais_receipt.contract.bedrock_certificate_summary,
         &verified_dais_receipt.contract.bedrock_certificate_sha256,
-        &verified_dais_receipt
-            .contract
-            .bedrock_certificate_algorithm,
+        &verified_dais_receipt.contract.bedrock_certificate_algorithm,
         &verified_dais_receipt.contract.basal_receipt_summary,
         &verified_dais_receipt.contract.basal_receipt_sha256,
         &verified_dais_receipt.contract.basal_receipt_algorithm,
@@ -1886,7 +1824,9 @@ fn verify_live_package_rostrum_certificate_report(
         &verified_dais_receipt.contract.plinth_receipt_algorithm,
         &verified_dais_receipt.contract.pedestal_certificate_summary,
         &verified_dais_receipt.contract.pedestal_certificate_sha256,
-        &verified_dais_receipt.contract.pedestal_certificate_algorithm,
+        &verified_dais_receipt
+            .contract
+            .pedestal_certificate_algorithm,
         &verified_dais_receipt.contract.dais_receipt_summary,
         &verified_dais_receipt.contract.dais_receipt_sha256,
         &verified_dais_receipt.contract.dais_receipt_algorithm,
@@ -2067,7 +2007,10 @@ fn planned_session(
         session_version: ROSTRUM_CERTIFICATE_SESSION_VERSION.to_string(),
         planned_at: Utc::now(),
         dais_receipt_session_dir: config.dais_receipt_session_dir.display().to_string(),
-        pedestal_certificate_session_dir: contract.pedestal_certificate_session_dir.display().to_string(),
+        pedestal_certificate_session_dir: contract
+            .pedestal_certificate_session_dir
+            .display()
+            .to_string(),
         plinth_receipt_session_dir: contract.plinth_receipt_session_dir.display().to_string(),
         substructure_certificate_session_dir: contract
             .substructure_certificate_session_dir
@@ -2235,7 +2178,10 @@ fn expected_status_from_verified(
         updated_at,
         session_dir: session_dir.display().to_string(),
         dais_receipt_session_dir: config.dais_receipt_session_dir.display().to_string(),
-        pedestal_certificate_session_dir: contract.pedestal_certificate_session_dir.display().to_string(),
+        pedestal_certificate_session_dir: contract
+            .pedestal_certificate_session_dir
+            .display()
+            .to_string(),
         plinth_receipt_session_dir: contract.plinth_receipt_session_dir.display().to_string(),
         substructure_certificate_session_dir: contract
             .substructure_certificate_session_dir
@@ -2362,7 +2308,12 @@ fn report_from_status(
         verdict,
         reason: status.reason.clone(),
         dais_receipt_session_dir: config.dais_receipt_session_dir.display().to_string(),
-        pedestal_certificate_session_dir: Some(contract.pedestal_certificate_session_dir.display().to_string()),
+        pedestal_certificate_session_dir: Some(
+            contract
+                .pedestal_certificate_session_dir
+                .display()
+                .to_string(),
+        ),
         plinth_receipt_session_dir: Some(contract.plinth_receipt_session_dir.display().to_string()),
         substructure_certificate_session_dir: Some(
             contract
@@ -2692,13 +2643,16 @@ fn failure_report_for_verify(
     PackageRostrumCertificateReport {
         generated_at: Utc::now(),
         mode: "verify_live_package_rostrum_certificate".to_string(),
-        verdict: TinyLivePackageRostrumCertificateVerdict::TinyLivePackageRostrumCertificateVerifyInvalid,
+        verdict:
+            TinyLivePackageRostrumCertificateVerdict::TinyLivePackageRostrumCertificateVerifyInvalid,
         reason,
-        dais_receipt_session_dir: config
-            .dais_receipt_session_dir
-            .display()
-            .to_string(),
-        pedestal_certificate_session_dir: Some(contract.pedestal_certificate_session_dir.display().to_string()),
+        dais_receipt_session_dir: config.dais_receipt_session_dir.display().to_string(),
+        pedestal_certificate_session_dir: Some(
+            contract
+                .pedestal_certificate_session_dir
+                .display()
+                .to_string(),
+        ),
         plinth_receipt_session_dir: Some(contract.plinth_receipt_session_dir.display().to_string()),
         substructure_certificate_session_dir: Some(
             contract
@@ -2759,10 +2713,7 @@ fn failure_report_for_verify(
         rostrum_certificate_session_path: Some(paths.session_path.display().to_string()),
         rostrum_certificate_status_path: Some(paths.status_path.display().to_string()),
         archived_dais_receipt_report_path: Some(
-            paths
-                .dais_receipt_report_path
-                .display()
-                .to_string(),
+            paths.dais_receipt_report_path.display().to_string(),
         ),
         result: None,
         handoff_bundle_result: contract.handoff_bundle_result.clone(),
@@ -2771,11 +2722,9 @@ fn failure_report_for_verify(
         current_pre_activation_gate_verdict: contract.current_pre_activation_gate_verdict.clone(),
         current_pre_activation_gate_reason: contract.current_pre_activation_gate_reason.clone(),
         dais_receipt_step: None,
-        verify_dais_receipt_command_summary: Some(
-            verify_dais_receipt_command_summary(
-                &config.dais_receipt_session_dir,
-            ),
-        ),
+        verify_dais_receipt_command_summary: Some(verify_dais_receipt_command_summary(
+            &config.dais_receipt_session_dir,
+        )),
         reviewed_frozen_live_cutover_controller_command_summary: Some(
             contract
                 .reviewed_frozen_live_cutover_controller_command_summary
@@ -3448,8 +3397,7 @@ mod tests {
             let paths = rostrum_certificate_paths(&fixture.rostrum_certificate_session_dir);
             let mut session: PackageRostrumCertificateSession =
                 load_json(&paths.session_path).unwrap();
-            session.dais_receipt_sha256 =
-                "tampered-dais-receipt-sha256".to_string();
+            session.dais_receipt_sha256 = "tampered-dais-receipt-sha256".to_string();
             persist_json(&paths.session_path, &session).unwrap();
 
             let verify =
@@ -4658,9 +4606,8 @@ mod tests {
         )
         .unwrap();
         persist_json(
-            &input_dais_receipt_session_dir.join(
-                "tiny_live_activation_package_dais_receipt.pedestal_certificate.report.json",
-            ),
+            &input_dais_receipt_session_dir
+                .join("tiny_live_activation_package_dais_receipt.pedestal_certificate.report.json"),
             &json!({
                 "decision_packet_session_dir": decision_packet_session_dir.display().to_string()
             }),
@@ -5092,7 +5039,10 @@ mod tests {
             "pedestal_certificate_sha256".to_string(),
             json!("pedestal-certificate-sha256"),
         );
-        object.insert("pedestal_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "pedestal_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         object.insert(
             "dais_receipt_summary".to_string(),
             json!("Dais receipt summary."),
@@ -5617,7 +5567,10 @@ mod tests {
             "pedestal_certificate_sha256".to_string(),
             json!("pedestal-certificate-sha256"),
         );
-        object.insert("pedestal_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "pedestal_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         object.insert(
             "dais_receipt_summary".to_string(),
             json!("Dais receipt summary."),
@@ -5910,7 +5863,10 @@ mod tests {
             "pedestal_certificate_sha256".to_string(),
             json!("pedestal-certificate-sha256"),
         );
-        object.insert("pedestal_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "pedestal_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         object.insert(
             "dais_receipt_summary".to_string(),
             json!("Dais receipt summary."),

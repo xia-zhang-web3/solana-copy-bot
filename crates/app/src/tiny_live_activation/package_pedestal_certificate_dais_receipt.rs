@@ -471,7 +471,8 @@ pub fn load_live_package_pedestal_certificate_contract_for_dais_receipt(
         execute_frozen_result: status.execute_frozen_result,
         current_pre_activation_gate_verdict: status.current_pre_activation_gate_verdict,
         current_pre_activation_gate_reason: status.current_pre_activation_gate_reason,
-        verify_pedestal_certificate_command_summary: session.verify_pedestal_certificate_command_summary,
+        verify_pedestal_certificate_command_summary: session
+            .verify_pedestal_certificate_command_summary,
         reviewed_frozen_live_cutover_controller_command_summary: session
             .reviewed_frozen_live_cutover_controller_command_summary,
         provenance_certificate_summary: if status.provenance_certificate_summary.is_empty() {
@@ -1319,13 +1320,16 @@ pub fn pedestal_certificate_verify_args(
     ]
 }
 
-pub fn pedestal_certificate_artifact_paths(session_dir: &Path) -> PackagePedestalCertificateArtifactPaths {
+pub fn pedestal_certificate_artifact_paths(
+    session_dir: &Path,
+) -> PackagePedestalCertificateArtifactPaths {
     PackagePedestalCertificateArtifactPaths {
-        session_path: session_dir.join("tiny_live_activation_package_pedestal_certificate.session.json"),
-        status_path: session_dir.join("tiny_live_activation_package_pedestal_certificate.status.json"),
-        plinth_receipt_report_path: session_dir.join(
-            "tiny_live_activation_package_pedestal_certificate.plinth_receipt.report.json",
-        ),
+        session_path: session_dir
+            .join("tiny_live_activation_package_pedestal_certificate.session.json"),
+        status_path: session_dir
+            .join("tiny_live_activation_package_pedestal_certificate.status.json"),
+        plinth_receipt_report_path: session_dir
+            .join("tiny_live_activation_package_pedestal_certificate.plinth_receipt.report.json"),
     }
 }
 
@@ -1829,11 +1833,17 @@ mod tests {
             "pedestal_certificate_sha256".to_string(),
             json!("imprint-sha256"),
         );
-        object.insert("pedestal_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "pedestal_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         Value::Object(object)
     }
 
-    fn stored_pedestal_certificate_status_value(result: &str, include_nested_results: bool) -> Value {
+    fn stored_pedestal_certificate_status_value(
+        result: &str,
+        include_nested_results: bool,
+    ) -> Value {
         let mut object = Map::new();
         object.insert(
             "plinth_receipt_session_dir".to_string(),
@@ -2040,7 +2050,10 @@ mod tests {
             "pedestal_certificate_sha256".to_string(),
             json!("imprint-sha256"),
         );
-        object.insert("pedestal_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "pedestal_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         Value::Object(object)
     }
 }

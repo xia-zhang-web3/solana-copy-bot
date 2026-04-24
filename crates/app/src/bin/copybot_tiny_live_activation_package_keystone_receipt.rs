@@ -878,7 +878,9 @@ fn run_live_package_keystone_receipt_report(
         &verified_capstone_certificate
             .contract
             .filing_certificate_algorithm,
-        &verified_capstone_certificate.contract.archive_receipt_sha256,
+        &verified_capstone_certificate
+            .contract
+            .archive_receipt_sha256,
         &verified_capstone_certificate
             .contract
             .archive_receipt_algorithm,
@@ -891,7 +893,9 @@ fn run_live_package_keystone_receipt_report(
         &verified_capstone_certificate
             .contract
             .closure_certificate_algorithm,
-        &verified_capstone_certificate.contract.finality_receipt_sha256,
+        &verified_capstone_certificate
+            .contract
+            .finality_receipt_sha256,
         &verified_capstone_certificate
             .contract
             .finality_receipt_algorithm,
@@ -970,7 +974,10 @@ fn run_live_package_keystone_receipt_report(
         status_version: KEYSTONE_RECEIPT_STATUS_VERSION.to_string(),
         updated_at: Utc::now(),
         session_dir: session_dir.display().to_string(),
-        capstone_certificate_session_dir: config.capstone_certificate_session_dir.display().to_string(),
+        capstone_certificate_session_dir: config
+            .capstone_certificate_session_dir
+            .display()
+            .to_string(),
         result,
         reason: classification.2.clone(),
         handoff_bundle_result: verified_capstone_certificate
@@ -1204,7 +1211,10 @@ fn verify_live_package_keystone_receipt_report(
 
     compare_string(
         &session.capstone_certificate_session_dir,
-        &config.capstone_certificate_session_dir.display().to_string(),
+        &config
+            .capstone_certificate_session_dir
+            .display()
+            .to_string(),
         "capstone-certificate capstone_certificate_session_dir",
         &mut mismatches,
     );
@@ -1222,7 +1232,10 @@ fn verify_live_package_keystone_receipt_report(
     );
     compare_string(
         &status.capstone_certificate_session_dir,
-        &config.capstone_certificate_session_dir.display().to_string(),
+        &config
+            .capstone_certificate_session_dir
+            .display()
+            .to_string(),
         "capstone-certificate status capstone_certificate_session_dir",
         &mut mismatches,
     );
@@ -1379,7 +1392,9 @@ fn verify_live_package_keystone_receipt_report(
         &verified_capstone_certificate
             .contract
             .filing_certificate_algorithm,
-        &verified_capstone_certificate.contract.archive_receipt_sha256,
+        &verified_capstone_certificate
+            .contract
+            .archive_receipt_sha256,
         &verified_capstone_certificate
             .contract
             .archive_receipt_algorithm,
@@ -1392,7 +1407,9 @@ fn verify_live_package_keystone_receipt_report(
         &verified_capstone_certificate
             .contract
             .closure_certificate_algorithm,
-        &verified_capstone_certificate.contract.finality_receipt_sha256,
+        &verified_capstone_certificate
+            .contract
+            .finality_receipt_sha256,
         &verified_capstone_certificate
             .contract
             .finality_receipt_algorithm,
@@ -1622,7 +1639,10 @@ fn planned_session(
     PackageKeystoneReceiptSession {
         session_version: KEYSTONE_RECEIPT_SESSION_VERSION.to_string(),
         planned_at: Utc::now(),
-        capstone_certificate_session_dir: config.capstone_certificate_session_dir.display().to_string(),
+        capstone_certificate_session_dir: config
+            .capstone_certificate_session_dir
+            .display()
+            .to_string(),
         registry_entry_session_dir: contract.registry_entry_session_dir.display().to_string(),
         notarization_receipt_session_dir: contract
             .notarization_receipt_session_dir
@@ -1748,7 +1768,10 @@ fn expected_status_from_verified(
         status_version: KEYSTONE_RECEIPT_STATUS_VERSION.to_string(),
         updated_at,
         session_dir: session_dir.display().to_string(),
-        capstone_certificate_session_dir: config.capstone_certificate_session_dir.display().to_string(),
+        capstone_certificate_session_dir: config
+            .capstone_certificate_session_dir
+            .display()
+            .to_string(),
         result: classification.0,
         reason: classification.2,
         handoff_bundle_result: contract.handoff_bundle_result.clone(),
@@ -1833,7 +1856,10 @@ fn report_from_status(
         },
         verdict,
         reason: status.reason.clone(),
-        capstone_certificate_session_dir: config.capstone_certificate_session_dir.display().to_string(),
+        capstone_certificate_session_dir: config
+            .capstone_certificate_session_dir
+            .display()
+            .to_string(),
         registry_entry_session_dir: Some(contract.registry_entry_session_dir.display().to_string()),
         notarization_receipt_session_dir: Some(
             contract
@@ -1883,9 +1909,9 @@ fn report_from_status(
         current_pre_activation_gate_verdict: status.current_pre_activation_gate_verdict.clone(),
         current_pre_activation_gate_reason: status.current_pre_activation_gate_reason.clone(),
         capstone_certificate_step: status.capstone_certificate_step.clone(),
-        verify_capstone_certificate_command_summary: Some(verify_capstone_certificate_command_summary(
-            &config.capstone_certificate_session_dir,
-        )),
+        verify_capstone_certificate_command_summary: Some(
+            verify_capstone_certificate_command_summary(&config.capstone_certificate_session_dir),
+        ),
         reviewed_frozen_live_cutover_controller_command_summary: Some(
             contract
                 .reviewed_frozen_live_cutover_controller_command_summary
@@ -2085,7 +2111,10 @@ fn failure_report_for_verify(
         mode: "verify_live_package_keystone_receipt".to_string(),
         verdict: TinyLivePackageKeystoneReceiptVerdict::TinyLivePackageKeystoneReceiptVerifyInvalid,
         reason,
-        capstone_certificate_session_dir: config.capstone_certificate_session_dir.display().to_string(),
+        capstone_certificate_session_dir: config
+            .capstone_certificate_session_dir
+            .display()
+            .to_string(),
         registry_entry_session_dir: Some(contract.registry_entry_session_dir.display().to_string()),
         notarization_receipt_session_dir: Some(
             contract
@@ -2135,9 +2164,9 @@ fn failure_report_for_verify(
         current_pre_activation_gate_verdict: contract.current_pre_activation_gate_verdict.clone(),
         current_pre_activation_gate_reason: contract.current_pre_activation_gate_reason.clone(),
         capstone_certificate_step: None,
-        verify_capstone_certificate_command_summary: Some(verify_capstone_certificate_command_summary(
-            &config.capstone_certificate_session_dir,
-        )),
+        verify_capstone_certificate_command_summary: Some(
+            verify_capstone_certificate_command_summary(&config.capstone_certificate_session_dir),
+        ),
         reviewed_frozen_live_cutover_controller_command_summary: Some(
             contract
                 .reviewed_frozen_live_cutover_controller_command_summary
@@ -2238,7 +2267,9 @@ fn load_required_step_json(
     mismatches: &mut Vec<String>,
 ) -> Result<serde_json::Value> {
     let Some(step) = step else {
-        mismatches.push(format!("{label} is missing from capstone-certificate status"));
+        mismatches.push(format!(
+            "{label} is missing from capstone-certificate status"
+        ));
         return load_json(expected_path);
     };
     compare_string(
@@ -2303,7 +2334,9 @@ fn compare_step_artifact(
     mismatches: &mut Vec<String>,
 ) {
     let Some(actual) = actual else {
-        mismatches.push(format!("{label} is missing from capstone-certificate status"));
+        mismatches.push(format!(
+            "{label} is missing from capstone-certificate status"
+        ));
         return;
     };
     compare_string(
@@ -2644,7 +2677,9 @@ mod tests {
             &fixture.install_root,
         )
         .unwrap();
-        let overlap_session_dir = managed_paths.runtime_dir.join("capstone-certificate-session");
+        let overlap_session_dir = managed_paths
+            .runtime_dir
+            .join("capstone-certificate-session");
         fs::create_dir_all(overlap_session_dir.parent().unwrap()).unwrap();
 
         let config = Config {
@@ -3573,7 +3608,10 @@ mod tests {
             "capstone_certificate_sha256".to_string(),
             json!("capstone-certificate-sha256"),
         );
-        object.insert("capstone_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "capstone_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         object.insert(
             "explicit_statement".to_string(),
             json!("capstone-certificate verify statement"),
@@ -3955,7 +3993,10 @@ mod tests {
             "capstone_certificate_sha256".to_string(),
             json!("capstone-certificate-sha256"),
         );
-        object.insert("capstone_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "capstone_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         object.insert(
             "explicit_statement".to_string(),
             json!("capstone-certificate statement"),
@@ -4141,7 +4182,10 @@ mod tests {
             "capstone_certificate_sha256".to_string(),
             json!("capstone-certificate-sha256"),
         );
-        object.insert("capstone_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "capstone_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         object.insert(
             "explicit_statement".to_string(),
             json!("capstone-certificate status statement"),

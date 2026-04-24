@@ -519,26 +519,18 @@ where
                 output_path = Some(PathBuf::from(parse_string_arg("--output", args.next())?))
             }
             "--json" => json = true,
-            "--plan-live-package-dais-receipt" => set_mode(
-                &mut mode,
-                Mode::PlanLivePackageDaisReceipt,
-                arg.as_str(),
-            )?,
-            "--render-live-package-dais-receipt" => set_mode(
-                &mut mode,
-                Mode::RenderLivePackageDaisReceipt,
-                arg.as_str(),
-            )?,
-            "--run-live-package-dais-receipt" => set_mode(
-                &mut mode,
-                Mode::RunLivePackageDaisReceipt,
-                arg.as_str(),
-            )?,
-            "--verify-live-package-dais-receipt" => set_mode(
-                &mut mode,
-                Mode::VerifyLivePackageDaisReceipt,
-                arg.as_str(),
-            )?,
+            "--plan-live-package-dais-receipt" => {
+                set_mode(&mut mode, Mode::PlanLivePackageDaisReceipt, arg.as_str())?
+            }
+            "--render-live-package-dais-receipt" => {
+                set_mode(&mut mode, Mode::RenderLivePackageDaisReceipt, arg.as_str())?
+            }
+            "--run-live-package-dais-receipt" => {
+                set_mode(&mut mode, Mode::RunLivePackageDaisReceipt, arg.as_str())?
+            }
+            "--verify-live-package-dais-receipt" => {
+                set_mode(&mut mode, Mode::VerifyLivePackageDaisReceipt, arg.as_str())?
+            }
             "--help" | "-h" => return Ok(None),
             other => bail!("unknown argument: {other}"),
         }
@@ -578,18 +570,10 @@ where
 
 fn run(config: Config) -> Result<String> {
     let report = match config.mode {
-        Mode::PlanLivePackageDaisReceipt => {
-            plan_live_package_dais_receipt_report(&config)?
-        }
-        Mode::RenderLivePackageDaisReceipt => {
-            render_live_package_dais_receipt_report(&config)?
-        }
-        Mode::RunLivePackageDaisReceipt => {
-            run_live_package_dais_receipt_report(&config)?
-        }
-        Mode::VerifyLivePackageDaisReceipt => {
-            verify_live_package_dais_receipt_report(&config)?
-        }
+        Mode::PlanLivePackageDaisReceipt => plan_live_package_dais_receipt_report(&config)?,
+        Mode::RenderLivePackageDaisReceipt => render_live_package_dais_receipt_report(&config)?,
+        Mode::RunLivePackageDaisReceipt => run_live_package_dais_receipt_report(&config)?,
+        Mode::VerifyLivePackageDaisReceipt => verify_live_package_dais_receipt_report(&config)?,
     };
     if config.json {
         Ok(serde_json::to_string_pretty(&report)?)
@@ -598,9 +582,7 @@ fn run(config: Config) -> Result<String> {
     }
 }
 
-fn plan_live_package_dais_receipt_report(
-    config: &Config,
-) -> Result<PackageDaisReceiptReport> {
+fn plan_live_package_dais_receipt_report(config: &Config) -> Result<PackageDaisReceiptReport> {
     let (basal_receipt, classification) =
         match config.confirmed_decision_packet_session_dir.as_deref() {
             Some(confirmed_decision_packet_session_dir) => {
@@ -632,11 +614,10 @@ fn plan_live_package_dais_receipt_report(
                 (raw_contract, classification)
             }
         };
-    let session_dir = config.session_dir.clone().unwrap_or_else(|| {
-        config
-            .pedestal_certificate_session_dir
-            .join("dais-receipt")
-    });
+    let session_dir = config
+        .session_dir
+        .clone()
+        .unwrap_or_else(|| config.pedestal_certificate_session_dir.join("dais-receipt"));
     let result = serialize_enum(&classification.0);
     let dais_receipt_sha256 = compute_dais_receipt_sha256(
         &result,
@@ -951,9 +932,7 @@ fn plan_live_package_dais_receipt_report(
     })
 }
 
-fn render_live_package_dais_receipt_report(
-    config: &Config,
-) -> Result<PackageDaisReceiptReport> {
+fn render_live_package_dais_receipt_report(config: &Config) -> Result<PackageDaisReceiptReport> {
     let plan = plan_live_package_dais_receipt_report(config)?;
     let output_path = config
         .output_path
@@ -993,9 +972,7 @@ fn render_live_package_dais_receipt_report(
     })
 }
 
-fn run_live_package_dais_receipt_report(
-    config: &Config,
-) -> Result<PackageDaisReceiptReport> {
+fn run_live_package_dais_receipt_report(config: &Config) -> Result<PackageDaisReceiptReport> {
     let session_dir = config
         .session_dir
         .as_ref()
@@ -1060,8 +1037,12 @@ fn run_live_package_dais_receipt_report(
         &verified_pedestal_certificate
             .contract
             .reviewed_frozen_live_cutover_controller_command_summary,
-        &verified_pedestal_certificate.contract.chain_fingerprint_sha256,
-        &verified_pedestal_certificate.contract.chain_fingerprint_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .chain_fingerprint_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .chain_fingerprint_algorithm,
         &verified_pedestal_certificate
             .contract
             .release_capsule_digest_manifest_sha256,
@@ -1074,21 +1055,39 @@ fn run_live_package_dais_receipt_report(
         &verified_pedestal_certificate.contract.ledger_seal_sha256,
         &verified_pedestal_certificate.contract.ledger_seal_algorithm,
         &verified_pedestal_certificate.contract.registry_entry_sha256,
-        &verified_pedestal_certificate.contract.registry_entry_algorithm,
-        &verified_pedestal_certificate.contract.filing_certificate_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .registry_entry_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .filing_certificate_sha256,
         &verified_pedestal_certificate
             .contract
             .filing_certificate_algorithm,
-        &verified_pedestal_certificate.contract.archive_receipt_sha256,
-        &verified_pedestal_certificate.contract.archive_receipt_algorithm,
-        &verified_pedestal_certificate.contract.closure_certificate_summary,
-        &verified_pedestal_certificate.contract.closure_certificate_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .archive_receipt_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .archive_receipt_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .closure_certificate_summary,
+        &verified_pedestal_certificate
+            .contract
+            .closure_certificate_sha256,
         &verified_pedestal_certificate
             .contract
             .closure_certificate_algorithm,
-        &verified_pedestal_certificate.contract.finality_receipt_sha256,
-        &verified_pedestal_certificate.contract.finality_receipt_algorithm,
-        &verified_pedestal_certificate.contract.consummation_record_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .finality_receipt_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .finality_receipt_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .consummation_record_sha256,
         &verified_pedestal_certificate
             .contract
             .consummation_record_algorithm,
@@ -1101,29 +1100,51 @@ fn run_live_package_dais_receipt_report(
         &verified_pedestal_certificate
             .contract
             .completion_certificate_algorithm,
-        &verified_pedestal_certificate.contract.summit_certificate_summary,
-        &verified_pedestal_certificate.contract.summit_certificate_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .summit_certificate_summary,
+        &verified_pedestal_certificate
+            .contract
+            .summit_certificate_sha256,
         &verified_pedestal_certificate
             .contract
             .summit_certificate_algorithm,
-        &verified_pedestal_certificate.contract.culmination_receipt_summary,
-        &verified_pedestal_certificate.contract.culmination_receipt_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .culmination_receipt_summary,
+        &verified_pedestal_certificate
+            .contract
+            .culmination_receipt_sha256,
         &verified_pedestal_certificate
             .contract
             .culmination_receipt_algorithm,
-        &verified_pedestal_certificate.contract.pinnacle_receipt_summary,
-        &verified_pedestal_certificate.contract.pinnacle_receipt_sha256,
-        &verified_pedestal_certificate.contract.pinnacle_receipt_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .pinnacle_receipt_summary,
+        &verified_pedestal_certificate
+            .contract
+            .pinnacle_receipt_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .pinnacle_receipt_algorithm,
         &verified_pedestal_certificate
             .contract
             .capstone_certificate_summary,
-        &verified_pedestal_certificate.contract.capstone_certificate_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .capstone_certificate_sha256,
         &verified_pedestal_certificate
             .contract
             .capstone_certificate_algorithm,
-        &verified_pedestal_certificate.contract.keystone_receipt_summary,
-        &verified_pedestal_certificate.contract.keystone_receipt_sha256,
-        &verified_pedestal_certificate.contract.keystone_receipt_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .keystone_receipt_summary,
+        &verified_pedestal_certificate
+            .contract
+            .keystone_receipt_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .keystone_receipt_algorithm,
         &verified_pedestal_certificate
             .contract
             .cornerstone_certificate_summary,
@@ -1133,19 +1154,29 @@ fn run_live_package_dais_receipt_report(
         &verified_pedestal_certificate
             .contract
             .cornerstone_certificate_algorithm,
-        &verified_pedestal_certificate.contract.foundation_receipt_summary,
-        &verified_pedestal_certificate.contract.foundation_receipt_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .foundation_receipt_summary,
+        &verified_pedestal_certificate
+            .contract
+            .foundation_receipt_sha256,
         &verified_pedestal_certificate
             .contract
             .foundation_receipt_algorithm,
-        &verified_pedestal_certificate.contract.bedrock_certificate_summary,
-        &verified_pedestal_certificate.contract.bedrock_certificate_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .bedrock_certificate_summary,
+        &verified_pedestal_certificate
+            .contract
+            .bedrock_certificate_sha256,
         &verified_pedestal_certificate
             .contract
             .bedrock_certificate_algorithm,
         &verified_pedestal_certificate.contract.basal_receipt_summary,
         &verified_pedestal_certificate.contract.basal_receipt_sha256,
-        &verified_pedestal_certificate.contract.basal_receipt_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .basal_receipt_algorithm,
         &verified_pedestal_certificate
             .contract
             .substructure_certificate_summary,
@@ -1155,12 +1186,22 @@ fn run_live_package_dais_receipt_report(
         &verified_pedestal_certificate
             .contract
             .substructure_certificate_algorithm,
-        &verified_pedestal_certificate.contract.plinth_receipt_summary,
+        &verified_pedestal_certificate
+            .contract
+            .plinth_receipt_summary,
         &verified_pedestal_certificate.contract.plinth_receipt_sha256,
-        &verified_pedestal_certificate.contract.plinth_receipt_algorithm,
-        &verified_pedestal_certificate.contract.pedestal_certificate_summary,
-        &verified_pedestal_certificate.contract.pedestal_certificate_sha256,
-        &verified_pedestal_certificate.contract.pedestal_certificate_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .plinth_receipt_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .pedestal_certificate_summary,
+        &verified_pedestal_certificate
+            .contract
+            .pedestal_certificate_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .pedestal_certificate_algorithm,
     )?;
     let session = planned_session(
         config,
@@ -1185,7 +1226,10 @@ fn run_live_package_dais_receipt_report(
         status_version: DAIS_RECEIPT_STATUS_VERSION.to_string(),
         updated_at: Utc::now(),
         session_dir: session_dir.display().to_string(),
-        pedestal_certificate_session_dir: config.pedestal_certificate_session_dir.display().to_string(),
+        pedestal_certificate_session_dir: config
+            .pedestal_certificate_session_dir
+            .display()
+            .to_string(),
         plinth_receipt_session_dir: verified_pedestal_certificate
             .contract
             .plinth_receipt_session_dir
@@ -1265,8 +1309,14 @@ fn run_live_package_dais_receipt_report(
             .contract
             .notarization_receipt_summary
             .clone(),
-        ledger_seal_summary: verified_pedestal_certificate.contract.ledger_seal_summary.clone(),
-        ledger_seal_sha256: verified_pedestal_certificate.contract.ledger_seal_sha256.clone(),
+        ledger_seal_summary: verified_pedestal_certificate
+            .contract
+            .ledger_seal_summary
+            .clone(),
+        ledger_seal_sha256: verified_pedestal_certificate
+            .contract
+            .ledger_seal_sha256
+            .clone(),
         ledger_seal_algorithm: verified_pedestal_certificate
             .contract
             .ledger_seal_algorithm
@@ -1520,9 +1570,7 @@ fn run_live_package_dais_receipt_report(
     ))
 }
 
-fn verify_live_package_dais_receipt_report(
-    config: &Config,
-) -> Result<PackageDaisReceiptReport> {
+fn verify_live_package_dais_receipt_report(config: &Config) -> Result<PackageDaisReceiptReport> {
     let session_dir = config
         .session_dir
         .as_ref()
@@ -1534,7 +1582,10 @@ fn verify_live_package_dais_receipt_report(
 
     compare_string(
         &session.pedestal_certificate_session_dir,
-        &config.pedestal_certificate_session_dir.display().to_string(),
+        &config
+            .pedestal_certificate_session_dir
+            .display()
+            .to_string(),
         "dais-receipt pedestal_certificate_session_dir",
         &mut mismatches,
     );
@@ -1552,7 +1603,10 @@ fn verify_live_package_dais_receipt_report(
     );
     compare_string(
         &status.pedestal_certificate_session_dir,
-        &config.pedestal_certificate_session_dir.display().to_string(),
+        &config
+            .pedestal_certificate_session_dir
+            .display()
+            .to_string(),
         "dais-receipt status pedestal_certificate_session_dir",
         &mut mismatches,
     );
@@ -1657,12 +1711,14 @@ fn verify_live_package_dais_receipt_report(
             )
         })?;
     let verified_substructure_certificate_report_view: NestedSubstructureCertificateReportView =
-        serde_json::from_value(verified_pedestal_certificate.report_json.clone()).with_context(|| {
-            format!(
-                "failed parsing freshly verified nested pedestal-certificate report for {}",
-                config.pedestal_certificate_session_dir.display()
-            )
-        })?;
+        serde_json::from_value(verified_pedestal_certificate.report_json.clone()).with_context(
+            || {
+                format!(
+                    "failed parsing freshly verified nested pedestal-certificate report for {}",
+                    config.pedestal_certificate_session_dir.display()
+                )
+            },
+        )?;
     compare_json_ignoring_generated_at(
         &stored_basal_receipt_report,
         &verified_pedestal_certificate.report_json,
@@ -1742,8 +1798,12 @@ fn verify_live_package_dais_receipt_report(
         &verified_pedestal_certificate
             .contract
             .reviewed_frozen_live_cutover_controller_command_summary,
-        &verified_pedestal_certificate.contract.chain_fingerprint_sha256,
-        &verified_pedestal_certificate.contract.chain_fingerprint_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .chain_fingerprint_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .chain_fingerprint_algorithm,
         &verified_pedestal_certificate
             .contract
             .release_capsule_digest_manifest_sha256,
@@ -1756,21 +1816,39 @@ fn verify_live_package_dais_receipt_report(
         &verified_pedestal_certificate.contract.ledger_seal_sha256,
         &verified_pedestal_certificate.contract.ledger_seal_algorithm,
         &verified_pedestal_certificate.contract.registry_entry_sha256,
-        &verified_pedestal_certificate.contract.registry_entry_algorithm,
-        &verified_pedestal_certificate.contract.filing_certificate_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .registry_entry_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .filing_certificate_sha256,
         &verified_pedestal_certificate
             .contract
             .filing_certificate_algorithm,
-        &verified_pedestal_certificate.contract.archive_receipt_sha256,
-        &verified_pedestal_certificate.contract.archive_receipt_algorithm,
-        &verified_pedestal_certificate.contract.closure_certificate_summary,
-        &verified_pedestal_certificate.contract.closure_certificate_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .archive_receipt_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .archive_receipt_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .closure_certificate_summary,
+        &verified_pedestal_certificate
+            .contract
+            .closure_certificate_sha256,
         &verified_pedestal_certificate
             .contract
             .closure_certificate_algorithm,
-        &verified_pedestal_certificate.contract.finality_receipt_sha256,
-        &verified_pedestal_certificate.contract.finality_receipt_algorithm,
-        &verified_pedestal_certificate.contract.consummation_record_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .finality_receipt_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .finality_receipt_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .consummation_record_sha256,
         &verified_pedestal_certificate
             .contract
             .consummation_record_algorithm,
@@ -1783,29 +1861,51 @@ fn verify_live_package_dais_receipt_report(
         &verified_pedestal_certificate
             .contract
             .completion_certificate_algorithm,
-        &verified_pedestal_certificate.contract.summit_certificate_summary,
-        &verified_pedestal_certificate.contract.summit_certificate_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .summit_certificate_summary,
+        &verified_pedestal_certificate
+            .contract
+            .summit_certificate_sha256,
         &verified_pedestal_certificate
             .contract
             .summit_certificate_algorithm,
-        &verified_pedestal_certificate.contract.culmination_receipt_summary,
-        &verified_pedestal_certificate.contract.culmination_receipt_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .culmination_receipt_summary,
+        &verified_pedestal_certificate
+            .contract
+            .culmination_receipt_sha256,
         &verified_pedestal_certificate
             .contract
             .culmination_receipt_algorithm,
-        &verified_pedestal_certificate.contract.pinnacle_receipt_summary,
-        &verified_pedestal_certificate.contract.pinnacle_receipt_sha256,
-        &verified_pedestal_certificate.contract.pinnacle_receipt_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .pinnacle_receipt_summary,
+        &verified_pedestal_certificate
+            .contract
+            .pinnacle_receipt_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .pinnacle_receipt_algorithm,
         &verified_pedestal_certificate
             .contract
             .capstone_certificate_summary,
-        &verified_pedestal_certificate.contract.capstone_certificate_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .capstone_certificate_sha256,
         &verified_pedestal_certificate
             .contract
             .capstone_certificate_algorithm,
-        &verified_pedestal_certificate.contract.keystone_receipt_summary,
-        &verified_pedestal_certificate.contract.keystone_receipt_sha256,
-        &verified_pedestal_certificate.contract.keystone_receipt_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .keystone_receipt_summary,
+        &verified_pedestal_certificate
+            .contract
+            .keystone_receipt_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .keystone_receipt_algorithm,
         &verified_pedestal_certificate
             .contract
             .cornerstone_certificate_summary,
@@ -1815,19 +1915,29 @@ fn verify_live_package_dais_receipt_report(
         &verified_pedestal_certificate
             .contract
             .cornerstone_certificate_algorithm,
-        &verified_pedestal_certificate.contract.foundation_receipt_summary,
-        &verified_pedestal_certificate.contract.foundation_receipt_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .foundation_receipt_summary,
+        &verified_pedestal_certificate
+            .contract
+            .foundation_receipt_sha256,
         &verified_pedestal_certificate
             .contract
             .foundation_receipt_algorithm,
-        &verified_pedestal_certificate.contract.bedrock_certificate_summary,
-        &verified_pedestal_certificate.contract.bedrock_certificate_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .bedrock_certificate_summary,
+        &verified_pedestal_certificate
+            .contract
+            .bedrock_certificate_sha256,
         &verified_pedestal_certificate
             .contract
             .bedrock_certificate_algorithm,
         &verified_pedestal_certificate.contract.basal_receipt_summary,
         &verified_pedestal_certificate.contract.basal_receipt_sha256,
-        &verified_pedestal_certificate.contract.basal_receipt_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .basal_receipt_algorithm,
         &verified_pedestal_certificate
             .contract
             .substructure_certificate_summary,
@@ -1837,12 +1947,22 @@ fn verify_live_package_dais_receipt_report(
         &verified_pedestal_certificate
             .contract
             .substructure_certificate_algorithm,
-        &verified_pedestal_certificate.contract.plinth_receipt_summary,
+        &verified_pedestal_certificate
+            .contract
+            .plinth_receipt_summary,
         &verified_pedestal_certificate.contract.plinth_receipt_sha256,
-        &verified_pedestal_certificate.contract.plinth_receipt_algorithm,
-        &verified_pedestal_certificate.contract.pedestal_certificate_summary,
-        &verified_pedestal_certificate.contract.pedestal_certificate_sha256,
-        &verified_pedestal_certificate.contract.pedestal_certificate_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .plinth_receipt_algorithm,
+        &verified_pedestal_certificate
+            .contract
+            .pedestal_certificate_summary,
+        &verified_pedestal_certificate
+            .contract
+            .pedestal_certificate_sha256,
+        &verified_pedestal_certificate
+            .contract
+            .pedestal_certificate_algorithm,
     )?;
 
     let expected_session = expected_session_from_verified(
@@ -1985,10 +2105,8 @@ fn dais_receipt_summary(
 
 fn dais_receipt_paths(session_dir: &Path) -> PackageDaisReceiptPaths {
     PackageDaisReceiptPaths {
-        session_path: session_dir
-            .join("tiny_live_activation_package_dais_receipt.session.json"),
-        status_path: session_dir
-            .join("tiny_live_activation_package_dais_receipt.status.json"),
+        session_path: session_dir.join("tiny_live_activation_package_dais_receipt.session.json"),
+        status_path: session_dir.join("tiny_live_activation_package_dais_receipt.status.json"),
         pedestal_certificate_report_path: session_dir
             .join("tiny_live_activation_package_dais_receipt.pedestal_certificate.report.json"),
     }
@@ -2019,7 +2137,10 @@ fn planned_session(
     PackageDaisReceiptSession {
         session_version: DAIS_RECEIPT_SESSION_VERSION.to_string(),
         planned_at: Utc::now(),
-        pedestal_certificate_session_dir: config.pedestal_certificate_session_dir.display().to_string(),
+        pedestal_certificate_session_dir: config
+            .pedestal_certificate_session_dir
+            .display()
+            .to_string(),
         plinth_receipt_session_dir: contract.plinth_receipt_session_dir.display().to_string(),
         substructure_certificate_session_dir: contract
             .substructure_certificate_session_dir
@@ -2156,13 +2277,7 @@ fn expected_session_from_verified(
 ) -> PackageDaisReceiptSession {
     PackageDaisReceiptSession {
         planned_at,
-        ..planned_session(
-            config,
-            session_dir,
-            contract,
-            result,
-            dais_receipt_sha256,
-        )
+        ..planned_session(config, session_dir, contract, result, dais_receipt_sha256)
     }
 }
 
@@ -2183,7 +2298,10 @@ fn expected_status_from_verified(
         status_version: DAIS_RECEIPT_STATUS_VERSION.to_string(),
         updated_at,
         session_dir: session_dir.display().to_string(),
-        pedestal_certificate_session_dir: config.pedestal_certificate_session_dir.display().to_string(),
+        pedestal_certificate_session_dir: config
+            .pedestal_certificate_session_dir
+            .display()
+            .to_string(),
         plinth_receipt_session_dir: contract.plinth_receipt_session_dir.display().to_string(),
         substructure_certificate_session_dir: contract
             .substructure_certificate_session_dir
@@ -2297,16 +2415,17 @@ fn report_from_status(
 ) -> PackageDaisReceiptReport {
     PackageDaisReceiptReport {
         generated_at: Utc::now(),
-        mode: if verdict
-            == TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyOk
-        {
+        mode: if verdict == TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyOk {
             "verify_live_package_dais_receipt".to_string()
         } else {
             "run_live_package_dais_receipt".to_string()
         },
         verdict,
         reason: status.reason.clone(),
-        pedestal_certificate_session_dir: config.pedestal_certificate_session_dir.display().to_string(),
+        pedestal_certificate_session_dir: config
+            .pedestal_certificate_session_dir
+            .display()
+            .to_string(),
         plinth_receipt_session_dir: Some(contract.plinth_receipt_session_dir.display().to_string()),
         substructure_certificate_session_dir: Some(
             contract
@@ -2376,9 +2495,9 @@ fn report_from_status(
         current_pre_activation_gate_verdict: status.current_pre_activation_gate_verdict.clone(),
         current_pre_activation_gate_reason: status.current_pre_activation_gate_reason.clone(),
         pedestal_certificate_step: status.pedestal_certificate_step.clone(),
-        verify_pedestal_certificate_command_summary: Some(verify_pedestal_certificate_command_summary(
-            &config.pedestal_certificate_session_dir,
-        )),
+        verify_pedestal_certificate_command_summary: Some(
+            verify_pedestal_certificate_command_summary(&config.pedestal_certificate_session_dir),
+        ),
         reviewed_frozen_live_cutover_controller_command_summary: Some(
             contract
                 .reviewed_frozen_live_cutover_controller_command_summary
@@ -2695,10 +2814,7 @@ fn failure_report_for_verify(
         dais_receipt_session_path: Some(paths.session_path.display().to_string()),
         dais_receipt_status_path: Some(paths.status_path.display().to_string()),
         archived_pedestal_certificate_report_path: Some(
-            paths
-                .pedestal_certificate_report_path
-                .display()
-                .to_string(),
+            paths.pedestal_certificate_report_path.display().to_string(),
         ),
         result: None,
         handoff_bundle_result: contract.handoff_bundle_result.clone(),
@@ -2708,9 +2824,7 @@ fn failure_report_for_verify(
         current_pre_activation_gate_reason: contract.current_pre_activation_gate_reason.clone(),
         pedestal_certificate_step: None,
         verify_pedestal_certificate_command_summary: Some(
-            verify_pedestal_certificate_command_summary(
-                &config.pedestal_certificate_session_dir,
-            ),
+            verify_pedestal_certificate_command_summary(&config.pedestal_certificate_session_dir),
         ),
         reviewed_frozen_live_cutover_controller_command_summary: Some(
             contract
@@ -2838,9 +2952,7 @@ fn load_required_step_json(
     mismatches: &mut Vec<String>,
 ) -> Result<serde_json::Value> {
     let Some(step) = step else {
-        mismatches.push(format!(
-            "{label} is missing from dais-receipt status"
-        ));
+        mismatches.push(format!("{label} is missing from dais-receipt status"));
         return load_json(expected_path);
     };
     compare_string(
@@ -2905,9 +3017,7 @@ fn compare_step_artifact(
     mismatches: &mut Vec<String>,
 ) {
     let Some(actual) = actual else {
-        mismatches.push(format!(
-            "{label} is missing from dais-receipt status"
-        ));
+        mismatches.push(format!("{label} is missing from dais-receipt status"));
         return;
     };
     compare_string(
@@ -3090,12 +3200,8 @@ fn sha256_hex_bytes(bytes: &[u8]) -> String {
 }
 
 fn write_script(path: &Path, contents: &str) -> Result<()> {
-    fs::write(path, contents).with_context(|| {
-        format!(
-            "failed writing dais-receipt script to {}",
-            path.display()
-        )
-    })?;
+    fs::write(path, contents)
+        .with_context(|| format!("failed writing dais-receipt script to {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -3213,8 +3319,7 @@ mod tests {
             run.verdict,
             TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptReadyForManualExecutionWhenGateTurnsGreen
         );
-        let verify =
-            verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+        let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyOk
@@ -3348,8 +3453,7 @@ mod tests {
             "/tmp/foreign.pedestal-certificate.report.json".to_string();
         persist_json(&paths.status_path, &status).unwrap();
 
-        let verify =
-            verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+        let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3373,14 +3477,12 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut session: PackageDaisReceiptSession =
-                load_json(&paths.session_path).unwrap();
+            let mut session: PackageDaisReceiptSession = load_json(&paths.session_path).unwrap();
             session.pedestal_certificate_sha256 =
                 "tampered-pedestal-certificate-sha256".to_string();
             persist_json(&paths.session_path, &session).unwrap();
 
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3402,13 +3504,12 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut session: PackageDaisReceiptSession =
-                load_json(&paths.session_path).unwrap();
-            session.pedestal_certificate_summary = "tampered pedestal certificate summary".to_string();
+            let mut session: PackageDaisReceiptSession = load_json(&paths.session_path).unwrap();
+            session.pedestal_certificate_summary =
+                "tampered pedestal certificate summary".to_string();
             persist_json(&paths.session_path, &session).unwrap();
 
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3430,13 +3531,12 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut session: PackageDaisReceiptSession =
-                load_json(&paths.session_path).unwrap();
-            session.pedestal_certificate_algorithm = "tampered-pedestal-certificate-algorithm".to_string();
+            let mut session: PackageDaisReceiptSession = load_json(&paths.session_path).unwrap();
+            session.pedestal_certificate_algorithm =
+                "tampered-pedestal-certificate-algorithm".to_string();
             persist_json(&paths.session_path, &session).unwrap();
 
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3464,8 +3564,7 @@ mod tests {
         status.result = LivePackageDaisReceiptResult::RefusedNowByStage3;
         persist_json(&paths.status_path, &status).unwrap();
 
-        let verify =
-            verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+        let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3493,8 +3592,7 @@ mod tests {
         status.current_pre_activation_gate_reason = Some("tampered".to_string());
         persist_json(&paths.status_path, &status).unwrap();
 
-        let verify =
-            verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+        let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3517,15 +3615,15 @@ mod tests {
         let _path_guard = PathGuard::install(&fixture.bin_dir);
         run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
         let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-        let mut report: serde_json::Value = load_json(&paths.pedestal_certificate_report_path).unwrap();
+        let mut report: serde_json::Value =
+            load_json(&paths.pedestal_certificate_report_path).unwrap();
         report.as_object_mut().unwrap().insert(
             "reason".to_string(),
             json!("tampered nested pedestal-certificate reason"),
         );
         persist_json(&paths.pedestal_certificate_report_path, &report).unwrap();
 
-        let verify =
-            verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+        let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3548,7 +3646,8 @@ mod tests {
         let _path_guard = PathGuard::install(&fixture.bin_dir);
         run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
         let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-        let mut report: serde_json::Value = load_json(&paths.pedestal_certificate_report_path).unwrap();
+        let mut report: serde_json::Value =
+            load_json(&paths.pedestal_certificate_report_path).unwrap();
         let archived_generated_at =
             DateTime::parse_from_rfc3339(report["generated_at"].as_str().unwrap())
                 .unwrap()
@@ -3561,11 +3660,14 @@ mod tests {
         persist_json(&paths.pedestal_certificate_report_path, &report).unwrap();
 
         let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
-        status.pedestal_certificate_step.as_mut().unwrap().generated_at = forged_generated_at;
+        status
+            .pedestal_certificate_step
+            .as_mut()
+            .unwrap()
+            .generated_at = forged_generated_at;
         persist_json(&paths.status_path, &status).unwrap();
 
-        let verify =
-            verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+        let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3590,12 +3692,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.chain_fingerprint_sha256 = "tampered-chain".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3617,12 +3717,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.ledger_seal_sha256 = "tampered-ledger".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3644,12 +3742,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.registry_entry_sha256 = "tampered-registry".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3671,12 +3767,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.filing_certificate_sha256 = "tampered-filing".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3698,12 +3792,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.archive_receipt_sha256 = "tampered-archive".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3725,12 +3817,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.summit_certificate_sha256 = "tampered-summit".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3752,12 +3842,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.closure_certificate_sha256 = "tampered-closure".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3779,12 +3867,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.finality_receipt_sha256 = "tampered-finality".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3806,12 +3892,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.consummation_record_sha256 = "tampered-consummation".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3837,12 +3921,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.bedrock_certificate_sha256 = "tampered-bedrock".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3864,12 +3946,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.capstone_certificate_sha256 = "tampered-capstone".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3891,12 +3971,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.keystone_receipt_sha256 = "tampered-keystone".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3918,12 +3996,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.cornerstone_certificate_sha256 = "tampered-cornerstone".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3945,12 +4021,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.foundation_receipt_sha256 = "tampered-foundation".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -3977,8 +4051,7 @@ mod tests {
         let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
         status.basal_receipt_sha256 = "tampered-basal".to_string();
         persist_json(&paths.status_path, &status).unwrap();
-        let verify =
-            verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+        let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4004,8 +4077,7 @@ mod tests {
         let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
         status.substructure_certificate_sha256 = "tampered-substructure".to_string();
         persist_json(&paths.status_path, &status).unwrap();
-        let verify =
-            verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+        let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4029,12 +4101,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.substructure_certificate_summary = "tampered substructure summary".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4056,13 +4126,11 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.substructure_certificate_algorithm =
                 "tampered-substructure-algorithm".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4087,12 +4155,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.plinth_receipt_sha256 = "tampered-plinth".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4114,12 +4180,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.plinth_receipt_summary = "tampered plinth summary".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4141,12 +4205,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.plinth_receipt_algorithm = "tampered-plinth-algorithm".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4171,12 +4233,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.bedrock_certificate_summary = "tampered bedrock summary".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4198,12 +4258,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.bedrock_certificate_algorithm = "tampered-bedrock-algorithm".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4228,12 +4286,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.dais_receipt_sha256 = "tampered-dais".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4255,12 +4311,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.dais_receipt_summary = "tampered dais summary".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4282,12 +4336,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.dais_receipt_algorithm = "tampered-dais-algorithm".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4312,12 +4364,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.closure_certificate_summary = "tampered closure summary".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4339,12 +4389,10 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_dais_receipt_report(&fixture.run_config()).unwrap();
             let paths = dais_receipt_paths(&fixture.dais_receipt_session_dir);
-            let mut status: PackageDaisReceiptStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageDaisReceiptStatus = load_json(&paths.status_path).unwrap();
             status.closure_certificate_algorithm = "sha512".to_string();
             persist_json(&paths.status_path, &status).unwrap();
-            let verify =
-                verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
+            let verify = verify_live_package_dais_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageDaisReceiptVerdict::TinyLivePackageDaisReceiptVerifyInvalid
@@ -4364,7 +4412,9 @@ mod tests {
         fn run_config(&self) -> Config {
             Config {
                 mode: Mode::RunLivePackageDaisReceipt,
-                pedestal_certificate_session_dir: self.input_pedestal_certificate_session_dir.clone(),
+                pedestal_certificate_session_dir: self
+                    .input_pedestal_certificate_session_dir
+                    .clone(),
                 confirmed_decision_packet_session_dir: Some(
                     self.decision_packet_session_dir.clone(),
                 ),
@@ -4377,7 +4427,9 @@ mod tests {
         fn verify_config(&self) -> Config {
             Config {
                 mode: Mode::VerifyLivePackageDaisReceipt,
-                pedestal_certificate_session_dir: self.input_pedestal_certificate_session_dir.clone(),
+                pedestal_certificate_session_dir: self
+                    .input_pedestal_certificate_session_dir
+                    .clone(),
                 confirmed_decision_packet_session_dir: Some(
                     self.decision_packet_session_dir.clone(),
                 ),
@@ -4393,7 +4445,8 @@ mod tests {
         let bin_dir = fixture_dir.join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
         let dais_receipt_session_dir = fixture_dir.join("dais-receipt-session");
-        let input_pedestal_certificate_session_dir = fixture_dir.join("pedestal-certificate-session");
+        let input_pedestal_certificate_session_dir =
+            fixture_dir.join("pedestal-certificate-session");
         let plinth_receipt_session_dir = fixture_dir.join("plinth-receipt-session");
         let substructure_certificate_session_dir =
             fixture_dir.join("substructure-certificate-session");
@@ -4925,7 +4978,10 @@ mod tests {
             "pedestal_certificate_sha256".to_string(),
             json!("pedestal-certificate-sha256"),
         );
-        object.insert("pedestal_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "pedestal_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         object.insert(
             "explicit_statement".to_string(),
             json!("pedestal-certificate verify statement"),
@@ -5436,7 +5492,10 @@ mod tests {
             "pedestal_certificate_sha256".to_string(),
             json!("pedestal-certificate-sha256"),
         );
-        object.insert("pedestal_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "pedestal_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         object.insert(
             "explicit_statement".to_string(),
             json!("pedestal-certificate statement"),
@@ -5715,7 +5774,10 @@ mod tests {
             "pedestal_certificate_sha256".to_string(),
             json!("pedestal-certificate-sha256"),
         );
-        object.insert("pedestal_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "pedestal_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         object.insert(
             "explicit_statement".to_string(),
             json!("pedestal-certificate status statement"),

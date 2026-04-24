@@ -1688,7 +1688,10 @@ fn report_from_status(
         },
         verdict,
         reason: status.reason.clone(),
-        culmination_receipt_session_dir: config.culmination_receipt_session_dir.display().to_string(),
+        culmination_receipt_session_dir: config
+            .culmination_receipt_session_dir
+            .display()
+            .to_string(),
         registry_entry_session_dir: Some(contract.registry_entry_session_dir.display().to_string()),
         notarization_receipt_session_dir: Some(
             contract
@@ -1738,9 +1741,9 @@ fn report_from_status(
         current_pre_activation_gate_verdict: status.current_pre_activation_gate_verdict.clone(),
         current_pre_activation_gate_reason: status.current_pre_activation_gate_reason.clone(),
         culmination_receipt_step: status.culmination_receipt_step.clone(),
-        verify_culmination_receipt_command_summary: Some(verify_culmination_receipt_command_summary(
-            &config.culmination_receipt_session_dir,
-        )),
+        verify_culmination_receipt_command_summary: Some(
+            verify_culmination_receipt_command_summary(&config.culmination_receipt_session_dir),
+        ),
         reviewed_frozen_live_cutover_controller_command_summary: Some(
             contract
                 .reviewed_frozen_live_cutover_controller_command_summary
@@ -1923,7 +1926,10 @@ fn failure_report_for_verify(
         verdict:
             TinyLivePackageSummitCertificateVerdict::TinyLivePackageSummitCertificateVerifyInvalid,
         reason,
-        culmination_receipt_session_dir: config.culmination_receipt_session_dir.display().to_string(),
+        culmination_receipt_session_dir: config
+            .culmination_receipt_session_dir
+            .display()
+            .to_string(),
         registry_entry_session_dir: Some(contract.registry_entry_session_dir.display().to_string()),
         notarization_receipt_session_dir: Some(
             contract
@@ -1973,9 +1979,9 @@ fn failure_report_for_verify(
         current_pre_activation_gate_verdict: contract.current_pre_activation_gate_verdict.clone(),
         current_pre_activation_gate_reason: contract.current_pre_activation_gate_reason.clone(),
         culmination_receipt_step: None,
-        verify_culmination_receipt_command_summary: Some(verify_culmination_receipt_command_summary(
-            &config.culmination_receipt_session_dir,
-        )),
+        verify_culmination_receipt_command_summary: Some(
+            verify_culmination_receipt_command_summary(&config.culmination_receipt_session_dir),
+        ),
         reviewed_frozen_live_cutover_controller_command_summary: Some(
             contract
                 .reviewed_frozen_live_cutover_controller_command_summary
@@ -2450,9 +2456,7 @@ mod tests {
             &fixture.install_root,
         )
         .unwrap();
-        let overlap_session_dir = managed_paths
-            .runtime_dir
-            .join("summit-certificate-session");
+        let overlap_session_dir = managed_paths.runtime_dir.join("summit-certificate-session");
         fs::create_dir_all(overlap_session_dir.parent().unwrap()).unwrap();
 
         let config = Config {
@@ -2516,8 +2520,7 @@ mod tests {
         let _path_guard = PathGuard::install(&fixture.bin_dir);
         run_live_package_summit_certificate_report(&fixture.run_config()).unwrap();
         let paths = summit_certificate_paths(&fixture.summit_certificate_session_dir);
-        let mut session: PackageSummitCertificateSession =
-            load_json(&paths.session_path).unwrap();
+        let mut session: PackageSummitCertificateSession = load_json(&paths.session_path).unwrap();
         session.summit_certificate_summary = "tampered consummation summary".to_string();
         persist_json(&paths.session_path, &session).unwrap();
 
@@ -2681,13 +2684,11 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_summit_certificate_report(&fixture.run_config()).unwrap();
             let paths = summit_certificate_paths(&fixture.summit_certificate_session_dir);
-            let mut status: PackageSummitCertificateStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageSummitCertificateStatus = load_json(&paths.status_path).unwrap();
             status.chain_fingerprint_sha256 = "tampered-chain".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_summit_certificate_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_summit_certificate_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageSummitCertificateVerdict::TinyLivePackageSummitCertificateVerifyInvalid
@@ -2709,13 +2710,11 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_summit_certificate_report(&fixture.run_config()).unwrap();
             let paths = summit_certificate_paths(&fixture.summit_certificate_session_dir);
-            let mut status: PackageSummitCertificateStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageSummitCertificateStatus = load_json(&paths.status_path).unwrap();
             status.ledger_seal_sha256 = "tampered-ledger".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_summit_certificate_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_summit_certificate_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageSummitCertificateVerdict::TinyLivePackageSummitCertificateVerifyInvalid
@@ -2737,13 +2736,11 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_summit_certificate_report(&fixture.run_config()).unwrap();
             let paths = summit_certificate_paths(&fixture.summit_certificate_session_dir);
-            let mut status: PackageSummitCertificateStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageSummitCertificateStatus = load_json(&paths.status_path).unwrap();
             status.registry_entry_sha256 = "tampered-registry".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_summit_certificate_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_summit_certificate_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageSummitCertificateVerdict::TinyLivePackageSummitCertificateVerifyInvalid
@@ -2765,13 +2762,11 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_summit_certificate_report(&fixture.run_config()).unwrap();
             let paths = summit_certificate_paths(&fixture.summit_certificate_session_dir);
-            let mut status: PackageSummitCertificateStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageSummitCertificateStatus = load_json(&paths.status_path).unwrap();
             status.filing_certificate_sha256 = "tampered-filing".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_summit_certificate_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_summit_certificate_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageSummitCertificateVerdict::TinyLivePackageSummitCertificateVerifyInvalid
@@ -2793,13 +2788,11 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_summit_certificate_report(&fixture.run_config()).unwrap();
             let paths = summit_certificate_paths(&fixture.summit_certificate_session_dir);
-            let mut status: PackageSummitCertificateStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageSummitCertificateStatus = load_json(&paths.status_path).unwrap();
             status.archive_receipt_sha256 = "tampered-archive".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_summit_certificate_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_summit_certificate_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageSummitCertificateVerdict::TinyLivePackageSummitCertificateVerifyInvalid
@@ -2821,13 +2814,11 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_summit_certificate_report(&fixture.run_config()).unwrap();
             let paths = summit_certificate_paths(&fixture.summit_certificate_session_dir);
-            let mut status: PackageSummitCertificateStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageSummitCertificateStatus = load_json(&paths.status_path).unwrap();
             status.closure_certificate_sha256 = "tampered-closure".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_summit_certificate_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_summit_certificate_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageSummitCertificateVerdict::TinyLivePackageSummitCertificateVerifyInvalid
@@ -2849,13 +2840,11 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_summit_certificate_report(&fixture.run_config()).unwrap();
             let paths = summit_certificate_paths(&fixture.summit_certificate_session_dir);
-            let mut status: PackageSummitCertificateStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageSummitCertificateStatus = load_json(&paths.status_path).unwrap();
             status.finality_receipt_sha256 = "tampered-finality".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_summit_certificate_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_summit_certificate_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageSummitCertificateVerdict::TinyLivePackageSummitCertificateVerifyInvalid
@@ -2877,13 +2866,11 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_summit_certificate_report(&fixture.run_config()).unwrap();
             let paths = summit_certificate_paths(&fixture.summit_certificate_session_dir);
-            let mut status: PackageSummitCertificateStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageSummitCertificateStatus = load_json(&paths.status_path).unwrap();
             status.consummation_record_sha256 = "tampered-consummation".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_summit_certificate_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_summit_certificate_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageSummitCertificateVerdict::TinyLivePackageSummitCertificateVerifyInvalid
@@ -2908,13 +2895,11 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_summit_certificate_report(&fixture.run_config()).unwrap();
             let paths = summit_certificate_paths(&fixture.summit_certificate_session_dir);
-            let mut status: PackageSummitCertificateStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageSummitCertificateStatus = load_json(&paths.status_path).unwrap();
             status.closure_certificate_summary = "tampered closure summary".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_summit_certificate_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_summit_certificate_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageSummitCertificateVerdict::TinyLivePackageSummitCertificateVerifyInvalid
@@ -2936,13 +2921,11 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_summit_certificate_report(&fixture.run_config()).unwrap();
             let paths = summit_certificate_paths(&fixture.summit_certificate_session_dir);
-            let mut status: PackageSummitCertificateStatus =
-                load_json(&paths.status_path).unwrap();
+            let mut status: PackageSummitCertificateStatus = load_json(&paths.status_path).unwrap();
             status.closure_certificate_algorithm = "sha512".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_summit_certificate_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_summit_certificate_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageSummitCertificateVerdict::TinyLivePackageSummitCertificateVerifyInvalid
@@ -3351,10 +3334,7 @@ mod tests {
             "culmination_receipt_sha256".to_string(),
             json!("culmination-receipt-sha256"),
         );
-        object.insert(
-            "culmination_receipt_algorithm".to_string(),
-            json!("sha256"),
-        );
+        object.insert("culmination_receipt_algorithm".to_string(), json!("sha256"));
         object.insert(
             "explicit_statement".to_string(),
             json!("culmination-receipt verify statement"),
@@ -3709,10 +3689,7 @@ mod tests {
             "culmination_receipt_sha256".to_string(),
             json!("culmination-receipt-sha256"),
         );
-        object.insert(
-            "culmination_receipt_algorithm".to_string(),
-            json!("sha256"),
-        );
+        object.insert("culmination_receipt_algorithm".to_string(), json!("sha256"));
         object.insert(
             "explicit_statement".to_string(),
             json!("culmination-receipt statement"),
@@ -3871,10 +3848,7 @@ mod tests {
             "culmination_receipt_sha256".to_string(),
             json!("culmination-receipt-sha256"),
         );
-        object.insert(
-            "culmination_receipt_algorithm".to_string(),
-            json!("sha256"),
-        );
+        object.insert("culmination_receipt_algorithm".to_string(), json!("sha256"));
         object.insert(
             "explicit_statement".to_string(),
             json!("culmination-receipt status statement"),

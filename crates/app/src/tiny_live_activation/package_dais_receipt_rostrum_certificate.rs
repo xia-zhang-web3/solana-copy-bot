@@ -873,9 +873,8 @@ pub fn verify_live_package_dais_receipt_for_rostrum_certificate(
     dais_receipt_session_dir: &Path,
     confirmed_decision_packet_session_dir: &Path,
 ) -> Result<VerifiedLivePackageDaisReceiptRostrumCertificateStep> {
-    let contract = load_live_package_dais_receipt_contract_for_rostrum_certificate(
-        dais_receipt_session_dir,
-    )?;
+    let contract =
+        load_live_package_dais_receipt_contract_for_rostrum_certificate(dais_receipt_session_dir)?;
     let trusted_decision_packet_session_dir =
         load_confirmed_decision_packet_session_dir_for_pedestal_verify(
             dais_receipt_session_dir,
@@ -1387,9 +1386,8 @@ pub fn dais_receipt_artifact_paths(session_dir: &Path) -> PackageDaisReceiptArti
     PackageDaisReceiptArtifactPaths {
         session_path: session_dir.join("tiny_live_activation_package_dais_receipt.session.json"),
         status_path: session_dir.join("tiny_live_activation_package_dais_receipt.status.json"),
-        pedestal_certificate_report_path: session_dir.join(
-            "tiny_live_activation_package_dais_receipt.pedestal_certificate.report.json",
-        ),
+        pedestal_certificate_report_path: session_dir
+            .join("tiny_live_activation_package_dais_receipt.pedestal_certificate.report.json"),
     }
 }
 
@@ -1892,25 +1890,22 @@ mod tests {
             "plinth_receipt_summary".to_string(),
             json!("plinth receipt"),
         );
-        object.insert(
-            "plinth_receipt_sha256".to_string(),
-            json!("cachet-sha256"),
-        );
+        object.insert("plinth_receipt_sha256".to_string(), json!("cachet-sha256"));
         object.insert("plinth_receipt_algorithm".to_string(), json!("sha256"));
         object.insert(
             "pedestal_certificate_summary".to_string(),
             json!("pedestal certificate"),
         );
-        object.insert("pedestal_certificate_sha256".to_string(), json!("imprint-sha256"));
-        object.insert("pedestal_certificate_algorithm".to_string(), json!("sha256"));
         object.insert(
-            "dais_receipt_summary".to_string(),
-            json!("dais receipt"),
+            "pedestal_certificate_sha256".to_string(),
+            json!("imprint-sha256"),
         );
         object.insert(
-            "dais_receipt_sha256".to_string(),
-            json!("hallmark-sha256"),
+            "pedestal_certificate_algorithm".to_string(),
+            json!("sha256"),
         );
+        object.insert("dais_receipt_summary".to_string(), json!("dais receipt"));
+        object.insert("dais_receipt_sha256".to_string(), json!("hallmark-sha256"));
         object.insert("dais_receipt_algorithm".to_string(), json!("sha256"));
         Value::Object(object)
     }
@@ -2116,25 +2111,22 @@ mod tests {
             "plinth_receipt_summary".to_string(),
             json!("plinth receipt"),
         );
-        object.insert(
-            "plinth_receipt_sha256".to_string(),
-            json!("cachet-sha256"),
-        );
+        object.insert("plinth_receipt_sha256".to_string(), json!("cachet-sha256"));
         object.insert("plinth_receipt_algorithm".to_string(), json!("sha256"));
         object.insert(
             "pedestal_certificate_summary".to_string(),
             json!("pedestal certificate"),
         );
-        object.insert("pedestal_certificate_sha256".to_string(), json!("imprint-sha256"));
-        object.insert("pedestal_certificate_algorithm".to_string(), json!("sha256"));
         object.insert(
-            "dais_receipt_summary".to_string(),
-            json!("dais receipt"),
+            "pedestal_certificate_sha256".to_string(),
+            json!("imprint-sha256"),
         );
         object.insert(
-            "dais_receipt_sha256".to_string(),
-            json!("hallmark-sha256"),
+            "pedestal_certificate_algorithm".to_string(),
+            json!("sha256"),
         );
+        object.insert("dais_receipt_summary".to_string(), json!("dais receipt"));
+        object.insert("dais_receipt_sha256".to_string(), json!("hallmark-sha256"));
         object.insert("dais_receipt_algorithm".to_string(), json!("sha256"));
         Value::Object(object)
     }

@@ -430,9 +430,11 @@ where
                 Mode::RenderLivePackageCornerstoneCertificate,
                 arg.as_str(),
             )?,
-            "--run-live-package-cornerstone-certificate" => {
-                set_mode(&mut mode, Mode::RunLivePackageCornerstoneCertificate, arg.as_str())?
-            }
+            "--run-live-package-cornerstone-certificate" => set_mode(
+                &mut mode,
+                Mode::RunLivePackageCornerstoneCertificate,
+                arg.as_str(),
+            )?,
             "--verify-live-package-cornerstone-certificate" => set_mode(
                 &mut mode,
                 Mode::VerifyLivePackageCornerstoneCertificate,
@@ -477,11 +479,15 @@ where
 
 fn run(config: Config) -> Result<String> {
     let report = match config.mode {
-        Mode::PlanLivePackageCornerstoneCertificate => plan_live_package_cornerstone_certificate_report(&config)?,
+        Mode::PlanLivePackageCornerstoneCertificate => {
+            plan_live_package_cornerstone_certificate_report(&config)?
+        }
         Mode::RenderLivePackageCornerstoneCertificate => {
             render_live_package_cornerstone_certificate_report(&config)?
         }
-        Mode::RunLivePackageCornerstoneCertificate => run_live_package_cornerstone_certificate_report(&config)?,
+        Mode::RunLivePackageCornerstoneCertificate => {
+            run_live_package_cornerstone_certificate_report(&config)?
+        }
         Mode::VerifyLivePackageCornerstoneCertificate => {
             verify_live_package_cornerstone_certificate_report(&config)?
         }
@@ -875,9 +881,7 @@ fn run_live_package_cornerstone_certificate_report(
         &verified_keystone_receipt
             .contract
             .reviewed_frozen_live_cutover_controller_command_summary,
-        &verified_keystone_receipt
-            .contract
-            .chain_fingerprint_sha256,
+        &verified_keystone_receipt.contract.chain_fingerprint_sha256,
         &verified_keystone_receipt
             .contract
             .chain_fingerprint_algorithm,
@@ -893,19 +897,13 @@ fn run_live_package_cornerstone_certificate_report(
         &verified_keystone_receipt.contract.ledger_seal_sha256,
         &verified_keystone_receipt.contract.ledger_seal_algorithm,
         &verified_keystone_receipt.contract.registry_entry_sha256,
-        &verified_keystone_receipt
-            .contract
-            .registry_entry_algorithm,
-        &verified_keystone_receipt
-            .contract
-            .filing_certificate_sha256,
+        &verified_keystone_receipt.contract.registry_entry_algorithm,
+        &verified_keystone_receipt.contract.filing_certificate_sha256,
         &verified_keystone_receipt
             .contract
             .filing_certificate_algorithm,
         &verified_keystone_receipt.contract.archive_receipt_sha256,
-        &verified_keystone_receipt
-            .contract
-            .archive_receipt_algorithm,
+        &verified_keystone_receipt.contract.archive_receipt_algorithm,
         &verified_keystone_receipt
             .contract
             .closure_certificate_summary,
@@ -937,9 +935,7 @@ fn run_live_package_cornerstone_certificate_report(
         &verified_keystone_receipt
             .contract
             .summit_certificate_summary,
-        &verified_keystone_receipt
-            .contract
-            .summit_certificate_sha256,
+        &verified_keystone_receipt.contract.summit_certificate_sha256,
         &verified_keystone_receipt
             .contract
             .summit_certificate_algorithm,
@@ -952,12 +948,8 @@ fn run_live_package_cornerstone_certificate_report(
         &verified_keystone_receipt
             .contract
             .culmination_receipt_algorithm,
-        &verified_keystone_receipt
-            .contract
-            .pinnacle_receipt_summary,
-        &verified_keystone_receipt
-            .contract
-            .pinnacle_receipt_sha256,
+        &verified_keystone_receipt.contract.pinnacle_receipt_summary,
+        &verified_keystone_receipt.contract.pinnacle_receipt_sha256,
         &verified_keystone_receipt
             .contract
             .pinnacle_receipt_algorithm,
@@ -970,12 +962,8 @@ fn run_live_package_cornerstone_certificate_report(
         &verified_keystone_receipt
             .contract
             .capstone_certificate_algorithm,
-        &verified_keystone_receipt
-            .contract
-            .keystone_receipt_summary,
-        &verified_keystone_receipt
-            .contract
-            .keystone_receipt_sha256,
+        &verified_keystone_receipt.contract.keystone_receipt_summary,
+        &verified_keystone_receipt.contract.keystone_receipt_sha256,
         &verified_keystone_receipt
             .contract
             .keystone_receipt_algorithm,
@@ -1397,9 +1385,7 @@ fn verify_live_package_cornerstone_certificate_report(
         &verified_keystone_receipt
             .contract
             .reviewed_frozen_live_cutover_controller_command_summary,
-        &verified_keystone_receipt
-            .contract
-            .chain_fingerprint_sha256,
+        &verified_keystone_receipt.contract.chain_fingerprint_sha256,
         &verified_keystone_receipt
             .contract
             .chain_fingerprint_algorithm,
@@ -1415,19 +1401,13 @@ fn verify_live_package_cornerstone_certificate_report(
         &verified_keystone_receipt.contract.ledger_seal_sha256,
         &verified_keystone_receipt.contract.ledger_seal_algorithm,
         &verified_keystone_receipt.contract.registry_entry_sha256,
-        &verified_keystone_receipt
-            .contract
-            .registry_entry_algorithm,
-        &verified_keystone_receipt
-            .contract
-            .filing_certificate_sha256,
+        &verified_keystone_receipt.contract.registry_entry_algorithm,
+        &verified_keystone_receipt.contract.filing_certificate_sha256,
         &verified_keystone_receipt
             .contract
             .filing_certificate_algorithm,
         &verified_keystone_receipt.contract.archive_receipt_sha256,
-        &verified_keystone_receipt
-            .contract
-            .archive_receipt_algorithm,
+        &verified_keystone_receipt.contract.archive_receipt_algorithm,
         &verified_keystone_receipt
             .contract
             .closure_certificate_summary,
@@ -1459,9 +1439,7 @@ fn verify_live_package_cornerstone_certificate_report(
         &verified_keystone_receipt
             .contract
             .summit_certificate_summary,
-        &verified_keystone_receipt
-            .contract
-            .summit_certificate_sha256,
+        &verified_keystone_receipt.contract.summit_certificate_sha256,
         &verified_keystone_receipt
             .contract
             .summit_certificate_algorithm,
@@ -1474,12 +1452,8 @@ fn verify_live_package_cornerstone_certificate_report(
         &verified_keystone_receipt
             .contract
             .culmination_receipt_algorithm,
-        &verified_keystone_receipt
-            .contract
-            .pinnacle_receipt_summary,
-        &verified_keystone_receipt
-            .contract
-            .pinnacle_receipt_sha256,
+        &verified_keystone_receipt.contract.pinnacle_receipt_summary,
+        &verified_keystone_receipt.contract.pinnacle_receipt_sha256,
         &verified_keystone_receipt
             .contract
             .pinnacle_receipt_algorithm,
@@ -1492,12 +1466,8 @@ fn verify_live_package_cornerstone_certificate_report(
         &verified_keystone_receipt
             .contract
             .capstone_certificate_algorithm,
-        &verified_keystone_receipt
-            .contract
-            .keystone_receipt_summary,
-        &verified_keystone_receipt
-            .contract
-            .keystone_receipt_sha256,
+        &verified_keystone_receipt.contract.keystone_receipt_summary,
+        &verified_keystone_receipt.contract.keystone_receipt_sha256,
         &verified_keystone_receipt
             .contract
             .keystone_receipt_algorithm,
@@ -1645,9 +1615,11 @@ fn cornerstone_certificate_paths(session_dir: &Path) -> PackageCornerstoneCertif
     PackageCornerstoneCertificatePaths {
         session_path: session_dir
             .join("tiny_live_activation_package_cornerstone_certificate.session.json"),
-        status_path: session_dir.join("tiny_live_activation_package_cornerstone_certificate.status.json"),
-        keystone_receipt_report_path: session_dir
-            .join("tiny_live_activation_package_cornerstone_certificate.keystone_receipt.report.json"),
+        status_path: session_dir
+            .join("tiny_live_activation_package_cornerstone_certificate.status.json"),
+        keystone_receipt_report_path: session_dir.join(
+            "tiny_live_activation_package_cornerstone_certificate.keystone_receipt.report.json",
+        ),
     }
 }
 
@@ -2627,7 +2599,8 @@ mod tests {
             run.verdict,
             TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateReadyForManualExecutionWhenGateTurnsGreen
         );
-        let verify = verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+        let verify =
+            verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyOk
@@ -2754,12 +2727,14 @@ mod tests {
         let _path_guard = PathGuard::install(&fixture.bin_dir);
         run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
         let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-        let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+        let mut status: PackageCornerstoneCertificateStatus =
+            load_json(&paths.status_path).unwrap();
         status.keystone_receipt_step.as_mut().unwrap().path =
             "/tmp/foreign.culmination-receipt.report.json".to_string();
         persist_json(&paths.status_path, &status).unwrap();
 
-        let verify = verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+        let verify =
+            verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -2782,11 +2757,13 @@ mod tests {
         let _path_guard = PathGuard::install(&fixture.bin_dir);
         run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
         let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-        let mut session: PackageCornerstoneCertificateSession = load_json(&paths.session_path).unwrap();
+        let mut session: PackageCornerstoneCertificateSession =
+            load_json(&paths.session_path).unwrap();
         session.keystone_receipt_summary = "tampered consummation summary".to_string();
         persist_json(&paths.session_path, &session).unwrap();
 
-        let verify = verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+        let verify =
+            verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -2809,11 +2786,13 @@ mod tests {
         let _path_guard = PathGuard::install(&fixture.bin_dir);
         run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
         let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-        let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+        let mut status: PackageCornerstoneCertificateStatus =
+            load_json(&paths.status_path).unwrap();
         status.result = LivePackageCornerstoneCertificateResult::RefusedNowByStage3;
         persist_json(&paths.status_path, &status).unwrap();
 
-        let verify = verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+        let verify =
+            verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -2836,12 +2815,14 @@ mod tests {
         let _path_guard = PathGuard::install(&fixture.bin_dir);
         run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
         let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-        let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+        let mut status: PackageCornerstoneCertificateStatus =
+            load_json(&paths.status_path).unwrap();
         status.current_pre_activation_gate_verdict = Some("red".to_string());
         status.current_pre_activation_gate_reason = Some("tampered".to_string());
         persist_json(&paths.status_path, &status).unwrap();
 
-        let verify = verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+        let verify =
+            verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -2864,15 +2845,15 @@ mod tests {
         let _path_guard = PathGuard::install(&fixture.bin_dir);
         run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
         let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-        let mut report: serde_json::Value =
-            load_json(&paths.keystone_receipt_report_path).unwrap();
+        let mut report: serde_json::Value = load_json(&paths.keystone_receipt_report_path).unwrap();
         report.as_object_mut().unwrap().insert(
             "reason".to_string(),
             json!("tampered nested closure-certificate reason"),
         );
         persist_json(&paths.keystone_receipt_report_path, &report).unwrap();
 
-        let verify = verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+        let verify =
+            verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -2895,8 +2876,7 @@ mod tests {
         let _path_guard = PathGuard::install(&fixture.bin_dir);
         run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
         let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-        let mut report: serde_json::Value =
-            load_json(&paths.keystone_receipt_report_path).unwrap();
+        let mut report: serde_json::Value = load_json(&paths.keystone_receipt_report_path).unwrap();
         let archived_generated_at =
             DateTime::parse_from_rfc3339(report["generated_at"].as_str().unwrap())
                 .unwrap()
@@ -2908,15 +2888,13 @@ mod tests {
         );
         persist_json(&paths.keystone_receipt_report_path, &report).unwrap();
 
-        let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
-        status
-            .keystone_receipt_step
-            .as_mut()
-            .unwrap()
-            .generated_at = forged_generated_at;
+        let mut status: PackageCornerstoneCertificateStatus =
+            load_json(&paths.status_path).unwrap();
+        status.keystone_receipt_step.as_mut().unwrap().generated_at = forged_generated_at;
         persist_json(&paths.status_path, &status).unwrap();
 
-        let verify = verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+        let verify =
+            verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
         assert_eq!(
             verify.verdict,
             TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -2941,11 +2919,13 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
             let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-            let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+            let mut status: PackageCornerstoneCertificateStatus =
+                load_json(&paths.status_path).unwrap();
             status.chain_fingerprint_sha256 = "tampered-chain".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+                verify_live_package_cornerstone_certificate_report(&fixture.verify_config())
+                    .unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -2967,11 +2947,13 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
             let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-            let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+            let mut status: PackageCornerstoneCertificateStatus =
+                load_json(&paths.status_path).unwrap();
             status.ledger_seal_sha256 = "tampered-ledger".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+                verify_live_package_cornerstone_certificate_report(&fixture.verify_config())
+                    .unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -2993,11 +2975,13 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
             let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-            let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+            let mut status: PackageCornerstoneCertificateStatus =
+                load_json(&paths.status_path).unwrap();
             status.registry_entry_sha256 = "tampered-registry".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+                verify_live_package_cornerstone_certificate_report(&fixture.verify_config())
+                    .unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -3019,11 +3003,13 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
             let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-            let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+            let mut status: PackageCornerstoneCertificateStatus =
+                load_json(&paths.status_path).unwrap();
             status.filing_certificate_sha256 = "tampered-filing".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+                verify_live_package_cornerstone_certificate_report(&fixture.verify_config())
+                    .unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -3045,11 +3031,13 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
             let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-            let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+            let mut status: PackageCornerstoneCertificateStatus =
+                load_json(&paths.status_path).unwrap();
             status.archive_receipt_sha256 = "tampered-archive".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+                verify_live_package_cornerstone_certificate_report(&fixture.verify_config())
+                    .unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -3071,11 +3059,13 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
             let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-            let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+            let mut status: PackageCornerstoneCertificateStatus =
+                load_json(&paths.status_path).unwrap();
             status.summit_certificate_sha256 = "tampered-summit".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+                verify_live_package_cornerstone_certificate_report(&fixture.verify_config())
+                    .unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -3097,11 +3087,13 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
             let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-            let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+            let mut status: PackageCornerstoneCertificateStatus =
+                load_json(&paths.status_path).unwrap();
             status.closure_certificate_sha256 = "tampered-closure".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+                verify_live_package_cornerstone_certificate_report(&fixture.verify_config())
+                    .unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -3123,11 +3115,13 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
             let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-            let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+            let mut status: PackageCornerstoneCertificateStatus =
+                load_json(&paths.status_path).unwrap();
             status.finality_receipt_sha256 = "tampered-finality".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+                verify_live_package_cornerstone_certificate_report(&fixture.verify_config())
+                    .unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -3149,11 +3143,13 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
             let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-            let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+            let mut status: PackageCornerstoneCertificateStatus =
+                load_json(&paths.status_path).unwrap();
             status.consummation_record_sha256 = "tampered-consummation".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+                verify_live_package_cornerstone_certificate_report(&fixture.verify_config())
+                    .unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -3178,11 +3174,13 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
             let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-            let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+            let mut status: PackageCornerstoneCertificateStatus =
+                load_json(&paths.status_path).unwrap();
             status.closure_certificate_summary = "tampered closure summary".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+                verify_live_package_cornerstone_certificate_report(&fixture.verify_config())
+                    .unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -3204,11 +3202,13 @@ mod tests {
             let _path_guard = PathGuard::install(&fixture.bin_dir);
             run_live_package_cornerstone_certificate_report(&fixture.run_config()).unwrap();
             let paths = cornerstone_certificate_paths(&fixture.cornerstone_certificate_session_dir);
-            let mut status: PackageCornerstoneCertificateStatus = load_json(&paths.status_path).unwrap();
+            let mut status: PackageCornerstoneCertificateStatus =
+                load_json(&paths.status_path).unwrap();
             status.closure_certificate_algorithm = "sha512".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_cornerstone_certificate_report(&fixture.verify_config()).unwrap();
+                verify_live_package_cornerstone_certificate_report(&fixture.verify_config())
+                    .unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCornerstoneCertificateVerdict::TinyLivePackageCornerstoneCertificateVerifyInvalid
@@ -3256,7 +3256,8 @@ mod tests {
         let fixture_dir = temp_dir(label);
         let bin_dir = fixture_dir.join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
-        let cornerstone_certificate_session_dir = fixture_dir.join("cornerstone-certificate-session");
+        let cornerstone_certificate_session_dir =
+            fixture_dir.join("cornerstone-certificate-session");
         let keystone_receipt_session_dir = fixture_dir.join("keystone-receipt-session");
         let capstone_certificate_session_dir = fixture_dir.join("capstone-certificate-session");
         let summit_certificate_session_dir = fixture_dir.join("summit-certificate-session");

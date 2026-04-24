@@ -342,8 +342,7 @@ pub fn load_live_package_pinnacle_receipt_contract_for_capstone_certificate(
         execute_frozen_result: status.execute_frozen_result,
         current_pre_activation_gate_verdict: status.current_pre_activation_gate_verdict,
         current_pre_activation_gate_reason: status.current_pre_activation_gate_reason,
-        verify_pinnacle_receipt_command_summary: session
-            .verify_pinnacle_receipt_command_summary,
+        verify_pinnacle_receipt_command_summary: session.verify_pinnacle_receipt_command_summary,
         reviewed_frozen_live_cutover_controller_command_summary: session
             .reviewed_frozen_live_cutover_controller_command_summary,
         provenance_certificate_summary: if status.provenance_certificate_summary.is_empty() {
@@ -907,17 +906,13 @@ pub fn pinnacle_receipt_verify_args(
     ]
 }
 
-pub fn pinnacle_receipt_artifact_paths(
-    session_dir: &Path,
-) -> PackagePinnacleReceiptArtifactPaths {
+pub fn pinnacle_receipt_artifact_paths(session_dir: &Path) -> PackagePinnacleReceiptArtifactPaths {
     PackagePinnacleReceiptArtifactPaths {
         session_path: session_dir
             .join("tiny_live_activation_package_pinnacle_receipt.session.json"),
-        status_path: session_dir
-            .join("tiny_live_activation_package_pinnacle_receipt.status.json"),
-        summit_certificate_report_path: session_dir.join(
-            "tiny_live_activation_package_pinnacle_receipt.summit_certificate.report.json",
-        ),
+        status_path: session_dir.join("tiny_live_activation_package_pinnacle_receipt.status.json"),
+        summit_certificate_report_path: session_dir
+            .join("tiny_live_activation_package_pinnacle_receipt.summit_certificate.report.json"),
     }
 }
 
@@ -1282,7 +1277,10 @@ mod tests {
             "summit_certificate_summary".to_string(),
             json!("summit certificate"),
         );
-        object.insert("summit_certificate_sha256".to_string(), json!("summit-sha256"));
+        object.insert(
+            "summit_certificate_sha256".to_string(),
+            json!("summit-sha256"),
+        );
         object.insert("summit_certificate_algorithm".to_string(), json!("sha256"));
         object.insert(
             "culmination_receipt_summary".to_string(),
@@ -1404,7 +1402,10 @@ mod tests {
             "summit_certificate_summary".to_string(),
             json!("summit certificate"),
         );
-        object.insert("summit_certificate_sha256".to_string(), json!("summit-sha256"));
+        object.insert(
+            "summit_certificate_sha256".to_string(),
+            json!("summit-sha256"),
+        );
         object.insert("summit_certificate_algorithm".to_string(), json!("sha256"));
         object.insert(
             "culmination_receipt_summary".to_string(),

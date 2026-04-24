@@ -5,7 +5,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const COMPLETION_CERTIFICATE_BIN: &str = "copybot_tiny_live_activation_package_completion_certificate";
+const COMPLETION_CERTIFICATE_BIN: &str =
+    "copybot_tiny_live_activation_package_completion_certificate";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LivePackageCompletionCertificateContractView {
@@ -537,7 +538,8 @@ pub fn verify_live_package_completion_certificate_for_culmination_receipt(
             reason: report.reason.clone(),
             generated_at: report.generated_at,
             contract: LivePackageCompletionCertificateContractView {
-                completion_certificate_session_dir: completion_certificate_session_dir.to_path_buf(),
+                completion_certificate_session_dir: completion_certificate_session_dir
+                    .to_path_buf(),
                 consummation_record_session_dir: contract.consummation_record_session_dir,
                 registry_entry_session_dir: reported_registry_entry_session_dir,
                 notarization_receipt_session_dir: PathBuf::from(required_string_field(

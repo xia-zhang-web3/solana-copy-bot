@@ -1049,7 +1049,10 @@ fn verify_live_package_culmination_receipt_report(
 
     compare_string(
         &session.completion_certificate_session_dir,
-        &config.completion_certificate_session_dir.display().to_string(),
+        &config
+            .completion_certificate_session_dir
+            .display()
+            .to_string(),
         "completion-certificate completion_certificate_session_dir",
         &mut mismatches,
     );
@@ -1067,7 +1070,10 @@ fn verify_live_package_culmination_receipt_report(
     );
     compare_string(
         &status.completion_certificate_session_dir,
-        &config.completion_certificate_session_dir.display().to_string(),
+        &config
+            .completion_certificate_session_dir
+            .display()
+            .to_string(),
         "culmination-receipt status completion_certificate_session_dir",
         &mut mismatches,
     );
@@ -1103,12 +1109,14 @@ fn verify_live_package_culmination_receipt_report(
         &mut mismatches,
     )?;
     let stored_completion_certificate_report_view: NestedFinalityReceiptReportView =
-        serde_json::from_value(stored_completion_certificate_report.clone()).with_context(|| {
-            format!(
-                "failed parsing archived nested completion-certificate report {}",
-                paths.completion_certificate_report_path.display()
-            )
-        })?;
+        serde_json::from_value(stored_completion_certificate_report.clone()).with_context(
+            || {
+                format!(
+                    "failed parsing archived nested completion-certificate report {}",
+                    paths.completion_certificate_report_path.display()
+                )
+            },
+        )?;
     let verified_completion_certificate_report_view: NestedFinalityReceiptReportView =
         serde_json::from_value(verified_consummation_record.report_json.clone()).with_context(
             || {
@@ -1164,7 +1172,8 @@ fn verify_live_package_culmination_receipt_report(
         "completion-certificate completion_certificate_step",
         &mut mismatches,
     );
-    if verified_consummation_record.verdict != "tiny_live_package_completion_certificate_verify_ok" {
+    if verified_consummation_record.verdict != "tiny_live_package_completion_certificate_verify_ok"
+    {
         mismatches.push(format!(
             "nested completion-certificate verification is non-green: {}",
             verified_consummation_record.reason
@@ -1309,7 +1318,9 @@ fn verify_live_package_culmination_receipt_report(
     ))
 }
 
-fn verify_completion_certificate_command_summary(completion_certificate_session_dir: &Path) -> String {
+fn verify_completion_certificate_command_summary(
+    completion_certificate_session_dir: &Path,
+) -> String {
     format!(
         "verify immutable completion-certificate session under {} before freezing the final culmination receipt",
         completion_certificate_session_dir.display()
@@ -1464,9 +1475,10 @@ fn planned_session(
         wrapper_timeout_ms: contract.wrapper_timeout_ms,
         service_status_max_staleness_ms: contract.service_status_max_staleness_ms,
         session_dir: session_dir.display().to_string(),
-        verify_completion_certificate_command_summary: verify_completion_certificate_command_summary(
-            &config.completion_certificate_session_dir,
-        ),
+        verify_completion_certificate_command_summary:
+            verify_completion_certificate_command_summary(
+                &config.completion_certificate_session_dir,
+            ),
         reviewed_frozen_live_cutover_controller_command_summary: contract
             .reviewed_frozen_live_cutover_controller_command_summary
             .clone(),
@@ -1628,7 +1640,10 @@ fn report_from_status(
         },
         verdict,
         reason: status.reason.clone(),
-        completion_certificate_session_dir: config.completion_certificate_session_dir.display().to_string(),
+        completion_certificate_session_dir: config
+            .completion_certificate_session_dir
+            .display()
+            .to_string(),
         registry_entry_session_dir: Some(contract.registry_entry_session_dir.display().to_string()),
         notarization_receipt_session_dir: Some(
             contract
@@ -1669,7 +1684,10 @@ fn report_from_status(
         culmination_receipt_session_path: Some(paths.session_path.display().to_string()),
         culmination_receipt_status_path: Some(paths.status_path.display().to_string()),
         archived_completion_certificate_report_path: Some(
-            paths.completion_certificate_report_path.display().to_string(),
+            paths
+                .completion_certificate_report_path
+                .display()
+                .to_string(),
         ),
         result: Some(serialize_enum(&status.result)),
         handoff_bundle_result: status.handoff_bundle_result.clone(),
@@ -1678,9 +1696,11 @@ fn report_from_status(
         current_pre_activation_gate_verdict: status.current_pre_activation_gate_verdict.clone(),
         current_pre_activation_gate_reason: status.current_pre_activation_gate_reason.clone(),
         completion_certificate_step: status.completion_certificate_step.clone(),
-        verify_completion_certificate_command_summary: Some(verify_completion_certificate_command_summary(
-            &config.completion_certificate_session_dir,
-        )),
+        verify_completion_certificate_command_summary: Some(
+            verify_completion_certificate_command_summary(
+                &config.completion_certificate_session_dir,
+            ),
+        ),
         reviewed_frozen_live_cutover_controller_command_summary: Some(
             contract
                 .reviewed_frozen_live_cutover_controller_command_summary
@@ -1857,7 +1877,10 @@ fn failure_report_for_verify(
         verdict:
             TinyLivePackageCulminationReceiptVerdict::TinyLivePackageCulminationReceiptVerifyInvalid,
         reason,
-        completion_certificate_session_dir: config.completion_certificate_session_dir.display().to_string(),
+        completion_certificate_session_dir: config
+            .completion_certificate_session_dir
+            .display()
+            .to_string(),
         registry_entry_session_dir: Some(contract.registry_entry_session_dir.display().to_string()),
         notarization_receipt_session_dir: Some(
             contract
@@ -1898,7 +1921,10 @@ fn failure_report_for_verify(
         culmination_receipt_session_path: Some(paths.session_path.display().to_string()),
         culmination_receipt_status_path: Some(paths.status_path.display().to_string()),
         archived_completion_certificate_report_path: Some(
-            paths.completion_certificate_report_path.display().to_string(),
+            paths
+                .completion_certificate_report_path
+                .display()
+                .to_string(),
         ),
         result: None,
         handoff_bundle_result: contract.handoff_bundle_result.clone(),
@@ -1907,9 +1933,11 @@ fn failure_report_for_verify(
         current_pre_activation_gate_verdict: contract.current_pre_activation_gate_verdict.clone(),
         current_pre_activation_gate_reason: contract.current_pre_activation_gate_reason.clone(),
         completion_certificate_step: None,
-        verify_completion_certificate_command_summary: Some(verify_completion_certificate_command_summary(
-            &config.completion_certificate_session_dir,
-        )),
+        verify_completion_certificate_command_summary: Some(
+            verify_completion_certificate_command_summary(
+                &config.completion_certificate_session_dir,
+            ),
+        ),
         reviewed_frozen_live_cutover_controller_command_summary: Some(
             contract
                 .reviewed_frozen_live_cutover_controller_command_summary
@@ -1998,7 +2026,9 @@ fn load_required_step_json(
     mismatches: &mut Vec<String>,
 ) -> Result<serde_json::Value> {
     let Some(step) = step else {
-        mismatches.push(format!("{label} is missing from culmination-receipt status"));
+        mismatches.push(format!(
+            "{label} is missing from culmination-receipt status"
+        ));
         return load_json(expected_path);
     };
     compare_string(
@@ -2063,7 +2093,9 @@ fn compare_step_artifact(
     mismatches: &mut Vec<String>,
 ) {
     let Some(actual) = actual else {
-        mismatches.push(format!("{label} is missing from culmination-receipt status"));
+        mismatches.push(format!(
+            "{label} is missing from culmination-receipt status"
+        ));
         return;
     };
     compare_string(
@@ -2441,8 +2473,7 @@ mod tests {
         let _path_guard = PathGuard::install(&fixture.bin_dir);
         run_live_package_culmination_receipt_report(&fixture.run_config()).unwrap();
         let paths = culmination_receipt_paths(&fixture.culmination_receipt_session_dir);
-        let mut session: PackageCulminationReceiptSession =
-            load_json(&paths.session_path).unwrap();
+        let mut session: PackageCulminationReceiptSession = load_json(&paths.session_path).unwrap();
         session.culmination_receipt_summary = "tampered consummation summary".to_string();
         persist_json(&paths.session_path, &session).unwrap();
 
@@ -2611,8 +2642,7 @@ mod tests {
             status.chain_fingerprint_sha256 = "tampered-chain".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_culmination_receipt_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_culmination_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCulminationReceiptVerdict::TinyLivePackageCulminationReceiptVerifyInvalid
@@ -2639,8 +2669,7 @@ mod tests {
             status.ledger_seal_sha256 = "tampered-ledger".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_culmination_receipt_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_culmination_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCulminationReceiptVerdict::TinyLivePackageCulminationReceiptVerifyInvalid
@@ -2667,8 +2696,7 @@ mod tests {
             status.registry_entry_sha256 = "tampered-registry".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_culmination_receipt_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_culmination_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCulminationReceiptVerdict::TinyLivePackageCulminationReceiptVerifyInvalid
@@ -2695,8 +2723,7 @@ mod tests {
             status.filing_certificate_sha256 = "tampered-filing".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_culmination_receipt_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_culmination_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCulminationReceiptVerdict::TinyLivePackageCulminationReceiptVerifyInvalid
@@ -2723,8 +2750,7 @@ mod tests {
             status.archive_receipt_sha256 = "tampered-archive".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_culmination_receipt_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_culmination_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCulminationReceiptVerdict::TinyLivePackageCulminationReceiptVerifyInvalid
@@ -2751,8 +2777,7 @@ mod tests {
             status.closure_certificate_sha256 = "tampered-closure".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_culmination_receipt_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_culmination_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCulminationReceiptVerdict::TinyLivePackageCulminationReceiptVerifyInvalid
@@ -2779,8 +2804,7 @@ mod tests {
             status.finality_receipt_sha256 = "tampered-finality".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_culmination_receipt_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_culmination_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCulminationReceiptVerdict::TinyLivePackageCulminationReceiptVerifyInvalid
@@ -2807,8 +2831,7 @@ mod tests {
             status.consummation_record_sha256 = "tampered-consummation".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_culmination_receipt_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_culmination_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCulminationReceiptVerdict::TinyLivePackageCulminationReceiptVerifyInvalid
@@ -2838,8 +2861,7 @@ mod tests {
             status.closure_certificate_summary = "tampered closure summary".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_culmination_receipt_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_culmination_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCulminationReceiptVerdict::TinyLivePackageCulminationReceiptVerifyInvalid
@@ -2866,8 +2888,7 @@ mod tests {
             status.closure_certificate_algorithm = "sha512".to_string();
             persist_json(&paths.status_path, &status).unwrap();
             let verify =
-                verify_live_package_culmination_receipt_report(&fixture.verify_config())
-                    .unwrap();
+                verify_live_package_culmination_receipt_report(&fixture.verify_config()).unwrap();
             assert_eq!(
                 verify.verdict,
                 TinyLivePackageCulminationReceiptVerdict::TinyLivePackageCulminationReceiptVerifyInvalid

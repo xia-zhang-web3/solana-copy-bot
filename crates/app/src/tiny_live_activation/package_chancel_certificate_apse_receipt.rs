@@ -585,8 +585,7 @@ pub fn load_live_package_chancel_certificate_contract_for_apse_receipt(
         execute_frozen_result: status.execute_frozen_result,
         current_pre_activation_gate_verdict: status.current_pre_activation_gate_verdict,
         current_pre_activation_gate_reason: status.current_pre_activation_gate_reason,
-        verify_pulpit_receipt_command_summary: session
-            .verify_pulpit_receipt_command_summary,
+        verify_pulpit_receipt_command_summary: session.verify_pulpit_receipt_command_summary,
         reviewed_frozen_live_cutover_controller_command_summary: session
             .reviewed_frozen_live_cutover_controller_command_summary,
         provenance_certificate_summary: if status.provenance_certificate_summary.is_empty() {
@@ -1636,10 +1635,14 @@ pub fn chancel_certificate_verify_args(
     ]
 }
 
-pub fn chancel_certificate_artifact_paths(session_dir: &Path) -> PackageChancelCertificateArtifactPaths {
+pub fn chancel_certificate_artifact_paths(
+    session_dir: &Path,
+) -> PackageChancelCertificateArtifactPaths {
     PackageChancelCertificateArtifactPaths {
-        session_path: session_dir.join("tiny_live_activation_package_chancel_certificate.session.json"),
-        status_path: session_dir.join("tiny_live_activation_package_chancel_certificate.status.json"),
+        session_path: session_dir
+            .join("tiny_live_activation_package_chancel_certificate.session.json"),
+        status_path: session_dir
+            .join("tiny_live_activation_package_chancel_certificate.status.json"),
         pulpit_receipt_report_path: session_dir
             .join("tiny_live_activation_package_chancel_certificate.pulpit_receipt.report.json"),
     }

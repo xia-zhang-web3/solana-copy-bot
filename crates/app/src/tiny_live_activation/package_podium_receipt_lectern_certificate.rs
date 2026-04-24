@@ -540,8 +540,7 @@ pub fn load_live_package_podium_receipt_contract_for_lectern_certificate(
         execute_frozen_result: status.execute_frozen_result,
         current_pre_activation_gate_verdict: status.current_pre_activation_gate_verdict,
         current_pre_activation_gate_reason: status.current_pre_activation_gate_reason,
-        verify_podium_receipt_command_summary: session
-            .verify_podium_receipt_command_summary,
+        verify_podium_receipt_command_summary: session.verify_podium_receipt_command_summary,
         reviewed_frozen_live_cutover_controller_command_summary: session
             .reviewed_frozen_live_cutover_controller_command_summary,
         provenance_certificate_summary: if status.provenance_certificate_summary.is_empty() {
@@ -1498,14 +1497,10 @@ pub fn podium_receipt_verify_args(
     ]
 }
 
-pub fn podium_receipt_artifact_paths(
-    session_dir: &Path,
-) -> PackagePodiumReceiptArtifactPaths {
+pub fn podium_receipt_artifact_paths(session_dir: &Path) -> PackagePodiumReceiptArtifactPaths {
     PackagePodiumReceiptArtifactPaths {
-        session_path: session_dir
-            .join("tiny_live_activation_package_podium_receipt.session.json"),
-        status_path: session_dir
-            .join("tiny_live_activation_package_podium_receipt.status.json"),
+        session_path: session_dir.join("tiny_live_activation_package_podium_receipt.session.json"),
+        status_path: session_dir.join("tiny_live_activation_package_podium_receipt.status.json"),
         rostrum_certificate_report_path: session_dir
             .join("tiny_live_activation_package_podium_receipt.rostrum_certificate.report.json"),
     }
@@ -1517,7 +1512,8 @@ fn load_confirmed_decision_packet_session_dir_for_rostrum_verify(
     contract: &LivePackagePodiumReceiptContractView,
 ) -> Result<PathBuf> {
     let paths = podium_receipt_artifact_paths(podium_receipt_session_dir);
-    let archived_report: StoredRostrumCertificateReportView = load_json(&paths.rostrum_certificate_report_path)?;
+    let archived_report: StoredRostrumCertificateReportView =
+        load_json(&paths.rostrum_certificate_report_path)?;
     let confirmed_decision_packet_session_dir = confirmed_decision_packet_session_dir.to_path_buf();
     if confirmed_decision_packet_session_dir != contract.decision_packet_session_dir {
         bail!(
@@ -2057,18 +2053,12 @@ mod tests {
             "podium_receipt_summary".to_string(),
             json!("podium receipt"),
         );
-        object.insert(
-            "podium_receipt_sha256".to_string(),
-            json!("blazon-sha256"),
-        );
+        object.insert("podium_receipt_sha256".to_string(), json!("blazon-sha256"));
         object.insert("podium_receipt_algorithm".to_string(), json!("sha256"));
         Value::Object(object)
     }
 
-    fn stored_podium_receipt_status_value(
-        result: &str,
-        include_nested_results: bool,
-    ) -> Value {
+    fn stored_podium_receipt_status_value(result: &str, include_nested_results: bool) -> Value {
         let mut object = Map::new();
         object.insert(
             "rostrum_certificate_session_dir".to_string(),
@@ -2307,10 +2297,7 @@ mod tests {
             "podium_receipt_summary".to_string(),
             json!("podium receipt"),
         );
-        object.insert(
-            "podium_receipt_sha256".to_string(),
-            json!("blazon-sha256"),
-        );
+        object.insert("podium_receipt_sha256".to_string(), json!("blazon-sha256"));
         object.insert("podium_receipt_algorithm".to_string(), json!("sha256"));
         Value::Object(object)
     }

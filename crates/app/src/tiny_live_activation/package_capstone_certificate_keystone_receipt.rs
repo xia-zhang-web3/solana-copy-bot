@@ -607,8 +607,7 @@ pub fn verify_live_package_capstone_certificate_for_keystone_receipt(
     )?;
     let report: CapstoneCertificateVerifyReportView = serde_json::from_value(raw_report.clone())
         .context("failed parsing capstone-certificate verify report")?;
-    let reported_pinnacle_receipt_session_dir =
-        PathBuf::from(&report.pinnacle_receipt_session_dir);
+    let reported_pinnacle_receipt_session_dir = PathBuf::from(&report.pinnacle_receipt_session_dir);
     if reported_pinnacle_receipt_session_dir != contract.pinnacle_receipt_session_dir {
         bail!(
             "capstone-certificate verify report pinnacle_receipt_session_dir {:?} does not match trusted {:?}",
@@ -936,9 +935,8 @@ pub fn capstone_certificate_artifact_paths(
             .join("tiny_live_activation_package_capstone_certificate.session.json"),
         status_path: session_dir
             .join("tiny_live_activation_package_capstone_certificate.status.json"),
-        pinnacle_receipt_report_path: session_dir.join(
-            "tiny_live_activation_package_capstone_certificate.pinnacle_receipt.report.json",
-        ),
+        pinnacle_receipt_report_path: session_dir
+            .join("tiny_live_activation_package_capstone_certificate.pinnacle_receipt.report.json"),
     }
 }
 
@@ -1300,17 +1298,17 @@ mod tests {
             "summit_certificate_summary".to_string(),
             json!("summit certificate"),
         );
-        object.insert("summit_certificate_sha256".to_string(), json!("summit-sha256"));
+        object.insert(
+            "summit_certificate_sha256".to_string(),
+            json!("summit-sha256"),
+        );
         object.insert("summit_certificate_algorithm".to_string(), json!("sha256"));
         object.insert(
             "culmination_receipt_summary".to_string(),
             json!("culmination receipt"),
         );
         object.insert("culmination_receipt_sha256".to_string(), json!("ab12cd34"));
-        object.insert(
-            "culmination_receipt_algorithm".to_string(),
-            json!("sha256"),
-        );
+        object.insert("culmination_receipt_algorithm".to_string(), json!("sha256"));
         object.insert(
             "pinnacle_receipt_summary".to_string(),
             json!("pinnacle receipt"),
@@ -1325,11 +1323,17 @@ mod tests {
             "capstone_certificate_sha256".to_string(),
             json!("sovereign-sha256"),
         );
-        object.insert("capstone_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "capstone_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         Value::Object(object)
     }
 
-    fn stored_capstone_certificate_status_value(result: &str, include_nested_results: bool) -> Value {
+    fn stored_capstone_certificate_status_value(
+        result: &str,
+        include_nested_results: bool,
+    ) -> Value {
         let mut object = Map::new();
         object.insert("result".to_string(), json!(result));
         if include_nested_results {
@@ -1431,17 +1435,17 @@ mod tests {
             "summit_certificate_summary".to_string(),
             json!("summit certificate"),
         );
-        object.insert("summit_certificate_sha256".to_string(), json!("summit-sha256"));
+        object.insert(
+            "summit_certificate_sha256".to_string(),
+            json!("summit-sha256"),
+        );
         object.insert("summit_certificate_algorithm".to_string(), json!("sha256"));
         object.insert(
             "culmination_receipt_summary".to_string(),
             json!("culmination receipt"),
         );
         object.insert("culmination_receipt_sha256".to_string(), json!("ab12cd34"));
-        object.insert(
-            "culmination_receipt_algorithm".to_string(),
-            json!("sha256"),
-        );
+        object.insert("culmination_receipt_algorithm".to_string(), json!("sha256"));
         object.insert(
             "pinnacle_receipt_summary".to_string(),
             json!("pinnacle receipt"),
@@ -1456,7 +1460,10 @@ mod tests {
             "capstone_certificate_sha256".to_string(),
             json!("sovereign-sha256"),
         );
-        object.insert("capstone_certificate_algorithm".to_string(), json!("sha256"));
+        object.insert(
+            "capstone_certificate_algorithm".to_string(),
+            json!("sha256"),
+        );
         Value::Object(object)
     }
 }

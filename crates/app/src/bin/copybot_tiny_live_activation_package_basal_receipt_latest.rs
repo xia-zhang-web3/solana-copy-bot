@@ -4935,12 +4935,10 @@ fn bedrock_certificate_latest_result_from_nested_status(
 
 fn foundation_receipt_run_verdict_for_result(result: &str) -> Option<&'static str> {
     match result {
-        "ready_for_manual_execution_when_gate_turns_green" => Some(
-            "tiny_live_package_basal_receipt_ready_for_manual_execution_when_gate_turns_green",
-        ),
-        "refused_now_by_stage3" => {
-            Some("tiny_live_package_basal_receipt_refused_now_by_stage3")
+        "ready_for_manual_execution_when_gate_turns_green" => {
+            Some("tiny_live_package_basal_receipt_ready_for_manual_execution_when_gate_turns_green")
         }
+        "refused_now_by_stage3" => Some("tiny_live_package_basal_receipt_refused_now_by_stage3"),
         "refused_now_by_pre_activation_gate" => {
             Some("tiny_live_package_basal_receipt_refused_now_by_pre_activation_gate")
         }

@@ -665,289 +665,294 @@ pub fn verify_live_package_keystone_receipt_for_cornerstone_certificate(
             contract.registry_entry_session_dir.display()
         );
     }
-    Ok(VerifiedLivePackageKeystoneReceiptCornerstoneCertificateStep {
-        report_json: raw_report,
-        verdict: report.verdict.clone(),
-        reason: report.reason.clone(),
-        generated_at: report.generated_at,
-        contract: LivePackageKeystoneReceiptContractView {
-            keystone_receipt_session_dir: keystone_receipt_session_dir.to_path_buf(),
-            capstone_certificate_session_dir: reported_capstone_certificate_session_dir,
-            registry_entry_session_dir: reported_registry_entry_session_dir,
-            notarization_receipt_session_dir: PathBuf::from(required_string_field(
-                report.notarization_receipt_session_dir,
-                "notarization_receipt_session_dir",
-            )?),
-            provenance_certificate_session_dir: PathBuf::from(required_string_field(
-                report.provenance_certificate_session_dir,
-                "provenance_certificate_session_dir",
-            )?),
-            attestation_seal_session_dir: PathBuf::from(required_string_field(
-                report.attestation_seal_session_dir,
-                "attestation_seal_session_dir",
-            )?),
-            release_capsule_session_dir: PathBuf::from(required_string_field(
-                report.release_capsule_session_dir,
-                "release_capsule_session_dir",
-            )?),
-            activation_ticket_session_dir: PathBuf::from(required_string_field(
-                report.activation_ticket_session_dir,
-                "activation_ticket_session_dir",
-            )?),
-            review_receipt_session_dir: PathBuf::from(required_string_field(
-                report.review_receipt_session_dir,
-                "review_receipt_session_dir",
-            )?),
-            handoff_bundle_session_dir: PathBuf::from(required_string_field(
-                report.handoff_bundle_session_dir,
-                "handoff_bundle_session_dir",
-            )?),
-            decision_packet_session_dir: trusted_decision_packet_session_dir,
-            execute_frozen_session_dir: PathBuf::from(required_string_field(
-                report.execute_frozen_session_dir,
-                "execute_frozen_session_dir",
-            )?),
-            turn_green_session_dir: PathBuf::from(required_string_field(
-                report.turn_green_session_dir,
-                "turn_green_session_dir",
-            )?),
-            launch_packet_session_dir: PathBuf::from(required_string_field(
-                report.launch_packet_session_dir,
-                "launch_packet_session_dir",
-            )?),
-            package_dir: PathBuf::from(required_string_field(report.package_dir, "package_dir")?),
-            install_root: PathBuf::from(required_string_field(
-                report.install_root,
-                "install_root",
-            )?),
-            target_service_name: required_string_field(
-                report.target_service_name,
-                "target_service_name",
-            )?,
-            backend_command: required_string_field(report.backend_command, "backend_command")?,
-            wrapper_timeout_ms: required_u64_field(
-                report.wrapper_timeout_ms,
-                "wrapper_timeout_ms",
-            )?,
-            service_status_max_staleness_ms: required_u64_field(
-                report.service_status_max_staleness_ms,
-                "service_status_max_staleness_ms",
-            )?,
-            result: report.result.or(contract.result),
-            handoff_bundle_result: report
-                .handoff_bundle_result
-                .or(contract.handoff_bundle_result),
-            decision_packet_result: report
-                .decision_packet_result
-                .or(contract.decision_packet_result),
-            execute_frozen_result: report
-                .execute_frozen_result
-                .or(contract.execute_frozen_result),
-            current_pre_activation_gate_verdict: report
-                .current_pre_activation_gate_verdict
-                .or(contract.current_pre_activation_gate_verdict),
-            current_pre_activation_gate_reason: report
-                .current_pre_activation_gate_reason
-                .or(contract.current_pre_activation_gate_reason),
-            verify_capstone_certificate_command_summary: required_string_field(
-                report.verify_capstone_certificate_command_summary,
-                "verify_capstone_certificate_command_summary",
-            )?,
-            reviewed_frozen_live_cutover_controller_command_summary: required_string_field(
-                report.reviewed_frozen_live_cutover_controller_command_summary,
-                "reviewed_frozen_live_cutover_controller_command_summary",
-            )?,
-            provenance_certificate_summary: required_string_field(
-                report.provenance_certificate_summary,
-                "provenance_certificate_summary",
-            )?,
-            chain_fingerprint_summary: required_string_field(
-                report.chain_fingerprint_summary,
-                "chain_fingerprint_summary",
-            )?,
-            chain_fingerprint_sha256: required_string_field(
-                report.chain_fingerprint_sha256,
-                "chain_fingerprint_sha256",
-            )?,
-            chain_fingerprint_algorithm: required_string_field(
-                report.chain_fingerprint_algorithm,
-                "chain_fingerprint_algorithm",
-            )?,
-            release_capsule_digest_manifest_sha256: required_string_field(
-                report.release_capsule_digest_manifest_sha256,
-                "release_capsule_digest_manifest_sha256",
-            )?,
-            release_capsule_digest_manifest_entry_count: required_usize_field(
-                report.release_capsule_digest_manifest_entry_count,
-                "release_capsule_digest_manifest_entry_count",
-            )?,
-            release_capsule_digest_algorithm: required_string_field(
-                report.release_capsule_digest_algorithm,
-                "release_capsule_digest_algorithm",
-            )?,
-            notarization_receipt_summary: required_string_field(
-                report.notarization_receipt_summary,
-                "notarization_receipt_summary",
-            )?,
-            ledger_seal_summary: required_string_field(
-                report.ledger_seal_summary,
-                "ledger_seal_summary",
-            )?,
-            ledger_seal_sha256: required_string_field(
-                report.ledger_seal_sha256,
-                "ledger_seal_sha256",
-            )?,
-            ledger_seal_algorithm: required_string_field(
-                report.ledger_seal_algorithm,
-                "ledger_seal_algorithm",
-            )?,
-            registry_entry_summary: required_string_field(
-                report.registry_entry_summary,
-                "registry_entry_summary",
-            )?,
-            registry_entry_sha256: required_string_field(
-                report.registry_entry_sha256,
-                "registry_entry_sha256",
-            )?,
-            registry_entry_algorithm: required_string_field(
-                report.registry_entry_algorithm,
-                "registry_entry_algorithm",
-            )?,
-            filing_certificate_summary: required_string_field(
-                report.filing_certificate_summary,
-                "filing_certificate_summary",
-            )?,
-            filing_certificate_sha256: required_string_field(
-                report.filing_certificate_sha256,
-                "filing_certificate_sha256",
-            )?,
-            filing_certificate_algorithm: required_string_field(
-                report.filing_certificate_algorithm,
-                "filing_certificate_algorithm",
-            )?,
-            archive_receipt_summary: required_string_field(
-                report.archive_receipt_summary,
-                "archive_receipt_summary",
-            )?,
-            archive_receipt_sha256: required_string_field(
-                report.archive_receipt_sha256,
-                "archive_receipt_sha256",
-            )?,
-            archive_receipt_algorithm: required_string_field(
-                report.archive_receipt_algorithm,
-                "archive_receipt_algorithm",
-            )?,
-            closure_certificate_summary: required_string_field(
-                report.closure_certificate_summary,
-                "closure_certificate_summary",
-            )?,
-            closure_certificate_sha256: required_string_field(
-                report.closure_certificate_sha256,
-                "closure_certificate_sha256",
-            )?,
-            closure_certificate_algorithm: required_string_field(
-                report.closure_certificate_algorithm,
-                "closure_certificate_algorithm",
-            )?,
-            finality_receipt_summary: required_string_field(
-                report.finality_receipt_summary,
-                "finality_receipt_summary",
-            )?,
-            finality_receipt_sha256: required_string_field(
-                report.finality_receipt_sha256,
-                "finality_receipt_sha256",
-            )?,
-            finality_receipt_algorithm: required_string_field(
-                report.finality_receipt_algorithm,
-                "finality_receipt_algorithm",
-            )?,
-            consummation_record_summary: required_string_field(
-                report.consummation_record_summary,
-                "consummation_record_summary",
-            )?,
-            consummation_record_sha256: required_string_field(
-                report.consummation_record_sha256,
-                "consummation_record_sha256",
-            )?,
-            consummation_record_algorithm: required_string_field(
-                report.consummation_record_algorithm,
-                "consummation_record_algorithm",
-            )?,
-            completion_certificate_summary: required_string_field(
-                report.completion_certificate_summary,
-                "completion_certificate_summary",
-            )?,
-            completion_certificate_sha256: required_string_field(
-                report.completion_certificate_sha256,
-                "completion_certificate_sha256",
-            )?,
-            completion_certificate_algorithm: required_string_field(
-                report.completion_certificate_algorithm,
-                "completion_certificate_algorithm",
-            )?,
-            summit_certificate_summary: required_string_field(
-                report.summit_certificate_summary,
-                "summit_certificate_summary",
-            )?,
-            summit_certificate_sha256: required_string_field(
-                report.summit_certificate_sha256,
-                "summit_certificate_sha256",
-            )?,
-            summit_certificate_algorithm: required_string_field(
-                report.summit_certificate_algorithm,
-                "summit_certificate_algorithm",
-            )?,
-            culmination_receipt_summary: required_string_field(
-                report.culmination_receipt_summary,
-                "culmination_receipt_summary",
-            )?,
-            culmination_receipt_sha256: required_string_field(
-                report.culmination_receipt_sha256,
-                "culmination_receipt_sha256",
-            )?,
-            culmination_receipt_algorithm: required_string_field(
-                report.culmination_receipt_algorithm,
-                "culmination_receipt_algorithm",
-            )?,
-            pinnacle_receipt_summary: required_string_field(
-                report.pinnacle_receipt_summary,
-                "pinnacle_receipt_summary",
-            )?,
-            pinnacle_receipt_sha256: required_string_field(
-                report.pinnacle_receipt_sha256,
-                "pinnacle_receipt_sha256",
-            )?,
-            pinnacle_receipt_algorithm: required_string_field(
-                report.pinnacle_receipt_algorithm,
-                "pinnacle_receipt_algorithm",
-            )?,
-            capstone_certificate_summary: required_string_field(
-                report.capstone_certificate_summary,
-                "capstone_certificate_summary",
-            )?,
-            capstone_certificate_sha256: required_string_field(
-                report.capstone_certificate_sha256,
-                "capstone_certificate_sha256",
-            )?,
-            capstone_certificate_algorithm: required_string_field(
-                report.capstone_certificate_algorithm,
-                "capstone_certificate_algorithm",
-            )?,
-            keystone_receipt_summary: required_string_field(
-                report.keystone_receipt_summary,
-                "keystone_receipt_summary",
-            )?,
-            keystone_receipt_sha256: required_string_field(
-                report.keystone_receipt_sha256,
-                "keystone_receipt_sha256",
-            )?,
-            keystone_receipt_algorithm: required_string_field(
-                report.keystone_receipt_algorithm,
-                "keystone_receipt_algorithm",
-            )?,
-            explicit_statement: report.explicit_statement,
+    Ok(
+        VerifiedLivePackageKeystoneReceiptCornerstoneCertificateStep {
+            report_json: raw_report,
+            verdict: report.verdict.clone(),
+            reason: report.reason.clone(),
+            generated_at: report.generated_at,
+            contract: LivePackageKeystoneReceiptContractView {
+                keystone_receipt_session_dir: keystone_receipt_session_dir.to_path_buf(),
+                capstone_certificate_session_dir: reported_capstone_certificate_session_dir,
+                registry_entry_session_dir: reported_registry_entry_session_dir,
+                notarization_receipt_session_dir: PathBuf::from(required_string_field(
+                    report.notarization_receipt_session_dir,
+                    "notarization_receipt_session_dir",
+                )?),
+                provenance_certificate_session_dir: PathBuf::from(required_string_field(
+                    report.provenance_certificate_session_dir,
+                    "provenance_certificate_session_dir",
+                )?),
+                attestation_seal_session_dir: PathBuf::from(required_string_field(
+                    report.attestation_seal_session_dir,
+                    "attestation_seal_session_dir",
+                )?),
+                release_capsule_session_dir: PathBuf::from(required_string_field(
+                    report.release_capsule_session_dir,
+                    "release_capsule_session_dir",
+                )?),
+                activation_ticket_session_dir: PathBuf::from(required_string_field(
+                    report.activation_ticket_session_dir,
+                    "activation_ticket_session_dir",
+                )?),
+                review_receipt_session_dir: PathBuf::from(required_string_field(
+                    report.review_receipt_session_dir,
+                    "review_receipt_session_dir",
+                )?),
+                handoff_bundle_session_dir: PathBuf::from(required_string_field(
+                    report.handoff_bundle_session_dir,
+                    "handoff_bundle_session_dir",
+                )?),
+                decision_packet_session_dir: trusted_decision_packet_session_dir,
+                execute_frozen_session_dir: PathBuf::from(required_string_field(
+                    report.execute_frozen_session_dir,
+                    "execute_frozen_session_dir",
+                )?),
+                turn_green_session_dir: PathBuf::from(required_string_field(
+                    report.turn_green_session_dir,
+                    "turn_green_session_dir",
+                )?),
+                launch_packet_session_dir: PathBuf::from(required_string_field(
+                    report.launch_packet_session_dir,
+                    "launch_packet_session_dir",
+                )?),
+                package_dir: PathBuf::from(required_string_field(
+                    report.package_dir,
+                    "package_dir",
+                )?),
+                install_root: PathBuf::from(required_string_field(
+                    report.install_root,
+                    "install_root",
+                )?),
+                target_service_name: required_string_field(
+                    report.target_service_name,
+                    "target_service_name",
+                )?,
+                backend_command: required_string_field(report.backend_command, "backend_command")?,
+                wrapper_timeout_ms: required_u64_field(
+                    report.wrapper_timeout_ms,
+                    "wrapper_timeout_ms",
+                )?,
+                service_status_max_staleness_ms: required_u64_field(
+                    report.service_status_max_staleness_ms,
+                    "service_status_max_staleness_ms",
+                )?,
+                result: report.result.or(contract.result),
+                handoff_bundle_result: report
+                    .handoff_bundle_result
+                    .or(contract.handoff_bundle_result),
+                decision_packet_result: report
+                    .decision_packet_result
+                    .or(contract.decision_packet_result),
+                execute_frozen_result: report
+                    .execute_frozen_result
+                    .or(contract.execute_frozen_result),
+                current_pre_activation_gate_verdict: report
+                    .current_pre_activation_gate_verdict
+                    .or(contract.current_pre_activation_gate_verdict),
+                current_pre_activation_gate_reason: report
+                    .current_pre_activation_gate_reason
+                    .or(contract.current_pre_activation_gate_reason),
+                verify_capstone_certificate_command_summary: required_string_field(
+                    report.verify_capstone_certificate_command_summary,
+                    "verify_capstone_certificate_command_summary",
+                )?,
+                reviewed_frozen_live_cutover_controller_command_summary: required_string_field(
+                    report.reviewed_frozen_live_cutover_controller_command_summary,
+                    "reviewed_frozen_live_cutover_controller_command_summary",
+                )?,
+                provenance_certificate_summary: required_string_field(
+                    report.provenance_certificate_summary,
+                    "provenance_certificate_summary",
+                )?,
+                chain_fingerprint_summary: required_string_field(
+                    report.chain_fingerprint_summary,
+                    "chain_fingerprint_summary",
+                )?,
+                chain_fingerprint_sha256: required_string_field(
+                    report.chain_fingerprint_sha256,
+                    "chain_fingerprint_sha256",
+                )?,
+                chain_fingerprint_algorithm: required_string_field(
+                    report.chain_fingerprint_algorithm,
+                    "chain_fingerprint_algorithm",
+                )?,
+                release_capsule_digest_manifest_sha256: required_string_field(
+                    report.release_capsule_digest_manifest_sha256,
+                    "release_capsule_digest_manifest_sha256",
+                )?,
+                release_capsule_digest_manifest_entry_count: required_usize_field(
+                    report.release_capsule_digest_manifest_entry_count,
+                    "release_capsule_digest_manifest_entry_count",
+                )?,
+                release_capsule_digest_algorithm: required_string_field(
+                    report.release_capsule_digest_algorithm,
+                    "release_capsule_digest_algorithm",
+                )?,
+                notarization_receipt_summary: required_string_field(
+                    report.notarization_receipt_summary,
+                    "notarization_receipt_summary",
+                )?,
+                ledger_seal_summary: required_string_field(
+                    report.ledger_seal_summary,
+                    "ledger_seal_summary",
+                )?,
+                ledger_seal_sha256: required_string_field(
+                    report.ledger_seal_sha256,
+                    "ledger_seal_sha256",
+                )?,
+                ledger_seal_algorithm: required_string_field(
+                    report.ledger_seal_algorithm,
+                    "ledger_seal_algorithm",
+                )?,
+                registry_entry_summary: required_string_field(
+                    report.registry_entry_summary,
+                    "registry_entry_summary",
+                )?,
+                registry_entry_sha256: required_string_field(
+                    report.registry_entry_sha256,
+                    "registry_entry_sha256",
+                )?,
+                registry_entry_algorithm: required_string_field(
+                    report.registry_entry_algorithm,
+                    "registry_entry_algorithm",
+                )?,
+                filing_certificate_summary: required_string_field(
+                    report.filing_certificate_summary,
+                    "filing_certificate_summary",
+                )?,
+                filing_certificate_sha256: required_string_field(
+                    report.filing_certificate_sha256,
+                    "filing_certificate_sha256",
+                )?,
+                filing_certificate_algorithm: required_string_field(
+                    report.filing_certificate_algorithm,
+                    "filing_certificate_algorithm",
+                )?,
+                archive_receipt_summary: required_string_field(
+                    report.archive_receipt_summary,
+                    "archive_receipt_summary",
+                )?,
+                archive_receipt_sha256: required_string_field(
+                    report.archive_receipt_sha256,
+                    "archive_receipt_sha256",
+                )?,
+                archive_receipt_algorithm: required_string_field(
+                    report.archive_receipt_algorithm,
+                    "archive_receipt_algorithm",
+                )?,
+                closure_certificate_summary: required_string_field(
+                    report.closure_certificate_summary,
+                    "closure_certificate_summary",
+                )?,
+                closure_certificate_sha256: required_string_field(
+                    report.closure_certificate_sha256,
+                    "closure_certificate_sha256",
+                )?,
+                closure_certificate_algorithm: required_string_field(
+                    report.closure_certificate_algorithm,
+                    "closure_certificate_algorithm",
+                )?,
+                finality_receipt_summary: required_string_field(
+                    report.finality_receipt_summary,
+                    "finality_receipt_summary",
+                )?,
+                finality_receipt_sha256: required_string_field(
+                    report.finality_receipt_sha256,
+                    "finality_receipt_sha256",
+                )?,
+                finality_receipt_algorithm: required_string_field(
+                    report.finality_receipt_algorithm,
+                    "finality_receipt_algorithm",
+                )?,
+                consummation_record_summary: required_string_field(
+                    report.consummation_record_summary,
+                    "consummation_record_summary",
+                )?,
+                consummation_record_sha256: required_string_field(
+                    report.consummation_record_sha256,
+                    "consummation_record_sha256",
+                )?,
+                consummation_record_algorithm: required_string_field(
+                    report.consummation_record_algorithm,
+                    "consummation_record_algorithm",
+                )?,
+                completion_certificate_summary: required_string_field(
+                    report.completion_certificate_summary,
+                    "completion_certificate_summary",
+                )?,
+                completion_certificate_sha256: required_string_field(
+                    report.completion_certificate_sha256,
+                    "completion_certificate_sha256",
+                )?,
+                completion_certificate_algorithm: required_string_field(
+                    report.completion_certificate_algorithm,
+                    "completion_certificate_algorithm",
+                )?,
+                summit_certificate_summary: required_string_field(
+                    report.summit_certificate_summary,
+                    "summit_certificate_summary",
+                )?,
+                summit_certificate_sha256: required_string_field(
+                    report.summit_certificate_sha256,
+                    "summit_certificate_sha256",
+                )?,
+                summit_certificate_algorithm: required_string_field(
+                    report.summit_certificate_algorithm,
+                    "summit_certificate_algorithm",
+                )?,
+                culmination_receipt_summary: required_string_field(
+                    report.culmination_receipt_summary,
+                    "culmination_receipt_summary",
+                )?,
+                culmination_receipt_sha256: required_string_field(
+                    report.culmination_receipt_sha256,
+                    "culmination_receipt_sha256",
+                )?,
+                culmination_receipt_algorithm: required_string_field(
+                    report.culmination_receipt_algorithm,
+                    "culmination_receipt_algorithm",
+                )?,
+                pinnacle_receipt_summary: required_string_field(
+                    report.pinnacle_receipt_summary,
+                    "pinnacle_receipt_summary",
+                )?,
+                pinnacle_receipt_sha256: required_string_field(
+                    report.pinnacle_receipt_sha256,
+                    "pinnacle_receipt_sha256",
+                )?,
+                pinnacle_receipt_algorithm: required_string_field(
+                    report.pinnacle_receipt_algorithm,
+                    "pinnacle_receipt_algorithm",
+                )?,
+                capstone_certificate_summary: required_string_field(
+                    report.capstone_certificate_summary,
+                    "capstone_certificate_summary",
+                )?,
+                capstone_certificate_sha256: required_string_field(
+                    report.capstone_certificate_sha256,
+                    "capstone_certificate_sha256",
+                )?,
+                capstone_certificate_algorithm: required_string_field(
+                    report.capstone_certificate_algorithm,
+                    "capstone_certificate_algorithm",
+                )?,
+                keystone_receipt_summary: required_string_field(
+                    report.keystone_receipt_summary,
+                    "keystone_receipt_summary",
+                )?,
+                keystone_receipt_sha256: required_string_field(
+                    report.keystone_receipt_sha256,
+                    "keystone_receipt_sha256",
+                )?,
+                keystone_receipt_algorithm: required_string_field(
+                    report.keystone_receipt_algorithm,
+                    "keystone_receipt_algorithm",
+                )?,
+                explicit_statement: report.explicit_statement,
+            },
         },
-    })
+    )
 }
 
 pub fn keystone_receipt_verify_args(
@@ -967,17 +972,13 @@ pub fn keystone_receipt_verify_args(
     ]
 }
 
-pub fn keystone_receipt_artifact_paths(
-    session_dir: &Path,
-) -> PackageKeystoneReceiptArtifactPaths {
+pub fn keystone_receipt_artifact_paths(session_dir: &Path) -> PackageKeystoneReceiptArtifactPaths {
     PackageKeystoneReceiptArtifactPaths {
         session_path: session_dir
             .join("tiny_live_activation_package_keystone_receipt.session.json"),
-        status_path: session_dir
-            .join("tiny_live_activation_package_keystone_receipt.status.json"),
-        capstone_certificate_report_path: session_dir.join(
-            "tiny_live_activation_package_keystone_receipt.capstone_certificate.report.json",
-        ),
+        status_path: session_dir.join("tiny_live_activation_package_keystone_receipt.status.json"),
+        capstone_certificate_report_path: session_dir
+            .join("tiny_live_activation_package_keystone_receipt.capstone_certificate.report.json"),
     }
 }
 
@@ -1340,17 +1341,17 @@ mod tests {
             "summit_certificate_summary".to_string(),
             json!("summit certificate"),
         );
-        object.insert("summit_certificate_sha256".to_string(), json!("summit-sha256"));
+        object.insert(
+            "summit_certificate_sha256".to_string(),
+            json!("summit-sha256"),
+        );
         object.insert("summit_certificate_algorithm".to_string(), json!("sha256"));
         object.insert(
             "culmination_receipt_summary".to_string(),
             json!("culmination receipt"),
         );
         object.insert("culmination_receipt_sha256".to_string(), json!("ab12cd34"));
-        object.insert(
-            "culmination_receipt_algorithm".to_string(),
-            json!("sha256"),
-        );
+        object.insert("culmination_receipt_algorithm".to_string(), json!("sha256"));
         object.insert(
             "pinnacle_receipt_summary".to_string(),
             json!("pinnacle receipt"),
@@ -1483,17 +1484,17 @@ mod tests {
             "summit_certificate_summary".to_string(),
             json!("summit certificate"),
         );
-        object.insert("summit_certificate_sha256".to_string(), json!("summit-sha256"));
+        object.insert(
+            "summit_certificate_sha256".to_string(),
+            json!("summit-sha256"),
+        );
         object.insert("summit_certificate_algorithm".to_string(), json!("sha256"));
         object.insert(
             "culmination_receipt_summary".to_string(),
             json!("culmination receipt"),
         );
         object.insert("culmination_receipt_sha256".to_string(), json!("ab12cd34"));
-        object.insert(
-            "culmination_receipt_algorithm".to_string(),
-            json!("sha256"),
-        );
+        object.insert("culmination_receipt_algorithm".to_string(), json!("sha256"));
         object.insert(
             "pinnacle_receipt_summary".to_string(),
             json!("pinnacle receipt"),

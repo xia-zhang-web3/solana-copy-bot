@@ -208,7 +208,9 @@ pub fn load_live_package_filing_certificate_contract_for_archive_receipt(
         filing_certificate_session_dir: filing_certificate_session_dir.to_path_buf(),
         registry_entry_session_dir: PathBuf::from(session.registry_entry_session_dir),
         notarization_receipt_session_dir: PathBuf::from(session.notarization_receipt_session_dir),
-        provenance_certificate_session_dir: PathBuf::from(session.provenance_certificate_session_dir),
+        provenance_certificate_session_dir: PathBuf::from(
+            session.provenance_certificate_session_dir,
+        ),
         attestation_seal_session_dir: PathBuf::from(session.attestation_seal_session_dir),
         release_capsule_session_dir: PathBuf::from(session.release_capsule_session_dir),
         activation_ticket_session_dir: PathBuf::from(session.activation_ticket_session_dir),
@@ -336,8 +338,9 @@ pub fn verify_live_package_filing_certificate_for_archive_receipt(
     filing_certificate_session_dir: &Path,
     confirmed_decision_packet_session_dir: &Path,
 ) -> Result<VerifiedLivePackageFilingCertificateArchiveReceiptStep> {
-    let contract =
-        load_live_package_filing_certificate_contract_for_archive_receipt(filing_certificate_session_dir)?;
+    let contract = load_live_package_filing_certificate_contract_for_archive_receipt(
+        filing_certificate_session_dir,
+    )?;
     let trusted_decision_packet_session_dir =
         load_confirmed_decision_packet_session_dir_for_verify(
             filing_certificate_session_dir,
@@ -352,9 +355,8 @@ pub fn verify_live_package_filing_certificate_for_archive_receipt(
             filing_certificate_session_dir,
         ),
     )?;
-    let report: FilingCertificateVerifyReportView =
-        serde_json::from_value(raw_report.clone())
-            .context("failed parsing filing-certificate verify report")?;
+    let report: FilingCertificateVerifyReportView = serde_json::from_value(raw_report.clone())
+        .context("failed parsing filing-certificate verify report")?;
     let reported_registry_entry_session_dir = PathBuf::from(&report.registry_entry_session_dir);
     if reported_registry_entry_session_dir != contract.registry_entry_session_dir {
         bail!(
@@ -559,11 +561,12 @@ pub fn filing_certificate_artifact_paths(
     session_dir: &Path,
 ) -> PackageFilingCertificateArtifactPaths {
     PackageFilingCertificateArtifactPaths {
-        session_path: session_dir.join("tiny_live_activation_package_filing_certificate.session.json"),
-        status_path: session_dir.join("tiny_live_activation_package_filing_certificate.status.json"),
-        registry_entry_report_path: session_dir.join(
-            "tiny_live_activation_package_filing_certificate.registry_entry.report.json",
-        ),
+        session_path: session_dir
+            .join("tiny_live_activation_package_filing_certificate.session.json"),
+        status_path: session_dir
+            .join("tiny_live_activation_package_filing_certificate.status.json"),
+        registry_entry_report_path: session_dir
+            .join("tiny_live_activation_package_filing_certificate.registry_entry.report.json"),
     }
 }
 
@@ -573,7 +576,8 @@ fn load_confirmed_decision_packet_session_dir_for_verify(
     contract: &LivePackageFilingCertificateContractView,
 ) -> Result<PathBuf> {
     let paths = filing_certificate_artifact_paths(filing_certificate_session_dir);
-    let archived_report: StoredRegistryEntryReportView = load_json(&paths.registry_entry_report_path)?;
+    let archived_report: StoredRegistryEntryReportView =
+        load_json(&paths.registry_entry_report_path)?;
     let confirmed_decision_packet_session_dir = confirmed_decision_packet_session_dir.to_path_buf();
     if confirmed_decision_packet_session_dir != contract.decision_packet_session_dir {
         bail!(
