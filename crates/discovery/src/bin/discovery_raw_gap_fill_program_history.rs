@@ -1,17 +1,16 @@
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
 #[cfg(test)]
 use chrono::Duration;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use copybot_config::load_from_path;
 use copybot_core_types::SwapEvent;
+#[cfg(test)]
+use copybot_discovery::raw_gap_fill_support::reset_sqlite_path;
 use copybot_discovery::raw_gap_fill_support::{
     compute_missing_segments, format_optional_cursor, format_optional_ts, max_cursor_opt,
     min_ts_opt, parse_program_scoped_transaction_to_swap_with_context, resolve_gap_fill_plan,
-    transaction_mentions_target_programs, GapFillMissingSegment,
-    GapFillPlan, ProgramIdConfig,
+    transaction_mentions_target_programs, GapFillMissingSegment, GapFillPlan, ProgramIdConfig,
 };
-#[cfg(test)]
-use copybot_discovery::raw_gap_fill_support::reset_sqlite_path;
 #[cfg(test)]
 use copybot_discovery::restore_verdict::DiscoveryRuntimeRestoreVerdictKind;
 use copybot_discovery::runtime_restore_ops::{
@@ -708,8 +707,8 @@ impl ProgramHistorySource for QuickNodeBlocksRpcSource {
             "method": "getBlockTime",
             "params": [slot],
         });
-        let block_time = post_json_rpc_allow_missing_block_time(self, &payload)?
-            .and_then(|response| {
+        let block_time =
+            post_json_rpc_allow_missing_block_time(self, &payload)?.and_then(|response| {
                 rpc_result(&response)
                     .as_i64()
                     .and_then(|value| DateTime::<Utc>::from_timestamp(value, 0))
@@ -973,6 +972,7 @@ fn run_with_source<S: ProgramHistorySource + Sync>(
         Err(error) => {
             let (verdict, reason) =
                 classify_source_error("program_history_gap_fill_failed", &error);
+            let current_phase = source_error_current_phase(&error).to_string();
             write_gap_fill_output(
                 &db_path,
                 source,
@@ -1021,8 +1021,8 @@ fn run_with_source<S: ProgramHistorySource + Sync>(
                     retry_429_backoff_ms: loaded_config
                         .program_history_gap_fill
                         .retry_429_backoff_ms,
-                    current_phase: "source_contract_failed".to_string(),
-                    dominant_phase: "source_contract_failed".to_string(),
+                    current_phase: current_phase.clone(),
+                    dominant_phase: current_phase,
                     resolve_slot_bounds_ms: 0,
                     attempt_number: 1,
                     cumulative_across_attempts: false,
@@ -1445,11 +1445,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
     let (bounds, resolved_bounds_reused_from_progress) =
         if let Some(progress) = preflight_progress.as_ref() {
             match bounds_from_progress(progress) {
-                Some(bounds)
-                    if bounds.usable_slot_range().is_some() =>
-                {
-                    (bounds, true)
-                }
+                Some(bounds) if bounds.usable_slot_range().is_some() => (bounds, true),
                 _ => (
                     resolve_slot_bounds(
                         source,
@@ -1493,7 +1489,10 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                 end_slot_adjustment_kind: bounds.end.adjustment_kind.as_str().to_string(),
                 start_slot_adjustment_distance: bounds.start.adjustment_distance,
                 end_slot_adjustment_distance: bounds.end.adjustment_distance,
-                boundary_resolution_verdict: bounds.boundary_resolution_verdict.as_str().to_string(),
+                boundary_resolution_verdict: bounds
+                    .boundary_resolution_verdict
+                    .as_str()
+                    .to_string(),
                 requested_interval_fully_bracketed_after_adjustment: bounds
                     .requested_interval_fully_bracketed_after_adjustment,
                 requested_interval_partially_bracketed_after_adjustment: bounds
@@ -1557,10 +1556,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                 gap_fill_covered_since: None,
                 gap_fill_covered_through_cursor: None,
                 verdict: GapFillVerdict::NonViableSourceContract,
-                reason: format!(
-                    "slot_bounds_unresolved:{}",
-                    bounds.failure_reason()
-                ),
+                reason: format!("slot_bounds_unresolved:{}", bounds.failure_reason()),
                 early_stop_reason: None,
             });
         }
@@ -1644,8 +1640,8 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                     end_slot
                         .checked_sub(start_slot)
                         .map(|delta| delta as usize + 1)
-            })
-            .unwrap_or(0),
+                })
+                .unwrap_or(0),
             next_batch_start_slot: None,
             zero_progress_retry_count: 0,
             zero_progress_blocked_start_slot: None,
@@ -1820,26 +1816,27 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
     let mut zero_progress_escape_applied = false;
     let mut zero_progress_escape_distance = None;
 
-    let (verdict, reason, current_phase, next_batch_start_slot) =
-        if let Some(source_error) = attempt.source_error.as_ref() {
-            let blocked_slot = zero_progress_blocked_start_slot;
-            let escape_applies = blocked_slot.is_some()
-                && zero_progress_retry_count >= ZERO_PROGRESS_ESCAPE_THRESHOLD;
-            if escape_applies {
-                let blocked_slot = blocked_slot.expect("blocked slot present when escape applies");
-                zero_progress_escape_applied = true;
-                zero_progress_escape_distance = Some(ZERO_PROGRESS_ESCAPE_DISTANCE);
-                let escaped_next_slot = blocked_slot.saturating_add(ZERO_PROGRESS_ESCAPE_DISTANCE);
-                merge_missing_segments(
-                    &mut boundary_missing_segments,
-                    [zero_progress_escape_missing_segment(
-                        source,
-                        blocked_slot,
-                        plan.requested_window_start,
-                        plan.requested_window_end,
-                    )],
-                );
-                (
+    let (verdict, reason, current_phase, next_batch_start_slot) = if let Some(source_error) =
+        attempt.source_error.as_ref()
+    {
+        let blocked_slot = zero_progress_blocked_start_slot;
+        let escape_applies =
+            blocked_slot.is_some() && zero_progress_retry_count >= ZERO_PROGRESS_ESCAPE_THRESHOLD;
+        if escape_applies {
+            let blocked_slot = blocked_slot.expect("blocked slot present when escape applies");
+            zero_progress_escape_applied = true;
+            zero_progress_escape_distance = Some(ZERO_PROGRESS_ESCAPE_DISTANCE);
+            let escaped_next_slot = blocked_slot.saturating_add(ZERO_PROGRESS_ESCAPE_DISTANCE);
+            merge_missing_segments(
+                &mut boundary_missing_segments,
+                [zero_progress_escape_missing_segment(
+                    source,
+                    blocked_slot,
+                    plan.requested_window_start,
+                    plan.requested_window_end,
+                )],
+            );
+            (
                     match source_error.kind {
                         SourceErrorKind::ProviderThrottled => {
                             GapFillVerdict::NotProvenDueToProviderThrottling
@@ -1857,8 +1854,8 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                     "awaiting_next_attempt".to_string(),
                     Some(escaped_next_slot),
                 )
-            } else {
-                match source_error.kind {
+        } else {
+            match source_error.kind {
                 SourceErrorKind::ProviderThrottled => (
                     GapFillVerdict::NotProvenDueToProviderThrottling,
                     format!(
@@ -1895,70 +1892,65 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                             .unwrap_or(frontier_start_slot.min(end_slot)),
                     ),
                 ),
-                }
             }
-        } else if attempt.summary.phase_b_like_cost_budget_exhausted {
-            zero_progress_retry_count = 0;
-            (
-                GapFillVerdict::NotProvenDueToCostBudget,
-                "program_history_gap_fill_phase_b_like_cost_budget_exhausted".to_string(),
-                "awaiting_next_attempt".to_string(),
-                Some(
-                    attempt
-                        .next_slot_to_scan
-                        .unwrap_or(frontier_start_slot.min(end_slot)),
-                ),
-            )
-        } else if attempt.attempt_budget_exhausted {
-            zero_progress_retry_count = 0;
-            (
-                GapFillVerdict::NotProvenDueToAttemptBudget,
-                "program_history_gap_fill_attempt_budget_exhausted".to_string(),
-                "awaiting_next_attempt".to_string(),
-                Some(
-                    attempt
-                        .next_slot_to_scan
-                        .unwrap_or(frontier_start_slot.min(end_slot)),
-                ),
-            )
-        } else {
-            zero_progress_retry_count = 0;
-            let has_persisted_blocked_slot_gap = boundary_missing_segments
-                .iter()
-                .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON);
-            let (verdict, reason, current_phase, next_batch_start_slot) =
-                if has_persisted_blocked_slot_gap
-                    && (frontier_start_slot > end_slot
-                        || attempt.summary.frontier_end_slot == Some(end_slot))
-                {
-                    (
-                        GapFillVerdict::NotProvenDueToProviderThrottling,
-                        "program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap"
-                            .to_string(),
-                        "completed_with_explicit_missing_segments".to_string(),
-                        Some(end_slot.saturating_add(1)),
-                    )
-                } else {
-                    let (verdict, reason) =
-                        classify_fetch_outcome(plan, false, false, progress_state.row_count);
-                    (
-                        verdict,
-                        reason,
-                        if frontier_start_slot > end_slot {
-                            "publishing_output".to_string()
-                        } else {
-                            "completed".to_string()
-                        },
-                        None,
-                    )
-                };
-            (
-                verdict,
-                reason,
-                current_phase,
-                next_batch_start_slot,
-            )
-        };
+        }
+    } else if attempt.summary.phase_b_like_cost_budget_exhausted {
+        zero_progress_retry_count = 0;
+        (
+            GapFillVerdict::NotProvenDueToCostBudget,
+            "program_history_gap_fill_phase_b_like_cost_budget_exhausted".to_string(),
+            "awaiting_next_attempt".to_string(),
+            Some(
+                attempt
+                    .next_slot_to_scan
+                    .unwrap_or(frontier_start_slot.min(end_slot)),
+            ),
+        )
+    } else if attempt.attempt_budget_exhausted {
+        zero_progress_retry_count = 0;
+        (
+            GapFillVerdict::NotProvenDueToAttemptBudget,
+            "program_history_gap_fill_attempt_budget_exhausted".to_string(),
+            "awaiting_next_attempt".to_string(),
+            Some(
+                attempt
+                    .next_slot_to_scan
+                    .unwrap_or(frontier_start_slot.min(end_slot)),
+            ),
+        )
+    } else {
+        zero_progress_retry_count = 0;
+        let has_persisted_blocked_slot_gap = boundary_missing_segments
+            .iter()
+            .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON);
+        let (verdict, reason, current_phase, next_batch_start_slot) =
+            if has_persisted_blocked_slot_gap
+                && (frontier_start_slot > end_slot
+                    || attempt.summary.frontier_end_slot == Some(end_slot))
+            {
+                (
+                    GapFillVerdict::NotProvenDueToProviderThrottling,
+                    "program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap"
+                        .to_string(),
+                    "completed_with_explicit_missing_segments".to_string(),
+                    Some(end_slot.saturating_add(1)),
+                )
+            } else {
+                let (verdict, reason) =
+                    classify_fetch_outcome(plan, false, false, progress_state.row_count);
+                (
+                    verdict,
+                    reason,
+                    if frontier_start_slot > end_slot {
+                        "publishing_output".to_string()
+                    } else {
+                        "completed".to_string()
+                    },
+                    None,
+                )
+            };
+        (verdict, reason, current_phase, next_batch_start_slot)
+    };
     let dominant_phase = dominant_phase_name(
         resolve_slot_bounds_ms,
         attempt.summary.block_list_ms,
@@ -2171,7 +2163,12 @@ fn resolve_slot_bounds<S: ProgramHistorySource>(
         end_requested_slot_raw,
         probe_slots,
     )?;
-    Ok(finalize_resolved_slot_bounds(window_start, window_end, start, end))
+    Ok(finalize_resolved_slot_bounds(
+        window_start,
+        window_end,
+        start,
+        end,
+    ))
 }
 
 fn estimate_requested_slot_raw<S: ProgramHistorySource>(
@@ -2336,43 +2333,44 @@ fn finalize_resolved_slot_bounds(
     end: SlotBoundaryResolution,
 ) -> ResolvedSlotBounds {
     let mut boundary_missing_segments = Vec::new();
-    let (boundary_resolution_verdict, fully_bracketed, partially_bracketed) =
-        match (
-            start.resolved_slot,
-            start.resolved_block_time,
-            end.resolved_slot,
-            end.resolved_block_time,
-        ) {
-            (Some(start_slot), Some(start_ts), Some(end_slot), Some(end_ts)) if end_slot >= start_slot => {
-                if start_ts > window_start {
-                    boundary_missing_segments.push(GapFillMissingSegment {
-                        start: window_start,
-                        end: start_ts.min(window_end),
-                        reason: "requested_window_prefix_uncovered_after_start_slot_adjustment"
-                            .to_string(),
-                    });
-                }
-                if end_ts < window_end {
-                    boundary_missing_segments.push(GapFillMissingSegment {
-                        start: end_ts.max(window_start),
-                        end: window_end,
-                        reason: "requested_window_suffix_uncovered_after_end_slot_adjustment"
-                            .to_string(),
-                    });
-                }
-                let fully_bracketed = boundary_missing_segments.is_empty();
-                (
-                    if fully_bracketed {
-                        BoundaryResolutionVerdict::FullyBracketed
-                    } else {
-                        BoundaryResolutionVerdict::PartiallyBracketed
-                    },
-                    fully_bracketed,
-                    !fully_bracketed,
-                )
+    let (boundary_resolution_verdict, fully_bracketed, partially_bracketed) = match (
+        start.resolved_slot,
+        start.resolved_block_time,
+        end.resolved_slot,
+        end.resolved_block_time,
+    ) {
+        (Some(start_slot), Some(start_ts), Some(end_slot), Some(end_ts))
+            if end_slot >= start_slot =>
+        {
+            if start_ts > window_start {
+                boundary_missing_segments.push(GapFillMissingSegment {
+                    start: window_start,
+                    end: start_ts.min(window_end),
+                    reason: "requested_window_prefix_uncovered_after_start_slot_adjustment"
+                        .to_string(),
+                });
             }
-            _ => (BoundaryResolutionVerdict::Unresolved, false, false),
-        };
+            if end_ts < window_end {
+                boundary_missing_segments.push(GapFillMissingSegment {
+                    start: end_ts.max(window_start),
+                    end: window_end,
+                    reason: "requested_window_suffix_uncovered_after_end_slot_adjustment"
+                        .to_string(),
+                });
+            }
+            let fully_bracketed = boundary_missing_segments.is_empty();
+            (
+                if fully_bracketed {
+                    BoundaryResolutionVerdict::FullyBracketed
+                } else {
+                    BoundaryResolutionVerdict::PartiallyBracketed
+                },
+                fully_bracketed,
+                !fully_bracketed,
+            )
+        }
+        _ => (BoundaryResolutionVerdict::Unresolved, false, false),
+    };
 
     ResolvedSlotBounds {
         start,
@@ -2765,7 +2763,10 @@ fn write_gap_fill_output<S: ProgramHistorySource>(
         plan.requested_window_end,
         &gap_fill_state,
     );
-    merge_missing_segments(&mut missing_segments, fetch.boundary_missing_segments.clone());
+    merge_missing_segments(
+        &mut missing_segments,
+        fetch.boundary_missing_segments.clone(),
+    );
     if !replayable_output {
         let mut explicit_segments = fetch.boundary_missing_segments.clone();
         explicit_segments.push(GapFillMissingSegment {
@@ -2981,6 +2982,15 @@ fn classify_source_error(context: &str, error: &anyhow::Error) -> (GapFillVerdic
             GapFillVerdict::NonViableSourceContract,
             format!("{context}:{error}"),
         ),
+    }
+}
+
+fn source_error_current_phase(error: &anyhow::Error) -> &'static str {
+    match source_error_kind(error) {
+        Some(SourceErrorKind::ProviderThrottled | SourceErrorKind::RetryableProviderFailure) => {
+            "awaiting_next_attempt"
+        }
+        _ => "source_contract_failed",
     }
 }
 
@@ -3299,15 +3309,32 @@ fn throttle_backoff_for_attempt(base_backoff_ms: u64, attempt_index: usize) -> S
     StdDuration::from_millis(base_backoff_ms.saturating_mul(attempt_index as u64))
 }
 
-fn throttle_response_message(status_code: u16, body: &str) -> Option<String> {
+fn throttle_text_message(body: &str) -> Option<String> {
+    let lowered = body.to_ascii_lowercase();
+    if lowered.contains("too many requests") || lowered.contains("rate limit") {
+        return Some(format!("rpc provider throttled request: {body}"));
+    }
+    None
+}
+
+fn throttle_http_error_response_message(status_code: u16, body: &str) -> Option<String> {
     if status_code == 429 {
         return Some(format!(
             "rpc returned http status 429 Too Many Requests: {body}"
         ));
     }
-    let lowered = body.to_ascii_lowercase();
-    if lowered.contains("too many requests") || lowered.contains("rate limit") {
-        return Some(format!("rpc provider throttled request: {body}"));
+    if retryable_source_contract_http_status_reason_code(status_code).is_some() {
+        return None;
+    }
+    if status_code < 200 || status_code >= 300 {
+        return throttle_text_message(body);
+    }
+    None
+}
+
+fn retryable_source_contract_http_status_reason_code(status_code: u16) -> Option<&'static str> {
+    if status_code == 503 {
+        return Some("program_history_gap_fill_retryable_source_contract_http_503");
     }
     None
 }
@@ -3345,7 +3372,9 @@ where
     for attempt in 0..=request_policy.retry_429_max_attempts {
         maybe_sleep_with_pacer(pacer, |duration| sleep_fn(duration));
         let response = send()?;
-        if let Some(message) = throttle_response_message(response.status_code, &response.body) {
+        if let Some(message) =
+            throttle_http_error_response_message(response.status_code, &response.body)
+        {
             if attempt < request_policy.retry_429_max_attempts {
                 sleep_fn(throttle_backoff_for_attempt(
                     request_policy.retry_429_backoff_ms,
@@ -3363,6 +3392,15 @@ where
         }
 
         if response.status_code < 200 || response.status_code >= 300 {
+            if let Some(reason_code) =
+                retryable_source_contract_http_status_reason_code(response.status_code)
+            {
+                return Err(SourceError::retryable_provider_failure(format!(
+                    "{reason_code}: rpc returned http status {}: {}",
+                    response.status_code, response.body
+                ))
+                .into());
+            }
             return Err(SourceError::source_contract_failure(format!(
                 "rpc returned http status {}: {}",
                 response.status_code, response.body
@@ -3377,7 +3415,7 @@ where
         })?;
         if let Some(error) = parsed.get("error") {
             let error_message = error.to_string();
-            if let Some(message) = throttle_response_message(response.status_code, &error_message) {
+            if let Some(message) = throttle_text_message(&error_message) {
                 if attempt < request_policy.retry_429_max_attempts {
                     sleep_fn(throttle_backoff_for_attempt(
                         request_policy.retry_429_backoff_ms,
@@ -3496,6 +3534,7 @@ mod tests {
         block_times: HashMap<u64, DateTime<Utc>>,
         block_ranges: HashMap<(u64, u64), Vec<u64>>,
         blocks: HashMap<u64, Value>,
+        list_block_failures: Mutex<HashMap<(u64, u64), VecDeque<SourceError>>>,
         get_block_failures: Mutex<HashMap<u64, VecDeque<SourceError>>>,
         get_block_delay: StdDuration,
         current_get_block_in_flight: AtomicUsize,
@@ -3521,6 +3560,21 @@ mod tests {
 
         fn with_block(mut self, slot: u64, block: Value) -> Self {
             self.blocks.insert(slot, block);
+            self
+        }
+
+        fn with_list_blocks_failure_once(
+            mut self,
+            start_slot: u64,
+            end_slot: u64,
+            error: SourceError,
+        ) -> Self {
+            self.list_block_failures
+                .get_mut()
+                .expect("list_block_failures poisoned")
+                .entry((start_slot, end_slot))
+                .or_default()
+                .push_back(error);
             self
         }
 
@@ -3579,6 +3633,25 @@ mod tests {
                 start_slot,
                 end_slot,
             });
+            let queued_failure = {
+                let mut failures = self
+                    .list_block_failures
+                    .lock()
+                    .expect("list_block_failures poisoned");
+                let error = failures
+                    .get_mut(&(start_slot, end_slot))
+                    .and_then(|queued| queued.pop_front());
+                if failures
+                    .get(&(start_slot, end_slot))
+                    .is_some_and(|queued| queued.is_empty())
+                {
+                    failures.remove(&(start_slot, end_slot));
+                }
+                error
+            };
+            if let Some(error) = queued_failure {
+                return Err(error.into());
+            }
             Ok(self
                 .block_ranges
                 .get(&(start_slot, end_slot))
@@ -3617,7 +3690,9 @@ mod tests {
                     .get_block_failures
                     .lock()
                     .expect("get_block_failures poisoned");
-                let error = failures.get_mut(&slot).and_then(|queued| queued.pop_front());
+                let error = failures
+                    .get_mut(&slot)
+                    .and_then(|queued| queued.pop_front());
                 if failures.get(&slot).is_some_and(|queued| queued.is_empty()) {
                     failures.remove(&slot);
                 }
@@ -3675,6 +3750,107 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn source_contract_http_503_classifies_retryable_provider_failure_stage1() {
+        let pacer = Mutex::new(RequestPacer::new(1_000_000));
+        let policy = QuickNodeRequestPolicy {
+            max_requests_per_second: 1_000_000,
+            retry_429_max_attempts: 0,
+            retry_429_backoff_ms: 1,
+        };
+
+        let error = execute_json_rpc_with_policy(
+            &pacer,
+            &policy,
+            || {
+                Ok(HttpRpcResponse {
+                    status_code: 503,
+                    body: "upstream service unavailable".to_string(),
+                })
+            },
+            |_| {},
+        )
+        .expect_err("HTTP 503 must not be accepted as a successful RPC response");
+
+        assert_eq!(
+            source_error_kind(&error),
+            Some(SourceErrorKind::RetryableProviderFailure)
+        );
+        assert!(error
+            .to_string()
+            .contains("program_history_gap_fill_retryable_source_contract_http_503"));
+    }
+
+    #[test]
+    fn source_contract_successful_result_body_with_throttle_words_is_not_provider_throttled_stage1()
+    {
+        let pacer = Mutex::new(RequestPacer::new(1_000_000));
+        let policy = QuickNodeRequestPolicy {
+            max_requests_per_second: 1_000_000,
+            retry_429_max_attempts: 0,
+            retry_429_backoff_ms: 1,
+        };
+
+        let parsed = execute_json_rpc_with_policy(
+            &pacer,
+            &policy,
+            || {
+                Ok(HttpRpcResponse {
+                    status_code: 200,
+                    body: json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "note": "rate limit and too many requests are payload text, not an error"
+                        }
+                    })
+                    .to_string(),
+                })
+            },
+            |_| {},
+        )
+        .expect("successful JSON-RPC result body must not be scanned as throttling");
+
+        assert_eq!(
+            rpc_result(&parsed)
+                .get("note")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            "rate limit and too many requests are payload text, not an error"
+        );
+    }
+
+    #[test]
+    fn source_contract_http_500_stays_terminal_stage1() {
+        let pacer = Mutex::new(RequestPacer::new(1_000_000));
+        let policy = QuickNodeRequestPolicy {
+            max_requests_per_second: 1_000_000,
+            retry_429_max_attempts: 0,
+            retry_429_backoff_ms: 1,
+        };
+
+        let error = execute_json_rpc_with_policy(
+            &pacer,
+            &policy,
+            || {
+                Ok(HttpRpcResponse {
+                    status_code: 500,
+                    body: "malformed upstream contract".to_string(),
+                })
+            },
+            |_| {},
+        )
+        .expect_err("HTTP 500 malformed source-contract response must remain terminal");
+
+        assert_eq!(
+            source_error_kind(&error),
+            Some(SourceErrorKind::SourceContractFailure)
+        );
+        assert!(error
+            .to_string()
+            .contains("rpc returned http status 500: malformed upstream contract"));
     }
 
     #[test]
@@ -4188,8 +4364,58 @@ mod tests {
     }
 
     #[test]
-    fn retryable_block_fetch_body_decode_failure_mid_attempt_stays_resumable_stage1(
-    ) -> Result<()> {
+    fn retryable_source_contract_http_503_mid_attempt_stays_resumable_stage1() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-source-contract-retryable-503")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture
+            .temp
+            .path()
+            .join("program-gap-fill-source-contract-retryable-503.sqlite");
+        let source = resumable_source(window_start, window_end).with_list_blocks_failure_once(
+            1_105,
+            2_109,
+            SourceError::retryable_provider_failure(
+                "program_history_gap_fill_retryable_source_contract_http_503: rpc returned http status 503: upstream service unavailable",
+            ),
+        );
+
+        let output = run_output_with_source(
+            Config {
+                output_path: Some(output_path.clone()),
+                window_start: Some(window_start),
+                window_end: Some(window_end),
+                max_slot_batches_per_attempt_override: Some(3),
+                now,
+                ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+            },
+            &source,
+        )?;
+
+        assert_eq!(
+            output.verdict,
+            "not_proven_due_to_retryable_provider_failure"
+        );
+        assert_eq!(output.current_phase, "awaiting_next_attempt");
+        assert_eq!(output.next_batch_start_slot, Some(1_105));
+        assert_eq!(output.attempt_frontier_end_slot, Some(1_104));
+        assert!(output.attempt_frontier_advanced_slots > 0);
+        assert_eq!(output.attempt_inserted_rows, 1);
+        assert_eq!(output.staged_rows, 1);
+        assert!(!output.replayable_output);
+        assert!(!output_path.exists());
+        assert_eq!(
+            output.reason,
+            "program_history_gap_fill_retryable_source_contract_http_503: rpc returned http status 503: upstream service unavailable"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retryable_block_fetch_body_decode_failure_mid_attempt_stays_resumable_stage1() -> Result<()>
+    {
         let fixture = make_fixture("program-gap-fill-retryable-body")?;
         let now = parse_ts("2026-03-24T13:43:40Z")?;
         let window_start = now - Duration::minutes(14);
@@ -4360,7 +4586,12 @@ mod tests {
                     block_with_transactions(
                         101,
                         window_start + Duration::minutes(1),
-                        vec![swap_tx("after-escape-a", "wallet-gap", 101, "raydium-program")],
+                        vec![swap_tx(
+                            "after-escape-a",
+                            "wallet-gap",
+                            101,
+                            "raydium-program",
+                        )],
                     ),
                 )
                 .with_block(
@@ -4368,7 +4599,12 @@ mod tests {
                     block_with_transactions(
                         102,
                         window_end - Duration::seconds(1),
-                        vec![swap_tx("after-escape-b", "wallet-gap", 102, "pumpswap-program")],
+                        vec![swap_tx(
+                            "after-escape-b",
+                            "wallet-gap",
+                            102,
+                            "pumpswap-program",
+                        )],
                     ),
                 )
                 .with_get_block_failure_once(
@@ -4406,9 +4642,10 @@ mod tests {
             Some(ZERO_PROGRESS_ESCAPE_DISTANCE)
         );
         assert_eq!(third.next_batch_start_slot, Some(101));
-        assert!(third.missing_segments.iter().any(|segment| {
-            segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON
-        }));
+        assert!(third
+            .missing_segments
+            .iter()
+            .any(|segment| { segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON }));
 
         let advanced_source = FakeProgramHistorySource::default()
             .with_latest_slot(102)
@@ -4421,7 +4658,12 @@ mod tests {
                 block_with_transactions(
                     101,
                     window_start + Duration::minutes(1),
-                    vec![swap_tx("after-escape-a", "wallet-gap", 101, "raydium-program")],
+                    vec![swap_tx(
+                        "after-escape-a",
+                        "wallet-gap",
+                        101,
+                        "raydium-program",
+                    )],
                 ),
             )
             .with_block(
@@ -4429,14 +4671,22 @@ mod tests {
                 block_with_transactions(
                     102,
                     window_end - Duration::seconds(1),
-                    vec![swap_tx("after-escape-b", "wallet-gap", 102, "pumpswap-program")],
+                    vec![swap_tx(
+                        "after-escape-b",
+                        "wallet-gap",
+                        102,
+                        "pumpswap-program",
+                    )],
                 ),
             );
         let fourth = run_output_with_source(base_config, &advanced_source)?;
         assert!(fourth.resolved_bounds_reused_from_progress);
         assert_eq!(fourth.attempt_frontier_start_slot, Some(101));
         assert_eq!(fourth.verdict, "not_proven_due_to_provider_throttling");
-        assert_eq!(fourth.current_phase, "completed_with_explicit_missing_segments");
+        assert_eq!(
+            fourth.current_phase,
+            "completed_with_explicit_missing_segments"
+        );
         assert_eq!(fourth.next_batch_start_slot, Some(103));
         assert!(!fourth.replayable_output);
         assert_eq!(fourth.zero_progress_retry_count, 0);
@@ -4666,11 +4916,7 @@ mod tests {
         let base = parse_ts("2026-03-24T00:00:00Z")?;
         let window_start = boundary_slot_time(base, 100);
         let window_end = boundary_slot_time(base, 110);
-        let source = boundary_source(
-            base,
-            120,
-            (101..=120).collect(),
-        );
+        let source = boundary_source(base, 120, (101..=120).collect());
         let bounds = resolve_slot_bounds(&source, window_start, window_end, 4)?;
         assert_eq!(bounds.requested_start_slot_raw(), Some(100));
         assert_eq!(bounds.requested_end_slot_raw(), Some(110));

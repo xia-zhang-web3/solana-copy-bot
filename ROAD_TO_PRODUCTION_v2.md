@@ -32,6 +32,12 @@ Accepted / live-proven blocker removals on this lane:
   validation or gap-fill
 - transient `getBlock` HTTP 503 / body-decode failures are retryable and
   non-terminal
+- transient source-contract HTTP 503 failures are retryable and non-terminal
+  with reason
+  `program_history_gap_fill_retryable_source_contract_http_503`
+- successful HTTP 2xx JSON-RPC `result` payloads are no longer scanned for
+  throttle words such as `rate limit`; only HTTP 429, non-2xx error bodies, and
+  JSON-RPC `error` payloads can drive throttle classification
 - bounded zero-progress escape breaks the one-slot provider-throttling
   livelock by recording an explicit uncovered segment instead of pretending
   coverage is complete

@@ -61,6 +61,12 @@ Repository/operator accounting:
 
 - HTTP 408 is now accepted as a retryable block-fetch failure with reason
   `program_history_gap_fill_retryable_block_fetch_http_408`
+- source-contract HTTP 503 is now accepted as a retryable provider failure with
+  reason `program_history_gap_fill_retryable_source_contract_http_503`
+- successful HTTP 2xx JSON-RPC `result` payloads are not throttle evidence even
+  if their body text contains `rate limit` / `too many requests`; throttle
+  detection remains limited to HTTP 429, non-2xx provider error bodies, and
+  JSON-RPC `error` payloads
 - a repo-managed single-child loop wrapper has been reviewed and accepted
   locally; it is not deployed to the live host while the transient live loop is
   already running
