@@ -23,8 +23,7 @@ const INGESTION_PRIMARY_SOURCE_UNKNOWN: &str = "unknown";
 const NEXT_SWAP_SURFACE: &str = "copybot_ingestion::IngestionService::next_swap";
 const SWAP_CANDIDATE_TYPE_SURFACE: &str = "copybot_ingestion::source::RawSwapObservation";
 const RELEVANT_SWAP_HANDOFF_SURFACE: &str = "copybot_app::main::persist_relevant_observed_swap";
-const IRRELEVANT_SWAP_HANDOFF_SURFACE: &str =
-    "copybot_app::main::persist_irrelevant_observed_swap";
+const IRRELEVANT_SWAP_HANDOFF_SURFACE: &str = "copybot_app::main::persist_irrelevant_observed_swap";
 const WRITER_ENQUEUE_SURFACE: &str =
     "copybot_app::observed_swap_writer::ObservedSwapWriter::send_request";
 
@@ -38,12 +37,12 @@ const APP_MAIN_SOURCE: &str = include_str!("../main.rs");
 const OBSERVED_SWAP_WRITER_SOURCE: &str = include_str!("../observed_swap_writer.rs");
 const INGESTION_LIB_SOURCE: &str = include_str!("../../../ingestion/src/lib.rs");
 const INGESTION_PARSER_SOURCE: &str = include_str!("../../../ingestion/src/parser.rs");
-const INGESTION_TELEMETRY_SOURCE: &str =
-    include_str!("../../../ingestion/src/source/telemetry.rs");
+const INGESTION_TELEMETRY_SOURCE: &str = include_str!("../../../ingestion/src/source/telemetry.rs");
 const YELLOWSTONE_PIPELINE_SOURCE: &str =
     include_str!("../../../ingestion/src/source/yellowstone_pipeline.rs");
 const YELLOWSTONE_PARSE_SOURCE: &str = include_str!("../../../ingestion/src/source/yellowstone.rs");
-const HELIUS_PIPELINE_SOURCE: &str = include_str!("../../../ingestion/src/source/helius_pipeline.rs");
+const HELIUS_PIPELINE_SOURCE: &str =
+    include_str!("../../../ingestion/src/source/helius_pipeline.rs");
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -156,7 +155,8 @@ fn parse_string_arg(flag: &str, value: Option<String>) -> Result<String> {
 fn run(config: &Config) -> Result<ObservedSwapExtractionHandoffAuditReport> {
     let loaded_config = load_from_path(&config.config_path)
         .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
-    let ingestion_primary_source = normalize_ingestion_primary_source(&loaded_config.ingestion.source);
+    let ingestion_primary_source =
+        normalize_ingestion_primary_source(&loaded_config.ingestion.source);
     let facts = current_code_path_facts(ingestion_primary_source);
     let conclusion = select_observed_swap_extraction_handoff_conclusion(ConclusionEvidence {
         upstream_messages_do_not_produce_swap_candidates: facts
@@ -235,9 +235,10 @@ fn current_code_path_facts(ingestion_primary_source: &str) -> CodePathFacts {
         .contains("pub(super) prefetch_stale_dropped: AtomicU64,")
         && HELIUS_PIPELINE_SOURCE.contains(".prefetch_stale_dropped");
 
-    let swap_extraction_metric_surface_present =
-        matches!(ingestion_primary_source, INGESTION_PRIMARY_SOURCE_YELLOWSTONE_GRPC)
-            && yellowstone_extraction_metric_surface_present;
+    let swap_extraction_metric_surface_present = matches!(
+        ingestion_primary_source,
+        INGESTION_PRIMARY_SOURCE_YELLOWSTONE_GRPC
+    ) && yellowstone_extraction_metric_surface_present;
     let fetch_success_metric_surface_present =
         matches!(ingestion_primary_source, INGESTION_PRIMARY_SOURCE_WS)
             && ws_fetch_success_metric_surface_present;
@@ -245,37 +246,42 @@ fn current_code_path_facts(ingestion_primary_source: &str) -> CodePathFacts {
         matches!(ingestion_primary_source, INGESTION_PRIMARY_SOURCE_WS)
             && ws_fetch_no_swap_metric_surface_present;
 
-    let swap_relevance_filter_surface_present =
-        APP_MAIN_SOURCE.contains("fn classify_observed_swap_shadow_relevance(")
-            && APP_MAIN_SOURCE.contains("ObservedSwapShadowRelevance::IrrelevantUnclassified")
-            && APP_MAIN_SOURCE.contains("ObservedSwapShadowRelevance::IrrelevantNotFollowed")
-            && APP_MAIN_SOURCE.contains("ObservedSwapShadowRelevance::Relevant(side)");
+    let swap_relevance_filter_surface_present = APP_MAIN_SOURCE
+        .contains("fn classify_observed_swap_shadow_relevance(")
+        && APP_MAIN_SOURCE.contains("ObservedSwapShadowRelevance::IrrelevantUnclassified")
+        && APP_MAIN_SOURCE.contains("ObservedSwapShadowRelevance::IrrelevantNotFollowed")
+        && APP_MAIN_SOURCE.contains("ObservedSwapShadowRelevance::Relevant(side)");
     let pre_persistence_drop_surface_present =
         APP_MAIN_SOURCE.contains(
             "dropping non-critical irrelevant observed swap under Yellowstone output pressure",
         ) && APP_MAIN_SOURCE.contains(
             "dropping non-critical irrelevant observed swap under writer backpressure",
         ) && APP_MAIN_SOURCE.contains(
-            "dropping non-critical irrelevant_not_followed observed swap because the runtime has no followed wallets, no open shadow lots, and no discovery-critical target mints",
+            "dropping non-critical irrelevant observed swap after the empty-target zero-universe best-effort writer budget was already exhausted",
         );
-    let parse_rejected_metric_surface_present =
-        matches!(ingestion_primary_source, INGESTION_PRIMARY_SOURCE_YELLOWSTONE_GRPC)
-            && INGESTION_TELEMETRY_SOURCE.contains("pub(super) parse_rejected_total: AtomicU64,")
-            && YELLOWSTONE_PIPELINE_SOURCE.contains("runtime_config.telemetry.note_parse_rejected(&error);");
+    let parse_rejected_metric_surface_present = matches!(
+        ingestion_primary_source,
+        INGESTION_PRIMARY_SOURCE_YELLOWSTONE_GRPC
+    ) && INGESTION_TELEMETRY_SOURCE
+        .contains("pub(super) parse_rejected_total: AtomicU64,")
+        && YELLOWSTONE_PIPELINE_SOURCE
+            .contains("runtime_config.telemetry.note_parse_rejected(&error);");
     let prefetch_stale_dropped_metric_surface_present =
         matches!(ingestion_primary_source, INGESTION_PRIMARY_SOURCE_WS)
             && ws_prefetch_stale_dropped_metric_surface_present;
     let relevant_swaps_call_writer_enqueue = APP_MAIN_SOURCE
         .contains("async fn persist_relevant_observed_swap(")
         && APP_MAIN_SOURCE.contains("match observed_swap_writer.write(swap).await {")
-        && OBSERVED_SWAP_WRITER_SOURCE.contains("pub(crate) async fn write(&self, swap: &SwapEvent) -> Result<bool> {")
+        && OBSERVED_SWAP_WRITER_SOURCE
+            .contains("pub(crate) async fn write(&self, swap: &SwapEvent) -> Result<bool> {")
         && OBSERVED_SWAP_WRITER_SOURCE.contains("self.send_request(ObservedSwapWriteRequest {");
     let irrelevant_swaps_bypass_batch_writer = false;
     let handoff_can_fail_before_writer_metric_surface = false;
     let code_implies_messages_can_arrive_without_swap_candidate = INGESTION_LIB_SOURCE
         .contains("pub async fn next_swap(&mut self) -> Result<Option<SwapEvent>> {")
         && INGESTION_LIB_SOURCE.contains("if let Some(parsed) = self.parser.parse(raw) {")
-        && INGESTION_PARSER_SOURCE.contains("pub fn parse(&self, raw: RawSwapObservation) -> Option<SwapEvent> {")
+        && INGESTION_PARSER_SOURCE
+            .contains("pub fn parse(&self, raw: RawSwapObservation) -> Option<SwapEvent> {")
         && INGESTION_PARSER_SOURCE.contains("return None;")
         && YELLOWSTONE_PARSE_SOURCE.contains("return Ok(None);");
     let code_implies_swap_candidate_can_be_filtered_before_persistence =
@@ -468,14 +474,13 @@ mod tests {
     }
 
     #[test]
-    fn conclusion_selection_reports_upstream_messages_without_swap_candidates_when_that_is_the_only_supported_seam()
-    {
-        let conclusion =
-            select_observed_swap_extraction_handoff_conclusion(ConclusionEvidence {
-                upstream_messages_do_not_produce_swap_candidates: true,
-                swap_candidates_produced_but_filtered_before_persistence: false,
-                relevant_swaps_reach_handoff_but_not_writer_enqueue: false,
-            });
+    fn conclusion_selection_reports_upstream_messages_without_swap_candidates_when_that_is_the_only_supported_seam(
+    ) {
+        let conclusion = select_observed_swap_extraction_handoff_conclusion(ConclusionEvidence {
+            upstream_messages_do_not_produce_swap_candidates: true,
+            swap_candidates_produced_but_filtered_before_persistence: false,
+            relevant_swaps_reach_handoff_but_not_writer_enqueue: false,
+        });
 
         assert_eq!(
             conclusion,
@@ -484,14 +489,13 @@ mod tests {
     }
 
     #[test]
-    fn conclusion_selection_reports_filtered_before_persistence_when_that_is_the_only_supported_seam()
-    {
-        let conclusion =
-            select_observed_swap_extraction_handoff_conclusion(ConclusionEvidence {
-                upstream_messages_do_not_produce_swap_candidates: false,
-                swap_candidates_produced_but_filtered_before_persistence: true,
-                relevant_swaps_reach_handoff_but_not_writer_enqueue: false,
-            });
+    fn conclusion_selection_reports_filtered_before_persistence_when_that_is_the_only_supported_seam(
+    ) {
+        let conclusion = select_observed_swap_extraction_handoff_conclusion(ConclusionEvidence {
+            upstream_messages_do_not_produce_swap_candidates: false,
+            swap_candidates_produced_but_filtered_before_persistence: true,
+            relevant_swaps_reach_handoff_but_not_writer_enqueue: false,
+        });
 
         assert_eq!(
             conclusion,
@@ -501,12 +505,11 @@ mod tests {
 
     #[test]
     fn conclusion_selection_reports_insufficient_evidence_when_multiple_seams_remain_supported() {
-        let conclusion =
-            select_observed_swap_extraction_handoff_conclusion(ConclusionEvidence {
-                upstream_messages_do_not_produce_swap_candidates: true,
-                swap_candidates_produced_but_filtered_before_persistence: true,
-                relevant_swaps_reach_handoff_but_not_writer_enqueue: false,
-            });
+        let conclusion = select_observed_swap_extraction_handoff_conclusion(ConclusionEvidence {
+            upstream_messages_do_not_produce_swap_candidates: true,
+            swap_candidates_produced_but_filtered_before_persistence: true,
+            relevant_swaps_reach_handoff_but_not_writer_enqueue: false,
+        });
 
         assert_eq!(conclusion, CONCLUSION_INSUFFICIENT_EVIDENCE);
     }

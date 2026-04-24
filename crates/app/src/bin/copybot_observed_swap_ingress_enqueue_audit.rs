@@ -4,11 +4,9 @@ use serde::Serialize;
 use std::env;
 use std::path::PathBuf;
 
-const USAGE: &str =
-    "usage: copybot_observed_swap_ingress_enqueue_audit --config <path> [--json]";
+const USAGE: &str = "usage: copybot_observed_swap_ingress_enqueue_audit --config <path> [--json]";
 
-const CONCLUSION_UPSTREAM_FEED_NOT_PRODUCING_SWAPS: &str =
-    "upstream_feed_not_producing_swaps";
+const CONCLUSION_UPSTREAM_FEED_NOT_PRODUCING_SWAPS: &str = "upstream_feed_not_producing_swaps";
 const CONCLUSION_SWAPS_PRODUCED_BUT_NOT_ENQUEUED_TO_WRITER: &str =
     "swaps_produced_but_not_enqueued_to_writer";
 const CONCLUSION_SWAPS_ENQUEUED_BUT_NOT_VISIBLE_IN_WRITER_TELEMETRY_SURFACE: &str =
@@ -151,8 +149,7 @@ fn run(config: &Config) -> Result<ObservedSwapIngressEnqueueAuditReport> {
             .code_implies_enqueue_can_fail_without_becoming_writer_terminal_failure
             && (code_facts.enqueue_failure_surface_present
                 || code_facts.enqueue_overflow_or_drop_surface_present),
-        enqueued_but_not_visible_branch_supported: code_facts
-            .ingress_calls_writer_enqueue_surface
+        enqueued_but_not_visible_branch_supported: code_facts.ingress_calls_writer_enqueue_surface
             && !code_facts.writer_telemetry_pending_requests_surface_present
             && !code_facts.writer_telemetry_batch_insert_surface_present,
     })
@@ -213,7 +210,8 @@ fn current_code_path_facts() -> CodePathFacts {
     let enqueue_surface_has_drop_or_backpressure_branch = OBSERVED_SWAP_WRITER_SOURCE
         .contains("Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Ok(false),")
         && MAIN_SOURCE.contains("PendingWriterBackpressure")
-        && MAIN_SOURCE.contains("dropping non-critical irrelevant observed swap under writer backpressure");
+        && MAIN_SOURCE
+            .contains("dropping non-critical irrelevant observed swap under writer backpressure");
     let enqueue_failure_surface_present = OBSERVED_SWAP_WRITER_SOURCE
         .contains(".context(OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT)?;")
         && MAIN_SOURCE.contains("failed enqueueing observed swap");
@@ -221,14 +219,17 @@ fn current_code_path_facts() -> CodePathFacts {
         .contains("Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Ok(false),")
         && (MAIN_SOURCE.contains(
             "dropping non-critical irrelevant observed swap under Yellowstone output pressure",
-        ) || MAIN_SOURCE.contains("dropping non-critical irrelevant observed swap under writer backpressure"));
+        ) || MAIN_SOURCE
+            .contains("dropping non-critical irrelevant observed swap under writer backpressure"));
     let writer_telemetry_pending_requests_surface_present = OBSERVED_SWAP_WRITER_SOURCE
         .contains("pub pending_requests: usize,")
         && OBSERVED_SWAP_WRITER_SOURCE.contains("fn note_enqueued(&self) {")
-        && OBSERVED_SWAP_WRITER_SOURCE.contains("self.pending_requests.fetch_add(1, Ordering::Relaxed);");
+        && OBSERVED_SWAP_WRITER_SOURCE
+            .contains("self.pending_requests.fetch_add(1, Ordering::Relaxed);");
     let writer_telemetry_batch_insert_surface_present = OBSERVED_SWAP_WRITER_SOURCE
         .contains("pub observed_swaps_insert_ms_p95: u64,")
-        && OBSERVED_SWAP_WRITER_SOURCE.contains("fn note_observed_swaps_insert_completed(&self, duration_ms: u64)")
+        && OBSERVED_SWAP_WRITER_SOURCE
+            .contains("fn note_observed_swaps_insert_completed(&self, duration_ms: u64)")
         && OBSERVED_SWAP_WRITER_SOURCE.contains("telemetry.note_observed_swaps_insert_completed(");
     let writer_telemetry_journal_surface_present = OBSERVED_SWAP_WRITER_SOURCE
         .contains("pub journal_queue_depth_batches: usize,")
@@ -248,7 +249,8 @@ fn current_code_path_facts() -> CodePathFacts {
         && MAIN_SOURCE.contains("Err(error) => {")
         && (MAIN_SOURCE.contains(
             "dropping non-critical irrelevant observed swap under Yellowstone output pressure",
-        ) || MAIN_SOURCE.contains("dropping non-critical irrelevant observed swap under writer backpressure"));
+        ) || MAIN_SOURCE
+            .contains("dropping non-critical irrelevant observed swap under writer backpressure"));
 
     CodePathFacts {
         ingress_constructs_writer_sender,
@@ -266,9 +268,7 @@ fn current_code_path_facts() -> CodePathFacts {
     }
 }
 
-fn select_observed_swap_ingress_enqueue_conclusion(
-    evidence: ConclusionEvidence,
-) -> &'static str {
+fn select_observed_swap_ingress_enqueue_conclusion(evidence: ConclusionEvidence) -> &'static str {
     let supported_count = [
         evidence.upstream_branch_supported,
         evidence.produced_but_not_enqueued_branch_supported,
@@ -437,8 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn conclusion_selection_reports_produced_but_not_enqueued_when_that_is_the_only_narrow_seam()
-    {
+    fn conclusion_selection_reports_produced_but_not_enqueued_when_that_is_the_only_narrow_seam() {
         let conclusion = select_observed_swap_ingress_enqueue_conclusion(ConclusionEvidence {
             upstream_branch_supported: false,
             produced_but_not_enqueued_branch_supported: true,
