@@ -2985,6 +2985,9 @@ fn classify_source_error(context: &str, error: &anyhow::Error) -> (GapFillVerdic
 }
 
 fn retryable_block_fetch_reason_code(message: &str) -> Option<&'static str> {
+    if message.contains("rpc returned http status 408") {
+        return Some("program_history_gap_fill_retryable_block_fetch_http_408");
+    }
     if message.contains("rpc returned http status 503") {
         return Some("program_history_gap_fill_retryable_block_fetch_http_503");
     }
@@ -3652,6 +3655,10 @@ mod tests {
 
     #[test]
     fn retryable_block_fetch_reason_code_classifies_only_transient_patterns_stage1() {
+        assert_eq!(
+            retryable_block_fetch_reason_code("rpc returned http status 408: request timeout"),
+            Some("program_history_gap_fill_retryable_block_fetch_http_408")
+        );
         assert_eq!(
             retryable_block_fetch_reason_code("rpc returned http status 503: upstream unavailable"),
             Some("program_history_gap_fill_retryable_block_fetch_http_503")
