@@ -118,6 +118,12 @@ Development accounting:
   when the explicit artifact-validator criteria are satisfied, and otherwise
   emits read-only status / restore-preflight / artifact-validator commands; it
   does not apply restore or mark production green
+- `discovery_runtime_restore --gap-fill-db-path` now has a fail-closed
+  program-history progress gate before any target DB mutation
+- the restore gate requires `--gap-fill-progress-path`,
+  `--gap-fill-window-start-utc`, and `--gap-fill-window-end-utc`, rejects invalid
+  windows, and only accepts explicit replayable exact-window progress with no
+  missing segments, positive inserted rows, and zero withheld rows
 
 ## Live Update (`2026-04-23`)
 

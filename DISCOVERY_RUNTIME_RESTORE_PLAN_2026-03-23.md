@@ -91,6 +91,12 @@ Repository/operator accounting:
   `discovery_raw_gap_fill_program_history_handoff_report --progress-path <progress.json> --window-start-utc 2026-04-18T16:56:04Z --window-end-utc 2026-04-23T15:59:39.857189405Z --json`
 - this report is a human review helper only; it does not apply restore, does not
   start the gap-fill child, and does not authorize production readiness
+- the mutating restore command now fail-closes `--gap-fill-db-path` behind a
+  matching program-history progress artifact:
+  `discovery_runtime_restore --gap-fill-db-path <db> --gap-fill-progress-path <progress.json> --gap-fill-window-start-utc 2026-04-18T16:56:04Z --gap-fill-window-end-utc 2026-04-23T15:59:39.857189405Z ...`
+- this restore gate runs before target DB creation/open/migrations/restore/replay
+  and refuses non-replayable, mismatched, invalid-window, missing-segment,
+  zero-row, or withheld-row progress
 
 ## Live addendum (`2026-04-23`)
 

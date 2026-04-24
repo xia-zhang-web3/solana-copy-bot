@@ -69,6 +69,11 @@ Operator rules for this lane:
   `discovery_raw_gap_fill_program_history_handoff_report --progress-path <progress.json> --window-start-utc 2026-04-18T16:56:04Z --window-end-utc 2026-04-23T15:59:39.857189405Z --json`
 - the handoff report only emits a review verdict and safe read-only follow-up
   commands; it does not apply restore or authorize production readiness
+- if a later human-approved restore uses `discovery_runtime_restore
+  --gap-fill-db-path`, it must also pass `--gap-fill-progress-path`,
+  `--gap-fill-window-start-utc`, and `--gap-fill-window-end-utc`; the restore
+  command fail-closes before target DB mutation unless the progress artifact
+  proves explicit replayable exact-window coverage
 
 ## Live Update (`2026-04-23`)
 

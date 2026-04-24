@@ -263,6 +263,8 @@ Accepted local/repo work for the current lane:
   `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_artifact_validate.rs`
 - read-only human handoff report:
   `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_handoff_report.rs`
+- mutating restore path gap-fill gate:
+  `crates/discovery/src/bin/discovery_runtime_restore.rs`
 
 Operator semantics:
 
@@ -282,6 +284,11 @@ Operator semantics:
   `handoff_ready_for_human_restore_review=true` only when the same artifact
   review criteria are explicitly satisfied; otherwise it emits safe read-only
   status, preflight, and artifact-validator commands
+- `discovery_runtime_restore --gap-fill-db-path` now requires a matching
+  program-history progress JSON and exact UTC window arguments before it will
+  replay the gap-fill DB into a target runtime DB
+- restore gate failures happen before target DB parent creation, target DB open,
+  migrations, artifact restore, or journal/gap-fill replay
 - missing progress control truth fails closed
 
 Deployment status:

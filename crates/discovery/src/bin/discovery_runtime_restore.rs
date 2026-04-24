@@ -15,14 +15,13 @@ use copybot_storage::{
     RecentRawJournalReplaySummary, SqliteStore,
 };
 use serde::Serialize;
-#[cfg(test)]
 use serde_json::Value;
 use std::env;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use tempfile::tempdir;
 
-const USAGE: &str = "usage: discovery_runtime_restore --config <path> --artifact <path> [--db-path <path>] [--journal-db-path <path>] [--gap-fill-db-path <path>] [--bootstrap-degraded] [--json] [--now <rfc3339>]";
+const USAGE: &str = "usage: discovery_runtime_restore --config <path> --artifact <path> [--db-path <path>] [--journal-db-path <path>] [--gap-fill-db-path <path> --gap-fill-progress-path <path> --gap-fill-window-start-utc <rfc3339> --gap-fill-window-end-utc <rfc3339>] [--bootstrap-degraded] [--json] [--now <rfc3339>]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -40,6 +39,9 @@ struct Config {
     db_path: Option<PathBuf>,
     journal_db_path: Option<PathBuf>,
     gap_fill_db_path: Option<PathBuf>,
+    gap_fill_progress_path: Option<PathBuf>,
+    gap_fill_window_start_utc: Option<DateTime<Utc>>,
+    gap_fill_window_end_utc: Option<DateTime<Utc>>,
     bootstrap_degraded: bool,
     json: bool,
     now: DateTime<Utc>,
@@ -88,6 +90,9 @@ where
     let mut db_path: Option<PathBuf> = None;
     let mut journal_db_path: Option<PathBuf> = None;
     let mut gap_fill_db_path: Option<PathBuf> = None;
+    let mut gap_fill_progress_path: Option<PathBuf> = None;
+    let mut gap_fill_window_start_utc: Option<DateTime<Utc>> = None;
+    let mut gap_fill_window_end_utc: Option<DateTime<Utc>> = None;
     let mut bootstrap_degraded = false;
     let mut json = false;
     let mut now: Option<DateTime<Utc>> = None;
@@ -115,11 +120,43 @@ where
                     args.next(),
                 )?))
             }
+            "--gap-fill-progress-path" => {
+                gap_fill_progress_path = Some(PathBuf::from(parse_string_arg(
+                    "--gap-fill-progress-path",
+                    args.next(),
+                )?))
+            }
+            "--gap-fill-window-start-utc" => {
+                gap_fill_window_start_utc =
+                    Some(parse_ts_arg("--gap-fill-window-start-utc", args.next())?)
+            }
+            "--gap-fill-window-end-utc" => {
+                gap_fill_window_end_utc =
+                    Some(parse_ts_arg("--gap-fill-window-end-utc", args.next())?)
+            }
             "--bootstrap-degraded" => bootstrap_degraded = true,
             "--json" => json = true,
             "--now" => now = Some(parse_ts_arg("--now", args.next())?),
             "--help" | "-h" => return Ok(None),
             other => bail!("unknown argument: {other}"),
+        }
+    }
+
+    if gap_fill_db_path.is_some() {
+        if gap_fill_progress_path.is_none() {
+            bail!(
+                "program_history_gap_fill_restore_gate_missing_progress_path: --gap-fill-progress-path is required when --gap-fill-db-path is supplied"
+            );
+        }
+        if gap_fill_window_start_utc.is_none() || gap_fill_window_end_utc.is_none() {
+            bail!(
+                "program_history_gap_fill_restore_gate_missing_window_args: --gap-fill-window-start-utc and --gap-fill-window-end-utc are required when --gap-fill-db-path is supplied"
+            );
+        }
+        if gap_fill_window_end_utc <= gap_fill_window_start_utc {
+            bail!(
+                "program_history_gap_fill_restore_gate_invalid_window: --gap-fill-window-end-utc must be after --gap-fill-window-start-utc"
+            );
         }
     }
 
@@ -129,6 +166,9 @@ where
         db_path,
         journal_db_path,
         gap_fill_db_path,
+        gap_fill_progress_path,
+        gap_fill_window_start_utc,
+        gap_fill_window_end_utc,
         bootstrap_degraded,
         json,
         now: now.unwrap_or_else(Utc::now),
@@ -137,9 +177,7 @@ where
 
 fn parse_ts_arg(flag: &str, value: Option<String>) -> Result<DateTime<Utc>> {
     let raw = parse_string_arg(flag, value)?;
-    DateTime::parse_from_rfc3339(&raw)
-        .map(|ts| ts.with_timezone(&Utc))
-        .with_context(|| format!("invalid {flag} rfc3339 timestamp: {raw}"))
+    parse_ts(&raw).with_context(|| format!("invalid {flag} rfc3339 timestamp: {raw}"))
 }
 
 fn parse_string_arg(flag: &str, value: Option<String>) -> Result<String> {
@@ -193,7 +231,186 @@ fn resolve_migrations_dir(config_path: &Path, configured_migrations_dir: &str) -
     configured
 }
 
+fn validate_program_history_gap_fill_restore_gate(
+    gap_fill_db_path: Option<&Path>,
+    gap_fill_progress_path: Option<&Path>,
+    gap_fill_window_start_utc: Option<&DateTime<Utc>>,
+    gap_fill_window_end_utc: Option<&DateTime<Utc>>,
+) -> Result<()> {
+    let Some(gap_fill_db_path) = gap_fill_db_path else {
+        return Ok(());
+    };
+    let gap_fill_progress_path = gap_fill_progress_path.ok_or_else(|| {
+        anyhow!(
+            "program_history_gap_fill_restore_gate_missing_progress_path: --gap-fill-progress-path is required when --gap-fill-db-path is supplied"
+        )
+    })?;
+    let (Some(gap_fill_window_start_utc), Some(gap_fill_window_end_utc)) = (
+        gap_fill_window_start_utc.cloned(),
+        gap_fill_window_end_utc.cloned(),
+    ) else {
+        bail!(
+            "program_history_gap_fill_restore_gate_missing_window_args: --gap-fill-window-start-utc and --gap-fill-window-end-utc are required when --gap-fill-db-path is supplied"
+        );
+    };
+    if gap_fill_window_end_utc <= gap_fill_window_start_utc {
+        bail!(
+            "program_history_gap_fill_restore_gate_invalid_window: gap-fill window end must be after start"
+        );
+    }
+    if !gap_fill_db_path.exists() {
+        bail!(
+            "program_history_gap_fill_restore_gate_db_path_missing: gap-fill DB does not exist: {}",
+            gap_fill_db_path.display()
+        );
+    }
+
+    let raw = std::fs::read_to_string(gap_fill_progress_path).with_context(|| {
+        format!(
+            "program_history_gap_fill_restore_gate_progress_unreadable: failed reading {}",
+            gap_fill_progress_path.display()
+        )
+    })?;
+    let progress: Value = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "program_history_gap_fill_restore_gate_progress_unreadable: failed parsing {}",
+            gap_fill_progress_path.display()
+        )
+    })?;
+
+    validate_program_history_gap_fill_progress(
+        &progress,
+        gap_fill_window_start_utc,
+        gap_fill_window_end_utc,
+    )
+}
+
+fn validate_program_history_gap_fill_progress(
+    progress: &Value,
+    gap_fill_window_start_utc: DateTime<Utc>,
+    gap_fill_window_end_utc: DateTime<Utc>,
+) -> Result<()> {
+    let _verdict = required_progress_string(progress, "verdict")?;
+    let _reason = required_progress_string(progress, "reason")?;
+    let _current_phase = required_progress_string(progress, "current_phase")?;
+    let replayable_output = required_progress_bool(progress, "replayable_output")?;
+    let requested_window_start = required_progress_ts(progress, "requested_window_start")?;
+    let requested_window_end = required_progress_ts(progress, "requested_window_end")?;
+    let covered_through = required_progress_cursor_ts(progress, "gap_fill_covered_through_cursor")?;
+    let missing_segments = required_progress_array(progress, "missing_segments")?;
+    let inserted_rows = required_progress_u64(progress, "inserted_rows")?;
+    let rows_withheld_due_to_incomplete_outcome =
+        required_progress_u64(progress, "rows_withheld_due_to_incomplete_outcome")?;
+
+    if !replayable_output {
+        bail!("program_history_gap_fill_restore_gate_replayable_output_false: progress replayable_output=false");
+    }
+    if requested_window_start != gap_fill_window_start_utc
+        || requested_window_end != gap_fill_window_end_utc
+    {
+        bail!(
+            "program_history_gap_fill_restore_gate_window_mismatch: requested_window_start={} requested_window_end={} expected_window_start={} expected_window_end={}",
+            requested_window_start.to_rfc3339(),
+            requested_window_end.to_rfc3339(),
+            gap_fill_window_start_utc.to_rfc3339(),
+            gap_fill_window_end_utc.to_rfc3339()
+        );
+    }
+    if covered_through < gap_fill_window_end_utc {
+        bail!(
+            "program_history_gap_fill_restore_gate_covered_through_before_window_end: covered_through={} expected_window_end={}",
+            covered_through.to_rfc3339(),
+            gap_fill_window_end_utc.to_rfc3339()
+        );
+    }
+    if !missing_segments.is_empty() {
+        bail!(
+            "program_history_gap_fill_restore_gate_missing_segments_present: missing_segments_count={}",
+            missing_segments.len()
+        );
+    }
+    if inserted_rows == 0 {
+        bail!("program_history_gap_fill_restore_gate_inserted_rows_not_positive: inserted_rows=0");
+    }
+    if rows_withheld_due_to_incomplete_outcome > 0 {
+        bail!(
+            "program_history_gap_fill_restore_gate_rows_withheld_present: rows_withheld_due_to_incomplete_outcome={rows_withheld_due_to_incomplete_outcome}"
+        );
+    }
+    Ok(())
+}
+
+fn required_progress_string(progress: &Value, field: &'static str) -> Result<String> {
+    progress
+        .get(field)
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| progress_required_field_error(field, "missing or non-string value"))
+}
+
+fn required_progress_bool(progress: &Value, field: &'static str) -> Result<bool> {
+    progress
+        .get(field)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| progress_required_field_error(field, "missing or non-bool value"))
+}
+
+fn required_progress_u64(progress: &Value, field: &'static str) -> Result<u64> {
+    progress
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| progress_required_field_error(field, "missing or non-u64 value"))
+}
+
+fn required_progress_ts(progress: &Value, field: &'static str) -> Result<DateTime<Utc>> {
+    let raw = required_progress_string(progress, field)?;
+    parse_ts(&raw).map_err(|error| progress_required_field_error(field, error))
+}
+
+fn required_progress_cursor_ts(progress: &Value, field: &'static str) -> Result<DateTime<Utc>> {
+    let raw = progress
+        .get(field)
+        .and_then(|cursor| cursor.get("ts_utc"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            progress_required_field_error(
+                "gap_fill_covered_through_cursor.ts_utc",
+                "missing or non-string value",
+            )
+        })?;
+    parse_ts(raw).map_err(|error| {
+        progress_required_field_error("gap_fill_covered_through_cursor.ts_utc", error)
+    })
+}
+
+fn required_progress_array<'a>(progress: &'a Value, field: &'static str) -> Result<&'a Vec<Value>> {
+    progress
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| progress_required_field_error(field, "missing or non-array value"))
+}
+
+fn progress_required_field_error(
+    field: &'static str,
+    detail: impl std::fmt::Display,
+) -> anyhow::Error {
+    anyhow!(
+        "program_history_gap_fill_restore_gate_required_field_missing_or_malformed: {field}: {detail}"
+    )
+}
+
+fn parse_ts(raw: &str) -> Result<DateTime<Utc>> {
+    Ok(DateTime::parse_from_rfc3339(raw)?.with_timezone(&Utc))
+}
+
 fn run(config: Config) -> Result<String> {
+    validate_program_history_gap_fill_restore_gate(
+        config.gap_fill_db_path.as_deref(),
+        config.gap_fill_progress_path.as_deref(),
+        config.gap_fill_window_start_utc.as_ref(),
+        config.gap_fill_window_end_utc.as_ref(),
+    )?;
+
     let loaded_config = load_from_path(&config.config_path)
         .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
     let db_path = resolve_db_path(
@@ -564,10 +781,68 @@ mod tests {
         export_artifact, make_fixture, make_swap, parse_ts, seed_recent_raw_journal,
         seed_runtime_artifact_source, SqliteStore, Value,
     };
-    use super::{parse_args_from, run, Config};
+    use super::{parse_args_from, run, validate_program_history_gap_fill_restore_gate, Config};
     use anyhow::Result;
-    use chrono::Duration;
+    use chrono::{DateTime, Duration, Utc};
     use std::path::{Path, PathBuf};
+    use tempfile::tempdir;
+
+    fn write_gap_fill_progress(
+        path: &Path,
+        replayable_output: bool,
+        requested_window_start: DateTime<Utc>,
+        requested_window_end: DateTime<Utc>,
+        covered_through: DateTime<Utc>,
+        missing_segments: &str,
+        inserted_rows: u64,
+        rows_withheld: u64,
+    ) -> Result<()> {
+        std::fs::write(
+            path,
+            format!(
+                r#"{{
+  "verdict": "complete_but_insufficient_for_healthy_restore",
+  "reason": "program_history_gap_fill_completed_but_still_missing_required_raw_window",
+  "current_phase": "complete",
+  "replayable_output": {replayable_output},
+  "requested_window_start": "{}",
+  "requested_window_end": "{}",
+  "gap_fill_covered_through_cursor": {{
+    "ts_utc": "{}",
+    "slot": 123,
+    "signature": "gap-fill-cursor"
+  }},
+  "missing_segments": {missing_segments},
+  "inserted_rows": {inserted_rows},
+  "rows_withheld_due_to_incomplete_outcome": {rows_withheld}
+}}"#,
+                requested_window_start.to_rfc3339(),
+                requested_window_end.to_rfc3339(),
+                covered_through.to_rfc3339(),
+            ),
+        )?;
+        Ok(())
+    }
+
+    fn write_valid_gap_fill_progress(
+        path: &Path,
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+    ) -> Result<()> {
+        write_gap_fill_progress(path, true, window_start, window_end, window_end, "[]", 1, 0)
+    }
+
+    fn assert_reason(error: anyhow::Error, reason: &str) {
+        let message = error.to_string();
+        assert!(
+            message.starts_with(reason),
+            "expected error to start with {reason}, got {message}"
+        );
+    }
+
+    fn restore_test_now() -> DateTime<Utc> {
+        Utc::now() + Duration::minutes(5)
+    }
 
     #[test]
     fn parse_args_from_accepts_bootstrap_json_and_now() {
@@ -593,16 +868,519 @@ mod tests {
         assert_eq!(parsed.db_path, Some(PathBuf::from("state/live.db")));
         assert_eq!(parsed.journal_db_path, None);
         assert_eq!(parsed.gap_fill_db_path, None);
+        assert_eq!(parsed.gap_fill_progress_path, None);
+        assert_eq!(parsed.gap_fill_window_start_utc, None);
+        assert_eq!(parsed.gap_fill_window_end_utc, None);
         assert!(parsed.bootstrap_degraded);
         assert!(parsed.json);
         assert_eq!(parsed.now.to_rfc3339(), "2026-03-23T12:00:00+00:00");
     }
 
     #[test]
+    fn parse_args_requires_gap_fill_progress_path_with_gap_fill_db_path() {
+        let error = parse_args_from(vec![
+            "--config".to_string(),
+            "configs/live.toml".to_string(),
+            "--artifact".to_string(),
+            "artifacts/runtime.json".to_string(),
+            "--gap-fill-db-path".to_string(),
+            "state/gap-fill.db".to_string(),
+            "--gap-fill-window-start-utc".to_string(),
+            "2026-04-18T16:56:04Z".to_string(),
+            "--gap-fill-window-end-utc".to_string(),
+            "2026-04-23T15:59:39Z".to_string(),
+        ])
+        .expect_err("missing gap-fill progress path must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_missing_progress_path",
+        );
+    }
+
+    #[test]
+    fn parse_args_requires_gap_fill_window_args_with_gap_fill_db_path() {
+        let error = parse_args_from(vec![
+            "--config".to_string(),
+            "configs/live.toml".to_string(),
+            "--artifact".to_string(),
+            "artifacts/runtime.json".to_string(),
+            "--gap-fill-db-path".to_string(),
+            "state/gap-fill.db".to_string(),
+            "--gap-fill-progress-path".to_string(),
+            "state/gap-fill.progress.json".to_string(),
+        ])
+        .expect_err("missing gap-fill window args must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_missing_window_args",
+        );
+    }
+
+    #[test]
+    fn parse_args_rejects_gap_fill_window_end_equal_start() {
+        let error = parse_args_from(vec![
+            "--config".to_string(),
+            "configs/live.toml".to_string(),
+            "--artifact".to_string(),
+            "artifacts/runtime.json".to_string(),
+            "--gap-fill-db-path".to_string(),
+            "state/gap-fill.db".to_string(),
+            "--gap-fill-progress-path".to_string(),
+            "state/gap-fill.progress.json".to_string(),
+            "--gap-fill-window-start-utc".to_string(),
+            "2026-04-18T16:56:04Z".to_string(),
+            "--gap-fill-window-end-utc".to_string(),
+            "2026-04-18T16:56:04Z".to_string(),
+        ])
+        .expect_err("equal gap-fill window bounds must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_invalid_window",
+        );
+    }
+
+    #[test]
+    fn valid_progress_gate_allows_existing_gap_fill_db_path() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        write_valid_gap_fill_progress(&progress_path, window_start, window_end)?;
+
+        validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn missing_gap_fill_db_path_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("missing-gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        write_valid_gap_fill_progress(&progress_path, window_start, window_end)?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("missing gap-fill DB must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_db_path_missing",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn validation_rejects_gap_fill_window_end_before_start() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-23T15:59:39Z")?;
+        let window_end = parse_ts("2026-04-18T16:56:04Z")?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("reversed gap-fill window must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_invalid_window",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replayable_output_false_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        write_gap_fill_progress(
+            &progress_path,
+            false,
+            window_start,
+            window_end,
+            window_end,
+            "[]",
+            1,
+            0,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("replayable_output=false must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_replayable_output_false",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn requested_window_mismatch_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        write_gap_fill_progress(
+            &progress_path,
+            true,
+            window_start + Duration::seconds(1),
+            window_end,
+            window_end,
+            "[]",
+            1,
+            0,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("requested window mismatch must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_window_mismatch",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn covered_through_before_window_end_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        write_gap_fill_progress(
+            &progress_path,
+            true,
+            window_start,
+            window_end,
+            window_end - Duration::seconds(1),
+            "[]",
+            1,
+            0,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("covered_through before window end must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_covered_through_before_window_end",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn missing_segments_non_empty_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        write_gap_fill_progress(
+            &progress_path,
+            true,
+            window_start,
+            window_end,
+            window_end,
+            r#"[{"start":"2026-04-18T16:56:04Z","end":"2026-04-18T17:56:04Z"}]"#,
+            1,
+            0,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("missing segments must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_missing_segments_present",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rows_withheld_present_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        write_gap_fill_progress(
+            &progress_path,
+            true,
+            window_start,
+            window_end,
+            window_end,
+            "[]",
+            1,
+            1,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("withheld rows must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_rows_withheld_present",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inserted_rows_not_positive_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        write_gap_fill_progress(
+            &progress_path,
+            true,
+            window_start,
+            window_end,
+            window_end,
+            "[]",
+            0,
+            0,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("zero inserted rows must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_inserted_rows_not_positive",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn missing_required_field_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        std::fs::write(
+            &progress_path,
+            r#"{
+  "reason": "program_history_gap_fill_completed_but_still_missing_required_raw_window",
+  "current_phase": "complete",
+  "replayable_output": true,
+  "requested_window_start": "2026-04-18T16:56:04Z",
+  "requested_window_end": "2026-04-23T15:59:39Z",
+  "gap_fill_covered_through_cursor": { "ts_utc": "2026-04-23T15:59:39Z" },
+  "missing_segments": [],
+  "inserted_rows": 1,
+  "rows_withheld_due_to_incomplete_outcome": 0
+}"#,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("missing verdict must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_required_field_missing_or_malformed",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_required_field_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        std::fs::write(
+            &progress_path,
+            r#"{
+  "verdict": "complete_but_insufficient_for_healthy_restore",
+  "reason": "program_history_gap_fill_completed_but_still_missing_required_raw_window",
+  "current_phase": "complete",
+  "replayable_output": true,
+  "requested_window_start": "2026-04-18T16:56:04Z",
+  "requested_window_end": "2026-04-23T15:59:39Z",
+  "gap_fill_covered_through_cursor": { "ts_utc": false },
+  "missing_segments": [],
+  "inserted_rows": 1,
+  "rows_withheld_due_to_incomplete_outcome": 0
+}"#,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("malformed covered_through timestamp must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_required_field_missing_or_malformed",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_gap_fill_gate_does_not_create_target_db() -> Result<()> {
+        let fixture = make_fixture("runtime-restore-invalid-gap-fill-gate")?;
+        let now = restore_test_now();
+        seed_runtime_artifact_source(&fixture.source_store, &fixture.config_path, now)?;
+        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
+        let artifact_path = fixture.temp.path().join("artifact-invalid-gate.json");
+        std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
+        let restored_db_path = fixture
+            .temp
+            .path()
+            .join("nested-target")
+            .join("restored-invalid-gate.db");
+        let gap_fill_db_path = fixture.temp.path().join("gap-fill-invalid-gate.db");
+        let gap_fill_progress_path = fixture.temp.path().join("gap-fill-invalid-gate.json");
+        let gap_fill_window_start = now - Duration::days(7);
+        let gap_fill_window_end = now;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        write_gap_fill_progress(
+            &gap_fill_progress_path,
+            false,
+            gap_fill_window_start,
+            gap_fill_window_end,
+            gap_fill_window_end,
+            "[]",
+            1,
+            0,
+        )?;
+
+        let error = run(Config {
+            config_path: fixture.config_path.clone(),
+            artifact_path,
+            db_path: Some(restored_db_path.clone()),
+            journal_db_path: None,
+            gap_fill_db_path: Some(gap_fill_db_path),
+            gap_fill_progress_path: Some(gap_fill_progress_path),
+            gap_fill_window_start_utc: Some(gap_fill_window_start),
+            gap_fill_window_end_utc: Some(gap_fill_window_end),
+            bootstrap_degraded: false,
+            json: true,
+            now,
+        })
+        .expect_err("invalid gate must stop before target DB mutation");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_replayable_output_false",
+        );
+        assert!(!restored_db_path.exists());
+        assert!(!restored_db_path.parent().expect("target parent").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_gap_fill_window_does_not_create_target_db() -> Result<()> {
+        let temp = tempdir()?;
+        let restored_db_path = temp
+            .path()
+            .join("invalid-window-target")
+            .join("restored.db");
+        let gap_fill_window_start = parse_ts("2026-04-23T15:59:39Z")?;
+        let gap_fill_window_end = parse_ts("2026-04-18T16:56:04Z")?;
+
+        let error = run(Config {
+            config_path: temp.path().join("missing-config.toml"),
+            artifact_path: temp.path().join("missing-artifact.json"),
+            db_path: Some(restored_db_path.clone()),
+            journal_db_path: None,
+            gap_fill_db_path: Some(temp.path().join("gap-fill.db")),
+            gap_fill_progress_path: Some(temp.path().join("gap-fill.progress.json")),
+            gap_fill_window_start_utc: Some(gap_fill_window_start),
+            gap_fill_window_end_utc: Some(gap_fill_window_end),
+            bootstrap_degraded: false,
+            json: true,
+            now: restore_test_now(),
+        })
+        .expect_err("invalid window must stop before target DB mutation");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_invalid_window",
+        );
+        assert!(!restored_db_path.exists());
+        assert!(!restored_db_path.parent().expect("target parent").exists());
+        Ok(())
+    }
+
+    #[test]
     fn run_roundtrips_runtime_artifact_into_fresh_db() -> Result<()> {
         let fixture = make_fixture("runtime-restore-roundtrip")?;
-        let now = parse_ts("2026-03-23T12:00:00Z")?;
-        seed_runtime_artifact_source(&fixture.source_store, now)?;
+        let now = restore_test_now();
+        seed_runtime_artifact_source(&fixture.source_store, &fixture.config_path, now)?;
         let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
         let artifact_path = fixture.temp.path().join("artifact-roundtrip.json");
         std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
@@ -614,6 +1392,9 @@ mod tests {
             db_path: Some(restored_db_path.clone()),
             journal_db_path: None,
             gap_fill_db_path: None,
+            gap_fill_progress_path: None,
+            gap_fill_window_start_utc: None,
+            gap_fill_window_end_utc: None,
             bootstrap_degraded: false,
             json: false,
             now,
@@ -652,9 +1433,10 @@ mod tests {
     #[test]
     fn run_rejects_stale_artifact_without_bootstrap_degraded() -> Result<()> {
         let fixture = make_fixture("runtime-restore-stale-reject")?;
-        let now = parse_ts("2026-03-23T12:00:00Z")?;
-        seed_runtime_artifact_source(&fixture.source_store, now - Duration::hours(3))?;
-        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
+        let artifact_now = restore_test_now();
+        let now = artifact_now + Duration::hours(3);
+        seed_runtime_artifact_source(&fixture.source_store, &fixture.config_path, artifact_now)?;
+        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, artifact_now)?;
         let artifact_path = fixture.temp.path().join("artifact-stale.json");
         std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
 
@@ -664,6 +1446,9 @@ mod tests {
             db_path: Some(fixture.temp.path().join("restored-stale.db")),
             journal_db_path: None,
             gap_fill_db_path: None,
+            gap_fill_progress_path: None,
+            gap_fill_window_start_utc: None,
+            gap_fill_window_end_utc: None,
             bootstrap_degraded: false,
             json: false,
             now,
@@ -679,9 +1464,10 @@ mod tests {
     #[test]
     fn run_restores_stale_artifact_in_bootstrap_degraded_mode() -> Result<()> {
         let fixture = make_fixture("runtime-restore-bootstrap")?;
-        let now = parse_ts("2026-03-23T12:00:00Z")?;
-        seed_runtime_artifact_source(&fixture.source_store, now - Duration::hours(3))?;
-        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
+        let artifact_now = restore_test_now();
+        let now = artifact_now + Duration::hours(3);
+        seed_runtime_artifact_source(&fixture.source_store, &fixture.config_path, artifact_now)?;
+        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, artifact_now)?;
         let artifact_path = fixture.temp.path().join("artifact-bootstrap.json");
         std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
         let restored_db_path = fixture.temp.path().join("restored-bootstrap.db");
@@ -692,6 +1478,9 @@ mod tests {
             db_path: Some(restored_db_path.clone()),
             journal_db_path: None,
             gap_fill_db_path: None,
+            gap_fill_progress_path: None,
+            gap_fill_window_start_utc: None,
+            gap_fill_window_end_utc: None,
             bootstrap_degraded: true,
             json: true,
             now,
@@ -721,9 +1510,9 @@ mod tests {
     #[test]
     fn run_restore_verdict_stays_fail_closed_without_required_raw_coverage() -> Result<()> {
         let fixture = make_fixture("runtime-restore-short-journal")?;
-        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        let now = restore_test_now();
         let artifact_now = now - Duration::minutes(30);
-        seed_runtime_artifact_source(&fixture.source_store, artifact_now)?;
+        seed_runtime_artifact_source(&fixture.source_store, &fixture.config_path, artifact_now)?;
         let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
         let artifact_path = fixture.temp.path().join("artifact-short-journal.json");
         std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
@@ -745,6 +1534,9 @@ mod tests {
             db_path: Some(restored_db_path),
             journal_db_path: Some(journal_db_path),
             gap_fill_db_path: None,
+            gap_fill_progress_path: None,
+            gap_fill_window_start_utc: None,
+            gap_fill_window_end_utc: None,
             bootstrap_degraded: false,
             json: true,
             now,
@@ -779,9 +1571,9 @@ mod tests {
     fn run_replays_recent_raw_journal_into_fresh_runtime_db_and_becomes_trading_ready() -> Result<()>
     {
         let fixture = make_fixture("runtime-restore-trading-ready")?;
-        let now = parse_ts("2026-03-23T12:00:00Z")?;
+        let now = restore_test_now();
         let artifact_now = now - Duration::minutes(30);
-        seed_runtime_artifact_source(&fixture.source_store, artifact_now)?;
+        seed_runtime_artifact_source(&fixture.source_store, &fixture.config_path, artifact_now)?;
         let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
         let artifact_path = fixture.temp.path().join("artifact-trading-ready.json");
         std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
@@ -803,6 +1595,9 @@ mod tests {
             db_path: Some(restored_db_path.clone()),
             journal_db_path: Some(journal_db_path),
             gap_fill_db_path: None,
+            gap_fill_progress_path: None,
+            gap_fill_window_start_utc: None,
+            gap_fill_window_end_utc: None,
             bootstrap_degraded: false,
             json: true,
             now,
@@ -850,10 +1645,10 @@ mod tests {
     fn run_keeps_bootstrap_degraded_verdict_even_when_journal_replay_restores_raw_window(
     ) -> Result<()> {
         let fixture = make_fixture("runtime-restore-bootstrap-journal")?;
-        let now = parse_ts("2026-03-23T12:00:00Z")?;
-        let artifact_now = now - Duration::hours(3);
-        seed_runtime_artifact_source(&fixture.source_store, artifact_now)?;
-        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
+        let artifact_now = restore_test_now();
+        let now = artifact_now + Duration::hours(3);
+        seed_runtime_artifact_source(&fixture.source_store, &fixture.config_path, artifact_now)?;
+        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, artifact_now)?;
         let artifact_path = fixture.temp.path().join("artifact-bootstrap-journal.json");
         std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
         let restored_db_path = fixture.temp.path().join("restored-bootstrap-journal.db");
@@ -873,6 +1668,9 @@ mod tests {
             db_path: Some(restored_db_path.clone()),
             journal_db_path: Some(journal_db_path),
             gap_fill_db_path: None,
+            gap_fill_progress_path: None,
+            gap_fill_window_start_utc: None,
+            gap_fill_window_end_utc: None,
             bootstrap_degraded: true,
             json: true,
             now,
@@ -896,9 +1694,9 @@ mod tests {
     #[test]
     fn run_gap_fill_plus_recent_journal_restores_trading_ready_verdict() -> Result<()> {
         let fixture = make_fixture("runtime-restore-gap-fill-healthy")?;
-        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let now = restore_test_now();
         let artifact_now = now - Duration::minutes(30);
-        seed_runtime_artifact_source(&fixture.source_store, artifact_now)?;
+        seed_runtime_artifact_source(&fixture.source_store, &fixture.config_path, artifact_now)?;
         let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
         let artifact_path = fixture.temp.path().join("artifact-gap-fill-healthy.json");
         std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
@@ -906,6 +1704,9 @@ mod tests {
         let restored_db_path = fixture.temp.path().join("restored-gap-fill-healthy.db");
         let journal_db_path = fixture.temp.path().join("recent-gap-fill-healthy.db");
         let gap_fill_db_path = fixture.temp.path().join("gap-fill-healthy.db");
+        let gap_fill_progress_path = fixture.temp.path().join("gap-fill-healthy.progress.json");
+        let gap_fill_window_start = now - Duration::days(7);
+        let gap_fill_window_end = now;
         seed_recent_raw_journal(
             &journal_db_path,
             &[make_swap("journal-recent", now - Duration::minutes(5), 12)],
@@ -920,6 +1721,11 @@ mod tests {
             )],
             now,
         )?;
+        write_valid_gap_fill_progress(
+            &gap_fill_progress_path,
+            gap_fill_window_start,
+            gap_fill_window_end,
+        )?;
 
         let output = run(Config {
             config_path: fixture.config_path.clone(),
@@ -927,6 +1733,9 @@ mod tests {
             db_path: Some(restored_db_path.clone()),
             journal_db_path: Some(journal_db_path),
             gap_fill_db_path: Some(gap_fill_db_path),
+            gap_fill_progress_path: Some(gap_fill_progress_path),
+            gap_fill_window_start_utc: Some(gap_fill_window_start),
+            gap_fill_window_end_utc: Some(gap_fill_window_end),
             bootstrap_degraded: false,
             json: true,
             now,
@@ -960,9 +1769,9 @@ mod tests {
     #[test]
     fn run_partial_gap_fill_keeps_restore_fail_closed() -> Result<()> {
         let fixture = make_fixture("runtime-restore-gap-fill-partial")?;
-        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let now = restore_test_now();
         let artifact_now = now - Duration::minutes(30);
-        seed_runtime_artifact_source(&fixture.source_store, artifact_now)?;
+        seed_runtime_artifact_source(&fixture.source_store, &fixture.config_path, artifact_now)?;
         let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
         let artifact_path = fixture.temp.path().join("artifact-gap-fill-partial.json");
         std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
@@ -970,6 +1779,9 @@ mod tests {
         let restored_db_path = fixture.temp.path().join("restored-gap-fill-partial.db");
         let journal_db_path = fixture.temp.path().join("recent-gap-fill-partial.db");
         let gap_fill_db_path = fixture.temp.path().join("gap-fill-partial.db");
+        let gap_fill_progress_path = fixture.temp.path().join("gap-fill-partial.progress.json");
+        let gap_fill_window_start = now - Duration::days(7);
+        let gap_fill_window_end = now;
         seed_recent_raw_journal(
             &journal_db_path,
             &[make_swap("journal-recent", now - Duration::minutes(5), 12)],
@@ -984,6 +1796,11 @@ mod tests {
             )],
             now,
         )?;
+        write_valid_gap_fill_progress(
+            &gap_fill_progress_path,
+            gap_fill_window_start,
+            gap_fill_window_end,
+        )?;
 
         let output = run(Config {
             config_path: fixture.config_path.clone(),
@@ -991,6 +1808,9 @@ mod tests {
             db_path: Some(restored_db_path.clone()),
             journal_db_path: Some(journal_db_path),
             gap_fill_db_path: Some(gap_fill_db_path),
+            gap_fill_progress_path: Some(gap_fill_progress_path),
+            gap_fill_window_start_utc: Some(gap_fill_window_start),
+            gap_fill_window_end_utc: Some(gap_fill_window_end),
             bootstrap_degraded: false,
             json: true,
             now,
@@ -1057,8 +1877,13 @@ fn export_artifact(
 }
 
 #[cfg(test)]
-fn seed_runtime_artifact_source(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+fn seed_runtime_artifact_source(
+    store: &SqliteStore,
+    config_path: &Path,
+    now: DateTime<Utc>,
+) -> Result<()> {
     let published_window_start = now - Duration::days(7);
+    let policy_fingerprint = test_publication_selection_policy_fingerprint(config_path)?;
     store.persist_discovery_cycle(
         &[WalletUpsertRow {
             wallet_id: "wallet-restore".to_string(),
@@ -1085,20 +1910,64 @@ fn seed_runtime_artifact_source(store: &SqliteStore, now: DateTime<Utc>) -> Resu
         now,
         "seed_runtime_artifact_source",
     )?;
-    store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
-        runtime_mode: copybot_storage::DiscoveryRuntimeMode::Healthy,
-        reason: "raw_window".to_string(),
-        last_published_at: Some(now),
-        last_published_window_start: Some(published_window_start),
-        published_scoring_source: Some("raw_window".to_string()),
-        published_wallet_ids: Some(vec!["wallet-restore".to_string()]),
-    })?;
+    store.set_discovery_publication_state_with_options(
+        &DiscoveryPublicationStateUpdate {
+            runtime_mode: copybot_storage::DiscoveryRuntimeMode::Healthy,
+            reason: "raw_window".to_string(),
+            last_published_at: Some(now),
+            last_published_window_start: Some(published_window_start),
+            published_scoring_source: Some("raw_window".to_string()),
+            published_wallet_ids: Some(vec!["wallet-restore".to_string()]),
+        },
+        false,
+        Some(&policy_fingerprint),
+    )?;
     store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
         ts_utc: now,
         slot: 42,
         signature: "sig-restore".to_string(),
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+fn test_publication_selection_policy_fingerprint(config_path: &Path) -> Result<String> {
+    let loaded_config = copybot_config::load_from_path(config_path)?;
+    let config = loaded_config.discovery;
+    Ok(format!(
+        concat!(
+            "follow_top_n={};",
+            "scoring_window_days={};",
+            "decay_window_days={};",
+            "min_leader_notional_sol={:.6};",
+            "min_trades={};",
+            "min_active_days={};",
+            "min_score={:.6};",
+            "max_tx_per_minute={};",
+            "min_buy_count={};",
+            "min_tradable_ratio={:.6};",
+            "require_open_positions_for_publication={};",
+            "max_rug_ratio={:.6};",
+            "rug_lookahead_seconds={};",
+            "thin_market_min_volume_sol={:.6};",
+            "thin_market_min_unique_traders={}"
+        ),
+        config.follow_top_n,
+        config.scoring_window_days,
+        config.decay_window_days,
+        config.min_leader_notional_sol,
+        config.min_trades,
+        config.min_active_days,
+        config.min_score,
+        config.max_tx_per_minute,
+        config.min_buy_count,
+        config.min_tradable_ratio,
+        config.require_open_positions_for_publication,
+        config.max_rug_ratio,
+        config.rug_lookahead_seconds,
+        config.thin_market_min_volume_sol,
+        config.thin_market_min_unique_traders,
+    ))
 }
 
 #[cfg(test)]
@@ -1126,9 +1995,4 @@ fn seed_recent_raw_journal(
     let journal_store = SqliteStore::open(journal_db_path)?;
     journal_store.insert_recent_raw_journal_batch(swaps, completed_at)?;
     Ok(())
-}
-
-#[cfg(test)]
-fn parse_ts(raw: &str) -> Result<DateTime<Utc>> {
-    Ok(DateTime::parse_from_rfc3339(raw)?.with_timezone(&Utc))
 }
