@@ -6,6 +6,105 @@
 Date: 2026-03-17
 Status: Active historical roadmap with 2026-03-27 production-readiness and live Stage 3 accumulation addendum
 
+## Live Update (`2026-04-24`)
+
+Current Stage 3 production-discovery truth remains fail-closed. The active
+operator lane is no longer selector starvation, replay `sol_leg`, or a passive
+"wait five days" accumulation theory. The live blocker is the exact recent raw
+history gap:
+
+- missing interval:
+  `2026-04-18T16:56:04Z -> 2026-04-23T15:59:39.857189405Z`
+- current closure path:
+  exact-window `program_history` raw gap-fill using the seeded wallet set
+- generic address/history gap-fill already proved partial historical recovery
+  is possible:
+  - `fetched_rows = 2478`
+  - `covered_since = 2026-04-19T03:47:53Z`
+  - `covered_through = 2026-04-22T20:18:37Z`
+- the current live question is whether the exact-window `program_history`
+  operator lane can close enough raw history honestly, not whether selector or
+  scoring should be changed
+
+Accepted / live-proven blocker removals on this lane:
+
+- skipped or snapshot-jump boundary slot resolution no longer terminal-fails
+  validation or gap-fill
+- transient `getBlock` HTTP 503 / body-decode failures are retryable and
+  non-terminal
+- bounded zero-progress escape breaks the one-slot provider-throttling
+  livelock by recording an explicit uncovered segment instead of pretending
+  coverage is complete
+- transient HTTP 408 is now a repository-managed retryable block-fetch
+  classification (`b61f23f`)
+
+Latest confirmed live operator snapshot from the production host:
+
+- snapshot time: `2026-04-24T11:18:43Z`
+- `solana-copy-bot.service = active`
+- `copybot-program-gap-loop.service = active/running`
+- service restarts remained at `NRestarts = 0`
+- disk for `/var/www/solana-copy-bot/state`:
+  `333G used / 134G available / 72%`
+- exact-window progress:
+  - attempt `48`
+  - `covered_through = 2026-04-19T06:42:50Z`
+  - progress against the missing interval: `11.573534%`
+  - remaining gap: about `105.28h`
+  - `staged_rows = 5225868`
+  - `block_fetch_concurrency = 8`
+  - `zero_progress_retry_count = 0`
+  - `zero_progress_escape_applied = false`
+  - `replayable_output = false`
+- last observed attempt returned retryable incomplete output with
+  `reason = program_history_gap_fill_retryable_block_fetch_http_503`
+- the latest journal tail shows repeated forward-moving attempts from attempt
+  `43` through `48`; this is not a stuck one-slot livelock
+
+Current engineering interpretation:
+
+- Stage 3 remains blocked until production raw-window coverage is honestly
+  restored and publication truth moves out of fail-closed
+- the strongest current live blocker is not a semantic code failure; it is a
+  long-running exact-window operator backfill through provider attrition
+- continue bounded exact-window program-history reruns / loop attempts while
+  they keep advancing and while disk remains above the guard threshold
+- do not reduce `scoring_window_days`, do not weaken fail-closed, and do not
+  route around the missing raw-history gap with selector/scoring fixes
+- no live degradation was observed in the latest read-only check; the current
+  action is continued operator monitoring, not a corrective deploy
+
+Development accounting:
+
+- a repository-managed loop wrapper,
+  `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_loop.rs`,
+  has been reviewed and accepted locally as a safer replacement for ad-hoc
+  recursive shell loops
+- the loop wrapper is intentionally not deployed while the current transient
+  production loop is already running; rollout should be a separate controlled
+  decision at a safe checkpoint
+- the wrapper does not write progress JSON, does not synthesize coverage, and
+  only treats child-produced `replayable_output=true` as completion
+- required progress control fields (`verdict`, `current_phase`,
+  `replayable_output`) are fail-closed; missing fields stop with
+  `program_history_gap_fill_loop_unproven_operator_error_progress_control_field_missing`
+- a read-only progress status operator,
+  `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_status.rs`,
+  has also been reviewed and accepted locally for this lane
+- the status operator only reads a single progress JSON and computes
+  `progress_percent` / `remaining_gap_hours` over an explicitly supplied UTC
+  window; it does not open SQLite, call RPC, spawn the gap-fill child, write
+  progress, or synthesize replayable output
+- the status operator treats missing `covered_through` as
+  `unproven_incomplete_missing_covered_through`, not production green
+- a read-only restore readiness preflight,
+  `crates/discovery/src/bin/discovery_raw_gap_fill_program_history_restore_preflight.rs`,
+  has been reviewed and accepted locally
+- the preflight reports `restore_ready=true` only when child progress explicitly
+  has `replayable_output=true`, coverage reaches the exact window end, and
+  `missing_segments` is empty; it does not apply restore or mark production
+  green
+
 ## Live Update (`2026-04-23`)
 
 The current live Stage 3 blocker is no longer the replay `sol_leg` recovery

@@ -1,7 +1,84 @@
 # DISCOVERY RUNTIME RESTORE PLAN
 
 Date: 2026-03-23
-Status: Canonical historical restore plan; live server is currently fail-closed on the recent-raw head-gap no-repairable-rows branch
+Status: Canonical historical restore plan; live server is currently fail-closed while exact-window program-history raw gap-fill backfills the missing interval
+
+## Live addendum (`2026-04-24`)
+
+This plan is still historical, but the active restore incident shape has moved
+again. The current operator lane is exact-window raw-history closure through
+`program_history`, not replay `sol_leg` and not selector/scoring.
+
+Current missing raw interval:
+
+- `start = 2026-04-18T16:56:04Z`
+- `end = 2026-04-23T15:59:39.857189405Z`
+
+Current production facts:
+
+- live raw ingestion and recent raw frontier have been seen alive on production
+- the old "no live raw frontier / source starvation" blocker is closed
+- current live publication remains fail-closed because the raw history window
+  is not yet honestly restored
+- the current exact-window gap-fill path has already advanced beyond the first
+  provider-blocked slot after the bounded zero-progress escape recorded an
+  explicit uncovered segment instead of faking full coverage
+
+Latest confirmed operator snapshot:
+
+- time: `2026-04-24T11:18:43Z`
+- `copybot-program-gap-loop.service = active/running`
+- `solana-copy-bot.service = active`
+- `copybot-discovery-recent-raw-snapshot.timer = active`
+- `copybot-discovery-runtime-export.timer = active`
+- disk: `333G used / 134G available / 72%`
+- exact-window gap-fill:
+  - attempt `48`
+  - progress `11.573534%`
+  - `covered_through = 2026-04-19T06:42:50Z`
+  - `remaining_gap_hours = 105.280516`
+  - `staged_rows = 5225868`
+  - `zero_progress_retry_count = 0`
+  - `zero_progress_escape_applied = false`
+  - `replayable_output = false`
+- latest journal tail shows attempts `43 -> 48` advanced the frontier and
+  staged rows; no stuck frontier or disk degradation was observed
+
+Operator meaning:
+
+- continue the exact-window `program_history` backfill while it advances and
+  disk remains safe
+- a retryable incomplete result is not a production green and must remain
+  non-replayable until the child proves replayable output
+- explicit skipped provider-blocked slot segments preserve restore honesty:
+  they prevent fake complete coverage and keep the output incomplete until
+  downstream restore semantics can account for the uncovered segment
+- do not reduce the five-day raw-window contract, do not loosen fail-closed,
+  and do not move to selector/scoring work while this raw-history gap remains
+  open
+
+Repository/operator accounting:
+
+- HTTP 408 is now accepted as a retryable block-fetch failure with reason
+  `program_history_gap_fill_retryable_block_fetch_http_408`
+- a repo-managed single-child loop wrapper has been reviewed and accepted
+  locally; it is not deployed to the live host while the transient live loop is
+  already running
+- the wrapper is an operator safety surface, not a restore semantic shortcut:
+  it does not edit progress, does not manufacture coverage, and fail-closes on
+  missing progress control truth
+- a read-only status operator has been accepted locally:
+  `discovery_raw_gap_fill_program_history_status`
+- status usage for the current exact window is:
+  `discovery_raw_gap_fill_program_history_status --progress-path <progress.json> --window-start-utc 2026-04-18T16:56:04Z --window-end-utc 2026-04-23T15:59:39.857189405Z --json`
+- this operator is observability only; it does not change restore semantics or
+  authorize production readiness
+- a read-only restore readiness preflight has been accepted locally:
+  `discovery_raw_gap_fill_program_history_restore_preflight`
+- preflight usage for the current exact window is:
+  `discovery_raw_gap_fill_program_history_restore_preflight --progress-path <progress.json> --window-start-utc 2026-04-18T16:56:04Z --window-end-utc 2026-04-23T15:59:39.857189405Z --json`
+- this preflight is a fail-closed post-backfill gate helper only; it does not
+  apply restore or authorize production readiness
 
 ## Live addendum (`2026-04-23`)
 

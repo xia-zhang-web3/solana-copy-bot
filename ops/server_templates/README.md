@@ -6,6 +6,62 @@
 These files are repository-side templates for the test-server bring-up tracked by `ops/test_server_rollout_6_1_tracker.md`.
 They are synced with the current staging server snapshot (`52.28.0.218`, `2026-03-03`).
 
+## Live Update (`2026-04-24`)
+
+The current production host is in an operator backfill lane, not a normal green
+production state.
+
+Current truth:
+
+- Stage 3 production discovery truth remains fail-closed
+- exact missing raw interval:
+  `2026-04-18T16:56:04Z -> 2026-04-23T15:59:39.857189405Z`
+- the current live operator lane is exact-window
+  `discovery_raw_gap_fill_program_history`
+- the transient live loop is intentionally left running; the repo-managed loop
+  wrapper is accepted locally but not rolled out over the active loop
+
+Latest confirmed live snapshot:
+
+- time: `2026-04-24T11:18:43Z`
+- `solana-copy-bot.service = active`
+- `copybot-program-gap-loop.service = active/running`
+- `copybot-discovery-recent-raw-snapshot.timer = active`
+- `copybot-discovery-runtime-export.timer = active`
+- state disk: `333G used / 134G available / 72%`
+- program-history progress:
+  - attempt `48`
+  - `covered_through = 2026-04-19T06:42:50Z`
+  - `progress = 11.573534%`
+  - `remaining_gap_hours = 105.280516`
+  - `staged_rows = 5225868`
+  - `zero_progress_retry_count = 0`
+  - `zero_progress_escape_applied = false`
+  - `replayable_output = false`
+- journal tail shows attempts `43 -> 48` advancing, so the current state is
+  continued forward progress, not degradation
+
+Operator rules for this lane:
+
+- continue bounded exact-window reruns while progress advances and disk stays
+  above guard
+- stop and audit a new concrete blocker if the same frontier repeats with no
+  progress, disk approaches the guard, the child returns terminal
+  non-replayable output, or the loop service dies
+- do not deploy the repo-managed loop wrapper mid-flight unless a controlled
+  checkpoint is chosen
+- do not change `scoring_window_days`, selector/scoring, Stage 4 execution, or
+  fail-closed behavior to bypass this raw-history gap
+- for read-only progress reporting, use the accepted status operator:
+  `discovery_raw_gap_fill_program_history_status --progress-path <progress.json> --window-start-utc 2026-04-18T16:56:04Z --window-end-utc 2026-04-23T15:59:39.857189405Z --json`
+- the status operator is not a deploy or restore shortcut; it only reports
+  progress from child-produced progress JSON
+- for post-backfill readiness preflight, use:
+  `discovery_raw_gap_fill_program_history_restore_preflight --progress-path <progress.json> --window-start-utc 2026-04-18T16:56:04Z --window-end-utc 2026-04-23T15:59:39.857189405Z --json`
+- the preflight only reports `restore_ready=true` for explicit replayable
+  complete coverage with no missing segments; it does not apply restore or
+  authorize production readiness
+
 ## Live Update (`2026-04-23`)
 
 The current live blocker is no longer the replay `sol_leg` recovery branch.
