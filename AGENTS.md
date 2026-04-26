@@ -207,9 +207,10 @@ Record facts, not vague status language.
 
 ## Current State Snapshot
 
-As of `2026-04-26T08:01:37Z`, the exact-window `program_history` backfill has
-reached the requested raw-history interval end, but Stage 3 remains fail-closed
-because explicit missing segments remain:
+As of `2026-04-26T16:13:17Z`, the exact-window `program_history` backfill and
+the broad explicit-missing repair scan have reached the requested raw-history
+interval end, but Stage 3 remains fail-closed because explicit boundary missing
+segments remain:
 
 - `start = 2026-04-18T16:56:04Z`
 - `end = 2026-04-23T15:59:39.857189405Z`
@@ -219,8 +220,10 @@ Current interpretation:
 - Stage 3 production discovery truth remains fail-closed.
 - The broad exact-window `program_history` backfill frontier has reached the
   requested end.
-- The current active lane is targeted repair of explicit
-  `program_history` missing segments.
+- The broad provider-blocked explicit missing root segment has been scanned and
+  removed.
+- The current active lane is targeted repair of remaining prefix/suffix
+  boundary missing segments.
 - The old live raw frontier/source-starvation blocker is closed.
 - The current blocker is not selector starvation and not "wait five days".
 - The current blocker is not broad backfill progress; it is missing-segment
@@ -229,27 +232,29 @@ Current interpretation:
 Latest confirmed live snapshot:
 
 - `solana-copy-bot.service = active`
-- transient `copybot-program-gap-loop.service` was stopped after reaching a
-  repeated terminal incomplete state
+- transient `copybot-gap-repair-loop-next.service` stopped after reaching
+  `completed_with_explicit_missing_segments` with only boundary/non-target
+  evidence remaining
 - `copybot-discovery-recent-raw-snapshot.timer = active`
 - `copybot-discovery-runtime-export.timer = active`
 - service restarts: `NRestarts = 0`
 - disk: `360G used / 108G available / 78%`
-- gap-fill attempt: `2176`
-- progress: `99.999800010%`
+- gap-fill attempt: `2261`
 - `covered_through = 2026-04-23T15:59:39Z`
+- `next_batch_start_slot = 415159799`
 - `current_phase = completed_with_explicit_missing_segments`
 - `verdict = not_proven_due_to_provider_throttling`
-- `reason = program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap`
-- `staged_rows = 45771005`
-- `missing_segments_count = 7`
+- `reason = program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain`
+- `staged_rows = 45771784`
+- `missing_segments_count = 8`
 - `replayable_output = false`
 
 Operational reading:
 
 - do not run runtime restore from the current artifact
 - do not restart the broad loop just because the artifact is not replayable
-- repair only the explicit missing segments with a bounded operator path
+- repair only the explicit boundary missing segments with a bounded operator
+  path
 - production green requires `replayable_output=true` and no `missing_segments`
 
 ## Current Development Accounting
@@ -327,11 +332,11 @@ Operator semantics:
 - explicit-missing repair mode requires existing matching progress JSON +
   progress DB and objective proof that the base artifact reached the requested
   window end
-- explicit-missing repair targets only root provider-blocked missing segments
-  with reason
-  `program_history_gap_fill_skipped_persistently_provider_blocked_slot_after_bounded_retries`
-- it does not scan the synthetic full-window reason
-  `program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap`
+- explicit-missing repair targets root provider-blocked missing segments first;
+  once those roots are gone it can target explicit prefix/suffix boundary
+  missing segments
+- it does not scan synthetic full-window reasons such as
+  `program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain`
   directly
 - retryable provider/source/budget attrition during repair stays
   non-replayable and persists repair resumability through
@@ -341,11 +346,15 @@ Operator semantics:
 - when a repair scan completes the scanable part of a broad provider-blocked
   root segment, the root is replaced by narrower boundary missing evidence so
   future repair attempts do not retarget the same already-refined root
+- boundary missing evidence is removed only after bounded repair scan proof;
+  until then it remains explicit fail-closed evidence
 
 Deployment status:
 
-- the broad transient live loop is currently stopped
-- deploy the explicit-missing repair binary only after reviewer acceptance
+- the broad repair live loop is currently stopped after proving only boundary
+  evidence remains
+- deploy the boundary-capable explicit-missing repair binary only after reviewer
+  acceptance
 - status operator is observability only and does not change restore semantics
 - restore preflight is a fail-closed post-backfill gate helper; it does not
   apply restore or mark production green

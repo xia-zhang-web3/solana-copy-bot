@@ -54,6 +54,10 @@ const ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON: &str =
     "program_history_gap_fill_skipped_persistently_provider_blocked_slot_after_bounded_retries";
 const PERSISTENT_BLOCKED_SLOT_GAP_INCOMPLETE_REASON: &str =
     "program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap";
+const BOUNDARY_PREFIX_MISSING_REASON: &str =
+    "requested_window_prefix_uncovered_after_start_slot_adjustment";
+const BOUNDARY_SUFFIX_MISSING_REASON: &str =
+    "requested_window_suffix_uncovered_after_end_slot_adjustment";
 const REPAIR_MODE_COVERAGE_METHOD: &str = "program_history_explicit_missing_segment_repair";
 const MIN_REPAIR_SEGMENT_SECONDS: i64 = 1;
 
@@ -1362,9 +1366,12 @@ fn persisted_explicit_missing_segments(
 }
 
 fn should_persist_explicit_missing_segment_reason(reason: &str) -> bool {
-    reason == "requested_window_prefix_uncovered_after_start_slot_adjustment"
-        || reason == "requested_window_suffix_uncovered_after_end_slot_adjustment"
+    is_targetable_boundary_missing_segment_reason(reason)
         || reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON
+}
+
+fn is_targetable_boundary_missing_segment_reason(reason: &str) -> bool {
+    reason == BOUNDARY_PREFIX_MISSING_REASON || reason == BOUNDARY_SUFFIX_MISSING_REASON
 }
 
 fn root_explicit_missing_segments(
@@ -1374,6 +1381,17 @@ fn root_explicit_missing_segments(
         .missing_segments
         .iter()
         .filter(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON)
+        .cloned()
+        .collect()
+}
+
+fn targetable_boundary_missing_segments(
+    progress: &ProgramHistoryGapFillOutput,
+) -> Vec<GapFillMissingSegment> {
+    progress
+        .missing_segments
+        .iter()
+        .filter(|segment| is_targetable_boundary_missing_segment_reason(&segment.reason))
         .cloned()
         .collect()
 }
@@ -1565,9 +1583,12 @@ fn fetch_program_history_gap_fill_repair_explicit_missing_segments<
         target_program_ids,
         plan,
     )?;
-    let root_segments = root_explicit_missing_segments(&progress);
-    if root_segments.is_empty() {
-        bail!("program_history_gap_fill_repair_explicit_missing_segments_no_root_segments");
+    let mut target_segments = root_explicit_missing_segments(&progress);
+    if target_segments.is_empty() {
+        target_segments = targetable_boundary_missing_segments(&progress);
+    }
+    if target_segments.is_empty() {
+        bail!("program_history_gap_fill_repair_explicit_missing_segments_no_target_segments");
     }
 
     let progress_store = SqliteStore::open(&output_paths.progress_db_path).with_context(|| {
@@ -1591,7 +1612,7 @@ fn fetch_program_history_gap_fill_repair_explicit_missing_segments<
     let mut attempt_budget_exhausted = false;
     let mut repair_reason: Option<String> = None;
 
-    for segment in root_segments {
+    for segment in target_segments {
         if !remaining_segments
             .iter()
             .any(|candidate| candidate == &segment)
@@ -1623,10 +1644,7 @@ fn fetch_program_history_gap_fill_repair_explicit_missing_segments<
             ));
             break;
         };
-        merge_missing_segments(
-            &mut remaining_segments,
-            segment_bounds.boundary_missing_segments.clone(),
-        );
+        let refined_boundary_missing_segments = segment_bounds.boundary_missing_segments.clone();
         let slot_span = segment_end_slot
             .saturating_sub(segment_start_slot)
             .saturating_add(1);
@@ -1695,6 +1713,7 @@ fn fetch_program_history_gap_fill_repair_explicit_missing_segments<
             break;
         }
         remaining_segments.retain(|candidate| candidate != &segment);
+        merge_missing_segments(&mut remaining_segments, refined_boundary_missing_segments);
         next_batch_start_slot = progress
             .resolved_end_slot
             .map(|end_slot| end_slot.saturating_add(1));
@@ -5549,7 +5568,7 @@ mod tests {
         let error = run_output_with_source(repair_config(base_config), &source)
             .expect_err("synthetic full-window reason must not be a repair root");
         assert!(error.to_string().contains(
-            "program_history_gap_fill_repair_explicit_missing_segments_no_root_segments"
+            "program_history_gap_fill_repair_explicit_missing_segments_no_target_segments"
         ));
         assert!(
             source.list_requests().is_empty(),
@@ -5711,14 +5730,14 @@ mod tests {
             .iter()
             .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON));
         assert!(output.missing_segments.iter().any(|segment| {
-            segment.reason == "requested_window_prefix_uncovered_after_start_slot_adjustment"
-                || segment.reason == "requested_window_suffix_uncovered_after_end_slot_adjustment"
+            segment.reason == BOUNDARY_PREFIX_MISSING_REASON
+                || segment.reason == BOUNDARY_SUFFIX_MISSING_REASON
         }));
         Ok(())
     }
 
     #[test]
-    fn explicit_missing_repair_after_boundary_refinement_does_not_target_removed_root_again(
+    fn explicit_missing_repair_after_boundary_refinement_targets_boundary_not_removed_root(
     ) -> Result<()> {
         let fixture = make_fixture("program-gap-fill-explicit-missing-refined-no-loop")?;
         let now = parse_ts("2026-03-24T13:43:40Z")?;
@@ -5764,19 +5783,329 @@ mod tests {
             .iter()
             .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON));
         assert!(first.missing_segments.iter().any(|segment| {
-            segment.reason == "requested_window_prefix_uncovered_after_start_slot_adjustment"
-                || segment.reason == "requested_window_suffix_uncovered_after_end_slot_adjustment"
+            segment.reason == BOUNDARY_PREFIX_MISSING_REASON
+                || segment.reason == BOUNDARY_SUFFIX_MISSING_REASON
         }));
 
-        let second_source = FakeProgramHistorySource::default();
-        let error = run_output_with_source(repair_config(base_config), &second_source)
-            .expect_err("refined progress must not target the removed root segment again");
+        let second_source = FakeProgramHistorySource::default()
+            .with_latest_slot(10_000)
+            .with_block_time(10_000, window_end)
+            .with_block_time(adjusted_slot - 2, segment_start)
+            .with_block_time(adjusted_slot, segment_start + Duration::seconds(1))
+            .with_block_time(adjusted_slot + 2, segment_end)
+            .with_block(
+                adjusted_slot - 2,
+                block_with_transactions(
+                    adjusted_slot - 2,
+                    segment_start,
+                    vec![swap_tx(
+                        "repair-refined-prefix",
+                        "wallet-gap",
+                        adjusted_slot - 2,
+                        "raydium-program",
+                    )],
+                ),
+            )
+            .with_block(
+                adjusted_slot + 2,
+                block_with_transactions(
+                    adjusted_slot + 2,
+                    segment_end - Duration::milliseconds(1),
+                    vec![swap_tx(
+                        "repair-refined-suffix",
+                        "wallet-gap",
+                        adjusted_slot + 2,
+                        "pumpswap-program",
+                    )],
+                ),
+            );
+        let second = run_output_with_source(repair_config(base_config), &second_source)?;
+        assert!(second.attempt_number > first.attempt_number);
+        assert!(!second
+            .missing_segments
+            .iter()
+            .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON));
+        assert!(
+            !second_source.list_requests().is_empty(),
+            "second repair attempt must target remaining boundary evidence instead of bailing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_boundary_segment_successfully_removed() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-boundary-success")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let segment_start = window_start + Duration::minutes(7);
+        let segment_end = segment_start + Duration::seconds(1);
+        let boundary_segment = prefix_boundary_segment(segment_start, segment_end);
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "boundary-success",
+            window_start,
+            window_end,
+            vec![boundary_segment.clone()],
+        )?;
+        let source = resumable_source(window_start, window_end)
+            .with_block_time(1_149, segment_start)
+            .with_block_time(1_153, segment_end)
+            .with_block(
+                1_149,
+                block_with_transactions(
+                    1_149,
+                    segment_start,
+                    vec![swap_tx(
+                        "repair-boundary-success-a",
+                        "wallet-gap",
+                        1_149,
+                        "raydium-program",
+                    )],
+                ),
+            )
+            .with_block(
+                1_153,
+                block_with_transactions(
+                    1_153,
+                    segment_end - Duration::milliseconds(1),
+                    vec![swap_tx(
+                        "repair-boundary-success-b",
+                        "wallet-gap",
+                        1_153,
+                        "pumpswap-program",
+                    )],
+                ),
+            );
+
+        let output = run_output_with_source(repair_config(base_config), &source)?;
+        assert!(
+            !source.list_requests().is_empty(),
+            "boundary repair must target boundary evidence instead of bailing no_target_segments"
+        );
+        assert!(!output
+            .missing_segments
+            .iter()
+            .any(|segment| segment == &boundary_segment));
+        assert!(!output
+            .missing_segments
+            .iter()
+            .any(|segment| is_targetable_boundary_missing_segment_reason(&segment.reason)));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_boundary_partial_refinement_replaces_target_evidence() -> Result<()>
+    {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-boundary-refine")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let segment_start = window_start + Duration::minutes(7);
+        let segment_end = segment_start + Duration::seconds(2);
+        let boundary_segment = prefix_boundary_segment(segment_start, segment_end);
+        let adjusted_slot = 8_951;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "boundary-refine",
+            window_start,
+            window_end,
+            vec![boundary_segment.clone()],
+        )?;
+        let source = FakeProgramHistorySource::default()
+            .with_latest_slot(10_000)
+            .with_block_time(10_000, window_end)
+            .with_block_time(adjusted_slot, segment_start + Duration::seconds(1))
+            .with_block_range(adjusted_slot, adjusted_slot, vec![adjusted_slot])
+            .with_block(
+                adjusted_slot,
+                block_with_transactions(
+                    adjusted_slot,
+                    segment_start + Duration::seconds(1),
+                    vec![swap_tx(
+                        "repair-boundary-refine",
+                        "wallet-gap",
+                        adjusted_slot,
+                        "raydium-program",
+                    )],
+                ),
+            );
+
+        let output = run_output_with_source(repair_config(base_config), &source)?;
+        assert!(!output.replayable_output);
+        assert_eq!(
+            output.reason,
+            "program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain"
+        );
+        assert!(!output
+            .missing_segments
+            .iter()
+            .any(|segment| segment == &boundary_segment));
+        assert!(output
+            .missing_segments
+            .iter()
+            .any(|segment| is_targetable_boundary_missing_segment_reason(&segment.reason)));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_boundary_retryable_failure_keeps_segment_non_replayable(
+    ) -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-boundary-retryable")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let segment_start = window_start + Duration::minutes(7);
+        let segment_end = segment_start + Duration::seconds(1);
+        let boundary_segment = suffix_boundary_segment(segment_start, segment_end);
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "boundary-retryable",
+            window_start,
+            window_end,
+            vec![boundary_segment.clone()],
+        )?;
+        let source = resumable_source(window_start, window_end)
+            .with_block_time(1_108, segment_end)
+            .with_get_block_failure_once(
+                1_104,
+                SourceError::retryable_provider_failure(
+                    "program_history_gap_fill_retryable_source_contract_http_408: rpc returned http status 408",
+                ),
+            )
+            .with_get_block_failure_once(
+                1_105,
+                SourceError::retryable_provider_failure(
+                    "program_history_gap_fill_retryable_source_contract_http_408: rpc returned http status 408",
+                ),
+            )
+            .with_get_block_failure_once(
+                1_106,
+                SourceError::retryable_provider_failure(
+                    "program_history_gap_fill_retryable_source_contract_http_408: rpc returned http status 408",
+                ),
+            )
+            .with_get_block_failure_once(
+                1_107,
+                SourceError::retryable_provider_failure(
+                    "program_history_gap_fill_retryable_source_contract_http_408: rpc returned http status 408",
+                ),
+            )
+            .with_get_block_failure_once(
+                1_108,
+                SourceError::retryable_provider_failure(
+                    "program_history_gap_fill_retryable_source_contract_http_408: rpc returned http status 408",
+                ),
+            );
+
+        let output = run_output_with_source(repair_config(base_config), &source)?;
+        assert_eq!(
+            output.verdict,
+            "not_proven_due_to_retryable_provider_failure"
+        );
+        assert_eq!(output.current_phase, "awaiting_next_attempt");
+        assert!(matches!(output.next_batch_start_slot, Some(1_104..=1_108)));
+        assert!(!output.replayable_output);
+        assert!(output.repair_explicit_missing_base_window_end_reached);
+        assert!(output
+            .missing_segments
+            .iter()
+            .any(|segment| segment == &boundary_segment));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_boundary_budget_exhaustion_keeps_segment_and_cursor() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-boundary-budget")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let segment_start = window_start + Duration::minutes(7);
+        let segment_end = segment_start + Duration::seconds(1);
+        let boundary_segment = prefix_boundary_segment(segment_start, segment_end);
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (mut base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "boundary-budget",
+            window_start,
+            window_end,
+            vec![boundary_segment.clone()],
+        )?;
+        base_config.max_blocks_to_fetch_override = Some(1);
+        let source = resumable_source(window_start, window_end)
+            .with_block_time(1_149, segment_start)
+            .with_block_time(1_153, segment_end)
+            .with_block(
+                1_149,
+                block_with_transactions(
+                    1_149,
+                    segment_start,
+                    vec![swap_tx(
+                        "repair-boundary-budget-a",
+                        "wallet-gap",
+                        1_149,
+                        "raydium-program",
+                    )],
+                ),
+            )
+            .with_block(
+                1_153,
+                block_with_transactions(
+                    1_153,
+                    segment_end - Duration::milliseconds(1),
+                    vec![swap_tx(
+                        "repair-boundary-budget-b",
+                        "wallet-gap",
+                        1_153,
+                        "pumpswap-program",
+                    )],
+                ),
+            );
+
+        let output = run_output_with_source(repair_config(base_config), &source)?;
+        assert_eq!(output.verdict, "not_proven_due_to_cost_budget");
+        assert_eq!(output.current_phase, "awaiting_next_attempt");
+        assert!(!output.replayable_output);
+        assert!(output.repair_explicit_missing_base_window_end_reached);
+        assert!(matches!(output.next_batch_start_slot, Some(1_150..=1_153)));
+        assert!(output
+            .missing_segments
+            .iter()
+            .any(|segment| segment == &boundary_segment));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_non_target_synthetic_reason_is_not_scanned() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-non-target-only")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "non-target-only",
+            window_start,
+            window_end,
+            vec![missing_segment_with_reason(
+                window_start,
+                window_end,
+                "program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain",
+            )],
+        )?;
+        let source = resumable_source(window_start, window_end);
+
+        let error = run_output_with_source(repair_config(base_config), &source)
+            .expect_err("synthetic non-target reason must not be scanned as a repair target");
         assert!(error.to_string().contains(
-            "program_history_gap_fill_repair_explicit_missing_segments_no_root_segments"
+            "program_history_gap_fill_repair_explicit_missing_segments_no_target_segments"
         ));
         assert!(
-            second_source.list_requests().is_empty(),
-            "second repair attempt must not rescan an already-refined root segment"
+            source.list_requests().is_empty(),
+            "repair mode must not scan synthetic non-target reasons"
         );
         Ok(())
     }
@@ -6265,10 +6594,26 @@ mod tests {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> GapFillMissingSegment {
+        missing_segment_with_reason(start, end, ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON)
+    }
+
+    fn prefix_boundary_segment(start: DateTime<Utc>, end: DateTime<Utc>) -> GapFillMissingSegment {
+        missing_segment_with_reason(start, end, BOUNDARY_PREFIX_MISSING_REASON)
+    }
+
+    fn suffix_boundary_segment(start: DateTime<Utc>, end: DateTime<Utc>) -> GapFillMissingSegment {
+        missing_segment_with_reason(start, end, BOUNDARY_SUFFIX_MISSING_REASON)
+    }
+
+    fn missing_segment_with_reason(
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        reason: &str,
+    ) -> GapFillMissingSegment {
         GapFillMissingSegment {
             start,
             end,
-            reason: ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON.to_string(),
+            reason: reason.to_string(),
         }
     }
 

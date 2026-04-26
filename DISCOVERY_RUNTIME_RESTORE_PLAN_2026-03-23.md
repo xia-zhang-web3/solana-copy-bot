@@ -16,22 +16,23 @@ Current exact raw interval:
 
 Latest confirmed production facts:
 
-- time: `2026-04-26T08:01:37Z`
+- time: `2026-04-26T16:13:17Z`
 - `solana-copy-bot.service = active`
 - service restarts: `NRestarts = 0`
-- transient `copybot-program-gap-loop.service` was stopped after it reached
-  repeated `completed_with_explicit_missing_segments` attempts
+- transient `copybot-gap-repair-loop-next.service` stopped after the broad
+  explicit-missing repair scan reached the requested window end again and
+  proved only boundary/non-target missing evidence remains
 - disk: `360G used / 108G available / 78%`
 - exact-window progress:
-  - attempt `2176`
+  - attempt `2261`
   - `covered_through = 2026-04-23T15:59:39Z`
-  - progress `99.999800010%`
-  - `staged_rows = 45771005`
+  - `next_batch_start_slot = 415159799`
+  - `staged_rows = 45771784`
   - `current_phase = completed_with_explicit_missing_segments`
   - `verdict = not_proven_due_to_provider_throttling`
-  - `reason = program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap`
+  - `reason = program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain`
   - `replayable_output = false`
-  - `missing_segments_count = 7`
+  - `missing_segments_count = 8`
 
 Restore meaning:
 
@@ -46,14 +47,19 @@ Repository/operator accounting:
   `--repair-explicit-missing-segments` mode
 - this mode requires matching progress JSON + progress DB and objective proof
   that the base artifact reached the requested window end
-- it targets only root explicit missing segments with reason
+- it targets root explicit missing segments with reason
   `program_history_gap_fill_skipped_persistently_provider_blocked_slot_after_bounded_retries`
+  first
+- after root segments are gone, it can target explicit boundary missing
+  segments with reasons
+  `requested_window_prefix_uncovered_after_start_slot_adjustment` and
+  `requested_window_suffix_uncovered_after_end_slot_adjustment`
 - it does not scan the synthetic full-window reason
-  `program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap`
+  `program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain`
   directly
 - it widens zero-duration missing segments to a minimal scanable window,
-  preserves partial-boundary evidence, and only removes a root missing segment
-  after a bounded repair scan completes without provider/source/budget failure
+  preserves partial-boundary evidence, and only removes a missing segment after
+  a bounded repair scan completes without provider/source/budget failure
 - if the scanable part of a root segment completes but boundary evidence
   remains, the broad root segment is replaced by narrower boundary missing
   segments and the artifact stays non-replayable

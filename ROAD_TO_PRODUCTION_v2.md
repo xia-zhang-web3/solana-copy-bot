@@ -15,23 +15,24 @@ segments remain.
 
 Latest confirmed production snapshot:
 
-- snapshot time: `2026-04-26T08:01:37Z`
+- snapshot time: `2026-04-26T16:13:17Z`
 - `solana-copy-bot.service = active`
 - `NRestarts = 0`
-- transient `copybot-program-gap-loop.service` was stopped after it reached a
-  terminal incomplete state and began repeating zero-progress attempts
+- transient `copybot-gap-repair-loop-next.service` stopped after the broad
+  explicit-missing repair scan reached the requested window end again and
+  exited on remaining non-target boundary evidence
 - disk for `/var/www/solana-copy-bot/state`:
   `360G used / 108G available / 78%`
 - exact-window progress:
-  - attempt `2176`
+  - attempt `2261`
   - `covered_through = 2026-04-23T15:59:39Z`
-  - progress against the requested interval: `99.999800010%`
-  - `staged_rows = 45771005`
+  - `next_batch_start_slot = 415159799`
+  - `staged_rows = 45771784`
   - `current_phase = completed_with_explicit_missing_segments`
   - `verdict = not_proven_due_to_provider_throttling`
-  - `reason = program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap`
+  - `reason = program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain`
   - `replayable_output = false`
-  - `missing_segments_count = 7`
+  - `missing_segments_count = 8`
 
 Current engineering interpretation:
 
@@ -39,11 +40,14 @@ Current engineering interpretation:
   broad raw-history interval frontier
 - the artifact is still not production green and must not be restored because
   explicit missing segments remain
-- the next bounded production lane is targeted repair of explicit
-  `program_history_gap_fill_skipped_persistently_provider_blocked_slot_after_bounded_retries`
-  segments from the existing progress artifact
+- the broad provider-blocked root repair segment has now completed and been
+  removed from the artifact
+- the current bounded production lane is targeted repair of the remaining
+  explicit boundary missing segments:
+  `requested_window_prefix_uncovered_after_start_slot_adjustment` and
+  `requested_window_suffix_uncovered_after_end_slot_adjustment`
 - the synthetic full-window reason
-  `program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap`
+  `program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain`
   is not a segment to scan directly
 - restore/trading/selector/scoring remain out of scope until the artifact is
   explicitly replayable with no missing segments
@@ -59,12 +63,16 @@ Development accounting:
   `repair_explicit_missing_base_window_end_reached` so retryable provider
   failures or budget-limited repair attempts can resume without losing the
   base end-of-window proof
-- repair mode targets only root explicit provider-blocked missing segments,
-  preserves partial-boundary missing evidence, and stays non-replayable on
-  provider/source/budget attrition
+- repair mode targets root explicit provider-blocked missing segments first;
+  after those roots are gone it can target explicit prefix/suffix boundary
+  missing segments from the same progress artifact
+- repair mode preserves partial-boundary missing evidence and stays
+  non-replayable on provider/source/budget attrition
 - after a bounded repair scan proves the scanable portion of a root segment,
   the broad provider-blocked root segment is removed and replaced by narrower
   boundary missing evidence instead of being retried forever
+- boundary segments are removed only after bounded scan proof; synthetic
+  full-window reasons are never scanned as repair targets
 - no selector/scoring, `scoring_window_days`, restore gate, systemd config,
   Stage 4, trading, or fail-closed relaxation was part of this batch
 
