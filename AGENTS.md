@@ -348,6 +348,10 @@ Operator semantics:
   future repair attempts do not retarget the same already-refined root
 - boundary missing evidence is removed only after bounded repair scan proof;
   until then it remains explicit fail-closed evidence
+- unchanged or non-narrower boundary evidence after a completed bounded scan is
+  terminal incomplete evidence with reason
+  `program_history_gap_fill_repair_explicit_missing_segments_irreducible_boundary_evidence_remains`,
+  not a continuable provider-throttling loop
 
 Deployment status:
 

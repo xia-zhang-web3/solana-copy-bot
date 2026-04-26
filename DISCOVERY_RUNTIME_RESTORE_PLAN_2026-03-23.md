@@ -63,6 +63,11 @@ Repository/operator accounting:
 - if the scanable part of a root segment completes but boundary evidence
   remains, the broad root segment is replaced by narrower boundary missing
   segments and the artifact stays non-replayable
+- if a completed boundary repair scan regenerates unchanged or non-narrower
+  boundary evidence, the artifact stays non-replayable and the operator emits
+  terminal incomplete reason
+  `program_history_gap_fill_repair_explicit_missing_segments_irreducible_boundary_evidence_remains`
+  instead of continuing as provider-throttling progress
 - retryable or budget-limited repair output stays non-replayable and persists
   `repair_explicit_missing_base_window_end_reached` so the repair cursor can
   resume without losing the base end-of-window proof

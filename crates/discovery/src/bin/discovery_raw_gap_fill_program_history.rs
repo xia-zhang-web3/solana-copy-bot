@@ -58,6 +58,8 @@ const BOUNDARY_PREFIX_MISSING_REASON: &str =
     "requested_window_prefix_uncovered_after_start_slot_adjustment";
 const BOUNDARY_SUFFIX_MISSING_REASON: &str =
     "requested_window_suffix_uncovered_after_end_slot_adjustment";
+const IRREDUCIBLE_BOUNDARY_EVIDENCE_REASON: &str =
+    "program_history_gap_fill_repair_explicit_missing_segments_irreducible_boundary_evidence_remains";
 const REPAIR_MODE_COVERAGE_METHOD: &str = "program_history_explicit_missing_segment_repair";
 const MIN_REPAIR_SEGMENT_SECONDS: i64 = 1;
 
@@ -243,6 +245,7 @@ enum GapFillVerdict {
     NotProvenDueToCostBudget,
     NotProvenDueToProviderThrottling,
     NotProvenDueToRetryableProviderFailure,
+    NotProvenDueToIrreducibleBoundaryEvidence,
     NonViableSourceContract,
 }
 
@@ -259,6 +262,9 @@ impl GapFillVerdict {
             Self::NotProvenDueToProviderThrottling => "not_proven_due_to_provider_throttling",
             Self::NotProvenDueToRetryableProviderFailure => {
                 "not_proven_due_to_retryable_provider_failure"
+            }
+            Self::NotProvenDueToIrreducibleBoundaryEvidence => {
+                "not_proven_due_to_irreducible_boundary_evidence"
             }
             Self::NonViableSourceContract => "non_viable_source_contract",
         }
@@ -1396,6 +1402,33 @@ fn targetable_boundary_missing_segments(
         .collect()
 }
 
+fn boundary_refinement_strictly_narrows(
+    target: &GapFillMissingSegment,
+    refined_segments: &[GapFillMissingSegment],
+) -> bool {
+    let target_duration_ms = missing_segment_duration_ms(target);
+    if target_duration_ms <= 0 {
+        return false;
+    }
+    refined_segments
+        .iter()
+        .filter(|segment| is_targetable_boundary_missing_segment_reason(&segment.reason))
+        .all(|segment| {
+            segment.start >= target.start
+                && segment.end <= target.end
+                && segment.end > segment.start
+                && missing_segment_duration_ms(segment) < target_duration_ms
+        })
+}
+
+fn missing_segment_duration_ms(segment: &GapFillMissingSegment) -> i64 {
+    segment
+        .end
+        .signed_duration_since(segment.start)
+        .num_milliseconds()
+        .max(0)
+}
+
 fn merge_missing_segments(
     segments: &mut Vec<GapFillMissingSegment>,
     extras: impl IntoIterator<Item = GapFillMissingSegment>,
@@ -1583,8 +1616,10 @@ fn fetch_program_history_gap_fill_repair_explicit_missing_segments<
         target_program_ids,
         plan,
     )?;
-    let mut target_segments = root_explicit_missing_segments(&progress);
-    if target_segments.is_empty() {
+    let root_segments = root_explicit_missing_segments(&progress);
+    let boundary_repair_phase = root_segments.is_empty();
+    let mut target_segments = root_segments;
+    if boundary_repair_phase {
         target_segments = targetable_boundary_missing_segments(&progress);
     }
     if target_segments.is_empty() {
@@ -1610,6 +1645,7 @@ fn fetch_program_history_gap_fill_repair_explicit_missing_segments<
     let mut next_batch_start_slot: Option<u64> = progress.next_batch_start_slot;
     let mut terminal_source_error: Option<SourceError> = None;
     let mut attempt_budget_exhausted = false;
+    let mut irreducible_boundary_evidence_remains = false;
     let mut repair_reason: Option<String> = None;
 
     for segment in target_segments {
@@ -1712,6 +1748,16 @@ fn fetch_program_history_gap_fill_repair_explicit_missing_segments<
             next_batch_start_slot = attempt_next_slot.or(Some(repair_start_slot));
             break;
         }
+        if boundary_repair_phase
+            && !refined_boundary_missing_segments.is_empty()
+            && !boundary_refinement_strictly_narrows(&segment, &refined_boundary_missing_segments)
+        {
+            irreducible_boundary_evidence_remains = true;
+            next_batch_start_slot = progress
+                .resolved_end_slot
+                .map(|end_slot| end_slot.saturating_add(1));
+            break;
+        }
         remaining_segments.retain(|candidate| candidate != &segment);
         merge_missing_segments(&mut remaining_segments, refined_boundary_missing_segments);
         next_batch_start_slot = progress
@@ -1761,6 +1807,15 @@ fn fetch_program_history_gap_fill_repair_explicit_missing_segments<
             "program_history_gap_fill_attempt_budget_exhausted".to_string(),
             "awaiting_next_attempt".to_string(),
             next_batch_start_slot,
+        )
+    } else if irreducible_boundary_evidence_remains {
+        (
+            GapFillVerdict::NotProvenDueToIrreducibleBoundaryEvidence,
+            IRREDUCIBLE_BOUNDARY_EVIDENCE_REASON.to_string(),
+            "completed_with_explicit_missing_segments".to_string(),
+            progress
+                .resolved_end_slot
+                .map(|end_slot| end_slot.saturating_add(1)),
         )
     } else if remaining_segments
         .iter()
@@ -5725,6 +5780,7 @@ mod tests {
             "completed_with_explicit_missing_segments"
         );
         assert!(output.repair_explicit_missing_base_window_end_reached);
+        assert_ne!(output.reason, IRREDUCIBLE_BOUNDARY_EVIDENCE_REASON);
         assert!(!output
             .missing_segments
             .iter()
@@ -5828,6 +5884,65 @@ mod tests {
         assert!(
             !second_source.list_requests().is_empty(),
             "second repair attempt must target remaining boundary evidence instead of bailing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_boundary_unchanged_evidence_becomes_irreducible() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-boundary-irreducible")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let segment_start = window_start + Duration::minutes(7);
+        let segment_end = segment_start + Duration::seconds(1);
+        let boundary_segment = prefix_boundary_segment(segment_start, segment_end);
+        let adjusted_slot = 8_951;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "boundary-irreducible",
+            window_start,
+            window_end,
+            vec![boundary_segment.clone()],
+        )?;
+        let source = FakeProgramHistorySource::default()
+            .with_latest_slot(10_000)
+            .with_block_time(10_000, window_end)
+            .with_block_time(adjusted_slot, segment_end)
+            .with_block_range(adjusted_slot, adjusted_slot, vec![adjusted_slot])
+            .with_block(
+                adjusted_slot,
+                block_with_transactions(
+                    adjusted_slot,
+                    segment_end,
+                    vec![swap_tx(
+                        "repair-boundary-irreducible",
+                        "wallet-gap",
+                        adjusted_slot,
+                        "raydium-program",
+                    )],
+                ),
+            );
+
+        let output = run_output_with_source(repair_config(base_config), &source)?;
+        assert_eq!(
+            output.verdict,
+            "not_proven_due_to_irreducible_boundary_evidence"
+        );
+        assert_eq!(output.reason, IRREDUCIBLE_BOUNDARY_EVIDENCE_REASON);
+        assert_eq!(
+            output.current_phase,
+            "completed_with_explicit_missing_segments"
+        );
+        assert!(!output.replayable_output);
+        assert!(output
+            .missing_segments
+            .iter()
+            .any(|segment| segment == &boundary_segment));
+        assert!(
+            !source.list_requests().is_empty(),
+            "irreducible boundary evidence must only be detected after a bounded scan"
         );
         Ok(())
     }
@@ -5939,6 +6054,8 @@ mod tests {
             output.reason,
             "program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain"
         );
+        assert_ne!(output.reason, IRREDUCIBLE_BOUNDARY_EVIDENCE_REASON);
+        assert_eq!(output.verdict, "not_proven_due_to_provider_throttling");
         assert!(!output
             .missing_segments
             .iter()
@@ -6009,6 +6126,7 @@ mod tests {
         assert_eq!(output.current_phase, "awaiting_next_attempt");
         assert!(matches!(output.next_batch_start_slot, Some(1_104..=1_108)));
         assert!(!output.replayable_output);
+        assert_ne!(output.reason, IRREDUCIBLE_BOUNDARY_EVIDENCE_REASON);
         assert!(output.repair_explicit_missing_base_window_end_reached);
         assert!(output
             .missing_segments
@@ -6069,8 +6187,45 @@ mod tests {
         assert_eq!(output.verdict, "not_proven_due_to_cost_budget");
         assert_eq!(output.current_phase, "awaiting_next_attempt");
         assert!(!output.replayable_output);
+        assert_ne!(output.reason, IRREDUCIBLE_BOUNDARY_EVIDENCE_REASON);
         assert!(output.repair_explicit_missing_base_window_end_reached);
         assert!(matches!(output.next_batch_start_slot, Some(1_150..=1_153)));
+        assert!(output
+            .missing_segments
+            .iter()
+            .any(|segment| segment == &boundary_segment));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_boundary_attempt_budget_keeps_segment_and_cursor() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-boundary-attempt-budget")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let segment_start = window_start + Duration::minutes(7);
+        let segment_end = segment_start + Duration::seconds(1);
+        let boundary_segment = suffix_boundary_segment(segment_start, segment_end);
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (mut base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "boundary-attempt-budget",
+            window_start,
+            window_end,
+            vec![boundary_segment.clone()],
+        )?;
+        base_config.max_slot_batches_per_attempt_override = Some(0);
+        let source = resumable_source(window_start, window_end)
+            .with_block_time(1_149, segment_start)
+            .with_block_time(1_153, segment_end);
+
+        let output = run_output_with_source(repair_config(base_config), &source)?;
+        assert_eq!(output.verdict, "not_proven_due_to_attempt_budget");
+        assert_eq!(output.current_phase, "awaiting_next_attempt");
+        assert!(!output.replayable_output);
+        assert_ne!(output.reason, IRREDUCIBLE_BOUNDARY_EVIDENCE_REASON);
+        assert!(output.repair_explicit_missing_base_window_end_reached);
+        assert!(matches!(output.next_batch_start_slot, Some(1_149..=1_153)));
         assert!(output
             .missing_segments
             .iter()

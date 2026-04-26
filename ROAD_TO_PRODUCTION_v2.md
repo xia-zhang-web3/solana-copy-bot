@@ -73,6 +73,11 @@ Development accounting:
   boundary missing evidence instead of being retried forever
 - boundary segments are removed only after bounded scan proof; synthetic
   full-window reasons are never scanned as repair targets
+- if a completed boundary repair scan regenerates unchanged or non-narrower
+  boundary evidence, the operator now stops with explicit terminal incomplete
+  reason
+  `program_history_gap_fill_repair_explicit_missing_segments_irreducible_boundary_evidence_remains`
+  instead of burning loop attempts as provider-throttling progress
 - no selector/scoring, `scoring_window_days`, restore gate, systemd config,
   Stage 4, trading, or fail-closed relaxation was part of this batch
 
