@@ -641,10 +641,12 @@ If repeated attempts stay incomplete:
    restarted safely from a clean in-progress state; manual archive/delete is no
    longer required for this case
 
-If `replayable_output = true`, do not jump straight to restore apply. First run
-the read-only program-history review operators against the exact requested
-window. This is a post-backfill human restore-review handoff only; these
-commands do not mark production green and do not mutate the runtime DB.
+If `replayable_output = true`, or if the artifact reached the terminal
+`not_proven_due_to_irreducible_boundary_evidence` boundary-residue state, do
+not jump straight to restore apply. First run the read-only program-history
+review operators against the exact requested window. This is a post-backfill
+human restore-review handoff only; these commands do not mark production green
+and do not mutate the runtime DB.
 
 ```bash
 PROGRAM_HISTORY_GAP_FILL_DB="${APP_ROOT}/state/discovery_restore/gap_fill_program_history/latest.sqlite"
@@ -680,8 +682,26 @@ ARTIFACT_PATH="${APP_ROOT}/state/discovery_restore/artifacts/latest.json"
 
 Proceed only after human review confirms the handoff report is ready for
 restore review and the artifact validator reports
-`artifact_valid_for_restore_review = true`. This is still not production green;
-the final service posture comes only from the restore verdict below.
+`artifact_valid_for_restore_review = true`. The normal full replayable path has
+`replayable_output = true` and no missing segments. The narrow accepted-residue
+path must explicitly show
+`accepted_residue_policy = accepted_irreducible_boundary_residue`,
+`accepted_irreducible_boundary_residue = true`,
+`inserted_rows = 0`,
+`staged_rows > 0`,
+`fetched_rows = staged_rows`,
+`rows_withheld_due_to_incomplete_outcome = staged_rows`,
+`zero_progress_root_segments_count = 0`,
+`unknown_non_target_segments_count = 0`,
+`start_coverage_deficit_ms <= 1000`,
+`end_coverage_deficit_ms <= 1000`,
+`total_accepted_residue_ms <= 10000`, and
+`max_accepted_residue_segment_or_deficit_ms <= 1000`. The total accepted residue
+budget includes target boundary segment duration plus start/end coverage
+deficits from producer timestamp precision. This accepted-residue path does not
+rewrite the progress artifact, does not set `replayable_output = true`, and does
+not make production green; the final service posture comes only from the restore
+verdict below.
 
 Replay the reviewed program-history artifact into a fresh restore run:
 
@@ -697,6 +717,14 @@ Replay the reviewed program-history artifact into a fresh restore run:
   --gap-fill-window-end-utc "${PROGRAM_HISTORY_WINDOW_END_UTC}" \
   --json | tee /tmp/discovery_runtime_restore_after_program_gap_fill.json
 ```
+
+For the residue path, verify the restore output records
+`gap_fill_acceptance_policy = accepted_irreducible_boundary_residue`,
+`gap_fill_acceptance_staged_rows > 0`,
+`gap_fill_acceptance_fetched_rows = gap_fill_acceptance_staged_rows`, and
+`gap_fill_acceptance_total_accepted_residue_ms <= 10000`. That means the
+restore gate accepted the tiny explicit boundary-residue policy, not full
+replayable coverage.
 
 Only `complete_sufficient_for_healthy_restore` is the operator signal that this
 path should be expected to produce `raw_coverage_satisfied = true` and a final

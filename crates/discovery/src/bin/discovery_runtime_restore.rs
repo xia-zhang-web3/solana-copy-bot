@@ -22,6 +22,18 @@ use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 const USAGE: &str = "usage: discovery_runtime_restore --config <path> --artifact <path> [--db-path <path>] [--journal-db-path <path>] [--gap-fill-db-path <path> --gap-fill-progress-path <path> --gap-fill-window-start-utc <rfc3339> --gap-fill-window-end-utc <rfc3339>] [--bootstrap-degraded] [--json] [--now <rfc3339>]";
+const GAP_FILL_ACCEPTANCE_FULL_REPLAYABLE: &str = "full_replayable_coverage";
+const ACCEPTED_RESIDUE_POLICY: &str = "accepted_irreducible_boundary_residue";
+const IRREDUCIBLE_VERDICT: &str = "not_proven_due_to_irreducible_boundary_evidence";
+const IRREDUCIBLE_REASON: &str =
+    "program_history_gap_fill_repair_explicit_missing_segments_irreducible_boundary_evidence_remains";
+const ZERO_PROGRESS_ROOT_REASON: &str =
+    "program_history_gap_fill_skipped_persistently_provider_blocked_slot_after_bounded_retries";
+const BOUNDARY_PREFIX_REASON: &str =
+    "requested_window_prefix_uncovered_after_start_slot_adjustment";
+const BOUNDARY_SUFFIX_REASON: &str = "requested_window_suffix_uncovered_after_end_slot_adjustment";
+const MAX_ACCEPTED_RESIDUE_TOTAL_MS: i64 = 10_000;
+const MAX_ACCEPTED_RESIDUE_SEGMENT_MS: i64 = 1_000;
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -52,6 +64,15 @@ struct RestoreOutput {
     db_path: String,
     journal_db_path: String,
     gap_fill_db_path: Option<String>,
+    gap_fill_acceptance_policy: Option<String>,
+    gap_fill_accepted_irreducible_boundary_residue: bool,
+    gap_fill_acceptance_fetched_rows: Option<u64>,
+    gap_fill_acceptance_staged_rows: Option<u64>,
+    gap_fill_acceptance_rows_withheld_due_to_incomplete_outcome: Option<u64>,
+    gap_fill_acceptance_start_coverage_deficit_ms: Option<i64>,
+    gap_fill_acceptance_end_coverage_deficit_ms: Option<i64>,
+    gap_fill_acceptance_total_accepted_residue_ms: Option<i64>,
+    gap_fill_acceptance_max_segment_or_deficit_ms: Option<i64>,
     freshness: DiscoveryRuntimeArtifactFreshnessAssessment,
     replay: RestoreReplaySummary,
     verdict: DiscoveryRuntimeRestoreVerdict,
@@ -236,9 +257,9 @@ fn validate_program_history_gap_fill_restore_gate(
     gap_fill_progress_path: Option<&Path>,
     gap_fill_window_start_utc: Option<&DateTime<Utc>>,
     gap_fill_window_end_utc: Option<&DateTime<Utc>>,
-) -> Result<()> {
+) -> Result<Option<GapFillRestoreGateAcceptance>> {
     let Some(gap_fill_db_path) = gap_fill_db_path else {
-        return Ok(());
+        return Ok(None);
     };
     let gap_fill_progress_path = gap_fill_progress_path.ok_or_else(|| {
         anyhow!(
@@ -283,28 +304,42 @@ fn validate_program_history_gap_fill_restore_gate(
         gap_fill_window_start_utc,
         gap_fill_window_end_utc,
     )
+    .map(Some)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct GapFillRestoreGateAcceptance {
+    policy: &'static str,
+    accepted_irreducible_boundary_residue: bool,
+    fetched_rows: Option<u64>,
+    staged_rows: Option<u64>,
+    rows_withheld_due_to_incomplete_outcome: Option<u64>,
+    start_coverage_deficit_ms: Option<i64>,
+    end_coverage_deficit_ms: Option<i64>,
+    total_accepted_residue_ms: Option<i64>,
+    max_segment_or_deficit_ms: Option<i64>,
 }
 
 fn validate_program_history_gap_fill_progress(
     progress: &Value,
     gap_fill_window_start_utc: DateTime<Utc>,
     gap_fill_window_end_utc: DateTime<Utc>,
-) -> Result<()> {
-    let _verdict = required_progress_string(progress, "verdict")?;
-    let _reason = required_progress_string(progress, "reason")?;
-    let _current_phase = required_progress_string(progress, "current_phase")?;
+) -> Result<GapFillRestoreGateAcceptance> {
+    let verdict = required_progress_string(progress, "verdict")?;
+    let reason = required_progress_string(progress, "reason")?;
+    let current_phase = required_progress_string(progress, "current_phase")?;
     let replayable_output = required_progress_bool(progress, "replayable_output")?;
     let requested_window_start = required_progress_ts(progress, "requested_window_start")?;
     let requested_window_end = required_progress_ts(progress, "requested_window_end")?;
     let covered_through = required_progress_cursor_ts(progress, "gap_fill_covered_through_cursor")?;
     let missing_segments = required_progress_array(progress, "missing_segments")?;
+    let covered_since = optional_progress_ts(progress, "gap_fill_covered_since")?;
+    let fetched_rows = optional_progress_u64(progress, "fetched_rows")?;
+    let staged_rows = optional_progress_u64(progress, "staged_rows")?;
     let inserted_rows = required_progress_u64(progress, "inserted_rows")?;
     let rows_withheld_due_to_incomplete_outcome =
         required_progress_u64(progress, "rows_withheld_due_to_incomplete_outcome")?;
 
-    if !replayable_output {
-        bail!("program_history_gap_fill_restore_gate_replayable_output_false: progress replayable_output=false");
-    }
     if requested_window_start != gap_fill_window_start_utc
         || requested_window_end != gap_fill_window_end_utc
     {
@@ -316,28 +351,199 @@ fn validate_program_history_gap_fill_progress(
             gap_fill_window_end_utc.to_rfc3339()
         );
     }
-    if covered_through < gap_fill_window_end_utc {
+    if replayable_output {
+        if covered_through < gap_fill_window_end_utc {
+            bail!(
+                "program_history_gap_fill_restore_gate_covered_through_before_window_end: covered_through={} expected_window_end={}",
+                covered_through.to_rfc3339(),
+                gap_fill_window_end_utc.to_rfc3339()
+            );
+        }
+        if inserted_rows == 0 {
+            bail!(
+                "program_history_gap_fill_restore_gate_inserted_rows_not_positive: inserted_rows=0"
+            );
+        }
+        if !missing_segments.is_empty() {
+            bail!(
+                "program_history_gap_fill_restore_gate_missing_segments_present: missing_segments_count={}",
+                missing_segments.len()
+            );
+        }
+        if rows_withheld_due_to_incomplete_outcome > 0 {
+            bail!(
+                "program_history_gap_fill_restore_gate_rows_withheld_present: rows_withheld_due_to_incomplete_outcome={rows_withheld_due_to_incomplete_outcome}"
+            );
+        }
+        return Ok(GapFillRestoreGateAcceptance {
+            policy: GAP_FILL_ACCEPTANCE_FULL_REPLAYABLE,
+            accepted_irreducible_boundary_residue: false,
+            fetched_rows,
+            staged_rows,
+            rows_withheld_due_to_incomplete_outcome: Some(rows_withheld_due_to_incomplete_outcome),
+            start_coverage_deficit_ms: None,
+            end_coverage_deficit_ms: None,
+            total_accepted_residue_ms: None,
+            max_segment_or_deficit_ms: None,
+        });
+    }
+
+    validate_accepted_irreducible_boundary_residue(
+        &verdict,
+        &reason,
+        &current_phase,
+        covered_since,
+        covered_through,
+        requested_window_start,
+        requested_window_end,
+        fetched_rows,
+        staged_rows,
+        inserted_rows,
+        rows_withheld_due_to_incomplete_outcome,
+        missing_segments,
+    )
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct GapFillMissingSegment {
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    reason: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GapFillResidueStats {
+    target_boundary_segments_count: usize,
+    zero_progress_root_segments_count: usize,
+    unknown_non_target_segments_count: usize,
+    total_boundary_missing_ms: i64,
+    start_coverage_deficit_ms: Option<i64>,
+    end_coverage_deficit_ms: Option<i64>,
+    total_accepted_residue_ms: Option<i64>,
+    max_segment_or_deficit_ms: Option<i64>,
+    max_boundary_segment_ms: i64,
+}
+
+fn validate_accepted_irreducible_boundary_residue(
+    verdict: &str,
+    reason: &str,
+    current_phase: &str,
+    covered_since: Option<DateTime<Utc>>,
+    covered_through: DateTime<Utc>,
+    requested_window_start: DateTime<Utc>,
+    requested_window_end: DateTime<Utc>,
+    fetched_rows: Option<u64>,
+    staged_rows: Option<u64>,
+    inserted_rows: u64,
+    rows_withheld_due_to_incomplete_outcome: u64,
+    missing_segments: &[Value],
+) -> Result<GapFillRestoreGateAcceptance> {
+    if verdict != IRREDUCIBLE_VERDICT {
+        bail!("program_history_gap_fill_restore_gate_replayable_output_false: progress replayable_output=false");
+    }
+    if reason != IRREDUCIBLE_REASON {
         bail!(
-            "program_history_gap_fill_restore_gate_covered_through_before_window_end: covered_through={} expected_window_end={}",
-            covered_through.to_rfc3339(),
-            gap_fill_window_end_utc.to_rfc3339()
+            "program_history_gap_fill_restore_gate_irreducible_boundary_reason_mismatch: reason={reason}"
         );
     }
-    if !missing_segments.is_empty() {
+    if current_phase != "completed_with_explicit_missing_segments" {
         bail!(
-            "program_history_gap_fill_restore_gate_missing_segments_present: missing_segments_count={}",
-            missing_segments.len()
+            "program_history_gap_fill_restore_gate_irreducible_boundary_current_phase_mismatch: current_phase={current_phase}"
         );
     }
-    if inserted_rows == 0 {
-        bail!("program_history_gap_fill_restore_gate_inserted_rows_not_positive: inserted_rows=0");
-    }
-    if rows_withheld_due_to_incomplete_outcome > 0 {
+    if inserted_rows > 0 {
         bail!(
-            "program_history_gap_fill_restore_gate_rows_withheld_present: rows_withheld_due_to_incomplete_outcome={rows_withheld_due_to_incomplete_outcome}"
+            "program_history_gap_fill_restore_gate_irreducible_boundary_inserted_rows_present: inserted_rows={inserted_rows}"
         );
     }
-    Ok(())
+    let staged_rows = staged_rows.ok_or_else(|| {
+        progress_required_field_error("staged_rows", "missing for accepted residue")
+    })?;
+    let fetched_rows = fetched_rows.ok_or_else(|| {
+        progress_required_field_error("fetched_rows", "missing for accepted residue")
+    })?;
+    if staged_rows == 0 {
+        bail!(
+            "program_history_gap_fill_restore_gate_irreducible_boundary_staged_rows_not_positive: staged_rows=0"
+        );
+    }
+    if fetched_rows != staged_rows {
+        bail!(
+            "program_history_gap_fill_restore_gate_irreducible_boundary_fetched_rows_mismatch: fetched_rows={fetched_rows} staged_rows={staged_rows}"
+        );
+    }
+    if rows_withheld_due_to_incomplete_outcome != staged_rows {
+        bail!(
+            "program_history_gap_fill_restore_gate_irreducible_boundary_rows_withheld_mismatch: rows_withheld_due_to_incomplete_outcome={rows_withheld_due_to_incomplete_outcome} staged_rows={staged_rows}"
+        );
+    }
+    let covered_since = covered_since.ok_or_else(|| {
+        progress_required_field_error("gap_fill_covered_since", "missing for accepted residue")
+    })?;
+    let parsed_segments = missing_segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| gap_fill_missing_segment_from_value(index, segment))
+        .collect::<Result<Vec<_>>>()?;
+    let stats = gap_fill_residue_stats(
+        &parsed_segments,
+        Some(covered_since),
+        Some(covered_through),
+        requested_window_start,
+        requested_window_end,
+    );
+    if stats.zero_progress_root_segments_count > 0 {
+        bail!(
+            "program_history_gap_fill_restore_gate_irreducible_boundary_root_segments_present: zero_progress_root_segments_count={}",
+            stats.zero_progress_root_segments_count
+        );
+    }
+    if stats.unknown_non_target_segments_count > 0 {
+        bail!(
+            "program_history_gap_fill_restore_gate_irreducible_boundary_unknown_non_target_segments_present: unknown_non_target_segments_count={}",
+            stats.unknown_non_target_segments_count
+        );
+    }
+    if stats.target_boundary_segments_count == 0 {
+        bail!(
+            "program_history_gap_fill_restore_gate_irreducible_boundary_no_target_segments: target_boundary_segments_count=0"
+        );
+    }
+    if stats.start_coverage_deficit_ms.unwrap_or(i64::MAX) > MAX_ACCEPTED_RESIDUE_SEGMENT_MS {
+        bail!(
+            "program_history_gap_fill_restore_gate_irreducible_boundary_start_deficit_too_large: start_coverage_deficit_ms={}",
+            stats.start_coverage_deficit_ms.unwrap_or(i64::MAX)
+        );
+    }
+    if stats.end_coverage_deficit_ms.unwrap_or(i64::MAX) > MAX_ACCEPTED_RESIDUE_SEGMENT_MS {
+        bail!(
+            "program_history_gap_fill_restore_gate_irreducible_boundary_end_deficit_too_large: end_coverage_deficit_ms={}",
+            stats.end_coverage_deficit_ms.unwrap_or(i64::MAX)
+        );
+    }
+    if stats.total_accepted_residue_ms.unwrap_or(i64::MAX) > MAX_ACCEPTED_RESIDUE_TOTAL_MS {
+        bail!(
+            "program_history_gap_fill_restore_gate_irreducible_boundary_total_duration_too_large: total_accepted_residue_ms={}",
+            stats.total_accepted_residue_ms.unwrap_or(i64::MAX)
+        );
+    }
+    if stats.max_segment_or_deficit_ms.unwrap_or(i64::MAX) > MAX_ACCEPTED_RESIDUE_SEGMENT_MS {
+        bail!(
+            "program_history_gap_fill_restore_gate_irreducible_boundary_segment_duration_too_large: max_segment_or_deficit_ms={}",
+            stats.max_segment_or_deficit_ms.unwrap_or(i64::MAX)
+        );
+    }
+    Ok(GapFillRestoreGateAcceptance {
+        policy: ACCEPTED_RESIDUE_POLICY,
+        accepted_irreducible_boundary_residue: true,
+        fetched_rows: Some(fetched_rows),
+        staged_rows: Some(staged_rows),
+        rows_withheld_due_to_incomplete_outcome: Some(rows_withheld_due_to_incomplete_outcome),
+        start_coverage_deficit_ms: stats.start_coverage_deficit_ms,
+        end_coverage_deficit_ms: stats.end_coverage_deficit_ms,
+        total_accepted_residue_ms: stats.total_accepted_residue_ms,
+        max_segment_or_deficit_ms: stats.max_segment_or_deficit_ms,
+    })
 }
 
 fn required_progress_string(progress: &Value, field: &'static str) -> Result<String> {
@@ -362,9 +568,28 @@ fn required_progress_u64(progress: &Value, field: &'static str) -> Result<u64> {
         .ok_or_else(|| progress_required_field_error(field, "missing or non-u64 value"))
 }
 
+fn optional_progress_u64(progress: &Value, field: &'static str) -> Result<Option<u64>> {
+    match progress.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| progress_required_field_error(field, "non-u64 value")),
+    }
+}
+
 fn required_progress_ts(progress: &Value, field: &'static str) -> Result<DateTime<Utc>> {
     let raw = required_progress_string(progress, field)?;
     parse_ts(&raw).map_err(|error| progress_required_field_error(field, error))
+}
+
+fn optional_progress_ts(progress: &Value, field: &'static str) -> Result<Option<DateTime<Utc>>> {
+    progress
+        .get(field)
+        .and_then(Value::as_str)
+        .map(parse_ts)
+        .transpose()
+        .map_err(|error| progress_required_field_error(field, error))
 }
 
 fn required_progress_cursor_ts(progress: &Value, field: &'static str) -> Result<DateTime<Utc>> {
@@ -390,6 +615,117 @@ fn required_progress_array<'a>(progress: &'a Value, field: &'static str) -> Resu
         .ok_or_else(|| progress_required_field_error(field, "missing or non-array value"))
 }
 
+fn gap_fill_missing_segment_from_value(
+    index: usize,
+    value: &Value,
+) -> Result<GapFillMissingSegment> {
+    let start = required_progress_segment_ts(value, index, "start")?;
+    let end = required_progress_segment_ts(value, index, "end")?;
+    if end < start {
+        return Err(progress_required_field_error(
+            "missing_segments.duration",
+            format!("segment {index} end is before start"),
+        ));
+    }
+    let reason = value
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            progress_required_field_error(
+                "missing_segments.reason",
+                format!("segment {index} missing or non-string reason"),
+            )
+        })?;
+    Ok(GapFillMissingSegment { start, end, reason })
+}
+
+fn required_progress_segment_ts(
+    value: &Value,
+    index: usize,
+    field: &'static str,
+) -> Result<DateTime<Utc>> {
+    let raw = value.get(field).and_then(Value::as_str).ok_or_else(|| {
+        progress_required_field_error(
+            "missing_segments.timestamp",
+            format!("segment {index} missing or non-string {field}"),
+        )
+    })?;
+    parse_ts(raw).map_err(|error| {
+        progress_required_field_error(
+            "missing_segments.timestamp",
+            format!("segment {index} invalid {field}: {error}"),
+        )
+    })
+}
+
+fn gap_fill_residue_stats(
+    missing_segments: &[GapFillMissingSegment],
+    covered_since: Option<DateTime<Utc>>,
+    covered_through: Option<DateTime<Utc>>,
+    requested_window_start: DateTime<Utc>,
+    requested_window_end: DateTime<Utc>,
+) -> GapFillResidueStats {
+    let mut stats = GapFillResidueStats::default();
+    for segment in missing_segments {
+        if is_boundary_reason(&segment.reason) {
+            let duration_ms = segment_duration_ms(segment);
+            stats.target_boundary_segments_count =
+                stats.target_boundary_segments_count.saturating_add(1);
+            stats.total_boundary_missing_ms =
+                stats.total_boundary_missing_ms.saturating_add(duration_ms);
+            stats.max_boundary_segment_ms = stats.max_boundary_segment_ms.max(duration_ms);
+        } else if segment.reason == ZERO_PROGRESS_ROOT_REASON {
+            stats.zero_progress_root_segments_count =
+                stats.zero_progress_root_segments_count.saturating_add(1);
+        } else if segment.reason != IRREDUCIBLE_REASON {
+            stats.unknown_non_target_segments_count =
+                stats.unknown_non_target_segments_count.saturating_add(1);
+        }
+    }
+    let start_deficit = covered_since.map(|covered_since| {
+        covered_since
+            .signed_duration_since(requested_window_start)
+            .num_milliseconds()
+            .max(0)
+    });
+    let end_deficit = covered_through.map(|covered_through| {
+        requested_window_end
+            .signed_duration_since(covered_through)
+            .num_milliseconds()
+            .max(0)
+    });
+    stats.start_coverage_deficit_ms = start_deficit;
+    stats.end_coverage_deficit_ms = end_deficit;
+    if let (Some(start_deficit), Some(end_deficit)) = (start_deficit, end_deficit) {
+        stats.total_accepted_residue_ms = Some(
+            stats
+                .total_boundary_missing_ms
+                .saturating_add(start_deficit)
+                .saturating_add(end_deficit),
+        );
+        stats.max_segment_or_deficit_ms = Some(
+            stats
+                .max_boundary_segment_ms
+                .max(start_deficit)
+                .max(end_deficit),
+        );
+    }
+    stats
+}
+
+fn is_boundary_reason(reason: &str) -> bool {
+    reason == BOUNDARY_PREFIX_REASON || reason == BOUNDARY_SUFFIX_REASON
+}
+
+fn segment_duration_ms(segment: &GapFillMissingSegment) -> i64 {
+    segment
+        .end
+        .signed_duration_since(segment.start)
+        .num_milliseconds()
+        .max(0)
+}
+
 fn progress_required_field_error(
     field: &'static str,
     detail: impl std::fmt::Display,
@@ -404,7 +740,7 @@ fn parse_ts(raw: &str) -> Result<DateTime<Utc>> {
 }
 
 fn run(config: Config) -> Result<String> {
-    validate_program_history_gap_fill_restore_gate(
+    let gap_fill_acceptance = validate_program_history_gap_fill_restore_gate(
         config.gap_fill_db_path.as_deref(),
         config.gap_fill_progress_path.as_deref(),
         config.gap_fill_window_start_utc.as_ref(),
@@ -479,6 +815,33 @@ fn run(config: Config) -> Result<String> {
             .gap_fill_db_path
             .as_ref()
             .map(|path| path.display().to_string()),
+        gap_fill_acceptance_policy: gap_fill_acceptance
+            .as_ref()
+            .map(|acceptance| acceptance.policy.to_string()),
+        gap_fill_accepted_irreducible_boundary_residue: gap_fill_acceptance
+            .as_ref()
+            .is_some_and(|acceptance| acceptance.accepted_irreducible_boundary_residue),
+        gap_fill_acceptance_fetched_rows: gap_fill_acceptance
+            .as_ref()
+            .and_then(|acceptance| acceptance.fetched_rows),
+        gap_fill_acceptance_staged_rows: gap_fill_acceptance
+            .as_ref()
+            .and_then(|acceptance| acceptance.staged_rows),
+        gap_fill_acceptance_rows_withheld_due_to_incomplete_outcome: gap_fill_acceptance
+            .as_ref()
+            .and_then(|acceptance| acceptance.rows_withheld_due_to_incomplete_outcome),
+        gap_fill_acceptance_start_coverage_deficit_ms: gap_fill_acceptance
+            .as_ref()
+            .and_then(|acceptance| acceptance.start_coverage_deficit_ms),
+        gap_fill_acceptance_end_coverage_deficit_ms: gap_fill_acceptance
+            .as_ref()
+            .and_then(|acceptance| acceptance.end_coverage_deficit_ms),
+        gap_fill_acceptance_total_accepted_residue_ms: gap_fill_acceptance
+            .as_ref()
+            .and_then(|acceptance| acceptance.total_accepted_residue_ms),
+        gap_fill_acceptance_max_segment_or_deficit_ms: gap_fill_acceptance
+            .as_ref()
+            .and_then(|acceptance| acceptance.max_segment_or_deficit_ms),
         freshness,
         replay,
         verdict,
@@ -503,6 +866,10 @@ fn render_human(
     output: &RestoreOutput,
 ) -> String {
     let gap_fill_db_path = output.gap_fill_db_path.as_deref().unwrap_or("null");
+    let gap_fill_acceptance_policy = output
+        .gap_fill_acceptance_policy
+        .as_deref()
+        .unwrap_or("null");
     [
         "event=discovery_runtime_restore".to_string(),
         format!("config_path={}", config_path.display()),
@@ -510,6 +877,39 @@ fn render_human(
         format!("db_path={}", output.db_path),
         format!("journal_db_path={}", journal_db_path.display()),
         format!("gap_fill_db_path={gap_fill_db_path}"),
+        format!("gap_fill_acceptance_policy={gap_fill_acceptance_policy}"),
+        format!(
+            "gap_fill_accepted_irreducible_boundary_residue={}",
+            output.gap_fill_accepted_irreducible_boundary_residue
+        ),
+        format!(
+            "gap_fill_acceptance_fetched_rows={}",
+            format_option(output.gap_fill_acceptance_fetched_rows)
+        ),
+        format!(
+            "gap_fill_acceptance_staged_rows={}",
+            format_option(output.gap_fill_acceptance_staged_rows)
+        ),
+        format!(
+            "gap_fill_acceptance_rows_withheld_due_to_incomplete_outcome={}",
+            format_option(output.gap_fill_acceptance_rows_withheld_due_to_incomplete_outcome)
+        ),
+        format!(
+            "gap_fill_acceptance_start_coverage_deficit_ms={}",
+            format_option(output.gap_fill_acceptance_start_coverage_deficit_ms)
+        ),
+        format!(
+            "gap_fill_acceptance_end_coverage_deficit_ms={}",
+            format_option(output.gap_fill_acceptance_end_coverage_deficit_ms)
+        ),
+        format!(
+            "gap_fill_acceptance_total_accepted_residue_ms={}",
+            format_option(output.gap_fill_acceptance_total_accepted_residue_ms)
+        ),
+        format!(
+            "gap_fill_acceptance_max_segment_or_deficit_ms={}",
+            format_option(output.gap_fill_acceptance_max_segment_or_deficit_ms)
+        ),
         format!("verdict={}", output.verdict.verdict),
         format!(
             "fresh_under_export_gate={}",
@@ -551,6 +951,12 @@ fn render_human(
         ),
     ]
     .join("\n")
+}
+
+fn format_option<T: ToString>(value: Option<T>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn replay_recent_raw_journal(
@@ -781,7 +1187,12 @@ mod tests {
         export_artifact, make_fixture, make_swap, parse_ts, seed_recent_raw_journal,
         seed_runtime_artifact_source, SqliteStore, Value,
     };
-    use super::{parse_args_from, run, validate_program_history_gap_fill_restore_gate, Config};
+    use super::{
+        parse_args_from, run, validate_program_history_gap_fill_restore_gate, Config,
+        ACCEPTED_RESIDUE_POLICY, BOUNDARY_PREFIX_REASON, BOUNDARY_SUFFIX_REASON,
+        GAP_FILL_ACCEPTANCE_FULL_REPLAYABLE, IRREDUCIBLE_REASON, IRREDUCIBLE_VERDICT,
+        ZERO_PROGRESS_ROOT_REASON,
+    };
     use anyhow::Result;
     use chrono::{DateTime, Duration, Utc};
     use std::path::{Path, PathBuf};
@@ -797,13 +1208,41 @@ mod tests {
         inserted_rows: u64,
         rows_withheld: u64,
     ) -> Result<()> {
+        write_gap_fill_progress_with_control(
+            path,
+            "complete_but_insufficient_for_healthy_restore",
+            "program_history_gap_fill_completed_but_still_missing_required_raw_window",
+            "complete",
+            replayable_output,
+            requested_window_start,
+            requested_window_end,
+            covered_through,
+            missing_segments,
+            inserted_rows,
+            rows_withheld,
+        )
+    }
+
+    fn write_gap_fill_progress_with_control(
+        path: &Path,
+        verdict: &str,
+        reason: &str,
+        current_phase: &str,
+        replayable_output: bool,
+        requested_window_start: DateTime<Utc>,
+        requested_window_end: DateTime<Utc>,
+        covered_through: DateTime<Utc>,
+        missing_segments: &str,
+        inserted_rows: u64,
+        rows_withheld: u64,
+    ) -> Result<()> {
         std::fs::write(
             path,
             format!(
                 r#"{{
-  "verdict": "complete_but_insufficient_for_healthy_restore",
-  "reason": "program_history_gap_fill_completed_but_still_missing_required_raw_window",
-  "current_phase": "complete",
+  "verdict": "{verdict}",
+  "reason": "{reason}",
+  "current_phase": "{current_phase}",
   "replayable_output": {replayable_output},
   "requested_window_start": "{}",
   "requested_window_end": "{}",
@@ -812,12 +1251,80 @@ mod tests {
     "slot": 123,
     "signature": "gap-fill-cursor"
   }},
+  "gap_fill_covered_since": "{}",
   "missing_segments": {missing_segments},
+  "fetched_rows": {inserted_rows},
+  "staged_rows": {inserted_rows},
   "inserted_rows": {inserted_rows},
   "rows_withheld_due_to_incomplete_outcome": {rows_withheld}
 }}"#,
                 requested_window_start.to_rfc3339(),
                 requested_window_end.to_rfc3339(),
+                covered_through.to_rfc3339(),
+                requested_window_start.to_rfc3339(),
+            ),
+        )?;
+        Ok(())
+    }
+
+    fn write_accepted_residue_gap_fill_progress(
+        path: &Path,
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+        missing_segments: &str,
+        rows_withheld: u64,
+    ) -> Result<()> {
+        write_accepted_residue_gap_fill_progress_with_fields(
+            path,
+            window_start,
+            window_end,
+            missing_segments,
+            rows_withheld,
+            rows_withheld,
+            0,
+            rows_withheld,
+            window_start,
+            window_end - Duration::milliseconds(857),
+        )
+    }
+
+    fn write_accepted_residue_gap_fill_progress_with_fields(
+        path: &Path,
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+        missing_segments: &str,
+        staged_rows: u64,
+        fetched_rows: u64,
+        inserted_rows: u64,
+        rows_withheld: u64,
+        covered_since: DateTime<Utc>,
+        covered_through: DateTime<Utc>,
+    ) -> Result<()> {
+        std::fs::write(
+            path,
+            format!(
+                r#"{{
+  "verdict": "{IRREDUCIBLE_VERDICT}",
+  "reason": "{IRREDUCIBLE_REASON}",
+  "current_phase": "completed_with_explicit_missing_segments",
+  "replayable_output": false,
+  "requested_window_start": "{}",
+  "requested_window_end": "{}",
+  "gap_fill_covered_since": "{}",
+  "gap_fill_covered_through_cursor": {{
+    "ts_utc": "{}",
+    "slot": 123,
+    "signature": "gap-fill-cursor"
+  }},
+  "missing_segments": {missing_segments},
+  "fetched_rows": {fetched_rows},
+  "staged_rows": {staged_rows},
+  "inserted_rows": {inserted_rows},
+  "rows_withheld_due_to_incomplete_outcome": {rows_withheld}
+}}"#,
+                window_start.to_rfc3339(),
+                window_end.to_rfc3339(),
+                covered_since.to_rfc3339(),
                 covered_through.to_rfc3339(),
             ),
         )?;
@@ -830,6 +1337,25 @@ mod tests {
         window_end: DateTime<Utc>,
     ) -> Result<()> {
         write_gap_fill_progress(path, true, window_start, window_end, window_end, "[]", 1, 0)
+    }
+
+    fn live_shaped_boundary_segments(
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+    ) -> String {
+        format!(
+            r#"[
+  {{ "start": "{}", "end": "{}", "reason": "{BOUNDARY_PREFIX_REASON}" }},
+  {{ "start": "{}", "end": "{}", "reason": "{BOUNDARY_SUFFIX_REASON}" }},
+  {{ "start": "{}", "end": "{}", "reason": "{IRREDUCIBLE_REASON}" }}
+]"#,
+            window_start.to_rfc3339(),
+            (window_start + Duration::milliseconds(600)).to_rfc3339(),
+            (window_end - Duration::seconds(1)).to_rfc3339(),
+            window_end.to_rfc3339(),
+            window_start.to_rfc3339(),
+            window_end.to_rfc3339(),
+        )
     }
 
     fn assert_reason(error: anyhow::Error, reason: &str) {
@@ -952,12 +1478,50 @@ mod tests {
         std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
         write_valid_gap_fill_progress(&progress_path, window_start, window_end)?;
 
-        validate_program_history_gap_fill_restore_gate(
+        let acceptance = validate_program_history_gap_fill_restore_gate(
             Some(&gap_fill_db_path),
             Some(&progress_path),
             Some(&window_start),
             Some(&window_end),
+        )?
+        .expect("gap-fill gate should return acceptance");
+        assert_eq!(acceptance.policy, GAP_FILL_ACCEPTANCE_FULL_REPLAYABLE);
+        assert!(!acceptance.accepted_irreducible_boundary_residue);
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_residue_progress_gate_allows_existing_gap_fill_db_path() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        write_accepted_residue_gap_fill_progress(
+            &progress_path,
+            window_start,
+            window_end,
+            &live_shaped_boundary_segments(window_start, window_end),
+            5,
         )?;
+
+        let acceptance = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )?
+        .expect("gap-fill gate should return accepted residue");
+        assert_eq!(acceptance.policy, ACCEPTED_RESIDUE_POLICY);
+        assert!(acceptance.accepted_irreducible_boundary_residue);
+        assert_eq!(acceptance.fetched_rows, Some(5));
+        assert_eq!(acceptance.staged_rows, Some(5));
+        assert_eq!(acceptance.rows_withheld_due_to_incomplete_outcome, Some(5));
+        assert_eq!(acceptance.start_coverage_deficit_ms, Some(0));
+        assert_eq!(acceptance.end_coverage_deficit_ms, Some(857));
+        assert_eq!(acceptance.total_accepted_residue_ms, Some(2_457));
+        assert_eq!(acceptance.max_segment_or_deficit_ms, Some(1_000));
         Ok(())
     }
 
@@ -1174,6 +1738,484 @@ mod tests {
         assert_reason(
             error,
             "program_history_gap_fill_restore_gate_rows_withheld_present",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_residue_root_segment_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        let segments = format!(
+            r#"[
+  {{ "start": "{}", "end": "{}", "reason": "{BOUNDARY_PREFIX_REASON}" }},
+  {{ "start": "2026-04-19T20:06:00Z", "end": "2026-04-19T20:06:01Z", "reason": "{ZERO_PROGRESS_ROOT_REASON}" }}
+]"#,
+            window_start.to_rfc3339(),
+            (window_start + Duration::milliseconds(600)).to_rfc3339(),
+        );
+        write_accepted_residue_gap_fill_progress(
+            &progress_path,
+            window_start,
+            window_end,
+            &segments,
+            7,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("root residue must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_irreducible_boundary_root_segments_present",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_residue_unknown_non_target_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        let segments = format!(
+            r#"[
+  {{ "start": "{}", "end": "{}", "reason": "{BOUNDARY_PREFIX_REASON}" }},
+  {{ "start": "2026-04-19T20:06:00Z", "end": "2026-04-19T20:06:01Z", "reason": "unexpected_boundary_gap" }}
+]"#,
+            window_start.to_rfc3339(),
+            (window_start + Duration::milliseconds(600)).to_rfc3339(),
+        );
+        write_accepted_residue_gap_fill_progress(
+            &progress_path,
+            window_start,
+            window_end,
+            &segments,
+            7,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("unknown residue must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_irreducible_boundary_unknown_non_target_segments_present",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_residue_wrong_reason_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        write_gap_fill_progress_with_control(
+            &progress_path,
+            IRREDUCIBLE_VERDICT,
+            "program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap",
+            "completed_with_explicit_missing_segments",
+            false,
+            window_start,
+            window_end,
+            window_end,
+            &live_shaped_boundary_segments(window_start, window_end),
+            1,
+            0,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("wrong residue reason must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_irreducible_boundary_reason_mismatch",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_residue_total_duration_over_policy_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        let mut segment_lines = Vec::new();
+        for offset in 0..11 {
+            let reason = if offset % 2 == 0 {
+                BOUNDARY_PREFIX_REASON
+            } else {
+                BOUNDARY_SUFFIX_REASON
+            };
+            let start = window_start + Duration::seconds(offset);
+            let end = start + Duration::seconds(1);
+            segment_lines.push(format!(
+                r#"{{ "start": "{}", "end": "{}", "reason": "{reason}" }}"#,
+                start.to_rfc3339(),
+                end.to_rfc3339()
+            ));
+        }
+        let segments = format!("[{}]", segment_lines.join(","));
+        write_accepted_residue_gap_fill_progress(
+            &progress_path,
+            window_start,
+            window_end,
+            &segments,
+            7,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("oversized total residue must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_irreducible_boundary_total_duration_too_large",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_residue_max_segment_over_policy_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        let segments = format!(
+            r#"[
+  {{ "start": "{}", "end": "{}", "reason": "{BOUNDARY_PREFIX_REASON}" }}
+]"#,
+            window_start.to_rfc3339(),
+            (window_start + Duration::milliseconds(1_001)).to_rfc3339(),
+        );
+        write_accepted_residue_gap_fill_progress(
+            &progress_path,
+            window_start,
+            window_end,
+            &segments,
+            7,
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("oversized segment residue must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_irreducible_boundary_segment_duration_too_large",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_residue_staged_rows_zero_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        write_accepted_residue_gap_fill_progress_with_fields(
+            &progress_path,
+            window_start,
+            window_end,
+            &live_shaped_boundary_segments(window_start, window_end),
+            0,
+            0,
+            0,
+            0,
+            window_start,
+            window_end - Duration::milliseconds(857),
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("zero staged accepted residue must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_irreducible_boundary_staged_rows_not_positive",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_residue_missing_staged_or_fetched_rows_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+
+        let missing_staged_path = temp.path().join("missing-staged.progress.json");
+        std::fs::write(
+            &missing_staged_path,
+            std::fs::read_to_string({
+                let path = temp.path().join("template-staged.progress.json");
+                write_accepted_residue_gap_fill_progress_with_fields(
+                    &path,
+                    window_start,
+                    window_end,
+                    &live_shaped_boundary_segments(window_start, window_end),
+                    7,
+                    7,
+                    0,
+                    7,
+                    window_start,
+                    window_end - Duration::milliseconds(857),
+                )?;
+                path
+            })?
+            .replace(
+                r#"  "staged_rows": 7,
+"#,
+                "",
+            ),
+        )?;
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&missing_staged_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("missing staged accepted residue must fail");
+        assert!(error.to_string().contains("staged_rows"));
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_required_field_missing_or_malformed",
+        );
+
+        let missing_fetched_path = temp.path().join("missing-fetched.progress.json");
+        std::fs::write(
+            &missing_fetched_path,
+            std::fs::read_to_string({
+                let path = temp.path().join("template-fetched.progress.json");
+                write_accepted_residue_gap_fill_progress_with_fields(
+                    &path,
+                    window_start,
+                    window_end,
+                    &live_shaped_boundary_segments(window_start, window_end),
+                    7,
+                    7,
+                    0,
+                    7,
+                    window_start,
+                    window_end - Duration::milliseconds(857),
+                )?;
+                path
+            })?
+            .replace(
+                r#"  "fetched_rows": 7,
+"#,
+                "",
+            ),
+        )?;
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&missing_fetched_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("missing fetched accepted residue must fail");
+        assert!(error.to_string().contains("fetched_rows"));
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_required_field_missing_or_malformed",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_residue_row_accounting_mismatches_fail_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+
+        let fetched_mismatch_path = temp.path().join("fetched-mismatch.progress.json");
+        write_accepted_residue_gap_fill_progress_with_fields(
+            &fetched_mismatch_path,
+            window_start,
+            window_end,
+            &live_shaped_boundary_segments(window_start, window_end),
+            7,
+            6,
+            0,
+            7,
+            window_start,
+            window_end - Duration::milliseconds(857),
+        )?;
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&fetched_mismatch_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("fetched mismatch accepted residue must fail");
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_irreducible_boundary_fetched_rows_mismatch",
+        );
+
+        let withheld_mismatch_path = temp.path().join("withheld-mismatch.progress.json");
+        write_accepted_residue_gap_fill_progress_with_fields(
+            &withheld_mismatch_path,
+            window_start,
+            window_end,
+            &live_shaped_boundary_segments(window_start, window_end),
+            7,
+            7,
+            0,
+            6,
+            window_start,
+            window_end - Duration::milliseconds(857),
+        )?;
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&withheld_mismatch_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("withheld mismatch accepted residue must fail");
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_irreducible_boundary_rows_withheld_mismatch",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_residue_inserted_rows_present_fails_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let progress_path = temp.path().join("gap-fill.progress.json");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        write_accepted_residue_gap_fill_progress_with_fields(
+            &progress_path,
+            window_start,
+            window_end,
+            &live_shaped_boundary_segments(window_start, window_end),
+            7,
+            7,
+            1,
+            7,
+            window_start,
+            window_end - Duration::milliseconds(857),
+        )?;
+
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&progress_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("inserted rows accepted residue must fail");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_irreducible_boundary_inserted_rows_present",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_residue_coverage_deficits_over_policy_fail_closed() -> Result<()> {
+        let temp = tempdir()?;
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+
+        let start_deficit_path = temp.path().join("start-deficit.progress.json");
+        write_accepted_residue_gap_fill_progress_with_fields(
+            &start_deficit_path,
+            window_start,
+            window_end,
+            &live_shaped_boundary_segments(window_start, window_end),
+            7,
+            7,
+            0,
+            7,
+            window_start + Duration::milliseconds(1_001),
+            window_end - Duration::milliseconds(857),
+        )?;
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&start_deficit_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("start deficit accepted residue must fail");
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_irreducible_boundary_start_deficit_too_large",
+        );
+
+        let end_deficit_path = temp.path().join("end-deficit.progress.json");
+        write_accepted_residue_gap_fill_progress_with_fields(
+            &end_deficit_path,
+            window_start,
+            window_end,
+            &live_shaped_boundary_segments(window_start, window_end),
+            7,
+            7,
+            0,
+            7,
+            window_start,
+            window_end - Duration::milliseconds(1_001),
+        )?;
+        let error = validate_program_history_gap_fill_restore_gate(
+            Some(&gap_fill_db_path),
+            Some(&end_deficit_path),
+            Some(&window_start),
+            Some(&window_end),
+        )
+        .expect_err("end deficit accepted residue must fail");
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_irreducible_boundary_end_deficit_too_large",
         );
         Ok(())
     }
@@ -1757,12 +2799,186 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            parsed
+                .pointer("/gap_fill_acceptance_policy")
+                .and_then(Value::as_str),
+            Some(GAP_FILL_ACCEPTANCE_FULL_REPLAYABLE)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/gap_fill_accepted_irreducible_boundary_residue")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
 
         let restored = SqliteStore::open(Path::new(&restored_db_path))?;
         let restore_state = restored.discovery_recent_raw_restore_state()?;
         assert!(restore_state.raw_coverage_satisfied);
         assert!(restore_state.gap_fill_replayed);
         assert_eq!(restore_state.gap_fill_replayed_rows, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn run_accepted_residue_gap_fill_records_policy_and_can_restore_raw_window() -> Result<()> {
+        let fixture = make_fixture("runtime-restore-gap-fill-accepted-residue")?;
+        let now = restore_test_now();
+        let artifact_now = now - Duration::minutes(30);
+        seed_runtime_artifact_source(&fixture.source_store, &fixture.config_path, artifact_now)?;
+        let artifact = export_artifact(&fixture.source_store, &fixture.config_path, now)?;
+        let artifact_path = fixture.temp.path().join("artifact-gap-fill-residue.json");
+        std::fs::write(&artifact_path, serde_json::to_vec_pretty(&artifact)?)?;
+
+        let restored_db_path = fixture.temp.path().join("restored-gap-fill-residue.db");
+        let journal_db_path = fixture.temp.path().join("recent-gap-fill-residue.db");
+        let gap_fill_db_path = fixture.temp.path().join("gap-fill-residue.db");
+        let gap_fill_progress_path = fixture.temp.path().join("gap-fill-residue.progress.json");
+        let gap_fill_window_start = now - Duration::days(7);
+        let gap_fill_window_end = now;
+        seed_recent_raw_journal(
+            &journal_db_path,
+            &[make_swap("journal-recent", now - Duration::minutes(5), 12)],
+            now,
+        )?;
+        seed_recent_raw_journal(
+            &gap_fill_db_path,
+            &[make_swap(
+                "gap-fill-window-start-residue",
+                now - Duration::days(7),
+                11,
+            )],
+            now,
+        )?;
+        write_accepted_residue_gap_fill_progress(
+            &gap_fill_progress_path,
+            gap_fill_window_start,
+            gap_fill_window_end,
+            &live_shaped_boundary_segments(gap_fill_window_start, gap_fill_window_end),
+            5,
+        )?;
+
+        let output = run(Config {
+            config_path: fixture.config_path.clone(),
+            artifact_path,
+            db_path: Some(restored_db_path.clone()),
+            journal_db_path: Some(journal_db_path),
+            gap_fill_db_path: Some(gap_fill_db_path),
+            gap_fill_progress_path: Some(gap_fill_progress_path),
+            gap_fill_window_start_utc: Some(gap_fill_window_start),
+            gap_fill_window_end_utc: Some(gap_fill_window_end),
+            bootstrap_degraded: false,
+            json: true,
+            now,
+        })?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(
+            parsed.pointer("/verdict/verdict").and_then(Value::as_str),
+            Some("trading_ready")
+        );
+        assert_eq!(
+            parsed
+                .pointer("/gap_fill_acceptance_policy")
+                .and_then(Value::as_str),
+            Some(ACCEPTED_RESIDUE_POLICY)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/gap_fill_accepted_irreducible_boundary_residue")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/gap_fill_acceptance_fetched_rows")
+                .and_then(Value::as_u64),
+            Some(5)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/gap_fill_acceptance_staged_rows")
+                .and_then(Value::as_u64),
+            Some(5)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/gap_fill_acceptance_rows_withheld_due_to_incomplete_outcome")
+                .and_then(Value::as_u64),
+            Some(5)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/gap_fill_acceptance_start_coverage_deficit_ms")
+                .and_then(Value::as_i64),
+            Some(0)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/gap_fill_acceptance_end_coverage_deficit_ms")
+                .and_then(Value::as_i64),
+            Some(857)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/gap_fill_acceptance_total_accepted_residue_ms")
+                .and_then(Value::as_i64),
+            Some(2_457)
+        );
+        assert_eq!(
+            parsed
+                .pointer("/replay/gap_fill_replayed")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_accepted_residue_gate_does_not_create_target_db() -> Result<()> {
+        let temp = tempdir()?;
+        let restored_db_path = temp.path().join("target").join("restored.db");
+        let gap_fill_db_path = temp.path().join("gap-fill.db");
+        let gap_fill_progress_path = temp.path().join("gap-fill.progress.json");
+        let gap_fill_window_start = parse_ts("2026-04-18T16:56:04Z")?;
+        let gap_fill_window_end = parse_ts("2026-04-23T15:59:39Z")?;
+        std::fs::write(&gap_fill_db_path, b"existing gap-fill db placeholder")?;
+        let segments = format!(
+            r#"[
+  {{ "start": "{}", "end": "{}", "reason": "{BOUNDARY_PREFIX_REASON}" }},
+  {{ "start": "2026-04-19T20:06:00Z", "end": "2026-04-19T20:06:01Z", "reason": "{ZERO_PROGRESS_ROOT_REASON}" }}
+]"#,
+            gap_fill_window_start.to_rfc3339(),
+            (gap_fill_window_start + Duration::milliseconds(600)).to_rfc3339(),
+        );
+        write_accepted_residue_gap_fill_progress(
+            &gap_fill_progress_path,
+            gap_fill_window_start,
+            gap_fill_window_end,
+            &segments,
+            7,
+        )?;
+
+        let error = run(Config {
+            config_path: temp.path().join("missing-config.toml"),
+            artifact_path: temp.path().join("missing-artifact.json"),
+            db_path: Some(restored_db_path.clone()),
+            journal_db_path: None,
+            gap_fill_db_path: Some(gap_fill_db_path),
+            gap_fill_progress_path: Some(gap_fill_progress_path),
+            gap_fill_window_start_utc: Some(gap_fill_window_start),
+            gap_fill_window_end_utc: Some(gap_fill_window_end),
+            bootstrap_degraded: false,
+            json: true,
+            now: restore_test_now(),
+        })
+        .expect_err("invalid accepted residue must stop before target DB mutation");
+
+        assert_reason(
+            error,
+            "program_history_gap_fill_restore_gate_irreducible_boundary_root_segments_present",
+        );
+        assert!(!restored_db_path.exists());
+        assert!(!restored_db_path.parent().expect("target parent").exists());
         Ok(())
     }
 
