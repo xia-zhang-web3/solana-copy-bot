@@ -6,6 +6,65 @@
 Date: 2026-03-17
 Status: Active historical roadmap with 2026-03-27 production-readiness and live Stage 3 accumulation addendum
 
+## Live Update (`2026-04-26`)
+
+Current Stage 3 production-discovery truth remains fail-closed. The
+exact-window `program_history` operator backfill has reached the requested
+window end, but the artifact is not restore-ready because explicit missing
+segments remain.
+
+Latest confirmed production snapshot:
+
+- snapshot time: `2026-04-26T08:01:37Z`
+- `solana-copy-bot.service = active`
+- `NRestarts = 0`
+- transient `copybot-program-gap-loop.service` was stopped after it reached a
+  terminal incomplete state and began repeating zero-progress attempts
+- disk for `/var/www/solana-copy-bot/state`:
+  `360G used / 108G available / 78%`
+- exact-window progress:
+  - attempt `2176`
+  - `covered_through = 2026-04-23T15:59:39Z`
+  - progress against the requested interval: `99.999800010%`
+  - `staged_rows = 45771005`
+  - `current_phase = completed_with_explicit_missing_segments`
+  - `verdict = not_proven_due_to_provider_throttling`
+  - `reason = program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap`
+  - `replayable_output = false`
+  - `missing_segments_count = 7`
+
+Current engineering interpretation:
+
+- the long-running exact-window operator backfill succeeded at closing the
+  broad raw-history interval frontier
+- the artifact is still not production green and must not be restored because
+  explicit missing segments remain
+- the next bounded production lane is targeted repair of explicit
+  `program_history_gap_fill_skipped_persistently_provider_blocked_slot_after_bounded_retries`
+  segments from the existing progress artifact
+- the synthetic full-window reason
+  `program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap`
+  is not a segment to scan directly
+- restore/trading/selector/scoring remain out of scope until the artifact is
+  explicitly replayable with no missing segments
+
+Development accounting:
+
+- `discovery_raw_gap_fill_program_history` now has a bounded
+  `--repair-explicit-missing-segments` operator mode
+- the repair mode requires existing matching progress JSON + progress DB, an
+  exact matching source/program/window contract, and objective evidence that
+  the base artifact reached the requested window end
+- repair output persists
+  `repair_explicit_missing_base_window_end_reached` so retryable provider
+  failures or budget-limited repair attempts can resume without losing the
+  base end-of-window proof
+- repair mode targets only root explicit provider-blocked missing segments,
+  preserves partial-boundary missing evidence, and stays non-replayable on
+  provider/source/budget attrition
+- no selector/scoring, `scoring_window_days`, restore gate, systemd config,
+  Stage 4, trading, or fail-closed relaxation was part of this batch
+
 ## Live Update (`2026-04-24`)
 
 Current Stage 3 production-discovery truth remains fail-closed. The active

@@ -3,6 +3,61 @@
 Date: 2026-03-23
 Status: Canonical historical restore plan; live server is currently fail-closed while exact-window program-history raw gap-fill backfills the missing interval
 
+## Live addendum (`2026-04-26`)
+
+This plan remains fail-closed. The exact-window `program_history` backfill has
+reached the requested window end, but the artifact is not eligible for restore
+because explicit missing segments remain.
+
+Current exact raw interval:
+
+- `start = 2026-04-18T16:56:04Z`
+- `end = 2026-04-23T15:59:39.857189405Z`
+
+Latest confirmed production facts:
+
+- time: `2026-04-26T08:01:37Z`
+- `solana-copy-bot.service = active`
+- service restarts: `NRestarts = 0`
+- transient `copybot-program-gap-loop.service` was stopped after it reached
+  repeated `completed_with_explicit_missing_segments` attempts
+- disk: `360G used / 108G available / 78%`
+- exact-window progress:
+  - attempt `2176`
+  - `covered_through = 2026-04-23T15:59:39Z`
+  - progress `99.999800010%`
+  - `staged_rows = 45771005`
+  - `current_phase = completed_with_explicit_missing_segments`
+  - `verdict = not_proven_due_to_provider_throttling`
+  - `reason = program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap`
+  - `replayable_output = false`
+  - `missing_segments_count = 7`
+
+Restore meaning:
+
+- do not run runtime restore from this artifact yet
+- do not treat the near-100% frontier as production green
+- `missing_segments` remains the hard blocker for restore review
+- selector/scoring and `scoring_window_days` remain out of scope
+
+Repository/operator accounting:
+
+- `discovery_raw_gap_fill_program_history` now includes a bounded
+  `--repair-explicit-missing-segments` mode
+- this mode requires matching progress JSON + progress DB and objective proof
+  that the base artifact reached the requested window end
+- it targets only root explicit missing segments with reason
+  `program_history_gap_fill_skipped_persistently_provider_blocked_slot_after_bounded_retries`
+- it does not scan the synthetic full-window reason
+  `program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap`
+  directly
+- it widens zero-duration missing segments to a minimal scanable window,
+  preserves partial-boundary evidence, and only removes a root missing segment
+  after a bounded repair scan completes without provider/source/budget failure
+- retryable or budget-limited repair output stays non-replayable and persists
+  `repair_explicit_missing_base_window_end_reached` so the repair cursor can
+  resume without losing the base end-of-window proof
+
 ## Live addendum (`2026-04-24`)
 
 This plan is still historical, but the active restore incident shape has moved

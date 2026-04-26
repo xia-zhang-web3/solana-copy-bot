@@ -42,7 +42,7 @@ use std::time::{Duration as StdDuration, Instant};
 #[cfg(test)]
 use tempfile::tempdir;
 
-const USAGE: &str = "usage: discovery_raw_gap_fill_program_history --config <path> [--db-path <path>] [--output <path>] [--window-start <rfc3339> --window-end <rfc3339>] [--http-url <url>] [--max-slots-to-scan <n>] [--sampling-segments <n>] [--block-fetch-concurrency <n>] [--max-slot-batches-per-attempt <n>] [--max-blocks-to-fetch <n>] [--max-candidate-transactions-to-parse <n>] [--json] [--now <rfc3339>]";
+const USAGE: &str = "usage: discovery_raw_gap_fill_program_history --config <path> [--db-path <path>] [--output <path>] [--window-start <rfc3339> --window-end <rfc3339>] [--http-url <url>] [--max-slots-to-scan <n>] [--sampling-segments <n>] [--block-fetch-concurrency <n>] [--max-slot-batches-per-attempt <n>] [--max-blocks-to-fetch <n>] [--max-candidate-transactions-to-parse <n>] [--repair-explicit-missing-segments] [--json] [--now <rfc3339>]";
 const AVG_SLOT_MS: f64 = 400.0;
 const IN_PROGRESS_DB_NAME: &str = "in_progress.sqlite";
 const DEFAULT_PROGRESS_DOMINANT_PHASE: &str = "unknown";
@@ -52,6 +52,10 @@ const ZERO_PROGRESS_ESCAPE_THRESHOLD: usize = 3;
 const ZERO_PROGRESS_ESCAPE_DISTANCE: u64 = 1;
 const ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON: &str =
     "program_history_gap_fill_skipped_persistently_provider_blocked_slot_after_bounded_retries";
+const PERSISTENT_BLOCKED_SLOT_GAP_INCOMPLETE_REASON: &str =
+    "program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap";
+const REPAIR_MODE_COVERAGE_METHOD: &str = "program_history_explicit_missing_segment_repair";
+const MIN_REPAIR_SEGMENT_SECONDS: i64 = 1;
 
 fn default_boundary_adjustment_kind() -> String {
     BoundaryAdjustmentKind::Unresolved.as_str().to_string()
@@ -96,6 +100,7 @@ struct Config {
     max_slot_batches_per_attempt_override: Option<usize>,
     max_blocks_to_fetch_override: Option<usize>,
     max_candidate_transactions_to_parse_override: Option<usize>,
+    repair_explicit_missing_segments: bool,
     json: bool,
     now: DateTime<Utc>,
 }
@@ -141,6 +146,8 @@ struct ProgramHistoryGapFillOutput {
     #[serde(default)]
     resolved_bounds_reused_from_progress: bool,
     coverage_method: String,
+    #[serde(default)]
+    repair_explicit_missing_base_window_end_reached: bool,
     #[serde(default = "default_block_fetch_encoding")]
     block_fetch_encoding: String,
     scan_budget_slots: usize,
@@ -443,6 +450,7 @@ struct FetchResult {
     boundary_missing_segments: Vec<GapFillMissingSegment>,
     resolved_bounds_reused_from_progress: bool,
     coverage_method: String,
+    repair_explicit_missing_base_window_end_reached: bool,
     block_fetch_encoding: String,
     scan_budget_slots: usize,
     budget_exhausted: bool,
@@ -790,6 +798,7 @@ where
     let mut max_slot_batches_per_attempt_override: Option<usize> = None;
     let mut max_blocks_to_fetch_override: Option<usize> = None;
     let mut max_candidate_transactions_to_parse_override: Option<usize> = None;
+    let mut repair_explicit_missing_segments = false;
     let mut json = false;
     let mut now: Option<DateTime<Utc>> = None;
 
@@ -835,6 +844,7 @@ where
                     args.next(),
                 )?)
             }
+            "--repair-explicit-missing-segments" => repair_explicit_missing_segments = true,
             "--json" => json = true,
             "--now" => now = Some(parse_ts_arg("--now", args.next())?),
             "--help" | "-h" => return Ok(None),
@@ -859,6 +869,7 @@ where
         max_slot_batches_per_attempt_override,
         max_blocks_to_fetch_override,
         max_candidate_transactions_to_parse_override,
+        repair_explicit_missing_segments,
         json,
         now: now.unwrap_or_else(Utc::now),
     }))
@@ -941,6 +952,35 @@ fn run_with_source<S: ProgramHistorySource + Sync>(
         config.now,
     );
 
+    if config.repair_explicit_missing_segments {
+        let fetch = fetch_program_history_gap_fill_repair_explicit_missing_segments(
+            source,
+            &program_ids,
+            &target_program_ids,
+            &plan,
+            settings,
+            loaded_config
+                .program_history_gap_fill
+                .max_requests_per_second,
+            loaded_config
+                .program_history_gap_fill
+                .retry_429_max_attempts,
+            loaded_config.program_history_gap_fill.retry_429_backoff_ms,
+            &output_paths,
+            config.now,
+        )?;
+        return write_gap_fill_output(
+            &db_path,
+            source,
+            &target_program_ids,
+            &plan,
+            fetch,
+            &output_paths,
+            loaded_config.program_history_gap_fill.output_retention,
+            config.now,
+        );
+    }
+
     let fetch = fetch_program_history_gap_fill(
         source,
         &program_ids,
@@ -1000,6 +1040,7 @@ fn run_with_source<S: ProgramHistorySource + Sync>(
                     boundary_missing_segments: Vec::new(),
                     resolved_bounds_reused_from_progress: false,
                     coverage_method: "unresolved".to_string(),
+                    repair_explicit_missing_base_window_end_reached: false,
                     block_fetch_encoding: "json".to_string(),
                     scan_budget_slots: settings.max_slots_to_scan,
                     budget_exhausted: false,
@@ -1156,6 +1197,21 @@ fn load_existing_progress(
     }
 }
 
+fn load_repair_progress(paths: &OutputPaths) -> Result<ProgramHistoryGapFillOutput> {
+    let state_exists = paths.progress_state_path.exists();
+    let db_exists = paths.progress_db_path.exists();
+    if !state_exists || !db_exists {
+        bail!(
+            "program_history_gap_fill_repair_explicit_missing_segments_missing_progress:progress_state_exists={state_exists}:progress_db_exists={db_exists}"
+        );
+    }
+    let raw_state = fs::read_to_string(&paths.progress_state_path)
+        .with_context(|| format!("failed reading {}", paths.progress_state_path.display()))?;
+    serde_json::from_str::<ProgramHistoryGapFillOutput>(&raw_state).with_context(|| {
+        "program_history_gap_fill_repair_explicit_missing_segments_progress_malformed".to_string()
+    })
+}
+
 fn progress_matches_preflight(
     progress: &ProgramHistoryGapFillOutput,
     source_kind: &str,
@@ -1168,6 +1224,73 @@ fn progress_matches_preflight(
         && progress.requested_window_start == plan.requested_window_start
         && progress.requested_window_end == plan.requested_window_end
         && progress.required_window_start == plan.required_window_start
+}
+
+fn validate_repair_progress_preflight(
+    progress: &ProgramHistoryGapFillOutput,
+    paths: &OutputPaths,
+    source_kind: &str,
+    target_program_ids: &[String],
+    plan: &GapFillPlan,
+) -> Result<()> {
+    if progress.replayable_output {
+        bail!(
+            "program_history_gap_fill_repair_explicit_missing_segments_progress_already_replayable"
+        );
+    }
+    if progress.source_kind != source_kind {
+        bail!("program_history_gap_fill_repair_explicit_missing_segments_source_mismatch");
+    }
+    if progress.target_program_ids != target_program_ids {
+        bail!("program_history_gap_fill_repair_explicit_missing_segments_program_set_mismatch");
+    }
+    if progress.requested_window_start != plan.requested_window_start
+        || progress.requested_window_end != plan.requested_window_end
+        || progress.required_window_start != plan.required_window_start
+    {
+        bail!("program_history_gap_fill_repair_explicit_missing_segments_window_mismatch");
+    }
+    let expected_progress_db_path = paths.progress_db_path.display().to_string();
+    let progress_db_matches = progress
+        .progress_db_path
+        .as_ref()
+        .map(|value| value == &expected_progress_db_path)
+        .unwrap_or(false)
+        || progress.output_db_path == expected_progress_db_path;
+    if !progress_db_matches {
+        bail!(
+            "program_history_gap_fill_repair_explicit_missing_segments_progress_db_path_mismatch"
+        );
+    }
+    if !progress_reached_requested_window_end(progress) {
+        bail!("program_history_gap_fill_repair_explicit_missing_segments_before_window_end");
+    }
+    Ok(())
+}
+
+fn progress_reached_requested_window_end(progress: &ProgramHistoryGapFillOutput) -> bool {
+    progress_objectively_reached_requested_window_end(progress)
+        || (progress.coverage_method == REPAIR_MODE_COVERAGE_METHOD
+            && progress.repair_explicit_missing_base_window_end_reached)
+}
+
+fn progress_objectively_reached_requested_window_end(
+    progress: &ProgramHistoryGapFillOutput,
+) -> bool {
+    if progress
+        .gap_fill_covered_through_cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.ts_utc >= progress.requested_window_end)
+    {
+        return true;
+    }
+    match (progress.next_batch_start_slot, progress.resolved_end_slot) {
+        (Some(next_slot), Some(end_slot)) if next_slot > end_slot => true,
+        _ => {
+            progress.attempt_frontier_end_slot == progress.resolved_end_slot
+                && progress.resolved_end_slot.is_some()
+        }
+    }
 }
 
 fn resume_progress_with_bounds(
@@ -1242,6 +1365,17 @@ fn should_persist_explicit_missing_segment_reason(reason: &str) -> bool {
     reason == "requested_window_prefix_uncovered_after_start_slot_adjustment"
         || reason == "requested_window_suffix_uncovered_after_end_slot_adjustment"
         || reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON
+}
+
+fn root_explicit_missing_segments(
+    progress: &ProgramHistoryGapFillOutput,
+) -> Vec<GapFillMissingSegment> {
+    progress
+        .missing_segments
+        .iter()
+        .filter(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON)
+        .cloned()
+        .collect()
 }
 
 fn merge_missing_segments(
@@ -1409,6 +1543,433 @@ fn dominant_phase_name(
     .unwrap_or_else(|| "idle".to_string())
 }
 
+fn fetch_program_history_gap_fill_repair_explicit_missing_segments<
+    S: ProgramHistorySource + Sync,
+>(
+    source: &S,
+    program_ids: &ProgramIdConfig,
+    target_program_ids: &[String],
+    plan: &GapFillPlan,
+    settings: ScanSettings,
+    max_requests_per_second: usize,
+    retry_429_max_attempts: usize,
+    retry_429_backoff_ms: u64,
+    output_paths: &OutputPaths,
+    now: DateTime<Utc>,
+) -> Result<FetchResult> {
+    let progress = load_repair_progress(output_paths)?;
+    validate_repair_progress_preflight(
+        &progress,
+        output_paths,
+        source.source_kind(),
+        target_program_ids,
+        plan,
+    )?;
+    let root_segments = root_explicit_missing_segments(&progress);
+    if root_segments.is_empty() {
+        bail!("program_history_gap_fill_repair_explicit_missing_segments_no_root_segments");
+    }
+
+    let progress_store = SqliteStore::open(&output_paths.progress_db_path).with_context(|| {
+        format!(
+            "failed opening program-history gap-fill progress db {}",
+            output_paths.progress_db_path.display()
+        )
+    })?;
+    progress_store.ensure_recent_raw_journal_tables()?;
+
+    let repair_base_window_end_reached = progress.repair_explicit_missing_base_window_end_reached
+        || progress_objectively_reached_requested_window_end(&progress);
+    let mut remaining_segments = persisted_explicit_missing_segments(&progress);
+    let mut combined_summary = ScanSummary::default();
+    let mut combined_sqlite_stage_ms = 0u64;
+    let mut attempt_inserted_rows = 0usize;
+    let mut first_attempt_start_slot: Option<u64> = None;
+    let mut last_attempt_frontier_end_slot: Option<u64> = None;
+    let mut next_batch_start_slot: Option<u64> = progress.next_batch_start_slot;
+    let mut terminal_source_error: Option<SourceError> = None;
+    let mut attempt_budget_exhausted = false;
+    let mut repair_reason: Option<String> = None;
+
+    for segment in root_segments {
+        if !remaining_segments
+            .iter()
+            .any(|candidate| candidate == &segment)
+        {
+            continue;
+        }
+        let (repair_start, repair_end) = repair_segment_time_window(
+            &segment,
+            plan.requested_window_start,
+            plan.requested_window_end,
+        )?;
+        let segment_bounds = match resolve_slot_bounds(
+            source,
+            repair_start,
+            repair_end,
+            settings.block_time_probe_slots,
+        ) {
+            Ok(bounds) => bounds,
+            Err(error) => {
+                terminal_source_error = Some(source_error_from_anyhow_or_contract(error));
+                break;
+            }
+        };
+        let Some((segment_start_slot, segment_end_slot)) = segment_bounds.usable_slot_range()
+        else {
+            repair_reason = Some(format!(
+                "program_history_gap_fill_repair_explicit_missing_segments_slot_bounds_unresolved:{}",
+                segment_bounds.failure_reason()
+            ));
+            break;
+        };
+        let segment_fully_bracketed = segment_bounds.boundary_missing_segments.is_empty()
+            && segment_bounds.requested_interval_fully_bracketed_after_adjustment;
+        merge_missing_segments(
+            &mut remaining_segments,
+            segment_bounds.boundary_missing_segments.clone(),
+        );
+        let slot_span = segment_end_slot
+            .saturating_sub(segment_start_slot)
+            .saturating_add(1);
+        if slot_span > settings.max_slots_to_scan.max(1) as u64 {
+            repair_reason = Some(
+                "program_history_gap_fill_repair_explicit_missing_segments_scan_budget_exhausted"
+                    .to_string(),
+            );
+            next_batch_start_slot = Some(segment_start_slot);
+            break;
+        }
+        let repair_start_slot =
+            repair_resume_start_slot(&progress, segment_start_slot, segment_end_slot);
+        first_attempt_start_slot.get_or_insert(repair_start_slot);
+        let attempt = scan_slot_range_attempt(
+            source,
+            program_ids,
+            repair_start,
+            repair_end,
+            repair_start_slot,
+            segment_end_slot,
+            settings,
+        )?;
+        if attempt.summary.frontier_end_slot.is_some() {
+            last_attempt_frontier_end_slot = attempt.summary.frontier_end_slot;
+        }
+        let mut attempt_swaps = attempt
+            .summary
+            .swaps_by_signature
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        attempt_swaps.sort_by(|left, right| {
+            left.ts_utc
+                .cmp(&right.ts_utc)
+                .then_with(|| left.slot.cmp(&right.slot))
+                .then_with(|| left.signature.cmp(&right.signature))
+        });
+        let sqlite_stage_started_at = Instant::now();
+        attempt_inserted_rows = attempt_inserted_rows.saturating_add(
+            progress_store
+                .insert_recent_raw_journal_batch(&attempt_swaps, now)?
+                .inserted_rows,
+        );
+        combined_sqlite_stage_ms =
+            combined_sqlite_stage_ms.saturating_add(elapsed_ms(sqlite_stage_started_at));
+        let attempt_source_error = attempt.source_error.clone();
+        let attempt_budget_exhausted_this_segment = attempt.attempt_budget_exhausted;
+        let phase_b_like_cost_budget_exhausted = attempt.summary.phase_b_like_cost_budget_exhausted;
+        let attempt_next_slot = attempt.next_slot_to_scan;
+        combined_summary = merge_scan_summaries(combined_summary, attempt.summary);
+        if let Some(source_error) = attempt_source_error {
+            terminal_source_error = Some(source_error);
+            next_batch_start_slot = attempt_next_slot.or(Some(repair_start_slot));
+            break;
+        }
+        if phase_b_like_cost_budget_exhausted {
+            repair_reason =
+                Some("program_history_gap_fill_phase_b_like_cost_budget_exhausted".to_string());
+            next_batch_start_slot = attempt_next_slot.or(Some(repair_start_slot));
+            break;
+        }
+        if attempt_budget_exhausted_this_segment {
+            attempt_budget_exhausted = true;
+            next_batch_start_slot = attempt_next_slot.or(Some(repair_start_slot));
+            break;
+        }
+        if segment_fully_bracketed {
+            remaining_segments.retain(|candidate| candidate != &segment);
+        }
+        next_batch_start_slot = progress
+            .resolved_end_slot
+            .map(|end_slot| end_slot.saturating_add(1));
+    }
+
+    let progress_state = progress_store.recent_raw_journal_state_read_only()?;
+    let (verdict, reason, current_phase, next_batch_start_slot) = if let Some(source_error) =
+        terminal_source_error
+    {
+        match source_error.kind {
+            SourceErrorKind::ProviderThrottled => (
+                GapFillVerdict::NotProvenDueToProviderThrottling,
+                format!("program_history_gap_fill_provider_throttled:{source_error}"),
+                "awaiting_next_attempt".to_string(),
+                next_batch_start_slot,
+            ),
+            SourceErrorKind::RetryableProviderFailure => (
+                GapFillVerdict::NotProvenDueToRetryableProviderFailure,
+                source_error.message,
+                "awaiting_next_attempt".to_string(),
+                next_batch_start_slot,
+            ),
+            SourceErrorKind::SourceContractFailure => (
+                GapFillVerdict::NonViableSourceContract,
+                format!("program_history_gap_fill_source_contract_failed:{source_error}"),
+                "source_contract_failed".to_string(),
+                next_batch_start_slot,
+            ),
+        }
+    } else if let Some(reason) = repair_reason {
+        let verdict = if reason == "program_history_gap_fill_phase_b_like_cost_budget_exhausted" {
+            GapFillVerdict::NotProvenDueToCostBudget
+        } else {
+            GapFillVerdict::NotProvenDueToScanBudget
+        };
+        (
+            verdict,
+            reason,
+            "awaiting_next_attempt".to_string(),
+            next_batch_start_slot,
+        )
+    } else if attempt_budget_exhausted {
+        (
+            GapFillVerdict::NotProvenDueToAttemptBudget,
+            "program_history_gap_fill_attempt_budget_exhausted".to_string(),
+            "awaiting_next_attempt".to_string(),
+            next_batch_start_slot,
+        )
+    } else if remaining_segments
+        .iter()
+        .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON)
+    {
+        (
+            GapFillVerdict::NotProvenDueToProviderThrottling,
+            PERSISTENT_BLOCKED_SLOT_GAP_INCOMPLETE_REASON.to_string(),
+            "completed_with_explicit_missing_segments".to_string(),
+            progress
+                .resolved_end_slot
+                .map(|end_slot| end_slot.saturating_add(1)),
+        )
+    } else if !remaining_segments.is_empty() {
+        (
+            GapFillVerdict::NotProvenDueToProviderThrottling,
+            "program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain"
+                .to_string(),
+            "completed_with_explicit_missing_segments".to_string(),
+            progress
+                .resolved_end_slot
+                .map(|end_slot| end_slot.saturating_add(1)),
+        )
+    } else {
+        let (verdict, reason) =
+            classify_fetch_outcome(plan, false, false, progress_state.row_count);
+        (verdict, reason, "publishing_output".to_string(), None)
+    };
+
+    Ok(FetchResult {
+        requested_start_slot_raw: progress.requested_start_slot_raw,
+        requested_end_slot_raw: progress.requested_end_slot_raw,
+        resolved_start_slot: progress.resolved_start_slot,
+        resolved_end_slot: progress.resolved_end_slot,
+        start_slot_adjustment_kind: progress.start_slot_adjustment_kind,
+        end_slot_adjustment_kind: progress.end_slot_adjustment_kind,
+        start_slot_adjustment_distance: progress.start_slot_adjustment_distance,
+        end_slot_adjustment_distance: progress.end_slot_adjustment_distance,
+        boundary_resolution_verdict: progress.boundary_resolution_verdict,
+        requested_interval_fully_bracketed_after_adjustment: progress
+            .requested_interval_fully_bracketed_after_adjustment,
+        requested_interval_partially_bracketed_after_adjustment: progress
+            .requested_interval_partially_bracketed_after_adjustment,
+        slot_span: progress.slot_span,
+        boundary_missing_segments: remaining_segments,
+        resolved_bounds_reused_from_progress: true,
+        coverage_method: REPAIR_MODE_COVERAGE_METHOD.to_string(),
+        repair_explicit_missing_base_window_end_reached: repair_base_window_end_reached,
+        block_fetch_encoding: progress.block_fetch_encoding,
+        scan_budget_slots: settings.max_slots_to_scan,
+        budget_exhausted: false,
+        phase_b_like_cost_budget_exhausted: combined_summary.phase_b_like_cost_budget_exhausted,
+        sampling_segments: progress.sampling_segments,
+        sampling_window_slots: progress.sampling_window_slots,
+        block_batch_size: settings.block_batch_size,
+        block_fetch_concurrency: settings.block_fetch_concurrency,
+        max_slot_batches_per_attempt: settings.max_slot_batches_per_attempt,
+        max_blocks_to_fetch: settings.max_blocks_to_fetch,
+        max_candidate_transactions_to_parse: settings.max_candidate_transactions_to_parse,
+        max_requests_per_second,
+        retry_429_max_attempts,
+        retry_429_backoff_ms,
+        current_phase,
+        dominant_phase: dominant_phase_name(
+            0,
+            combined_summary.block_list_ms,
+            combined_summary.block_fetch_ms,
+            combined_summary.candidate_filter_ms,
+            combined_summary.swap_parse_ms,
+            combined_sqlite_stage_ms,
+        ),
+        resolve_slot_bounds_ms: 0,
+        attempt_number: progress.attempt_number.saturating_add(1),
+        cumulative_across_attempts: true,
+        attempt_frontier_start_slot: first_attempt_start_slot,
+        attempt_frontier_end_slot: last_attempt_frontier_end_slot,
+        attempt_frontier_advanced_slots: combined_summary.scanned_slots,
+        next_batch_start_slot,
+        zero_progress_retry_count: 0,
+        zero_progress_blocked_start_slot: None,
+        zero_progress_escape_applied: false,
+        zero_progress_escape_distance: None,
+        progress_reset_reason: None,
+        attempt_budget_exhausted,
+        attempt_block_list_ms: combined_summary.block_list_ms,
+        attempt_block_fetch_ms: combined_summary.block_fetch_ms,
+        attempt_candidate_filter_ms: combined_summary.candidate_filter_ms,
+        attempt_swap_parse_ms: combined_summary.swap_parse_ms,
+        attempt_sqlite_stage_ms: combined_sqlite_stage_ms,
+        attempt_scanned_batches: combined_summary.scanned_batches,
+        attempt_scanned_slots: combined_summary.scanned_slots,
+        attempt_listed_block_slots: combined_summary.listed_block_slots,
+        attempt_scanned_blocks: combined_summary.scanned_blocks,
+        attempt_scanned_transactions: combined_summary.scanned_transactions,
+        attempt_candidate_program_transactions: combined_summary.candidate_program_transactions,
+        attempt_parsed_candidate_transactions: combined_summary.parsed_candidate_transactions,
+        attempt_parsed_candidate_swaps: combined_summary.parsed_candidate_swaps,
+        scanned_batches: progress
+            .scanned_batches
+            .saturating_add(combined_summary.scanned_batches),
+        scanned_slots: progress
+            .scanned_slots
+            .saturating_add(combined_summary.scanned_slots),
+        listed_block_slots: progress
+            .listed_block_slots
+            .saturating_add(combined_summary.listed_block_slots),
+        scanned_blocks: progress
+            .scanned_blocks
+            .saturating_add(combined_summary.scanned_blocks),
+        scanned_transactions: progress
+            .scanned_transactions
+            .saturating_add(combined_summary.scanned_transactions),
+        candidate_program_transactions: progress
+            .candidate_program_transactions
+            .saturating_add(combined_summary.candidate_program_transactions),
+        parsed_candidate_transactions: progress
+            .parsed_candidate_transactions
+            .saturating_add(combined_summary.parsed_candidate_transactions),
+        parsed_candidate_swaps: progress
+            .parsed_candidate_swaps
+            .saturating_add(combined_summary.parsed_candidate_swaps),
+        attempt_inserted_rows,
+        staged_rows: progress_state.row_count,
+        gap_fill_covered_since: progress_state.covered_since,
+        gap_fill_covered_through_cursor: progress_state.covered_through_cursor.clone(),
+        verdict,
+        reason,
+        early_stop_reason: combined_summary.early_stop_reason,
+    })
+}
+
+fn repair_segment_time_window(
+    segment: &GapFillMissingSegment,
+    requested_window_start: DateTime<Utc>,
+    requested_window_end: DateTime<Utc>,
+) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
+    let mut start = segment.start.max(requested_window_start);
+    let mut end = segment.end.min(requested_window_end);
+    if end <= start {
+        let min_duration = ChronoDuration::seconds(MIN_REPAIR_SEGMENT_SECONDS);
+        let widened_end = (start + min_duration).min(requested_window_end);
+        if widened_end > start {
+            end = widened_end;
+        } else {
+            let widened_start = (end - min_duration).max(requested_window_start);
+            if widened_start < end {
+                start = widened_start;
+            }
+        }
+    }
+    if end <= start {
+        bail!("program_history_gap_fill_repair_explicit_missing_segments_unscanable_segment");
+    }
+    Ok((start, end))
+}
+
+fn repair_resume_start_slot(
+    progress: &ProgramHistoryGapFillOutput,
+    segment_start_slot: u64,
+    segment_end_slot: u64,
+) -> u64 {
+    progress
+        .next_batch_start_slot
+        .filter(|slot| *slot >= segment_start_slot && *slot <= segment_end_slot)
+        .unwrap_or(segment_start_slot)
+}
+
+fn source_error_from_anyhow_or_contract(error: anyhow::Error) -> SourceError {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SourceError>())
+        .map(|source| SourceError {
+            kind: source.kind,
+            message: source.message.clone(),
+        })
+        .unwrap_or_else(|| SourceError::source_contract_failure(error.to_string()))
+}
+
+fn merge_scan_summaries(mut combined: ScanSummary, summary: ScanSummary) -> ScanSummary {
+    if summary.frontier_end_slot.is_some() {
+        combined.frontier_end_slot = summary.frontier_end_slot;
+    }
+    combined.block_list_ms = combined.block_list_ms.saturating_add(summary.block_list_ms);
+    combined.block_fetch_ms = combined
+        .block_fetch_ms
+        .saturating_add(summary.block_fetch_ms);
+    combined.candidate_filter_ms = combined
+        .candidate_filter_ms
+        .saturating_add(summary.candidate_filter_ms);
+    combined.swap_parse_ms = combined.swap_parse_ms.saturating_add(summary.swap_parse_ms);
+    combined.scanned_batches = combined
+        .scanned_batches
+        .saturating_add(summary.scanned_batches);
+    combined.scanned_slots = combined.scanned_slots.saturating_add(summary.scanned_slots);
+    combined.listed_block_slots = combined
+        .listed_block_slots
+        .saturating_add(summary.listed_block_slots);
+    combined.scanned_blocks = combined
+        .scanned_blocks
+        .saturating_add(summary.scanned_blocks);
+    combined.scanned_transactions = combined
+        .scanned_transactions
+        .saturating_add(summary.scanned_transactions);
+    combined.candidate_program_transactions = combined
+        .candidate_program_transactions
+        .saturating_add(summary.candidate_program_transactions);
+    combined.parsed_candidate_transactions = combined
+        .parsed_candidate_transactions
+        .saturating_add(summary.parsed_candidate_transactions);
+    combined.parsed_candidate_swaps = combined
+        .parsed_candidate_swaps
+        .saturating_add(summary.parsed_candidate_swaps);
+    if summary.phase_b_like_cost_budget_exhausted {
+        combined.phase_b_like_cost_budget_exhausted = true;
+    }
+    if combined.early_stop_reason.is_none() {
+        combined.early_stop_reason = summary.early_stop_reason;
+    }
+    for (signature, swap) in summary.swaps_by_signature {
+        combined.swaps_by_signature.entry(signature).or_insert(swap);
+    }
+    combined
+}
+
 fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
     source: &S,
     program_ids: &ProgramIdConfig,
@@ -1501,6 +2062,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
                 boundary_missing_segments: bounds.boundary_missing_segments.clone(),
                 resolved_bounds_reused_from_progress,
                 coverage_method: "unresolved".to_string(),
+                repair_explicit_missing_base_window_end_reached: false,
                 block_fetch_encoding: "json".to_string(),
                 scan_budget_slots: settings.max_slots_to_scan,
                 budget_exhausted: false,
@@ -1606,6 +2168,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
             boundary_missing_segments: bounds.boundary_missing_segments.clone(),
             resolved_bounds_reused_from_progress,
             coverage_method: scan_plan.coverage_method.to_string(),
+            repair_explicit_missing_base_window_end_reached: false,
             block_fetch_encoding: "json".to_string(),
             scan_budget_slots: scan_plan.scan_budget_slots,
             budget_exhausted: scan_plan.budget_exhausted,
@@ -1930,8 +2493,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
             {
                 (
                     GapFillVerdict::NotProvenDueToProviderThrottling,
-                    "program_history_gap_fill_incomplete_due_to_persistently_blocked_slot_gap"
-                        .to_string(),
+                    PERSISTENT_BLOCKED_SLOT_GAP_INCOMPLETE_REASON.to_string(),
                     "completed_with_explicit_missing_segments".to_string(),
                     Some(end_slot.saturating_add(1)),
                 )
@@ -1978,6 +2540,7 @@ fn fetch_program_history_gap_fill<S: ProgramHistorySource + Sync>(
         boundary_missing_segments,
         resolved_bounds_reused_from_progress,
         coverage_method: scan_plan.coverage_method.to_string(),
+        repair_explicit_missing_base_window_end_reached: false,
         block_fetch_encoding: "json".to_string(),
         scan_budget_slots: scan_plan.scan_budget_slots,
         budget_exhausted: false,
@@ -2856,6 +3419,8 @@ fn write_gap_fill_output<S: ProgramHistorySource>(
         slot_span: fetch.slot_span,
         resolved_bounds_reused_from_progress: fetch.resolved_bounds_reused_from_progress,
         coverage_method: fetch.coverage_method,
+        repair_explicit_missing_base_window_end_reached: fetch
+            .repair_explicit_missing_base_window_end_reached,
         block_fetch_encoding: fetch.block_fetch_encoding,
         scan_budget_slots: fetch.scan_budget_slots,
         budget_exhausted: fetch.budget_exhausted,
@@ -3117,6 +3682,10 @@ fn render_human(output: &ProgramHistoryGapFillOutput) -> String {
             output.resolved_bounds_reused_from_progress
         ),
         format!("coverage_method={}", output.coverage_method),
+        format!(
+            "repair_explicit_missing_base_window_end_reached={}",
+            output.repair_explicit_missing_base_window_end_reached
+        ),
         format!("block_fetch_encoding={}", output.block_fetch_encoding),
         format!("scan_budget_slots={}", output.scan_budget_slots),
         format!("budget_exhausted={}", output.budget_exhausted),
@@ -4865,6 +5434,465 @@ mod tests {
     }
 
     #[test]
+    fn explicit_missing_repair_refuses_without_existing_progress() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-no-progress")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture.temp.path().join("missing-progress.sqlite");
+        let source = resumable_source(window_start, window_end);
+        let error = run_output_with_source(
+            repair_config(Config {
+                output_path: Some(output_path),
+                window_start: Some(window_start),
+                window_end: Some(window_end),
+                now,
+                ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+            }),
+            &source,
+        )
+        .expect_err("repair mode must require existing progress artifacts");
+
+        assert!(error.to_string().contains(
+            "program_history_gap_fill_repair_explicit_missing_segments_missing_progress"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_refuses_before_progress_reaches_window_end() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-before-end")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture.temp.path().join("before-end.sqlite");
+        let source = resumable_source(window_start, window_end);
+        let base_config = Config {
+            output_path: Some(output_path),
+            window_start: Some(window_start),
+            window_end: Some(window_end),
+            max_slot_batches_per_attempt_override: Some(1),
+            now,
+            ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+        };
+        let first = run_output_with_source(base_config.clone(), &source)?;
+        assert_eq!(first.next_batch_start_slot, Some(1_105));
+
+        let error = run_output_with_source(repair_config(base_config), &source)
+            .expect_err("repair mode must refuse progress before window-end frontier");
+        assert!(error.to_string().contains(
+            "program_history_gap_fill_repair_explicit_missing_segments_before_window_end"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_coverage_method_does_not_bypass_window_end_preflight() -> Result<()>
+    {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-method-bypass")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let segment_start = window_start + Duration::minutes(7);
+        let segment_end = segment_start + Duration::seconds(1);
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (base_config, mut progress) = seed_explicit_missing_progress(
+            &fixture,
+            "method-bypass",
+            window_start,
+            window_end,
+            vec![persistent_blocked_segment(segment_start, segment_end)],
+        )?;
+        progress.coverage_method = REPAIR_MODE_COVERAGE_METHOD.to_string();
+        progress.repair_explicit_missing_base_window_end_reached = false;
+        progress.gap_fill_covered_through_cursor = Some(DiscoveryRuntimeCursor {
+            ts_utc: window_end - Duration::seconds(1),
+            slot: progress.resolved_end_slot.unwrap_or(2_200),
+            signature: "before-window-end".to_string(),
+        });
+        progress.next_batch_start_slot = progress.resolved_start_slot;
+        progress.attempt_frontier_end_slot = progress.resolved_start_slot;
+        let progress_state_path = PathBuf::from(
+            progress
+                .progress_state_path
+                .as_ref()
+                .expect("seeded progress must have progress state path"),
+        );
+        write_json_atomic(&progress_state_path, &progress)?;
+        let source = resumable_source(window_start, window_end);
+
+        let error = run_output_with_source(repair_config(base_config), &source)
+            .expect_err("repair coverage_method must not bypass objective window-end evidence");
+        assert!(error.to_string().contains(
+            "program_history_gap_fill_repair_explicit_missing_segments_before_window_end"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_does_not_scan_synthetic_full_window_reason() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-synthetic-only")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "synthetic-only",
+            window_start,
+            window_end,
+            vec![synthetic_persistent_blocked_gap_segment(
+                window_start,
+                window_end,
+            )],
+        )?;
+        let source = resumable_source(window_start, window_end);
+
+        let error = run_output_with_source(repair_config(base_config), &source)
+            .expect_err("synthetic full-window reason must not be a repair root");
+        assert!(error.to_string().contains(
+            "program_history_gap_fill_repair_explicit_missing_segments_no_root_segments"
+        ));
+        assert!(
+            source.list_requests().is_empty(),
+            "repair mode must not scan synthetic full-window segment"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_widens_zero_duration_segment_and_removes_it() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-zero-duration")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let zero_ts = window_start + Duration::minutes(7);
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "zero-duration",
+            window_start,
+            window_end,
+            vec![
+                persistent_blocked_segment(zero_ts, zero_ts),
+                synthetic_persistent_blocked_gap_segment(window_start, window_end),
+            ],
+        )?;
+        let source = resumable_source(window_start, window_end)
+            .with_block_time(1_149, zero_ts)
+            .with_block_time(1_153, zero_ts + Duration::seconds(1))
+            .with_block(
+                1_149,
+                block_with_transactions(
+                    1_149,
+                    zero_ts,
+                    vec![swap_tx(
+                        "repair-zero",
+                        "wallet-gap",
+                        1_149,
+                        "raydium-program",
+                    )],
+                ),
+            );
+
+        let output = run_output_with_source(repair_config(base_config), &source)?;
+        assert!(
+            !source.list_requests().is_empty(),
+            "zero-duration repair segment must be widened and scanned"
+        );
+        assert!(output.replayable_output);
+        assert_eq!(output.coverage_method, REPAIR_MODE_COVERAGE_METHOD);
+        assert!(!output
+            .missing_segments
+            .iter()
+            .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON));
+        assert!(!output
+            .missing_segments
+            .iter()
+            .any(|segment| segment.reason == PERSISTENT_BLOCKED_SLOT_GAP_INCOMPLETE_REASON));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_successfully_scanned_segment_is_removed() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-success")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let segment_start = window_start + Duration::minutes(7);
+        let segment_end = segment_start + Duration::seconds(1);
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "success",
+            window_start,
+            window_end,
+            vec![
+                persistent_blocked_segment(segment_start, segment_end),
+                synthetic_persistent_blocked_gap_segment(window_start, window_end),
+            ],
+        )?;
+        let source = resumable_source(window_start, window_end)
+            .with_block_time(1_149, segment_start)
+            .with_block_time(1_153, segment_end)
+            .with_block(
+                1_149,
+                block_with_transactions(
+                    1_149,
+                    segment_start,
+                    vec![swap_tx(
+                        "repair-success",
+                        "wallet-gap",
+                        1_149,
+                        "pumpswap-program",
+                    )],
+                ),
+            );
+
+        let output = run_output_with_source(repair_config(base_config), &source)?;
+        assert!(output.replayable_output);
+        assert_eq!(output.current_phase, "publishing_output");
+        assert!(output.missing_segments.is_empty());
+        assert_eq!(output.rows_withheld_due_to_incomplete_outcome, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_partial_boundary_evidence_keeps_segment_non_replayable() -> Result<()>
+    {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-partial-boundary")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let segment_start = window_start + Duration::minutes(7);
+        let segment_end = segment_start + Duration::seconds(2);
+        let adjusted_slot = 8_951;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "partial-boundary",
+            window_start,
+            window_end,
+            vec![
+                persistent_blocked_segment(segment_start, segment_end),
+                synthetic_persistent_blocked_gap_segment(window_start, window_end),
+            ],
+        )?;
+        let source = FakeProgramHistorySource::default()
+            .with_latest_slot(10_000)
+            .with_block_time(10_000, window_end)
+            .with_block_time(adjusted_slot, segment_start + Duration::seconds(1))
+            .with_block_range(adjusted_slot, adjusted_slot, vec![adjusted_slot])
+            .with_block(
+                adjusted_slot,
+                block_with_transactions(
+                    adjusted_slot,
+                    segment_start + Duration::seconds(1),
+                    vec![swap_tx(
+                        "repair-partial-boundary",
+                        "wallet-gap",
+                        adjusted_slot,
+                        "raydium-program",
+                    )],
+                ),
+            );
+
+        let output = run_output_with_source(repair_config(base_config), &source)?;
+        assert!(!output.replayable_output);
+        assert_eq!(output.verdict, "not_proven_due_to_provider_throttling");
+        assert!(output
+            .missing_segments
+            .iter()
+            .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON));
+        assert!(output.missing_segments.iter().any(|segment| {
+            segment.reason == "requested_window_prefix_uncovered_after_start_slot_adjustment"
+                || segment.reason == "requested_window_suffix_uncovered_after_end_slot_adjustment"
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_retryable_provider_failure_keeps_segment_non_replayable(
+    ) -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-retryable")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let segment_start = window_start + Duration::minutes(7);
+        let segment_end = segment_start + Duration::seconds(1);
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "retryable",
+            window_start,
+            window_end,
+            vec![
+                persistent_blocked_segment(segment_start, segment_end),
+                synthetic_persistent_blocked_gap_segment(window_start, window_end),
+            ],
+        )?;
+        let output_path = base_config
+            .output_path
+            .clone()
+            .expect("seeded config must use explicit output path");
+        let source = resumable_source(window_start, window_end)
+            .with_block_time(1_108, segment_end)
+            .with_get_block_failure_once(
+                1_104,
+                SourceError::retryable_provider_failure(
+                    "program_history_gap_fill_retryable_source_contract_http_408: rpc returned http status 408",
+                ),
+            )
+            .with_get_block_failure_once(
+                1_105,
+                SourceError::retryable_provider_failure(
+                    "program_history_gap_fill_retryable_source_contract_http_408: rpc returned http status 408",
+                ),
+            )
+            .with_get_block_failure_once(
+                1_106,
+                SourceError::retryable_provider_failure(
+                    "program_history_gap_fill_retryable_source_contract_http_408: rpc returned http status 408",
+                ),
+            )
+            .with_get_block_failure_once(
+                1_107,
+                SourceError::retryable_provider_failure(
+                    "program_history_gap_fill_retryable_source_contract_http_408: rpc returned http status 408",
+                ),
+            )
+            .with_get_block_failure_once(
+                1_108,
+                SourceError::retryable_provider_failure(
+                    "program_history_gap_fill_retryable_source_contract_http_408: rpc returned http status 408",
+                ),
+            );
+
+        let output = run_output_with_source(repair_config(base_config.clone()), &source)?;
+        assert_eq!(
+            output.verdict,
+            "not_proven_due_to_retryable_provider_failure"
+        );
+        assert_eq!(output.current_phase, "awaiting_next_attempt");
+        assert!(matches!(output.next_batch_start_slot, Some(1_104..=1_108)));
+        assert!(!output.replayable_output);
+        assert!(output.repair_explicit_missing_base_window_end_reached);
+        assert!(!output_path.exists());
+        assert!(output
+            .missing_segments
+            .iter()
+            .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON));
+
+        let resumed = run_output_with_source(repair_config(base_config), &source)?;
+        assert!(resumed.repair_explicit_missing_base_window_end_reached);
+        assert!(
+            resumed.attempt_number > output.attempt_number,
+            "second repair attempt must resume from repair output instead of failing preflight"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_budget_exhaustion_preserves_base_window_end_for_resume() -> Result<()>
+    {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-budget-resume")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let segment_start = window_start + Duration::minutes(7);
+        let segment_end = segment_start + Duration::seconds(1);
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (mut base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "budget-resume",
+            window_start,
+            window_end,
+            vec![
+                persistent_blocked_segment(segment_start, segment_end),
+                synthetic_persistent_blocked_gap_segment(window_start, window_end),
+            ],
+        )?;
+        base_config.max_blocks_to_fetch_override = Some(1);
+        let source = resumable_source(window_start, window_end)
+            .with_block_time(1_149, segment_start)
+            .with_block_time(1_153, segment_end)
+            .with_block(
+                1_149,
+                block_with_transactions(
+                    1_149,
+                    segment_start,
+                    vec![swap_tx(
+                        "repair-budget-a",
+                        "wallet-gap",
+                        1_149,
+                        "raydium-program",
+                    )],
+                ),
+            )
+            .with_block(
+                1_153,
+                block_with_transactions(
+                    1_153,
+                    segment_end - Duration::milliseconds(1),
+                    vec![swap_tx(
+                        "repair-budget-b",
+                        "wallet-gap",
+                        1_153,
+                        "pumpswap-program",
+                    )],
+                ),
+            );
+
+        let first = run_output_with_source(repair_config(base_config.clone()), &source)?;
+        assert_eq!(first.verdict, "not_proven_due_to_cost_budget");
+        assert_eq!(first.current_phase, "awaiting_next_attempt");
+        assert!(!first.replayable_output);
+        assert!(first.repair_explicit_missing_base_window_end_reached);
+        assert!(matches!(first.next_batch_start_slot, Some(1_150..=1_153)));
+
+        let mut second_config = base_config;
+        second_config.max_blocks_to_fetch_override = Some(8);
+        let second = run_output_with_source(repair_config(second_config), &source)?;
+        assert!(second.repair_explicit_missing_base_window_end_reached);
+        assert!(
+            second.attempt_number > first.attempt_number,
+            "second repair attempt must resume after budget cursor without preflight failure"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_flag_does_not_change_normal_gap_fill_behavior() -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-normal-unchanged")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let output_path = fixture.temp.path().join("normal-unchanged.sqlite");
+        let source = resumable_source(window_start, window_end);
+
+        let output = run_output_with_source(
+            Config {
+                output_path: Some(output_path),
+                window_start: Some(window_start),
+                window_end: Some(window_end),
+                max_slot_batches_per_attempt_override: Some(1),
+                now,
+                ..gap_fill_config(&fixture, Some(window_start), Some(window_end))
+            },
+            &source,
+        )?;
+
+        assert_eq!(output.verdict, "not_proven_due_to_attempt_budget");
+        assert_eq!(output.current_phase, "awaiting_next_attempt");
+        assert_ne!(output.coverage_method, REPAIR_MODE_COVERAGE_METHOD);
+        assert!(!output.replayable_output);
+        Ok(())
+    }
+
+    #[test]
     fn positive_progress_provider_throttling_does_not_trigger_zero_progress_escape_stage1(
     ) -> Result<()> {
         let fixture = make_fixture("program-gap-fill-positive-progress-throttle")?;
@@ -5142,6 +6170,7 @@ mod tests {
             max_slot_batches_per_attempt_override: None,
             max_blocks_to_fetch_override: None,
             max_candidate_transactions_to_parse_override: None,
+            repair_explicit_missing_segments: false,
             json: true,
             now: parse_ts("2026-03-24T13:43:40Z").expect("static ts"),
         }
@@ -5153,6 +6182,74 @@ mod tests {
     ) -> Result<ProgramHistoryGapFillOutput> {
         let loaded_config = load_from_path(&config.config_path)?;
         run_with_source(config, &loaded_config, source)
+    }
+
+    fn repair_config(mut config: Config) -> Config {
+        config.repair_explicit_missing_segments = true;
+        config
+    }
+
+    fn persistent_blocked_segment(
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> GapFillMissingSegment {
+        GapFillMissingSegment {
+            start,
+            end,
+            reason: ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON.to_string(),
+        }
+    }
+
+    fn synthetic_persistent_blocked_gap_segment(
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> GapFillMissingSegment {
+        GapFillMissingSegment {
+            start,
+            end,
+            reason: PERSISTENT_BLOCKED_SLOT_GAP_INCOMPLETE_REASON.to_string(),
+        }
+    }
+
+    fn seed_explicit_missing_progress(
+        fixture: &Fixture,
+        name: &str,
+        window_start: DateTime<Utc>,
+        window_end: DateTime<Utc>,
+        missing_segments: Vec<GapFillMissingSegment>,
+    ) -> Result<(Config, ProgramHistoryGapFillOutput)> {
+        let output_path = fixture.temp.path().join(format!("{name}.sqlite"));
+        let source = resumable_source(window_start, window_end);
+        let base_config = Config {
+            output_path: Some(output_path),
+            window_start: Some(window_start),
+            window_end: Some(window_end),
+            max_slot_batches_per_attempt_override: Some(1),
+            now: window_end,
+            ..gap_fill_config(fixture, Some(window_start), Some(window_end))
+        };
+        let mut progress = run_output_with_source(base_config.clone(), &source)?;
+        progress.current_phase = "completed_with_explicit_missing_segments".to_string();
+        progress.verdict = "not_proven_due_to_provider_throttling".to_string();
+        progress.reason = PERSISTENT_BLOCKED_SLOT_GAP_INCOMPLETE_REASON.to_string();
+        progress.attempt_frontier_end_slot = progress.resolved_end_slot;
+        progress.next_batch_start_slot = progress
+            .resolved_end_slot
+            .map(|end_slot| end_slot.saturating_add(1));
+        progress.missing_segments = missing_segments;
+        progress.replayable_output = false;
+        progress.sufficient_for_healthy_restore = false;
+        progress.inserted_rows = 0;
+        progress.rows_withheld_due_to_incomplete_outcome = progress.staged_rows;
+
+        let progress_state_path = PathBuf::from(
+            progress
+                .progress_state_path
+                .as_ref()
+                .expect("seeded progress must have progress state path"),
+        );
+        write_json_atomic(&progress_state_path, &progress)?;
+        Ok((base_config, progress))
     }
 
     fn dense_source(now: DateTime<Utc>) -> FakeProgramHistorySource {
