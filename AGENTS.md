@@ -338,6 +338,9 @@ Operator semantics:
   `repair_explicit_missing_base_window_end_reached`
 - missing segments are removed only after bounded re-scan proof; partial
   boundary evidence remains explicit fail-closed evidence
+- when a repair scan completes the scanable part of a broad provider-blocked
+  root segment, the root is replaced by narrower boundary missing evidence so
+  future repair attempts do not retarget the same already-refined root
 
 Deployment status:
 

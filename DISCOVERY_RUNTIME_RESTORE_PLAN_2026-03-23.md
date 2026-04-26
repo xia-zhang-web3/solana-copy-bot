@@ -54,6 +54,9 @@ Repository/operator accounting:
 - it widens zero-duration missing segments to a minimal scanable window,
   preserves partial-boundary evidence, and only removes a root missing segment
   after a bounded repair scan completes without provider/source/budget failure
+- if the scanable part of a root segment completes but boundary evidence
+  remains, the broad root segment is replaced by narrower boundary missing
+  segments and the artifact stays non-replayable
 - retryable or budget-limited repair output stays non-replayable and persists
   `repair_explicit_missing_base_window_end_reached` so the repair cursor can
   resume without losing the base end-of-window proof

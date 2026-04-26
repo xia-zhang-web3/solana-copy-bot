@@ -62,6 +62,9 @@ Development accounting:
 - repair mode targets only root explicit provider-blocked missing segments,
   preserves partial-boundary missing evidence, and stays non-replayable on
   provider/source/budget attrition
+- after a bounded repair scan proves the scanable portion of a root segment,
+  the broad provider-blocked root segment is removed and replaced by narrower
+  boundary missing evidence instead of being retried forever
 - no selector/scoring, `scoring_window_days`, restore gate, systemd config,
   Stage 4, trading, or fail-closed relaxation was part of this batch
 

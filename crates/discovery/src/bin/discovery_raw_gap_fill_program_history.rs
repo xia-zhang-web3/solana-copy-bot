@@ -1623,8 +1623,6 @@ fn fetch_program_history_gap_fill_repair_explicit_missing_segments<
             ));
             break;
         };
-        let segment_fully_bracketed = segment_bounds.boundary_missing_segments.is_empty()
-            && segment_bounds.requested_interval_fully_bracketed_after_adjustment;
         merge_missing_segments(
             &mut remaining_segments,
             segment_bounds.boundary_missing_segments.clone(),
@@ -1696,9 +1694,7 @@ fn fetch_program_history_gap_fill_repair_explicit_missing_segments<
             next_batch_start_slot = attempt_next_slot.or(Some(repair_start_slot));
             break;
         }
-        if segment_fully_bracketed {
-            remaining_segments.retain(|candidate| candidate != &segment);
-        }
+        remaining_segments.retain(|candidate| candidate != &segment);
         next_batch_start_slot = progress
             .resolved_end_slot
             .map(|end_slot| end_slot.saturating_add(1));
@@ -5660,8 +5656,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_missing_repair_partial_boundary_evidence_keeps_segment_non_replayable() -> Result<()>
-    {
+    fn explicit_missing_repair_partial_boundary_refinement_removes_root_segment() -> Result<()> {
         let fixture = make_fixture("program-gap-fill-explicit-missing-partial-boundary")?;
         let now = parse_ts("2026-03-24T13:43:40Z")?;
         let window_start = now - Duration::minutes(14);
@@ -5702,7 +5697,16 @@ mod tests {
         let output = run_output_with_source(repair_config(base_config), &source)?;
         assert!(!output.replayable_output);
         assert_eq!(output.verdict, "not_proven_due_to_provider_throttling");
-        assert!(output
+        assert_eq!(
+            output.reason,
+            "program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain"
+        );
+        assert_eq!(
+            output.current_phase,
+            "completed_with_explicit_missing_segments"
+        );
+        assert!(output.repair_explicit_missing_base_window_end_reached);
+        assert!(!output
             .missing_segments
             .iter()
             .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON));
@@ -5710,6 +5714,70 @@ mod tests {
             segment.reason == "requested_window_prefix_uncovered_after_start_slot_adjustment"
                 || segment.reason == "requested_window_suffix_uncovered_after_end_slot_adjustment"
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_missing_repair_after_boundary_refinement_does_not_target_removed_root_again(
+    ) -> Result<()> {
+        let fixture = make_fixture("program-gap-fill-explicit-missing-refined-no-loop")?;
+        let now = parse_ts("2026-03-24T13:43:40Z")?;
+        let window_start = now - Duration::minutes(14);
+        let window_end = now;
+        let segment_start = window_start + Duration::minutes(7);
+        let segment_end = segment_start + Duration::seconds(2);
+        let adjusted_slot = 8_951;
+        init_runtime_db(&fixture.runtime_db_path)?;
+        let (base_config, _) = seed_explicit_missing_progress(
+            &fixture,
+            "refined-no-loop",
+            window_start,
+            window_end,
+            vec![
+                persistent_blocked_segment(segment_start, segment_end),
+                synthetic_persistent_blocked_gap_segment(window_start, window_end),
+            ],
+        )?;
+        let first_source = FakeProgramHistorySource::default()
+            .with_latest_slot(10_000)
+            .with_block_time(10_000, window_end)
+            .with_block_time(adjusted_slot, segment_start + Duration::seconds(1))
+            .with_block_range(adjusted_slot, adjusted_slot, vec![adjusted_slot])
+            .with_block(
+                adjusted_slot,
+                block_with_transactions(
+                    adjusted_slot,
+                    segment_start + Duration::seconds(1),
+                    vec![swap_tx(
+                        "repair-refined-no-loop",
+                        "wallet-gap",
+                        adjusted_slot,
+                        "raydium-program",
+                    )],
+                ),
+            );
+
+        let first = run_output_with_source(repair_config(base_config.clone()), &first_source)?;
+        assert!(!first.replayable_output);
+        assert!(!first
+            .missing_segments
+            .iter()
+            .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON));
+        assert!(first.missing_segments.iter().any(|segment| {
+            segment.reason == "requested_window_prefix_uncovered_after_start_slot_adjustment"
+                || segment.reason == "requested_window_suffix_uncovered_after_end_slot_adjustment"
+        }));
+
+        let second_source = FakeProgramHistorySource::default();
+        let error = run_output_with_source(repair_config(base_config), &second_source)
+            .expect_err("refined progress must not target the removed root segment again");
+        assert!(error.to_string().contains(
+            "program_history_gap_fill_repair_explicit_missing_segments_no_root_segments"
+        ));
+        assert!(
+            second_source.list_requests().is_empty(),
+            "second repair attempt must not rescan an already-refined root segment"
+        );
         Ok(())
     }
 
@@ -5851,6 +5919,10 @@ mod tests {
         assert!(!first.replayable_output);
         assert!(first.repair_explicit_missing_base_window_end_reached);
         assert!(matches!(first.next_batch_start_slot, Some(1_150..=1_153)));
+        assert!(first
+            .missing_segments
+            .iter()
+            .any(|segment| segment.reason == ZERO_PROGRESS_ESCAPED_SLOT_MISSING_REASON));
 
         let mut second_config = base_config;
         second_config.max_blocks_to_fetch_override = Some(8);
