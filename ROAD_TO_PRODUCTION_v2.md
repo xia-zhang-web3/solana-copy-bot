@@ -78,6 +78,11 @@ Development accounting:
   reason
   `program_history_gap_fill_repair_explicit_missing_segments_irreducible_boundary_evidence_remains`
   instead of burning loop attempts as provider-throttling progress
+- `discovery_raw_gap_fill_program_history_irreducible_boundary_report` is a
+  read-only decision-surface report for this terminal state; it quantifies only
+  the remaining boundary evidence, always reports `restore_ready=false` and
+  `production_green=false`, and requires an explicit human contract decision
+  rather than marking the artifact replayable
 - no selector/scoring, `scoring_window_days`, restore gate, systemd config,
   Stage 4, trading, or fail-closed relaxation was part of this batch
 

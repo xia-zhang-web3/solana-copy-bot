@@ -352,6 +352,10 @@ Operator semantics:
   terminal incomplete evidence with reason
   `program_history_gap_fill_repair_explicit_missing_segments_irreducible_boundary_evidence_remains`,
   not a continuable provider-throttling loop
+- `discovery_raw_gap_fill_program_history_irreducible_boundary_report` is a
+  read-only decision-surface report only: it quantifies irreducible boundary
+  residue, always keeps `restore_ready=false` and `production_green=false`, and
+  does not weaken restore gates or fail-closed semantics
 
 Deployment status:
 

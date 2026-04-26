@@ -68,6 +68,9 @@ Repository/operator accounting:
   terminal incomplete reason
   `program_history_gap_fill_repair_explicit_missing_segments_irreducible_boundary_evidence_remains`
   instead of continuing as provider-throttling progress
+- `discovery_raw_gap_fill_program_history_irreducible_boundary_report` is
+  read-only; it quantifies irreducible boundary residue and never authorizes
+  restore, never opens SQLite/RPC, and never marks production green
 - retryable or budget-limited repair output stays non-replayable and persists
   `repair_explicit_missing_base_window_end_reached` so the repair cursor can
   resume without losing the base end-of-window proof
