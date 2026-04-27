@@ -73,6 +73,7 @@ const QUALITY_MAX_FETCH_PER_CYCLE: usize = 20;
 const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
 const AGGREGATE_READINESS_MAX_LAG_BUCKETS: u64 = 2;
 const CAP_TRUNCATION_FOLLOWLIST_DEACTIVATION_GUARD_CYCLES: u32 = 2;
+const RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON: &str = "raw_window_zero_publishable_universe";
 const STREAMING_RUG_TRADE_SWEEP_INTERVAL_SWAPS: usize = 2_048;
 const COLLECT_BUY_MINTS_FRESH_SCAN_BATCH_CAP: usize = 512;
 const STALE_RECONCILE_TOKEN_BATCH_CAP: usize = 256;
@@ -13424,7 +13425,7 @@ impl DiscoveryService {
                                 published_scoring_source: Some(scoring_source.to_string()),
                                 published_wallet_ids: None,
                             },
-                            false,
+                            reason == RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON,
                             None,
                         )?;
                     }
@@ -13491,8 +13492,11 @@ impl DiscoveryService {
             }
         }
         let published_universe = effective_runtime_mode == DiscoveryRuntimeMode::Healthy;
+        let clear_published_truth =
+            !published_universe && effective_reason == RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON;
         write_attempted = true;
         carry_forward_happened = !published_universe
+            && !clear_published_truth
             && existing_publication_state.as_ref().is_some_and(|state| {
                 state.last_published_at.is_some()
                     || state
@@ -13513,7 +13517,7 @@ impl DiscoveryService {
                     None
                 },
             },
-            false,
+            clear_published_truth,
             published_universe
                 .then(|| self.publication_selection_policy_fingerprint())
                 .as_deref(),
@@ -22098,18 +22102,34 @@ impl DiscoveryService {
                 .with_runtime_mode(previous_summary.runtime_mode)
                 .with_scoring_source(previous_summary.scoring_source)
                 .with_cap_truncation_telemetry(&cap_truncation_telemetry);
+                let exact_empty_current_raw = current_raw
+                    .as_ref()
+                    .is_some_and(|current_raw| current_raw.top_wallet_ids.is_empty());
+                if exact_empty_current_raw {
+                    if let Some(current_raw) = current_raw.as_ref() {
+                        summary.eligible_wallets = current_raw.eligible_wallet_count;
+                        summary.top_wallets.clear();
+                    }
+                    summary = summary.with_runtime_mode(DiscoveryRuntimeMode::FailClosed);
+                }
                 if summary.runtime_mode != DiscoveryRuntimeMode::BootstrapDegraded {
+                    let publication_write_due = publish_due || exact_empty_current_raw;
+                    let publication_reason = if exact_empty_current_raw {
+                        RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON
+                    } else {
+                        summary.scoring_source
+                    };
                     let publication_outcome = self.persist_publication_state(
                         store,
                         summary.runtime_mode,
-                        publish_due,
+                        publication_write_due,
                         metrics_window_start,
                         Self::cached_cycle_exact_published_wallet_ids(
                             summary.runtime_mode,
                             current_raw.as_ref(),
                         ),
                         summary.scoring_source,
-                        summary.scoring_source,
+                        publication_reason,
                         now,
                     )?;
                     if publish_due && publication_outcome.published_universe_persisted {
@@ -35034,6 +35054,137 @@ mod tests {
                 .as_ref()
                 .is_some_and(|wallets| wallets == &vec!["wallet_top".to_string()]),
             "cached healthy publish must flush the exact cached top-wallet ids instead of issuing a partial publication-state update with published_wallet_ids=None"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cached_cycle_exact_empty_publication_clears_stale_published_truth_stage1() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-cached-exact-empty-publication-clears-stale-truth.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let mut config = stage1_runtime_config();
+        config.metric_snapshot_interval_seconds = 3_600;
+        config.max_window_swaps_in_memory = 512;
+        let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
+        let now = DateTime::parse_from_rfc3339("2026-04-24T18:05:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let (window_start, metrics_window_start) =
+            seed_stage1_persisted_stream_runtime_fixture(&store, &config, now, 6, 1)?;
+
+        let stale_published_at = DateTime::parse_from_rfc3339("2026-04-06T17:55:23Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let stale_wallet_ids = (0..7)
+            .map(|idx| format!("wallet_stale_published_{idx}"))
+            .collect::<Vec<_>>();
+        let stale_publish = discovery.persist_publication_state(
+            &store,
+            DiscoveryRuntimeMode::Healthy,
+            true,
+            metrics_window_start - Duration::hours(1),
+            Some(&stale_wallet_ids),
+            "raw_window",
+            "seed_stale_publication_truth",
+            stale_published_at,
+        )?;
+        assert!(stale_publish.published_universe_persisted);
+        {
+            let mut state = discovery
+                .window_state
+                .lock()
+                .expect("window_state lock should succeed");
+            state.last_publish_at =
+                Some(now - Duration::seconds(config.refresh_seconds as i64 + 1));
+            state.last_snapshot_bucket = Some(metrics_window_start);
+            state.last_summary = Some(
+                DiscoverySummary {
+                    window_start,
+                    wallets_seen: 7_715,
+                    eligible_wallets: 0,
+                    metrics_written: 0,
+                    follow_promoted: 0,
+                    follow_demoted: 0,
+                    active_follow_wallets: 0,
+                    top_wallets: stale_wallet_ids.clone(),
+                    published: false,
+                    ..DiscoverySummary::default()
+                }
+                .with_runtime_mode(DiscoveryRuntimeMode::FailClosed)
+                .with_scoring_source("raw_window"),
+            );
+            state.last_exact_current_raw_truth = Some(CachedCurrentRawTruthSample {
+                window_start,
+                observed_swaps_loaded: 45_771_784,
+                eligible_wallet_count: 0,
+                top_wallet_ids: Vec::new(),
+            });
+        }
+
+        let summary = discovery.run_cycle(&store, now)?;
+        assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
+        assert_eq!(summary.scoring_source, "raw_window");
+        assert!(
+            !summary.published,
+            "exact empty current_raw truth must not report a healthy publish"
+        );
+        assert!(
+            summary.top_wallets.is_empty(),
+            "cached exact empty raw-window truth must not keep stale summary top wallets"
+        );
+        assert_eq!(summary.eligible_wallets, 0);
+        assert_eq!(
+            store.list_active_follow_wallets()?,
+            HashSet::<String>::new(),
+            "exact empty raw-window truth must not activate the stale published followlist"
+        );
+
+        let publication_state = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state should exist after exact empty cached cycle");
+        assert_eq!(
+            publication_state.runtime_mode,
+            DiscoveryRuntimeMode::FailClosed
+        );
+        assert_eq!(
+            publication_state.reason,
+            RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON
+        );
+        assert_eq!(
+            publication_state.published_scoring_source.as_deref(),
+            Some("raw_window")
+        );
+        assert_eq!(
+            publication_state.last_published_at, None,
+            "exact empty current_raw truth must clear the stale last_published_at"
+        );
+        assert_eq!(
+            publication_state.last_published_window_start, None,
+            "exact empty current_raw truth must clear the stale publication window"
+        );
+        assert!(
+            publication_state
+                .published_wallet_ids
+                .as_ref()
+                .map_or(true, Vec::is_empty),
+            "exact empty current_raw truth must clear stale published wallet ids"
+        );
+        assert_ne!(
+            publication_state.published_wallet_ids.unwrap_or_default(),
+            stale_wallet_ids,
+            "cached exact empty raw-window truth must not carry forward stale wallet ids"
+        );
+        assert!(
+            discovery
+                .runtime_publication_truth_resolution(&store, now)?
+                .is_none(),
+            "fail-closed exact empty publication state must not resolve as production-ready truth"
         );
         Ok(())
     }
