@@ -159,6 +159,28 @@ Current engineering interpretation:
   - `unexplained_candidate_wallets_after_persisted_gates = 0`
   - `selector_zero_universe_claimed = false`
   - `production_green = false`
+- commit `f34b3f9` added persisted near-miss metrics to the same read-only
+  zero-universe report; live proof at `2026-04-27T19:49:43Z` showed:
+  - `elapsed_ms = 7470`
+  - `near_miss_metrics_proven = true`
+  - `near_miss_unavailable_reason = null`
+  - `max_trades = 59`
+  - `max_active_days = 2`
+  - `max_buy_count = 35`
+  - `max_tradable_ratio = 1.0`
+  - `max_score = 0.0`
+  - all `single_gate_relief_counts` are `0`
+  - bounded near-miss samples with sufficient trades/buys/tradable ratio still
+    fail simultaneously on:
+    - `min_active_days`
+    - `min_score`
+    - `require_open_positions_for_publication`
+  - `selector_zero_universe_claimed = false`
+  - `production_green = false`
+- current bounded evidence now points at persisted score/open-position/active
+  day inputs for otherwise high-activity wallets; do not lower thresholds or
+  bypass gates before proving whether those persisted evidence paths are
+  truthful
 - current bounded work should now target why the fresh persisted metrics/raw
   evidence produce zero publishable wallets, using persisted metrics evidence
   only; stale persisted freshness evidence and cached-summary conflict are no
