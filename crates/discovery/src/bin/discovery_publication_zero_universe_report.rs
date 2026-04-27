@@ -62,6 +62,11 @@ struct PublicationZeroUniverseReport {
     reject_counts_unavailable_reason: Option<String>,
     reject_counts: RejectCountsReport,
     rejected_wallet_samples: Vec<RejectedWalletSample>,
+    near_miss_metrics_proven: bool,
+    near_miss_unavailable_reason: Option<String>,
+    max_observed_metrics: MaxObservedMetricsReport,
+    single_gate_relief_counts: SingleGateReliefCountsReport,
+    bounded_near_miss_wallet_samples: Vec<NearMissWalletSample>,
     selector_zero_universe_claimed: bool,
     zero_universe_reason: String,
     production_green: bool,
@@ -135,6 +140,25 @@ struct RejectCountsReport {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+struct MaxObservedMetricsReport {
+    max_trades: Option<u64>,
+    max_active_days: Option<u64>,
+    max_buy_count: Option<u64>,
+    max_tradable_ratio: Option<f64>,
+    max_score: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SingleGateReliefCountsReport {
+    would_pass_if_min_trades_ignored: Option<u64>,
+    would_pass_if_min_active_days_ignored: Option<u64>,
+    would_pass_if_min_buy_count_ignored: Option<u64>,
+    would_pass_if_min_tradable_ratio_ignored: Option<u64>,
+    would_pass_if_min_score_ignored: Option<u64>,
+    would_pass_if_open_position_gate_ignored: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 struct PersistedMetricsGateReport {
     evidence_source: &'static str,
     expected_metrics_window_start: DateTime<Utc>,
@@ -171,6 +195,18 @@ struct RejectedWalletSample {
     wallet_id: String,
     reject_reasons_proven: bool,
     reject_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct NearMissWalletSample {
+    wallet_id: String,
+    trades: u32,
+    active_days: u32,
+    buy_count: u32,
+    tradable_ratio: f64,
+    score: f64,
+    has_open_position: bool,
+    failing_gates: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -229,6 +265,11 @@ struct PersistedMetricsGateResult {
     reject_counts_unavailable_reason: Option<String>,
     reject_counts: RejectCountsReport,
     rejected_wallet_samples: Vec<RejectedWalletSample>,
+    near_miss_metrics_proven: bool,
+    near_miss_unavailable_reason: Option<String>,
+    max_observed_metrics: MaxObservedMetricsReport,
+    single_gate_relief_counts: SingleGateReliefCountsReport,
+    bounded_near_miss_wallet_samples: Vec<NearMissWalletSample>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -410,6 +451,11 @@ fn run(config: &Config) -> Result<PublicationZeroUniverseReport> {
         reject_counts_unavailable_reason: metrics_gate.reject_counts_unavailable_reason,
         reject_counts: metrics_gate.reject_counts,
         rejected_wallet_samples,
+        near_miss_metrics_proven: metrics_gate.near_miss_metrics_proven,
+        near_miss_unavailable_reason: metrics_gate.near_miss_unavailable_reason,
+        max_observed_metrics: metrics_gate.max_observed_metrics,
+        single_gate_relief_counts: metrics_gate.single_gate_relief_counts,
+        bounded_near_miss_wallet_samples: metrics_gate.bounded_near_miss_wallet_samples,
         selector_zero_universe_claimed,
         zero_universe_reason,
         production_green: false,
@@ -822,6 +868,11 @@ fn load_persisted_metrics_gate_report(
         &token_quality,
         sample_limit,
     );
+    let max_observed_metrics = max_observed_metrics_report(&wallets);
+    let single_gate_relief_counts =
+        single_gate_relief_counts_report(&wallets, thresholds, &token_quality);
+    let bounded_near_miss_wallet_samples =
+        bounded_near_miss_wallet_samples(&wallets, thresholds, &token_quality, sample_limit);
 
     Ok(PersistedMetricsGateResult {
         report: PersistedMetricsGateReport {
@@ -859,6 +910,11 @@ fn load_persisted_metrics_gate_report(
         reject_counts_unavailable_reason: None,
         reject_counts,
         rejected_wallet_samples,
+        near_miss_metrics_proven: true,
+        near_miss_unavailable_reason: None,
+        max_observed_metrics,
+        single_gate_relief_counts,
+        bounded_near_miss_wallet_samples,
     })
 }
 
@@ -906,6 +962,11 @@ fn unproven_persisted_metrics_gate_report(
         reject_counts_unavailable_reason: Some(reason.to_string()),
         reject_counts: RejectCountsReport::unproven(),
         rejected_wallet_samples: Vec::new(),
+        near_miss_metrics_proven: false,
+        near_miss_unavailable_reason: Some(reason.to_string()),
+        max_observed_metrics: MaxObservedMetricsReport::unproven(),
+        single_gate_relief_counts: SingleGateReliefCountsReport::unproven(),
+        bounded_near_miss_wallet_samples: Vec::new(),
     }
 }
 
@@ -1205,6 +1266,167 @@ fn persisted_metric_wallet_reject_reasons(
     reject_reasons
 }
 
+fn max_observed_metrics_report(wallets: &[PersistedMetricWallet]) -> MaxObservedMetricsReport {
+    MaxObservedMetricsReport {
+        max_trades: wallets.iter().map(|wallet| wallet.trades as u64).max(),
+        max_active_days: wallets.iter().map(|wallet| wallet.active_days as u64).max(),
+        max_buy_count: wallets.iter().map(|wallet| wallet.buy_total as u64).max(),
+        max_tradable_ratio: wallets
+            .iter()
+            .map(|wallet| wallet.tradable_ratio)
+            .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)),
+        max_score: wallets
+            .iter()
+            .map(|wallet| wallet.score)
+            .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)),
+    }
+}
+
+fn single_gate_relief_counts_report(
+    wallets: &[PersistedMetricWallet],
+    thresholds: &ThresholdConfig,
+    token_quality: &TokenQualityEvidence,
+) -> SingleGateReliefCountsReport {
+    SingleGateReliefCountsReport {
+        would_pass_if_min_trades_ignored: Some(count_single_gate_relief_wallets(
+            wallets,
+            thresholds,
+            token_quality,
+            "min_trades",
+        )),
+        would_pass_if_min_active_days_ignored: Some(count_single_gate_relief_wallets(
+            wallets,
+            thresholds,
+            token_quality,
+            "min_active_days",
+        )),
+        would_pass_if_min_buy_count_ignored: Some(count_single_gate_relief_wallets(
+            wallets,
+            thresholds,
+            token_quality,
+            "min_buy_count",
+        )),
+        would_pass_if_min_tradable_ratio_ignored: Some(count_single_gate_relief_wallets(
+            wallets,
+            thresholds,
+            token_quality,
+            "min_tradable_ratio",
+        )),
+        would_pass_if_min_score_ignored: Some(count_single_gate_relief_wallets(
+            wallets,
+            thresholds,
+            token_quality,
+            "min_score",
+        )),
+        would_pass_if_open_position_gate_ignored: Some(count_single_gate_relief_wallets(
+            wallets,
+            thresholds,
+            token_quality,
+            "require_open_positions_for_publication",
+        )),
+    }
+}
+
+fn count_single_gate_relief_wallets(
+    wallets: &[PersistedMetricWallet],
+    thresholds: &ThresholdConfig,
+    token_quality: &TokenQualityEvidence,
+    ignored_gate: &str,
+) -> u64 {
+    wallets
+        .iter()
+        .filter(|wallet| {
+            let failing_gates = persisted_metric_wallet_independent_failing_gates(
+                wallet,
+                thresholds,
+                token_quality,
+            );
+            failing_gates.len() == 1
+                && failing_gates
+                    .first()
+                    .is_some_and(|gate| gate == ignored_gate)
+        })
+        .count() as u64
+}
+
+fn bounded_near_miss_wallet_samples(
+    wallets: &[PersistedMetricWallet],
+    thresholds: &ThresholdConfig,
+    token_quality: &TokenQualityEvidence,
+    sample_limit: usize,
+) -> Vec<NearMissWalletSample> {
+    let mut samples = wallets
+        .iter()
+        .filter_map(|wallet| {
+            let failing_gates = persisted_metric_wallet_independent_failing_gates(
+                wallet,
+                thresholds,
+                token_quality,
+            );
+            (!failing_gates.is_empty()).then(|| NearMissWalletSample {
+                wallet_id: wallet.wallet_id.clone(),
+                trades: wallet.trades,
+                active_days: wallet.active_days,
+                buy_count: wallet.buy_total,
+                tradable_ratio: wallet.tradable_ratio,
+                score: wallet.score,
+                has_open_position: wallet.has_open_position,
+                failing_gates,
+            })
+        })
+        .collect::<Vec<_>>();
+    samples.sort_by(|left, right| {
+        left.failing_gates
+            .len()
+            .cmp(&right.failing_gates.len())
+            .then_with(|| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| left.wallet_id.cmp(&right.wallet_id))
+    });
+    samples.truncate(sample_limit);
+    samples
+}
+
+fn persisted_metric_wallet_independent_failing_gates(
+    wallet: &PersistedMetricWallet,
+    thresholds: &ThresholdConfig,
+    token_quality: &TokenQualityEvidence,
+) -> Vec<String> {
+    let mut failing_gates = Vec::new();
+    if wallet.trades < thresholds.min_trades {
+        failing_gates.push("min_trades".to_string());
+    }
+    if wallet.active_days < thresholds.min_active_days {
+        failing_gates.push("min_active_days".to_string());
+    }
+    if wallet.buy_total < thresholds.min_buy_count {
+        failing_gates.push("min_buy_count".to_string());
+    }
+    if wallet.tradable_ratio < thresholds.min_tradable_ratio {
+        failing_gates.push("min_tradable_ratio".to_string());
+    }
+    if wallet.score < thresholds.min_score {
+        failing_gates.push("min_score".to_string());
+    }
+    if thresholds.require_open_positions_for_publication && !wallet.has_open_position {
+        failing_gates.push("require_open_positions_for_publication".to_string());
+    }
+    if token_quality.missing_wallets.contains(&wallet.wallet_id) {
+        failing_gates.push("token_quality_missing".to_string());
+    }
+    if token_quality.stale_wallets.contains(&wallet.wallet_id) {
+        failing_gates.push("token_quality_stale".to_string());
+    }
+    if token_quality.deferred_wallets.contains(&wallet.wallet_id) {
+        failing_gates.push("token_quality_deferred".to_string());
+    }
+    failing_gates
+}
+
 fn nonnegative_i64_to_u32(value: i64) -> u32 {
     value.max(0).min(u32::MAX as i64) as u32
 }
@@ -1277,6 +1499,31 @@ impl RejectCountsReport {
     }
 }
 
+impl MaxObservedMetricsReport {
+    fn unproven() -> Self {
+        Self {
+            max_trades: None,
+            max_active_days: None,
+            max_buy_count: None,
+            max_tradable_ratio: None,
+            max_score: None,
+        }
+    }
+}
+
+impl SingleGateReliefCountsReport {
+    fn unproven() -> Self {
+        Self {
+            would_pass_if_min_trades_ignored: None,
+            would_pass_if_min_active_days_ignored: None,
+            would_pass_if_min_buy_count_ignored: None,
+            would_pass_if_min_tradable_ratio_ignored: None,
+            would_pass_if_min_score_ignored: None,
+            would_pass_if_open_position_gate_ignored: None,
+        }
+    }
+}
+
 fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
@@ -1331,6 +1578,24 @@ mod tests {
         assert_eq!(report.reject_counts.token_quality_missing, Some(1));
         assert_eq!(report.reject_counts.token_quality_stale, Some(1));
         assert_eq!(report.reject_counts.other_rejects, Some(0));
+        assert!(report.near_miss_metrics_proven);
+        assert_eq!(report.near_miss_unavailable_reason, None);
+        assert_eq!(report.max_observed_metrics.max_trades, Some(8));
+        assert_eq!(report.max_observed_metrics.max_active_days, Some(3));
+        assert_eq!(report.max_observed_metrics.max_buy_count, Some(10));
+        assert_eq!(
+            report
+                .single_gate_relief_counts
+                .would_pass_if_min_trades_ignored,
+            Some(1)
+        );
+        assert_eq!(
+            report
+                .single_gate_relief_counts
+                .would_pass_if_min_score_ignored,
+            Some(1)
+        );
+        assert!(!report.bounded_near_miss_wallet_samples.is_empty());
         Ok(())
     }
 
@@ -1367,6 +1632,13 @@ mod tests {
             Some(PERSISTED_METRICS_BUCKET_MISMATCH_REASON)
         );
         assert_eq!(report.reject_counts.min_trades, None);
+        assert!(!report.near_miss_metrics_proven);
+        assert_eq!(
+            report.near_miss_unavailable_reason.as_deref(),
+            Some(PERSISTED_METRICS_BUCKET_MISMATCH_REASON)
+        );
+        assert_eq!(report.max_observed_metrics.max_trades, None);
+        assert!(report.bounded_near_miss_wallet_samples.is_empty());
         assert!(
             !report
                 .persisted_metrics
@@ -1377,6 +1649,64 @@ mod tests {
             .iter()
             .all(|sample| !sample.reject_reasons_proven));
         assert!(!report.selector_full_scan_used);
+        Ok(())
+    }
+
+    #[test]
+    fn near_miss_metrics_show_min_trades_dominates() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::MinTradesDominates)?;
+        let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
+        assert!(report.near_miss_metrics_proven);
+        assert_eq!(report.max_observed_metrics.max_trades, Some(1));
+        assert_eq!(
+            report
+                .single_gate_relief_counts
+                .would_pass_if_min_trades_ignored,
+            Some(3)
+        );
+        assert_eq!(
+            report
+                .single_gate_relief_counts
+                .would_pass_if_min_active_days_ignored,
+            Some(0)
+        );
+        assert_eq!(report.bounded_near_miss_wallet_samples.len(), 3);
+        assert!(report
+            .bounded_near_miss_wallet_samples
+            .iter()
+            .all(|sample| sample.failing_gates == vec!["min_trades".to_string()]));
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
+    fn near_miss_metrics_surface_one_gate_away_wallet() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::OneGateAway)?;
+        let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
+        assert!(report.near_miss_metrics_proven);
+        assert_eq!(
+            report
+                .single_gate_relief_counts
+                .would_pass_if_min_score_ignored,
+            Some(1)
+        );
+        let sample = report
+            .bounded_near_miss_wallet_samples
+            .first()
+            .expect("one-gate-away wallet sample should be present");
+        assert_eq!(sample.wallet_id, "wallet-one-gate-score");
+        assert_eq!(sample.failing_gates, vec!["min_score".to_string()]);
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
+    fn near_miss_wallet_samples_are_capped_by_sample_limit() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::MinTradesDominates)?;
+        let report = run(&fixture.config(1))?;
+        assert!(report.near_miss_metrics_proven);
+        assert_eq!(report.bounded_near_miss_wallet_samples.len(), 1);
+        assert!(!report.production_green);
         Ok(())
     }
 
@@ -1500,6 +1830,8 @@ mod tests {
         UnalignedExpectedBucket,
         StaleMetricsBucket,
         SurvivingCandidate,
+        MinTradesDominates,
+        OneGateAway,
     }
 
     impl TestCase {
@@ -1652,6 +1984,26 @@ mod tests {
                     "full_scoring_window_raw_truth_available",
                 )?;
             }
+            TestCase::MinTradesDominates => {
+                seed_swaps(&store, now, 1)?;
+                seed_min_trades_dominates_metrics(&store, now)?;
+                seed_freshness_history(
+                    &store,
+                    now,
+                    true,
+                    "full_scoring_window_raw_truth_available",
+                )?;
+            }
+            TestCase::OneGateAway => {
+                seed_swaps(&store, now, 1)?;
+                seed_one_gate_away_metrics(&store, now)?;
+                seed_freshness_history(
+                    &store,
+                    now,
+                    true,
+                    "full_scoring_window_raw_truth_available",
+                )?;
+            }
         }
         Ok(())
     }
@@ -1788,6 +2140,67 @@ mod tests {
             score: 0.9,
             quality_source: None,
         }];
+        seed_metric_rows(store, window_start, now, &rows)?;
+        Ok(())
+    }
+
+    fn seed_min_trades_dominates_metrics(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+        let window_start = fixture_expected_metrics_window_start(now);
+        let rows = [
+            MetricFixture {
+                wallet_id: "wallet-min-trades-a",
+                trades: 1,
+                active_days: 3,
+                buy_total: 10,
+                tradable_ratio: 1.0,
+                score: 0.9,
+                quality_source: None,
+            },
+            MetricFixture {
+                wallet_id: "wallet-min-trades-b",
+                trades: 1,
+                active_days: 3,
+                buy_total: 10,
+                tradable_ratio: 1.0,
+                score: 0.8,
+                quality_source: None,
+            },
+            MetricFixture {
+                wallet_id: "wallet-min-trades-c",
+                trades: 1,
+                active_days: 3,
+                buy_total: 10,
+                tradable_ratio: 1.0,
+                score: 0.7,
+                quality_source: None,
+            },
+        ];
+        seed_metric_rows(store, window_start, now, &rows)?;
+        Ok(())
+    }
+
+    fn seed_one_gate_away_metrics(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+        let window_start = fixture_expected_metrics_window_start(now);
+        let rows = [
+            MetricFixture {
+                wallet_id: "wallet-one-gate-score",
+                trades: 8,
+                active_days: 3,
+                buy_total: 10,
+                tradable_ratio: 1.0,
+                score: 0.1,
+                quality_source: None,
+            },
+            MetricFixture {
+                wallet_id: "wallet-multiple-gates",
+                trades: 1,
+                active_days: 0,
+                buy_total: 1,
+                tradable_ratio: 0.1,
+                score: 0.9,
+                quality_source: None,
+            },
+        ];
         seed_metric_rows(store, window_start, now, &rows)?;
         Ok(())
     }
