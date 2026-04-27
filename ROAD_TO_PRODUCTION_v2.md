@@ -76,10 +76,23 @@ Current engineering interpretation:
   blocker:
   `publication_truth_withheld_while_collect_buy_mints_fresh_scan_incomplete`
   / `collect_buy_mints_fresh_scan_incomplete`
-- the next bounded work should explain the mismatch between the cached
-  raw-window cycle summary and the persisted/operator raw-window evidence,
-  focusing on the `collect_buy_mints` freshness path and not on selector
-  threshold changes
+- `discovery_collect_buy_mints_freshness_blocker_report` was added and live-run
+  on commit `f798b4c` at `2026-04-27T16:45:43Z`; it completed in `103ms`,
+  read only the runtime DB/config, and reported:
+  - `publication_state.reason = raw_window_zero_publishable_universe`
+  - latest persisted freshness capture is still
+    `2026-04-06T17:55:23.235675833Z`
+  - `raw_truth_sufficient = false`
+  - `raw_truth_reason = observed_swaps_coverage_ends_before_freshness_gate`
+  - `fresh_under_refresh_gate = false`
+  - `persisted_rebuild = null`
+  - `collect_buy_mints_checkpoint_exists = false`
+  - `cached_raw_window_summary_conflicts_with_persisted_truth = true`
+  - `blocker_reason = raw_window_persisted_evidence_stale`
+- current bounded work should now target the freshness-capture / persisted
+  raw-window truth write path: runtime cycles compute a cached
+  zero-publishable raw-window summary, but the durable persisted freshness
+  evidence remains stale and still carries the old 7-wallet capture
 - do not change selector thresholds, `scoring_window_days`, fail-closed
   semantics, restore/gap-fill, or trading until that zero-universe cause is
   proven
