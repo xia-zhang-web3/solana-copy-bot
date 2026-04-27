@@ -206,6 +206,22 @@ Current engineering interpretation:
   - `wallet_scoring_close_facts = 0`
   - `wallet_scoring_open_lots = 0`
   - `wallet_scoring_carryover_lots = 0`
+- commit `2bb9aad` added the read-only
+  `copybot_discovery_scoring_fact_writer_blocker_report` operator to make that
+  scoring fact writer seam explicit; local targeted tests, check, rustfmt, and
+  release build passed
+- live rollout of `2bb9aad` built only that operator binary on the production
+  host; the main service stayed active with `MainPID = 1544590` and
+  `NRestarts = 0`
+- the first live run of that operator at `2026-04-27T22:32:18Z` did not
+  complete within the bounded operator window and was killed manually; the main
+  service remained active with no restart
+- interpretation: the operator shape is not yet live-usable because it still
+  reaches an unbounded runtime `observed_swaps` coverage scan before producing
+  the scoring fact writer report
+- next corrective batch should keep the same proof target but remove the
+  unbounded `observed_swaps_coverage_snapshot` dependency and use only bounded
+  / indexed read-only SQL or already persisted cached freshness evidence
 - latest three `wallet_metrics` buckets all have `MAX(score) = 0.0`, while
   `MAX(tradable_ratio) = 1.0`, `MAX(trades) = 59`, and `MAX(buy_total) = 35`
 - current bounded evidence now points at persisted score/open-position/active
