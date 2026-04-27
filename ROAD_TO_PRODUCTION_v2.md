@@ -135,6 +135,30 @@ Current engineering interpretation:
   - `cached_raw_window_summary_conflicts_with_persisted_truth = false`
   - `blocker_reason = raw_window_zero_publishable_universe_confirmed`
   - `production_green = false`
+- follow-up `discovery_publication_zero_universe_report` at
+  `2026-04-27T19:42:07Z`:
+  - `elapsed_ms = 27551`
+  - `persisted_raw_truth_reason = raw_window_zero_publishable_universe`
+  - `metrics_rows = 10725`
+  - `threshold_counts_proven = true`
+  - `min_trades_threshold = 10`
+  - `min_active_days_threshold = 3`
+  - `min_buy_count_threshold = 10`
+  - `min_tradable_ratio_threshold = 0.25`
+  - `min_score_threshold = 0.4`
+  - `require_open_positions_for_publication = true`
+  - ordered reject counts:
+    - `min_trades = 10260`
+    - `min_active_days = 465`
+    - `min_buy_count = 0`
+    - `min_tradable_ratio = 0`
+    - `min_score = 0`
+    - `require_open_positions_for_publication = 0`
+    - `other_rejects = 0`
+  - `post_threshold_candidate_wallets = 0`
+  - `unexplained_candidate_wallets_after_persisted_gates = 0`
+  - `selector_zero_universe_claimed = false`
+  - `production_green = false`
 - current bounded work should now target why the fresh persisted metrics/raw
   evidence produce zero publishable wallets, using persisted metrics evidence
   only; stale persisted freshness evidence and cached-summary conflict are no
