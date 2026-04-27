@@ -11,29 +11,19 @@ Status: Active historical roadmap with 2026-03-27 production-readiness and live 
 Current Stage 3 production-discovery truth remains fail-closed, but the live
 blocker moved again after the accepted publication honesty fix.
 
-Latest confirmed production snapshot after rollout:
+Latest confirmed production snapshot after the cheap zero-universe freshness
+capture rollout:
 
-- deployed commit: `6f7e02e`
-  (`Clear stale publication on empty raw universe`)
+- deployed commit: `3acd52b`
+  (`Use cheap zero universe freshness capture`)
 - `solana-copy-bot.service = active`
-- `MainPID = 1537266`
+- `MainPID = 1544590`
 - `NRestarts = 0`
 - disk for `/var/www/solana-copy-bot/state`:
-  `374G used / 93G available / 81%`
-- `discovery_status` at `2026-04-27T16:01:43Z`:
-  - `runtime_state = healthy_runtime_truth`
-  - `runtime_mode = healthy`
-  - `scoring_source = raw_window`
-  - `raw_window_state = healthy`
-  - `recent_swaps_window = 18127`
-  - `active_follow_wallets = 0`
-  - publication:
-    - `runtime_mode = fail_closed`
-    - `reason = raw_window_zero_publishable_universe`
-    - `latest_publication_ts = null`
-    - `latest_publication_window_start = null`
-    - `published_scoring_source = raw_window`
-    - `published_wallet_count = 0`
+  `375G used / 92G available / 81%`
+- server repo is clean on `3acd52b`
+- release rebuild completed in `41m43s`; only existing out-of-scope
+  `copybot-app` dead-code warnings were emitted
 
 What changed:
 
@@ -89,10 +79,46 @@ Current engineering interpretation:
   - `collect_buy_mints_checkpoint_exists = false`
   - `cached_raw_window_summary_conflicts_with_persisted_truth = true`
   - `blocker_reason = raw_window_persisted_evidence_stale`
-- current bounded work should now target the freshness-capture / persisted
-  raw-window truth write path: runtime cycles compute a cached
-  zero-publishable raw-window summary, but the durable persisted freshness
-  evidence remains stale and still carries the old 7-wallet capture
+- commit `4d288aa` attempted to persist the zero-universe freshness evidence
+  from the cached exact-empty path, but live falsified the implementation:
+  the capture eventually persisted only after a long in-cycle generic
+  freshness-audit path, while scheduled discovery ticks were skipped as
+  `discovery cycle still running`; that shape was rejected and the server was
+  rolled back before the corrective batch
+- commit `3acd52b` replaced that path with a dedicated cheap
+  `DiscoveryWalletFreshnessCaptureWrite` for cached exact-empty
+  `raw_window_zero_publishable_universe` cycles; this path does not call the
+  generic wallet freshness audit helper, does not run a selector/full
+  observed-swap scan, and does not mark production green
+- post-rollout live journal proof on `3acd52b`:
+  - first post-restart recompute completed in `12895ms`
+  - subsequent cached cycle at `2026-04-27T19:28:25Z` completed in `0ms`
+  - `wallet_freshness_capture_state = persisted_zero_universe_evidence`
+  - `wallet_freshness_capture_id = 31`
+  - `publication_reason = raw_window_zero_publishable_universe`
+  - no recurring post-rollout `discovery cycle still running` livelock was
+    observed
+- follow-up live operator proof at `2026-04-27T19:29:27Z` on `3acd52b`:
+  - `latest_persisted_freshness_capture.capture_id = 32`
+  - `captured_at = 2026-04-27T19:29:25.379013866Z`
+  - `age_seconds = 1`
+  - `verdict = insufficient_raw_truth`
+  - `raw_truth_sufficient = false`
+  - `raw_truth_reason = raw_window_zero_publishable_universe`
+  - `published_wallet_count = 0`
+  - `active_follow_wallet_count = 0`
+  - `current_raw_top_wallet_count = 0`
+  - `raw_truth_observed_swaps_loaded = 24226`
+  - `raw_truth_eligible_wallet_count = 0`
+  - `raw_truth_wallets_seen = 10725`
+  - `fresh_under_refresh_gate = true`
+  - `raw_window_healthy = false`
+  - `cached_raw_window_summary_conflicts_with_persisted_truth = true`
+  - `blocker_reason = cached_raw_window_summary_conflicts_with_persisted_truth`
+  - `production_green = false`
+- current bounded work should now target the conflict between cached
+  raw-window publication summary and persisted freshness truth; stale
+  persisted freshness evidence is no longer the active blocker
 - do not change selector thresholds, `scoring_window_days`, fail-closed
   semantics, restore/gap-fill, or trading until that zero-universe cause is
   proven
