@@ -6,6 +6,66 @@
 Date: 2026-03-17
 Status: Active historical roadmap with 2026-03-27 production-readiness and live Stage 3 accumulation addendum
 
+## Live Update (`2026-04-27`)
+
+Current Stage 3 production-discovery truth remains fail-closed, but the live
+blocker moved again after the accepted publication honesty fix.
+
+Latest confirmed production snapshot after rollout:
+
+- deployed commit: `6f7e02e`
+  (`Clear stale publication on empty raw universe`)
+- `solana-copy-bot.service = active`
+- `MainPID = 1537266`
+- `NRestarts = 0`
+- disk for `/var/www/solana-copy-bot/state`:
+  `374G used / 93G available / 81%`
+- `discovery_status` at `2026-04-27T16:01:43Z`:
+  - `runtime_state = healthy_runtime_truth`
+  - `runtime_mode = healthy`
+  - `scoring_source = raw_window`
+  - `raw_window_state = healthy`
+  - `recent_swaps_window = 18127`
+  - `active_follow_wallets = 0`
+  - publication:
+    - `runtime_mode = fail_closed`
+    - `reason = raw_window_zero_publishable_universe`
+    - `latest_publication_ts = null`
+    - `latest_publication_window_start = null`
+    - `published_scoring_source = raw_window`
+    - `published_wallet_count = 0`
+
+What changed:
+
+- `discovery_publication_zero_universe_report` was added as a bounded
+  read-only operator. It does not call the full selector proof path, does not
+  call RPC, and always reports `production_green=false`.
+- The live operator proved that the old persisted 7-wallet publication was
+  stale and not sufficient production truth.
+- The cached exact-empty raw-window path now clears stale publication truth
+  instead of carrying forward old `last_published_at`, publication window, and
+  wallet ids.
+- Live journal proof after rollout showed:
+  - `publication_state_write_kind = clear_published_truth`
+  - `publication_reason = raw_window_zero_publishable_universe`
+  - `publication_new_last_published_at = None`
+  - `publication_new_wallet_id_count = 0`
+  - `publication_stale_fields_carried_forward = false`
+  - discovery cycle remained fail-closed with `top_wallets = []`
+
+Current engineering interpretation:
+
+- the stale 7-wallet publication carry-forward blocker is removed
+- Stage 3 is still not green
+- current live truth is now honest fail-closed zero publishable universe under
+  a healthy raw-window runtime surface
+- the next bounded work should explain why the current raw-window universe has
+  `wallets_seen = 7715`, `eligible_wallets = 0`, and `top_wallets = []`
+  using persisted metrics / quality / open-position evidence
+- do not change selector thresholds, `scoring_window_days`, fail-closed
+  semantics, restore/gap-fill, or trading until that zero-universe cause is
+  proven
+
 ## Live Update (`2026-04-26`)
 
 Current Stage 3 production-discovery truth remains fail-closed. The
