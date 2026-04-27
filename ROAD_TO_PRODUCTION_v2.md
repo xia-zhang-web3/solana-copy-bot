@@ -57,11 +57,29 @@ Current engineering interpretation:
 
 - the stale 7-wallet publication carry-forward blocker is removed
 - Stage 3 is still not green
-- current live truth is now honest fail-closed zero publishable universe under
-  a healthy raw-window runtime surface
-- the next bounded work should explain why the current raw-window universe has
-  `wallets_seen = 7715`, `eligible_wallets = 0`, and `top_wallets = []`
-  using persisted metrics / quality / open-position evidence
+- the cached runtime cycle now reports fail-closed
+  `raw_window_zero_publishable_universe` with `wallets_seen = 7715`,
+  `eligible_wallets = 0`, and `top_wallets = []`
+- follow-up live operator proof at `2026-04-27T16:30:48Z` on commit
+  `396503c` showed the persisted metrics bucket itself is current:
+  - `expected_metrics_window_start = 2026-04-22T16:00:00Z`
+  - `latest_metrics_window_start = 2026-04-22T16:00:00Z`
+  - `metrics_rows = 7715`
+  - `reject_counts_proven = true`
+  - ordered reject counts were dominated by:
+    `min_trades = 7355`, then `min_active_days = 360`
+- the same live operator did not claim selector zero-universe because its
+  persisted raw-window evidence remained stale:
+  `raw_window_healthy = false`,
+  `raw_window_health_reason = observed_swaps_coverage_ends_before_freshness_gate`
+- recent service journal cycles also show a preceding publication-truth refresh
+  blocker:
+  `publication_truth_withheld_while_collect_buy_mints_fresh_scan_incomplete`
+  / `collect_buy_mints_fresh_scan_incomplete`
+- the next bounded work should explain the mismatch between the cached
+  raw-window cycle summary and the persisted/operator raw-window evidence,
+  focusing on the `collect_buy_mints` freshness path and not on selector
+  threshold changes
 - do not change selector thresholds, `scoring_window_days`, fail-closed
   semantics, restore/gap-fill, or trading until that zero-universe cause is
   proven
