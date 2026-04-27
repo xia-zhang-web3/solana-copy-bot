@@ -116,9 +116,29 @@ Current engineering interpretation:
   - `cached_raw_window_summary_conflicts_with_persisted_truth = true`
   - `blocker_reason = cached_raw_window_summary_conflicts_with_persisted_truth`
   - `production_green = false`
-- current bounded work should now target the conflict between cached
-  raw-window publication summary and persisted freshness truth; stale
-  persisted freshness evidence is no longer the active blocker
+- commit `307922d` updated the read-only
+  `discovery_collect_buy_mints_freshness_blocker_report` classifier so a
+  fresh, consistent, fail-closed zero-universe artifact is no longer
+  mislabeled as a cached-summary conflict
+- live operator proof at `2026-04-27T19:40:48Z` on `307922d`:
+  - `elapsed_ms = 15`
+  - `latest_persisted_freshness_capture.capture_id = 43`
+  - `captured_at = 2026-04-27T19:40:25.375706962Z`
+  - `age_seconds = 22`
+  - `raw_truth_reason = raw_window_zero_publishable_universe`
+  - `published_wallet_count = 0`
+  - `active_follow_wallet_count = 0`
+  - `current_raw_top_wallet_count = 0`
+  - `raw_truth_observed_swaps_loaded = 24226`
+  - `raw_truth_eligible_wallet_count = 0`
+  - `fresh_zero_universe_persisted_evidence_consistent = true`
+  - `cached_raw_window_summary_conflicts_with_persisted_truth = false`
+  - `blocker_reason = raw_window_zero_publishable_universe_confirmed`
+  - `production_green = false`
+- current bounded work should now target why the fresh persisted metrics/raw
+  evidence produce zero publishable wallets, using persisted metrics evidence
+  only; stale persisted freshness evidence and cached-summary conflict are no
+  longer the active blockers
 - do not change selector thresholds, `scoring_window_days`, fail-closed
   semantics, restore/gap-fill, or trading until that zero-universe cause is
   proven
