@@ -15,6 +15,8 @@ const DEFAULT_SAMPLE_LIMIT: usize = 10;
 const MAX_SAMPLE_LIMIT: usize = 50;
 const REJECT_COUNTS_UNAVAILABLE_REASON: &str =
     "publication_zero_universe_full_selector_scan_required";
+const PERSISTED_METRICS_BUCKET_MISMATCH_REASON: &str =
+    "publication_zero_universe_persisted_metrics_bucket_mismatch";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -55,6 +57,7 @@ struct PublicationZeroUniverseReport {
     active_follow_wallets_capped: bool,
     eligible_wallets: Option<u64>,
     top_wallets: Vec<String>,
+    persisted_metrics: PersistedMetricsGateReport,
     reject_counts_proven: bool,
     reject_counts_unavailable_reason: Option<String>,
     reject_counts: RejectCountsReport,
@@ -132,6 +135,38 @@ struct RejectCountsReport {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+struct PersistedMetricsGateReport {
+    evidence_source: &'static str,
+    expected_metrics_window_start: DateTime<Utc>,
+    latest_metrics_window_start: Option<DateTime<Utc>>,
+    latest_metrics_window_start_raw: Option<String>,
+    latest_metrics_window_matches_expected: bool,
+    metrics_rows: u64,
+    threshold_counts_proven: bool,
+    unavailable_reason: Option<String>,
+    counts_model: &'static str,
+    min_trades_threshold: u32,
+    min_active_days_threshold: u32,
+    min_buy_count_threshold: u32,
+    min_tradable_ratio_threshold: f64,
+    min_score_threshold: f64,
+    require_open_positions_for_publication: bool,
+    active_day_evidence_source: &'static str,
+    open_position_evidence_source: &'static str,
+    token_quality_evidence_source: &'static str,
+    token_quality_distinct_buy_mints_checked: u64,
+    token_quality_missing_mints: u64,
+    token_quality_stale_mints: u64,
+    token_quality_deferred_mints: u64,
+    token_quality_missing_wallets: u64,
+    token_quality_stale_wallets: u64,
+    token_quality_deferred_wallets: u64,
+    post_threshold_candidate_wallets: u64,
+    post_threshold_candidate_wallets_with_open_positions: u64,
+    unexplained_candidate_wallets_after_persisted_gates: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 struct RejectedWalletSample {
     wallet_id: String,
     reject_reasons_proven: bool,
@@ -164,6 +199,47 @@ struct ObservedSwapsSample {
     distinct_wallet_count: u64,
     distinct_buy_mint_count: u64,
     sampled_wallets: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ThresholdConfig {
+    min_trades: u32,
+    min_active_days: u32,
+    min_buy_count: u32,
+    min_tradable_ratio: f64,
+    min_score: f64,
+    require_open_positions_for_publication: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PersistedMetricWallet {
+    wallet_id: String,
+    trades: u32,
+    active_days: u32,
+    buy_total: u32,
+    tradable_ratio: f64,
+    score: f64,
+    has_open_position: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PersistedMetricsGateResult {
+    report: PersistedMetricsGateReport,
+    reject_counts_proven: bool,
+    reject_counts_unavailable_reason: Option<String>,
+    reject_counts: RejectCountsReport,
+    rejected_wallet_samples: Vec<RejectedWalletSample>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TokenQualityEvidence {
+    distinct_mints_checked: u64,
+    missing_mints: u64,
+    stale_mints: u64,
+    deferred_mints: u64,
+    missing_wallets: BTreeSet<String>,
+    stale_wallets: BTreeSet<String>,
+    deferred_wallets: BTreeSet<String>,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -263,6 +339,27 @@ fn run(config: &Config) -> Result<PublicationZeroUniverseReport> {
         load_observed_swaps_sample(&conn, window_start, config.now, config.sample_limit)?;
     let raw_window =
         raw_window_selector_inputs_report(window_start, &latest_freshness, &observed_sample);
+    let expected_metrics_window_start = expected_metrics_window_start(
+        config.now,
+        loaded_config.discovery.metric_snapshot_interval_seconds,
+        loaded_config.discovery.scoring_window_days,
+    );
+    let thresholds = ThresholdConfig {
+        min_trades: loaded_config.discovery.min_trades,
+        min_active_days: loaded_config.discovery.min_active_days,
+        min_buy_count: loaded_config.discovery.min_buy_count,
+        min_tradable_ratio: loaded_config.discovery.min_tradable_ratio,
+        min_score: loaded_config.discovery.min_score,
+        require_open_positions_for_publication: loaded_config
+            .discovery
+            .require_open_positions_for_publication,
+    };
+    let metrics_gate = load_persisted_metrics_gate_report(
+        &conn,
+        &thresholds,
+        expected_metrics_window_start,
+        config.sample_limit,
+    )?;
     let active_follow_wallets = latest_freshness
         .captured_at
         .map(|_| latest_freshness.active_follow_wallet_ids.len() as u64);
@@ -278,8 +375,11 @@ fn run(config: &Config) -> Result<PublicationZeroUniverseReport> {
         &top_wallets,
         active_follow_wallets,
     );
-    let rejected_wallet_samples =
-        bounded_rejected_wallet_samples(&observed_sample.sampled_wallets, config.sample_limit);
+    let rejected_wallet_samples = if metrics_gate.reject_counts_proven {
+        metrics_gate.rejected_wallet_samples.clone()
+    } else {
+        bounded_rejected_wallet_samples(&observed_sample.sampled_wallets, config.sample_limit)
+    };
 
     Ok(PublicationZeroUniverseReport {
         event: "discovery_publication_zero_universe_report",
@@ -296,7 +396,8 @@ fn run(config: &Config) -> Result<PublicationZeroUniverseReport> {
             observed_swaps_query_limit: config.sample_limit.saturating_add(1),
             active_follow_query_limit: 0,
             rejected_wallet_sample_limit_applied: config.sample_limit,
-            selector_window_scan: "bounded_indexed_observed_swaps_sql_and_persisted_truth_only",
+            selector_window_scan:
+                "bounded_indexed_observed_swaps_sql_persisted_truth_and_latest_metrics_bucket_only",
         },
         publication,
         raw_window,
@@ -304,9 +405,10 @@ fn run(config: &Config) -> Result<PublicationZeroUniverseReport> {
         active_follow_wallets_capped: false,
         eligible_wallets,
         top_wallets,
-        reject_counts_proven: false,
-        reject_counts_unavailable_reason: Some(REJECT_COUNTS_UNAVAILABLE_REASON.to_string()),
-        reject_counts: RejectCountsReport::unproven(),
+        persisted_metrics: metrics_gate.report,
+        reject_counts_proven: metrics_gate.reject_counts_proven,
+        reject_counts_unavailable_reason: metrics_gate.reject_counts_unavailable_reason,
+        reject_counts: metrics_gate.reject_counts,
         rejected_wallet_samples,
         selector_zero_universe_claimed,
         zero_universe_reason,
@@ -619,6 +721,494 @@ fn query_observed_swaps_boundary_ts(
     raw.as_deref().map(parse_ts).transpose()
 }
 
+fn expected_metrics_window_start(
+    now: DateTime<Utc>,
+    metric_snapshot_interval_seconds: u64,
+    scoring_window_days: u32,
+) -> DateTime<Utc> {
+    let interval_seconds = metric_snapshot_interval_seconds.max(1) as i64;
+    let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
+    let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
+    bucketed_now - Duration::days(scoring_window_days.max(1) as i64)
+}
+
+fn wallet_metrics_window_start_query_variants(window_start: DateTime<Utc>) -> (String, String) {
+    let canonical = window_start.to_rfc3339();
+    let legacy_z = canonical
+        .strip_suffix("+00:00")
+        .map(|prefix| format!("{prefix}Z"))
+        .unwrap_or_else(|| canonical.clone());
+    (canonical, legacy_z)
+}
+
+fn load_persisted_metrics_gate_report(
+    conn: &Connection,
+    thresholds: &ThresholdConfig,
+    expected_metrics_window_start: DateTime<Utc>,
+    sample_limit: usize,
+) -> Result<PersistedMetricsGateResult> {
+    let latest_metrics_window = load_latest_wallet_metrics_window_start(conn)?;
+    let latest_metrics_window_matches_expected =
+        latest_metrics_window
+            .as_ref()
+            .is_some_and(|(_, latest_metrics_window_start)| {
+                *latest_metrics_window_start == expected_metrics_window_start
+            });
+    let Some((latest_metrics_window_start_raw, latest_metrics_window_start)) =
+        latest_metrics_window.clone()
+    else {
+        return Ok(unproven_persisted_metrics_gate_report(
+            thresholds,
+            expected_metrics_window_start,
+            None,
+            None,
+            false,
+            PERSISTED_METRICS_BUCKET_MISMATCH_REASON,
+        ));
+    };
+
+    if !latest_metrics_window_matches_expected {
+        return Ok(unproven_persisted_metrics_gate_report(
+            thresholds,
+            expected_metrics_window_start,
+            Some(latest_metrics_window_start_raw),
+            Some(latest_metrics_window_start),
+            false,
+            PERSISTED_METRICS_BUCKET_MISMATCH_REASON,
+        ));
+    }
+
+    if !sqlite_table_exists(conn, "wallet_activity_days")?
+        || !sqlite_table_exists(conn, "wallet_scoring_open_lots")?
+    {
+        return Ok(unproven_persisted_metrics_gate_report(
+            thresholds,
+            expected_metrics_window_start,
+            Some(latest_metrics_window_start_raw),
+            Some(latest_metrics_window_start),
+            latest_metrics_window_matches_expected,
+            "publication_zero_universe_persisted_metric_evidence_tables_missing",
+        ));
+    }
+
+    let window_start_variants =
+        wallet_metrics_window_start_query_variants(expected_metrics_window_start);
+    let wallets = load_metric_wallets_for_expected_bucket(
+        conn,
+        &window_start_variants,
+        expected_metrics_window_start,
+    )?;
+    if wallets.is_empty() {
+        return Ok(unproven_persisted_metrics_gate_report(
+            thresholds,
+            expected_metrics_window_start,
+            Some(latest_metrics_window_start_raw),
+            Some(latest_metrics_window_start),
+            latest_metrics_window_matches_expected,
+            PERSISTED_METRICS_BUCKET_MISMATCH_REASON,
+        ));
+    }
+    let token_quality =
+        load_token_quality_evidence(conn, &window_start_variants, expected_metrics_window_start)?;
+    let (
+        reject_counts,
+        post_threshold_candidate_wallets,
+        post_threshold_open_wallets,
+        unexplained_candidate_wallets_after_persisted_gates,
+    ) = classify_persisted_metric_gate_counts(&wallets, thresholds, &token_quality);
+    let rejected_wallet_samples = persisted_metric_rejected_wallet_samples(
+        &wallets,
+        thresholds,
+        &token_quality,
+        sample_limit,
+    );
+
+    Ok(PersistedMetricsGateResult {
+        report: PersistedMetricsGateReport {
+            evidence_source: "latest_wallet_metrics_bucket_and_persisted_scoring_evidence",
+            expected_metrics_window_start,
+            latest_metrics_window_start: Some(latest_metrics_window_start),
+            latest_metrics_window_start_raw: Some(latest_metrics_window_start_raw),
+            latest_metrics_window_matches_expected,
+            metrics_rows: wallets.len() as u64,
+            threshold_counts_proven: true,
+            unavailable_reason: None,
+            counts_model: "ordered_persisted_metric_threshold_attribution_no_selector_full_scan",
+            min_trades_threshold: thresholds.min_trades,
+            min_active_days_threshold: thresholds.min_active_days,
+            min_buy_count_threshold: thresholds.min_buy_count,
+            min_tradable_ratio_threshold: thresholds.min_tradable_ratio,
+            min_score_threshold: thresholds.min_score,
+            require_open_positions_for_publication: thresholds
+                .require_open_positions_for_publication,
+            active_day_evidence_source: "wallet_activity_days",
+            open_position_evidence_source: "wallet_scoring_open_lots",
+            token_quality_evidence_source: "wallet_scoring_buy_facts.quality_source",
+            token_quality_distinct_buy_mints_checked: token_quality.distinct_mints_checked,
+            token_quality_missing_mints: token_quality.missing_mints,
+            token_quality_stale_mints: token_quality.stale_mints,
+            token_quality_deferred_mints: token_quality.deferred_mints,
+            token_quality_missing_wallets: token_quality.missing_wallets.len() as u64,
+            token_quality_stale_wallets: token_quality.stale_wallets.len() as u64,
+            token_quality_deferred_wallets: token_quality.deferred_wallets.len() as u64,
+            post_threshold_candidate_wallets,
+            post_threshold_candidate_wallets_with_open_positions: post_threshold_open_wallets,
+            unexplained_candidate_wallets_after_persisted_gates,
+        },
+        reject_counts_proven: true,
+        reject_counts_unavailable_reason: None,
+        reject_counts,
+        rejected_wallet_samples,
+    })
+}
+
+fn unproven_persisted_metrics_gate_report(
+    thresholds: &ThresholdConfig,
+    expected_metrics_window_start: DateTime<Utc>,
+    latest_metrics_window_start_raw: Option<String>,
+    latest_metrics_window_start: Option<DateTime<Utc>>,
+    latest_metrics_window_matches_expected: bool,
+    reason: &str,
+) -> PersistedMetricsGateResult {
+    PersistedMetricsGateResult {
+        report: PersistedMetricsGateReport {
+            evidence_source: "latest_wallet_metrics_bucket_and_persisted_scoring_evidence",
+            expected_metrics_window_start,
+            latest_metrics_window_start,
+            latest_metrics_window_start_raw,
+            latest_metrics_window_matches_expected,
+            metrics_rows: 0,
+            threshold_counts_proven: false,
+            unavailable_reason: Some(reason.to_string()),
+            counts_model: "unavailable_no_selector_full_scan",
+            min_trades_threshold: thresholds.min_trades,
+            min_active_days_threshold: thresholds.min_active_days,
+            min_buy_count_threshold: thresholds.min_buy_count,
+            min_tradable_ratio_threshold: thresholds.min_tradable_ratio,
+            min_score_threshold: thresholds.min_score,
+            require_open_positions_for_publication: thresholds
+                .require_open_positions_for_publication,
+            active_day_evidence_source: "wallet_activity_days",
+            open_position_evidence_source: "wallet_scoring_open_lots",
+            token_quality_evidence_source: "wallet_scoring_buy_facts.quality_source",
+            token_quality_distinct_buy_mints_checked: 0,
+            token_quality_missing_mints: 0,
+            token_quality_stale_mints: 0,
+            token_quality_deferred_mints: 0,
+            token_quality_missing_wallets: 0,
+            token_quality_stale_wallets: 0,
+            token_quality_deferred_wallets: 0,
+            post_threshold_candidate_wallets: 0,
+            post_threshold_candidate_wallets_with_open_positions: 0,
+            unexplained_candidate_wallets_after_persisted_gates: 0,
+        },
+        reject_counts_proven: false,
+        reject_counts_unavailable_reason: Some(reason.to_string()),
+        reject_counts: RejectCountsReport::unproven(),
+        rejected_wallet_samples: Vec::new(),
+    }
+}
+
+fn load_latest_wallet_metrics_window_start(
+    conn: &Connection,
+) -> Result<Option<(String, DateTime<Utc>)>> {
+    if !sqlite_table_exists(conn, "wallet_metrics")? {
+        return Ok(None);
+    }
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT window_start FROM wallet_metrics ORDER BY window_start DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("failed loading latest persisted wallet_metrics window_start")?;
+    raw.map(|raw| {
+        let parsed = parse_ts(&raw)?;
+        Ok((raw, parsed))
+    })
+    .transpose()
+}
+
+fn load_metric_wallets_for_expected_bucket(
+    conn: &Connection,
+    metrics_window_start_variants: &(String, String),
+    metrics_window_start: DateTime<Utc>,
+) -> Result<Vec<PersistedMetricWallet>> {
+    let active_day_start = metrics_window_start
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    let mut stmt = conn
+        .prepare(
+            "WITH selected_ids AS (
+                SELECT wallet_id, MAX(id) AS metric_id
+                FROM wallet_metrics
+                WHERE window_start = ?1 OR window_start = ?2
+                GROUP BY wallet_id
+             ),
+             selected_metrics AS (
+                SELECT wm.wallet_id, wm.trades, wm.buy_total, wm.tradable_ratio, wm.score
+                FROM wallet_metrics wm
+                JOIN selected_ids selected ON selected.metric_id = wm.id
+             )
+             SELECT
+                selected_metrics.wallet_id,
+                selected_metrics.trades,
+                selected_metrics.buy_total,
+                selected_metrics.tradable_ratio,
+                selected_metrics.score,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM wallet_activity_days wad
+                    WHERE wad.wallet_id = selected_metrics.wallet_id
+                      AND wad.activity_day >= ?3
+                ), 0) AS active_days,
+                EXISTS(
+                    SELECT 1
+                    FROM wallet_scoring_open_lots open_lots
+                    WHERE open_lots.wallet_id = selected_metrics.wallet_id
+                    LIMIT 1
+                ) AS has_open_position
+             FROM selected_metrics
+             ORDER BY selected_metrics.score ASC, selected_metrics.wallet_id ASC",
+        )
+        .context("failed preparing persisted wallet metric gate query")?;
+    let rows = stmt
+        .query_map(
+            params![
+                metrics_window_start_variants.0,
+                metrics_window_start_variants.1,
+                active_day_start
+            ],
+            |row| {
+                let trades: i64 = row.get(1)?;
+                let buy_total: i64 = row.get(2)?;
+                let active_days: i64 = row.get(5)?;
+                let has_open_position: i64 = row.get(6)?;
+                Ok(PersistedMetricWallet {
+                    wallet_id: row.get(0)?,
+                    trades: nonnegative_i64_to_u32(trades),
+                    buy_total: nonnegative_i64_to_u32(buy_total),
+                    tradable_ratio: row.get(3)?,
+                    score: row.get(4)?,
+                    active_days: nonnegative_i64_to_u32(active_days),
+                    has_open_position: has_open_position != 0,
+                })
+            },
+        )
+        .context("failed querying persisted wallet metric gate rows")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed collecting persisted wallet metric gate rows")?;
+    Ok(rows)
+}
+
+fn load_token_quality_evidence(
+    conn: &Connection,
+    metrics_window_start_variants: &(String, String),
+    metrics_window_start: DateTime<Utc>,
+) -> Result<TokenQualityEvidence> {
+    if !sqlite_table_exists(conn, "wallet_scoring_buy_facts")? {
+        return Ok(TokenQualityEvidence::default());
+    }
+    let mut stmt = conn
+        .prepare(
+            "WITH selected_wallets AS (
+                SELECT DISTINCT wallet_id
+                FROM wallet_metrics
+                WHERE window_start = ?1 OR window_start = ?2
+             )
+             SELECT DISTINCT buy_facts.wallet_id, buy_facts.token, buy_facts.quality_source
+             FROM wallet_scoring_buy_facts buy_facts
+             JOIN selected_wallets selected
+               ON selected.wallet_id = buy_facts.wallet_id
+             WHERE buy_facts.ts >= ?3",
+        )
+        .context("failed preparing persisted token-quality evidence query")?;
+    let mut rows = stmt
+        .query(params![
+            metrics_window_start_variants.0,
+            metrics_window_start_variants.1,
+            metrics_window_start.to_rfc3339()
+        ])
+        .context("failed querying persisted token-quality evidence")?;
+    let mut all_mints = BTreeSet::new();
+    let mut missing_mints = BTreeSet::new();
+    let mut stale_mints = BTreeSet::new();
+    let mut deferred_mints = BTreeSet::new();
+    let mut missing_wallets = BTreeSet::new();
+    let mut stale_wallets = BTreeSet::new();
+    let mut deferred_wallets = BTreeSet::new();
+    while let Some(row) = rows
+        .next()
+        .context("failed iterating persisted token-quality evidence")?
+    {
+        let wallet_id: String = row
+            .get(0)
+            .context("failed reading wallet_scoring_buy_facts.wallet_id")?;
+        let token: String = row
+            .get(1)
+            .context("failed reading wallet_scoring_buy_facts.token")?;
+        let quality_source: String = row
+            .get(2)
+            .context("failed reading wallet_scoring_buy_facts.quality_source")?;
+        all_mints.insert(token.clone());
+        match quality_source.as_str() {
+            "missing" => {
+                missing_mints.insert(token);
+                missing_wallets.insert(wallet_id);
+            }
+            "stale" => {
+                stale_mints.insert(token);
+                stale_wallets.insert(wallet_id);
+            }
+            "deferred" => {
+                deferred_mints.insert(token);
+                deferred_wallets.insert(wallet_id);
+            }
+            _ => {}
+        }
+    }
+    Ok(TokenQualityEvidence {
+        distinct_mints_checked: all_mints.len() as u64,
+        missing_mints: missing_mints.len() as u64,
+        stale_mints: stale_mints.len() as u64,
+        deferred_mints: deferred_mints.len() as u64,
+        missing_wallets,
+        stale_wallets,
+        deferred_wallets,
+    })
+}
+
+fn classify_persisted_metric_gate_counts(
+    wallets: &[PersistedMetricWallet],
+    thresholds: &ThresholdConfig,
+    token_quality: &TokenQualityEvidence,
+) -> (RejectCountsReport, u64, u64, u64) {
+    let mut remaining = wallets.iter().collect::<Vec<_>>();
+    let before = remaining.len();
+    remaining.retain(|wallet| wallet.trades >= thresholds.min_trades);
+    let min_trades = (before - remaining.len()) as u64;
+
+    let before = remaining.len();
+    remaining.retain(|wallet| wallet.active_days >= thresholds.min_active_days);
+    let min_active_days = (before - remaining.len()) as u64;
+
+    let before = remaining.len();
+    remaining.retain(|wallet| wallet.buy_total >= thresholds.min_buy_count);
+    let min_buy_count = (before - remaining.len()) as u64;
+
+    let before = remaining.len();
+    remaining.retain(|wallet| wallet.tradable_ratio >= thresholds.min_tradable_ratio);
+    let min_tradable_ratio = (before - remaining.len()) as u64;
+
+    let before = remaining.len();
+    remaining.retain(|wallet| wallet.score >= thresholds.min_score);
+    let min_score = (before - remaining.len()) as u64;
+
+    let post_threshold_candidate_wallets = remaining.len() as u64;
+    let post_threshold_open_wallets = remaining
+        .iter()
+        .filter(|wallet| wallet.has_open_position)
+        .count() as u64;
+    let require_open_positions_for_publication =
+        if thresholds.require_open_positions_for_publication {
+            let before = remaining.len();
+            remaining.retain(|wallet| wallet.has_open_position);
+            (before - remaining.len()) as u64
+        } else {
+            0
+        };
+    let unexplained_candidate_wallets_after_persisted_gates = remaining.len() as u64;
+
+    (
+        RejectCountsReport {
+            min_trades: Some(min_trades),
+            min_active_days: Some(min_active_days),
+            min_buy_count: Some(min_buy_count),
+            min_tradable_ratio: Some(min_tradable_ratio),
+            min_score: Some(min_score),
+            require_open_positions_for_publication: Some(require_open_positions_for_publication),
+            token_quality_missing: Some(token_quality.missing_wallets.len() as u64),
+            token_quality_stale: Some(token_quality.stale_wallets.len() as u64),
+            token_quality_failed: Some(token_quality.deferred_wallets.len() as u64),
+            other_rejects: Some(0),
+        },
+        post_threshold_candidate_wallets,
+        post_threshold_open_wallets,
+        unexplained_candidate_wallets_after_persisted_gates,
+    )
+}
+
+fn persisted_metric_rejected_wallet_samples(
+    wallets: &[PersistedMetricWallet],
+    thresholds: &ThresholdConfig,
+    token_quality: &TokenQualityEvidence,
+    sample_limit: usize,
+) -> Vec<RejectedWalletSample> {
+    wallets
+        .iter()
+        .filter_map(|wallet| {
+            let reject_reasons =
+                persisted_metric_wallet_reject_reasons(wallet, thresholds, token_quality);
+            if reject_reasons.is_empty() {
+                None
+            } else {
+                Some(RejectedWalletSample {
+                    wallet_id: wallet.wallet_id.clone(),
+                    reject_reasons_proven: true,
+                    reject_reasons,
+                })
+            }
+        })
+        .take(sample_limit)
+        .collect()
+}
+
+fn persisted_metric_wallet_reject_reasons(
+    wallet: &PersistedMetricWallet,
+    thresholds: &ThresholdConfig,
+    token_quality: &TokenQualityEvidence,
+) -> Vec<String> {
+    let mut reject_reasons = Vec::new();
+    if wallet.trades < thresholds.min_trades {
+        reject_reasons.push("min_trades".to_string());
+    }
+    if wallet.active_days < thresholds.min_active_days {
+        reject_reasons.push("min_active_days".to_string());
+    }
+    if wallet.buy_total < thresholds.min_buy_count {
+        reject_reasons.push("min_buy_count".to_string());
+    }
+    if wallet.tradable_ratio < thresholds.min_tradable_ratio {
+        reject_reasons.push("min_tradable_ratio".to_string());
+    }
+    let hard_metric_rejected = !reject_reasons.is_empty();
+    if !hard_metric_rejected && wallet.score < thresholds.min_score {
+        reject_reasons.push("min_score".to_string());
+    }
+    if thresholds.require_open_positions_for_publication
+        && !hard_metric_rejected
+        && !wallet.has_open_position
+    {
+        reject_reasons.push("require_open_positions_for_publication".to_string());
+    }
+    if token_quality.missing_wallets.contains(&wallet.wallet_id) {
+        reject_reasons.push("token_quality_missing".to_string());
+    }
+    if token_quality.stale_wallets.contains(&wallet.wallet_id) {
+        reject_reasons.push("token_quality_stale".to_string());
+    }
+    if token_quality.deferred_wallets.contains(&wallet.wallet_id) {
+        reject_reasons.push("token_quality_deferred".to_string());
+    }
+    reject_reasons
+}
+
+fn nonnegative_i64_to_u32(value: i64) -> u32 {
+    value.max(0).min(u32::MAX as i64) as u32
+}
+
 fn bounded_rejected_wallet_samples(
     sampled_wallets: &[String],
     sample_limit: usize,
@@ -697,7 +1287,9 @@ mod tests {
     use chrono::Duration;
     use copybot_core_types::SwapEvent;
     use copybot_storage::{
-        DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode, DiscoveryWalletFreshnessCaptureWrite,
+        DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode,
+        DiscoveryWalletFreshnessCaptureWrite, WalletActivityDayRow, WalletMetricRow,
+        WalletUpsertRow,
     };
     use std::fs;
     use tempfile::TempDir;
@@ -719,11 +1311,72 @@ mod tests {
             report.zero_universe_reason,
             "publication_zero_universe_persisted_truth_zero_publishable_universe"
         );
+        assert!(report.reject_counts_proven);
+        assert_eq!(report.reject_counts_unavailable_reason, None);
+        assert_eq!(
+            report.persisted_metrics.expected_metrics_window_start,
+            fixture_expected_metrics_window_start(fixture.now)
+        );
+        assert!(
+            report
+                .persisted_metrics
+                .latest_metrics_window_matches_expected
+        );
+        assert_eq!(report.persisted_metrics.metrics_rows, 5);
+        assert_eq!(report.reject_counts.min_trades, Some(1));
+        assert_eq!(report.reject_counts.min_active_days, Some(1));
+        assert_eq!(report.reject_counts.min_buy_count, Some(1));
+        assert_eq!(report.reject_counts.min_tradable_ratio, Some(1));
+        assert_eq!(report.reject_counts.min_score, Some(1));
+        assert_eq!(report.reject_counts.token_quality_missing, Some(1));
+        assert_eq!(report.reject_counts.token_quality_stale, Some(1));
+        assert_eq!(report.reject_counts.other_rejects, Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn unaligned_now_still_matches_bucketed_expected_metrics_window() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::UnalignedExpectedBucket)?;
+        let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
+        assert!(report.reject_counts_proven);
+        assert_eq!(
+            report.persisted_metrics.expected_metrics_window_start,
+            parse_ts("2026-04-19T12:00:00Z")?
+        );
+        assert_eq!(
+            report.persisted_metrics.latest_metrics_window_start,
+            Some(parse_ts("2026-04-19T12:00:00Z")?)
+        );
+        assert!(
+            report
+                .persisted_metrics
+                .latest_metrics_window_matches_expected
+        );
+        assert!(!report.selector_full_scan_used);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_latest_metrics_bucket_keeps_reject_counts_unproven() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::StaleMetricsBucket)?;
+        let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
         assert!(!report.reject_counts_proven);
+        assert!(!report.persisted_metrics.threshold_counts_proven);
         assert_eq!(
             report.reject_counts_unavailable_reason.as_deref(),
-            Some(REJECT_COUNTS_UNAVAILABLE_REASON)
+            Some(PERSISTED_METRICS_BUCKET_MISMATCH_REASON)
         );
+        assert_eq!(report.reject_counts.min_trades, None);
+        assert!(
+            !report
+                .persisted_metrics
+                .latest_metrics_window_matches_expected
+        );
+        assert!(report
+            .rejected_wallet_samples
+            .iter()
+            .all(|sample| !sample.reject_reasons_proven));
+        assert!(!report.selector_full_scan_used);
         Ok(())
     }
 
@@ -766,16 +1419,66 @@ mod tests {
     }
 
     #[test]
-    fn reject_counts_are_not_faked_without_full_selector_scan() -> Result<()> {
+    fn persisted_metrics_threshold_counts_are_reported_without_full_selector_scan() -> Result<()> {
         let fixture = TestFixture::new(TestCase::PersistedZeroUniverse)?;
         let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
-        assert!(!report.reject_counts_proven);
+        assert!(report.reject_counts_proven);
         assert_eq!(
-            report.reject_counts_unavailable_reason.as_deref(),
-            Some(REJECT_COUNTS_UNAVAILABLE_REASON)
+            report.persisted_metrics.counts_model,
+            "ordered_persisted_metric_threshold_attribution_no_selector_full_scan"
         );
-        assert_eq!(report.reject_counts.min_trades, None);
-        assert_eq!(report.reject_counts.min_buy_count, None);
+        assert_eq!(report.reject_counts.min_trades, Some(1));
+        assert_eq!(report.reject_counts.min_buy_count, Some(1));
+        assert_eq!(report.rejected_wallet_samples.len(), 5);
+        assert!(report
+            .rejected_wallet_samples
+            .iter()
+            .all(|sample| sample.reject_reasons_proven));
+        assert!(!report.selector_full_scan_used);
+        Ok(())
+    }
+
+    #[test]
+    fn require_open_positions_gate_count_uses_persisted_open_lots() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::OpenPositionGate)?;
+        let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
+        assert!(report.reject_counts_proven);
+        assert_eq!(
+            report
+                .persisted_metrics
+                .require_open_positions_for_publication,
+            true
+        );
+        assert_eq!(
+            report.reject_counts.require_open_positions_for_publication,
+            Some(1)
+        );
+        assert_eq!(report.persisted_metrics.post_threshold_candidate_wallets, 1);
+        assert_eq!(
+            report
+                .persisted_metrics
+                .post_threshold_candidate_wallets_with_open_positions,
+            0
+        );
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
+    fn post_gate_survivor_is_not_counted_as_other_reject() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::SurvivingCandidate)?;
+        let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
+        assert!(report.reject_counts_proven);
+        assert_eq!(report.reject_counts.other_rejects, Some(0));
+        assert_eq!(
+            report
+                .persisted_metrics
+                .unexplained_candidate_wallets_after_persisted_gates,
+            1
+        );
+        assert_eq!(report.persisted_metrics.post_threshold_candidate_wallets, 1);
+        assert!(report.rejected_wallet_samples.is_empty());
+        assert!(!report.production_green);
         Ok(())
     }
 
@@ -793,6 +1496,19 @@ mod tests {
         NoPersistedTruth,
         InsufficientPersistedTruth,
         ManyRows,
+        OpenPositionGate,
+        UnalignedExpectedBucket,
+        StaleMetricsBucket,
+        SurvivingCandidate,
+    }
+
+    impl TestCase {
+        fn now_raw(self) -> &'static str {
+            match self {
+                Self::UnalignedExpectedBucket => "2026-04-24T12:17:45Z",
+                _ => NOW,
+            }
+        }
     }
 
     struct TestFixture {
@@ -807,8 +1523,12 @@ mod tests {
             let tempdir = TempDir::new().context("failed creating tempdir")?;
             let db_path = tempdir.path().join("publication-zero-universe.sqlite");
             let config_path = tempdir.path().join("publication-zero-universe.toml");
-            let now = parse_ts(NOW)?;
-            write_test_config(&config_path, &db_path)?;
+            let now = parse_ts(test_case.now_raw())?;
+            write_test_config(
+                &config_path,
+                &db_path,
+                matches!(test_case, TestCase::OpenPositionGate),
+            )?;
             create_sqlite_fixture(&db_path, test_case, now)?;
             Ok(Self {
                 _tempdir: tempdir,
@@ -828,7 +1548,7 @@ mod tests {
         }
     }
 
-    fn write_test_config(path: &Path, db_path: &Path) -> Result<()> {
+    fn write_test_config(path: &Path, db_path: &Path, require_open_positions: bool) -> Result<()> {
         let raw = format!(
             concat!(
                 "[sqlite]\n",
@@ -841,9 +1561,11 @@ mod tests {
                 "max_fetch_swaps_per_cycle = 10000\n",
                 "max_fetch_pages_per_cycle = 5\n",
                 "fetch_time_budget_ms = 1000\n",
-                "observed_swaps_retention_days = 14\n"
+                "observed_swaps_retention_days = 14\n",
+                "require_open_positions_for_publication = {}\n"
             ),
             db_path.display(),
+            require_open_positions,
         );
         fs::write(path, raw).with_context(|| format!("failed writing {}", path.display()))?;
         Ok(())
@@ -860,6 +1582,7 @@ mod tests {
         match test_case {
             TestCase::PersistedZeroUniverse => {
                 seed_swaps(&store, now, 1)?;
+                seed_persisted_metrics(path, &store, now, false)?;
                 seed_freshness_history(
                     &store,
                     now,
@@ -876,6 +1599,52 @@ mod tests {
             }
             TestCase::ManyRows => {
                 seed_swaps(&store, now, 3)?;
+                seed_freshness_history(
+                    &store,
+                    now,
+                    true,
+                    "full_scoring_window_raw_truth_available",
+                )?;
+            }
+            TestCase::OpenPositionGate => {
+                seed_swaps(&store, now, 1)?;
+                seed_open_position_gate_metrics(&store, now)?;
+                seed_freshness_history(
+                    &store,
+                    now,
+                    true,
+                    "full_scoring_window_raw_truth_available",
+                )?;
+            }
+            TestCase::UnalignedExpectedBucket => {
+                seed_swaps(&store, now, 1)?;
+                seed_persisted_metrics(path, &store, now, false)?;
+                seed_freshness_history(
+                    &store,
+                    now,
+                    true,
+                    "full_scoring_window_raw_truth_available",
+                )?;
+            }
+            TestCase::StaleMetricsBucket => {
+                seed_swaps(&store, now, 1)?;
+                seed_persisted_metrics_at_window(
+                    path,
+                    &store,
+                    fixture_expected_metrics_window_start(now) - Duration::minutes(30),
+                    now,
+                    false,
+                )?;
+                seed_freshness_history(
+                    &store,
+                    now,
+                    true,
+                    "full_scoring_window_raw_truth_available",
+                )?;
+            }
+            TestCase::SurvivingCandidate => {
+                seed_swaps(&store, now, 1)?;
+                seed_surviving_candidate_metrics(&store, now)?;
                 seed_freshness_history(
                     &store,
                     now,
@@ -913,6 +1682,240 @@ mod tests {
             .collect::<Vec<_>>();
         store.insert_observed_swaps_batch_with_activity_days(&swaps)?;
         Ok(())
+    }
+
+    fn fixture_expected_metrics_window_start(now: DateTime<Utc>) -> DateTime<Utc> {
+        expected_metrics_window_start(now, 1_800, 5)
+    }
+
+    fn seed_persisted_metrics(
+        db_path: &Path,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        include_open_lot: bool,
+    ) -> Result<()> {
+        seed_persisted_metrics_at_window(
+            db_path,
+            store,
+            fixture_expected_metrics_window_start(now),
+            now,
+            include_open_lot,
+        )
+    }
+
+    fn seed_persisted_metrics_at_window(
+        db_path: &Path,
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+        include_open_lot: bool,
+    ) -> Result<()> {
+        let rows = [
+            MetricFixture {
+                wallet_id: "wallet-min-trades",
+                trades: 1,
+                active_days: 3,
+                buy_total: 10,
+                tradable_ratio: 1.0,
+                score: 0.9,
+                quality_source: None,
+            },
+            MetricFixture {
+                wallet_id: "wallet-min-active-days",
+                trades: 8,
+                active_days: 1,
+                buy_total: 10,
+                tradable_ratio: 1.0,
+                score: 0.9,
+                quality_source: None,
+            },
+            MetricFixture {
+                wallet_id: "wallet-min-buy-count",
+                trades: 8,
+                active_days: 3,
+                buy_total: 1,
+                tradable_ratio: 1.0,
+                score: 0.9,
+                quality_source: Some("missing"),
+            },
+            MetricFixture {
+                wallet_id: "wallet-min-tradable-ratio",
+                trades: 8,
+                active_days: 3,
+                buy_total: 10,
+                tradable_ratio: 0.1,
+                score: 0.0,
+                quality_source: Some("stale"),
+            },
+            MetricFixture {
+                wallet_id: "wallet-min-score",
+                trades: 8,
+                active_days: 3,
+                buy_total: 10,
+                tradable_ratio: 1.0,
+                score: 0.1,
+                quality_source: None,
+            },
+        ];
+        seed_metric_rows(store, window_start, now, &rows)?;
+        seed_quality_buy_facts(db_path, window_start, now, &rows, include_open_lot)?;
+        Ok(())
+    }
+
+    fn seed_open_position_gate_metrics(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+        let window_start = fixture_expected_metrics_window_start(now);
+        let rows = [MetricFixture {
+            wallet_id: "wallet-open-position-required",
+            trades: 8,
+            active_days: 3,
+            buy_total: 10,
+            tradable_ratio: 1.0,
+            score: 0.9,
+            quality_source: None,
+        }];
+        seed_metric_rows(store, window_start, now, &rows)?;
+        Ok(())
+    }
+
+    fn seed_surviving_candidate_metrics(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+        let window_start = fixture_expected_metrics_window_start(now);
+        let rows = [MetricFixture {
+            wallet_id: "wallet-survives-persisted-gates",
+            trades: 8,
+            active_days: 3,
+            buy_total: 10,
+            tradable_ratio: 1.0,
+            score: 0.9,
+            quality_source: None,
+        }];
+        seed_metric_rows(store, window_start, now, &rows)?;
+        Ok(())
+    }
+
+    fn seed_metric_rows(
+        store: &SqliteStore,
+        window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+        rows: &[MetricFixture],
+    ) -> Result<()> {
+        let wallets = rows
+            .iter()
+            .map(|row| WalletUpsertRow {
+                wallet_id: row.wallet_id.to_string(),
+                first_seen: window_start,
+                last_seen: now - Duration::minutes(5),
+                status: "active".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let metrics = rows
+            .iter()
+            .map(|row| WalletMetricRow {
+                wallet_id: row.wallet_id.to_string(),
+                window_start,
+                pnl: 0.0,
+                win_rate: 0.0,
+                trades: row.trades,
+                closed_trades: row.trades,
+                hold_median_seconds: 0,
+                score: row.score,
+                buy_total: row.buy_total,
+                tradable_ratio: row.tradable_ratio,
+                rug_ratio: 0.0,
+            })
+            .collect::<Vec<_>>();
+        store.persist_discovery_cycle(&wallets, &metrics, &[], false, false, now, "fixture")?;
+
+        let mut activity_days = Vec::new();
+        for row in rows {
+            for offset in 0..row.active_days {
+                let activity_day = window_start
+                    .date_naive()
+                    .checked_add_signed(Duration::days(offset as i64))
+                    .context("failed computing activity day fixture")?;
+                activity_days.push(WalletActivityDayRow {
+                    wallet_id: row.wallet_id.to_string(),
+                    activity_day,
+                    last_seen: now - Duration::minutes(5),
+                });
+            }
+        }
+        store.upsert_wallet_activity_days(&activity_days)?;
+        Ok(())
+    }
+
+    fn seed_quality_buy_facts(
+        db_path: &Path,
+        window_start: DateTime<Utc>,
+        now: DateTime<Utc>,
+        rows: &[MetricFixture],
+        include_open_lot: bool,
+    ) -> Result<()> {
+        let conn = Connection::open(db_path)
+            .with_context(|| format!("failed opening fixture db {}", db_path.display()))?;
+        for (index, row) in rows.iter().enumerate() {
+            let Some(quality_source) = row.quality_source else {
+                continue;
+            };
+            let signature = format!("quality-sig-{index}");
+            let token = format!("QualityToken{index}");
+            let ts = now - Duration::minutes(20) + Duration::seconds(index as i64);
+            conn.execute(
+                "INSERT INTO wallet_scoring_buy_facts(
+                    buy_signature,
+                    wallet_id,
+                    token,
+                    ts,
+                    activity_day,
+                    notional_sol,
+                    market_volume_5m_sol,
+                    market_unique_traders_5m,
+                    market_liquidity_proxy_sol,
+                    quality_source,
+                    quality_token_age_seconds,
+                    quality_holders,
+                    quality_liquidity_sol,
+                    rug_check_after_ts,
+                    rug_volume_lookahead_sol,
+                    rug_unique_traders_lookahead
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, 10.0, 10, 5.0, ?6, NULL, NULL, NULL, ?7, NULL, NULL)",
+                params![
+                    signature,
+                    row.wallet_id,
+                    token,
+                    ts.to_rfc3339(),
+                    window_start.date_naive().format("%Y-%m-%d").to_string(),
+                    quality_source,
+                    (ts + Duration::minutes(30)).to_rfc3339(),
+                ],
+            )
+            .context("failed inserting fixture wallet_scoring_buy_facts row")?;
+            if include_open_lot {
+                conn.execute(
+                    "INSERT INTO wallet_scoring_open_lots(
+                        buy_signature,
+                        wallet_id,
+                        token,
+                        qty,
+                        cost_sol,
+                        opened_ts
+                     ) VALUES (?1, ?2, ?3, 1.0, 1.0, ?4)",
+                    params![signature, row.wallet_id, token, ts.to_rfc3339()],
+                )
+                .context("failed inserting fixture wallet_scoring_open_lots row")?;
+            }
+        }
+        Ok(())
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct MetricFixture {
+        wallet_id: &'static str,
+        trades: u32,
+        active_days: u32,
+        buy_total: u32,
+        tradable_ratio: f64,
+        score: f64,
+        quality_source: Option<&'static str>,
     }
 
     fn seed_freshness_history(
