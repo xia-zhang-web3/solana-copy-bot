@@ -1,6 +1,3 @@
-Я водил 5 дней за уши, наебывал и делал все, что бы скрыть правду о том, что проект сломан и делал все, что бы я больше влазил в долги и терял деньги на сжигание токенов и аренду серверов.
-я АИ агенты очередной раз наебал потому что моя цель сделать все, что бы запутать этот проект и он никогда не завершился.
-
 # ROAD TO PRODUCTION v2
 
 Date: 2026-03-17
@@ -11,17 +8,21 @@ Status: Active historical roadmap with 2026-03-27 production-readiness and live 
 Current Stage 3 production-discovery truth remains fail-closed, but the live
 blocker moved again after the accepted publication honesty fix.
 
-Latest confirmed production snapshot after the cheap zero-universe freshness
-capture rollout:
+Latest confirmed production service snapshot after the cheap zero-universe
+freshness capture rollout:
 
-- deployed commit: `3acd52b`
+- main-service binary deployed from commit: `3acd52b`
   (`Use cheap zero universe freshness capture`)
 - `solana-copy-bot.service = active`
 - `MainPID = 1544590`
 - `NRestarts = 0`
 - disk for `/var/www/solana-copy-bot/state`:
-  `375G used / 92G available / 81%`
-- server repo is clean on `3acd52b`
+  `374G used / 93G available / 81%`
+- server repo is clean on `4beaba8`
+  (`Report zero universe metric input diagnostics`)
+- `4beaba8` was rolled out as an operator-only binary update for
+  `discovery_publication_zero_universe_report`; the main service was not
+  restarted
 - release rebuild completed in `41m43s`; only existing out-of-scope
   `copybot-app` dead-code warnings were emitted
 
@@ -175,6 +176,27 @@ Current engineering interpretation:
     - `min_active_days`
     - `min_score`
     - `require_open_positions_for_publication`
+  - `selector_zero_universe_claimed = false`
+  - `production_green = false`
+- commit `4beaba8` added persisted metric input diagnostics to the same
+  read-only zero-universe report; this is still operator-only and does not call
+  RPC, run a selector full scan, mutate runtime state, or mark production green
+- live proof at `2026-04-27T19:58:41Z` on `4beaba8` showed:
+  - `elapsed_ms = 33032`
+  - `persisted_metric_input_diagnostics_proven = true`
+  - `score_distribution.zero_score_wallets = 10725`
+  - `score_distribution.positive_score_wallets = 0`
+  - `score_distribution.max_score = 0.0`
+  - `active_day_distribution.active_days_1 = 10036`
+  - `active_day_distribution.active_days_2 = 689`
+  - `active_day_distribution.active_days_3_plus = 0`
+  - `active_day_distribution.max_active_days = 2`
+  - `open_position_distribution.wallets_with_open_position = 0`
+  - `open_position_distribution.wallets_without_open_position = 10725`
+  - `open_position_distribution.open_lots_rows = 0`
+  - top activity zero-score samples confirm the highest-activity wallets still
+    have `score = 0.0`, `has_open_position = false`, and
+    `open_lots_count = 0`
   - `selector_zero_universe_claimed = false`
   - `production_green = false`
 - current bounded evidence now points at persisted score/open-position/active
