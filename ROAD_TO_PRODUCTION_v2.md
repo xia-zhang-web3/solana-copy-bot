@@ -199,10 +199,23 @@ Current engineering interpretation:
     `open_lots_count = 0`
   - `selector_zero_universe_claimed = false`
   - `production_green = false`
+- direct read-only SQLite count on the live runtime DB after that report showed:
+  - `wallet_metrics = 32175`
+  - `wallet_activity_days = 5026747`
+  - `wallet_scoring_buy_facts = 0`
+  - `wallet_scoring_close_facts = 0`
+  - `wallet_scoring_open_lots = 0`
+  - `wallet_scoring_carryover_lots = 0`
+- latest three `wallet_metrics` buckets all have `MAX(score) = 0.0`, while
+  `MAX(tradable_ratio) = 1.0`, `MAX(trades) = 59`, and `MAX(buy_total) = 35`
 - current bounded evidence now points at persisted score/open-position/active
   day inputs for otherwise high-activity wallets; do not lower thresholds or
   bypass gates before proving whether those persisted evidence paths are
   truthful
+- because all `wallet_scoring_*` fact/open-lot tables are empty on the live
+  runtime DB, the next proof-first batch should target the scoring fact writer
+  / rebuild path that is supposed to populate those tables from observed swaps
+  before any selector/scoring threshold change is considered
 - current bounded work should now target why the fresh persisted metrics/raw
   evidence produce zero publishable wallets, using persisted metrics evidence
   only; stale persisted freshness evidence and cached-summary conflict are no
