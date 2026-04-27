@@ -13562,7 +13562,6 @@ impl DiscoveryService {
         capture_due: bool,
         runtime_mode: DiscoveryRuntimeMode,
         current_raw: Option<PrecomputedWalletFreshnessCurrentRawTruth>,
-        fail_closed_zero_universe_wallets_seen: Option<usize>,
     ) -> InBandWalletFreshnessCaptureTelemetry {
         if !capture_due {
             return InBandWalletFreshnessCaptureTelemetry {
@@ -13571,9 +13570,7 @@ impl DiscoveryService {
                 ..InBandWalletFreshnessCaptureTelemetry::default()
             };
         }
-        let fail_closed_zero_universe_capture = runtime_mode == DiscoveryRuntimeMode::FailClosed
-            && fail_closed_zero_universe_wallets_seen.is_some();
-        if runtime_mode != DiscoveryRuntimeMode::Healthy && !fail_closed_zero_universe_capture {
+        if runtime_mode != DiscoveryRuntimeMode::Healthy {
             return InBandWalletFreshnessCaptureTelemetry {
                 state: "skipped_runtime_mode",
                 reason: Some(format!(
@@ -13590,20 +13587,6 @@ impl DiscoveryService {
                 ..InBandWalletFreshnessCaptureTelemetry::default()
             };
         };
-        if fail_closed_zero_universe_capture
-            && (current_raw.observed_swaps_loaded == 0
-                || current_raw.eligible_wallet_count != 0
-                || !current_raw.top_wallet_ids.is_empty())
-        {
-            return InBandWalletFreshnessCaptureTelemetry {
-                state: "skipped_invalid_zero_universe_evidence",
-                reason: Some(
-                    "raw_window_zero_publishable_universe_capture_requires_empty_current_raw"
-                        .to_string(),
-                ),
-                ..InBandWalletFreshnessCaptureTelemetry::default()
-            };
-        }
 
         let computed = match self.wallet_freshness_capture_snapshot_from_precomputed_current_raw(
             store,
@@ -13626,7 +13609,7 @@ impl DiscoveryService {
             }
         };
 
-        let mut write = match computed.snapshot.to_storage_write() {
+        let write = match computed.snapshot.to_storage_write() {
             Ok(write) => write,
             Err(error) => {
                 let error_text = format!("{error:#}");
@@ -13641,24 +13624,6 @@ impl DiscoveryService {
                 };
             }
         };
-        if fail_closed_zero_universe_capture {
-            if let Err(error) = Self::rewrite_wallet_freshness_capture_as_zero_universe_evidence(
-                &mut write,
-                fail_closed_zero_universe_wallets_seen
-                    .expect("zero-universe capture flag requires wallets_seen"),
-            ) {
-                let error_text = format!("{error:#}");
-                warn!(
-                    error = %error,
-                    "in-band Stage 3 zero-universe wallet freshness capture rewrite failed; continuing discovery refresh without persisted capture"
-                );
-                return InBandWalletFreshnessCaptureTelemetry {
-                    state: "build_failed",
-                    reason: Some(error_text),
-                    ..InBandWalletFreshnessCaptureTelemetry::default()
-                };
-            }
-        }
 
         match store.append_discovery_wallet_freshness_capture(&write) {
             Ok(row) => InBandWalletFreshnessCaptureTelemetry {
@@ -13682,54 +13647,180 @@ impl DiscoveryService {
         }
     }
 
-    fn rewrite_wallet_freshness_capture_as_zero_universe_evidence(
-        write: &mut DiscoveryWalletFreshnessCaptureWrite,
-        wallets_seen: usize,
-    ) -> Result<()> {
-        write.raw_truth_sufficient = false;
-        write.raw_truth_reason = RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON.to_string();
-        write.published_wallet_ids.clear();
-        write.active_follow_wallet_ids.clear();
-        write.current_raw_top_wallet_ids.clear();
+    fn persist_cached_zero_universe_wallet_freshness_capture(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        summary: &DiscoverySummary,
+        current_raw: &CachedCurrentRawTruthSample,
+    ) -> InBandWalletFreshnessCaptureTelemetry {
+        let write = match self.cached_zero_universe_wallet_freshness_capture_write(
+            now,
+            summary,
+            current_raw,
+        ) {
+            Ok(write) => write,
+            Err(error) => {
+                let error_text = format!("{error:#}");
+                warn!(
+                    error = %error,
+                    "cheap Stage 3 zero-universe wallet freshness capture build failed; continuing discovery refresh without persisted capture"
+                );
+                return InBandWalletFreshnessCaptureTelemetry {
+                    state: "build_failed",
+                    reason: Some(error_text),
+                    ..InBandWalletFreshnessCaptureTelemetry::default()
+                };
+            }
+        };
 
-        let mut audit: serde_json::Value = serde_json::from_str(&write.audit_json)
-            .context("failed deserializing wallet freshness audit for zero-universe evidence")?;
-        let audit_object = audit
-            .as_object_mut()
-            .ok_or_else(|| anyhow!("wallet freshness audit json is not an object"))?;
-        audit_object.insert("published_wallet_ids".to_string(), serde_json::json!([]));
-        audit_object.insert(
-            "active_follow_wallet_ids".to_string(),
-            serde_json::json!([]),
-        );
-        audit_object.insert(
-            "current_raw_top_wallet_ids".to_string(),
-            serde_json::json!([]),
-        );
-        let raw_truth = audit_object
-            .get_mut("raw_truth")
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| anyhow!("wallet freshness audit missing raw_truth object"))?;
-        raw_truth.insert("sufficient".to_string(), serde_json::Value::Bool(false));
-        raw_truth.insert(
-            "reason".to_string(),
-            serde_json::Value::String(RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON.to_string()),
-        );
-        raw_truth.insert(
-            "eligible_wallet_count".to_string(),
-            serde_json::Value::Number(0_u64.into()),
-        );
-        raw_truth.insert(
-            "top_wallet_count".to_string(),
-            serde_json::Value::Number(0_u64.into()),
-        );
-        raw_truth.insert(
-            "wallets_seen".to_string(),
-            serde_json::Value::Number((wallets_seen as u64).into()),
-        );
-        write.audit_json = serde_json::to_string(&audit)
-            .context("failed serializing zero-universe wallet freshness audit")?;
-        Ok(())
+        match store.append_discovery_wallet_freshness_capture(&write) {
+            Ok(row) => InBandWalletFreshnessCaptureTelemetry {
+                state: "persisted_zero_universe_evidence",
+                reason: None,
+                capture_id: Some(row.capture_id),
+                captured_at: Some(row.captured_at),
+            },
+            Err(error) => {
+                let error_text = format!("{error:#}");
+                warn!(
+                    error = %error,
+                    "cheap Stage 3 zero-universe wallet freshness capture persistence failed; continuing discovery refresh without persisted capture"
+                );
+                InBandWalletFreshnessCaptureTelemetry {
+                    state: "persistence_failed",
+                    reason: Some(error_text),
+                    ..InBandWalletFreshnessCaptureTelemetry::default()
+                }
+            }
+        }
+    }
+
+    fn cached_zero_universe_wallet_freshness_capture_write(
+        &self,
+        now: DateTime<Utc>,
+        summary: &DiscoverySummary,
+        current_raw: &CachedCurrentRawTruthSample,
+    ) -> Result<DiscoveryWalletFreshnessCaptureWrite> {
+        if summary.runtime_mode != DiscoveryRuntimeMode::FailClosed
+            || summary.scoring_source != "raw_window"
+            || summary.eligible_wallets != 0
+            || !summary.top_wallets.is_empty()
+            || summary.active_follow_wallets != 0
+            || summary.wallets_seen == 0
+            || current_raw.observed_swaps_loaded == 0
+            || current_raw.eligible_wallet_count != 0
+            || !current_raw.top_wallet_ids.is_empty()
+        {
+            return Err(anyhow!(
+                "raw_window_zero_publishable_universe_capture_requires_exact_empty_cached_truth"
+            ));
+        }
+
+        let empty_comparison = serde_json::json!({
+            "left_count": 0,
+            "right_count": 0,
+            "overlap_count": 0,
+            "exact_match": true,
+            "only_left": [],
+            "only_right": [],
+        });
+        let raw_truth = serde_json::json!({
+            "sufficient": false,
+            "reason": RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON,
+            "observed_swaps_loaded": current_raw.observed_swaps_loaded,
+            "eligible_wallet_count": 0,
+            "top_wallet_count": 0,
+            "wallets_seen": summary.wallets_seen,
+            "short_retention_configured": false,
+            "covered_since": null,
+            "covered_through_cursor": null,
+            "covered_through_lag_seconds": null,
+            "tail_fresh_within_runtime_lag": false,
+            "runtime_freshness_lag_seconds": self.config.refresh_seconds.max(1),
+            "total_observed_swaps_rows": current_raw.observed_swaps_loaded,
+        });
+        let rotation = serde_json::json!({
+            "signal_available": false,
+            "reason": "fewer_than_two_raw_truth_cycle_samples",
+            "cycles_requested": 1,
+            "cycles_completed": 1,
+            "sample_interval_seconds": self.config.refresh_seconds.max(1),
+            "overlap_with_previous_cycle": null,
+            "entered_since_previous_cycle": [],
+            "left_since_previous_cycle": [],
+            "stable_wallets_across_cycles": [],
+            "unique_wallet_count_across_cycles": 0,
+            "samples": [{
+                "sample_now": now,
+                "window_start": current_raw.window_start,
+                "observed_swaps_loaded": current_raw.observed_swaps_loaded,
+                "eligible_wallet_count": 0,
+                "top_wallet_ids": [],
+            }],
+        });
+        let audit = serde_json::json!({
+            "now": now,
+            "window_start": current_raw.window_start,
+            "verdict": "insufficient_raw_truth",
+            "reason": RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON,
+            "follow_top_n": self.config.follow_top_n as usize,
+            "publication_truth_available": false,
+            "publication_runtime_mode": "fail_closed",
+            "publication_recent_under_gate": false,
+            "latest_publication_ts": null,
+            "publication_age_seconds": null,
+            "latest_publication_window_start": null,
+            "published_scoring_source": "raw_window",
+            "published_wallet_ids": [],
+            "active_follow_wallet_ids": [],
+            "current_raw_top_wallet_ids": [],
+            "published_vs_current_raw": empty_comparison.clone(),
+            "active_follow_vs_current_raw": empty_comparison.clone(),
+            "active_follow_vs_published": empty_comparison,
+            "raw_truth": raw_truth,
+            "rotation": rotation,
+        });
+        let shadow_signal = serde_json::json!({
+            "recent_window_start": now,
+            "recent_window_end": now,
+            "evidence_lookback_seconds": self.in_band_wallet_freshness_shadow_evidence_lookback_seconds(),
+            "selected_wallet_ids": [],
+            "selected_wallet_count": 0,
+            "selected_wallets_with_recent_raw_activity": 0,
+            "selected_wallets_with_recent_shadow_signal": 0,
+            "recent_raw_swap_count": 0,
+            "recent_shadow_signal_count": 0,
+            "recent_raw_activity_wallet_ids": [],
+            "recent_shadow_signal_wallet_ids": [],
+            "recent_raw_activity_by_wallet": [],
+            "recent_shadow_signal_by_wallet": [],
+            "raw_activity_top_wallet_share": null,
+            "shadow_signal_top_wallet_share": null,
+            "raw_activity_broadly_distributed": false,
+            "shadow_signal_broadly_distributed": false,
+            "verdict": "no_selected_wallets",
+            "reason": "no_active_follow_wallets_selected",
+        });
+
+        Ok(DiscoveryWalletFreshnessCaptureWrite {
+            captured_at: now,
+            recent_cycles: 1,
+            verdict: "insufficient_raw_truth".to_string(),
+            reason: RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON.to_string(),
+            publication_age_seconds: None,
+            raw_truth_sufficient: false,
+            raw_truth_reason: RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON.to_string(),
+            shadow_signal_verdict: "no_selected_wallets".to_string(),
+            shadow_signal_reason: "no_active_follow_wallets_selected".to_string(),
+            published_wallet_ids: Vec::new(),
+            active_follow_wallet_ids: Vec::new(),
+            current_raw_top_wallet_ids: Vec::new(),
+            audit_json: serde_json::to_string(&audit)
+                .context("failed serializing cheap zero-universe freshness audit")?,
+            shadow_signal_json: serde_json::to_string(&shadow_signal)
+                .context("failed serializing cheap zero-universe freshness shadow signal")?,
+        })
     }
 
     fn degraded_summary_from_published_universe(
@@ -22235,19 +22326,29 @@ impl DiscoveryService {
                             && current_raw.eligible_wallet_count == 0
                             && current_raw.top_wallet_ids.is_empty()
                     });
-                let capture_telemetry = self.maybe_persist_in_band_wallet_freshness_capture(
-                    store,
-                    now,
-                    publish_due || fail_closed_zero_universe_capture,
-                    summary.runtime_mode,
-                    current_raw.map(|current_raw| PrecomputedWalletFreshnessCurrentRawTruth {
-                        window_start: current_raw.window_start,
-                        observed_swaps_loaded: current_raw.observed_swaps_loaded,
-                        eligible_wallet_count: current_raw.eligible_wallet_count,
-                        top_wallet_ids: current_raw.top_wallet_ids,
-                    }),
-                    fail_closed_zero_universe_capture.then_some(summary.wallets_seen),
-                );
+                let capture_telemetry = if fail_closed_zero_universe_capture {
+                    self.persist_cached_zero_universe_wallet_freshness_capture(
+                        store,
+                        now,
+                        &summary,
+                        current_raw
+                            .as_ref()
+                            .expect("zero-universe capture requires cached current_raw"),
+                    )
+                } else {
+                    self.maybe_persist_in_band_wallet_freshness_capture(
+                        store,
+                        now,
+                        publish_due,
+                        summary.runtime_mode,
+                        current_raw.map(|current_raw| PrecomputedWalletFreshnessCurrentRawTruth {
+                            window_start: current_raw.window_start,
+                            observed_swaps_loaded: current_raw.observed_swaps_loaded,
+                            eligible_wallet_count: current_raw.eligible_wallet_count,
+                            top_wallet_ids: current_raw.top_wallet_ids,
+                        }),
+                    )
+                };
                 let summary = summary.with_wallet_freshness_capture(&capture_telemetry);
                 store.clear_discovery_persisted_rebuild_state()?;
                 info!(
@@ -22893,7 +22994,6 @@ impl DiscoveryService {
             publish_due,
             summary.runtime_mode,
             Some(current_raw_for_capture.clone()),
-            None,
         );
         let summary = summary.with_wallet_freshness_capture(&capture_telemetry);
         {
@@ -35245,7 +35345,11 @@ mod tests {
         let summary = discovery.run_cycle(&store, now)?;
         assert_eq!(summary.runtime_mode, DiscoveryRuntimeMode::FailClosed);
         assert_eq!(summary.scoring_source, "raw_window");
-        assert_eq!(summary.wallet_freshness_capture_state, Some("persisted"));
+        assert_eq!(
+            summary.wallet_freshness_capture_state,
+            Some("persisted_zero_universe_evidence"),
+            "cached exact-empty zero-universe evidence must use the dedicated cheap writer, not the generic wallet freshness audit path"
+        );
         assert_eq!(summary.wallet_freshness_capture_reason, None);
         assert!(
             !summary.published,
@@ -35280,9 +35384,22 @@ mod tests {
             "zero-universe evidence must be a current freshness capture"
         );
         assert!(!latest_capture_row.raw_truth_sufficient);
+        assert_eq!(latest_capture_row.verdict, "insufficient_raw_truth");
+        assert_eq!(
+            latest_capture_row.reason,
+            RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON
+        );
         assert_eq!(
             latest_capture_row.raw_truth_reason,
             RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON
+        );
+        assert_eq!(
+            latest_capture_row.shadow_signal_verdict,
+            "no_selected_wallets"
+        );
+        assert_eq!(
+            latest_capture_row.shadow_signal_reason,
+            "no_active_follow_wallets_selected"
         );
         assert_eq!(
             latest_capture_row.current_raw_top_wallet_ids,
@@ -35297,6 +35414,14 @@ mod tests {
             Vec::<String>::new()
         );
         let latest_capture = wallet_freshness_capture_from_row(latest_capture_row.clone())?;
+        assert_eq!(
+            latest_capture.audit.verdict.as_str(),
+            "insufficient_raw_truth"
+        );
+        assert_eq!(
+            latest_capture.audit.reason,
+            RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON
+        );
         assert!(!latest_capture.audit.raw_truth.sufficient);
         assert_eq!(
             latest_capture.audit.raw_truth.reason,
@@ -35320,6 +35445,15 @@ mod tests {
             latest_capture.audit.published_wallet_ids,
             Vec::<String>::new()
         );
+        assert_eq!(
+            latest_capture.shadow_signal.verdict.as_str(),
+            "no_selected_wallets"
+        );
+        assert_eq!(
+            latest_capture.shadow_signal.reason,
+            "no_active_follow_wallets_selected"
+        );
+        assert_eq!(latest_capture.shadow_signal.selected_wallet_count, 0);
         let latest_audit_json: serde_json::Value =
             serde_json::from_str(&latest_capture_row.audit_json)?;
         assert_eq!(
