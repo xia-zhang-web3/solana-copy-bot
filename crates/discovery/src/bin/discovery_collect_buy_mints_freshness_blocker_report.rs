@@ -56,6 +56,7 @@ struct CollectBuyMintsFreshnessBlockerReport {
     persisted_rebuild: Option<PersistedRebuildReport>,
     collect_buy_mints_checkpoint_exists: bool,
     collect_buy_mints_appears_to_restart_from_fresh_each_cycle: bool,
+    fresh_zero_universe_persisted_evidence_consistent: bool,
     cached_raw_window_summary_conflicts_with_persisted_truth: bool,
     blocker_reason: String,
     next_safe_operator_action: String,
@@ -279,17 +280,25 @@ fn run(config: &Config) -> Result<CollectBuyMintsFreshnessBlockerReport> {
     });
     let collect_buy_mints_appears_to_restart_from_fresh_each_cycle =
         collect_buy_mints_restart_from_fresh_each_cycle(persisted_rebuild.as_ref());
-    let cached_raw_window_summary_conflicts_with_persisted_truth =
-        cached_raw_window_summary_conflicts_with_persisted_truth(
+    let fresh_zero_universe_persisted_evidence_consistent =
+        fresh_zero_universe_persisted_evidence_consistent(
             &publication_state,
+            latest_persisted_freshness_capture.as_ref(),
             &raw_window_persisted_health,
         );
+    let cached_raw_window_summary_conflicts_with_persisted_truth =
+        !fresh_zero_universe_persisted_evidence_consistent
+            && cached_raw_window_summary_conflicts_with_persisted_truth(
+                &publication_state,
+                &raw_window_persisted_health,
+            );
     let blocker_reason = classify_blocker_reason(
         &publication_state,
         &raw_window_persisted_health,
         persisted_rebuild.as_ref(),
         collect_buy_mints_checkpoint_exists,
         collect_buy_mints_appears_to_restart_from_fresh_each_cycle,
+        fresh_zero_universe_persisted_evidence_consistent,
         cached_raw_window_summary_conflicts_with_persisted_truth,
     );
     let next_safe_operator_action = next_safe_operator_action(&blocker_reason);
@@ -313,6 +322,7 @@ fn run(config: &Config) -> Result<CollectBuyMintsFreshnessBlockerReport> {
         persisted_rebuild,
         collect_buy_mints_checkpoint_exists,
         collect_buy_mints_appears_to_restart_from_fresh_each_cycle,
+        fresh_zero_universe_persisted_evidence_consistent,
         cached_raw_window_summary_conflicts_with_persisted_truth,
         blocker_reason,
         next_safe_operator_action,
@@ -921,6 +931,7 @@ fn classify_blocker_reason(
     persisted_rebuild: Option<&PersistedRebuildReport>,
     checkpoint_exists: bool,
     restart_from_fresh_each_cycle: bool,
+    fresh_zero_universe_consistent: bool,
     cached_conflict: bool,
 ) -> String {
     if let Some(rebuild) = persisted_rebuild {
@@ -938,6 +949,9 @@ fn classify_blocker_reason(
 
     if raw_window.fresh_under_refresh_gate == Some(false) {
         return "raw_window_persisted_evidence_stale".to_string();
+    }
+    if fresh_zero_universe_consistent {
+        return "raw_window_zero_publishable_universe_confirmed".to_string();
     }
     if cached_conflict {
         return "cached_raw_window_summary_conflicts_with_persisted_truth".to_string();
@@ -968,6 +982,9 @@ fn next_safe_operator_action(blocker_reason: &str) -> String {
         "cached_raw_window_summary_conflicts_with_persisted_truth" => {
             "audit cached raw-window publication summary versus persisted freshness truth; do not treat cached zero-universe as current raw-window proof".to_string()
         }
+        "raw_window_zero_publishable_universe_confirmed" => {
+            "current persisted freshness evidence confirms a fail-closed zero publishable universe; investigate selector inputs from bounded persisted metrics without changing thresholds".to_string()
+        }
         _ => "collect more read-only persisted evidence before changing selector/scoring behavior".to_string(),
     }
 }
@@ -992,6 +1009,27 @@ fn cached_raw_window_summary_conflicts_with_persisted_truth(
 ) -> bool {
     publication_state.reason.as_deref() == Some(RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON)
         && raw_window.raw_truth_sufficient != Some(true)
+}
+
+fn fresh_zero_universe_persisted_evidence_consistent(
+    publication_state: &PublicationStateReport,
+    latest_capture: Option<&FreshnessCaptureReport>,
+    raw_window: &RawWindowPersistedHealthReport,
+) -> bool {
+    let Some(capture) = latest_capture else {
+        return false;
+    };
+    publication_state.reason.as_deref() == Some(RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON)
+        && raw_window.fresh_under_refresh_gate == Some(true)
+        && !capture.raw_truth_sufficient
+        && capture.raw_truth_reason == RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON
+        && capture.published_wallet_count == 0
+        && capture.active_follow_wallet_count == 0
+        && capture.current_raw_top_wallet_count == 0
+        && capture
+            .raw_truth_observed_swaps_loaded
+            .is_some_and(|count| count > 0)
+        && capture.raw_truth_eligible_wallet_count == Some(0)
 }
 
 fn parse_optional_cursor(
@@ -1137,13 +1175,63 @@ mod tests {
     }
 
     #[test]
-    fn cached_zero_summary_conflict_is_reported() -> Result<()> {
+    fn fresh_consistent_zero_universe_evidence_is_not_cached_conflict() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::FreshZeroUniverseConsistent)?;
+        let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
+        assert_eq!(
+            report.blocker_reason,
+            "raw_window_zero_publishable_universe_confirmed"
+        );
+        assert!(report.fresh_zero_universe_persisted_evidence_consistent);
+        assert!(!report.cached_raw_window_summary_conflicts_with_persisted_truth);
+        assert_eq!(
+            report.publication_state.reason.as_deref(),
+            Some(RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON)
+        );
+        let capture = report
+            .latest_persisted_freshness_capture
+            .as_ref()
+            .expect("zero-universe freshness capture should be present");
+        assert!(!capture.raw_truth_sufficient);
+        assert_eq!(
+            capture.raw_truth_reason,
+            RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON
+        );
+        assert_eq!(capture.published_wallet_count, 0);
+        assert_eq!(capture.active_follow_wallet_count, 0);
+        assert_eq!(capture.current_raw_top_wallet_count, 0);
+        assert!(capture
+            .raw_truth_observed_swaps_loaded
+            .is_some_and(|count| count > 0));
+        assert_eq!(capture.raw_truth_eligible_wallet_count, Some(0));
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_zero_universe_evidence_still_reports_stale() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::StaleZeroUniverse)?;
+        let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
+        assert_eq!(report.blocker_reason, "raw_window_persisted_evidence_stale");
+        assert!(!report.fresh_zero_universe_persisted_evidence_consistent);
+        assert_eq!(
+            report.raw_window_persisted_health.fresh_under_refresh_gate,
+            Some(false)
+        );
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
+    fn mismatched_zero_universe_publication_and_capture_reason_is_reported_as_conflict(
+    ) -> Result<()> {
         let fixture = TestFixture::new(TestCase::CachedConflict)?;
         let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
         assert_eq!(
             report.blocker_reason,
             "cached_raw_window_summary_conflicts_with_persisted_truth"
         );
+        assert!(!report.fresh_zero_universe_persisted_evidence_consistent);
         assert!(report.cached_raw_window_summary_conflicts_with_persisted_truth);
         assert_eq!(
             report.publication_state.reason.as_deref(),
@@ -1190,6 +1278,8 @@ mod tests {
         CheckpointMissing,
         CheckpointNotAdvancing,
         StaleFreshness,
+        FreshZeroUniverseConsistent,
+        StaleZeroUniverse,
         CachedConflict,
         ManyObservedRows,
     }
@@ -1261,7 +1351,11 @@ mod tests {
                 seed_rebuild_state(&conn, now, "TokenCursor042", 100, 2)?
             }
             TestCase::CheckpointNotAdvancing => seed_rebuild_state(&conn, now, "", 0, 0)?,
-            TestCase::CheckpointMissing | TestCase::StaleFreshness | TestCase::CachedConflict => {}
+            TestCase::CheckpointMissing
+            | TestCase::StaleFreshness
+            | TestCase::FreshZeroUniverseConsistent
+            | TestCase::StaleZeroUniverse
+            | TestCase::CachedConflict => {}
         }
         Ok(())
     }
@@ -1335,7 +1429,12 @@ mod tests {
         now: DateTime<Utc>,
         test_case: TestCase,
     ) -> Result<()> {
-        let reason = if matches!(test_case, TestCase::CachedConflict) {
+        let reason = if matches!(
+            test_case,
+            TestCase::FreshZeroUniverseConsistent
+                | TestCase::StaleZeroUniverse
+                | TestCase::CachedConflict
+        ) {
             RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON
         } else {
             "raw_window"
@@ -1367,16 +1466,27 @@ mod tests {
         now: DateTime<Utc>,
         test_case: TestCase,
     ) -> Result<()> {
-        let captured_at = if matches!(test_case, TestCase::StaleFreshness) {
+        let captured_at = if matches!(
+            test_case,
+            TestCase::StaleFreshness | TestCase::StaleZeroUniverse
+        ) {
             now - Duration::minutes(30)
         } else {
             now - Duration::minutes(1)
         };
         let raw_truth_sufficient = !matches!(
             test_case,
-            TestCase::CheckpointMissing | TestCase::CachedConflict
+            TestCase::CheckpointMissing
+                | TestCase::FreshZeroUniverseConsistent
+                | TestCase::StaleZeroUniverse
+                | TestCase::CachedConflict
         );
-        let raw_truth_reason = if raw_truth_sufficient {
+        let raw_truth_reason = if matches!(
+            test_case,
+            TestCase::FreshZeroUniverseConsistent | TestCase::StaleZeroUniverse
+        ) {
+            RAW_WINDOW_ZERO_PUBLISHABLE_UNIVERSE_REASON
+        } else if raw_truth_sufficient {
             "full_scoring_window_raw_truth_available"
         } else {
             "collect_buy_mints_fresh_scan_incomplete"
