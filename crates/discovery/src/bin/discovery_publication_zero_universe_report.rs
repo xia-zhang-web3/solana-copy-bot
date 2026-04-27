@@ -67,6 +67,12 @@ struct PublicationZeroUniverseReport {
     max_observed_metrics: MaxObservedMetricsReport,
     single_gate_relief_counts: SingleGateReliefCountsReport,
     bounded_near_miss_wallet_samples: Vec<NearMissWalletSample>,
+    persisted_metric_input_diagnostics_proven: bool,
+    persisted_metric_input_diagnostics_unavailable_reason: Option<String>,
+    score_distribution: ScoreDistributionReport,
+    active_day_distribution: ActiveDayDistributionReport,
+    open_position_distribution: OpenPositionDistributionReport,
+    top_activity_zero_score_samples: Vec<TopActivityZeroScoreSample>,
     selector_zero_universe_claimed: bool,
     zero_universe_reason: String,
     production_green: bool,
@@ -209,6 +215,45 @@ struct NearMissWalletSample {
     failing_gates: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct ScoreDistributionReport {
+    zero_score_wallets: Option<u64>,
+    positive_score_wallets: Option<u64>,
+    max_score: Option<f64>,
+    max_score_wallet_sample: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ActiveDayDistributionReport {
+    active_days_0: Option<u64>,
+    active_days_1: Option<u64>,
+    active_days_2: Option<u64>,
+    active_days_3_plus: Option<u64>,
+    max_active_days: Option<u64>,
+    max_active_days_wallet_sample: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct OpenPositionDistributionReport {
+    wallets_with_open_position: Option<u64>,
+    wallets_without_open_position: Option<u64>,
+    open_lots_rows: Option<u64>,
+    open_position_wallet_sample: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct TopActivityZeroScoreSample {
+    wallet_id: String,
+    trades: u32,
+    active_days: u32,
+    buy_count: u32,
+    tradable_ratio: f64,
+    score: f64,
+    has_open_position: bool,
+    open_lots_count: u64,
+    activity_day_count: u32,
+}
+
 #[derive(Debug, Clone, Default)]
 struct LatestFreshnessFacts {
     captured_at: Option<DateTime<Utc>>,
@@ -256,6 +301,7 @@ struct PersistedMetricWallet {
     tradable_ratio: f64,
     score: f64,
     has_open_position: bool,
+    open_lots_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -270,6 +316,12 @@ struct PersistedMetricsGateResult {
     max_observed_metrics: MaxObservedMetricsReport,
     single_gate_relief_counts: SingleGateReliefCountsReport,
     bounded_near_miss_wallet_samples: Vec<NearMissWalletSample>,
+    persisted_metric_input_diagnostics_proven: bool,
+    persisted_metric_input_diagnostics_unavailable_reason: Option<String>,
+    score_distribution: ScoreDistributionReport,
+    active_day_distribution: ActiveDayDistributionReport,
+    open_position_distribution: OpenPositionDistributionReport,
+    top_activity_zero_score_samples: Vec<TopActivityZeroScoreSample>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -456,6 +508,14 @@ fn run(config: &Config) -> Result<PublicationZeroUniverseReport> {
         max_observed_metrics: metrics_gate.max_observed_metrics,
         single_gate_relief_counts: metrics_gate.single_gate_relief_counts,
         bounded_near_miss_wallet_samples: metrics_gate.bounded_near_miss_wallet_samples,
+        persisted_metric_input_diagnostics_proven: metrics_gate
+            .persisted_metric_input_diagnostics_proven,
+        persisted_metric_input_diagnostics_unavailable_reason: metrics_gate
+            .persisted_metric_input_diagnostics_unavailable_reason,
+        score_distribution: metrics_gate.score_distribution,
+        active_day_distribution: metrics_gate.active_day_distribution,
+        open_position_distribution: metrics_gate.open_position_distribution,
+        top_activity_zero_score_samples: metrics_gate.top_activity_zero_score_samples,
         selector_zero_universe_claimed,
         zero_universe_reason,
         production_green: false,
@@ -873,6 +933,10 @@ fn load_persisted_metrics_gate_report(
         single_gate_relief_counts_report(&wallets, thresholds, &token_quality);
     let bounded_near_miss_wallet_samples =
         bounded_near_miss_wallet_samples(&wallets, thresholds, &token_quality, sample_limit);
+    let score_distribution = score_distribution_report(&wallets, sample_limit);
+    let active_day_distribution = active_day_distribution_report(&wallets, sample_limit);
+    let open_position_distribution = open_position_distribution_report(&wallets, sample_limit);
+    let top_activity_zero_score_samples = top_activity_zero_score_samples(&wallets, sample_limit);
 
     Ok(PersistedMetricsGateResult {
         report: PersistedMetricsGateReport {
@@ -915,6 +979,12 @@ fn load_persisted_metrics_gate_report(
         max_observed_metrics,
         single_gate_relief_counts,
         bounded_near_miss_wallet_samples,
+        persisted_metric_input_diagnostics_proven: true,
+        persisted_metric_input_diagnostics_unavailable_reason: None,
+        score_distribution,
+        active_day_distribution,
+        open_position_distribution,
+        top_activity_zero_score_samples,
     })
 }
 
@@ -967,6 +1037,12 @@ fn unproven_persisted_metrics_gate_report(
         max_observed_metrics: MaxObservedMetricsReport::unproven(),
         single_gate_relief_counts: SingleGateReliefCountsReport::unproven(),
         bounded_near_miss_wallet_samples: Vec::new(),
+        persisted_metric_input_diagnostics_proven: false,
+        persisted_metric_input_diagnostics_unavailable_reason: Some(reason.to_string()),
+        score_distribution: ScoreDistributionReport::unproven(),
+        active_day_distribution: ActiveDayDistributionReport::unproven(),
+        open_position_distribution: OpenPositionDistributionReport::unproven(),
+        top_activity_zero_score_samples: Vec::new(),
     }
 }
 
@@ -1030,7 +1106,12 @@ fn load_metric_wallets_for_expected_bucket(
                     FROM wallet_scoring_open_lots open_lots
                     WHERE open_lots.wallet_id = selected_metrics.wallet_id
                     LIMIT 1
-                ) AS has_open_position
+                ) AS has_open_position,
+                COALESCE((
+                    SELECT COUNT(*)
+                    FROM wallet_scoring_open_lots open_lots
+                    WHERE open_lots.wallet_id = selected_metrics.wallet_id
+                ), 0) AS open_lots_count
              FROM selected_metrics
              ORDER BY selected_metrics.score ASC, selected_metrics.wallet_id ASC",
         )
@@ -1047,6 +1128,7 @@ fn load_metric_wallets_for_expected_bucket(
                 let buy_total: i64 = row.get(2)?;
                 let active_days: i64 = row.get(5)?;
                 let has_open_position: i64 = row.get(6)?;
+                let open_lots_count: i64 = row.get(7)?;
                 Ok(PersistedMetricWallet {
                     wallet_id: row.get(0)?,
                     trades: nonnegative_i64_to_u32(trades),
@@ -1055,6 +1137,7 @@ fn load_metric_wallets_for_expected_bucket(
                     score: row.get(4)?,
                     active_days: nonnegative_i64_to_u32(active_days),
                     has_open_position: has_open_position != 0,
+                    open_lots_count: open_lots_count.max(0) as u64,
                 })
             },
         )
@@ -1427,6 +1510,143 @@ fn persisted_metric_wallet_independent_failing_gates(
     failing_gates
 }
 
+fn score_distribution_report(
+    wallets: &[PersistedMetricWallet],
+    sample_limit: usize,
+) -> ScoreDistributionReport {
+    let max_score = wallets
+        .iter()
+        .map(|wallet| wallet.score)
+        .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    let max_score_wallet_sample = max_score
+        .map(|max_score| {
+            let mut samples = wallets
+                .iter()
+                .filter(|wallet| wallet.score == max_score)
+                .map(|wallet| wallet.wallet_id.clone())
+                .collect::<Vec<_>>();
+            samples.sort();
+            samples.truncate(sample_limit);
+            samples
+        })
+        .unwrap_or_default();
+    ScoreDistributionReport {
+        zero_score_wallets: Some(wallets.iter().filter(|wallet| wallet.score == 0.0).count() as u64),
+        positive_score_wallets: Some(
+            wallets.iter().filter(|wallet| wallet.score > 0.0).count() as u64
+        ),
+        max_score,
+        max_score_wallet_sample,
+    }
+}
+
+fn active_day_distribution_report(
+    wallets: &[PersistedMetricWallet],
+    sample_limit: usize,
+) -> ActiveDayDistributionReport {
+    let max_active_days = wallets.iter().map(|wallet| wallet.active_days).max();
+    let max_active_days_wallet_sample = max_active_days
+        .map(|max_active_days| {
+            let mut samples = wallets
+                .iter()
+                .filter(|wallet| wallet.active_days == max_active_days)
+                .map(|wallet| wallet.wallet_id.clone())
+                .collect::<Vec<_>>();
+            samples.sort();
+            samples.truncate(sample_limit);
+            samples
+        })
+        .unwrap_or_default();
+    ActiveDayDistributionReport {
+        active_days_0: Some(
+            wallets
+                .iter()
+                .filter(|wallet| wallet.active_days == 0)
+                .count() as u64,
+        ),
+        active_days_1: Some(
+            wallets
+                .iter()
+                .filter(|wallet| wallet.active_days == 1)
+                .count() as u64,
+        ),
+        active_days_2: Some(
+            wallets
+                .iter()
+                .filter(|wallet| wallet.active_days == 2)
+                .count() as u64,
+        ),
+        active_days_3_plus: Some(
+            wallets
+                .iter()
+                .filter(|wallet| wallet.active_days >= 3)
+                .count() as u64,
+        ),
+        max_active_days: max_active_days.map(u64::from),
+        max_active_days_wallet_sample,
+    }
+}
+
+fn open_position_distribution_report(
+    wallets: &[PersistedMetricWallet],
+    sample_limit: usize,
+) -> OpenPositionDistributionReport {
+    let mut open_position_wallet_sample = wallets
+        .iter()
+        .filter(|wallet| wallet.has_open_position)
+        .map(|wallet| wallet.wallet_id.clone())
+        .collect::<Vec<_>>();
+    open_position_wallet_sample.sort();
+    open_position_wallet_sample.truncate(sample_limit);
+    OpenPositionDistributionReport {
+        wallets_with_open_position: Some(
+            wallets
+                .iter()
+                .filter(|wallet| wallet.has_open_position)
+                .count() as u64,
+        ),
+        wallets_without_open_position: Some(
+            wallets
+                .iter()
+                .filter(|wallet| !wallet.has_open_position)
+                .count() as u64,
+        ),
+        open_lots_rows: Some(wallets.iter().map(|wallet| wallet.open_lots_count).sum()),
+        open_position_wallet_sample,
+    }
+}
+
+fn top_activity_zero_score_samples(
+    wallets: &[PersistedMetricWallet],
+    sample_limit: usize,
+) -> Vec<TopActivityZeroScoreSample> {
+    let mut samples = wallets
+        .iter()
+        .filter(|wallet| wallet.score == 0.0)
+        .map(|wallet| TopActivityZeroScoreSample {
+            wallet_id: wallet.wallet_id.clone(),
+            trades: wallet.trades,
+            active_days: wallet.active_days,
+            buy_count: wallet.buy_total,
+            tradable_ratio: wallet.tradable_ratio,
+            score: wallet.score,
+            has_open_position: wallet.has_open_position,
+            open_lots_count: wallet.open_lots_count,
+            activity_day_count: wallet.active_days,
+        })
+        .collect::<Vec<_>>();
+    samples.sort_by(|left, right| {
+        right
+            .trades
+            .cmp(&left.trades)
+            .then_with(|| right.active_days.cmp(&left.active_days))
+            .then_with(|| right.buy_count.cmp(&left.buy_count))
+            .then_with(|| left.wallet_id.cmp(&right.wallet_id))
+    });
+    samples.truncate(sample_limit);
+    samples
+}
+
 fn nonnegative_i64_to_u32(value: i64) -> u32 {
     value.max(0).min(u32::MAX as i64) as u32
 }
@@ -1520,6 +1740,41 @@ impl SingleGateReliefCountsReport {
             would_pass_if_min_tradable_ratio_ignored: None,
             would_pass_if_min_score_ignored: None,
             would_pass_if_open_position_gate_ignored: None,
+        }
+    }
+}
+
+impl ScoreDistributionReport {
+    fn unproven() -> Self {
+        Self {
+            zero_score_wallets: None,
+            positive_score_wallets: None,
+            max_score: None,
+            max_score_wallet_sample: Vec::new(),
+        }
+    }
+}
+
+impl ActiveDayDistributionReport {
+    fn unproven() -> Self {
+        Self {
+            active_days_0: None,
+            active_days_1: None,
+            active_days_2: None,
+            active_days_3_plus: None,
+            max_active_days: None,
+            max_active_days_wallet_sample: Vec::new(),
+        }
+    }
+}
+
+impl OpenPositionDistributionReport {
+    fn unproven() -> Self {
+        Self {
+            wallets_with_open_position: None,
+            wallets_without_open_position: None,
+            open_lots_rows: None,
+            open_position_wallet_sample: Vec::new(),
         }
     }
 }
@@ -1711,6 +1966,117 @@ mod tests {
     }
 
     #[test]
+    fn metric_input_diagnostics_report_all_zero_scores() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::AllZeroScores)?;
+        let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
+        assert!(report.persisted_metric_input_diagnostics_proven);
+        assert_eq!(
+            report.persisted_metric_input_diagnostics_unavailable_reason,
+            None
+        );
+        assert_eq!(report.score_distribution.zero_score_wallets, Some(3));
+        assert_eq!(report.score_distribution.positive_score_wallets, Some(0));
+        assert_eq!(report.score_distribution.max_score, Some(0.0));
+        assert_eq!(report.active_day_distribution.max_active_days, Some(2));
+        assert_eq!(report.active_day_distribution.active_days_2, Some(1));
+        let sample = report
+            .top_activity_zero_score_samples
+            .first()
+            .expect("top zero-score activity sample should be present");
+        assert_eq!(sample.wallet_id, "wallet-zero-score-high");
+        assert_eq!(sample.trades, 59);
+        assert_eq!(sample.active_days, 2);
+        assert_eq!(sample.buy_count, 35);
+        assert_eq!(sample.activity_day_count, 2);
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
+    fn metric_input_diagnostics_report_positive_score_samples() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::PositiveScores)?;
+        let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
+        assert!(report.persisted_metric_input_diagnostics_proven);
+        assert_eq!(report.score_distribution.zero_score_wallets, Some(1));
+        assert_eq!(report.score_distribution.positive_score_wallets, Some(2));
+        assert_eq!(report.score_distribution.max_score, Some(0.65));
+        assert_eq!(
+            report.score_distribution.max_score_wallet_sample,
+            vec!["wallet-positive-max".to_string()]
+        );
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
+    fn metric_input_diagnostics_report_open_positions_present() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::OpenPositionsPresent)?;
+        let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
+        assert!(report.persisted_metric_input_diagnostics_proven);
+        assert_eq!(
+            report.open_position_distribution.wallets_with_open_position,
+            Some(2)
+        );
+        assert_eq!(
+            report
+                .open_position_distribution
+                .wallets_without_open_position,
+            Some(1)
+        );
+        assert_eq!(report.open_position_distribution.open_lots_rows, Some(3));
+        assert_eq!(
+            report
+                .open_position_distribution
+                .open_position_wallet_sample,
+            vec!["wallet-open-a".to_string(), "wallet-open-b".to_string()]
+        );
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
+    fn metric_input_diagnostics_missing_required_table_is_unproven() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::MissingMetricInputEvidenceTable)?;
+        let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
+        assert!(!report.persisted_metric_input_diagnostics_proven);
+        assert_eq!(
+            report
+                .persisted_metric_input_diagnostics_unavailable_reason
+                .as_deref(),
+            Some("publication_zero_universe_persisted_metric_evidence_tables_missing")
+        );
+        assert_eq!(report.score_distribution.zero_score_wallets, None);
+        assert!(report.top_activity_zero_score_samples.is_empty());
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
+    fn metric_input_diagnostics_samples_are_capped_by_sample_limit() -> Result<()> {
+        let fixture = TestFixture::new(TestCase::OpenPositionsPresent)?;
+        let report = run(&fixture.config(1))?;
+        assert!(report.persisted_metric_input_diagnostics_proven);
+        assert!(report.score_distribution.max_score_wallet_sample.len() <= 1);
+        assert!(
+            report
+                .active_day_distribution
+                .max_active_days_wallet_sample
+                .len()
+                <= 1
+        );
+        assert!(
+            report
+                .open_position_distribution
+                .open_position_wallet_sample
+                .len()
+                <= 1
+        );
+        assert!(report.top_activity_zero_score_samples.len() <= 1);
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
     fn raw_window_health_unproven_does_not_claim_zero_universe() -> Result<()> {
         let fixture = TestFixture::new(TestCase::NoPersistedTruth)?;
         let report = run(&fixture.config(DEFAULT_SAMPLE_LIMIT))?;
@@ -1832,6 +2198,10 @@ mod tests {
         SurvivingCandidate,
         MinTradesDominates,
         OneGateAway,
+        AllZeroScores,
+        PositiveScores,
+        OpenPositionsPresent,
+        MissingMetricInputEvidenceTable,
     }
 
     impl TestCase {
@@ -2003,6 +2373,47 @@ mod tests {
                     true,
                     "full_scoring_window_raw_truth_available",
                 )?;
+            }
+            TestCase::AllZeroScores => {
+                seed_swaps(&store, now, 1)?;
+                seed_all_zero_score_metrics(&store, now)?;
+                seed_freshness_history(
+                    &store,
+                    now,
+                    true,
+                    "full_scoring_window_raw_truth_available",
+                )?;
+            }
+            TestCase::PositiveScores => {
+                seed_swaps(&store, now, 1)?;
+                seed_positive_score_metrics(&store, now)?;
+                seed_freshness_history(
+                    &store,
+                    now,
+                    true,
+                    "full_scoring_window_raw_truth_available",
+                )?;
+            }
+            TestCase::OpenPositionsPresent => {
+                seed_swaps(&store, now, 1)?;
+                seed_open_positions_present_metrics(path, &store, now)?;
+                seed_freshness_history(
+                    &store,
+                    now,
+                    true,
+                    "full_scoring_window_raw_truth_available",
+                )?;
+            }
+            TestCase::MissingMetricInputEvidenceTable => {
+                seed_swaps(&store, now, 1)?;
+                seed_all_zero_score_metrics(&store, now)?;
+                seed_freshness_history(
+                    &store,
+                    now,
+                    true,
+                    "full_scoring_window_raw_truth_available",
+                )?;
+                drop_fixture_table(path, "wallet_activity_days")?;
             }
         }
         Ok(())
@@ -2205,6 +2616,116 @@ mod tests {
         Ok(())
     }
 
+    fn seed_all_zero_score_metrics(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+        let window_start = fixture_expected_metrics_window_start(now);
+        let rows = [
+            MetricFixture {
+                wallet_id: "wallet-zero-score-high",
+                trades: 59,
+                active_days: 2,
+                buy_total: 35,
+                tradable_ratio: 1.0,
+                score: 0.0,
+                quality_source: None,
+            },
+            MetricFixture {
+                wallet_id: "wallet-zero-score-mid",
+                trades: 20,
+                active_days: 1,
+                buy_total: 10,
+                tradable_ratio: 0.8,
+                score: 0.0,
+                quality_source: None,
+            },
+            MetricFixture {
+                wallet_id: "wallet-zero-score-low",
+                trades: 5,
+                active_days: 0,
+                buy_total: 2,
+                tradable_ratio: 0.5,
+                score: 0.0,
+                quality_source: None,
+            },
+        ];
+        seed_metric_rows(store, window_start, now, &rows)?;
+        Ok(())
+    }
+
+    fn seed_positive_score_metrics(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+        let window_start = fixture_expected_metrics_window_start(now);
+        let rows = [
+            MetricFixture {
+                wallet_id: "wallet-positive-max",
+                trades: 8,
+                active_days: 3,
+                buy_total: 10,
+                tradable_ratio: 1.0,
+                score: 0.65,
+                quality_source: None,
+            },
+            MetricFixture {
+                wallet_id: "wallet-positive-mid",
+                trades: 8,
+                active_days: 2,
+                buy_total: 10,
+                tradable_ratio: 1.0,
+                score: 0.25,
+                quality_source: None,
+            },
+            MetricFixture {
+                wallet_id: "wallet-zero-score",
+                trades: 8,
+                active_days: 1,
+                buy_total: 10,
+                tradable_ratio: 1.0,
+                score: 0.0,
+                quality_source: None,
+            },
+        ];
+        seed_metric_rows(store, window_start, now, &rows)?;
+        Ok(())
+    }
+
+    fn seed_open_positions_present_metrics(
+        db_path: &Path,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        let window_start = fixture_expected_metrics_window_start(now);
+        let rows = [
+            MetricFixture {
+                wallet_id: "wallet-open-a",
+                trades: 20,
+                active_days: 2,
+                buy_total: 10,
+                tradable_ratio: 1.0,
+                score: 0.0,
+                quality_source: None,
+            },
+            MetricFixture {
+                wallet_id: "wallet-open-b",
+                trades: 18,
+                active_days: 2,
+                buy_total: 9,
+                tradable_ratio: 1.0,
+                score: 0.0,
+                quality_source: None,
+            },
+            MetricFixture {
+                wallet_id: "wallet-no-open",
+                trades: 10,
+                active_days: 1,
+                buy_total: 5,
+                tradable_ratio: 1.0,
+                score: 0.0,
+                quality_source: None,
+            },
+        ];
+        seed_metric_rows(store, window_start, now, &rows)?;
+        seed_open_lots(db_path, now, &[("wallet-open-a", 2), ("wallet-open-b", 1)])?;
+        Ok(())
+    }
+
     fn seed_metric_rows(
         store: &SqliteStore,
         window_start: DateTime<Utc>,
@@ -2317,6 +2838,45 @@ mod tests {
                 .context("failed inserting fixture wallet_scoring_open_lots row")?;
             }
         }
+        Ok(())
+    }
+
+    fn seed_open_lots(
+        db_path: &Path,
+        now: DateTime<Utc>,
+        wallet_lot_counts: &[(&str, usize)],
+    ) -> Result<()> {
+        let conn = Connection::open(db_path)
+            .with_context(|| format!("failed opening fixture db {}", db_path.display()))?;
+        for (wallet_id, lot_count) in wallet_lot_counts {
+            for index in 0..*lot_count {
+                conn.execute(
+                    "INSERT INTO wallet_scoring_open_lots(
+                        buy_signature,
+                        wallet_id,
+                        token,
+                        qty,
+                        cost_sol,
+                        opened_ts
+                     ) VALUES (?1, ?2, ?3, 1.0, 1.0, ?4)",
+                    params![
+                        format!("open-lot-{wallet_id}-{index}"),
+                        wallet_id,
+                        format!("OpenToken{wallet_id}{index}"),
+                        (now - Duration::minutes(5) + Duration::seconds(index as i64)).to_rfc3339(),
+                    ],
+                )
+                .context("failed inserting fixture direct wallet_scoring_open_lots row")?;
+            }
+        }
+        Ok(())
+    }
+
+    fn drop_fixture_table(db_path: &Path, table_name: &str) -> Result<()> {
+        let conn = Connection::open(db_path)
+            .with_context(|| format!("failed opening fixture db {}", db_path.display()))?;
+        conn.execute(&format!("DROP TABLE {table_name}"), [])
+            .with_context(|| format!("failed dropping fixture table {table_name}"))?;
         Ok(())
     }
 
