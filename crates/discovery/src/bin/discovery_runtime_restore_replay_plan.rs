@@ -9,11 +9,11 @@ use serde::Serialize;
 use serde_json::Value;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-const USAGE: &str = "usage: discovery_runtime_restore_replay_plan --config <path> --artifact <path> --journal-db-path <path> --gap-fill-db-path <path> --gap-fill-progress-path <path> --gap-fill-window-start-utc <rfc3339> --gap-fill-window-end-utc <rfc3339> --json [--db-path <runtime db path override>] [--min-free-gb <n>] [--estimate-only]";
+const USAGE: &str = "usage: discovery_runtime_restore_replay_plan --config <path> --artifact <path> --journal-db-path <path> --gap-fill-db-path <path> --gap-fill-progress-path <path> --gap-fill-window-start-utc <rfc3339> --gap-fill-window-end-utc <rfc3339> --db-path <non-production target db path> --json [--allow-existing-target-db] [--min-free-gb <n>] [--estimate-only]";
 
 const BYTES_PER_GB: u64 = 1024 * 1024 * 1024;
 const ACCEPTED_RESIDUE_POLICY: &str = "accepted_irreducible_boundary_residue";
@@ -56,7 +56,8 @@ struct Config {
     gap_fill_progress_path: PathBuf,
     gap_fill_window_start_utc: DateTime<Utc>,
     gap_fill_window_end_utc: DateTime<Utc>,
-    db_path: Option<PathBuf>,
+    db_path: PathBuf,
+    allow_existing_target_db: bool,
     min_free_gb: u64,
     estimate_only: bool,
     json: bool,
@@ -67,7 +68,14 @@ struct Config {
 struct RestoreReplayPlanReport {
     event: &'static str,
     config_path: String,
+    configured_runtime_db_path: String,
     target_runtime_db_path: String,
+    target_db_explicit: bool,
+    target_db_matches_configured_runtime_db: bool,
+    target_db_exists: Option<bool>,
+    allow_existing_target_db: bool,
+    target_db_guard_passed: bool,
+    target_db_guard_reason: String,
     target_runtime_artifact_path: String,
     target_runtime_artifact_exists: bool,
     artifact_freshness_assessed: bool,
@@ -128,6 +136,14 @@ struct DiskGuardReport {
     estimated_required_bytes: Option<u64>,
     disk_guard_passed: bool,
     disk_guard_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TargetDbGuard {
+    matches_configured_runtime_db: bool,
+    exists: Option<bool>,
+    passed: bool,
+    reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -193,6 +209,7 @@ where
     let mut gap_fill_window_start_utc: Option<DateTime<Utc>> = None;
     let mut gap_fill_window_end_utc: Option<DateTime<Utc>> = None;
     let mut db_path: Option<PathBuf> = None;
+    let mut allow_existing_target_db = false;
     let mut min_free_gb: u64 = 100;
     let mut estimate_only = true;
     let mut json = false;
@@ -235,6 +252,7 @@ where
             "--db-path" => {
                 db_path = Some(PathBuf::from(parse_string_arg("--db-path", args.next())?))
             }
+            "--allow-existing-target-db" => allow_existing_target_db = true,
             "--min-free-gb" => {
                 min_free_gb = parse_u64_arg("--min-free-gb", args.next())?;
             }
@@ -269,7 +287,8 @@ where
             .ok_or_else(|| anyhow!("missing required --gap-fill-progress-path\n{USAGE}"))?,
         gap_fill_window_start_utc,
         gap_fill_window_end_utc,
-        db_path,
+        db_path: db_path.ok_or_else(|| anyhow!("missing required --db-path\n{USAGE}"))?,
+        allow_existing_target_db,
         min_free_gb,
         estimate_only,
         json,
@@ -308,10 +327,20 @@ fn build_report(config: &Config) -> Result<RestoreReplayPlanReport> {
         loaded_config.discovery.clone(),
         loaded_config.shadow.clone(),
     );
-    let target_runtime_db_path = resolve_db_path(
+    let configured_runtime_db_path = absolute_lexical_path(&resolve_db_path(
         &config.config_path,
-        config.db_path.as_deref(),
+        None,
         &loaded_config.sqlite.path,
+    ))?;
+    let target_runtime_db_path = absolute_lexical_path(&resolve_db_path(
+        &config.config_path,
+        Some(config.db_path.as_path()),
+        &loaded_config.sqlite.path,
+    ))?;
+    let target_db_guard = target_db_guard_report(
+        &configured_runtime_db_path,
+        &target_runtime_db_path,
+        config.allow_existing_target_db,
     );
     let scoring_window_days = loaded_config.discovery.scoring_window_days.max(1) as i64;
     let required_window_start = config.now - Duration::days(scoring_window_days);
@@ -355,12 +384,17 @@ fn build_report(config: &Config) -> Result<RestoreReplayPlanReport> {
         &journal_stats,
         &gap_fill_stats,
         &disk_guard,
+        &target_db_guard,
     );
-    let recommended_restore_command = recommended_restore_command(
-        config,
-        &target_runtime_db_path,
-        normal_restore_requires_bootstrap_degraded == Some(true),
-    );
+    let recommended_restore_command = if target_db_guard.passed {
+        recommended_restore_command(
+            config,
+            &target_runtime_db_path,
+            normal_restore_requires_bootstrap_degraded == Some(true),
+        )
+    } else {
+        format!("not_available:{}", target_db_guard.reason)
+    };
     let recommended_next_operator_action = if ready {
         "restore replay plan is ready; run the recommended command only after human approval"
             .to_string()
@@ -371,7 +405,14 @@ fn build_report(config: &Config) -> Result<RestoreReplayPlanReport> {
     Ok(RestoreReplayPlanReport {
         event: "discovery_runtime_restore_replay_plan",
         config_path: config.config_path.display().to_string(),
+        configured_runtime_db_path: configured_runtime_db_path.display().to_string(),
         target_runtime_db_path: target_runtime_db_path.display().to_string(),
+        target_db_explicit: true,
+        target_db_matches_configured_runtime_db: target_db_guard.matches_configured_runtime_db,
+        target_db_exists: target_db_guard.exists,
+        allow_existing_target_db: config.allow_existing_target_db,
+        target_db_guard_passed: target_db_guard.passed,
+        target_db_guard_reason: target_db_guard.reason,
         target_runtime_artifact_path: config.artifact_path.display().to_string(),
         target_runtime_artifact_exists: config.artifact_path.exists(),
         artifact_freshness_assessed,
@@ -415,6 +456,80 @@ fn build_report(config: &Config) -> Result<RestoreReplayPlanReport> {
         recommended_next_operator_action,
         production_green: false,
     })
+}
+
+fn absolute_lexical_path(path: &Path) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .context("failed resolving current directory for restore replay plan path")?
+            .join(path)
+    };
+    Ok(normalize_lexical_path(&absolute))
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() && !path.is_absolute() {
+                    normalized.push("..");
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        normalized
+    }
+}
+
+fn target_db_guard_report(
+    configured_runtime_db_path: &Path,
+    target_runtime_db_path: &Path,
+    allow_existing_target_db: bool,
+) -> TargetDbGuard {
+    let matches_configured_runtime_db = target_runtime_db_path == configured_runtime_db_path;
+    if matches_configured_runtime_db {
+        return TargetDbGuard {
+            matches_configured_runtime_db,
+            exists: target_runtime_db_path.try_exists().ok(),
+            passed: false,
+            reason: "restore_replay_plan_target_db_matches_configured_runtime_db".to_string(),
+        };
+    }
+
+    match target_runtime_db_path.try_exists() {
+        Ok(true) if !allow_existing_target_db => TargetDbGuard {
+            matches_configured_runtime_db,
+            exists: Some(true),
+            passed: false,
+            reason: "restore_replay_plan_target_db_already_exists".to_string(),
+        },
+        Ok(exists) => TargetDbGuard {
+            matches_configured_runtime_db,
+            exists: Some(exists),
+            passed: true,
+            reason: if exists {
+                "restore_replay_plan_existing_target_db_explicitly_allowed".to_string()
+            } else {
+                "restore_replay_plan_target_db_fresh_non_production_path_verified".to_string()
+            },
+        },
+        Err(error) => TargetDbGuard {
+            matches_configured_runtime_db,
+            exists: None,
+            passed: false,
+            reason: format!("restore_replay_plan_target_db_existence_unproven:{error:#}"),
+        },
+    }
 }
 
 fn load_artifact(path: &Path) -> Result<DiscoveryRuntimeArtifact> {
@@ -588,7 +703,11 @@ fn plan_readiness(
     journal_stats: &DbStatsReport,
     gap_fill_stats: &DbStatsReport,
     disk_guard: &DiskGuardReport,
+    target_db_guard: &TargetDbGuard,
 ) -> (bool, String) {
+    if !target_db_guard.passed {
+        return (false, target_db_guard.reason.clone());
+    }
     if !config.artifact_path.exists() {
         return (false, "restore_replay_plan_missing_artifact".to_string());
     }
@@ -1052,6 +1171,7 @@ mod tests {
 
     struct Fixture {
         config: Config,
+        configured_runtime_db_path: PathBuf,
         _temp: tempfile::TempDir,
     }
 
@@ -1062,12 +1182,13 @@ mod tests {
         let journal_db_path = temp.path().join(format!("{name}.journal.sqlite"));
         let gap_fill_db_path = temp.path().join(format!("{name}.gap-fill.sqlite"));
         let progress_path = temp.path().join(format!("{name}.progress.json"));
+        let configured_runtime_db_path = temp.path().join(format!("{name}.production.sqlite"));
         let target_db_path = temp.path().join(format!("{name}.target.sqlite"));
         fs::write(
             &config_path,
             format!(
                 "[sqlite]\npath = \"{}\"\n\n[discovery]\nscoring_window_days = 7\nrefresh_seconds = 600\nmetric_snapshot_interval_seconds = 1800\nmax_window_swaps_in_memory = 8\nmax_fetch_swaps_per_cycle = 8\nmax_fetch_pages_per_cycle = 5\nfetch_time_budget_ms = 1000\nobserved_swaps_retention_days = 14\n",
-                target_db_path.display()
+                configured_runtime_db_path.display()
             ),
         )?;
         write_runtime_artifact(
@@ -1087,12 +1208,14 @@ mod tests {
                 gap_fill_progress_path: progress_path,
                 gap_fill_window_start_utc: parse_ts(WINDOW_START)?,
                 gap_fill_window_end_utc: parse_ts(WINDOW_END)?,
-                db_path: Some(target_db_path),
+                db_path: target_db_path,
+                allow_existing_target_db: false,
                 min_free_gb: 0,
                 estimate_only: true,
                 json: true,
                 now: parse_ts(NOW)?,
             },
+            configured_runtime_db_path,
             _temp: temp,
         })
     }
@@ -1214,6 +1337,34 @@ mod tests {
     }
 
     #[test]
+    fn missing_db_path_fails_parse() -> Result<()> {
+        let fixture = make_fixture("missing-db-path-parse")?;
+        let err = parse_args_from(
+            vec![
+                "--config".to_string(),
+                fixture.config.config_path.display().to_string(),
+                "--artifact".to_string(),
+                fixture.config.artifact_path.display().to_string(),
+                "--journal-db-path".to_string(),
+                fixture.config.journal_db_path.display().to_string(),
+                "--gap-fill-db-path".to_string(),
+                fixture.config.gap_fill_db_path.display().to_string(),
+                "--gap-fill-progress-path".to_string(),
+                fixture.config.gap_fill_progress_path.display().to_string(),
+                "--gap-fill-window-start-utc".to_string(),
+                WINDOW_START.to_string(),
+                "--gap-fill-window-end-utc".to_string(),
+                WINDOW_END.to_string(),
+                "--json".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect_err("missing --db-path must fail parse");
+        assert!(err.to_string().contains("missing required --db-path"));
+        Ok(())
+    }
+
+    #[test]
     fn valid_accepted_residue_and_readable_stats_with_enough_disk_is_ready() -> Result<()> {
         let fixture = make_fixture("ready")?;
         let report = build_report(&fixture.config)?;
@@ -1230,6 +1381,99 @@ mod tests {
         assert!(report.journal_db_stats.stats_readable);
         assert!(report.gap_fill_db_stats.stats_readable);
         assert!(report.disk_guard.disk_guard_passed);
+        assert!(report.target_db_guard_passed);
+        assert_eq!(report.target_db_exists, Some(false));
+        assert!(!report.target_db_matches_configured_runtime_db);
+        assert_eq!(
+            report.configured_runtime_db_path,
+            fixture.configured_runtime_db_path.display().to_string()
+        );
+        assert!(report
+            .recommended_restore_command
+            .contains(&fixture.config.db_path.display().to_string()));
+        assert!(!report
+            .recommended_restore_command
+            .contains(&fixture.configured_runtime_db_path.display().to_string()));
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
+    fn target_db_equal_to_configured_runtime_db_fails_closed() -> Result<()> {
+        let mut fixture = make_fixture("target-equals-configured")?;
+        fixture.config.db_path = fixture.configured_runtime_db_path.clone();
+        let report = build_report(&fixture.config)?;
+        assert!(!report.restore_replay_plan_ready);
+        assert_eq!(
+            report.restore_replay_plan_reason,
+            "restore_replay_plan_target_db_matches_configured_runtime_db"
+        );
+        assert!(!report.target_db_guard_passed);
+        assert!(report.target_db_matches_configured_runtime_db);
+        assert!(!report
+            .recommended_restore_command
+            .contains(&fixture.configured_runtime_db_path.display().to_string()));
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
+    fn target_db_equal_to_configured_runtime_db_fails_even_when_existing_db_allowed() -> Result<()>
+    {
+        let mut fixture = make_fixture("target-equals-configured-allow-existing")?;
+        fixture.config.db_path = fixture.configured_runtime_db_path.clone();
+        fixture.config.allow_existing_target_db = true;
+        let report = build_report(&fixture.config)?;
+        assert!(!report.restore_replay_plan_ready);
+        assert_eq!(
+            report.restore_replay_plan_reason,
+            "restore_replay_plan_target_db_matches_configured_runtime_db"
+        );
+        assert!(!report.target_db_guard_passed);
+        assert!(report.target_db_matches_configured_runtime_db);
+        Ok(())
+    }
+
+    #[test]
+    fn existing_target_db_fails_closed_by_default() -> Result<()> {
+        let fixture = make_fixture("existing-target-default")?;
+        fs::write(&fixture.config.db_path, b"existing target")?;
+        let report = build_report(&fixture.config)?;
+        assert!(!report.restore_replay_plan_ready);
+        assert_eq!(
+            report.restore_replay_plan_reason,
+            "restore_replay_plan_target_db_already_exists"
+        );
+        assert_eq!(report.target_db_exists, Some(true));
+        assert!(!report.allow_existing_target_db);
+        assert!(!report.target_db_guard_passed);
+        assert!(!report
+            .recommended_restore_command
+            .contains(&fixture.config.db_path.display().to_string()));
+        assert!(!report.production_green);
+        Ok(())
+    }
+
+    #[test]
+    fn existing_target_db_is_allowed_only_with_explicit_flag() -> Result<()> {
+        let mut fixture = make_fixture("existing-target-allowed")?;
+        fs::write(&fixture.config.db_path, b"existing target")?;
+        fixture.config.allow_existing_target_db = true;
+        let report = build_report(&fixture.config)?;
+        assert!(report.restore_replay_plan_ready, "{report:#?}");
+        assert_eq!(report.target_db_exists, Some(true));
+        assert!(report.allow_existing_target_db);
+        assert!(report.target_db_guard_passed);
+        assert_eq!(
+            report.target_db_guard_reason,
+            "restore_replay_plan_existing_target_db_explicitly_allowed"
+        );
+        assert!(report
+            .recommended_restore_command
+            .contains(&fixture.config.db_path.display().to_string()));
+        assert!(!report
+            .recommended_restore_command
+            .contains(&fixture.configured_runtime_db_path.display().to_string()));
         assert!(!report.production_green);
         Ok(())
     }
@@ -1336,6 +1580,13 @@ mod tests {
     ) -> Result<()> {
         let fixture = make_fixture("recommended-command")?;
         let report = build_report(&fixture.config)?;
+        assert!(report.recommended_restore_command.contains("--db-path"));
+        assert!(report
+            .recommended_restore_command
+            .contains(&fixture.config.db_path.display().to_string()));
+        assert!(!report
+            .recommended_restore_command
+            .contains(&fixture.configured_runtime_db_path.display().to_string()));
         assert!(report
             .recommended_restore_command
             .contains("--gap-fill-db-path"));
