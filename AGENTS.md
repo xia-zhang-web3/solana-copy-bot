@@ -207,10 +207,10 @@ Record facts, not vague status language.
 
 ## Current State Snapshot
 
-As of `2026-04-28T15:13:25Z`, Stage 3 production discovery truth remains
+As of `2026-04-28T15:47:10Z`, Stage 3 production discovery truth remains
 fail-closed. Raw-history recovery and the one-shot aggregate-scoring
 materialization are no longer the active blocker, but aggregate runtime
-enablement exposed a live observed-swap writer startup/backpressure seam.
+enablement exposed a live aggregate materialization-gap replay seam.
 
 Current interpretation:
 
@@ -221,8 +221,8 @@ Current interpretation:
 - The aggregate-scoring materialization lane has been unblocked and run on
   production.
 - Current active evidence is still `raw_window_zero_publishable_universe`, and
-  aggregate reads cannot be enabled yet because live observed-swap persistence
-  does not stay fresh after runtime restart.
+  aggregate reads cannot be enabled yet because live aggregate readiness remains
+  blocked by an explicit `materialization_gap_cursor`.
 - Do not reduce `scoring_window_days` or weaken fail-closed semantics to route
   around this result.
 
@@ -234,6 +234,7 @@ Latest confirmed live snapshot:
   - `a566402` (`Bound scoring prepare market stats`)
   - `1722c36` (`Record aggregate scoring materialization result`)
   - `835b6d5` (`Raise aggregate writer enqueue budget`)
+  - `f535503` (`Decouple observed swap writer startup gates`)
 - `backfill_discovery_scoring` and `copybot-app` have both been rebuilt on
   production
 - aggregate scoring backfill completed and marked coverage:
@@ -317,6 +318,35 @@ Latest confirmed live snapshot:
   - post-rollback service state:
     `solana-copy-bot.service = active`, `MainPID = 1561223`,
     `NRestarts = 0`
+- startup-gate fix rollout:
+  - commit `f535503` was deployed and `copybot-app` was rebuilt
+  - local bounded checks passed:
+    `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer`,
+    `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - live enablement with aggregate flags proved raw persistence now moves:
+    `observed_swap_writer_raw_batch_ms_p95` and
+    `observed_swap_writer_observed_swaps_insert_ms_p95` became non-zero
+  - aggregate coverage became fresh:
+    `covered_through = 2026-04-28T15:43:10.093919453Z`,
+    `covered_through_lag_seconds = 97`
+  - readiness still failed closed with
+    `write_blockers = ["materialization_gap_latched"]` and
+    `read_blockers = ["materialization_gap_latched"]`
+  - latched gap cursor:
+    `2026-04-28T15:40:04.136715225Z / 416248013 /
+    ZSoPwzqpMLMBypvWdLhf1jJXwaLPJbPcAv9siEED1s8uZTz5RP9mkE9byvJvkwpCkuczkCudjfED4Us3hpTbk3w`
+  - code inspection showed current `run_aggregate_gap_replay` starts from
+    `covered_through`, so once hot-path aggregate writes advance beyond the
+    latched gap, idle replay cannot observe the exact gap row and cannot clear
+    the latch honestly
+  - aggregate flags were rolled back again to `false` / `false` from
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428T-startup-gates-before-aggregate-enable`
+  - post-rollback service state:
+    `solana-copy-bot.service = active`, `MainPID = 1562846`,
+    `NRestarts = 0`
+  - with aggregate flags disabled on the new binary, raw observed-swap writes
+    still move: `observed_swap_writer_pending_requests = 0`,
+    `observed_swap_writer_raw_batch_ms_p95 = 652`
 
 Operational reading:
 
@@ -324,9 +354,9 @@ Operational reading:
 - do not run restore/gap-fill work as the next step unless new raw-history
   evidence appears
 - do not mark production green from operator observability alone
-- next batches should target the proven live observed-swap writer startup
-  barrier/backpressure seam that prevents raw batches from being processed
-  after restart, not historical raw recovery and not selector threshold changes
+- next batch should target aggregate gap replay semantics for a latched
+  `materialization_gap_cursor` that is at or before `covered_through`, not
+  historical raw recovery and not selector threshold changes
 
 ## Current Development Accounting
 

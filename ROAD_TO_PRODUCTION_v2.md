@@ -7,11 +7,11 @@ Status: Active historical roadmap with 2026-03-27 production-readiness and live 
 
 Current Stage 3 production-discovery truth remains fail-closed. Raw-history
 recovery is no longer the active lane, and aggregate-scoring materialization was
-proven and covered on production. A controlled aggregate runtime enablement was
-attempted and rolled back because live aggregate coverage freshness did not
-advance under observed-swap writer saturation. A follow-up enqueue-budget fix
-raised the cap but exposed the next seam: raw batches are not processed while
-the raw writer is blocked behind downstream startup receivers.
+proven and covered on production. Controlled aggregate runtime enablement
+attempts remain fail-closed. The enqueue-budget and startup-gate fixes both
+landed, but the latest live rollout exposed the next seam:
+`materialization_gap_cursor` can remain latched behind an already-advanced
+aggregate `covered_through` cursor.
 
 Latest accepted and deployed operator batch:
 
@@ -228,6 +228,64 @@ Current next bounded seam:
 - next coding batch should make the raw observed-swap writer stop blocking raw
   persistence on aggregate/recent-raw startup replay/prune completion, while
   still surfacing downstream startup failures fail-closed
+
+Follow-up startup-gate fix and live result (`2026-04-28`):
+
+- commit `f535503` (`Decouple observed swap writer startup gates`) changed only
+  `crates/app/src/observed_swap_writer.rs`
+- local reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer`
+  - `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`
+  - `git diff --check -- crates/app/src/observed_swap_writer.rs`
+- production rollout:
+  - server checkout advanced to `f535503`
+  - `copybot-app` rebuilt successfully
+  - aggregate flags were enabled from backup
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428T-startup-gates-before-aggregate-enable`
+  - service restarted and stayed `active`, `NRestarts = 0`
+- behavior proven on live:
+  - raw observed-swap persistence no longer waited on downstream startup:
+    `observed_swap_writer_raw_batch_ms_p95` and
+    `observed_swap_writer_observed_swaps_insert_ms_p95` became non-zero
+  - aggregate coverage became fresh:
+    `covered_through = 2026-04-28T15:43:10.093919453Z`
+  - `covered_through_lag_seconds = 97`
+  - readiness still failed closed because
+    `materialization_gap_cursor = 2026-04-28T15:40:04.136715225Z /
+    416248013 /
+    ZSoPwzqpMLMBypvWdLhf1jJXwaLPJbPcAv9siEED1s8uZTz5RP9mkE9byvJvkwpCkuczkCudjfED4Us3hpTbk3w`
+  - blockers:
+    `write_blockers = ["materialization_gap_latched"]`,
+    `read_blockers = ["materialization_gap_latched"]`
+- code-inspection interpretation:
+  - the startup-gate fix is directionally correct and removed the raw insert
+    blocker
+  - during startup pending, the raw writer can latch a materialization gap and
+    later aggregate hot-path writes can advance `covered_through` beyond that
+    gap
+  - current `run_aggregate_gap_replay` starts from `covered_through`, so after
+    the cursor has advanced past the latched gap it cannot observe and clear
+    the exact gap row
+- rollback:
+  - restored
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428T-startup-gates-before-aggregate-enable`
+  - aggregate flags are back to `false` / `false`
+  - post-rollback service stayed `active`, `MainPID = 1562846`, `NRestarts = 0`
+  - with aggregate flags disabled on the new binary, raw observed-swap writes
+    still move: `observed_swap_writer_pending_requests = 0`,
+    `observed_swap_writer_raw_batch_ms_p95 = 652`
+
+Current next bounded seam:
+
+- keep `f535503`; it fixed the startup raw-persistence block and is safe with
+  aggregate writes disabled
+- do not re-enable aggregate reads/writes until the latched-gap repair semantics
+  are fixed
+- next coding batch should make aggregate gap replay start from the latched gap
+  boundary when `materialization_gap_cursor` is at or before
+  `covered_through`, then clear the latch only after the exact gap row is
+  observed and replay catches up to tail
 
 ## Live Update (`2026-04-27`)
 
