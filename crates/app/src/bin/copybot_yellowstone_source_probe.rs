@@ -301,7 +301,8 @@ async fn run_yellowstone_probe(config: &ProbeConfig, started: Instant) -> Result
     {
         Ok(Ok(parts)) => parts,
         Ok(Err(error)) => {
-            report.reason_class = REASON_SUBSCRIBE_OPEN_FAILED.to_string();
+            report.reason_class =
+                error_reason_for_phase(ProbePhase::SubscribeOpen, &error.to_string()).to_string();
             report.error_redacted = Some(redact_error(
                 &error.to_string(),
                 &config.grpc_url,
@@ -464,6 +465,35 @@ fn timeout_reason_for_phase(phase: ProbePhase) -> &'static str {
     }
 }
 
+fn error_reason_for_phase(phase: ProbePhase, message: &str) -> &'static str {
+    if phase == ProbePhase::SubscribeOpen && error_message_is_timeout_shaped(message) {
+        return timeout_reason_for_phase(phase);
+    }
+
+    match phase {
+        ProbePhase::Connect => REASON_CONNECT_FAILED,
+        ProbePhase::SubscribeOpen => REASON_SUBSCRIBE_OPEN_FAILED,
+        ProbePhase::SubscribeSend => REASON_SUBSCRIBE_SEND_FAILED,
+        ProbePhase::FirstMessage => REASON_STREAM_ERROR,
+    }
+}
+
+fn error_message_is_timeout_shaped(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    let compact = normalized
+        .chars()
+        .filter(|ch| !ch.is_whitespace() && *ch != '_' && *ch != '-')
+        .collect::<String>();
+
+    normalized.contains("timeout expired")
+        || normalized.contains("timed out")
+        || normalized.contains("deadline exceeded")
+        || compact.contains("timeoutexpired")
+        || (normalized.contains("deadline") && normalized.contains("timeout"))
+        || (normalized.contains("cancelled") && compact.contains("timeout"))
+        || (normalized.contains("canceled") && compact.contains("timeout"))
+}
+
 fn classify_config_error(message: &str) -> &'static str {
     if message.contains(REASON_CONFIG_MISSING_YELLOWSTONE) {
         REASON_CONFIG_MISSING_YELLOWSTONE
@@ -549,6 +579,26 @@ mod tests {
         assert_eq!(
             timeout_reason_for_phase(ProbePhase::FirstMessage),
             REASON_FIRST_MESSAGE_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn subscribe_open_timeout_status_error_classifies_as_timeout() {
+        let live_error = "gRPC status: code: 'The operation was cancelled', message: \"Timeout expired\", source: tonic::transport::Error(Transport, TimeoutExpired(()))";
+        assert_eq!(
+            error_reason_for_phase(ProbePhase::SubscribeOpen, live_error),
+            REASON_SUBSCRIBE_OPEN_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn subscribe_open_non_timeout_error_remains_failed() {
+        assert_eq!(
+            error_reason_for_phase(
+                ProbePhase::SubscribeOpen,
+                "gRPC status: code: 'Unauthenticated', message: \"bad token\""
+            ),
+            REASON_SUBSCRIBE_OPEN_FAILED
         );
     }
 
