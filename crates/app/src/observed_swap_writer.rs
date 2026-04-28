@@ -634,9 +634,14 @@ fn observed_swap_writer_normal_try_enqueue_soft_limit(config: &ObservedSwapWrite
         .channel_capacity
         .saturating_sub(discovery_critical_reserve_requests)
         .max(1);
-    // `try_enqueue()` is only used by non-critical irrelevant swaps. One queued raw batch is
-    // enough to preserve best-effort persistence without letting this lowest-priority class
-    // consume the entire normal writer budget before backpressure starts.
+    if config.aggregate_writes_enabled {
+        return normal_capacity;
+    }
+
+    // `try_enqueue()` is only used by non-critical irrelevant swaps. When aggregate writes
+    // are disabled, one queued raw batch is enough to preserve best-effort persistence without
+    // letting this lowest-priority class consume the entire normal writer budget before
+    // backpressure starts.
     let noncritical_irrelevant_budget =
         OBSERVED_SWAP_WRITER_NONCRITICAL_IRRELEVANT_MAX_QUEUED_BATCHES
             .saturating_mul(config.batch_max_size.max(1))
@@ -3323,6 +3328,124 @@ mod tests {
     }
 
     #[test]
+    fn observed_swap_writer_try_enqueue_aggregate_enabled_uses_normal_capacity_and_preserves_discovery_reserve_stage1(
+    ) -> Result<()> {
+        let unique = format!(
+            "copybot-app-observed-swap-aggregate-enabled-normal-capacity-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+
+        let mut seed_store = SqliteStore::open(Path::new(&db_path))?;
+        seed_store.run_migrations(&migration_dir)?;
+
+        let writer = ObservedSwapWriter::start_with_config(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig::for_test(4, 1, true, aggregate_write_config(), None),
+        )?;
+        std::thread::sleep(StdDuration::from_millis(50));
+
+        let blocker_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open blocker sqlite connection")?;
+        blocker_conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed to shorten blocker busy timeout")?;
+        blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let base_swap = SwapEvent {
+            wallet: "wallet-aggregate-enabled-normal-capacity".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-aggregate-enabled-normal-capacity-0".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-aggregate-enabled-normal-capacity-0".to_string(),
+            slot: 500,
+            ts_utc: DateTime::parse_from_rfc3339("2026-04-28T12:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+        let config = ObservedSwapWriterConfig::for_test(4, 1, true, aggregate_write_config(), None);
+        let discovery_critical_reserve =
+            super::observed_swap_writer_discovery_critical_reserve_requests(&config);
+        let normal_capacity = 4usize.saturating_sub(discovery_critical_reserve);
+        assert_eq!(normal_capacity, 3);
+
+        for idx in 0..normal_capacity {
+            assert!(
+                writer.try_enqueue(&SwapEvent {
+                    token_out: format!("token-aggregate-enabled-normal-capacity-{idx}"),
+                    signature: format!("sig-aggregate-enabled-normal-capacity-{idx}"),
+                    slot: 500 + idx as u64,
+                    ..base_swap.clone()
+                })?,
+                "aggregate-enabled normal try_enqueue should accept every non-reserved writer slot"
+            );
+        }
+        assert!(
+            !writer.try_enqueue(&SwapEvent {
+                token_out: "token-aggregate-enabled-normal-capacity-blocked".to_string(),
+                signature: "sig-aggregate-enabled-normal-capacity-blocked".to_string(),
+                slot: 600,
+                ..base_swap.clone()
+            })?,
+            "one more normal try_enqueue must yield before consuming discovery-critical reserve"
+        );
+        assert!(
+            writer.try_enqueue_discovery_critical(&SwapEvent {
+                token_out: "token-aggregate-enabled-normal-capacity-critical".to_string(),
+                signature: "sig-aggregate-enabled-normal-capacity-critical".to_string(),
+                slot: 601,
+                ..base_swap.clone()
+            })?,
+            "discovery-critical enqueue must still claim the reserved writer slot"
+        );
+
+        blocker_conn.execute_batch("COMMIT")?;
+        let drain_started = Instant::now();
+        while writer.snapshot().pending_requests > 0 {
+            if drain_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "writer failed to drain after aggregate-enabled normal-capacity try_enqueue test"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+        writer.shutdown()?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        let swaps = verify_store.load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-04-28T11:59:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )?;
+        assert_eq!(
+            swaps.len(),
+            normal_capacity + 1,
+            "accepted normal swaps plus the reserved discovery-critical swap should persist"
+        );
+        assert!(
+            swaps
+                .iter()
+                .any(|swap| { swap.signature == "sig-aggregate-enabled-normal-capacity-critical" }),
+            "the reserved discovery-critical swap should be persisted"
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+        Ok(())
+    }
+
+    #[test]
     fn observed_swap_writer_snapshot_clears_pending_after_fast_successful_enqueue() -> Result<()> {
         let unique = format!(
             "copybot-app-observed-swap-fast-snapshot-{}-{}",
@@ -4356,6 +4479,50 @@ mod tests {
                 &ObservedSwapWriterConfig::for_test(16, 8, false, aggregate_write_config(), None,),
             ),
             0
+        );
+    }
+
+    #[test]
+    fn observed_swap_writer_normal_try_enqueue_soft_limit_stays_one_batch_when_aggregates_disabled_stage1(
+    ) {
+        let config = ObservedSwapWriterConfig::for_test(
+            super::OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+            super::OBSERVED_SWAP_BATCH_MAX_SIZE,
+            false,
+            aggregate_write_config(),
+            None,
+        );
+
+        assert_eq!(
+            super::observed_swap_writer_normal_try_enqueue_soft_limit(&config),
+            super::OBSERVED_SWAP_BATCH_MAX_SIZE,
+            "aggregate-disabled non-critical irrelevant swaps must keep the old one-batch try_enqueue budget"
+        );
+    }
+
+    #[test]
+    fn observed_swap_writer_normal_try_enqueue_soft_limit_uses_normal_capacity_when_aggregates_enabled_stage1(
+    ) {
+        let config = ObservedSwapWriterConfig::for_test(
+            super::OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
+            super::OBSERVED_SWAP_BATCH_MAX_SIZE,
+            true,
+            aggregate_write_config(),
+            None,
+        );
+        let discovery_critical_reserve =
+            super::observed_swap_writer_discovery_critical_reserve_requests(&config);
+        let expected_normal_capacity =
+            super::OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY.saturating_sub(discovery_critical_reserve);
+
+        assert_eq!(
+            super::observed_swap_writer_normal_try_enqueue_soft_limit(&config),
+            expected_normal_capacity,
+            "aggregate-enabled non-critical irrelevant swaps need the full normal writer budget so observed_swaps can continue feeding aggregate coverage"
+        );
+        assert!(
+            expected_normal_capacity > super::OBSERVED_SWAP_BATCH_MAX_SIZE,
+            "the aggregate-enabled budget must be above the old one-batch plateau"
         );
     }
 
