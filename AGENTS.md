@@ -230,6 +230,12 @@ Current interpretation:
   `covered_through_too_stale_for_runtime_gate`.
 - Logs show repeated `failed opening yellowstone subscription stream` timeout
   errors; the timeout sequence began before the `3ca9a53` rollout.
+- Read-only `copybot_yellowstone_source_probe` on `f99f42c` reproduced the
+  current source failure with:
+  `connect_completed = true`,
+  `subscribe_started = true`,
+  `subscribe_completed = false`,
+  `reason_class = yellowstone_subscription_open_timeout`.
 - Do not reduce `scoring_window_days` or weaken fail-closed semantics to route
   around this result.
 
@@ -450,6 +456,18 @@ Latest confirmed live snapshot:
   - aggregate flags were left enabled because readiness remains fail-closed
     while stale, queues are clean, and the next useful proof is source resume
     behavior
+- Yellowstone source probe rollout:
+  - commits `f0c2d43` and `f99f42c` added/corrected read-only
+    `copybot_yellowstone_source_probe`
+  - operator-only debug binary was built on production; main service was not
+    restarted
+  - live result:
+    `connect_completed = true`,
+    `subscribe_started = true`,
+    `subscribe_completed = false`,
+    `reason_class = yellowstone_subscription_open_timeout`,
+    `production_green = false`
+  - service remained `active`, `MainPID = 1566861`, `NRestarts = 0`
 
 Operational reading:
 
@@ -457,9 +475,9 @@ Operational reading:
 - do not run restore/gap-fill work as the next step unless new raw-history
   evidence appears
 - do not mark production green from operator observability alone
-- next batch should target source/Yellowstone subscription-open timeout and
-  live raw freshness proof, not historical raw recovery and not selector
-  threshold changes
+- next batch should extend the read-only Yellowstone probe with docs-parity
+  modes to separate provider/add-on/session failure from our current
+  transaction-filter subscribe mode
 
 ## Current Development Accounting
 

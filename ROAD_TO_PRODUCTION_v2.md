@@ -444,6 +444,17 @@ Follow-up frozen-target gap-repair fix and live result (`2026-04-28`):
   - aggregate flags were left enabled because fail-closed readiness blocks reads
     while stale, queues are clean, and the next useful proof requires seeing
     behavior when source resumes
+- follow-up source probe:
+  - commit `f0c2d43` added read-only
+    `copybot_yellowstone_source_probe`
+  - commit `f99f42c` corrected subscribe-open timeout classification
+  - live probe result after correction:
+    `connect_completed = true`,
+    `subscribe_started = true`,
+    `subscribe_completed = false`,
+    `reason_class = yellowstone_subscription_open_timeout`,
+    `production_green = false`
+  - service remained `active`, `MainPID = 1566861`, `NRestarts = 0`
 
 Current next bounded seam:
 
@@ -451,10 +462,9 @@ Current next bounded seam:
   coverage
 - do not reduce `scoring_window_days`, weaken fail-closed gates, or touch
   selector thresholds
-- next coding batch should add or refine a bounded source/Yellowstone
-  connectivity and live-raw freshness blocker surface, or narrowly harden the
-  proven subscription-open timeout path if code inspection shows an actionable
-  fix
+- next coding batch should extend the read-only Yellowstone probe with
+  docs-parity probe modes so the timeout can be separated into provider/add-on
+  failure versus our transaction-filter client mode
 
 ## Live Update (`2026-04-27`)
 
