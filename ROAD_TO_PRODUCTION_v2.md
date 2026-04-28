@@ -8,10 +8,10 @@ Status: Active historical roadmap with 2026-03-27 production-readiness and live 
 Current Stage 3 production-discovery truth remains fail-closed. Raw-history
 recovery is no longer the active lane, and aggregate-scoring materialization was
 proven and covered on production. Controlled aggregate runtime enablement
-attempts remain fail-closed. The enqueue-budget and startup-gate fixes both
-landed, but the latest live rollout exposed the next seam:
-`materialization_gap_cursor` can remain latched behind an already-advanced
-aggregate `covered_through` cursor.
+attempts remain fail-closed. The aggregate materialization-gap latch was cleared
+by the frozen-target repair rollout, but production green is still blocked
+because live raw/source freshness is stale while Yellowstone subscription
+opening repeatedly times out.
 
 Latest accepted and deployed operator batch:
 
@@ -399,14 +399,62 @@ Follow-up prioritized gap-repair fix and live result (`2026-04-28`):
     `observed_swap_writer_pending_requests = 0`,
     `observed_swap_writer_raw_batch_ms_p95 = 549`
 
+Follow-up frozen-target gap-repair fix and live result (`2026-04-28`):
+
+- commit `3ca9a53` (`Freeze aggregate gap repair target`) changed only
+  `crates/app/src/observed_swap_writer.rs`
+- local reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer`
+  - `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`
+  - `git diff --check -- crates/app/src/observed_swap_writer.rs`
+- production rollout:
+  - server checkout advanced to `3ca9a53`
+  - `copybot-app` rebuilt successfully
+  - aggregate flags were enabled from backup
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428-frozen-gap-target-before-aggregate-enable-2`
+  - `execution.enabled` remained `false`
+  - service restarted and stayed `active`, `MainPID = 1566861`,
+    `NRestarts = 0`
+- behavior proven on live:
+  - aggregate readiness reported `materialization_gap_cursor = null`
+  - `effective_writes_ready = true`
+  - writer pressure stayed clean after restart:
+    `observed_swap_writer_pending_requests = 0`,
+    `observed_swap_writer_journal_queue_depth_batches = 0`,
+    `observed_swap_writer_journal_overflow_depth_batches = 0`,
+    `observed_swap_writer_aggregate_queue_depth_batches = 0`
+  - latest observed raw cursor was still
+    `2026-04-28T16:42:13.769796192Z / 416257461 /
+    3HXJDhf3LWPvEnST8vpq4H1PhzYwnLbHTypoExasJpxfPKDvxcobWJrBMafaxi5pkY3DvX8thm94jTovBZpNHGm`
+  - direct SQL showed `0` `observed_swaps` rows at or after
+    `2026-04-28T17:00:00Z`
+  - readiness remained fail-closed:
+    `effective_reads_ready = false`,
+    `read_blockers = ["covered_through_too_stale_for_runtime_gate"]`,
+    `covered_through_lag_seconds = 2401`
+  - logs showed repeated
+    `failed opening yellowstone subscription stream` with timeout errors; this
+    began on the previous PID before the frozen-target rollout
+- interpretation:
+  - `3ca9a53` fixed the aggregate materialization-gap latch seam
+  - the current blocker is no longer `materialization_gap_latched`
+  - the current blocker is live source/raw freshness: Yellowstone subscription
+    opens are timing out, so no new raw rows are reaching `observed_swaps`
+  - aggregate flags were left enabled because fail-closed readiness blocks reads
+    while stale, queues are clean, and the next useful proof requires seeing
+    behavior when source resumes
+
 Current next bounded seam:
 
-- keep `f647d91`; it improved scheduling but is still not sufficient for
-  production cutover
-- do not re-enable aggregate reads/writes until the recent_raw journal backlog
-  interaction is fixed or bounded away during aggregate repair
-- next coding batch should address recent_raw journal saturation as the current
-  shared writer pressure source, without weakening aggregate/readiness gates
+- keep `3ca9a53`; it cleared the latched-gap seam without fake-clearing
+  coverage
+- do not reduce `scoring_window_days`, weaken fail-closed gates, or touch
+  selector thresholds
+- next coding batch should add or refine a bounded source/Yellowstone
+  connectivity and live-raw freshness blocker surface, or narrowly harden the
+  proven subscription-open timeout path if code inspection shows an actionable
+  fix
 
 ## Live Update (`2026-04-27`)
 

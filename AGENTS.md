@@ -207,22 +207,29 @@ Record facts, not vague status language.
 
 ## Current State Snapshot
 
-As of `2026-04-28T16:42:10Z`, Stage 3 production discovery truth remains
+As of `2026-04-28T17:22:14Z`, Stage 3 production discovery truth remains
 fail-closed. Raw-history recovery and the one-shot aggregate-scoring
-materialization are no longer the active blocker, but aggregate runtime
-enablement exposed a live recent_raw journal / shared writer pressure seam.
+materialization are no longer the active blocker. The aggregate
+materialization-gap latch seam was cleared by the frozen-target repair rollout,
+but production green is still blocked by live source/raw freshness while
+Yellowstone subscription opens repeatedly time out.
 
 Current interpretation:
 
 - Stage 3 production discovery truth is still red.
-- The old live raw frontier/source-starvation blocker is closed.
+- The old long-running raw-history recovery blocker is closed.
 - The old long-running `program_history` raw-history backfill lane is no longer
   the active production blocker.
 - The aggregate-scoring materialization lane has been unblocked and run on
   production.
-- Current active evidence is still `raw_window_zero_publishable_universe`, and
-  aggregate reads cannot be enabled yet because live aggregate readiness remains
-  blocked by an explicit `materialization_gap_cursor`.
+- `3ca9a53` cleared the live `materialization_gap_cursor` without fake-clearing
+  coverage; aggregate write readiness is now true.
+- Current active production blocker is live source/raw freshness:
+  `observed_swaps` has not advanced past
+  `2026-04-28T16:42:13.769796192Z`, and readiness blocks reads with
+  `covered_through_too_stale_for_runtime_gate`.
+- Logs show repeated `failed opening yellowstone subscription stream` timeout
+  errors; the timeout sequence began before the `3ca9a53` rollout.
 - Do not reduce `scoring_window_days` or weaken fail-closed semantics to route
   around this result.
 
@@ -237,6 +244,7 @@ Latest confirmed live snapshot:
   - `f535503` (`Decouple observed swap writer startup gates`)
   - `3255576` (`Replay aggregate gaps behind coverage cursor`)
   - `f647d91` (`Prioritize aggregate gap repair`)
+  - `3ca9a53` (`Freeze aggregate gap repair target`)
 - `backfill_discovery_scoring` and `copybot-app` have both been rebuilt on
   production
 - aggregate scoring backfill completed and marked coverage:
@@ -408,6 +416,40 @@ Latest confirmed live snapshot:
   - with aggregate flags disabled, raw writes resumed:
     `observed_swap_writer_pending_requests = 0`,
     `observed_swap_writer_raw_batch_ms_p95 = 549`
+- frozen-target gap-repair rollout:
+  - commit `3ca9a53` was deployed and `copybot-app` was rebuilt
+  - local bounded checks passed:
+    `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer`,
+    `cargo check -j 1 -p copybot-app --bin copybot-app`,
+    `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`,
+    `git diff --check -- crates/app/src/observed_swap_writer.rs`
+  - aggregate flags were enabled from backup
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428-frozen-gap-target-before-aggregate-enable-2`
+  - `execution.enabled` remained `false`
+  - post-rollout service state:
+    `solana-copy-bot.service = active`, `MainPID = 1566861`,
+    `NRestarts = 0`
+  - aggregate readiness after rollout:
+    `materialization_gap_cursor = null`,
+    `effective_writes_ready = true`,
+    `effective_reads_ready = false`,
+    `read_blockers = ["covered_through_too_stale_for_runtime_gate"]`,
+    `covered_through_lag_seconds = 2401`
+  - writer telemetry stayed clean:
+    `observed_swap_writer_pending_requests = 0`,
+    `observed_swap_writer_journal_queue_depth_batches = 0`,
+    `observed_swap_writer_journal_overflow_depth_batches = 0`,
+    `observed_swap_writer_aggregate_queue_depth_batches = 0`
+  - latest observed raw cursor stayed at
+    `2026-04-28T16:42:13.769796192Z / 416257461 /
+    3HXJDhf3LWPvEnST8vpq4H1PhzYwnLbHTypoExasJpxfPKDvxcobWJrBMafaxi5pkY3DvX8thm94jTovBZpNHGm`
+  - direct SQL showed `0` `observed_swaps` rows at or after
+    `2026-04-28T17:00:00Z`
+  - logs showed repeated Yellowstone subscription-open timeout failures, and
+    the first timeout appeared on the previous PID before this rollout
+  - aggregate flags were left enabled because readiness remains fail-closed
+    while stale, queues are clean, and the next useful proof is source resume
+    behavior
 
 Operational reading:
 
@@ -415,9 +457,9 @@ Operational reading:
 - do not run restore/gap-fill work as the next step unless new raw-history
   evidence appears
 - do not mark production green from operator observability alone
-- next batch should target recent_raw journal backlog / shared writer pressure
-  under aggregate-enabled live traffic, not historical raw recovery and not
-  selector threshold changes
+- next batch should target source/Yellowstone subscription-open timeout and
+  live raw freshness proof, not historical raw recovery and not selector
+  threshold changes
 
 ## Current Development Accounting
 
@@ -455,6 +497,15 @@ Accepted local/repo work for the current lane:
   `token_market_stats_on_conn` no longer runs lifetime token `MIN(ts)` or
   lifetime `COUNT(DISTINCT wallet_id)` scans in the private aggregate
   materialization path
+- observed-swap writer aggregate runtime enablement fixes:
+  - enqueue budget raised for aggregate-enabled noncritical writes while
+    preserving discovery-critical reserve
+  - downstream startup gates no longer block raw `observed_swaps` persistence
+  - aggregate gap replay can resume from a latched gap behind
+    `covered_through`
+  - aggregate repair is prioritized while a latch exists
+  - aggregate repair now freezes a bounded target cursor so it can clear an
+    observed exact gap without chasing a moving live tail
 
 Operator semantics:
 
@@ -535,20 +586,21 @@ Operator semantics:
 
 Deployment status:
 
-- aggregate-scoring storage was ready for the runtime gate immediately after
-  the backfill, but runtime enablement was rolled back because live coverage
-  freshness did not advance while the raw writer was blocked behind downstream
-  startup receivers
-- do not re-enable aggregate reads/writes until the writer/backpressure seam is
-  corrected and live readiness proves `effective_reads_ready = true`
+- aggregate flags are currently enabled on production, but readiness remains
+  fail-closed because `covered_through` is stale while Yellowstone subscription
+  opens time out
+- do not call this production green until live raw resumes and
+  `effective_reads_ready = true` is proven by the read-only readiness operator
+- if source resumes and aggregate writer queues/gap degrade again, roll back
+  using the latest aggregate-enable config backup and record the exact blocker
 - emergency-stop CLI remains a manual safety surface only; it is not a Stage 3
   production-green signal
 
 Current sync status:
 
-- current accepted commits have reached `origin/main` through `835b6d5`
-- server checkout has been advanced to the current docs/code head when noted in
-  the live update; still check `git status` and `git log -1` at session start
+- current accepted code commits have reached `origin/main` through `3ca9a53`
+- server checkout was advanced to `3ca9a53` during the frozen-target rollout;
+  still check `git status` and `git log -1` at session start
 
 ## If A New Session Starts Elsewhere
 
