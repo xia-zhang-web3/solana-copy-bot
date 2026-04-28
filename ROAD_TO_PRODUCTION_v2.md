@@ -3,6 +3,77 @@
 Date: 2026-03-17
 Status: Active historical roadmap with 2026-03-27 production-readiness and live Stage 3 accumulation addendum
 
+## Live Update (`2026-04-28`)
+
+Current Stage 3 production-discovery truth remains fail-closed. The active
+post-gap-fill blocker is now the aggregate-scoring materialization lane, not
+raw-history recovery and not selector/scoring thresholds.
+
+Latest accepted and deployed operator batch:
+
+- commit `e9dea09` (`Instrument scoring prepare diagnostics`)
+- touched only:
+  - `crates/storage/src/discovery_scoring.rs`
+  - `crates/storage/src/bin/backfill_discovery_scoring.rs`
+- local reviewer checks passed:
+  - `cargo test -j 1 -p copybot-storage --bin backfill_discovery_scoring`
+  - `cargo check -j 1 -p copybot-storage --bin backfill_discovery_scoring`
+  - `rustfmt --check --edition 2021 crates/storage/src/discovery_scoring.rs crates/storage/src/bin/backfill_discovery_scoring.rs`
+  - `git diff --check -- crates/storage/src/discovery_scoring.rs crates/storage/src/bin/backfill_discovery_scoring.rs`
+- production rollout rebuilt only
+  `target/release/backfill_discovery_scoring`; the main service was not
+  restarted
+
+Latest production probe:
+
+- report dir: `/tmp/aggregate-scoring-probe-20260428T111630Z`
+- `solana-copy-bot.service = active`
+- `MainPID = 1544590`
+- `NRestarts = 0`
+- probe command used one bounded batch:
+  `--reset --batch-size 250 --max-batches-per-run 1 --max-runtime-seconds 120`
+  and did not pass `--mark-covered`
+- outcome:
+  - `stop_reason = stopped_due_to_runtime_budget`
+  - `coverage_marked = false`
+  - `total_rows = 0`
+  - `batches = 0`
+  - `event=backfill_stage_skipped ... stage=aggregate_batch_apply`
+  - `reason = discovery_scoring_prepare_runtime_budget_exhausted`
+  - `event=coverage_not_marked reason=not_requested`
+  - final cleanup completed
+- post-probe readiness stayed clean:
+  - `backfill_progress = null`
+  - `backfill_protected_since = null`
+  - `backfill_active = false`
+  - `covered_since = null`
+  - `covered_through_cursor = null`
+  - no `backfill_*` / `covered_*` rows remain in `discovery_scoring_state`
+
+Concrete live blocker now proven:
+
+- `observed_swap_page_scan` completed quickly for 250 rows
+- prepare diagnostics show repeated successful `quality_cache_lookup` and
+  skipped `quality_rpc_fetch`
+- the bounded run exhausted the runtime budget inside
+  `token_market_stats`
+- the last blocked live token was USDC
+  `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`
+- current interpretation: the private discovery-scoring SQL prepare path still
+  runs expensive per-buy token-history market-stat queries before any
+  checkpoint can be persisted
+
+Next bounded development seam:
+
+- keep Stage 3 fail-closed
+- do not change selector thresholds, `scoring_window_days`, restore/gap-fill,
+  configs, systemd, or trading
+- make `discovery_scoring` prepare avoid unbounded per-buy token-history scans
+  in the private scoring materialization path, or prove the exact subquery if a
+  narrower diagnostic is needed first
+- do not mark aggregate scoring coverage unless a real checkpointed replay
+  reaches a valid completion contract
+
 ## Live Update (`2026-04-27`)
 
 Current Stage 3 production-discovery truth remains fail-closed, but the live
