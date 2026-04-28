@@ -11,7 +11,8 @@ use tonic::transport::ClientTlsConfig;
 use url::Url;
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::prelude::{
-    CommitmentLevel, SubscribeRequest, SubscribeRequestFilterTransactions,
+    CommitmentLevel, SubscribeRequest, SubscribeRequestFilterBlocksMeta,
+    SubscribeRequestFilterSlots, SubscribeRequestFilterTransactions,
 };
 
 const REASON_OK: &str = "yellowstone_source_probe_subscribe_opened";
@@ -34,6 +35,7 @@ const REASON_STREAM_ERROR: &str = "yellowstone_stream_error_before_first_message
 struct Cli {
     config_path: PathBuf,
     json: bool,
+    mode: ProbeMode,
     connect_timeout_ms: Option<u64>,
     subscribe_timeout_ms: Option<u64>,
 }
@@ -45,6 +47,38 @@ struct ProbeConfig {
     connect_timeout_ms: u64,
     subscribe_timeout_ms: u64,
     program_ids: Vec<String>,
+    mode: ProbeMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeMode {
+    TransactionFilter,
+    SlotsOnly,
+    BlocksMeta,
+    EmptyThenSend,
+}
+
+impl ProbeMode {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "transaction-filter" => Ok(Self::TransactionFilter),
+            "slots-only" => Ok(Self::SlotsOnly),
+            "blocks-meta" => Ok(Self::BlocksMeta),
+            "empty-then-send" => Ok(Self::EmptyThenSend),
+            other => Err(anyhow!(
+                "--mode must be one of transaction-filter, slots-only, blocks-meta, empty-then-send; got {other}"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TransactionFilter => "transaction-filter",
+            Self::SlotsOnly => "slots-only",
+            Self::BlocksMeta => "blocks-meta",
+            Self::EmptyThenSend => "empty-then-send",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,12 +91,14 @@ enum ProbePhase {
 
 #[derive(Debug, Serialize)]
 struct ProbeReport {
+    probe_mode: String,
     config_loaded: bool,
     endpoint_host_redacted: Option<String>,
     connect_started: bool,
     connect_completed: bool,
     subscribe_started: bool,
     subscribe_completed: bool,
+    subscribe_send_completed: bool,
     first_message_received: bool,
     elapsed_ms: u64,
     reason_class: String,
@@ -73,12 +109,14 @@ struct ProbeReport {
 impl ProbeReport {
     fn failed(reason_class: &str, error_redacted: Option<String>, elapsed_ms: u64) -> Self {
         Self {
+            probe_mode: "unknown".to_string(),
             config_loaded: false,
             endpoint_host_redacted: None,
             connect_started: false,
             connect_completed: false,
             subscribe_started: false,
             subscribe_completed: false,
+            subscribe_send_completed: false,
             first_message_received: false,
             elapsed_ms,
             reason_class: reason_class.to_string(),
@@ -101,11 +139,13 @@ async fn main() {
     let report = match parse_args_from(env::args().skip(1)) {
         Ok(cli) => {
             if !cli.json {
-                ProbeReport::failed(
+                let mut report = ProbeReport::failed(
                     "yellowstone_source_probe_json_required",
                     Some("--json is required for operator output".to_string()),
                     elapsed_ms(started),
-                )
+                );
+                report.probe_mode = cli.mode.as_str().to_string();
+                report
             } else {
                 run(cli, started).await
             }
@@ -128,11 +168,13 @@ async fn run(cli: Cli, started: Instant) -> ProbeReport {
     let loaded = match load_probe_config(&cli) {
         Ok(config) => config,
         Err(error) => {
-            return ProbeReport::failed(
+            let mut report = ProbeReport::failed(
                 classify_config_error(&error.to_string()),
                 Some(redact_error(&error.to_string(), "", "")),
                 elapsed_ms(started),
             );
+            report.probe_mode = cli.mode.as_str().to_string();
+            return report;
         }
     };
 
@@ -148,6 +190,7 @@ async fn run(cli: Cli, started: Instant) -> ProbeReport {
                 )),
                 elapsed_ms(started),
             );
+            report.probe_mode = loaded.mode.as_str().to_string();
             report.config_loaded = true;
             report.endpoint_host_redacted = Some(redacted_endpoint_host(&loaded.grpc_url));
             report
@@ -160,6 +203,7 @@ fn load_probe_config(cli: &Cli) -> Result<ProbeConfig> {
         .with_context(|| format!("failed to load config: {}", cli.config_path.display()))?;
     build_probe_config(
         &app_config.ingestion,
+        cli.mode,
         cli.connect_timeout_ms,
         cli.subscribe_timeout_ms,
     )
@@ -167,6 +211,7 @@ fn load_probe_config(cli: &Cli) -> Result<ProbeConfig> {
 
 fn build_probe_config(
     ingestion: &IngestionConfig,
+    mode: ProbeMode,
     connect_timeout_override_ms: Option<u64>,
     subscribe_timeout_override_ms: Option<u64>,
 ) -> Result<ProbeConfig> {
@@ -209,7 +254,7 @@ fn build_probe_config(
         fallback.extend(ingestion.pumpswap_program_ids.iter().cloned());
         fallback
     };
-    if program_ids.is_empty() {
+    if mode == ProbeMode::TransactionFilter && program_ids.is_empty() {
         return Err(anyhow!(
             "{REASON_CONFIG_MISSING_YELLOWSTONE}: no yellowstone program filters configured"
         ));
@@ -225,17 +270,20 @@ fn build_probe_config(
             .unwrap_or(ingestion.yellowstone_subscribe_timeout_ms)
             .max(1),
         program_ids,
+        mode,
     })
 }
 
 async fn run_yellowstone_probe(config: &ProbeConfig, started: Instant) -> Result<ProbeReport> {
     let mut report = ProbeReport {
+        probe_mode: config.mode.as_str().to_string(),
         config_loaded: true,
         endpoint_host_redacted: Some(redacted_endpoint_host(&config.grpc_url)),
         connect_started: false,
         connect_completed: false,
         subscribe_started: false,
         subscribe_completed: false,
+        subscribe_send_completed: false,
         first_message_received: false,
         elapsed_ms: 0,
         reason_class: REASON_OK.to_string(),
@@ -299,7 +347,10 @@ async fn run_yellowstone_probe(config: &ProbeConfig, started: Instant) -> Result
     )
     .await
     {
-        Ok(Ok(parts)) => parts,
+        Ok(Ok(parts)) => {
+            report.subscribe_completed = true;
+            parts
+        }
         Ok(Err(error)) => {
             report.reason_class =
                 error_reason_for_phase(ProbePhase::SubscribeOpen, &error.to_string()).to_string();
@@ -318,7 +369,7 @@ async fn run_yellowstone_probe(config: &ProbeConfig, started: Instant) -> Result
         }
     };
 
-    let subscribe_request = build_subscribe_request(&config.program_ids);
+    let subscribe_request = build_subscribe_request(config.mode, &config.program_ids);
     match time::timeout(
         Duration::from_millis(config.subscribe_timeout_ms),
         subscribe_tx.send(subscribe_request),
@@ -326,7 +377,7 @@ async fn run_yellowstone_probe(config: &ProbeConfig, started: Instant) -> Result
     .await
     {
         Ok(Ok(())) => {
-            report.subscribe_completed = true;
+            report.subscribe_send_completed = true;
         }
         Ok(Err(error)) => {
             report.reason_class = REASON_SUBSCRIBE_SEND_FAILED.to_string();
@@ -374,7 +425,16 @@ async fn run_yellowstone_probe(config: &ProbeConfig, started: Instant) -> Result
     Ok(report)
 }
 
-fn build_subscribe_request(program_ids: &[String]) -> SubscribeRequest {
+fn build_subscribe_request(mode: ProbeMode, program_ids: &[String]) -> SubscribeRequest {
+    match mode {
+        ProbeMode::TransactionFilter => build_transaction_filter_subscribe_request(program_ids),
+        ProbeMode::SlotsOnly => build_slots_only_subscribe_request(),
+        ProbeMode::BlocksMeta => build_blocks_meta_subscribe_request(),
+        ProbeMode::EmptyThenSend => build_empty_subscribe_request(),
+    }
+}
+
+fn build_transaction_filter_subscribe_request(program_ids: &[String]) -> SubscribeRequest {
     let mut transactions = HashMap::new();
     transactions.insert(
         "copybot-swaps".to_string(),
@@ -403,6 +463,69 @@ fn build_subscribe_request(program_ids: &[String]) -> SubscribeRequest {
     }
 }
 
+fn build_slots_only_subscribe_request() -> SubscribeRequest {
+    let mut slots = HashMap::new();
+    slots.insert(
+        "copybot-slots-probe".to_string(),
+        SubscribeRequestFilterSlots {
+            filter_by_commitment: Some(true),
+            interslot_updates: Some(false),
+        },
+    );
+
+    SubscribeRequest {
+        accounts: HashMap::new(),
+        slots,
+        transactions: HashMap::new(),
+        transactions_status: HashMap::new(),
+        blocks: HashMap::new(),
+        blocks_meta: HashMap::new(),
+        entry: HashMap::new(),
+        commitment: Some(CommitmentLevel::Confirmed as i32),
+        accounts_data_slice: Vec::new(),
+        ping: None,
+        from_slot: None,
+    }
+}
+
+fn build_blocks_meta_subscribe_request() -> SubscribeRequest {
+    let mut blocks_meta = HashMap::new();
+    blocks_meta.insert(
+        "copybot-blocks-meta-probe".to_string(),
+        SubscribeRequestFilterBlocksMeta {},
+    );
+
+    SubscribeRequest {
+        accounts: HashMap::new(),
+        slots: HashMap::new(),
+        transactions: HashMap::new(),
+        transactions_status: HashMap::new(),
+        blocks: HashMap::new(),
+        blocks_meta,
+        entry: HashMap::new(),
+        commitment: Some(CommitmentLevel::Confirmed as i32),
+        accounts_data_slice: Vec::new(),
+        ping: None,
+        from_slot: None,
+    }
+}
+
+fn build_empty_subscribe_request() -> SubscribeRequest {
+    SubscribeRequest {
+        accounts: HashMap::new(),
+        slots: HashMap::new(),
+        transactions: HashMap::new(),
+        transactions_status: HashMap::new(),
+        blocks: HashMap::new(),
+        blocks_meta: HashMap::new(),
+        entry: HashMap::new(),
+        commitment: None,
+        accounts_data_slice: Vec::new(),
+        ping: None,
+        from_slot: None,
+    }
+}
+
 fn parse_args_from<I>(args: I) -> Result<Cli>
 where
     I: IntoIterator,
@@ -410,6 +533,7 @@ where
 {
     let mut config_path = None;
     let mut json = false;
+    let mut mode = ProbeMode::TransactionFilter;
     let mut connect_timeout_ms = None;
     let mut subscribe_timeout_ms = None;
     let mut iter = args.into_iter().map(Into::into);
@@ -422,6 +546,12 @@ where
                 config_path = Some(PathBuf::from(value));
             }
             "--json" => json = true,
+            "--mode" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| anyhow!("--mode requires a value"))?;
+                mode = ProbeMode::parse(&value)?;
+            }
             "--connect-timeout-ms" => {
                 let value = iter
                     .next()
@@ -441,6 +571,7 @@ where
     Ok(Cli {
         config_path: config_path.ok_or_else(|| anyhow!("--config is required"))?,
         json,
+        mode,
         connect_timeout_ms,
         subscribe_timeout_ms,
     })
@@ -583,6 +714,44 @@ mod tests {
     }
 
     #[test]
+    fn mode_parser_accepts_all_probe_modes() {
+        assert_eq!(
+            ProbeMode::parse("transaction-filter").unwrap(),
+            ProbeMode::TransactionFilter
+        );
+        assert_eq!(
+            ProbeMode::parse("slots-only").unwrap(),
+            ProbeMode::SlotsOnly
+        );
+        assert_eq!(
+            ProbeMode::parse("blocks-meta").unwrap(),
+            ProbeMode::BlocksMeta
+        );
+        assert_eq!(
+            ProbeMode::parse("empty-then-send").unwrap(),
+            ProbeMode::EmptyThenSend
+        );
+        assert!(ProbeMode::parse("unknown").is_err());
+    }
+
+    #[test]
+    fn cli_defaults_to_transaction_filter_mode() {
+        let cli = parse_args_from(["--config", "configs/prod.toml", "--json"])
+            .expect("minimal cli should parse");
+        assert_eq!(cli.mode, ProbeMode::TransactionFilter);
+
+        let cli = parse_args_from([
+            "--config",
+            "configs/prod.toml",
+            "--json",
+            "--mode",
+            "blocks-meta",
+        ])
+        .expect("mode cli should parse");
+        assert_eq!(cli.mode, ProbeMode::BlocksMeta);
+    }
+
+    #[test]
     fn subscribe_open_timeout_status_error_classifies_as_timeout() {
         let live_error = "gRPC status: code: 'The operation was cancelled', message: \"Timeout expired\", source: tonic::transport::Error(Transport, TimeoutExpired(()))";
         assert_eq!(
@@ -626,11 +795,12 @@ mod tests {
     #[test]
     fn probe_config_uses_yellowstone_program_filters_and_timeout_overrides() {
         let config = yellowstone_ingestion_config();
-        let probe = build_probe_config(&config, Some(111), Some(222))
+        let probe = build_probe_config(&config, ProbeMode::TransactionFilter, Some(111), Some(222))
             .expect("yellowstone config should build probe config");
         assert_eq!(probe.connect_timeout_ms, 111);
         assert_eq!(probe.subscribe_timeout_ms, 222);
         assert_eq!(probe.program_ids, config.yellowstone_program_ids);
+        assert_eq!(probe.mode, ProbeMode::TransactionFilter);
     }
 
     #[test]
@@ -639,7 +809,7 @@ mod tests {
         config.yellowstone_program_ids.clear();
         config.subscribe_program_ids =
             vec!["Fallback111111111111111111111111111111111".to_string()];
-        let probe = build_probe_config(&config, None, None)
+        let probe = build_probe_config(&config, ProbeMode::TransactionFilter, None, None)
             .expect("subscribe program fallback should be accepted");
         assert_eq!(probe.program_ids, config.subscribe_program_ids);
     }
@@ -649,7 +819,7 @@ mod tests {
         let mut config = yellowstone_ingestion_config();
         config.yellowstone_program_ids.clear();
         config.subscribe_program_ids.clear();
-        let probe = build_probe_config(&config, None, None)
+        let probe = build_probe_config(&config, ProbeMode::TransactionFilter, None, None)
             .expect("dex program fallback should match runtime source");
         assert!(probe
             .program_ids
@@ -663,7 +833,7 @@ mod tests {
     fn non_yellowstone_config_fails_closed() {
         let mut config = yellowstone_ingestion_config();
         config.source = "mock".to_string();
-        let error = build_probe_config(&config, None, None)
+        let error = build_probe_config(&config, ProbeMode::TransactionFilter, None, None)
             .expect_err("non-yellowstone source must fail closed")
             .to_string();
         assert!(error.contains(REASON_CONFIG_MISSING_YELLOWSTONE));
@@ -685,8 +855,10 @@ mod tests {
 
     #[test]
     fn subscribe_request_matches_runtime_transaction_filter_shape() {
-        let request =
-            build_subscribe_request(&["Program1111111111111111111111111111111111".to_string()]);
+        let request = build_subscribe_request(
+            ProbeMode::TransactionFilter,
+            &["Program1111111111111111111111111111111111".to_string()],
+        );
         assert_eq!(request.commitment, Some(CommitmentLevel::Confirmed as i32));
         let filter = request
             .transactions
@@ -695,5 +867,46 @@ mod tests {
         assert_eq!(filter.vote, Some(false));
         assert_eq!(filter.failed, Some(false));
         assert_eq!(filter.account_include.len(), 1);
+    }
+
+    #[test]
+    fn subscribe_request_slots_only_shape_is_docs_minimal() {
+        let request = build_subscribe_request(ProbeMode::SlotsOnly, &[]);
+        assert_eq!(request.commitment, Some(CommitmentLevel::Confirmed as i32));
+        assert!(request.transactions.is_empty());
+        assert!(request.blocks_meta.is_empty());
+        let filter = request
+            .slots
+            .get("copybot-slots-probe")
+            .expect("slots filter should exist");
+        assert_eq!(filter.filter_by_commitment, Some(true));
+        assert_eq!(filter.interslot_updates, Some(false));
+    }
+
+    #[test]
+    fn subscribe_request_blocks_meta_shape_is_docs_minimal() {
+        let request = build_subscribe_request(ProbeMode::BlocksMeta, &[]);
+        assert_eq!(request.commitment, Some(CommitmentLevel::Confirmed as i32));
+        assert!(request.transactions.is_empty());
+        assert!(request.slots.is_empty());
+        assert!(request
+            .blocks_meta
+            .contains_key("copybot-blocks-meta-probe"));
+    }
+
+    #[test]
+    fn subscribe_request_empty_then_send_shape_is_default_empty() {
+        let request = build_subscribe_request(ProbeMode::EmptyThenSend, &[]);
+        assert!(request.accounts.is_empty());
+        assert!(request.slots.is_empty());
+        assert!(request.transactions.is_empty());
+        assert!(request.transactions_status.is_empty());
+        assert!(request.blocks.is_empty());
+        assert!(request.blocks_meta.is_empty());
+        assert!(request.entry.is_empty());
+        assert_eq!(request.commitment, None);
+        assert!(request.accounts_data_slice.is_empty());
+        assert!(request.ping.is_none());
+        assert!(request.from_slot.is_none());
     }
 }
