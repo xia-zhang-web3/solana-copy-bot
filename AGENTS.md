@@ -207,10 +207,10 @@ Record facts, not vague status language.
 
 ## Current State Snapshot
 
-As of `2026-04-28T15:47:10Z`, Stage 3 production discovery truth remains
+As of `2026-04-28T16:12:10Z`, Stage 3 production discovery truth remains
 fail-closed. Raw-history recovery and the one-shot aggregate-scoring
 materialization are no longer the active blocker, but aggregate runtime
-enablement exposed a live aggregate materialization-gap replay seam.
+enablement exposed a live aggregate materialization-gap scheduling seam.
 
 Current interpretation:
 
@@ -235,6 +235,7 @@ Latest confirmed live snapshot:
   - `1722c36` (`Record aggregate scoring materialization result`)
   - `835b6d5` (`Raise aggregate writer enqueue budget`)
   - `f535503` (`Decouple observed swap writer startup gates`)
+  - `3255576` (`Replay aggregate gaps behind coverage cursor`)
 - `backfill_discovery_scoring` and `copybot-app` have both been rebuilt on
   production
 - aggregate scoring backfill completed and marked coverage:
@@ -347,6 +348,35 @@ Latest confirmed live snapshot:
   - with aggregate flags disabled on the new binary, raw observed-swap writes
     still move: `observed_swap_writer_pending_requests = 0`,
     `observed_swap_writer_raw_batch_ms_p95 = 652`
+- behind-cursor gap replay rollout:
+  - commit `3255576` was deployed and `copybot-app` was rebuilt
+  - local bounded checks passed:
+    `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer`,
+    `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - live enablement with aggregate flags proved the exact latched gap row
+    exists in `observed_swaps`:
+    `2026-04-28T16:06:58.496536802Z / 416252112 /
+    2RHt6BMikxRyB2BfgGCADZ9mC6ioYfoPsrfexW2qcyw4mVXPZhvPk46GBStaMXzsvrUMF4K9PnkDNpHSxhEDxpR8`
+  - `covered_through` was already past the latch:
+    `2026-04-28T16:07:30.401379572Z / 416252192 /
+    3fHGZRbKC7p2A2Xdvejx3SbxaSypeXRCtpz5uHczzo55zujZRKSuUd9rQiV7s8NYsyE5cV7oMctUfrUWW5o7iDB8`
+  - readiness remained fail-closed with
+    `materialization_gap_latched`
+  - raw writer pressure returned under aggregate-enabled live traffic:
+    `observed_swap_writer_pending_requests = 3968`,
+    `observed_swap_writer_journal_queue_depth_batches = 64`,
+    `observed_swap_writer_journal_overflow_depth_batches = 255`
+  - interpretation: the replay primitive is correct but not sufficient because
+    gap repair is still scheduled through idle replay and does not complete
+    under continuous live traffic/journal pressure
+  - aggregate flags were rolled back again to `false` / `false` from
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428T-gap-replay-before-aggregate-enable`
+  - post-rollback service state:
+    `solana-copy-bot.service = active`, `MainPID = 1564245`,
+    `NRestarts = 0`
+  - with aggregate flags disabled, raw writes resumed:
+    `observed_swap_writer_pending_requests = 0`,
+    `observed_swap_writer_raw_batch_ms_p95 = 680`
 
 Operational reading:
 
@@ -354,8 +384,8 @@ Operational reading:
 - do not run restore/gap-fill work as the next step unless new raw-history
   evidence appears
 - do not mark production green from operator observability alone
-- next batch should target aggregate gap replay semantics for a latched
-  `materialization_gap_cursor` that is at or before `covered_through`, not
+- next batch should target aggregate gap repair scheduling/priority under
+  continuous live traffic when `materialization_gap_cursor` exists, not
   historical raw recovery and not selector threshold changes
 
 ## Current Development Accounting

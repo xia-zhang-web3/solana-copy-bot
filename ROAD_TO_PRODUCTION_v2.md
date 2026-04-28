@@ -287,6 +287,67 @@ Current next bounded seam:
   `covered_through`, then clear the latch only after the exact gap row is
   observed and replay catches up to tail
 
+Follow-up behind-cursor gap replay fix and live result (`2026-04-28`):
+
+- commit `3255576` (`Replay aggregate gaps behind coverage cursor`) changed
+  only `crates/app/src/observed_swap_writer.rs`
+- local reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer`
+  - `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`
+  - `git diff --check -- crates/app/src/observed_swap_writer.rs`
+- production rollout:
+  - server checkout advanced to `3255576`
+  - `copybot-app` rebuilt successfully
+  - aggregate flags were enabled from backup
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428T-gap-replay-before-aggregate-enable`
+  - service restarted and stayed `active`, `NRestarts = 0`
+- behavior proven on live:
+  - raw observed-swap persistence still moved initially:
+    `observed_swap_writer_raw_batch_ms_p95 = 297`,
+    `observed_swap_writer_observed_swaps_insert_ms_p95 = 254`
+  - aggregate coverage stayed fresh initially:
+    `covered_through = 2026-04-28T16:07:01.140400472Z`,
+    `covered_through_lag_seconds = 1`
+  - after waiting, readiness still failed closed:
+    `materialization_gap_latched`
+  - the latched gap row exists in `observed_swaps`:
+    `2026-04-28T16:06:58.496536802Z / 416252112 /
+    2RHt6BMikxRyB2BfgGCADZ9mC6ioYfoPsrfexW2qcyw4mVXPZhvPk46GBStaMXzsvrUMF4K9PnkDNpHSxhEDxpR8`
+  - `covered_through` had advanced past it:
+    `2026-04-28T16:07:30.401379572Z / 416252192 /
+    3fHGZRbKC7p2A2Xdvejx3SbxaSypeXRCtpz5uHczzo55zujZRKSuUd9rQiV7s8NYsyE5cV7oMctUfrUWW5o7iDB8`
+  - observed-swap writer pressure returned:
+    `observed_swap_writer_pending_requests = 3968`
+  - journal backlog was saturated:
+    `observed_swap_writer_journal_queue_depth_batches = 64`,
+    `observed_swap_writer_journal_overflow_depth_batches = 255`
+- interpretation:
+  - `3255576` adds the needed primitive but is not sufficient in live traffic
+  - the exact gap row is present, so the remaining blocker is not missing raw
+    data
+  - the likely live seam is scheduling/priority: gap repair is still tied to
+    aggregate idle replay and does not run or finish while hot live requests and
+    journal pressure keep the writer busy
+- rollback:
+  - restored
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428T-gap-replay-before-aggregate-enable`
+  - aggregate flags are back to `false` / `false`
+  - post-rollback service stayed `active`, `MainPID = 1564245`, `NRestarts = 0`
+  - with aggregate flags disabled, raw writes resumed:
+    `observed_swap_writer_pending_requests = 0`,
+    `observed_swap_writer_raw_batch_ms_p95 = 680`
+
+Current next bounded seam:
+
+- keep `3255576`; it is safe with aggregate writes disabled and adds the
+  correct replay primitive
+- do not re-enable aggregate reads/writes until gap repair is prioritized under
+  continuous live traffic
+- next coding batch should make aggregate writer prioritize bounded
+  materialization-gap repair whenever a latch exists, instead of relying only
+  on idle timeout replay
+
 ## Live Update (`2026-04-27`)
 
 Current Stage 3 production-discovery truth remains fail-closed, but the live
