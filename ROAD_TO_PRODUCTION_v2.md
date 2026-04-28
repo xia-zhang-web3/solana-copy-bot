@@ -9,7 +9,9 @@ Current Stage 3 production-discovery truth remains fail-closed. Raw-history
 recovery is no longer the active lane, and aggregate-scoring materialization was
 proven and covered on production. A controlled aggregate runtime enablement was
 attempted and rolled back because live aggregate coverage freshness did not
-advance under observed-swap writer saturation.
+advance under observed-swap writer saturation. A follow-up enqueue-budget fix
+raised the cap but exposed the next seam: raw batches are not processed while
+the raw writer is blocked behind downstream startup receivers.
 
 Latest accepted and deployed operator batch:
 
@@ -179,6 +181,53 @@ Aggregate runtime enablement attempt and rollback (`2026-04-28`):
     `/etc/solana-copy-bot/live.server.toml.backup-20260428T114128Z-before-aggregate-enable`
   - aggregate flags are back to `false` / `false`
   - post-rollback service stayed `active`, `MainPID = 1559057`, `NRestarts = 0`
+
+Follow-up enqueue-budget fix and live result (`2026-04-28`):
+
+- commit `835b6d5` (`Raise aggregate writer enqueue budget`) changed only
+  `crates/app/src/observed_swap_writer.rs`
+- local reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer_try_enqueue`
+  - `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer_normal_try_enqueue_soft_limit`
+  - `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`
+  - `git diff --check -- crates/app/src/observed_swap_writer.rs`
+- production rollout:
+  - server checkout advanced to `835b6d5`
+  - `copybot-app` rebuilt successfully
+  - service restarted and stayed `active`, `NRestarts = 0`
+- behavior proven on live:
+  - with aggregate writes enabled, the noncritical writer pending plateau moved
+    from `128` to `3968`
+  - discovery-critical reserve remained preserved by code/test contract
+  - service logs showed:
+    `observed_swap_writer_pending_requests = 3968`,
+    `observed_swap_writer_raw_batch_ms_p95 = 0`,
+    `observed_swap_writer_observed_swaps_insert_ms_p95 = 0`,
+    `observed_swap_writer_aggregate_queue_depth_batches = 0`
+  - aggregate coverage advanced only to
+    `2026-04-28T13:28:52.149924946Z`, then remained stale
+- code-inspection interpretation:
+  - `observed_swap_writer_loop` waits on downstream startup receivers before
+    processing any raw batch:
+    `aggregate_startup_receiver.recv()` and `journal_startup_receiver.recv()`
+  - while that startup barrier is pending, app-consumer enqueues swaps, but raw
+    batches are never inserted, so coverage cannot become fresh
+- rollback:
+  - restored
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428T-enqueue-budget-before-aggregate-enable`
+  - aggregate flags are back to `false` / `false`
+  - post-rollback service stayed `active`, `MainPID = 1561223`, `NRestarts = 0`
+
+Current next bounded seam:
+
+- keep `835b6d5`; it fixed the first cap and is inert while aggregate writes
+  are disabled
+- do not re-enable aggregate reads/writes until the raw-writer startup barrier
+  is fixed
+- next coding batch should make the raw observed-swap writer stop blocking raw
+  persistence on aggregate/recent-raw startup replay/prune completion, while
+  still surfacing downstream startup failures fail-closed
 
 ## Live Update (`2026-04-27`)
 

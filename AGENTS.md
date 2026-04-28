@@ -207,10 +207,10 @@ Record facts, not vague status language.
 
 ## Current State Snapshot
 
-As of `2026-04-28T12:39:19Z`, Stage 3 production discovery truth remains
+As of `2026-04-28T15:13:25Z`, Stage 3 production discovery truth remains
 fail-closed. Raw-history recovery and the one-shot aggregate-scoring
-materialization are no longer the active blocker, but the attempted aggregate
-runtime enablement exposed a new live writer/coverage freshness seam.
+materialization are no longer the active blocker, but aggregate runtime
+enablement exposed a live observed-swap writer startup/backpressure seam.
 
 Current interpretation:
 
@@ -220,9 +220,9 @@ Current interpretation:
   the active production blocker.
 - The aggregate-scoring materialization lane has been unblocked and run on
   production.
-- Current active evidence is still `raw_window_zero_publishable_universe`, but
-  aggregate reads cannot be enabled yet because aggregate coverage becomes stale
-  when live observed-swap persistence is saturated.
+- Current active evidence is still `raw_window_zero_publishable_universe`, and
+  aggregate reads cannot be enabled yet because live observed-swap persistence
+  does not stay fresh after runtime restart.
 - Do not reduce `scoring_window_days` or weaken fail-closed semantics to route
   around this result.
 
@@ -233,6 +233,7 @@ Latest confirmed live snapshot:
 - server repo and origin include:
   - `a566402` (`Bound scoring prepare market stats`)
   - `1722c36` (`Record aggregate scoring materialization result`)
+  - `835b6d5` (`Raise aggregate writer enqueue budget`)
 - `backfill_discovery_scoring` and `copybot-app` have both been rebuilt on
   production
 - aggregate scoring backfill completed and marked coverage:
@@ -293,6 +294,29 @@ Latest confirmed live snapshot:
   - aggregate readiness is back to config blockers plus stale coverage:
     `writes_disabled_by_config`, `reads_disabled_by_config`,
     `covered_through_too_stale_for_runtime_gate`
+- enqueue-budget fix rollout:
+  - commit `835b6d5` was deployed and `copybot-app` was rebuilt
+  - local bounded checks passed:
+    `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer_try_enqueue`,
+    `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer_normal_try_enqueue_soft_limit`,
+    `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - the fix changed the aggregate-enabled noncritical enqueue plateau from
+    `128` to `3968`, preserving the discovery-critical reserve
+  - live enablement with the new binary proved that the enqueue cap was raised:
+    `observed_swap_writer_pending_requests = 3968`
+  - the live run still did not write new raw rows:
+    `observed_swap_writer_raw_batch_ms_p95 = 0`,
+    `observed_swap_writer_observed_swaps_insert_ms_p95 = 0`
+  - code inspection showed the raw writer blocks on downstream startup
+    receivers before it processes any raw batch:
+    `aggregate_startup_receiver.recv()` and `journal_startup_receiver.recv()`
+  - aggregate coverage advanced only to
+    `2026-04-28T13:28:52.149924946Z`, then stayed stale
+  - aggregate flags were rolled back again to `false` / `false` from
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428T-enqueue-budget-before-aggregate-enable`
+  - post-rollback service state:
+    `solana-copy-bot.service = active`, `MainPID = 1561223`,
+    `NRestarts = 0`
 
 Operational reading:
 
@@ -300,9 +324,9 @@ Operational reading:
 - do not run restore/gap-fill work as the next step unless new raw-history
   evidence appears
 - do not mark production green from operator observability alone
-- next batches should target the proven live observed-swap writer/backpressure
-  seam that prevents aggregate coverage freshness, not historical raw recovery
-  and not selector threshold changes
+- next batches should target the proven live observed-swap writer startup
+  barrier/backpressure seam that prevents raw batches from being processed
+  after restart, not historical raw recovery and not selector threshold changes
 
 ## Current Development Accounting
 
@@ -422,7 +446,8 @@ Deployment status:
 
 - aggregate-scoring storage was ready for the runtime gate immediately after
   the backfill, but runtime enablement was rolled back because live coverage
-  freshness did not advance under observed-swap writer saturation
+  freshness did not advance while the raw writer was blocked behind downstream
+  startup receivers
 - do not re-enable aggregate reads/writes until the writer/backpressure seam is
   corrected and live readiness proves `effective_reads_ready = true`
 - emergency-stop CLI remains a manual safety surface only; it is not a Stage 3
@@ -430,7 +455,7 @@ Deployment status:
 
 Current sync status:
 
-- current accepted commits have reached `origin/main` through `1722c36`
+- current accepted commits have reached `origin/main` through `835b6d5`
 - server checkout has been advanced to the current docs/code head when noted in
   the live update; still check `git status` and `git log -1` at session start
 
