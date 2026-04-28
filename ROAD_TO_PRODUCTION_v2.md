@@ -9,9 +9,11 @@ Current Stage 3 production-discovery truth remains fail-closed. Raw-history
 recovery is no longer the active lane, and aggregate-scoring materialization was
 proven and covered on production. Controlled aggregate runtime enablement
 attempts remain fail-closed. The aggregate materialization-gap latch was cleared
-by the frozen-target repair rollout, but production green is still blocked
-because live raw/source freshness is stale while Yellowstone subscription
-opening repeatedly times out.
+by the frozen-target repair rollout. The Yellowstone subscribe-open timeout seam
+was closed by the request-first subscribe rollout, but production green is still
+blocked because live raw persistence freshness is stale after source resume:
+Yellowstone is receiving updates while the observed-swap writer/journal path is
+saturated.
 
 Latest accepted and deployed operator batch:
 
@@ -140,9 +142,71 @@ Current next bounded seam:
 
 - aggregate storage was ready immediately after materialization, but production
   runtime enablement is not safe yet
+- the old Yellowstone subscribe-open timeout seam is closed by request-first
+  subscribe open
 - the next coding batch should be proof-first around the live observed-swap
-  writer/backpressure seam that prevents aggregate coverage freshness, not
-  another raw-history/gap-fill batch and not selector threshold changes
+  writer/journal overflow freshness seam that prevents raw frontier movement
+  after source resume, not another raw-history/gap-fill batch and not selector
+  threshold changes
+
+Yellowstone request-first rollout and live result (`2026-04-28`):
+
+- commit `8353a10` (`Use request-first Yellowstone subscribe`) changed only:
+  - `crates/ingestion/src/source/yellowstone_pipeline.rs`
+  - `crates/app/src/bin/copybot_yellowstone_source_probe.rs`
+- local reviewer correction kept probe reporting honest:
+  `initial_request_sent_during_subscribe_open=true` is set only once the
+  request-first subscribe attempt actually starts
+- local checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot_yellowstone_source_probe`
+  - `cargo check -j 1 -p copybot-app --bin copybot_yellowstone_source_probe`
+  - `cargo check -j 1 -p copybot-ingestion`
+  - `rustfmt --check --edition 2021 crates/ingestion/src/source/yellowstone_pipeline.rs crates/app/src/bin/copybot_yellowstone_source_probe.rs`
+  - `git diff --check -- crates/ingestion/src/source/yellowstone_pipeline.rs crates/app/src/bin/copybot_yellowstone_source_probe.rs`
+- live terminal proof before rollout showed the provider was not dead:
+  - `SubscribeReplayInfo` with token returned `HTTP/2 200` and
+    `grpc-status = 0`
+  - raw `/geyser.Geyser/Subscribe` with token and immediate first frame returned
+    `HTTP/2 200` plus protobuf bytes
+- live request-first probe after deploying the debug probe returned:
+  - `connect_completed = true`
+  - `subscribe_completed = true`
+  - `subscribe_send_completed = true`
+  - `initial_request_sent_during_subscribe_open = true`
+  - `first_message_received = true`
+  - `elapsed_ms = 57`
+  - `reason_class = yellowstone_first_message_received`
+- production `copybot-app` release build completed in `47m38s`
+- controlled service restart applied the new runtime binary
+- systemd then performed one automatic fail-closed restart after aggregate
+  startup catch-up hit SQLite lock:
+  `failed to open discovery scoring batch transaction: database is locked`
+- post-restart state:
+  - `solana-copy-bot.service = active`
+  - `MainPID = 1576503`
+  - `NRestarts = 1`
+  - `execution runtime disabled`
+- post-restart source telemetry:
+  - `grpc_message_total = 91896`
+  - `grpc_transaction_updates_total = 91840`
+  - `reconnect_count = 0`
+  - `ws_notifications_dropped = 0`
+  - `yellowstone_output_queue_depth = 0`
+- post-restart writer/raw persistence telemetry:
+  - latest indexed `observed_swaps` frontier stayed at
+    `2026-04-28T19:58:04.292842175+00:00 / slot 416287087`
+  - `observed_swap_writer_pending_requests = 3968`
+  - `observed_swap_writer_journal_queue_depth_batches = 64`
+  - `observed_swap_writer_journal_overflow_depth_batches = 255`
+  - `observed_swap_writer_aggregate_queue_depth_batches = 1`
+- interpretation:
+  - endpoint/token/add-on are valid
+  - request-first subscribe fixed the source-open blocker
+  - the active blocker moved to live observed-swap writer/journal overflow and
+    raw frontier freshness after source resume
+  - Stage 3 remains fail-closed; do not change `scoring_window_days`,
+    selector thresholds, restore/gap-fill, configs, or execution/trading to
+    route around this
 
 Aggregate runtime enablement attempt and rollback (`2026-04-28`):
 

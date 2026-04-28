@@ -207,12 +207,14 @@ Record facts, not vague status language.
 
 ## Current State Snapshot
 
-As of `2026-04-28T17:22:14Z`, Stage 3 production discovery truth remains
+As of `2026-04-28T20:02:16Z`, Stage 3 production discovery truth remains
 fail-closed. Raw-history recovery and the one-shot aggregate-scoring
 materialization are no longer the active blocker. The aggregate
-materialization-gap latch seam was cleared by the frozen-target repair rollout,
-but production green is still blocked by live source/raw freshness while
-Yellowstone subscription opens repeatedly time out.
+materialization-gap latch seam was cleared by the frozen-target repair rollout.
+The Yellowstone subscribe-open timeout seam was closed by the request-first
+subscribe rollout, but production green is still blocked by live raw persistence
+freshness: the source stream is receiving updates while the observed-swap writer
+is saturated at its pending cap and the `observed_swaps` frontier is stale.
 
 Current interpretation:
 
@@ -224,28 +226,35 @@ Current interpretation:
   production.
 - `3ca9a53` cleared the live `materialization_gap_cursor` without fake-clearing
   coverage; aggregate write readiness is now true.
-- Current active production blocker is live source/raw freshness:
+- The old Yellowstone subscribe-open timeout blocker is closed:
+  `copybot_yellowstone_source_probe` now uses request-first
+  `subscribe_with_request(Some(request))`, and live request-first probe returned
+  `first_message_received` in `57ms`.
+- Runtime was rebuilt and restarted with `8353a10`
+  (`Use request-first Yellowstone subscribe`).
+- The new active blocker is live raw persistence freshness after source resume:
+  the source stream is receiving messages with `reconnect_count = 0`, but
   `observed_swaps` has not advanced past
-  `2026-04-28T16:42:13.769796192Z`, and readiness blocks reads with
-  `covered_through_too_stale_for_runtime_gate`.
-- Logs show repeated `failed opening yellowstone subscription stream` timeout
-  errors; the timeout sequence began before the `3ca9a53` rollout.
-- Read-only `copybot_yellowstone_source_probe` on `f99f42c` reproduced the
-  current source failure with:
-  `connect_completed = true`,
-  `subscribe_started = true`,
-  `subscribe_completed = false`,
-  `reason_class = yellowstone_subscription_open_timeout`.
-- `aad8a15` docs-parity probe modes all reproduced the same subscribe-open
-  timeout before any request send completed:
-  `transaction-filter`, `slots-only`, `blocks-meta`, `empty-then-send`.
+  `2026-04-28T19:58:04.292842175Z`.
+- Writer telemetry after rollout shows:
+  `observed_swap_writer_pending_requests = 3968`,
+  `observed_swap_writer_journal_queue_depth_batches = 64`,
+  `observed_swap_writer_journal_overflow_depth_batches = 255`, and
+  `observed_swap_writer_aggregate_queue_depth_batches = 1`.
+- Ingestion telemetry after rollout shows:
+  `grpc_message_total = 91896`,
+  `grpc_transaction_updates_total = 91840`,
+  `reconnect_count = 0`,
+  `ws_notifications_dropped = 0`,
+  `yellowstone_output_queue_depth = 0`.
 - Do not reduce `scoring_window_days` or weaken fail-closed semantics to route
   around this result.
 
 Latest confirmed live snapshot:
 
 - `solana-copy-bot.service = active`
-- service restarts: `NRestarts = 0`
+- service restarts: `NRestarts = 1`
+- current `MainPID = 1576503`
 - server repo and origin include:
   - `a566402` (`Bound scoring prepare market stats`)
   - `1722c36` (`Record aggregate scoring materialization result`)
@@ -254,6 +263,7 @@ Latest confirmed live snapshot:
   - `3255576` (`Replay aggregate gaps behind coverage cursor`)
   - `f647d91` (`Prioritize aggregate gap repair`)
   - `3ca9a53` (`Freeze aggregate gap repair target`)
+  - `8353a10` (`Use request-first Yellowstone subscribe`)
 - `backfill_discovery_scoring` and `copybot-app` have both been rebuilt on
   production
 - aggregate scoring backfill completed and marked coverage:
@@ -459,7 +469,7 @@ Latest confirmed live snapshot:
   - aggregate flags were left enabled because readiness remains fail-closed
     while stale, queues are clean, and the next useful proof is source resume
     behavior
-- Yellowstone source probe rollout:
+- Yellowstone source probe and request-first rollout:
   - commits `f0c2d43`, `f99f42c`, and `aad8a15` added/corrected read-only
     `copybot_yellowstone_source_probe`
   - operator-only debug binary was built on production; main service was not
@@ -474,7 +484,26 @@ Latest confirmed live snapshot:
     `transaction-filter`, `slots-only`, `blocks-meta`, and `empty-then-send`
     all completed connect and then timed out at subscribe-open before request
     send
-  - service remained `active`, `MainPID = 1566861`, `NRestarts = 0`
+  - terminal gRPC proof from production host showed the QuickNode endpoint,
+    token, and add-on were valid:
+    `SubscribeReplayInfo` returned `grpc-status = 0`, and raw `/Subscribe`
+    returned `HTTP/2 200` plus protobuf bytes when the first request frame was
+    sent immediately
+  - commit `8353a10` changed runtime and probe to request-first subscribe
+    open
+  - live request-first probe result:
+    `connect_completed = true`,
+    `subscribe_completed = true`,
+    `subscribe_send_completed = true`,
+    `initial_request_sent_during_subscribe_open = true`,
+    `first_message_received = true`,
+    `reason_class = yellowstone_first_message_received`
+  - production release build of `copybot-app` completed in `47m38s`
+  - controlled service restart succeeded, then systemd performed one automatic
+    fail-closed restart after aggregate-writer startup catch-up hit:
+    `failed to open discovery scoring batch transaction: database is locked`
+  - post-restart service remained `active`, `MainPID = 1576503`,
+    `NRestarts = 1`
 
 Operational reading:
 
@@ -482,10 +511,9 @@ Operational reading:
 - do not run restore/gap-fill work as the next step unless new raw-history
   evidence appears
 - do not mark production green from operator observability alone
-- next batch should extend the read-only Yellowstone probe with docs-parity
-  endpoint/auth/add-on checks or create a fallback-source decision surface; the
-  current four-mode result points to provider/add-on/session/endpoint failure
-  before our transaction-filter request shape is involved
+- next batch should target the proven observed-swap writer/journal overflow
+  freshness seam after source resume; do not go back to provider/add-on,
+  raw-history gap-fill, selector thresholds, or `scoring_window_days`
 
 ## Current Development Accounting
 
