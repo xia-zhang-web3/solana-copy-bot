@@ -9,10 +9,10 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_core_types::SwapEvent;
 use rusqlite::{params, Connection, OptionalExtension};
+#[cfg(debug_assertions)]
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::Instant;
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -82,21 +82,26 @@ struct CarryoverLotRow {
     oldest_opened_ts: DateTime<Utc>,
 }
 
-#[cfg(test)]
-static DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT: AtomicBool =
-    AtomicBool::new(false);
-
-#[cfg(test)]
-pub(crate) fn set_discovery_scoring_atomic_checkpoint_failpoint(enabled: bool) {
-    DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT
-        .store(enabled, AtomicOrdering::SeqCst);
+#[cfg(debug_assertions)]
+thread_local! {
+    static DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT: Cell<bool> =
+        const { Cell::new(false) };
 }
 
-#[cfg(test)]
+#[cfg(debug_assertions)]
+fn set_discovery_scoring_atomic_checkpoint_failpoint(enabled: bool) {
+    DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT
+        .with(|failpoint| failpoint.set(enabled));
+}
+
+#[cfg(debug_assertions)]
 pub(crate) fn maybe_fail_after_materialization_before_checkpoint() -> Result<()> {
-    if DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT
-        .swap(false, AtomicOrdering::SeqCst)
-    {
+    let fired = DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT.with(|failpoint| {
+        let fired = failpoint.get();
+        failpoint.set(false);
+        fired
+    });
+    if fired {
         anyhow::bail!(
             "test failpoint: discovery scoring crash after materialization before checkpoint"
         );
@@ -104,9 +109,17 @@ pub(crate) fn maybe_fail_after_materialization_before_checkpoint() -> Result<()>
     Ok(())
 }
 
-#[cfg(not(test))]
+#[cfg(not(debug_assertions))]
 pub(crate) fn maybe_fail_after_materialization_before_checkpoint() -> Result<()> {
     Ok(())
+}
+
+#[cfg(debug_assertions)]
+impl SqliteStore {
+    #[doc(hidden)]
+    pub fn set_discovery_scoring_atomic_checkpoint_failpoint_for_tests(enabled: bool) {
+        set_discovery_scoring_atomic_checkpoint_failpoint(enabled);
+    }
 }
 
 fn is_sol_buy(swap: &SwapEvent) -> bool {
@@ -1278,22 +1291,54 @@ fn apply_discovery_scoring_swaps_and_checkpoint_on_conn(
     prepared_swaps: &[PreparedScoringSwap],
     progress_start_ts: DateTime<Utc>,
     progress_cursor: &DiscoveryRuntimeCursor,
+    stage_start: &mut impl FnMut(&str),
+    stage_end: &mut impl FnMut(&str, usize, u64, &str),
 ) -> Result<(u64, u64)> {
+    stage_start("aggregate_batch_apply");
     let apply_started_at = Instant::now();
-    apply_discovery_scoring_swaps_on_conn(conn, prepared_swaps)?;
+    if let Err(error) = apply_discovery_scoring_swaps_on_conn(conn, prepared_swaps) {
+        stage_end(
+            "aggregate_batch_apply",
+            prepared_swaps.len(),
+            apply_started_at.elapsed().as_millis() as u64,
+            "failed",
+        );
+        return Err(error);
+    }
     let apply_ms = apply_started_at.elapsed().as_millis() as u64;
+    stage_end(
+        "aggregate_batch_apply",
+        prepared_swaps.len(),
+        apply_ms,
+        "completed",
+    );
 
     maybe_fail_after_materialization_before_checkpoint()?;
 
+    stage_start("progress_checkpoint");
     let progress_started_at = Instant::now();
     let updated_at = Utc::now().to_rfc3339();
-    upsert_discovery_scoring_backfill_progress_on_conn(
+    if let Err(error) = upsert_discovery_scoring_backfill_progress_on_conn(
         conn,
         progress_start_ts,
         progress_cursor,
         &updated_at,
-    )?;
+    ) {
+        stage_end(
+            "progress_checkpoint",
+            prepared_swaps.len(),
+            progress_started_at.elapsed().as_millis() as u64,
+            "failed",
+        );
+        return Err(error);
+    }
     let progress_update_ms = progress_started_at.elapsed().as_millis() as u64;
+    stage_end(
+        "progress_checkpoint",
+        prepared_swaps.len(),
+        progress_update_ms,
+        "completed",
+    );
 
     Ok((apply_ms, progress_update_ms))
 }
@@ -1303,22 +1348,49 @@ fn apply_discovery_scoring_boundary_lot_swaps_and_checkpoint_on_conn(
     swaps: &[SwapEvent],
     progress_start_ts: DateTime<Utc>,
     progress_cursor: &DiscoveryRuntimeCursor,
+    stage_start: &mut impl FnMut(&str),
+    stage_end: &mut impl FnMut(&str, usize, u64, &str),
 ) -> Result<(u64, u64)> {
+    stage_start("aggregate_batch_apply");
     let apply_started_at = Instant::now();
-    apply_discovery_scoring_boundary_lot_swaps_on_conn(conn, swaps)?;
+    if let Err(error) = apply_discovery_scoring_boundary_lot_swaps_on_conn(conn, swaps) {
+        stage_end(
+            "aggregate_batch_apply",
+            swaps.len(),
+            apply_started_at.elapsed().as_millis() as u64,
+            "failed",
+        );
+        return Err(error);
+    }
     let apply_ms = apply_started_at.elapsed().as_millis() as u64;
+    stage_end("aggregate_batch_apply", swaps.len(), apply_ms, "completed");
 
     maybe_fail_after_materialization_before_checkpoint()?;
 
+    stage_start("progress_checkpoint");
     let progress_started_at = Instant::now();
     let updated_at = Utc::now().to_rfc3339();
-    upsert_discovery_scoring_backfill_progress_on_conn(
+    if let Err(error) = upsert_discovery_scoring_backfill_progress_on_conn(
         conn,
         progress_start_ts,
         progress_cursor,
         &updated_at,
-    )?;
+    ) {
+        stage_end(
+            "progress_checkpoint",
+            swaps.len(),
+            progress_started_at.elapsed().as_millis() as u64,
+            "failed",
+        );
+        return Err(error);
+    }
     let progress_update_ms = progress_started_at.elapsed().as_millis() as u64;
+    stage_end(
+        "progress_checkpoint",
+        swaps.len(),
+        progress_update_ms,
+        "completed",
+    );
 
     Ok((apply_ms, progress_update_ms))
 }
@@ -1400,8 +1472,47 @@ impl SqliteStore {
         progress_start_ts: DateTime<Utc>,
         progress_cursor: &DiscoveryRuntimeCursor,
     ) -> Result<super::DiscoveryScoringCheckpointedBatchTimings> {
+        self.apply_discovery_scoring_batch_and_checkpoint_with_timings_and_diagnostics(
+            swaps,
+            config,
+            progress_start_ts,
+            progress_cursor,
+            |_| {},
+            |_, _, _, _| {},
+        )
+    }
+
+    pub fn apply_discovery_scoring_batch_and_checkpoint_with_timings_and_diagnostics(
+        &self,
+        swaps: &[SwapEvent],
+        config: &DiscoveryAggregateWriteConfig,
+        progress_start_ts: DateTime<Utc>,
+        progress_cursor: &DiscoveryRuntimeCursor,
+        mut stage_start: impl FnMut(&str),
+        mut stage_end: impl FnMut(&str, usize, u64, &str),
+    ) -> Result<super::DiscoveryScoringCheckpointedBatchTimings> {
+        stage_start("prepare_discovery_scoring_swaps");
         let prepare_started_at = Instant::now();
-        let prepared = prepare_discovery_scoring_swaps(&self.conn, swaps, config)?;
+        let prepared = match prepare_discovery_scoring_swaps(&self.conn, swaps, config) {
+            Ok(prepared) => {
+                stage_end(
+                    "prepare_discovery_scoring_swaps",
+                    prepared.len(),
+                    prepare_started_at.elapsed().as_millis() as u64,
+                    "completed",
+                );
+                prepared
+            }
+            Err(error) => {
+                stage_end(
+                    "prepare_discovery_scoring_swaps",
+                    swaps.len(),
+                    prepare_started_at.elapsed().as_millis() as u64,
+                    "failed",
+                );
+                return Err(error);
+            }
+        };
         let prepare_ms = prepare_started_at.elapsed().as_millis() as u64;
 
         let (apply_ms, progress_update_ms) = self.with_immediate_transaction_retry(
@@ -1412,6 +1523,8 @@ impl SqliteStore {
                     &prepared,
                     progress_start_ts,
                     progress_cursor,
+                    &mut stage_start,
+                    &mut stage_end,
                 )
             },
         )?;
@@ -1429,6 +1542,23 @@ impl SqliteStore {
         progress_start_ts: DateTime<Utc>,
         progress_cursor: &DiscoveryRuntimeCursor,
     ) -> Result<super::DiscoveryScoringCheckpointedBatchTimings> {
+        self.apply_discovery_scoring_boundary_lot_batch_and_checkpoint_with_timings_and_diagnostics(
+            swaps,
+            progress_start_ts,
+            progress_cursor,
+            |_| {},
+            |_, _, _, _| {},
+        )
+    }
+
+    pub fn apply_discovery_scoring_boundary_lot_batch_and_checkpoint_with_timings_and_diagnostics(
+        &self,
+        swaps: &[SwapEvent],
+        progress_start_ts: DateTime<Utc>,
+        progress_cursor: &DiscoveryRuntimeCursor,
+        mut stage_start: impl FnMut(&str),
+        mut stage_end: impl FnMut(&str, usize, u64, &str),
+    ) -> Result<super::DiscoveryScoringCheckpointedBatchTimings> {
         let (apply_ms, progress_update_ms) = self.with_immediate_transaction_retry(
             "discovery scoring boundary lot sql batch with checkpoint",
             |conn| {
@@ -1437,6 +1567,8 @@ impl SqliteStore {
                     swaps,
                     progress_start_ts,
                     progress_cursor,
+                    &mut stage_start,
+                    &mut stage_end,
                 )
             },
         )?;

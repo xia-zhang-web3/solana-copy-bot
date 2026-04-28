@@ -12,13 +12,13 @@ use signal_hook::consts::signal::SIGINT;
 #[cfg(unix)]
 use signal_hook::consts::signal::SIGTERM;
 use signal_hook::flag;
+#[cfg(test)]
+use std::cell::{Cell, RefCell};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-#[cfg(test)]
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -183,7 +183,10 @@ enum BackfillTestFailpoint {
 }
 
 #[cfg(test)]
-static BACKFILL_TEST_FAILPOINT: AtomicU8 = AtomicU8::new(0);
+thread_local! {
+    static BACKFILL_TEST_FAILPOINT: Cell<u8> = const { Cell::new(0) };
+    static BACKFILL_TEST_EVENTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
 
 #[cfg(test)]
 fn set_backfill_test_failpoint(failpoint: BackfillTestFailpoint) {
@@ -192,7 +195,7 @@ fn set_backfill_test_failpoint(failpoint: BackfillTestFailpoint) {
         BackfillTestFailpoint::AfterBoundaryExportBeforeSeedInstall => 1,
         BackfillTestFailpoint::AfterCommittedSeedInstallBeforeReplayAfterSeed => 2,
     };
-    BACKFILL_TEST_FAILPOINT.store(raw, Ordering::SeqCst);
+    BACKFILL_TEST_FAILPOINT.with(|stored| stored.set(raw));
 }
 
 #[cfg(test)]
@@ -202,10 +205,15 @@ fn maybe_fire_backfill_test_failpoint(failpoint: BackfillTestFailpoint) -> Resul
         BackfillTestFailpoint::AfterBoundaryExportBeforeSeedInstall => 1,
         BackfillTestFailpoint::AfterCommittedSeedInstallBeforeReplayAfterSeed => 2,
     };
-    if BACKFILL_TEST_FAILPOINT
-        .compare_exchange(expected, 0, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-    {
+    let fired = BACKFILL_TEST_FAILPOINT.with(|stored| {
+        if stored.get() == expected {
+            stored.set(0);
+            true
+        } else {
+            false
+        }
+    });
+    if fired {
         bail!("test failpoint triggered: {}", failpoint.as_str());
     }
     Ok(())
@@ -547,6 +555,141 @@ fn log_run_summary(
 
 fn flush_stdout() {
     let _ = io::stdout().flush();
+}
+
+fn emit_event(line: String) {
+    println!("{line}");
+    flush_stdout();
+    #[cfg(test)]
+    {
+        BACKFILL_TEST_EVENTS.with(|events| events.borrow_mut().push(line));
+    }
+}
+
+#[cfg(test)]
+fn clear_backfill_test_events() {
+    BACKFILL_TEST_EVENTS.with(|events| events.borrow_mut().clear());
+}
+
+#[cfg(test)]
+fn backfill_test_events() -> Vec<String> {
+    BACKFILL_TEST_EVENTS.with(|events| events.borrow().clone())
+}
+
+fn format_stage_cursor(cursor: Option<&Cursor>) -> (String, String, String) {
+    cursor
+        .map(|cursor| {
+            (
+                cursor.ts.to_rfc3339(),
+                cursor.slot.to_string(),
+                sanitize_log_value(&cursor.signature),
+            )
+        })
+        .unwrap_or_else(|| ("none".to_string(), "none".to_string(), "none".to_string()))
+}
+
+fn log_stage_start(
+    phase_label: &str,
+    stage: &str,
+    cursor: Option<&Cursor>,
+    batch_size: usize,
+    batches: usize,
+    total_rows: usize,
+) -> Instant {
+    let (cursor_ts, cursor_slot, cursor_signature) = format_stage_cursor(cursor);
+    emit_event(format!(
+        "event=backfill_stage_start phase={} stage={} cursor_ts={} cursor_slot={} cursor_signature={} batch_size={} batches={} total_rows={}",
+        phase_label,
+        stage,
+        cursor_ts,
+        cursor_slot,
+        cursor_signature,
+        batch_size,
+        batches,
+        total_rows,
+    ));
+    Instant::now()
+}
+
+fn log_stage_end(
+    phase_label: &str,
+    stage: &str,
+    cursor: Option<&Cursor>,
+    batch_size: usize,
+    batches: usize,
+    total_rows: usize,
+    rows: usize,
+    elapsed_ms: u64,
+    outcome: &str,
+) {
+    let (cursor_ts, cursor_slot, cursor_signature) = format_stage_cursor(cursor);
+    emit_event(format!(
+        "event=backfill_stage_end phase={} stage={} cursor_ts={} cursor_slot={} cursor_signature={} batch_size={} batches={} total_rows={} rows={} elapsed_ms={} outcome={}",
+        phase_label,
+        stage,
+        cursor_ts,
+        cursor_slot,
+        cursor_signature,
+        batch_size,
+        batches,
+        total_rows,
+        rows,
+        elapsed_ms,
+        outcome,
+    ));
+}
+
+fn log_stage_skipped(
+    phase_label: &str,
+    stage: &str,
+    cursor: Option<&Cursor>,
+    batch_size: usize,
+    batches: usize,
+    total_rows: usize,
+    reason: &str,
+) {
+    let (cursor_ts, cursor_slot, cursor_signature) = format_stage_cursor(cursor);
+    emit_event(format!(
+        "event=backfill_stage_skipped phase={} stage={} cursor_ts={} cursor_slot={} cursor_signature={} batch_size={} batches={} total_rows={} reason={}",
+        phase_label,
+        stage,
+        cursor_ts,
+        cursor_slot,
+        cursor_signature,
+        batch_size,
+        batches,
+        total_rows,
+        reason,
+    ));
+}
+
+fn runtime_budget_stop_before_stage(
+    config: &Config,
+    run_started_at: DateTime<Utc>,
+    phase_label: &str,
+    stage: &str,
+    cursor: Option<&Cursor>,
+    batches: usize,
+    total_rows: usize,
+) -> Option<RunStopReason> {
+    let max_runtime_seconds = config.max_runtime_seconds?;
+    let elapsed_seconds = Utc::now()
+        .signed_duration_since(run_started_at)
+        .num_seconds()
+        .max(0) as u64;
+    if elapsed_seconds < max_runtime_seconds {
+        return None;
+    }
+    log_stage_skipped(
+        phase_label,
+        stage,
+        cursor,
+        config.batch_size,
+        batches,
+        total_rows,
+        "max_runtime_seconds_exhausted_before_stage_start",
+    );
+    Some(RunStopReason::StoppedDueToRuntimeBudget)
 }
 
 fn should_skip_batch_rug_finalize(phase_label: &str) -> bool {
@@ -972,7 +1115,30 @@ fn run_with_cleanup(
     termination_requested: &AtomicBool,
 ) -> Result<()> {
     let run_result = run_with_store_inner(store, config, termination_requested);
+    let cleanup_started_at = log_stage_start(
+        "run_complete",
+        "final_cleanup",
+        None,
+        config.batch_size,
+        0,
+        0,
+    );
     let clear_result = store.clear_discovery_scoring_backfill_source_protection();
+    log_stage_end(
+        "run_complete",
+        "final_cleanup",
+        None,
+        config.batch_size,
+        0,
+        0,
+        0,
+        cleanup_started_at.elapsed().as_millis() as u64,
+        if clear_result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        },
+    );
     match (run_result, clear_result) {
         (Ok(_), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
@@ -1295,10 +1461,18 @@ fn run_replay_phase(
             );
         }
         ReplayEngineSelection::Auto => {
-            println!(
+            emit_event(format!(
                 "event=builder_replay_disabled phase={} reason={}",
                 phase_label, "runtime_budget_bounded"
-            );
+            ));
+            emit_event(format!(
+                "event=runtime_budget_bounded_without_builder_replay_warning phase={} replay_engine=sql reason=builder_replay_disabled_by_runtime_budget max_runtime_seconds={}",
+                phase_label,
+                config
+                    .max_runtime_seconds
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+            ));
         }
         ReplayEngineSelection::AllowBoundedBuilder => {
             unreachable!("bounded builder replay selection should always attempt builder bootstrap")
@@ -1318,8 +1492,26 @@ fn run_replay_phase(
         if let Some(reason) = bounded_run_stop_reason(config, run_started_at, batches, Utc::now()) {
             break reason;
         }
+        if let Some(reason) = runtime_budget_stop_before_stage(
+            config,
+            run_started_at,
+            phase_label,
+            "observed_swap_page_scan",
+            Some(&cursor),
+            batches,
+            total_rows,
+        ) {
+            break reason;
+        }
 
-        let scan_started_at = Instant::now();
+        let scan_started_at = log_stage_start(
+            phase_label,
+            "observed_swap_page_scan",
+            Some(&cursor),
+            config.batch_size,
+            batches,
+            total_rows,
+        );
         let mut page = Vec::<SwapEvent>::with_capacity(config.batch_size);
         let mut reached_end_ts = false;
         let (rows_seen, time_budget_exhausted) =
@@ -1384,6 +1576,23 @@ fn run_replay_phase(
                 (rows_seen, false)
             };
         let scan_ms = scan_started_at.elapsed().as_millis() as u64;
+        log_stage_end(
+            phase_label,
+            "observed_swap_page_scan",
+            Some(&cursor),
+            config.batch_size,
+            batches,
+            total_rows,
+            page.len(),
+            scan_ms,
+            if time_budget_exhausted {
+                "time_budget_exhausted"
+            } else if page.is_empty() {
+                "empty"
+            } else {
+                "completed"
+            },
+        );
 
         if page.is_empty() {
             if time_budget_exhausted {
@@ -1394,6 +1603,19 @@ fn run_replay_phase(
             } else {
                 RunStopReason::CompletedSourceExhausted
             };
+        }
+        if time_budget_exhausted {
+            stage_totals.scan_ms = stage_totals.scan_ms.saturating_add(scan_ms);
+            log_stage_skipped(
+                phase_label,
+                "aggregate_batch_apply",
+                Some(&cursor),
+                config.batch_size,
+                batches,
+                total_rows,
+                "max_runtime_seconds_exhausted_during_scan",
+            );
+            break RunStopReason::StoppedDueToRuntimeBudget;
         }
 
         let last_swap = page
@@ -1414,57 +1636,105 @@ fn run_replay_phase(
             &cursor,
             runtime_pressure_monitor,
         )?;
+        if let Some(reason) = runtime_budget_stop_before_stage(
+            config,
+            run_started_at,
+            phase_label,
+            "aggregate_batch_apply",
+            Some(&cursor),
+            batches,
+            total_rows,
+        ) {
+            stage_totals.scan_ms = stage_totals.scan_ms.saturating_add(scan_ms);
+            break reason;
+        }
         refresh_backfill_source_protection(store, progress_start_ts)?;
 
         let batch_rows = page.len();
-        let (storage_timings, replay_engine): (_, &str) =
-            if let Some(builder) = replay_builder.as_mut() {
-                (
-                    store.apply_discovery_scoring_builder_batch_and_checkpoint_with_timings(
-                        builder,
-                        &page,
-                        &config.aggregate_write_config,
-                        progress_start_ts,
-                        &DiscoveryRuntimeCursor {
-                            ts_utc: next_cursor.ts,
-                            slot: next_cursor.slot,
-                            signature: next_cursor.signature.clone(),
-                        },
-                    )?,
-                    "builder",
-                )
-            } else if matches!(
-                replay_engine_selection,
-                ReplayEngineSelection::ForceBoundaryLotSql
-            ) {
-                (
-                    store.apply_discovery_scoring_boundary_lot_batch_and_checkpoint_with_timings(
-                        &page,
-                        progress_start_ts,
-                        &DiscoveryRuntimeCursor {
-                            ts_utc: next_cursor.ts,
-                            slot: next_cursor.slot,
-                            signature: next_cursor.signature.clone(),
-                        },
-                    )?,
-                    "boundary_lot_sql",
-                )
+        let progress_cursor = DiscoveryRuntimeCursor {
+            ts_utc: next_cursor.ts,
+            slot: next_cursor.slot,
+            signature: next_cursor.signature.clone(),
+        };
+        let mut diagnostic_stage_start = |stage: &str| {
+            let stage_cursor = if stage == "progress_checkpoint" {
+                &next_cursor
             } else {
-                (
-                    store.apply_discovery_scoring_batch_and_checkpoint_with_timings(
-                        &page,
-                        &config.aggregate_write_config,
-                        progress_start_ts,
-                        &DiscoveryRuntimeCursor {
-                            ts_utc: next_cursor.ts,
-                            slot: next_cursor.slot,
-                            signature: next_cursor.signature.clone(),
-                        },
-                    )?,
-                    "sql",
-                )
+                &cursor
             };
-        println!(
+            let _ = log_stage_start(
+                phase_label,
+                stage,
+                Some(stage_cursor),
+                config.batch_size,
+                batches,
+                total_rows,
+            );
+        };
+        let mut diagnostic_stage_end =
+            |stage: &str, rows: usize, elapsed_ms: u64, outcome: &str| {
+                let completed = outcome == "completed";
+                let stage_cursor = if stage == "progress_checkpoint" || completed {
+                    &next_cursor
+                } else {
+                    &cursor
+                };
+                let stage_total_rows = if stage == "progress_checkpoint" && completed {
+                    total_rows.saturating_add(batch_rows)
+                } else {
+                    total_rows
+                };
+                log_stage_end(
+                    phase_label,
+                    stage,
+                    Some(stage_cursor),
+                    config.batch_size,
+                    batches,
+                    stage_total_rows,
+                    rows,
+                    elapsed_ms,
+                    outcome,
+                );
+            };
+        let storage_result: Result<(_, &str)> = if let Some(builder) = replay_builder.as_mut() {
+            store
+                .apply_discovery_scoring_builder_batch_and_checkpoint_with_timings_and_diagnostics(
+                    builder,
+                    &page,
+                    &config.aggregate_write_config,
+                    progress_start_ts,
+                    &progress_cursor,
+                    &mut diagnostic_stage_start,
+                    &mut diagnostic_stage_end,
+                )
+                .map(|timings| (timings, "builder"))
+        } else if matches!(
+            replay_engine_selection,
+            ReplayEngineSelection::ForceBoundaryLotSql
+        ) {
+            store
+                .apply_discovery_scoring_boundary_lot_batch_and_checkpoint_with_timings_and_diagnostics(
+                    &page,
+                    progress_start_ts,
+                    &progress_cursor,
+                    &mut diagnostic_stage_start,
+                    &mut diagnostic_stage_end,
+                )
+                .map(|timings| (timings, "boundary_lot_sql"))
+        } else {
+            store
+                .apply_discovery_scoring_batch_and_checkpoint_with_timings_and_diagnostics(
+                    &page,
+                    &config.aggregate_write_config,
+                    progress_start_ts,
+                    &progress_cursor,
+                    &mut diagnostic_stage_start,
+                    &mut diagnostic_stage_end,
+                )
+                .map(|timings| (timings, "sql"))
+        };
+        let (storage_timings, replay_engine): (_, &str) = storage_result?;
+        emit_event(format!(
             "event=checkpoint_persisted phase={} replay_engine={} rows={} next_total_rows={} next_batches={} cursor_ts={} cursor_slot={} cursor_signature={} scan_ms={} prepare_ms={} apply_ms={} progress_update_ms={} durable=true",
             phase_label,
             replay_engine,
@@ -1478,8 +1748,12 @@ fn run_replay_phase(
             storage_timings.prepare_ms,
             storage_timings.apply_ms,
             storage_timings.progress_update_ms,
-        );
-        flush_stdout();
+        ));
+        cursor = next_cursor;
+
+        total_rows = total_rows.saturating_add(batch_rows);
+        batches = batches.saturating_add(1);
+        let mut stop_after_batch = None;
         let rug_finalize_ms = if replay_builder.is_some() {
             println!(
                 "event=rug_finalize_skipped phase={} replay_engine={} reason=builder_path",
@@ -1508,9 +1782,39 @@ fn run_replay_phase(
             );
             flush_stdout();
             0
+        } else if let Some(reason) = runtime_budget_stop_before_stage(
+            config,
+            run_started_at,
+            phase_label,
+            "rug_finalization",
+            Some(&cursor),
+            batches,
+            total_rows,
+        ) {
+            stop_after_batch = Some(reason);
+            0
         } else {
+            let rug_stage_started_at = log_stage_start(
+                phase_label,
+                "rug_finalization",
+                Some(&cursor),
+                config.batch_size,
+                batches,
+                total_rows,
+            );
             let rug_finalize_ms =
                 store.finalize_discovery_scoring_rug_facts_with_timing(last_swap.ts_utc)?;
+            log_stage_end(
+                phase_label,
+                "rug_finalization",
+                Some(&cursor),
+                config.batch_size,
+                batches,
+                total_rows,
+                batch_rows,
+                rug_stage_started_at.elapsed().as_millis() as u64,
+                "completed",
+            );
             println!(
                 "event=rug_finalize_completed phase={} replay_engine={} watermark_ts={} rug_finalize_ms={}",
                 phase_label,
@@ -1522,10 +1826,6 @@ fn run_replay_phase(
             rug_finalize_ms
         };
 
-        cursor = next_cursor;
-
-        total_rows = total_rows.saturating_add(batch_rows);
-        batches = batches.saturating_add(1);
         let timings = BatchStageTimings {
             scan_ms,
             prepare_ms: storage_timings.prepare_ms,
@@ -1560,6 +1860,9 @@ fn run_replay_phase(
         );
         flush_stdout();
 
+        if let Some(reason) = stop_after_batch {
+            break reason;
+        }
         abort_if_control_requested(
             store,
             config,
@@ -1818,9 +2121,36 @@ fn run_with_store_inner(
         None
     };
     let final_finalize_ms = if let Some(reason) = final_rug_finalize_skip_reason {
+        log_stage_skipped(
+            "run_complete",
+            "rug_finalization",
+            Some(&final_outcome.cursor),
+            config.batch_size,
+            final_outcome.batches,
+            final_outcome.total_rows,
+            reason,
+        );
         println!(
             "event=final_rug_finalize_skipped phase=run_complete reason={} watermark_ts={}",
             reason,
+            final_outcome.cursor.ts.to_rfc3339(),
+        );
+        0
+    } else if matches!(
+        final_outcome.stop_reason,
+        RunStopReason::StoppedDueToRuntimeBudget
+    ) {
+        log_stage_skipped(
+            "run_complete",
+            "rug_finalization",
+            Some(&final_outcome.cursor),
+            config.batch_size,
+            final_outcome.batches,
+            final_outcome.total_rows,
+            "stopped_due_to_runtime_budget",
+        );
+        println!(
+            "event=final_rug_finalize_skipped phase=run_complete reason=stopped_due_to_runtime_budget watermark_ts={}",
             final_outcome.cursor.ts.to_rfc3339(),
         );
         0
@@ -1833,8 +2163,27 @@ fn run_with_store_inner(
         } else {
             final_outcome.cursor.ts
         };
+        let final_rug_stage_started_at = log_stage_start(
+            "run_complete",
+            "rug_finalization",
+            Some(&final_outcome.cursor),
+            config.batch_size,
+            final_outcome.batches,
+            final_outcome.total_rows,
+        );
         let final_finalize_ms =
             store.finalize_discovery_scoring_rug_facts_with_timing(finalize_rug_facts_until)?;
+        log_stage_end(
+            "run_complete",
+            "rug_finalization",
+            Some(&final_outcome.cursor),
+            config.batch_size,
+            final_outcome.batches,
+            final_outcome.total_rows,
+            0,
+            final_rug_stage_started_at.elapsed().as_millis() as u64,
+            "completed",
+        );
         println!(
             "event=final_rug_finalize phase=run_complete watermark_ts={} rug_finalize_ms={}",
             finalize_rug_facts_until.to_rfc3339(),
@@ -2078,11 +2427,11 @@ fn refresh_backfill_source_protection(
 #[cfg(test)]
 mod tests {
     use super::{
-        abort_if_control_requested_at, bounded_run_scan_deadline, replay_builder_enabled,
-        run_boundary_build_phase, run_outcome, run_with_cleanup, run_with_store,
-        run_with_store_stop_reason, set_backfill_test_failpoint, should_attempt_replay_builder,
-        should_defer_final_rug_finalize, BackfillTestFailpoint, Config, Cursor,
-        ReplayEngineSelection, RunStopReason, RuntimePressureMonitor,
+        abort_if_control_requested_at, backfill_test_events, bounded_run_scan_deadline,
+        clear_backfill_test_events, replay_builder_enabled, run_boundary_build_phase, run_outcome,
+        run_with_cleanup, run_with_store, run_with_store_stop_reason, set_backfill_test_failpoint,
+        should_attempt_replay_builder, should_defer_final_rug_finalize, BackfillTestFailpoint,
+        Config, Cursor, ReplayEngineSelection, RunStopReason, RuntimePressureMonitor,
         DEFAULT_RUNTIME_PRESSURE_FETCH_INTERVAL_MS,
         DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO, DEFAULT_RUNTIME_PRESSURE_SERVICE,
         RUNTIME_INFRA_CLEARED_EVENT_TYPE, RUNTIME_INFRA_STOP_EVENT_TYPE,
@@ -2117,6 +2466,23 @@ mod tests {
 
     fn fmt_f64(value: f64) -> String {
         format!("{value:.12}")
+    }
+
+    fn stage_event_index(events: &[String], event_kind: &str, stage: &str) -> usize {
+        events
+            .iter()
+            .position(|event| {
+                event.contains(&format!("event={event_kind} phase="))
+                    && event.contains(&format!("stage={stage}"))
+            })
+            .unwrap_or_else(|| panic!("missing {event_kind}/{stage} in events: {events:#?}"))
+    }
+
+    fn event_index(events: &[String], needle: &str) -> usize {
+        events
+            .iter()
+            .position(|event| event.contains(needle))
+            .unwrap_or_else(|| panic!("missing event containing {needle:?} in events: {events:#?}"))
     }
 
     fn comparable_days(
@@ -4564,7 +4930,7 @@ mod tests {
                 batch_size: 1,
                 sleep_ms: 0,
                 max_batches_per_run: None,
-                max_runtime_seconds: None,
+                max_runtime_seconds: Some(120),
                 reset: false,
                 seeded_reset: false,
                 stop_after_seed_install: false,
@@ -4885,6 +5251,233 @@ mod tests {
     }
 
     #[test]
+    fn max_batches_one_logs_scan_apply_checkpoint_boundaries() -> Result<()> {
+        let _guard = FAILPOINT_TEST_MUTEX.lock().expect("test mutex poisoned");
+        clear_backfill_test_events();
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-stage-boundaries.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let first_swap = SwapEvent {
+            signature: "sig-stage-boundaries-1".to_string(),
+            wallet: "wallet-stage-boundaries".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenStageBoundaries11111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 707,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let second_swap = SwapEvent {
+            signature: "sig-stage-boundaries-2".to_string(),
+            wallet: "wallet-stage-boundaries".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenStageBoundaries11111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 11.0,
+            exact_amounts: None,
+            slot: 708,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[first_swap.clone(), second_swap])?;
+
+        run_with_cleanup(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts,
+                seeded_reset_max_start_ts: None,
+                end_ts: None,
+                batch_size: 1,
+                sleep_ms: 0,
+                max_batches_per_run: Some(1),
+                max_runtime_seconds: Some(120),
+                reset: true,
+                seeded_reset: false,
+                stop_after_seed_install: false,
+                mark_covered: false,
+                resume_after: None,
+                abort_on_runtime_pressure: false,
+                runtime_pressure_service: DEFAULT_RUNTIME_PRESSURE_SERVICE.to_string(),
+                runtime_pressure_log_path: None,
+                max_yellowstone_fill_ratio: DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO,
+                max_ingestion_lag_ms_p95: 10_000,
+                max_runtime_pressure_sample_age_seconds: 35,
+                abort_on_runtime_infra_stop: false,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+            &AtomicBool::new(false),
+        )?;
+
+        let events = backfill_test_events();
+        for (event_kind, stage) in [
+            ("backfill_stage_start", "observed_swap_page_scan"),
+            ("backfill_stage_end", "observed_swap_page_scan"),
+            ("backfill_stage_start", "prepare_discovery_scoring_swaps"),
+            ("backfill_stage_end", "prepare_discovery_scoring_swaps"),
+            ("backfill_stage_start", "aggregate_batch_apply"),
+            ("backfill_stage_end", "aggregate_batch_apply"),
+            ("backfill_stage_start", "progress_checkpoint"),
+            ("backfill_stage_end", "progress_checkpoint"),
+            ("backfill_stage_start", "rug_finalization"),
+            ("backfill_stage_end", "rug_finalization"),
+            ("backfill_stage_start", "final_cleanup"),
+            ("backfill_stage_end", "final_cleanup"),
+        ] {
+            assert!(
+                events.iter().any(
+                    |event| event.contains(&format!("event={event_kind} phase="))
+                        && event.contains(&format!("stage={stage}"))
+                ),
+                "missing {event_kind}/{stage} in events: {events:#?}"
+            );
+        }
+        let prepare_start = stage_event_index(
+            &events,
+            "backfill_stage_start",
+            "prepare_discovery_scoring_swaps",
+        );
+        let prepare_end = stage_event_index(
+            &events,
+            "backfill_stage_end",
+            "prepare_discovery_scoring_swaps",
+        );
+        let apply_start =
+            stage_event_index(&events, "backfill_stage_start", "aggregate_batch_apply");
+        let apply_end = stage_event_index(&events, "backfill_stage_end", "aggregate_batch_apply");
+        let checkpoint_start =
+            stage_event_index(&events, "backfill_stage_start", "progress_checkpoint");
+        let checkpoint_end =
+            stage_event_index(&events, "backfill_stage_end", "progress_checkpoint");
+        let checkpoint_persisted = event_index(&events, "event=checkpoint_persisted");
+        assert!(
+            prepare_start < prepare_end
+                && prepare_end < apply_start
+                && apply_start < apply_end
+                && apply_end < checkpoint_start
+                && checkpoint_start < checkpoint_end
+                && checkpoint_end < checkpoint_persisted,
+            "stage events must reflect real prepare/apply/checkpoint order: {events:#?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.contains("batch_size=1") && event.contains("elapsed_ms=")),
+            "stage events should include batch_size and elapsed_ms where applicable: {events:#?}"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_backfill_protected_since(Utc::now())?,
+            None,
+            "cleanup stage must clear source protection"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn materialization_failpoint_logs_apply_without_checkpoint_completion() -> Result<()> {
+        let _guard = FAILPOINT_TEST_MUTEX.lock().expect("test mutex poisoned");
+        clear_backfill_test_events();
+        SqliteStore::set_discovery_scoring_atomic_checkpoint_failpoint_for_tests(false);
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-checkpoint-failpoint.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let first_swap = SwapEvent {
+            signature: "sig-checkpoint-failpoint-1".to_string(),
+            wallet: "wallet-checkpoint-failpoint".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenCheckpointFailpoint111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 711,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[first_swap.clone()])?;
+
+        SqliteStore::set_discovery_scoring_atomic_checkpoint_failpoint_for_tests(true);
+        let error = run_with_cleanup(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts,
+                seeded_reset_max_start_ts: None,
+                end_ts: None,
+                batch_size: 1,
+                sleep_ms: 0,
+                max_batches_per_run: Some(1),
+                max_runtime_seconds: Some(120),
+                reset: true,
+                seeded_reset: false,
+                stop_after_seed_install: false,
+                mark_covered: false,
+                resume_after: None,
+                abort_on_runtime_pressure: false,
+                runtime_pressure_service: DEFAULT_RUNTIME_PRESSURE_SERVICE.to_string(),
+                runtime_pressure_log_path: None,
+                max_yellowstone_fill_ratio: DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO,
+                max_ingestion_lag_ms_p95: 10_000,
+                max_runtime_pressure_sample_age_seconds: 35,
+                abort_on_runtime_infra_stop: false,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+            &AtomicBool::new(false),
+        )
+        .expect_err("checkpoint failpoint must abort before progress checkpoint upsert");
+        SqliteStore::set_discovery_scoring_atomic_checkpoint_failpoint_for_tests(false);
+
+        assert!(
+            format!("{error:#}").contains(
+                "test failpoint: discovery scoring crash after materialization before checkpoint"
+            ),
+            "unexpected failpoint error: {error:#}"
+        );
+        let events = backfill_test_events();
+        let apply_end = stage_event_index(&events, "backfill_stage_end", "aggregate_batch_apply");
+        assert!(
+            events[apply_end].contains("outcome=completed"),
+            "apply stage should have completed before checkpoint failpoint: {events:#?}"
+        );
+        assert!(
+            !events.iter().any(|event| {
+                event.contains("event=backfill_stage_end phase=")
+                    && event.contains("stage=progress_checkpoint")
+            }),
+            "progress checkpoint end must not be emitted before checkpoint upsert returns: {events:#?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.contains("event=checkpoint_persisted")),
+            "checkpoint_persisted must not be emitted on checkpoint failpoint: {events:#?}"
+        );
+        assert_eq!(store.load_discovery_scoring_backfill_progress()?, None);
+        assert_eq!(store.load_discovery_scoring_covered_since()?, None);
+        assert_eq!(store.load_discovery_scoring_covered_through_cursor()?, None);
+        Ok(())
+    }
+
+    #[test]
     fn max_runtime_seconds_stops_cleanly_and_persists_progress() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("backfill-runtime-budget.db");
@@ -4965,6 +5558,103 @@ mod tests {
         );
         assert_eq!(store.load_discovery_scoring_covered_since()?, None);
         assert_eq!(store.load_discovery_scoring_covered_through_cursor()?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_budget_stop_cleans_backfill_source_protection() -> Result<()> {
+        let _guard = FAILPOINT_TEST_MUTEX.lock().expect("test mutex poisoned");
+        clear_backfill_test_events();
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-runtime-budget-cleanup.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let first_swap = SwapEvent {
+            signature: "sig-runtime-budget-cleanup-1".to_string(),
+            wallet: "wallet-runtime-budget-cleanup".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenRuntimeBudgetCleanup1111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 709,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let second_swap = SwapEvent {
+            signature: "sig-runtime-budget-cleanup-2".to_string(),
+            wallet: "wallet-runtime-budget-cleanup".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenRuntimeBudgetCleanup1111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 11.0,
+            exact_amounts: None,
+            slot: 710,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:10:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[first_swap.clone(), second_swap])?;
+
+        run_with_cleanup(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts,
+                seeded_reset_max_start_ts: None,
+                end_ts: None,
+                batch_size: 1,
+                sleep_ms: 1_100,
+                max_batches_per_run: None,
+                max_runtime_seconds: Some(1),
+                reset: true,
+                seeded_reset: false,
+                stop_after_seed_install: false,
+                mark_covered: false,
+                resume_after: None,
+                abort_on_runtime_pressure: false,
+                runtime_pressure_service: DEFAULT_RUNTIME_PRESSURE_SERVICE.to_string(),
+                runtime_pressure_log_path: None,
+                max_yellowstone_fill_ratio: DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO,
+                max_ingestion_lag_ms_p95: 10_000,
+                max_runtime_pressure_sample_age_seconds: 35,
+                abort_on_runtime_infra_stop: false,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+            &AtomicBool::new(false),
+        )?;
+
+        assert_eq!(
+            store.load_discovery_scoring_backfill_progress()?,
+            Some((
+                start_ts,
+                DiscoveryRuntimeCursor {
+                    ts_utc: first_swap.ts_utc,
+                    slot: first_swap.slot,
+                    signature: first_swap.signature.clone(),
+                },
+            ))
+        );
+        assert_eq!(
+            store.load_discovery_scoring_backfill_protected_since(Utc::now())?,
+            None,
+            "runtime budget stop must still run final cleanup"
+        );
+        let events = backfill_test_events();
+        assert!(
+            events.iter().any(|event| event
+                .contains("event=backfill_stage_end phase=run_complete stage=final_cleanup")
+                && event.contains("outcome=completed")),
+            "runtime-budget run must emit successful final cleanup: {events:#?}"
+        );
         Ok(())
     }
 
