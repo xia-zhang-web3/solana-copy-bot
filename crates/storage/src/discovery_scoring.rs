@@ -538,44 +538,6 @@ fn token_market_stats_on_conn(
     token: &str,
     as_of: DateTime<Utc>,
 ) -> Result<TokenMarketStats> {
-    let as_of_raw = as_of.to_rfc3339();
-
-    let first_seen_raw: Option<String> = conn
-        .query_row(
-            "SELECT MIN(ts)
-             FROM (
-                SELECT ts FROM observed_swaps WHERE token_in = ?1 AND ts <= ?2
-                UNION ALL
-                SELECT ts FROM observed_swaps WHERE token_out = ?1 AND ts <= ?2
-             )",
-            params![token, &as_of_raw],
-            |row| row.get(0),
-        )
-        .context("failed querying token first_seen for discovery scoring")?;
-    let first_seen = first_seen_raw
-        .as_deref()
-        .map(|raw| parse_ts(raw, "wallet_scoring token first_seen"))
-        .transpose()?;
-
-    let holders_proxy_raw: i64 = conn
-        .query_row(
-            "SELECT COUNT(*)
-             FROM (
-                SELECT DISTINCT wallet_id
-                FROM observed_swaps
-                WHERE token_in = ?1
-                  AND ts <= ?2
-                UNION
-                SELECT DISTINCT wallet_id
-                FROM observed_swaps
-                WHERE token_out = ?1
-                  AND ts <= ?2
-             )",
-            params![token, &as_of_raw],
-            |row| row.get(0),
-        )
-        .context("failed querying token holders proxy for discovery scoring")?;
-
     let window_start = (as_of - Duration::minutes(5)).to_rfc3339();
     let window_end = as_of.to_rfc3339();
     let (volume_5m_sol, liquidity_sol_proxy, unique_traders_5m_raw): (f64, f64, i64) = conn
@@ -586,14 +548,14 @@ fn token_market_stats_on_conn(
                 COUNT(DISTINCT wallet_id) AS unique_traders_5m
              FROM (
                 SELECT wallet_id, qty_out AS sol_notional
-                FROM observed_swaps
+                FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
                 WHERE token_in = ?1
                   AND token_out = ?2
                   AND ts >= ?3
                   AND ts <= ?4
                 UNION ALL
                 SELECT wallet_id, qty_in AS sol_notional
-                FROM observed_swaps
+                FROM observed_swaps INDEXED BY idx_observed_swaps_token_out_in_ts
                 WHERE token_out = ?1
                   AND token_in = ?2
                   AND ts >= ?3
@@ -605,8 +567,8 @@ fn token_market_stats_on_conn(
         .context("failed querying token 5m market stats for discovery scoring")?;
 
     Ok(TokenMarketStats {
-        first_seen,
-        holders_proxy: holders_proxy_raw.max(0) as u64,
+        first_seen: None,
+        holders_proxy: 0,
         liquidity_sol_proxy,
         volume_5m_sol,
         unique_traders_5m: unique_traders_5m_raw.max(0) as u64,

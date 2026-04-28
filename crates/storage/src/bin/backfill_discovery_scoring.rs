@@ -5662,6 +5662,118 @@ mod tests {
     }
 
     #[test]
+    fn scoring_prepare_uses_bounded_sol_leg_market_stats_not_global_token_history() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-bounded-market-stats.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let token = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        {
+            let conn = Connection::open(&db_path)?;
+            conn.execute(
+                "INSERT INTO observed_swaps(
+                    signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![
+                    "sig-invalid-global-token-history",
+                    "wallet-invalid-history",
+                    "raydium",
+                    token,
+                    "OtherToken111111111111111111111111111111",
+                    1.0f64,
+                    2.0f64,
+                    600i64,
+                    "0000-not-rfc3339",
+                ],
+            )?;
+        }
+
+        let target_buy = SwapEvent {
+            signature: "sig-bounded-market-target".to_string(),
+            wallet: "wallet-market-a".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: token.to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 700,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let other_buy = SwapEvent {
+            signature: "sig-bounded-market-other-buy".to_string(),
+            wallet: "wallet-market-b".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: token.to_string(),
+            amount_in: 2.0,
+            amount_out: 20.0,
+            exact_amounts: None,
+            slot: 699,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:59:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let sell = SwapEvent {
+            signature: "sig-bounded-market-sell".to_string(),
+            wallet: "wallet-market-c".to_string(),
+            dex: "raydium".to_string(),
+            token_in: token.to_string(),
+            token_out: "So11111111111111111111111111111111111111112".to_string(),
+            amount_in: 30.0,
+            amount_out: 3.0,
+            exact_amounts: None,
+            slot: 698,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:58:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        let old_sol_leg = SwapEvent {
+            signature: "sig-bounded-market-old-sol-leg".to_string(),
+            wallet: "wallet-market-old".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: token.to_string(),
+            amount_in: 100.0,
+            amount_out: 1000.0,
+            exact_amounts: None,
+            slot: 650,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[
+            target_buy.clone(),
+            other_buy.clone(),
+            sell.clone(),
+            old_sol_leg,
+        ])?;
+
+        store.apply_discovery_scoring_batch(
+            std::slice::from_ref(&target_buy),
+            &DiscoveryAggregateWriteConfig::default(),
+        )?;
+
+        drop(store);
+        let conn = Connection::open(&db_path)?;
+        let (volume, unique_traders, liquidity): (f64, i64, f64) = conn.query_row(
+            "SELECT market_volume_5m_sol, market_unique_traders_5m, market_liquidity_proxy_sol
+             FROM wallet_scoring_buy_facts
+             WHERE buy_signature = ?1",
+            rusqlite::params![target_buy.signature],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(fmt_f64(volume), "6.000000000000");
+        assert_eq!(unique_traders, 3);
+        assert_eq!(fmt_f64(liquidity), "3.000000000000");
+        Ok(())
+    }
+
+    #[test]
     fn max_runtime_seconds_stops_cleanly_and_persists_progress() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("backfill-runtime-budget.db");
