@@ -236,6 +236,9 @@ Current interpretation:
   `subscribe_started = true`,
   `subscribe_completed = false`,
   `reason_class = yellowstone_subscription_open_timeout`.
+- `aad8a15` docs-parity probe modes all reproduced the same subscribe-open
+  timeout before any request send completed:
+  `transaction-filter`, `slots-only`, `blocks-meta`, `empty-then-send`.
 - Do not reduce `scoring_window_days` or weaken fail-closed semantics to route
   around this result.
 
@@ -457,16 +460,20 @@ Latest confirmed live snapshot:
     while stale, queues are clean, and the next useful proof is source resume
     behavior
 - Yellowstone source probe rollout:
-  - commits `f0c2d43` and `f99f42c` added/corrected read-only
+  - commits `f0c2d43`, `f99f42c`, and `aad8a15` added/corrected read-only
     `copybot_yellowstone_source_probe`
   - operator-only debug binary was built on production; main service was not
     restarted
-  - live result:
+  - live default result:
     `connect_completed = true`,
     `subscribe_started = true`,
     `subscribe_completed = false`,
     `reason_class = yellowstone_subscription_open_timeout`,
     `production_green = false`
+  - docs-parity mode results:
+    `transaction-filter`, `slots-only`, `blocks-meta`, and `empty-then-send`
+    all completed connect and then timed out at subscribe-open before request
+    send
   - service remained `active`, `MainPID = 1566861`, `NRestarts = 0`
 
 Operational reading:
@@ -476,8 +483,9 @@ Operational reading:
   evidence appears
 - do not mark production green from operator observability alone
 - next batch should extend the read-only Yellowstone probe with docs-parity
-  modes to separate provider/add-on/session failure from our current
-  transaction-filter subscribe mode
+  endpoint/auth/add-on checks or create a fallback-source decision surface; the
+  current four-mode result points to provider/add-on/session/endpoint failure
+  before our transaction-filter request shape is involved
 
 ## Current Development Accounting
 
