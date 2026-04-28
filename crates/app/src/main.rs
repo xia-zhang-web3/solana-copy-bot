@@ -4359,12 +4359,20 @@ async fn run_app_loop(
                         observed_swap_writer_snapshot.aggregate_overflow_capacity_batches,
                     observed_swap_writer_journal_queue_depth_batches =
                         observed_swap_writer_snapshot.journal_queue_depth_batches,
+                    observed_swap_writer_journal_queue_row_debt =
+                        observed_swap_writer_snapshot.journal_queue_row_debt,
                     observed_swap_writer_journal_queue_capacity_batches =
                         observed_swap_writer_snapshot.journal_queue_capacity_batches,
                     observed_swap_writer_journal_overflow_depth_batches =
                         observed_swap_writer_snapshot.journal_overflow_depth_batches,
+                    observed_swap_writer_journal_overflow_row_debt =
+                        observed_swap_writer_snapshot.journal_overflow_row_debt,
                     observed_swap_writer_journal_overflow_capacity_batches =
                         observed_swap_writer_snapshot.journal_overflow_capacity_batches,
+                    observed_swap_writer_journal_overflow_row_debt_capacity =
+                        observed_swap_writer_snapshot.journal_overflow_row_debt_capacity,
+                    observed_swap_writer_journal_writer_inflight_rows =
+                        observed_swap_writer_snapshot.journal_writer_inflight_rows,
                     observed_swap_writer_journal_sqlite_write_retry_total =
                         observed_swap_writer_snapshot.journal_sqlite_write_retry_total,
                     observed_swap_writer_journal_sqlite_busy_error_total =
@@ -5922,9 +5930,13 @@ mod app_tests {
             aggregate_overflow_depth_batches: 0,
             aggregate_overflow_capacity_batches: 128,
             journal_queue_depth_batches: 0,
+            journal_queue_row_debt: 0,
             journal_queue_capacity_batches: 32,
             journal_overflow_depth_batches: 0,
+            journal_overflow_row_debt: 0,
             journal_overflow_capacity_batches: 64,
+            journal_overflow_row_debt_capacity: 0,
+            journal_writer_inflight_rows: 0,
             journal_sqlite_write_retry_total: 0,
             journal_sqlite_busy_error_total: 0,
         }

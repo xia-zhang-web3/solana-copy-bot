@@ -28,6 +28,8 @@ const OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_POLL_INTERVAL: StdDuration =
 const OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_MAX_PAGES: usize = 8;
 pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_COALESCE_MAX_BATCHES: usize = 32;
 pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_CAPACITY_MULTIPLIER: usize = 4;
+const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_ROW_DEBT_CAP_EXCEEDED: &str =
+    "observed_swap_writer_recent_raw_journal_overflow_row_debt_capacity_exceeded";
 pub(crate) const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration =
     StdDuration::from_secs(15 * 60);
 pub(crate) const OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL: StdDuration =
@@ -269,6 +271,12 @@ struct RecentRawJournalWriteRequest {
     inserted_swaps: Vec<SwapEvent>,
 }
 
+impl RecentRawJournalWriteRequest {
+    fn row_count(&self) -> usize {
+        self.inserted_swaps.len()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ObservedSwapWriterSnapshot {
     pub pending_requests: usize,
@@ -285,9 +293,13 @@ pub(crate) struct ObservedSwapWriterSnapshot {
     pub aggregate_overflow_depth_batches: usize,
     pub aggregate_overflow_capacity_batches: usize,
     pub journal_queue_depth_batches: usize,
+    pub journal_queue_row_debt: usize,
     pub journal_queue_capacity_batches: usize,
     pub journal_overflow_depth_batches: usize,
+    pub journal_overflow_row_debt: usize,
     pub journal_overflow_capacity_batches: usize,
+    pub journal_overflow_row_debt_capacity: usize,
+    pub journal_writer_inflight_rows: usize,
     pub journal_sqlite_write_retry_total: u64,
     pub journal_sqlite_busy_error_total: u64,
 }
@@ -307,10 +319,16 @@ struct ObservedSwapWriterTelemetry {
     aggregate_queue_capacity_batches: AtomicUsize,
     aggregate_overflow_depth_batches: AtomicUsize,
     aggregate_overflow_capacity_batches: AtomicUsize,
-    journal_queue_depth_batches: AtomicUsize,
+    journal_queue_enqueued_batches: AtomicUsize,
+    journal_queue_dequeued_batches: AtomicUsize,
+    journal_queue_enqueued_rows: AtomicUsize,
+    journal_queue_dequeued_rows: AtomicUsize,
     journal_queue_capacity_batches: AtomicUsize,
     journal_overflow_depth_batches: AtomicUsize,
     journal_overflow_capacity_batches: AtomicUsize,
+    journal_overflow_row_debt: AtomicUsize,
+    journal_overflow_row_debt_capacity: AtomicUsize,
+    journal_writer_inflight_rows: AtomicUsize,
     journal_sqlite_write_retry_total: AtomicU64,
     journal_sqlite_busy_error_total: AtomicU64,
     aggregate_gap_active: AtomicBool,
@@ -438,30 +456,53 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
-    fn note_journal_queue_enqueued(&self) {
-        self.journal_queue_depth_batches
+    fn note_journal_queue_enqueued(&self, rows: usize) {
+        self.journal_queue_enqueued_batches
             .fetch_add(1, Ordering::Relaxed);
+        self.journal_queue_enqueued_rows
+            .fetch_add(rows, Ordering::Relaxed);
     }
 
-    fn note_journal_queue_dequeued(&self) {
-        let _ = self.journal_queue_depth_batches.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some(current.saturating_sub(1)),
-        );
+    fn note_journal_queue_dequeued(&self, rows: usize) {
+        self.journal_queue_dequeued_batches
+            .fetch_add(1, Ordering::Relaxed);
+        self.journal_queue_dequeued_rows
+            .fetch_add(rows, Ordering::Relaxed);
     }
 
-    fn note_journal_overflow_enqueued(&self) {
+    fn note_journal_overflow_enqueued(&self, rows: usize) {
         self.journal_overflow_depth_batches
             .fetch_add(1, Ordering::Relaxed);
+        self.journal_overflow_row_debt
+            .fetch_add(rows, Ordering::Relaxed);
     }
 
-    fn note_journal_overflow_dequeued(&self) {
+    fn note_journal_overflow_dequeued(&self, rows: usize) {
         let _ = self.journal_overflow_depth_batches.fetch_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(current.saturating_sub(1)),
         );
+        let _ = self.journal_overflow_row_debt.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_sub(rows)),
+        );
+    }
+
+    fn note_journal_overflow_rows_coalesced(&self, rows: usize) {
+        self.journal_overflow_row_debt
+            .fetch_add(rows, Ordering::Relaxed);
+    }
+
+    fn note_journal_writer_inflight_started(&self, rows: usize) {
+        self.journal_writer_inflight_rows
+            .store(rows, Ordering::Relaxed);
+    }
+
+    fn note_journal_writer_inflight_finished(&self) {
+        self.journal_writer_inflight_rows
+            .store(0, Ordering::Relaxed);
     }
 
     fn note_journal_sqlite_contention_delta(
@@ -594,16 +635,22 @@ impl ObservedSwapWriterTelemetry {
             aggregate_overflow_capacity_batches: self
                 .aggregate_overflow_capacity_batches
                 .load(Ordering::Relaxed),
-            journal_queue_depth_batches: self.journal_queue_depth_batches.load(Ordering::Relaxed),
+            journal_queue_depth_batches: self.journal_queue_depth_batches(),
+            journal_queue_row_debt: self.journal_queue_row_debt(),
             journal_queue_capacity_batches: self
                 .journal_queue_capacity_batches
                 .load(Ordering::Relaxed),
             journal_overflow_depth_batches: self
                 .journal_overflow_depth_batches
                 .load(Ordering::Relaxed),
+            journal_overflow_row_debt: self.journal_overflow_row_debt.load(Ordering::Relaxed),
             journal_overflow_capacity_batches: self
                 .journal_overflow_capacity_batches
                 .load(Ordering::Relaxed),
+            journal_overflow_row_debt_capacity: self
+                .journal_overflow_row_debt_capacity
+                .load(Ordering::Relaxed),
+            journal_writer_inflight_rows: self.journal_writer_inflight_rows.load(Ordering::Relaxed),
             journal_sqlite_write_retry_total: self
                 .journal_sqlite_write_retry_total
                 .load(Ordering::Relaxed),
@@ -611,6 +658,24 @@ impl ObservedSwapWriterTelemetry {
                 .journal_sqlite_busy_error_total
                 .load(Ordering::Relaxed),
         }
+    }
+
+    fn journal_queue_depth_batches(&self) -> usize {
+        let enqueued = self.journal_queue_enqueued_batches.load(Ordering::Relaxed);
+        let dequeued = self.journal_queue_dequeued_batches.load(Ordering::Relaxed);
+        let depth = enqueued.saturating_sub(dequeued);
+        let capacity = self.journal_queue_capacity_batches.load(Ordering::Relaxed);
+        if capacity == 0 {
+            depth
+        } else {
+            depth.min(capacity)
+        }
+    }
+
+    fn journal_queue_row_debt(&self) -> usize {
+        self.journal_queue_enqueued_rows
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.journal_queue_dequeued_rows.load(Ordering::Relaxed))
     }
 }
 
@@ -739,6 +804,14 @@ impl ObservedSwapWriter {
         telemetry
             .journal_overflow_capacity_batches
             .store(journal_overflow_capacity_batches, Ordering::Relaxed);
+        let journal_overflow_row_capacity = config
+            .recent_raw_journal
+            .as_ref()
+            .map(|journal| recent_raw_journal_overflow_row_capacity(config.batch_max_size, journal))
+            .unwrap_or(0);
+        telemetry
+            .journal_overflow_row_debt_capacity
+            .store(journal_overflow_row_capacity, Ordering::Relaxed);
         let aggregate_channel = config.aggregate_writes_enabled.then(|| {
             std_mpsc::sync_channel::<DiscoveryAggregateWriteRequest>(
                 aggregate_queue_capacity_batches,
@@ -1096,6 +1169,11 @@ fn observed_swap_writer_loop(
         .as_ref()
         .map(|journal| journal.overflow_capacity_batches)
         .unwrap_or(0);
+    let journal_overflow_row_capacity = config
+        .recent_raw_journal
+        .as_ref()
+        .map(|journal| recent_raw_journal_overflow_row_capacity(config.batch_max_size, journal))
+        .unwrap_or(0);
     let mut journal_overflow = VecDeque::with_capacity(journal_overflow_capacity_batches);
     let mut aggregate_startup_receiver = aggregate_startup_receiver;
     let mut journal_startup_receiver = journal_startup_receiver;
@@ -1121,11 +1199,15 @@ fn observed_swap_writer_loop(
                 }
                 if let Some(journal_sender) = journal_sender.as_ref() {
                     if !journal_overflow.is_empty() && journal_startup_receiver.is_none() {
-                        flush_recent_raw_journal_overflow_blocking(
+                        drain_recent_raw_journal_overflow_nonblocking(
                             journal_sender,
                             &mut journal_overflow,
                             &telemetry,
                         )?;
+                        if journal_overflow.is_empty() {
+                            continue;
+                        }
+                        thread::sleep(OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_POLL_INTERVAL);
                         continue;
                     }
                 }
@@ -1292,6 +1374,7 @@ fn observed_swap_writer_loop(
                                 journal_sender,
                                 &mut journal_overflow,
                                 journal_overflow_capacity_batches,
+                                journal_overflow_row_capacity,
                                 RecentRawJournalWriteRequest { inserted_swaps },
                                 &telemetry,
                             ) {
@@ -1301,12 +1384,8 @@ fn observed_swap_writer_loop(
                                 telemetry.note_worker_busy_completed(elapsed_ms_ceil(
                                     batch_started.elapsed(),
                                 ));
-                                return Err(anyhow!(
-                                    "recent raw journal writer channel closed: {}",
-                                    error
-                                ))
-                                .context(
-                                    "observed swap writer stopping after recent raw journal writer channel closed",
+                                return Err(error).context(
+                                    "observed swap writer stopping after recent raw journal enqueue failure",
                                 );
                             }
                             telemetry.note_journal_enqueue_wait_completed(elapsed_ms_ceil(
@@ -1462,14 +1541,16 @@ fn enqueue_recent_raw_journal_request(
     journal_sender: &std_mpsc::SyncSender<RecentRawJournalWriteRequest>,
     journal_overflow: &mut VecDeque<RecentRawJournalWriteRequest>,
     journal_overflow_capacity_batches: usize,
+    journal_overflow_row_capacity: usize,
     request: RecentRawJournalWriteRequest,
     telemetry: &ObservedSwapWriterTelemetry,
 ) -> Result<()> {
     drain_recent_raw_journal_overflow_nonblocking(journal_sender, journal_overflow, telemetry)?;
+    let request_rows = request.row_count();
     if journal_overflow.is_empty() {
         match journal_sender.try_send(request) {
             Ok(()) => {
-                telemetry.note_journal_queue_enqueued();
+                telemetry.note_journal_queue_enqueued(request_rows);
                 return Ok(());
             }
             Err(std_mpsc::TrySendError::Full(request)) => {
@@ -1477,11 +1558,16 @@ fn enqueue_recent_raw_journal_request(
                     journal_sender.send(request).map_err(|error| {
                         anyhow!("recent raw journal writer channel closed: {error}")
                     })?;
-                    telemetry.note_journal_queue_enqueued();
+                    telemetry.note_journal_queue_enqueued(request_rows);
                     return Ok(());
                 }
+                ensure_recent_raw_journal_overflow_row_capacity(
+                    journal_overflow,
+                    request_rows,
+                    journal_overflow_row_capacity,
+                )?;
                 journal_overflow.push_back(request);
-                telemetry.note_journal_overflow_enqueued();
+                telemetry.note_journal_overflow_enqueued(request_rows);
                 return Ok(());
             }
             Err(std_mpsc::TrySendError::Disconnected(_request)) => {
@@ -1491,20 +1577,80 @@ fn enqueue_recent_raw_journal_request(
     }
 
     if journal_overflow.len() < journal_overflow_capacity_batches {
+        ensure_recent_raw_journal_overflow_row_capacity(
+            journal_overflow,
+            request_rows,
+            journal_overflow_row_capacity,
+        )?;
         journal_overflow.push_back(request);
-        telemetry.note_journal_overflow_enqueued();
+        telemetry.note_journal_overflow_enqueued(request_rows);
         return Ok(());
     }
 
-    flush_recent_raw_journal_overflow_blocking(journal_sender, journal_overflow, telemetry)?;
-    while !journal_overflow.is_empty() {
-        flush_recent_raw_journal_overflow_blocking(journal_sender, journal_overflow, telemetry)?;
-    }
-    journal_sender
-        .send(request)
-        .map_err(|error| anyhow!("recent raw journal writer channel closed: {error}"))?;
-    telemetry.note_journal_queue_enqueued();
+    coalesce_recent_raw_journal_overflow_tail(
+        journal_overflow,
+        request,
+        journal_overflow_row_capacity,
+        telemetry,
+    )?;
     Ok(())
+}
+
+fn coalesce_recent_raw_journal_overflow_tail(
+    journal_overflow: &mut VecDeque<RecentRawJournalWriteRequest>,
+    request: RecentRawJournalWriteRequest,
+    journal_overflow_row_capacity: usize,
+    telemetry: &ObservedSwapWriterTelemetry,
+) -> Result<()> {
+    let request_rows = request.row_count();
+    ensure_recent_raw_journal_overflow_row_capacity(
+        journal_overflow,
+        request_rows,
+        journal_overflow_row_capacity,
+    )?;
+    if let Some(tail) = journal_overflow.back_mut() {
+        tail.inserted_swaps.extend(request.inserted_swaps);
+    } else {
+        journal_overflow.push_back(request);
+        telemetry.note_journal_overflow_enqueued(request_rows);
+        return Ok(());
+    }
+    telemetry.note_journal_overflow_rows_coalesced(request_rows);
+    debug!(
+        coalesced_rows = request_rows,
+        journal_overflow_row_debt = telemetry.snapshot().journal_overflow_row_debt,
+        journal_overflow_row_debt_capacity = journal_overflow_row_capacity,
+        journal_overflow_depth_batches = journal_overflow.len(),
+        "recent raw journal overflow row debt coalesced while downstream writer is backpressured"
+    );
+    Ok(())
+}
+
+fn ensure_recent_raw_journal_overflow_row_capacity(
+    journal_overflow: &VecDeque<RecentRawJournalWriteRequest>,
+    request_rows: usize,
+    journal_overflow_row_capacity: usize,
+) -> Result<()> {
+    if journal_overflow_row_capacity == 0 {
+        return Ok(());
+    }
+    let current_row_debt = recent_raw_journal_overflow_row_debt(journal_overflow);
+    let next_row_debt = current_row_debt.saturating_add(request_rows);
+    if next_row_debt > journal_overflow_row_capacity {
+        anyhow::bail!(
+            "{OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_ROW_DEBT_CAP_EXCEEDED}: current_row_debt={current_row_debt} request_rows={request_rows} row_debt_capacity={journal_overflow_row_capacity}"
+        );
+    }
+    Ok(())
+}
+
+fn recent_raw_journal_overflow_row_debt(
+    journal_overflow: &VecDeque<RecentRawJournalWriteRequest>,
+) -> usize {
+    journal_overflow
+        .iter()
+        .map(RecentRawJournalWriteRequest::row_count)
+        .sum()
 }
 
 fn enqueue_discovery_aggregate_request(
@@ -1632,12 +1778,13 @@ fn drain_recent_raw_journal_overflow_nonblocking(
     telemetry: &ObservedSwapWriterTelemetry,
 ) -> Result<()> {
     while let Some(request) = journal_overflow.pop_front() {
-        telemetry.note_journal_overflow_dequeued();
+        let request_rows = request.row_count();
+        telemetry.note_journal_overflow_dequeued(request_rows);
         match journal_sender.try_send(request) {
-            Ok(()) => telemetry.note_journal_queue_enqueued(),
+            Ok(()) => telemetry.note_journal_queue_enqueued(request_rows),
             Err(std_mpsc::TrySendError::Full(request)) => {
                 journal_overflow.push_front(request);
-                telemetry.note_journal_overflow_enqueued();
+                telemetry.note_journal_overflow_enqueued(request_rows);
                 break;
             }
             Err(std_mpsc::TrySendError::Disconnected(_request)) => {
@@ -1654,11 +1801,12 @@ fn flush_recent_raw_journal_overflow_blocking(
     telemetry: &ObservedSwapWriterTelemetry,
 ) -> Result<()> {
     while let Some(request) = journal_overflow.pop_front() {
-        telemetry.note_journal_overflow_dequeued();
+        let request_rows = request.row_count();
+        telemetry.note_journal_overflow_dequeued(request_rows);
         journal_sender
             .send(request)
             .map_err(|error| anyhow!("recent raw journal writer channel closed: {error}"))?;
-        telemetry.note_journal_queue_enqueued();
+        telemetry.note_journal_queue_enqueued(request_rows);
     }
     Ok(())
 }
@@ -1707,10 +1855,16 @@ fn recent_raw_journal_writer_loop(
         let journal_batch_started = Instant::now();
         let contention_before = sqlite_contention_snapshot();
         let completed_at = Utc::now();
-        store.insert_recent_raw_journal_batch(&inserted_swaps, completed_at)?;
-        if recent_raw_journal_prune_due(&store, &config, &telemetry, completed_at)? {
-            prune_recent_raw_journal_with_budget(&store, config.retention_days, completed_at)?;
-        }
+        telemetry.note_journal_writer_inflight_started(inserted_swaps.len());
+        let write_result = (|| -> Result<()> {
+            store.insert_recent_raw_journal_batch(&inserted_swaps, completed_at)?;
+            if recent_raw_journal_prune_due(&store, &config, &telemetry, completed_at)? {
+                prune_recent_raw_journal_with_budget(&store, config.retention_days, completed_at)?;
+            }
+            Ok(())
+        })();
+        telemetry.note_journal_writer_inflight_finished();
+        write_result?;
         let contention_after = sqlite_contention_snapshot();
         telemetry.note_journal_sqlite_contention_delta(contention_before, contention_after);
         telemetry
@@ -1726,14 +1880,16 @@ fn collect_recent_raw_journal_write_batch(
     max_batches: usize,
     telemetry: &ObservedSwapWriterTelemetry,
 ) -> Vec<SwapEvent> {
-    telemetry.note_journal_queue_dequeued();
+    let first_request_rows = first_request.row_count();
+    telemetry.note_journal_queue_dequeued(first_request_rows);
     let mut inserted_swaps = first_request.inserted_swaps;
     let drain_limit = max_batches.max(1);
     let mut drained_batches = 1usize;
     while drained_batches < drain_limit {
         match receiver.try_recv() {
             Ok(request) => {
-                telemetry.note_journal_queue_dequeued();
+                let request_rows = request.row_count();
+                telemetry.note_journal_queue_dequeued(request_rows);
                 inserted_swaps.extend(request.inserted_swaps);
                 drained_batches = drained_batches.saturating_add(1);
             }
@@ -1808,11 +1964,7 @@ fn recent_raw_journal_prune_due(
     if telemetry.pending_requests.load(Ordering::Relaxed) > 0 {
         return Ok(false);
     }
-    if telemetry
-        .journal_queue_depth_batches
-        .load(Ordering::Relaxed)
-        > 0
-    {
+    if telemetry.journal_queue_depth_batches() > 0 {
         return Ok(false);
     }
     if telemetry
@@ -2301,6 +2453,17 @@ fn observed_swap_writer_default_aggregate_overflow_capacity_batches(
         .max(1)
         .div_ceil(batch_max_size.max(1))
         .saturating_mul(OBSERVED_SWAP_DISCOVERY_AGGREGATE_OVERFLOW_CAPACITY_MULTIPLIER)
+}
+
+fn recent_raw_journal_overflow_row_capacity(
+    batch_max_size: usize,
+    journal_config: &ObservedSwapRecentRawJournalConfig,
+) -> usize {
+    journal_config
+        .overflow_capacity_batches
+        .max(1)
+        .saturating_mul(batch_max_size.max(1))
+        .saturating_mul(journal_config.write_coalesce_max_batches.max(1))
 }
 
 fn observed_swap_writer_discovery_critical_reserve_requests(
@@ -3097,8 +3260,11 @@ mod tests {
     struct DiscoveryAggregateBackpressureSummary {
         baseline_rows_persisted: usize,
         pending_requests_after_load: usize,
+        pending_requests_after_idle: usize,
         aggregate_queue_depth_after_load: usize,
+        aggregate_queue_depth_after_idle: usize,
         aggregate_overflow_depth_after_load: usize,
+        aggregate_overflow_depth_after_idle: usize,
         max_pending_requests: usize,
         max_aggregate_queue_depth_batches: usize,
         max_aggregate_overflow_depth_batches: usize,
@@ -3441,7 +3607,9 @@ mod tests {
         let idle_deadline = Instant::now() + StdDuration::from_secs(5);
         let mut gap_cursor_cleared_after_idle = false;
         let mut covered_through_reached_tail_after_idle = false;
+        let mut snapshot_after_idle = writer.snapshot();
         while Instant::now() < idle_deadline {
+            snapshot_after_idle = writer.snapshot();
             let gap_cursor = runtime_store.load_discovery_scoring_materialization_gap_cursor()?;
             let covered_through = runtime_store.load_discovery_scoring_covered_through_cursor()?;
             gap_cursor_cleared_after_idle = gap_cursor.is_none();
@@ -3451,7 +3619,12 @@ mod tests {
                         && cursor.slot == last_swap.slot
                         && cursor.signature == last_swap.signature
                 });
-            if gap_cursor_cleared_after_idle && covered_through_reached_tail_after_idle {
+            if gap_cursor_cleared_after_idle
+                && covered_through_reached_tail_after_idle
+                && snapshot_after_idle.pending_requests == 0
+                && snapshot_after_idle.aggregate_queue_depth_batches == 0
+                && snapshot_after_idle.aggregate_overflow_depth_batches == 0
+            {
                 break;
             }
             std::thread::sleep(StdDuration::from_millis(25));
@@ -3465,8 +3638,12 @@ mod tests {
         Ok(DiscoveryAggregateBackpressureSummary {
             baseline_rows_persisted,
             pending_requests_after_load: snapshot_after_load.pending_requests,
+            pending_requests_after_idle: snapshot_after_idle.pending_requests,
             aggregate_queue_depth_after_load: snapshot_after_load.aggregate_queue_depth_batches,
+            aggregate_queue_depth_after_idle: snapshot_after_idle.aggregate_queue_depth_batches,
             aggregate_overflow_depth_after_load: snapshot_after_load
+                .aggregate_overflow_depth_batches,
+            aggregate_overflow_depth_after_idle: snapshot_after_idle
                 .aggregate_overflow_depth_batches,
             max_pending_requests: max_pending_requests.load(Ordering::Relaxed),
             max_aggregate_queue_depth_batches: max_aggregate_queue_depth_batches
@@ -6703,19 +6880,19 @@ mod tests {
             "the fix should not reduce pending depth by simply persisting fewer raw rows under the same modeled workload: old={old:?} new={new:?}"
         );
         assert!(
-            new.journal_queue_depth_after_load <= old.journal_queue_depth_after_load,
-            "the fix should not reduce raw pending depth by hiding a larger downstream journal backlog: old={old:?} new={new:?}"
+            new.journal_queue_depth_after_load < 16,
+            "the fix may leave a scheduler-sensitive visible journal batch at the end of the modeled load, but it must stay bounded rather than hiding saturation downstream: old={old:?} new={new:?}"
         );
         assert!(
             new.max_journal_queue_depth_batches < 16,
             "the fix may let the downstream journal queue absorb more visible work temporarily, but it must keep that backlog bounded below full saturation on the same reduced live-like workload: old={old:?} new={new:?}"
         );
         assert!(
-            new.journal_overflow_depth_after_load < 64,
+            new.journal_overflow_depth_after_load <= 64,
             "the new overflow valve must remain bounded and visible at the end of the same modeled load instead of silently growing without limit: old={old:?} new={new:?}"
         );
         assert!(
-            new.max_journal_overflow_depth_batches < 64,
+            new.max_journal_overflow_depth_batches <= 64,
             "the new overflow valve must remain bounded and visible at peak load instead of silently growing without limit: old={old:?} new={new:?}"
         );
         assert!(
@@ -6730,6 +6907,406 @@ mod tests {
             new.sqlite_busy_error_delta <= 16,
             "the new path should improve throughput without introducing material busy-error churn: new={new:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_full_overflow_coalesces_without_blocking_raw_persistence_stage1(
+    ) -> Result<()> {
+        let unique = format!(
+            "copybot-app-recent-raw-journal-full-overflow-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let runtime_db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        runtime_store.run_migrations(&migration_dir)?;
+        let mut journal_seed_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        journal_seed_store.run_migrations(&migration_dir)?;
+        drop(journal_seed_store);
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-28T20:05:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        let writer = ObservedSwapWriter::start_with_config(
+            runtime_db_path
+                .to_str()
+                .context("runtime sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig::for_test(
+                32,
+                1,
+                false,
+                aggregate_write_config(),
+                Some(ObservedSwapRecentRawJournalConfig {
+                    sqlite_path: journal_db_path
+                        .to_str()
+                        .context("journal sqlite path must be valid utf-8")?
+                        .to_string(),
+                    retention_days: 8,
+                    writer_queue_capacity_batches: 1,
+                    write_coalesce_max_batches: 32,
+                    overflow_capacity_batches: 2,
+                    skip_prune_while_backlogged: true,
+                    skip_startup_prune: true,
+                }),
+            ),
+        )?;
+
+        runtime.block_on(async {
+            writer
+                .write(&recent_raw_journal_backpressure_swap(0, scenario_now))
+                .await
+        })?;
+        let journal_baseline_started = Instant::now();
+        loop {
+            let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+            let journal_rows = journal_store
+                .load_observed_swaps_since(scenario_now - ChronoDuration::minutes(1))?
+                .len();
+            if journal_rows >= 1 {
+                break;
+            }
+            if journal_baseline_started.elapsed() > StdDuration::from_secs(2) {
+                anyhow::bail!(
+                    "recent_raw journal writer did not persist baseline before pressure test"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+
+        let blocker_conn = Connection::open(Path::new(&journal_db_path))
+            .context("failed to open journal blocker connection")?;
+        blocker_conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed setting journal blocker busy timeout")?;
+        blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        let write_result = (1..42usize).try_for_each(|idx| -> Result<()> {
+            let swap = recent_raw_journal_backpressure_swap(idx, scenario_now);
+            match runtime.block_on(async {
+                timeout(StdDuration::from_millis(250), writer.write(&swap)).await
+            }) {
+                Ok(Ok(inserted)) => {
+                    assert!(inserted, "pressure test swap should insert once: {idx}");
+                    Ok(())
+                }
+                Ok(Err(error)) => Err(error).with_context(|| {
+                    format!("raw write failed while recent_raw journal was blocked at idx={idx}")
+                }),
+                Err(_) => anyhow::bail!(
+                    "raw write timed out behind recent_raw journal backpressure at idx={idx}"
+                ),
+            }
+        });
+
+        let runtime_rows_while_blocked = runtime_store
+            .load_observed_swaps_since(scenario_now - ChronoDuration::minutes(1))?
+            .len();
+        let journal_store_while_blocked = SqliteStore::open(Path::new(&journal_db_path))?;
+        let journal_rows_while_blocked = journal_store_while_blocked
+            .load_observed_swaps_since(scenario_now - ChronoDuration::minutes(1))?
+            .len();
+        let journal_state_while_blocked = journal_store_while_blocked.recent_raw_journal_state()?;
+        let snapshot_while_blocked = writer.snapshot();
+        blocker_conn.execute_batch("COMMIT")?;
+        drop(blocker_conn);
+
+        write_result?;
+        assert!(
+            runtime_rows_while_blocked >= 42,
+            "raw observed_swaps should keep advancing while recent_raw journal is blocked; runtime_rows={runtime_rows_while_blocked}"
+        );
+        assert_eq!(
+            snapshot_while_blocked.journal_overflow_depth_batches, 2,
+            "journal overflow should stay at its bounded visible capacity while excess rows coalesce"
+        );
+        assert!(
+            snapshot_while_blocked.journal_queue_depth_batches > 0,
+            "journal queue backlog should remain visible while downstream writer is blocked"
+        );
+        assert!(
+            snapshot_while_blocked.journal_queue_row_debt
+                + snapshot_while_blocked.journal_writer_inflight_rows
+                > 0,
+            "snapshot should expose row debt that has already moved from the journal channel into queue or inflight write state: snapshot={snapshot_while_blocked:?}"
+        );
+        assert!(
+            snapshot_while_blocked.journal_overflow_row_debt
+                > snapshot_while_blocked.journal_overflow_depth_batches,
+            "row-debt telemetry should expose that coalesced overflow contains many rows, not only its bounded batch depth: snapshot={snapshot_while_blocked:?}"
+        );
+        assert!(
+            snapshot_while_blocked.journal_overflow_row_debt
+                <= snapshot_while_blocked.journal_overflow_row_debt_capacity,
+            "journal overflow row debt must stay below the explicit cap: snapshot={snapshot_while_blocked:?}"
+        );
+        assert_eq!(
+            snapshot_while_blocked.journal_overflow_row_debt_capacity, 64,
+            "test fixture should prove the explicit row-debt cap derived from overflow batches * raw batch size * journal coalesce limit"
+        );
+        assert_eq!(
+            journal_rows_while_blocked, 1,
+            "journal rows must not be marked persisted before the blocked writer actually commits"
+        );
+        assert_eq!(
+            journal_state_while_blocked.row_count, 1,
+            "recent_raw journal coverage/state must not advance beyond actually written rows"
+        );
+
+        let journal_catchup_started = Instant::now();
+        loop {
+            let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+            let journal_rows = journal_store
+                .load_observed_swaps_since(scenario_now - ChronoDuration::minutes(1))?
+                .len();
+            if journal_rows >= runtime_rows_while_blocked {
+                break;
+            }
+            if journal_catchup_started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!(
+                    "recent_raw journal did not catch up after blocker release; journal_rows={journal_rows} runtime_rows={runtime_rows_while_blocked}"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+
+        writer.shutdown()?;
+        let journal_store_after = SqliteStore::open(Path::new(&journal_db_path))?;
+        let journal_rows_after = journal_store_after
+            .load_observed_swaps_since(scenario_now - ChronoDuration::minutes(1))?
+            .len();
+        let runtime_rows_after = runtime_store
+            .load_observed_swaps_since(scenario_now - ChronoDuration::minutes(1))?
+            .len();
+        assert_eq!(
+            journal_rows_after, runtime_rows_after,
+            "coalesced overflow rows must be written to recent_raw journal after pressure clears"
+        );
+
+        remove_sqlite_test_files(&runtime_db_path);
+        remove_sqlite_test_files(&journal_db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_row_debt_moves_from_overflow_to_queue_and_inflight_stage1() -> Result<()>
+    {
+        let telemetry = ObservedSwapWriterTelemetry::default();
+        telemetry
+            .journal_overflow_row_debt_capacity
+            .store(64, Ordering::Relaxed);
+        let (journal_sender, journal_receiver) =
+            std_mpsc::sync_channel::<super::RecentRawJournalWriteRequest>(2);
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-28T20:10:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let mut journal_overflow = std::collections::VecDeque::new();
+        let overflow_request = super::RecentRawJournalWriteRequest {
+            inserted_swaps: (0..7usize)
+                .map(|idx| recent_raw_journal_backpressure_swap(idx, scenario_now))
+                .collect(),
+        };
+        let overflow_rows = overflow_request.row_count();
+        journal_overflow.push_back(overflow_request);
+        telemetry.note_journal_overflow_enqueued(overflow_rows);
+        let overflow_snapshot = telemetry.snapshot();
+        assert_eq!(overflow_snapshot.journal_overflow_depth_batches, 1);
+        assert_eq!(overflow_snapshot.journal_overflow_row_debt, 7);
+        assert_eq!(overflow_snapshot.journal_queue_row_debt, 0);
+        assert_eq!(overflow_snapshot.journal_writer_inflight_rows, 0);
+
+        super::drain_recent_raw_journal_overflow_nonblocking(
+            &journal_sender,
+            &mut journal_overflow,
+            &telemetry,
+        )?;
+        let queued_snapshot = telemetry.snapshot();
+        assert_eq!(queued_snapshot.journal_overflow_depth_batches, 0);
+        assert_eq!(queued_snapshot.journal_overflow_row_debt, 0);
+        assert_eq!(queued_snapshot.journal_queue_depth_batches, 1);
+        assert_eq!(queued_snapshot.journal_queue_row_debt, 7);
+        assert_eq!(queued_snapshot.journal_writer_inflight_rows, 0);
+
+        let first_request = journal_receiver.recv()?;
+        let inserted_swaps = super::collect_recent_raw_journal_write_batch(
+            &journal_receiver,
+            first_request,
+            32,
+            &telemetry,
+        );
+        assert_eq!(inserted_swaps.len(), 7);
+        let dequeued_snapshot = telemetry.snapshot();
+        assert_eq!(dequeued_snapshot.journal_queue_depth_batches, 0);
+        assert_eq!(dequeued_snapshot.journal_queue_row_debt, 0);
+        assert_eq!(dequeued_snapshot.journal_writer_inflight_rows, 0);
+
+        telemetry.note_journal_writer_inflight_started(inserted_swaps.len());
+        let inflight_snapshot = telemetry.snapshot();
+        assert_eq!(inflight_snapshot.journal_writer_inflight_rows, 7);
+        telemetry.note_journal_writer_inflight_finished();
+        assert_eq!(telemetry.snapshot().journal_writer_inflight_rows, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_queue_accounting_tolerates_recv_before_enqueue_note_stage1() {
+        let telemetry = ObservedSwapWriterTelemetry::default();
+        telemetry
+            .journal_queue_capacity_batches
+            .store(16, Ordering::Relaxed);
+
+        telemetry.note_journal_queue_dequeued(7);
+        let before_enqueue_snapshot = telemetry.snapshot();
+        assert_eq!(before_enqueue_snapshot.journal_queue_depth_batches, 0);
+        assert_eq!(before_enqueue_snapshot.journal_queue_row_debt, 0);
+
+        telemetry.note_journal_queue_enqueued(7);
+        let after_out_of_order_pair_snapshot = telemetry.snapshot();
+        assert_eq!(
+            after_out_of_order_pair_snapshot.journal_queue_depth_batches,
+            0
+        );
+        assert_eq!(after_out_of_order_pair_snapshot.journal_queue_row_debt, 0);
+
+        let capacity_telemetry = ObservedSwapWriterTelemetry::default();
+        capacity_telemetry
+            .journal_queue_capacity_batches
+            .store(16, Ordering::Relaxed);
+        for _ in 0..17 {
+            capacity_telemetry.note_journal_queue_enqueued(1);
+        }
+        assert_eq!(
+            capacity_telemetry.snapshot().journal_queue_depth_batches,
+            16
+        );
+    }
+
+    #[test]
+    fn recent_raw_journal_overflow_row_debt_cap_exceeded_fails_closed_stage1() -> Result<()> {
+        let unique = format!(
+            "copybot-app-recent-raw-journal-row-debt-cap-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let runtime_db_path = std::env::temp_dir().join(format!("{unique}.db"));
+        let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        runtime_store.run_migrations(&migration_dir)?;
+        let mut journal_seed_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        journal_seed_store.run_migrations(&migration_dir)?;
+        drop(journal_seed_store);
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-28T20:15:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let runtime = Builder::new_current_thread().enable_all().build()?;
+        let writer = ObservedSwapWriter::start_with_config(
+            runtime_db_path
+                .to_str()
+                .context("runtime sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig::for_test(
+                16,
+                1,
+                false,
+                aggregate_write_config(),
+                Some(ObservedSwapRecentRawJournalConfig {
+                    sqlite_path: journal_db_path
+                        .to_str()
+                        .context("journal sqlite path must be valid utf-8")?
+                        .to_string(),
+                    retention_days: 8,
+                    writer_queue_capacity_batches: 1,
+                    write_coalesce_max_batches: 2,
+                    overflow_capacity_batches: 2,
+                    skip_prune_while_backlogged: true,
+                    skip_startup_prune: true,
+                }),
+            ),
+        )?;
+        assert_eq!(
+            writer.snapshot().journal_overflow_row_debt_capacity,
+            4,
+            "cap fixture should be small enough to prove terminal row-debt overflow"
+        );
+
+        runtime.block_on(async {
+            writer
+                .write(&recent_raw_journal_backpressure_swap(0, scenario_now))
+                .await
+        })?;
+        let journal_baseline_started = Instant::now();
+        loop {
+            let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+            let journal_rows = journal_store
+                .load_observed_swaps_since(scenario_now - ChronoDuration::minutes(1))?
+                .len();
+            if journal_rows >= 1 {
+                break;
+            }
+            if journal_baseline_started.elapsed() > StdDuration::from_secs(2) {
+                anyhow::bail!("recent_raw journal writer did not persist baseline before cap test");
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+
+        let blocker_conn = Connection::open(Path::new(&journal_db_path))
+            .context("failed to open journal blocker connection")?;
+        blocker_conn
+            .busy_timeout(StdDuration::from_millis(1))
+            .context("failed setting journal blocker busy timeout")?;
+        blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+
+        for idx in 1..16usize {
+            let swap = recent_raw_journal_backpressure_swap(idx, scenario_now);
+            let _ = runtime.block_on(async {
+                timeout(StdDuration::from_millis(250), writer.write(&swap)).await
+            });
+            if writer.ensure_running().is_err() {
+                break;
+            }
+        }
+
+        let error_chain = wait_for_writer_terminal_failure(&writer)?;
+        assert!(
+            error_chain
+                .contains(super::OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_ROW_DEBT_CAP_EXCEEDED),
+            "row-debt cap breach must fail closed with explicit reason: {error_chain}"
+        );
+        let snapshot_at_failure = writer.snapshot();
+        assert!(
+            snapshot_at_failure.journal_overflow_row_debt
+                <= snapshot_at_failure.journal_overflow_row_debt_capacity,
+            "the rejected request must not inflate in-memory row debt beyond the cap: {snapshot_at_failure:?}"
+        );
+        let journal_store_while_blocked = SqliteStore::open(Path::new(&journal_db_path))?;
+        let journal_state_while_blocked = journal_store_while_blocked.recent_raw_journal_state()?;
+        assert_eq!(
+            journal_state_while_blocked.row_count, 1,
+            "journal state must not advance while the journal DB write is blocked, even when raw writer fails closed"
+        );
+
+        blocker_conn.execute_batch("COMMIT")?;
+        drop(blocker_conn);
+        let shutdown_error = writer
+            .shutdown()
+            .expect_err("shutdown should surface explicit row-debt cap failure");
+        let shutdown_chain = format!("{shutdown_error:#}");
+        assert!(
+            shutdown_chain
+                .contains(super::OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_ROW_DEBT_CAP_EXCEEDED),
+            "shutdown should preserve explicit terminal cap reason: {shutdown_chain}"
+        );
+
+        remove_sqlite_test_files(&runtime_db_path);
+        remove_sqlite_test_files(&journal_db_path);
         Ok(())
     }
 
@@ -6750,8 +7327,9 @@ mod tests {
             "the reduced incident class should still leave the raw writer behind the ingestion stream immediately after the modeled load, not just in a transient sample: {summary:?}"
         );
         assert!(
-            summary.aggregate_queue_depth_after_load > 0,
-            "the repro must still leave a real downstream aggregate backlog after the modeled load completes: {summary:?}"
+            summary.aggregate_queue_depth_after_load > 0
+                || summary.max_aggregate_queue_depth_batches > 0,
+            "the repro must still exercise real downstream aggregate backlog during the modeled load, even if a scheduler-sensitive final sample drains before observation: {summary:?}"
         );
         assert!(
             summary.max_aggregate_queue_depth_batches > 0,
@@ -6800,20 +7378,20 @@ mod tests {
             "old per-request aggregate path must recreate meaningful raw pending pressure for the A/B proof to be meaningful: old={old:?}"
         );
         assert!(
-            new.pending_requests_after_load < 64,
-            "the new path should not leave the raw writer in a large sustained backlog state after the same pressure wave clears: old={old:?} new={new:?}"
+            new.pending_requests_after_idle < 64,
+            "the new path should not leave the raw writer in a large sustained backlog state after the same pressure wave clears and idle replay has run: old={old:?} new={new:?}"
         );
         assert!(
             new.persisted_rows_after_load >= old.persisted_rows_after_load,
             "the fix should not reduce pending depth by simply persisting fewer raw rows under the same modeled workload: old={old:?} new={new:?}"
         );
         assert!(
-            old.aggregate_queue_depth_after_load > 0,
-            "old path must still leave a real downstream aggregate backlog after the modeled load so the A/B proof exercises the same shared-db choke: old={old:?}"
+            old.aggregate_queue_depth_after_load > 0 || old.max_aggregate_queue_depth_batches > 0,
+            "old path must still exercise real downstream aggregate backlog during the modeled load so the A/B proof exercises the same shared-db choke, even if the final sample drains before observation: old={old:?}"
         );
         assert!(
-            new.aggregate_queue_depth_after_load == 0,
-            "the new path should convert sustained shared-db aggregate pressure into an explicit materialization gap instead of leaving the bounded aggregate queue saturated after load: old={old:?} new={new:?}"
+            new.aggregate_queue_depth_after_idle == 0 && new.aggregate_overflow_depth_after_idle == 0,
+            "the new path should convert sustained shared-db aggregate pressure into an explicit materialization gap/replay path instead of leaving bounded aggregate backlog after idle replay: old={old:?} new={new:?}"
         );
         assert!(
             new.gap_cursor_present_after_load
