@@ -348,6 +348,66 @@ Current next bounded seam:
   materialization-gap repair whenever a latch exists, instead of relying only
   on idle timeout replay
 
+Follow-up prioritized gap-repair fix and live result (`2026-04-28`):
+
+- commit `f647d91` (`Prioritize aggregate gap repair`) changed only
+  `crates/app/src/observed_swap_writer.rs`
+- local reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer`
+    passed 51/51 on rerun
+  - `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`
+  - `git diff --check -- crates/app/src/observed_swap_writer.rs`
+- production rollout:
+  - server checkout advanced to `f647d91`
+  - `copybot-app` rebuilt successfully
+  - aggregate flags were enabled from backup
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428T-prioritized-gap-repair-before-aggregate-enable`
+  - service restarted and stayed `active`, `NRestarts = 0`
+- behavior proven on live:
+  - raw writer pressure was initially improved versus the previous rollout:
+    `observed_swap_writer_pending_requests = 0`
+  - aggregate coverage stayed fresh:
+    `covered_through = 2026-04-28T16:39:40.740669023Z`,
+    `covered_through_lag_seconds = 62`
+  - readiness still failed closed on
+    `materialization_gap_latched`
+  - the latched exact row exists in `observed_swaps`:
+    `2026-04-28T16:37:26.107417860Z / 416256738 /
+    5mRLCtXnhH9cQsZBWyZfdRM99nDNjDieeU6aX13m2tVawZzGZ9w4HUieChRFobxgGHuFh2JeeVUoDyrfy88qC2gz`
+  - `covered_through` advanced beyond that row:
+    `2026-04-28T16:39:40.740669023Z / 416257076 /
+    3UQn9CSMuMuSmz9iJzn4m9z4n4tuDZPQj2nqk4F3fjWf4TCN91v8pT4cQ7hycSvY6CCN3JZuD4Cmq5sGQ1wk6XTz`
+  - under continued live load, recent-raw journal pressure saturated:
+    `observed_swap_writer_journal_queue_depth_batches = 64`,
+    `observed_swap_writer_journal_overflow_depth_batches = 246`
+  - raw pending started growing again:
+    `observed_swap_writer_pending_requests = 2739` then `2415`
+- interpretation:
+  - `f647d91` moved repair earlier and kept raw pressure lower at first, but
+    still did not clear the latch under live journal pressure
+  - the remaining blocker is not missing raw data and not aggregate replay
+    cursor positioning
+  - the next seam is shared observed-swap writer pressure from recent_raw
+    journal backlog while aggregate repair is still trying to clear the latch
+- rollback:
+  - restored
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428T-prioritized-gap-repair-before-aggregate-enable`
+  - aggregate flags are back to `false` / `false`
+  - post-rollback service stayed `active`, `MainPID = 1565708`, `NRestarts = 0`
+  - with aggregate flags disabled, raw writes resumed:
+    `observed_swap_writer_pending_requests = 0`,
+    `observed_swap_writer_raw_batch_ms_p95 = 549`
+
+Current next bounded seam:
+
+- keep `f647d91`; it improved scheduling but is still not sufficient for
+  production cutover
+- do not re-enable aggregate reads/writes until the recent_raw journal backlog
+  interaction is fixed or bounded away during aggregate repair
+- next coding batch should address recent_raw journal saturation as the current
+  shared writer pressure source, without weakening aggregate/readiness gates
+
 ## Live Update (`2026-04-27`)
 
 Current Stage 3 production-discovery truth remains fail-closed, but the live
