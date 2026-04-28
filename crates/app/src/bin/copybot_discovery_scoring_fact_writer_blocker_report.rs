@@ -1,8 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
 use copybot_config::load_from_path;
-use copybot_storage::{DiscoveryRuntimeCursor, SqliteStore};
-use rusqlite::{params, Connection, OpenFlags};
+use copybot_storage::DiscoveryRuntimeCursor;
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -177,8 +177,8 @@ fn load_runtime_evidence(
 ) -> (RuntimeEvidence, Vec<String>) {
     let mut evidence = RuntimeEvidence::default();
     let mut errors = Vec::new();
-    let store = match SqliteStore::open_read_only(db_path) {
-        Ok(store) => store,
+    let conn = match open_read_only_connection(db_path) {
+        Ok(conn) => conn,
         Err(error) => {
             errors.push(format!(
                 "failed_opening_configured_sqlite_read_only:{}",
@@ -188,19 +188,16 @@ fn load_runtime_evidence(
         }
     };
 
-    match store.observed_swaps_coverage_snapshot() {
-        Ok(snapshot) => {
-            evidence.observed_swaps_total_rows = Some(snapshot.row_count as u64);
-            evidence.observed_swaps_max_ts_utc =
-                snapshot.covered_through_cursor.map(|cursor| cursor.ts_utc);
-        }
-        Err(error) => errors.push(format!(
-            "observed_swaps_coverage_unavailable:{}",
-            compact_error(error)
-        )),
-    }
+    errors.push(
+        "observed_swaps_total_rows_unavailable:observed_swaps_full_table_count_unbounded_scan_avoided"
+            .to_string(),
+    );
+    errors.push(
+        "observed_swaps_max_ts_utc_unavailable:observed_swaps_full_table_max_unbounded_scan_avoided"
+            .to_string(),
+    );
 
-    match count_observed_swaps_in_window(db_path, window_start, now) {
+    match count_observed_swaps_in_window(&conn, window_start, now) {
         Ok(counts) => {
             evidence.observed_swaps_window_rows = Some(counts.total_rows);
             evidence.observed_swaps_window_buy_rows = Some(counts.buy_rows);
@@ -212,7 +209,7 @@ fn load_runtime_evidence(
         )),
     }
 
-    match store.wallet_activity_days_coverage_snapshot() {
+    match wallet_activity_days_coverage_snapshot(&conn) {
         Ok(snapshot) => {
             evidence.wallet_activity_days_total_rows = Some(snapshot.row_count);
             evidence.wallet_activity_days_max_day_utc = snapshot.covered_through_day_utc;
@@ -223,29 +220,20 @@ fn load_runtime_evidence(
         )),
     }
 
-    match store.latest_wallet_metrics_window_start() {
+    match latest_wallet_metrics_window_start(&conn) {
         Ok(Some(window_start)) => {
             evidence.latest_wallet_metrics_window_start = Some(window_start);
-            match store.wallet_metrics_row_count_for_window(window_start) {
-                Ok(row_count) => evidence.latest_wallet_metrics_rows = Some(row_count as u64),
-                Err(error) => errors.push(format!(
-                    "latest_wallet_metrics_row_count_unavailable:{}",
-                    compact_error(error)
-                )),
-            }
-            match store.load_wallet_metric_snapshots_for_window(window_start) {
-                Ok(rows) => {
-                    evidence.latest_wallet_metrics_max_score =
-                        rows.iter().map(|row| row.score).reduce(f64::max);
-                    evidence.latest_wallet_metrics_max_trades =
-                        rows.iter().map(|row| u64::from(row.trades)).max();
-                    evidence.latest_wallet_metrics_max_buy_total =
-                        rows.iter().map(|row| u64::from(row.buy_total)).max();
+            match wallet_metrics_aggregate_for_window(&conn, window_start) {
+                Ok(aggregate) => {
+                    evidence.latest_wallet_metrics_rows = Some(aggregate.row_count);
+                    evidence.latest_wallet_metrics_max_score = aggregate.max_score;
+                    evidence.latest_wallet_metrics_max_trades = aggregate.max_trades;
+                    evidence.latest_wallet_metrics_max_buy_total = aggregate.max_buy_total;
                     evidence.latest_wallet_metrics_max_tradable_ratio =
-                        rows.iter().map(|row| row.tradable_ratio).reduce(f64::max);
+                        aggregate.max_tradable_ratio;
                 }
                 Err(error) => errors.push(format!(
-                    "latest_wallet_metrics_maxima_unavailable:{}",
+                    "latest_wallet_metrics_aggregate_unavailable:{}",
                     compact_error(error)
                 )),
             }
@@ -257,35 +245,35 @@ fn load_runtime_evidence(
         )),
     }
 
-    match count_sqlite_table_read_only(db_path, "wallet_scoring_days") {
+    match count_sqlite_table_read_only(&conn, "wallet_scoring_days") {
         Ok(row_count) => evidence.wallet_scoring_days_rows = Some(row_count),
         Err(error) => errors.push(format!(
             "wallet_scoring_days_count_unavailable:{}",
             compact_error(error)
         )),
     }
-    match count_sqlite_table_read_only(db_path, "wallet_scoring_buy_facts") {
+    match count_sqlite_table_read_only(&conn, "wallet_scoring_buy_facts") {
         Ok(row_count) => evidence.wallet_scoring_buy_facts_rows = Some(row_count),
         Err(error) => errors.push(format!(
             "wallet_scoring_buy_facts_count_unavailable:{}",
             compact_error(error)
         )),
     }
-    match count_sqlite_table_read_only(db_path, "wallet_scoring_close_facts") {
+    match count_sqlite_table_read_only(&conn, "wallet_scoring_close_facts") {
         Ok(row_count) => evidence.wallet_scoring_close_facts_rows = Some(row_count),
         Err(error) => errors.push(format!(
             "wallet_scoring_close_facts_count_unavailable:{}",
             compact_error(error)
         )),
     }
-    match count_sqlite_table_read_only(db_path, "wallet_scoring_open_lots") {
+    match count_sqlite_table_read_only(&conn, "wallet_scoring_open_lots") {
         Ok(row_count) => evidence.wallet_scoring_open_lots_rows = Some(row_count),
         Err(error) => errors.push(format!(
             "wallet_scoring_open_lots_count_unavailable:{}",
             compact_error(error)
         )),
     }
-    match count_sqlite_table_read_only(db_path, "wallet_scoring_carryover_lots") {
+    match count_sqlite_table_read_only(&conn, "wallet_scoring_carryover_lots") {
         Ok(row_count) => evidence.wallet_scoring_carryover_lots_rows = Some(row_count),
         Err(error) => errors.push(format!(
             "wallet_scoring_carryover_lots_count_unavailable:{}",
@@ -293,21 +281,21 @@ fn load_runtime_evidence(
         )),
     }
 
-    match store.load_discovery_scoring_covered_since() {
+    match load_discovery_scoring_state_ts(&conn, "covered_since_ts") {
         Ok(value) => evidence.discovery_scoring_covered_since = value,
         Err(error) => errors.push(format!(
             "discovery_scoring_covered_since_unavailable:{}",
             compact_error(error)
         )),
     }
-    match store.load_discovery_scoring_covered_through() {
+    match load_discovery_scoring_state_ts(&conn, "covered_through_ts") {
         Ok(value) => evidence.discovery_scoring_covered_through = value,
         Err(error) => errors.push(format!(
             "discovery_scoring_covered_through_unavailable:{}",
             compact_error(error)
         )),
     }
-    match store.load_discovery_scoring_materialization_gap_cursor() {
+    match load_discovery_scoring_materialization_gap_cursor(&conn) {
         Ok(value) => evidence.discovery_scoring_materialization_gap_cursor = value,
         Err(error) => errors.push(format!(
             "discovery_scoring_materialization_gap_cursor_unavailable:{}",
@@ -318,7 +306,7 @@ fn load_runtime_evidence(
     (evidence, errors)
 }
 
-fn count_sqlite_table_read_only(db_path: &Path, table_name: &str) -> Result<u64> {
+fn count_sqlite_table_read_only(conn: &Connection, table_name: &str) -> Result<u64> {
     const ALLOWED_TABLES: &[&str] = &[
         "wallet_scoring_days",
         "wallet_scoring_buy_facts",
@@ -330,7 +318,6 @@ fn count_sqlite_table_read_only(db_path: &Path, table_name: &str) -> Result<u64>
         bail!("unsupported scoring table count: {table_name}");
     }
 
-    let conn = open_read_only_connection(db_path)?;
     let sql = format!("SELECT COUNT(*) FROM {table_name}");
     let count: i64 = conn
         .query_row(&sql, [], |row| row.get(0))
@@ -346,18 +333,17 @@ struct ObservedSwapWindowCounts {
 }
 
 fn count_observed_swaps_in_window(
-    db_path: &Path,
+    conn: &Connection,
     window_start: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Result<ObservedSwapWindowCounts> {
-    let conn = open_read_only_connection(db_path)?;
     let (total_rows, buy_rows, sell_rows): (i64, i64, i64) = conn
         .query_row(
             "SELECT
                 COUNT(*),
                 COALESCE(SUM(CASE WHEN token_in = ?3 AND token_out != ?3 THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN token_out = ?3 AND token_in != ?3 THEN 1 ELSE 0 END), 0)
-             FROM observed_swaps
+             FROM observed_swaps INDEXED BY idx_observed_swaps_ts_slot_signature
              WHERE ts >= ?1
                AND ts <= ?2",
             params![window_start.to_rfc3339(), now.to_rfc3339(), SOL_MINT],
@@ -369,6 +355,183 @@ fn count_observed_swaps_in_window(
         buy_rows: buy_rows.max(0) as u64,
         sell_rows: sell_rows.max(0) as u64,
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WalletActivityDaysCoverageSnapshot {
+    covered_through_day_utc: Option<DateTime<Utc>>,
+    row_count: u64,
+}
+
+fn wallet_activity_days_coverage_snapshot(
+    conn: &Connection,
+) -> Result<WalletActivityDaysCoverageSnapshot> {
+    let (max_day_raw, row_count): (Option<String>, i64) = conn
+        .query_row(
+            "SELECT MAX(activity_day), COUNT(*)
+             FROM wallet_activity_days",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .context("failed querying wallet_activity_days coverage snapshot")?;
+    Ok(WalletActivityDaysCoverageSnapshot {
+        covered_through_day_utc: parse_optional_day_start_utc(
+            max_day_raw,
+            "wallet_activity_days.activity_day",
+        )?,
+        row_count: row_count.max(0) as u64,
+    })
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct WalletMetricsAggregate {
+    row_count: u64,
+    max_score: Option<f64>,
+    max_trades: Option<u64>,
+    max_buy_total: Option<u64>,
+    max_tradable_ratio: Option<f64>,
+}
+
+fn latest_wallet_metrics_window_start(conn: &Connection) -> Result<Option<DateTime<Utc>>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT window_start
+             FROM wallet_metrics INDEXED BY idx_wallet_metrics_window_start
+             ORDER BY window_start DESC
+             LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("failed querying latest wallet_metrics window_start")?;
+    raw.map(|raw| parse_rfc3339_utc(&raw, "wallet_metrics.window_start"))
+        .transpose()
+}
+
+fn wallet_metrics_aggregate_for_window(
+    conn: &Connection,
+    window_start: DateTime<Utc>,
+) -> Result<WalletMetricsAggregate> {
+    let (canonical, legacy_z) = wallet_metrics_window_start_query_variants(window_start);
+    let (row_count, max_score, max_trades, max_buy_total, max_tradable_ratio): (
+        i64,
+        Option<f64>,
+        Option<i64>,
+        Option<i64>,
+        Option<f64>,
+    ) = conn
+        .query_row(
+            "SELECT
+                COUNT(*),
+                MAX(wallet_metrics.score),
+                MAX(wallet_metrics.trades),
+                MAX(wallet_metrics.buy_total),
+                MAX(wallet_metrics.tradable_ratio)
+             FROM wallet_metrics
+             JOIN (
+                SELECT
+                    wallet_id,
+                    COALESCE(
+                        MAX(CASE WHEN window_start = ?1 THEN id END),
+                        MAX(id)
+                    ) AS selected_id
+                FROM wallet_metrics INDEXED BY idx_wallet_metrics_window_start
+                WHERE window_start IN (?1, ?2)
+                GROUP BY wallet_id
+             ) AS selected_wallet_metrics
+                ON selected_wallet_metrics.selected_id = wallet_metrics.id",
+            params![canonical, legacy_z],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .context("failed querying wallet_metrics aggregate for latest window")?;
+    Ok(WalletMetricsAggregate {
+        row_count: row_count.max(0) as u64,
+        max_score,
+        max_trades: max_trades.map(|value| value.max(0) as u64),
+        max_buy_total: max_buy_total.map(|value| value.max(0) as u64),
+        max_tradable_ratio,
+    })
+}
+
+fn wallet_metrics_window_start_query_variants(window_start: DateTime<Utc>) -> (String, String) {
+    let canonical = window_start.to_rfc3339();
+    let legacy_z = canonical
+        .strip_suffix("+00:00")
+        .map(|prefix| format!("{prefix}Z"))
+        .unwrap_or_else(|| canonical.clone());
+    (canonical, legacy_z)
+}
+
+fn load_discovery_scoring_state_ts(
+    conn: &Connection,
+    state_key: &str,
+) -> Result<Option<DateTime<Utc>>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT state_value
+             FROM discovery_scoring_state
+             WHERE state_key = ?1",
+            params![state_key],
+            |row| row.get(0),
+        )
+        .optional()
+        .with_context(|| format!("failed querying discovery_scoring_state.{state_key}"))?;
+    raw.map(|raw| parse_rfc3339_utc(&raw, &format!("discovery_scoring_state.{state_key}")))
+        .transpose()
+}
+
+fn load_discovery_scoring_state_value(
+    conn: &Connection,
+    state_key: &str,
+) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT state_value
+         FROM discovery_scoring_state
+         WHERE state_key = ?1",
+        params![state_key],
+        |row| row.get(0),
+    )
+    .optional()
+    .with_context(|| format!("failed querying discovery_scoring_state.{state_key}"))
+}
+
+fn load_discovery_scoring_materialization_gap_cursor(
+    conn: &Connection,
+) -> Result<Option<DiscoveryRuntimeCursor>> {
+    let Some(ts_utc) = load_discovery_scoring_state_ts(conn, "materialization_gap_since_ts")?
+    else {
+        return Ok(None);
+    };
+    let slot_raw = load_discovery_scoring_state_value(conn, "materialization_gap_since_slot")?;
+    let signature =
+        load_discovery_scoring_state_value(conn, "materialization_gap_since_signature")?;
+    match (slot_raw, signature) {
+        (Some(slot_raw), Some(signature)) => {
+            let slot = slot_raw.parse::<u64>().with_context(|| {
+                format!(
+                    "invalid discovery_scoring_state.materialization_gap_since_slot value: {slot_raw}"
+                )
+            })?;
+            Ok(Some(DiscoveryRuntimeCursor {
+                ts_utc,
+                slot,
+                signature,
+            }))
+        }
+        _ => Ok(Some(DiscoveryRuntimeCursor {
+            ts_utc,
+            slot: 0,
+            signature: String::new(),
+        })),
+    }
 }
 
 fn open_read_only_connection(db_path: &Path) -> Result<Connection> {
@@ -437,15 +600,19 @@ fn select_blocker_reason(
     {
         return BLOCKER_MATERIALIZATION_GAP_PENDING.to_string();
     }
-    if !runtime_evidence_errors.is_empty() {
+    if has_blocking_runtime_evidence_errors(runtime_evidence_errors) {
         return BLOCKER_UNPROVEN_MISSING_RUNTIME_EVIDENCE.to_string();
     }
 
     let Some(scoring_rows) = total_scoring_fact_rows(evidence) else {
         return BLOCKER_UNPROVEN_MISSING_RUNTIME_EVIDENCE.to_string();
     };
+    let observed_swaps_rows = evidence
+        .observed_swaps_window_rows
+        .or(evidence.observed_swaps_total_rows)
+        .unwrap_or(0);
     if scoring_rows == 0
-        && evidence.observed_swaps_total_rows.unwrap_or(0) > 0
+        && observed_swaps_rows > 0
         && evidence.wallet_activity_days_total_rows.unwrap_or(0) > 0
     {
         return BLOCKER_TABLES_EMPTY_DESPITE_ENABLED_WRITER.to_string();
@@ -455,6 +622,17 @@ fn select_blocker_reason(
     }
 
     BLOCKER_UNPROVEN_MISSING_RUNTIME_EVIDENCE.to_string()
+}
+
+fn has_blocking_runtime_evidence_errors(runtime_evidence_errors: &[String]) -> bool {
+    runtime_evidence_errors
+        .iter()
+        .any(|error| !is_expected_unbounded_observed_swaps_coverage_skip(error))
+}
+
+fn is_expected_unbounded_observed_swaps_coverage_skip(error: &str) -> bool {
+    error.starts_with("observed_swaps_total_rows_unavailable:")
+        || error.starts_with("observed_swaps_max_ts_utc_unavailable:")
 }
 
 fn total_scoring_fact_rows(evidence: &RuntimeEvidence) -> Option<u64> {
@@ -586,11 +764,36 @@ fn compact_error(error: anyhow::Error) -> String {
     format!("{error:#}").replace('\n', " ")
 }
 
+fn parse_rfc3339_utc(raw: &str, field_name: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|dt| dt.with_timezone(&Utc))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S")
+                .map(|naive| DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+        })
+        .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))
+}
+
+fn parse_optional_day_start_utc(
+    raw: Option<String>,
+    field_name: &str,
+) -> Result<Option<DateTime<Utc>>> {
+    raw.map(|raw| {
+        let day = NaiveDate::parse_from_str(&raw, "%Y-%m-%d")
+            .with_context(|| format!("invalid {field_name} day value: {raw}"))?;
+        let start = day
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| anyhow!("invalid {field_name} day start value: {raw}"))?;
+        Ok(DateTime::<Utc>::from_naive_utc_and_offset(start, Utc))
+    })
+    .transpose()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use copybot_core_types::{SwapEvent, WalletMetricRow};
-    use copybot_storage::DiscoveryAggregateWriteConfig;
+    use copybot_storage::{DiscoveryAggregateWriteConfig, SqliteStore};
     use rusqlite::{params, Connection};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -697,6 +900,25 @@ mod tests {
             evidence,
             errors,
         )
+    }
+
+    fn assert_observed_full_coverage_skipped(errors: &[String]) {
+        assert!(
+            errors.iter().any(|error| error.starts_with(
+                "observed_swaps_total_rows_unavailable:observed_swaps_full_table_count_unbounded_scan_avoided"
+            )),
+            "expected observed_swaps total row scan to be skipped: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|error| error.starts_with(
+                "observed_swaps_max_ts_utc_unavailable:observed_swaps_full_table_max_unbounded_scan_avoided"
+            )),
+            "expected observed_swaps max timestamp scan to be skipped: {errors:?}"
+        );
+        assert!(
+            !has_blocking_runtime_evidence_errors(errors),
+            "expected only non-blocking bounded-operator skips: {errors:?}"
+        );
     }
 
     fn populated_runtime_with_scoring_counts(
@@ -829,7 +1051,9 @@ mod tests {
             report.blocker_reason,
             BLOCKER_TABLES_EMPTY_DESPITE_ENABLED_WRITER
         );
-        assert_eq!(report.observed_swaps_total_rows, Some(2));
+        assert_eq!(report.observed_swaps_total_rows, None);
+        assert_eq!(report.observed_swaps_max_ts_utc, None);
+        assert_eq!(report.observed_swaps_window_rows, Some(2));
         assert_eq!(report.observed_swaps_window_buy_rows, Some(1));
         assert_eq!(report.observed_swaps_window_sell_rows, Some(1));
         assert_eq!(report.wallet_activity_days_total_rows, Some(1));
@@ -839,7 +1063,29 @@ mod tests {
         assert_eq!(report.wallet_scoring_open_lots_rows, Some(0));
         assert_eq!(report.wallet_scoring_carryover_lots_rows, Some(0));
         assert!(!report.production_green);
-        assert!(report.runtime_evidence_errors.is_empty());
+        assert_observed_full_coverage_skipped(&report.runtime_evidence_errors);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swaps_total_coverage_unavailable_does_not_require_full_scan() -> Result<()> {
+        let db_path = temp_db_path("observed-coverage-unavailable");
+        cleanup_db(&db_path);
+        let now = test_ts("2026-04-27T12:00:00Z");
+        seed_observed_activity_and_zero_metrics(&db_path, now)?;
+
+        let report = read_report_from_fixture(&db_path, now);
+        cleanup_db(&db_path);
+
+        assert_eq!(report.observed_swaps_total_rows, None);
+        assert_eq!(report.observed_swaps_max_ts_utc, None);
+        assert_eq!(report.observed_swaps_window_rows, Some(2));
+        assert_eq!(
+            report.blocker_reason,
+            BLOCKER_TABLES_EMPTY_DESPITE_ENABLED_WRITER
+        );
+        assert!(!report.production_green);
+        assert_observed_full_coverage_skipped(&report.runtime_evidence_errors);
         Ok(())
     }
 
@@ -899,7 +1145,7 @@ mod tests {
         assert!(report.wallet_scoring_buy_facts_rows.unwrap_or(0) > 0);
         assert_eq!(report.latest_wallet_metrics_max_score, Some(0.0));
         assert!(!report.production_green);
-        assert!(report.runtime_evidence_errors.is_empty());
+        assert_observed_full_coverage_skipped(&report.runtime_evidence_errors);
         Ok(())
     }
 
@@ -928,7 +1174,7 @@ mod tests {
             report.blocker_reason,
             BLOCKER_TABLES_PRESENT_BUT_METRICS_STILL_ZERO
         );
-        assert!(report.runtime_evidence_errors.is_empty());
+        assert_observed_full_coverage_skipped(&report.runtime_evidence_errors);
         Ok(())
     }
 
