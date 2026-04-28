@@ -314,6 +314,7 @@ dependencies = [
  "copybot-ingestion",
  "copybot-shadow",
  "copybot-storage",
+ "futures-util",
  "reqwest",
  "rusqlite",
  "serde",
@@ -321,9 +322,12 @@ dependencies = [
  "sha2",
  "tokio",
  "toml",
+ "tonic",
  "tracing",
  "tracing-subscriber",
  "url",
+ "yellowstone-grpc-client",
+ "yellowstone-grpc-proto",
 ]
 
 [[package]]
