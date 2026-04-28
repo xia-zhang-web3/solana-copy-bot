@@ -21,6 +21,9 @@ const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
 const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
 const QUALITY_MAX_FETCH_PER_BATCH: usize = 20;
 const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
+const DISCOVERY_SCORING_PREPARE_PROGRESS_OPS: i32 = 10_000;
+const DISCOVERY_SCORING_PREPARE_RUNTIME_BUDGET_EXHAUSTED_REASON: &str =
+    "discovery_scoring_prepare_runtime_budget_exhausted";
 
 #[derive(Debug, Clone)]
 struct OpenLotRow {
@@ -86,6 +89,8 @@ struct CarryoverLotRow {
 thread_local! {
     static DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT: Cell<bool> =
         const { Cell::new(false) };
+    static DISCOVERY_SCORING_FORCE_PREPARE_RUNTIME_BUDGET_EXHAUSTED: Cell<bool> =
+        const { Cell::new(false) };
 }
 
 #[cfg(debug_assertions)]
@@ -119,6 +124,32 @@ impl SqliteStore {
     #[doc(hidden)]
     pub fn set_discovery_scoring_atomic_checkpoint_failpoint_for_tests(enabled: bool) {
         set_discovery_scoring_atomic_checkpoint_failpoint(enabled);
+    }
+
+    #[doc(hidden)]
+    pub fn set_discovery_scoring_prepare_runtime_budget_failpoint_for_tests(enabled: bool) {
+        DISCOVERY_SCORING_FORCE_PREPARE_RUNTIME_BUDGET_EXHAUSTED
+            .with(|failpoint| failpoint.set(enabled));
+    }
+}
+
+struct DiscoveryScoringPrepareProgressGuard<'a> {
+    conn: &'a Connection,
+}
+
+impl<'a> DiscoveryScoringPrepareProgressGuard<'a> {
+    fn install(conn: &'a Connection, deadline: Instant) -> Self {
+        conn.progress_handler(
+            DISCOVERY_SCORING_PREPARE_PROGRESS_OPS,
+            Some(move || Instant::now() >= deadline),
+        );
+        Self { conn }
+    }
+}
+
+impl Drop for DiscoveryScoringPrepareProgressGuard<'_> {
+    fn drop(&mut self) {
+        self.conn.progress_handler(0, None::<fn() -> bool>);
     }
 }
 
@@ -342,6 +373,166 @@ fn parse_ts(raw: &str, field: &str) -> Result<DateTime<Utc>> {
         .with_context(|| format!("invalid {field} rfc3339 value: {raw}"))
 }
 
+fn sanitize_prepare_log_value(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| {
+            if ch.is_ascii_whitespace() || ch.is_control() {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+fn emit_prepare_stage_start(
+    emit: &mut impl FnMut(String),
+    stage: &str,
+    token: Option<&str>,
+    swap_signature: Option<&str>,
+) {
+    emit(format!(
+        "event=backfill_prepare_stage_start stage={} token={} swap_signature={} elapsed_ms=0 outcome=started",
+        stage,
+        token.map(sanitize_prepare_log_value)
+            .unwrap_or_else(|| "none".to_string()),
+        swap_signature
+            .map(sanitize_prepare_log_value)
+            .unwrap_or_else(|| "none".to_string()),
+    ));
+}
+
+fn emit_prepare_stage_end(
+    emit: &mut impl FnMut(String),
+    stage: &str,
+    token: Option<&str>,
+    swap_signature: Option<&str>,
+    elapsed_ms: u64,
+    outcome: &str,
+) {
+    emit(format!(
+        "event=backfill_prepare_stage_end stage={} token={} swap_signature={} elapsed_ms={} outcome={}",
+        stage,
+        token.map(sanitize_prepare_log_value)
+            .unwrap_or_else(|| "none".to_string()),
+        swap_signature
+            .map(sanitize_prepare_log_value)
+            .unwrap_or_else(|| "none".to_string()),
+        elapsed_ms,
+        outcome,
+    ));
+}
+
+fn emit_prepare_stage_skipped(
+    emit: &mut impl FnMut(String),
+    stage: &str,
+    token: Option<&str>,
+    swap_signature: Option<&str>,
+    reason: &str,
+) {
+    emit(format!(
+        "event=backfill_prepare_stage_skipped stage={} token={} swap_signature={} elapsed_ms=0 outcome=skipped reason={}",
+        stage,
+        token.map(sanitize_prepare_log_value)
+            .unwrap_or_else(|| "none".to_string()),
+        swap_signature
+            .map(sanitize_prepare_log_value)
+            .unwrap_or_else(|| "none".to_string()),
+        reason,
+    ));
+}
+
+fn emit_prepare_batch_counts(emit: &mut impl FnMut(String), swaps: &[SwapEvent]) {
+    let buy_count = swaps.iter().filter(|swap| is_sol_buy(swap)).count();
+    let sell_count = swaps.iter().filter(|swap| is_sol_sell(swap)).count();
+    let other_count = swaps
+        .len()
+        .saturating_sub(buy_count.saturating_add(sell_count));
+    emit(format!(
+        "event=backfill_prepare_batch_counts stage=prepare_discovery_scoring_swaps token=none swap_signature=none elapsed_ms=0 outcome=observed total_swaps={} buy_count={} sell_count={} other_count={}",
+        swaps.len(),
+        buy_count,
+        sell_count,
+        other_count,
+    ));
+}
+
+#[cfg(debug_assertions)]
+fn forced_prepare_runtime_budget_exhausted() -> bool {
+    DISCOVERY_SCORING_FORCE_PREPARE_RUNTIME_BUDGET_EXHAUSTED.with(|failpoint| {
+        let fired = failpoint.get();
+        failpoint.set(false);
+        fired
+    })
+}
+
+#[cfg(not(debug_assertions))]
+fn forced_prepare_runtime_budget_exhausted() -> bool {
+    false
+}
+
+fn prepare_runtime_budget_exhausted(deadline: Option<Instant>) -> bool {
+    forced_prepare_runtime_budget_exhausted()
+        || deadline.is_some_and(|deadline| Instant::now() >= deadline)
+}
+
+fn prepare_runtime_budget_error(
+    stage: &str,
+    token: Option<&str>,
+    swap_signature: Option<&str>,
+) -> anyhow::Error {
+    anyhow!(
+        "{}:stage={}:token={}:swap_signature={}",
+        DISCOVERY_SCORING_PREPARE_RUNTIME_BUDGET_EXHAUSTED_REASON,
+        stage,
+        token
+            .map(sanitize_prepare_log_value)
+            .unwrap_or_else(|| "none".to_string()),
+        swap_signature
+            .map(sanitize_prepare_log_value)
+            .unwrap_or_else(|| "none".to_string())
+    )
+}
+
+fn check_prepare_runtime_budget(
+    deadline: Option<Instant>,
+    emit: &mut impl FnMut(String),
+    stage: &str,
+    token: Option<&str>,
+    swap_signature: Option<&str>,
+) -> Result<()> {
+    if prepare_runtime_budget_exhausted(deadline) {
+        emit_prepare_stage_end(
+            emit,
+            stage,
+            token,
+            swap_signature,
+            0,
+            "runtime_budget_exhausted",
+        );
+        return Err(prepare_runtime_budget_error(stage, token, swap_signature));
+    }
+    Ok(())
+}
+
+fn prepare_error_is_runtime_budget(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains(DISCOVERY_SCORING_PREPARE_RUNTIME_BUDGET_EXHAUSTED_REASON)
+}
+
+fn prepare_stage_error(
+    error: anyhow::Error,
+    deadline: Option<Instant>,
+    stage: &str,
+    token: Option<&str>,
+    swap_signature: Option<&str>,
+) -> anyhow::Error {
+    if prepare_runtime_budget_exhausted(deadline) {
+        prepare_runtime_budget_error(stage, token, swap_signature).context(error)
+    } else {
+        error
+    }
+}
+
 fn token_market_stats_on_conn(
     conn: &Connection,
     token: &str,
@@ -483,17 +674,98 @@ fn upsert_token_quality_cache_on_conn(
     Ok(())
 }
 
-fn resolve_quality_snapshot_on_conn(
+fn cached_quality_snapshot(
+    cached: Option<QualityCacheRowLocal>,
+    signal_ts: DateTime<Utc>,
+    missing_source: WalletScoringQualitySource,
+) -> QualitySnapshot {
+    match cached {
+        Some(row) => QualitySnapshot {
+            source: WalletScoringQualitySource::Stale,
+            token_age_seconds: row.token_age_seconds.map(|age| {
+                age.saturating_add(
+                    signal_ts
+                        .signed_duration_since(row.fetched_at)
+                        .num_seconds()
+                        .max(0) as u64,
+                )
+            }),
+            holders: row.holders,
+            liquidity_sol: row.liquidity_sol,
+        },
+        None => QualitySnapshot {
+            source: missing_source,
+            token_age_seconds: None,
+            holders: None,
+            liquidity_sol: None,
+        },
+    }
+}
+
+fn resolve_quality_snapshot_on_conn_with_diagnostics(
     conn: &Connection,
     mint: &str,
     signal_ts: DateTime<Utc>,
     config: &DiscoveryAggregateWriteConfig,
     budget: &mut QualityFetchBudget,
+    emit: &mut impl FnMut(String),
+    deadline: Option<Instant>,
+    swap_signature: Option<&str>,
 ) -> Result<(QualitySnapshot, Option<QualityCacheUpsert>)> {
-    let cached = load_token_quality_cache_on_conn(conn, mint)?;
+    emit_prepare_stage_start(emit, "quality_cache_lookup", Some(mint), swap_signature);
+    let cache_started_at = Instant::now();
+    check_prepare_runtime_budget(
+        deadline,
+        emit,
+        "quality_cache_lookup",
+        Some(mint),
+        swap_signature,
+    )?;
+    let cached = match load_token_quality_cache_on_conn(conn, mint) {
+        Ok(cached) => {
+            emit_prepare_stage_end(
+                emit,
+                "quality_cache_lookup",
+                Some(mint),
+                swap_signature,
+                cache_started_at.elapsed().as_millis() as u64,
+                "completed",
+            );
+            cached
+        }
+        Err(error) => {
+            let error = prepare_stage_error(
+                error,
+                deadline,
+                "quality_cache_lookup",
+                Some(mint),
+                swap_signature,
+            );
+            emit_prepare_stage_end(
+                emit,
+                "quality_cache_lookup",
+                Some(mint),
+                swap_signature,
+                cache_started_at.elapsed().as_millis() as u64,
+                if prepare_error_is_runtime_budget(&error) {
+                    "runtime_budget_exhausted"
+                } else {
+                    "failed"
+                },
+            );
+            return Err(error);
+        }
+    };
     let ttl = Duration::seconds(QUALITY_CACHE_TTL_SECONDS);
     if let Some(row) = cached.as_ref() {
         if signal_ts.signed_duration_since(row.fetched_at) <= ttl {
+            emit_prepare_stage_skipped(
+                emit,
+                "quality_rpc_fetch",
+                Some(mint),
+                swap_signature,
+                "fresh_cache_hit",
+            );
             return Ok((
                 QualitySnapshot {
                     source: WalletScoringQualitySource::Fresh,
@@ -507,88 +779,58 @@ fn resolve_quality_snapshot_on_conn(
     }
 
     let Some(helius_http_url) = config.helius_http_url.as_deref() else {
+        emit_prepare_stage_skipped(
+            emit,
+            "quality_rpc_fetch",
+            Some(mint),
+            swap_signature,
+            "helius_http_url_absent",
+        );
         return Ok((
-            match cached {
-                Some(row) => QualitySnapshot {
-                    source: WalletScoringQualitySource::Stale,
-                    token_age_seconds: row.token_age_seconds.map(|age| {
-                        age.saturating_add(
-                            signal_ts
-                                .signed_duration_since(row.fetched_at)
-                                .num_seconds()
-                                .max(0) as u64,
-                        )
-                    }),
-                    holders: row.holders,
-                    liquidity_sol: row.liquidity_sol,
-                },
-                None => QualitySnapshot {
-                    source: WalletScoringQualitySource::Missing,
-                    token_age_seconds: None,
-                    holders: None,
-                    liquidity_sol: None,
-                },
-            },
+            cached_quality_snapshot(cached, signal_ts, WalletScoringQualitySource::Missing),
             None,
         ));
     };
 
     if budget.rpc_attempted >= QUALITY_MAX_FETCH_PER_BATCH {
+        emit_prepare_stage_skipped(
+            emit,
+            "quality_rpc_fetch",
+            Some(mint),
+            swap_signature,
+            "quality_rpc_max_fetch_per_batch_exhausted",
+        );
         return Ok((
-            match cached {
-                Some(row) => QualitySnapshot {
-                    source: WalletScoringQualitySource::Stale,
-                    token_age_seconds: row.token_age_seconds.map(|age| {
-                        age.saturating_add(
-                            signal_ts
-                                .signed_duration_since(row.fetched_at)
-                                .num_seconds()
-                                .max(0) as u64,
-                        )
-                    }),
-                    holders: row.holders,
-                    liquidity_sol: row.liquidity_sol,
-                },
-                None => QualitySnapshot {
-                    source: WalletScoringQualitySource::Deferred,
-                    token_age_seconds: None,
-                    holders: None,
-                    liquidity_sol: None,
-                },
-            },
+            cached_quality_snapshot(cached, signal_ts, WalletScoringQualitySource::Deferred),
             None,
         ));
     }
 
     let started_at = budget.started_at.get_or_insert_with(Instant::now);
     if started_at.elapsed().as_millis() as u64 >= QUALITY_RPC_BUDGET_MS {
+        emit_prepare_stage_skipped(
+            emit,
+            "quality_rpc_fetch",
+            Some(mint),
+            swap_signature,
+            "quality_rpc_budget_exhausted",
+        );
         return Ok((
-            match cached {
-                Some(row) => QualitySnapshot {
-                    source: WalletScoringQualitySource::Stale,
-                    token_age_seconds: row.token_age_seconds.map(|age| {
-                        age.saturating_add(
-                            signal_ts
-                                .signed_duration_since(row.fetched_at)
-                                .num_seconds()
-                                .max(0) as u64,
-                        )
-                    }),
-                    holders: row.holders,
-                    liquidity_sol: row.liquidity_sol,
-                },
-                None => QualitySnapshot {
-                    source: WalletScoringQualitySource::Deferred,
-                    token_age_seconds: None,
-                    holders: None,
-                    liquidity_sol: None,
-                },
-            },
+            cached_quality_snapshot(cached, signal_ts, WalletScoringQualitySource::Deferred),
             None,
         ));
     }
 
     budget.rpc_attempted = budget.rpc_attempted.saturating_add(1);
+    emit_prepare_stage_start(emit, "quality_rpc_fetch", Some(mint), swap_signature);
+    let rpc_started_at = Instant::now();
+    check_prepare_runtime_budget(
+        deadline,
+        emit,
+        "quality_rpc_fetch",
+        Some(mint),
+        swap_signature,
+    )?;
     let fetched = SqliteStore::fetch_token_quality_from_helius(
         helius_http_url,
         mint,
@@ -597,45 +839,45 @@ fn resolve_quality_snapshot_on_conn(
         config.min_token_age_hint_seconds,
     );
     match fetched {
-        Ok(fetched) => Ok((
-            QualitySnapshot {
-                source: WalletScoringQualitySource::Fresh,
-                token_age_seconds: fetched.token_age_seconds,
-                holders: fetched.holders,
-                liquidity_sol: fetched.liquidity_sol,
-            },
-            Some(QualityCacheUpsert {
-                mint: mint.to_string(),
-                holders: fetched.holders,
-                liquidity_sol: fetched.liquidity_sol,
-                token_age_seconds: fetched.token_age_seconds,
-                fetched_at: signal_ts,
-            }),
-        )),
-        Err(_) => Ok((
-            match cached {
-                Some(row) => QualitySnapshot {
-                    source: WalletScoringQualitySource::Stale,
-                    token_age_seconds: row.token_age_seconds.map(|age| {
-                        age.saturating_add(
-                            signal_ts
-                                .signed_duration_since(row.fetched_at)
-                                .num_seconds()
-                                .max(0) as u64,
-                        )
-                    }),
-                    holders: row.holders,
-                    liquidity_sol: row.liquidity_sol,
+        Ok(fetched) => {
+            emit_prepare_stage_end(
+                emit,
+                "quality_rpc_fetch",
+                Some(mint),
+                swap_signature,
+                rpc_started_at.elapsed().as_millis() as u64,
+                "completed",
+            );
+            Ok((
+                QualitySnapshot {
+                    source: WalletScoringQualitySource::Fresh,
+                    token_age_seconds: fetched.token_age_seconds,
+                    holders: fetched.holders,
+                    liquidity_sol: fetched.liquidity_sol,
                 },
-                None => QualitySnapshot {
-                    source: WalletScoringQualitySource::Missing,
-                    token_age_seconds: None,
-                    holders: None,
-                    liquidity_sol: None,
-                },
-            },
-            None,
-        )),
+                Some(QualityCacheUpsert {
+                    mint: mint.to_string(),
+                    holders: fetched.holders,
+                    liquidity_sol: fetched.liquidity_sol,
+                    token_age_seconds: fetched.token_age_seconds,
+                    fetched_at: signal_ts,
+                }),
+            ))
+        }
+        Err(_) => {
+            emit_prepare_stage_end(
+                emit,
+                "quality_rpc_fetch",
+                Some(mint),
+                swap_signature,
+                rpc_started_at.elapsed().as_millis() as u64,
+                "failed",
+            );
+            Ok((
+                cached_quality_snapshot(cached, signal_ts, WalletScoringQualitySource::Missing),
+                None,
+            ))
+        }
     }
 }
 
@@ -706,20 +948,103 @@ fn prepare_discovery_scoring_swaps(
     swaps: &[SwapEvent],
     config: &DiscoveryAggregateWriteConfig,
 ) -> Result<Vec<PreparedScoringSwap>> {
+    prepare_discovery_scoring_swaps_with_diagnostics(conn, swaps, config, &mut |_| {}, None)
+}
+
+fn prepare_discovery_scoring_swaps_with_diagnostics(
+    conn: &Connection,
+    swaps: &[SwapEvent],
+    config: &DiscoveryAggregateWriteConfig,
+    emit: &mut impl FnMut(String),
+    deadline: Option<Instant>,
+) -> Result<Vec<PreparedScoringSwap>> {
     if swaps.is_empty() {
         return Ok(Vec::new());
     }
 
+    let _progress_guard =
+        deadline.map(|deadline| DiscoveryScoringPrepareProgressGuard::install(conn, deadline));
+
+    emit_prepare_stage_start(emit, "prepare_sort", None, None);
+    let sort_started_at = Instant::now();
+    check_prepare_runtime_budget(deadline, emit, "prepare_sort", None, None)?;
     let mut ordered = swaps.to_vec();
     ordered.sort_by(cmp_swap_order);
+    emit_prepare_stage_end(
+        emit,
+        "prepare_sort",
+        None,
+        None,
+        sort_started_at.elapsed().as_millis() as u64,
+        "completed",
+    );
+    emit_prepare_batch_counts(emit, &ordered);
+
     let mut budget = QualityFetchBudget::default();
     let mut prepared = Vec::with_capacity(ordered.len());
     for swap in ordered {
         let buy_fact = if is_sol_buy(&swap) {
             let token = swap.token_out.as_str();
-            let market_stats = token_market_stats_on_conn(conn, token, swap.ts_utc)?;
+            emit_prepare_stage_start(
+                emit,
+                "token_market_stats",
+                Some(token),
+                Some(&swap.signature),
+            );
+            let market_stats_started_at = Instant::now();
+            check_prepare_runtime_budget(
+                deadline,
+                emit,
+                "token_market_stats",
+                Some(token),
+                Some(&swap.signature),
+            )?;
+            let market_stats = match token_market_stats_on_conn(conn, token, swap.ts_utc) {
+                Ok(market_stats) => {
+                    emit_prepare_stage_end(
+                        emit,
+                        "token_market_stats",
+                        Some(token),
+                        Some(&swap.signature),
+                        market_stats_started_at.elapsed().as_millis() as u64,
+                        "completed",
+                    );
+                    market_stats
+                }
+                Err(error) => {
+                    let error = prepare_stage_error(
+                        error,
+                        deadline,
+                        "token_market_stats",
+                        Some(token),
+                        Some(&swap.signature),
+                    );
+                    emit_prepare_stage_end(
+                        emit,
+                        "token_market_stats",
+                        Some(token),
+                        Some(&swap.signature),
+                        market_stats_started_at.elapsed().as_millis() as u64,
+                        if prepare_error_is_runtime_budget(&error) {
+                            "runtime_budget_exhausted"
+                        } else {
+                            "failed"
+                        },
+                    );
+                    return Err(error);
+                }
+            };
             let (quality, quality_cache_upsert) =
-                resolve_quality_snapshot_on_conn(conn, token, swap.ts_utc, config, &mut budget)?;
+                resolve_quality_snapshot_on_conn_with_diagnostics(
+                    conn,
+                    token,
+                    swap.ts_utc,
+                    config,
+                    &mut budget,
+                    emit,
+                    deadline,
+                    Some(&swap.signature),
+                )?;
             Some(PreparedBuyFact {
                 market_stats,
                 quality,
@@ -1479,6 +1804,8 @@ impl SqliteStore {
             progress_cursor,
             |_| {},
             |_, _, _, _| {},
+            |_| {},
+            None,
         )
     }
 
@@ -1490,10 +1817,18 @@ impl SqliteStore {
         progress_cursor: &DiscoveryRuntimeCursor,
         mut stage_start: impl FnMut(&str),
         mut stage_end: impl FnMut(&str, usize, u64, &str),
+        mut prepare_event: impl FnMut(String),
+        prepare_deadline: Option<Instant>,
     ) -> Result<super::DiscoveryScoringCheckpointedBatchTimings> {
         stage_start("prepare_discovery_scoring_swaps");
         let prepare_started_at = Instant::now();
-        let prepared = match prepare_discovery_scoring_swaps(&self.conn, swaps, config) {
+        let prepared = match prepare_discovery_scoring_swaps_with_diagnostics(
+            &self.conn,
+            swaps,
+            config,
+            &mut prepare_event,
+            prepare_deadline,
+        ) {
             Ok(prepared) => {
                 stage_end(
                     "prepare_discovery_scoring_swaps",
@@ -1504,11 +1839,16 @@ impl SqliteStore {
                 prepared
             }
             Err(error) => {
+                let outcome = if prepare_error_is_runtime_budget(&error) {
+                    "runtime_budget_exhausted"
+                } else {
+                    "failed"
+                };
                 stage_end(
                     "prepare_discovery_scoring_swaps",
                     swaps.len(),
                     prepare_started_at.elapsed().as_millis() as u64,
-                    "failed",
+                    outcome,
                 );
                 return Err(error);
             }

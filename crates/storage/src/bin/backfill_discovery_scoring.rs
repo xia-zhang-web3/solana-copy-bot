@@ -31,6 +31,8 @@ const DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO: f64 = 0.25;
 const DEFAULT_RUNTIME_PRESSURE_JOURNAL_LINES: usize = 250;
 const DEFAULT_RUNTIME_PRESSURE_FETCH_INTERVAL_MS: i64 = 1_000;
 const DEFAULT_RUNTIME_PRESSURE_SAMPLE_AGE_GRACE_SECONDS: u64 = 5;
+const DISCOVERY_SCORING_PREPARE_RUNTIME_BUDGET_EXHAUSTED_REASON: &str =
+    "discovery_scoring_prepare_runtime_budget_exhausted";
 const RUNTIME_INFRA_STOP_EVENT_TYPE: &str = "shadow_risk_infra_stop";
 const RUNTIME_INFRA_CLEARED_EVENT_TYPE: &str = "shadow_risk_infra_cleared";
 const SLEEP_INTERRUPT_POLL_MS: u64 = 100;
@@ -690,6 +692,10 @@ fn runtime_budget_stop_before_stage(
         "max_runtime_seconds_exhausted_before_stage_start",
     );
     Some(RunStopReason::StoppedDueToRuntimeBudget)
+}
+
+fn storage_error_is_prepare_runtime_budget_exhausted(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains(DISCOVERY_SCORING_PREPARE_RUNTIME_BUDGET_EXHAUSTED_REASON)
 }
 
 fn should_skip_batch_rug_finalize(phase_label: &str) -> bool {
@@ -1696,6 +1702,13 @@ fn run_replay_phase(
                     outcome,
                 );
             };
+        let prepare_deadline = bounded_run_scan_deadline(config, run_started_at, Utc::now());
+        let mut diagnostic_prepare_event = |line: String| {
+            emit_event(format!(
+                "{} phase={} batch_size={} batches={} total_rows={}",
+                line, phase_label, config.batch_size, batches, total_rows,
+            ));
+        };
         let storage_result: Result<(_, &str)> = if let Some(builder) = replay_builder.as_mut() {
             store
                 .apply_discovery_scoring_builder_batch_and_checkpoint_with_timings_and_diagnostics(
@@ -1730,10 +1743,28 @@ fn run_replay_phase(
                     &progress_cursor,
                     &mut diagnostic_stage_start,
                     &mut diagnostic_stage_end,
+                    &mut diagnostic_prepare_event,
+                    prepare_deadline,
                 )
                 .map(|timings| (timings, "sql"))
         };
-        let (storage_timings, replay_engine): (_, &str) = storage_result?;
+        let (storage_timings, replay_engine): (_, &str) = match storage_result {
+            Ok(value) => value,
+            Err(error) if storage_error_is_prepare_runtime_budget_exhausted(&error) => {
+                stage_totals.scan_ms = stage_totals.scan_ms.saturating_add(scan_ms);
+                log_stage_skipped(
+                    phase_label,
+                    "aggregate_batch_apply",
+                    Some(&cursor),
+                    config.batch_size,
+                    batches,
+                    total_rows,
+                    DISCOVERY_SCORING_PREPARE_RUNTIME_BUDGET_EXHAUSTED_REASON,
+                );
+                break RunStopReason::StoppedDueToRuntimeBudget;
+            }
+            Err(error) => return Err(error),
+        };
         emit_event(format!(
             "event=checkpoint_persisted phase={} replay_engine={} rows={} next_total_rows={} next_batches={} cursor_ts={} cursor_slot={} cursor_signature={} scan_ms={} prepare_ms={} apply_ms={} progress_update_ms={} durable=true",
             phase_label,
@@ -2434,6 +2465,7 @@ mod tests {
         Config, Cursor, ReplayEngineSelection, RunStopReason, RuntimePressureMonitor,
         DEFAULT_RUNTIME_PRESSURE_FETCH_INTERVAL_MS,
         DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO, DEFAULT_RUNTIME_PRESSURE_SERVICE,
+        DISCOVERY_SCORING_PREPARE_RUNTIME_BUDGET_EXHAUSTED_REASON,
         RUNTIME_INFRA_CLEARED_EVENT_TYPE, RUNTIME_INFRA_STOP_EVENT_TYPE,
     };
     use anyhow::{Context, Result};
@@ -5362,14 +5394,68 @@ mod tests {
         let checkpoint_end =
             stage_event_index(&events, "backfill_stage_end", "progress_checkpoint");
         let checkpoint_persisted = event_index(&events, "event=checkpoint_persisted");
+        let prepare_sort_start = event_index(
+            &events,
+            "event=backfill_prepare_stage_start stage=prepare_sort",
+        );
+        let prepare_sort_end = event_index(
+            &events,
+            "event=backfill_prepare_stage_end stage=prepare_sort",
+        );
+        let prepare_counts = event_index(
+            &events,
+            "event=backfill_prepare_batch_counts stage=prepare_discovery_scoring_swaps",
+        );
+        let market_stats_start = event_index(
+            &events,
+            "event=backfill_prepare_stage_start stage=token_market_stats",
+        );
+        let market_stats_end = event_index(
+            &events,
+            "event=backfill_prepare_stage_end stage=token_market_stats",
+        );
+        let quality_cache_start = event_index(
+            &events,
+            "event=backfill_prepare_stage_start stage=quality_cache_lookup",
+        );
+        let quality_cache_end = event_index(
+            &events,
+            "event=backfill_prepare_stage_end stage=quality_cache_lookup",
+        );
+        let quality_rpc_skipped = event_index(
+            &events,
+            "event=backfill_prepare_stage_skipped stage=quality_rpc_fetch",
+        );
         assert!(
             prepare_start < prepare_end
+                && prepare_start < prepare_sort_start
+                && prepare_sort_start < prepare_sort_end
+                && prepare_sort_end < prepare_counts
+                && prepare_counts < market_stats_start
+                && market_stats_start < market_stats_end
+                && market_stats_end < quality_cache_start
+                && quality_cache_start < quality_cache_end
+                && quality_cache_end < quality_rpc_skipped
+                && quality_rpc_skipped < prepare_end
                 && prepare_end < apply_start
                 && apply_start < apply_end
                 && apply_end < checkpoint_start
                 && checkpoint_start < checkpoint_end
                 && checkpoint_end < checkpoint_persisted,
             "stage events must reflect real prepare/apply/checkpoint order: {events:#?}"
+        );
+        assert!(
+            events[prepare_counts].contains("buy_count=1")
+                && events[prepare_counts].contains("sell_count=0")
+                && events[prepare_counts].contains("other_count=0"),
+            "prepare batch counts must identify buy/sell shape: {events:#?}"
+        );
+        assert!(
+            events[market_stats_start].contains("token=TokenStageBoundaries11111111111111")
+                && events[market_stats_start].contains("swap_signature=sig-stage-boundaries-1")
+                && events[market_stats_end].contains("elapsed_ms=")
+                && events[market_stats_end].contains("outcome=completed"),
+            "token_market_stats diagnostics must include token/signature/elapsed/outcome: {events:#?}"
         );
         assert!(
             events
@@ -5470,6 +5556,104 @@ mod tests {
                 .iter()
                 .any(|event| event.contains("event=checkpoint_persisted")),
             "checkpoint_persisted must not be emitted on checkpoint failpoint: {events:#?}"
+        );
+        assert_eq!(store.load_discovery_scoring_backfill_progress()?, None);
+        assert_eq!(store.load_discovery_scoring_covered_since()?, None);
+        assert_eq!(store.load_discovery_scoring_covered_through_cursor()?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_runtime_budget_exhaustion_stops_without_checkpoint_or_coverage() -> Result<()> {
+        let _guard = FAILPOINT_TEST_MUTEX.lock().expect("test mutex poisoned");
+        clear_backfill_test_events();
+        SqliteStore::set_discovery_scoring_prepare_runtime_budget_failpoint_for_tests(false);
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("backfill-prepare-budget.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(&migration_dir)?;
+
+        let start_ts = DateTime::parse_from_rfc3339("2026-03-06T09:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let first_swap = SwapEvent {
+            signature: "sig-prepare-budget-1".to_string(),
+            wallet: "wallet-prepare-budget".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "TokenPrepareBudget11111111111111".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            exact_amounts: None,
+            slot: 712,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+        };
+        store.insert_observed_swaps_batch(&[first_swap.clone()])?;
+
+        SqliteStore::set_discovery_scoring_prepare_runtime_budget_failpoint_for_tests(true);
+        run_with_cleanup(
+            &mut store,
+            &Config {
+                db_path: db_path.clone(),
+                start_ts,
+                seeded_reset_max_start_ts: None,
+                end_ts: None,
+                batch_size: 1,
+                sleep_ms: 0,
+                max_batches_per_run: Some(1),
+                max_runtime_seconds: Some(120),
+                reset: true,
+                seeded_reset: false,
+                stop_after_seed_install: false,
+                mark_covered: true,
+                resume_after: None,
+                abort_on_runtime_pressure: false,
+                runtime_pressure_service: DEFAULT_RUNTIME_PRESSURE_SERVICE.to_string(),
+                runtime_pressure_log_path: None,
+                max_yellowstone_fill_ratio: DEFAULT_RUNTIME_PRESSURE_MAX_YELLOWSTONE_FILL_RATIO,
+                max_ingestion_lag_ms_p95: 10_000,
+                max_runtime_pressure_sample_age_seconds: 35,
+                abort_on_runtime_infra_stop: false,
+                aggregate_write_config: DiscoveryAggregateWriteConfig::default(),
+            },
+            &AtomicBool::new(false),
+        )?;
+        SqliteStore::set_discovery_scoring_prepare_runtime_budget_failpoint_for_tests(false);
+
+        let events = backfill_test_events();
+        assert!(
+            events.iter().any(|event| event
+                .contains("event=backfill_prepare_stage_end stage=prepare_sort")
+                && event.contains("outcome=runtime_budget_exhausted")),
+            "prepare budget exhaustion must identify the blocked prepare substage: {events:#?}"
+        );
+        assert!(
+            events.iter().any(|event| event
+                .contains("event=backfill_stage_end phase=direct_replay stage=prepare_discovery_scoring_swaps")
+                && event.contains("outcome=runtime_budget_exhausted")),
+            "outer prepare stage must report runtime budget exhaustion: {events:#?}"
+        );
+        assert!(
+            events.iter().any(|event| event.contains(
+                "event=backfill_stage_skipped phase=direct_replay stage=aggregate_batch_apply"
+            ) && event
+                .contains(DISCOVERY_SCORING_PREPARE_RUNTIME_BUDGET_EXHAUSTED_REASON)),
+            "apply stage must be skipped after prepare budget exhaustion: {events:#?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.contains("stage=progress_checkpoint")),
+            "prepare budget exhaustion must not reach checkpoint stage: {events:#?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.contains("event=checkpoint_persisted")),
+            "prepare budget exhaustion must not persist checkpoint: {events:#?}"
         );
         assert_eq!(store.load_discovery_scoring_backfill_progress()?, None);
         assert_eq!(store.load_discovery_scoring_covered_since()?, None);
