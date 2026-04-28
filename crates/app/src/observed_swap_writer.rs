@@ -1414,6 +1414,16 @@ fn discovery_aggregate_writer_loop(
     let mut gap_replay_resume_after_cursor: Option<DiscoveryRuntimeCursor> = None;
 
     loop {
+        run_discovery_aggregate_gap_repair_slice(
+            &store,
+            &config,
+            &telemetry,
+            true,
+            &mut gap_cursor_observed_since_last_clear,
+            &mut gap_replay_resume_gap_cursor,
+            &mut gap_replay_resume_after_cursor,
+        )?;
+
         match receiver.recv_timeout(OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_POLL_INTERVAL) {
             Ok(request) => {
                 let request = collect_discovery_aggregate_write_batch(
@@ -1434,65 +1444,15 @@ fn discovery_aggregate_writer_loop(
                 result?;
             }
             Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                if config.aggregate_gap_fallback_enabled
-                    && config.aggregate_idle_replay_max_pages > 0
-                {
-                    let current_gap_cursor =
-                        store.load_discovery_scoring_materialization_gap_cursor()?;
-                    let resume_after_cursor = match (
-                        current_gap_cursor.as_ref(),
-                        gap_replay_resume_gap_cursor.as_ref(),
-                        gap_replay_resume_after_cursor.as_ref(),
-                    ) {
-                        (Some(current), Some(resume_gap), Some(resume_after))
-                            if compare_discovery_runtime_cursors(current, resume_gap)
-                                == std::cmp::Ordering::Equal =>
-                        {
-                            Some(resume_after)
-                        }
-                        _ => {
-                            gap_cursor_observed_since_last_clear = false;
-                            gap_replay_resume_gap_cursor = None;
-                            gap_replay_resume_after_cursor = None;
-                            None
-                        }
-                    };
-                    telemetry.set_aggregate_worker_busy(true);
-                    let result = run_aggregate_gap_replay_with_resume(
-                        &store,
-                        &config,
-                        Some(config.aggregate_idle_replay_max_pages),
-                        resume_after_cursor,
-                        gap_cursor_observed_since_last_clear,
-                    );
-                    telemetry.set_aggregate_worker_busy(false);
-                    let replay_progress = result?;
-                    gap_cursor_observed_since_last_clear |= replay_progress.gap_cursor_observed;
-                    if replay_progress.caught_up_to_tail && gap_cursor_observed_since_last_clear {
-                        if let Some(gap_cursor) =
-                            store.load_discovery_scoring_materialization_gap_cursor()?
-                        {
-                            store.clear_discovery_scoring_materialization_gap_if_cursor_observed(
-                                &gap_cursor,
-                            )?;
-                        }
-                        gap_cursor_observed_since_last_clear = false;
-                        gap_replay_resume_gap_cursor = None;
-                        gap_replay_resume_after_cursor = None;
-                    } else if let Some(current_gap_cursor) =
-                        store.load_discovery_scoring_materialization_gap_cursor()?
-                    {
-                        if let Some(last_replay_cursor) = replay_progress.last_replay_cursor {
-                            gap_replay_resume_gap_cursor = Some(current_gap_cursor);
-                            gap_replay_resume_after_cursor = Some(last_replay_cursor);
-                        }
-                    }
-                    telemetry.set_aggregate_gap_active(
-                        store
-                            .load_discovery_scoring_materialization_gap_cursor()?
-                            .is_some(),
-                    );
-                }
+                run_discovery_aggregate_gap_repair_slice(
+                    &store,
+                    &config,
+                    &telemetry,
+                    false,
+                    &mut gap_cursor_observed_since_last_clear,
+                    &mut gap_replay_resume_gap_cursor,
+                    &mut gap_replay_resume_after_cursor,
+                )?;
             }
             Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -2359,6 +2319,80 @@ fn observed_swap_retention_protection_load_error_requires_abort(error: &anyhow::
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn run_discovery_aggregate_gap_repair_slice(
+    store: &SqliteStore,
+    config: &ObservedSwapWriterConfig,
+    telemetry: &ObservedSwapWriterTelemetry,
+    require_gap_cursor: bool,
+    gap_cursor_observed_since_last_clear: &mut bool,
+    gap_replay_resume_gap_cursor: &mut Option<DiscoveryRuntimeCursor>,
+    gap_replay_resume_after_cursor: &mut Option<DiscoveryRuntimeCursor>,
+) -> Result<bool> {
+    if !config.aggregate_gap_fallback_enabled || config.aggregate_idle_replay_max_pages == 0 {
+        return Ok(false);
+    }
+
+    let current_gap_cursor = store.load_discovery_scoring_materialization_gap_cursor()?;
+    if current_gap_cursor.is_none() {
+        if require_gap_cursor {
+            *gap_cursor_observed_since_last_clear = false;
+            *gap_replay_resume_gap_cursor = None;
+            *gap_replay_resume_after_cursor = None;
+            telemetry.set_aggregate_gap_active(false);
+            return Ok(false);
+        }
+    }
+
+    let resume_after_cursor = match (
+        current_gap_cursor.as_ref(),
+        gap_replay_resume_gap_cursor.as_ref(),
+        gap_replay_resume_after_cursor.as_ref(),
+    ) {
+        (Some(current), Some(resume_gap), Some(resume_after))
+            if compare_discovery_runtime_cursors(current, resume_gap)
+                == std::cmp::Ordering::Equal =>
+        {
+            Some(resume_after)
+        }
+        _ => {
+            *gap_cursor_observed_since_last_clear = false;
+            *gap_replay_resume_gap_cursor = None;
+            *gap_replay_resume_after_cursor = None;
+            None
+        }
+    };
+
+    telemetry.set_aggregate_worker_busy(true);
+    let result = run_aggregate_gap_replay_with_resume(
+        store,
+        config,
+        Some(config.aggregate_idle_replay_max_pages),
+        resume_after_cursor,
+        *gap_cursor_observed_since_last_clear,
+    );
+    telemetry.set_aggregate_worker_busy(false);
+    let replay_progress = result?;
+
+    *gap_cursor_observed_since_last_clear |= replay_progress.gap_cursor_observed;
+    let remaining_gap_cursor = store.load_discovery_scoring_materialization_gap_cursor()?;
+    if let Some(remaining_gap_cursor) = remaining_gap_cursor {
+        if let Some(last_replay_cursor) = replay_progress.last_replay_cursor {
+            *gap_replay_resume_gap_cursor = Some(remaining_gap_cursor);
+            *gap_replay_resume_after_cursor = Some(last_replay_cursor);
+        }
+    } else {
+        *gap_cursor_observed_since_last_clear = false;
+        *gap_replay_resume_gap_cursor = None;
+        *gap_replay_resume_after_cursor = None;
+    }
+    telemetry.set_aggregate_gap_active(
+        store
+            .load_discovery_scoring_materialization_gap_cursor()?
+            .is_some(),
+    );
+    Ok(true)
+}
+
 #[derive(Default)]
 struct AggregateReplayProgress {
     page_count: usize,
@@ -2596,7 +2630,7 @@ mod tests {
     };
     use rusqlite::Connection;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{mpsc as std_mpsc, Arc, Mutex};
     use std::thread;
     use std::time::{Duration as StdDuration, Instant};
@@ -2659,6 +2693,117 @@ mod tests {
                 .expect("timestamp")
                 .with_timezone(&Utc),
             exact_amounts: None,
+        }
+    }
+
+    fn hot_aggregate_repair_request(idx: usize) -> super::DiscoveryAggregateWriteRequest {
+        super::DiscoveryAggregateWriteRequest {
+            inserted_swaps: vec![SwapEvent {
+                wallet: format!("wallet-hot-aggregate-repair-{idx:05}"),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: format!("token-hot-aggregate-repair-{idx:05}"),
+                amount_in: 1.0,
+                amount_out: 10.0 + idx as f64,
+                signature: format!("sig-hot-aggregate-repair-{idx:05}"),
+                slot: 100_000 + idx as u64,
+                ts_utc: DateTime::parse_from_rfc3339("2026-04-28T13:30:00Z")
+                    .expect("timestamp")
+                    .with_timezone(&Utc)
+                    + ChronoDuration::milliseconds(idx as i64),
+                exact_amounts: None,
+            }],
+            batch_started: Instant::now(),
+        }
+    }
+
+    fn start_discovery_aggregate_writer_loop_for_test(
+        db_path: &Path,
+        config: ObservedSwapWriterConfig,
+        channel_capacity_batches: usize,
+    ) -> Result<(
+        std_mpsc::SyncSender<super::DiscoveryAggregateWriteRequest>,
+        thread::JoinHandle<Result<()>>,
+    )> {
+        let (aggregate_sender, aggregate_receiver) = std_mpsc::sync_channel::<
+            super::DiscoveryAggregateWriteRequest,
+        >(channel_capacity_batches);
+        let (startup_sender, startup_receiver) =
+            std_mpsc::channel::<std::result::Result<(), String>>();
+        let telemetry = Arc::new(ObservedSwapWriterTelemetry::default());
+        let aggregate_sqlite_path = db_path
+            .to_str()
+            .context("sqlite path must be valid utf-8")?
+            .to_string();
+        let worker = thread::Builder::new()
+            .name("copybot-discovery-aggregate-writer-test".to_string())
+            .spawn(move || {
+                super::discovery_aggregate_writer_loop(
+                    aggregate_sqlite_path,
+                    aggregate_receiver,
+                    startup_sender,
+                    config,
+                    telemetry,
+                )
+            })
+            .context("failed to spawn discovery aggregate writer test thread")?;
+        match startup_receiver
+            .recv_timeout(StdDuration::from_secs(5))
+            .context("timed out waiting for aggregate writer startup")?
+        {
+            Ok(()) => Ok((aggregate_sender, worker)),
+            Err(message) => Err(anyhow!(message)).context("aggregate writer startup failed"),
+        }
+    }
+
+    fn start_hot_aggregate_repair_traffic(
+        sender: std_mpsc::SyncSender<super::DiscoveryAggregateWriteRequest>,
+        stop: Arc<AtomicBool>,
+        sent_count: Arc<AtomicUsize>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let mut idx = 0usize;
+            while !stop.load(Ordering::Relaxed) {
+                match sender.try_send(hot_aggregate_repair_request(idx)) {
+                    Ok(()) => {
+                        idx = idx.saturating_add(1);
+                        sent_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(std_mpsc::TrySendError::Full(_request)) => {
+                        std::thread::sleep(StdDuration::from_millis(1));
+                    }
+                    Err(std_mpsc::TrySendError::Disconnected(_request)) => break,
+                }
+            }
+        })
+    }
+
+    fn wait_for_hot_aggregate_repair_traffic(sent_count: &AtomicUsize) -> Result<()> {
+        let started = Instant::now();
+        loop {
+            if sent_count.load(Ordering::Relaxed) > 0 {
+                return Ok(());
+            }
+            if started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!("timed out waiting for hot aggregate repair traffic");
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+    }
+
+    fn wait_for_materialization_gap_clear(store: &SqliteStore) -> Result<()> {
+        let started = Instant::now();
+        loop {
+            if store
+                .load_discovery_scoring_materialization_gap_cursor()?
+                .is_none()
+            {
+                return Ok(());
+            }
+            if started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!("timed out waiting for materialization gap cursor to clear");
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
         }
     }
 
@@ -4076,6 +4221,240 @@ mod tests {
     }
 
     #[test]
+    fn observed_swap_writer_aggregate_gap_repair_runs_under_continuous_hot_traffic_stage1(
+    ) -> Result<()> {
+        let db_path =
+            migrated_observed_swap_writer_test_db("copybot-app-observed-swap-hot-gap-repair")?;
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let gap_swap =
+            aggregate_gap_replay_test_swap("sig-hot-gap-repair-exact", 830, "2026-04-28T13:15:00Z");
+        let tail_swap =
+            aggregate_gap_replay_test_swap("sig-hot-gap-repair-tail", 831, "2026-04-28T13:15:05Z");
+        store.insert_observed_swaps_batch(&[gap_swap.clone(), tail_swap.clone()])?;
+        let gap_cursor = DiscoveryRuntimeCursor {
+            ts_utc: gap_swap.ts_utc,
+            slot: gap_swap.slot,
+            signature: gap_swap.signature.clone(),
+        };
+        let tail_cursor = DiscoveryRuntimeCursor {
+            ts_utc: tail_swap.ts_utc,
+            slot: tail_swap.slot,
+            signature: tail_swap.signature.clone(),
+        };
+        store.set_discovery_scoring_covered_through_cursor(&tail_cursor)?;
+        let (aggregate_sender, aggregate_worker) = start_discovery_aggregate_writer_loop_for_test(
+            &db_path,
+            ObservedSwapWriterConfig::for_test_with_aggregate_tuning(
+                64,
+                1,
+                true,
+                aggregate_write_config(),
+                1,
+                64,
+                true,
+                1,
+                None,
+            ),
+            128,
+        )?;
+        store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let sent_count = Arc::new(AtomicUsize::new(0));
+        let traffic = start_hot_aggregate_repair_traffic(
+            aggregate_sender.clone(),
+            Arc::clone(&stop),
+            Arc::clone(&sent_count),
+        );
+        wait_for_hot_aggregate_repair_traffic(&sent_count)?;
+        wait_for_materialization_gap_clear(&store)?;
+        stop.store(true, Ordering::Relaxed);
+        drop(aggregate_sender);
+        traffic
+            .join()
+            .expect("hot aggregate traffic thread panicked");
+        aggregate_worker
+            .join()
+            .expect("aggregate writer test thread panicked")?;
+
+        assert!(
+            sent_count.load(Ordering::Relaxed) > 0,
+            "test must keep hot aggregate requests flowing while repair clears the gap"
+        );
+        let covered_through = store
+            .load_discovery_scoring_covered_through_cursor()?
+            .context("covered_through cursor should remain present")?;
+        assert!(
+            super::compare_discovery_runtime_cursors(&covered_through, &tail_cursor)
+                != std::cmp::Ordering::Less,
+            "bounded hot-traffic repair must not regress covered_through"
+        );
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_aggregate_gap_repair_under_hot_traffic_preserves_monotonic_covered_through_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-observed-swap-hot-gap-repair-monotonic",
+        )?;
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let gap_swap = aggregate_gap_replay_test_swap(
+            "sig-hot-gap-repair-monotonic-exact",
+            840,
+            "2026-04-28T13:20:00Z",
+        );
+        let tail_swap = aggregate_gap_replay_test_swap(
+            "sig-hot-gap-repair-monotonic-tail",
+            842,
+            "2026-04-28T13:20:05Z",
+        );
+        store.insert_observed_swaps_batch(&[gap_swap.clone(), tail_swap.clone()])?;
+        let gap_cursor = DiscoveryRuntimeCursor {
+            ts_utc: gap_swap.ts_utc,
+            slot: gap_swap.slot,
+            signature: gap_swap.signature.clone(),
+        };
+        let tail_cursor = DiscoveryRuntimeCursor {
+            ts_utc: tail_swap.ts_utc,
+            slot: tail_swap.slot,
+            signature: tail_swap.signature.clone(),
+        };
+        store.set_discovery_scoring_covered_through_cursor(&tail_cursor)?;
+        let (aggregate_sender, aggregate_worker) = start_discovery_aggregate_writer_loop_for_test(
+            &db_path,
+            ObservedSwapWriterConfig::for_test_with_aggregate_tuning(
+                64,
+                1,
+                true,
+                aggregate_write_config(),
+                1,
+                64,
+                true,
+                1,
+                None,
+            ),
+            128,
+        )?;
+        store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let sent_count = Arc::new(AtomicUsize::new(0));
+        let traffic = start_hot_aggregate_repair_traffic(
+            aggregate_sender.clone(),
+            Arc::clone(&stop),
+            Arc::clone(&sent_count),
+        );
+        wait_for_hot_aggregate_repair_traffic(&sent_count)?;
+        wait_for_materialization_gap_clear(&store)?;
+        stop.store(true, Ordering::Relaxed);
+        drop(aggregate_sender);
+        traffic
+            .join()
+            .expect("hot aggregate traffic thread panicked");
+        aggregate_worker
+            .join()
+            .expect("aggregate writer test thread panicked")?;
+
+        let covered_through = store
+            .load_discovery_scoring_covered_through_cursor()?
+            .context("covered_through cursor should remain present")?;
+        assert!(
+            super::compare_discovery_runtime_cursors(&covered_through, &tail_cursor)
+                != std::cmp::Ordering::Less,
+            "continuous hot requests plus bounded repair must keep covered_through monotonic"
+        );
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_aggregate_gap_repair_under_hot_traffic_keeps_missing_exact_gap_latched_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-observed-swap-hot-gap-repair-missing",
+        )?;
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let missing_gap = aggregate_gap_replay_test_swap(
+            "sig-hot-gap-repair-missing",
+            850,
+            "2026-04-28T13:25:00Z",
+        );
+        let tail_swap = aggregate_gap_replay_test_swap(
+            "sig-hot-gap-repair-missing-tail",
+            851,
+            "2026-04-28T13:25:05Z",
+        );
+        store.insert_observed_swaps_batch(&[tail_swap.clone()])?;
+        let gap_cursor = DiscoveryRuntimeCursor {
+            ts_utc: missing_gap.ts_utc,
+            slot: missing_gap.slot,
+            signature: missing_gap.signature.clone(),
+        };
+        let tail_cursor = DiscoveryRuntimeCursor {
+            ts_utc: tail_swap.ts_utc,
+            slot: tail_swap.slot,
+            signature: tail_swap.signature.clone(),
+        };
+        store.set_discovery_scoring_covered_through_cursor(&tail_cursor)?;
+        let (aggregate_sender, aggregate_worker) = start_discovery_aggregate_writer_loop_for_test(
+            &db_path,
+            ObservedSwapWriterConfig::for_test_with_aggregate_tuning(
+                64,
+                1,
+                true,
+                aggregate_write_config(),
+                1,
+                64,
+                true,
+                1,
+                None,
+            ),
+            128,
+        )?;
+        store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let sent_count = Arc::new(AtomicUsize::new(0));
+        let traffic = start_hot_aggregate_repair_traffic(
+            aggregate_sender.clone(),
+            Arc::clone(&stop),
+            Arc::clone(&sent_count),
+        );
+        wait_for_hot_aggregate_repair_traffic(&sent_count)?;
+        std::thread::sleep(StdDuration::from_millis(250));
+        stop.store(true, Ordering::Relaxed);
+        drop(aggregate_sender);
+        traffic
+            .join()
+            .expect("hot aggregate traffic thread panicked");
+        aggregate_worker
+            .join()
+            .expect("aggregate writer test thread panicked")?;
+
+        assert!(
+            sent_count.load(Ordering::Relaxed) > 0,
+            "test must keep hot aggregate requests flowing while missing-gap repair runs"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(gap_cursor),
+            "missing exact latched gap row must remain fail-closed under hot traffic"
+        );
+        let covered_through = store
+            .load_discovery_scoring_covered_through_cursor()?
+            .context("covered_through cursor should remain present")?;
+        assert!(
+            super::compare_discovery_runtime_cursors(&covered_through, &tail_cursor)
+                != std::cmp::Ordering::Less,
+            "missing-gap repair under hot traffic must still preserve monotonic covered_through"
+        );
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
     fn observed_swap_writer_snapshot_clears_pending_after_fast_successful_enqueue() -> Result<()> {
         let unique = format!(
             "copybot-app-observed-swap-fast-snapshot-{}-{}",
@@ -5277,50 +5656,26 @@ mod tests {
             slot: covered_swap.slot,
             signature: covered_swap.signature.clone(),
         })?;
-        let trigger_conn = Connection::open(Path::new(&db_path))
-            .context("failed to open sqlite db for gap trigger")?;
-        trigger_conn.execute_batch(
-            "CREATE TRIGGER fail_wallet_scoring_days_insert
-             BEFORE INSERT ON wallet_scoring_days
-             BEGIN
-                 SELECT RAISE(FAIL, 'forced discovery scoring failure');
-             END;",
-        )?;
-
-        let runtime = Builder::new_current_thread().enable_all().build()?;
-        runtime.block_on(async {
-            let writer = ObservedSwapWriter::start_with_config(
-                db_path
-                    .to_str()
-                    .context("sqlite path must be valid utf-8")?
-                    .to_string(),
-                ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
-            )?;
-
-            let failed_swap = SwapEvent {
-                wallet: "wallet-gap".to_string(),
-                dex: "raydium".to_string(),
-                token_in: "So11111111111111111111111111111111111111112".to_string(),
-                token_out: "token-gap".to_string(),
-                amount_in: 1.0,
-                amount_out: 10.0,
-                signature: "sig-gap-failed".to_string(),
-                slot: 100,
-                ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
-                    .expect("timestamp")
-                    .with_timezone(&Utc),
-                exact_amounts: None,
-            };
-            std::thread::sleep(StdDuration::from_millis(50));
-            writer.write(&failed_swap).await?;
-            writer.shutdown()?;
-            Ok::<(), anyhow::Error>(())
+        let failed_swap = SwapEvent {
+            wallet: "wallet-gap".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-gap".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-gap-failed".to_string(),
+            slot: 100,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-06T10:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+        seed_store.insert_observed_swaps_batch(&[failed_swap.clone()])?;
+        seed_store.set_discovery_scoring_materialization_gap_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: failed_swap.ts_utc,
+            slot: failed_swap.slot,
+            signature: failed_swap.signature.clone(),
         })?;
-
-        drop(trigger_conn);
-        let reopen = Connection::open(Path::new(&db_path))
-            .context("failed to reopen sqlite db for trigger cleanup")?;
-        reopen.execute_batch("DROP TRIGGER fail_wallet_scoring_days_insert;")?;
 
         let runtime = Builder::new_current_thread().enable_all().build()?;
         runtime.block_on(async {
