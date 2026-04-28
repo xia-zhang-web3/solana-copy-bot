@@ -118,37 +118,24 @@ pub(super) async fn yellowstone_stream_loop(
             }
         };
 
-        let (mut subscribe_tx, mut stream) = match client.subscribe().await {
-            Ok(parts) => parts,
-            Err(error) => {
-                runtime_config
-                    .telemetry
-                    .reconnect_count
-                    .fetch_add(1, Ordering::Relaxed);
-                warn!(error = %error, "failed opening yellowstone subscription stream");
-                sleep_with_backoff(
-                    &mut next_backoff_ms,
-                    runtime_config.reconnect_initial_ms,
-                    runtime_config.reconnect_max_ms,
-                )
-                .await;
-                continue;
-            }
-        };
-        if let Err(error) = subscribe_tx.send(subscribe_request).await {
-            runtime_config
-                .telemetry
-                .reconnect_count
-                .fetch_add(1, Ordering::Relaxed);
-            warn!(error = %error, "failed sending yellowstone subscribe request");
-            sleep_with_backoff(
-                &mut next_backoff_ms,
-                runtime_config.reconnect_initial_ms,
-                runtime_config.reconnect_max_ms,
-            )
-            .await;
-            continue;
-        };
+        let (mut subscribe_tx, mut stream) =
+            match client.subscribe_with_request(Some(subscribe_request)).await {
+                Ok(parts) => parts,
+                Err(error) => {
+                    runtime_config
+                        .telemetry
+                        .reconnect_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    warn!(error = %error, "failed opening yellowstone subscription stream");
+                    sleep_with_backoff(
+                        &mut next_backoff_ms,
+                        runtime_config.reconnect_initial_ms,
+                        runtime_config.reconnect_max_ms,
+                    )
+                    .await;
+                    continue;
+                }
+            };
         next_backoff_ms = runtime_config.reconnect_initial_ms;
 
         loop {

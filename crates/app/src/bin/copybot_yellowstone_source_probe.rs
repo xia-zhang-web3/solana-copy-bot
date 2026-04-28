@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use copybot_config::{load_from_path, IngestionConfig};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
@@ -85,6 +85,7 @@ impl ProbeMode {
 enum ProbePhase {
     Connect,
     SubscribeOpen,
+    #[allow(dead_code)]
     SubscribeSend,
     FirstMessage,
 }
@@ -99,6 +100,7 @@ struct ProbeReport {
     subscribe_started: bool,
     subscribe_completed: bool,
     subscribe_send_completed: bool,
+    initial_request_sent_during_subscribe_open: bool,
     first_message_received: bool,
     elapsed_ms: u64,
     reason_class: String,
@@ -117,6 +119,7 @@ impl ProbeReport {
             subscribe_started: false,
             subscribe_completed: false,
             subscribe_send_completed: false,
+            initial_request_sent_during_subscribe_open: false,
             first_message_received: false,
             elapsed_ms,
             reason_class: reason_class.to_string(),
@@ -284,6 +287,7 @@ async fn run_yellowstone_probe(config: &ProbeConfig, started: Instant) -> Result
         subscribe_started: false,
         subscribe_completed: false,
         subscribe_send_completed: false,
+        initial_request_sent_during_subscribe_open: false,
         first_message_received: false,
         elapsed_ms: 0,
         reason_class: REASON_OK.to_string(),
@@ -340,15 +344,18 @@ async fn run_yellowstone_probe(config: &ProbeConfig, started: Instant) -> Result
         }
     };
 
+    let subscribe_request = build_subscribe_request(config.mode, &config.program_ids);
     report.subscribe_started = true;
-    let (mut subscribe_tx, mut stream) = match time::timeout(
+    report.initial_request_sent_during_subscribe_open = true;
+    let (_subscribe_tx, mut stream) = match time::timeout(
         Duration::from_millis(config.subscribe_timeout_ms),
-        client.subscribe(),
+        client.subscribe_with_request(Some(subscribe_request)),
     )
     .await
     {
         Ok(Ok(parts)) => {
             report.subscribe_completed = true;
+            report.subscribe_send_completed = true;
             parts
         }
         Ok(Err(error)) => {
@@ -368,33 +375,6 @@ async fn run_yellowstone_probe(config: &ProbeConfig, started: Instant) -> Result
             return Ok(report);
         }
     };
-
-    let subscribe_request = build_subscribe_request(config.mode, &config.program_ids);
-    match time::timeout(
-        Duration::from_millis(config.subscribe_timeout_ms),
-        subscribe_tx.send(subscribe_request),
-    )
-    .await
-    {
-        Ok(Ok(())) => {
-            report.subscribe_send_completed = true;
-        }
-        Ok(Err(error)) => {
-            report.reason_class = REASON_SUBSCRIBE_SEND_FAILED.to_string();
-            report.error_redacted = Some(redact_error(
-                &error.to_string(),
-                &config.grpc_url,
-                &config.x_token,
-            ));
-            report.elapsed_ms = elapsed_ms(started);
-            return Ok(report);
-        }
-        Err(_) => {
-            report.reason_class = timeout_reason_for_phase(ProbePhase::SubscribeSend).to_string();
-            report.elapsed_ms = elapsed_ms(started);
-            return Ok(report);
-        }
-    }
 
     match time::timeout(
         Duration::from_millis(config.subscribe_timeout_ms),
