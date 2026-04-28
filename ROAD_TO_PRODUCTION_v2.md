@@ -219,19 +219,56 @@ Current engineering interpretation:
 - interpretation: the operator shape is not yet live-usable because it still
   reaches an unbounded runtime `observed_swaps` coverage scan before producing
   the scoring fact writer report
-- next corrective batch should keep the same proof target but remove the
-  unbounded `observed_swaps_coverage_snapshot` dependency and use only bounded
-  / indexed read-only SQL or already persisted cached freshness evidence
-- latest three `wallet_metrics` buckets all have `MAX(score) = 0.0`, while
-  `MAX(tradable_ratio) = 1.0`, `MAX(trades) = 59`, and `MAX(buy_total) = 35`
-- current bounded evidence now points at persisted score/open-position/active
-  day inputs for otherwise high-activity wallets; do not lower thresholds or
-  bypass gates before proving whether those persisted evidence paths are
-  truthful
-- because all `wallet_scoring_*` fact/open-lot tables are empty on the live
-  runtime DB, the next proof-first batch should target the scoring fact writer
-  / rebuild path that is supposed to populate those tables from observed swaps
-  before any selector/scoring threshold change is considered
+- corrective requirement from that failed run: keep the same proof target but
+  remove the unbounded `observed_swaps_coverage_snapshot` dependency and use
+  only bounded / indexed read-only SQL or already persisted cached freshness
+  evidence
+- commit `31836b2` removed the production-path
+  `observed_swaps_coverage_snapshot` dependency from that report and changed
+  the unavailable full-table observed-swaps coverage fields into explicit
+  non-blocking read-only evidence skips
+- operator-only rollout of `31836b2` completed without restarting the main
+  service; the server stayed at `solana-copy-bot.service = active`,
+  `MainPID = 1544590`, `NRestarts = 0`
+- first post-rollout report invocation with a `60s` guard produced no JSON and
+  timed out; targeted read-only SQL profiling then showed the remaining report
+  queries were individually bounded enough on warm cache:
+  - five-day indexed `observed_swaps` aggregate:
+    `29450 total / 24035 buys / 5415 sells`, `elapsed_s = 0`
+  - `wallet_activity_days` coverage:
+    `5030095 rows`, `max_day = 2026-04-28`, `elapsed_s = 3`
+  - latest `wallet_metrics` aggregate:
+    `12506 rows`, `max_score = 0.24680428924031877`,
+    `max_trades = 76`, `max_buy_total = 42`, `max_tradable_ratio = 1.0`,
+    `elapsed_s = 0`
+  - all `wallet_scoring_*` fact/open-lot tables remained `0`, `elapsed_s = 0`
+- second post-profiling live report invocation completed in `2s` and reported:
+  - `production_green = false`
+  - `scoring_aggregates_write_enabled = false`
+  - `scoring_aggregates_enabled = false`
+  - `observed_swaps_total_rows = null`
+  - `observed_swaps_max_ts_utc = null`
+  - `observed_swaps_window_rows = 29450`
+  - `wallet_activity_days_total_rows = 5030095`
+  - `latest_wallet_metrics_window_start = 2026-04-23T06:00:00Z`
+  - `latest_wallet_metrics_rows = 12506`
+  - all `wallet_scoring_*` fact/open-lot row counts are `0`
+  - `discovery_scoring_covered_since = null`
+  - `discovery_scoring_covered_through = null`
+  - `discovery_scoring_materialization_gap_cursor = null`
+  - `blocker_reason = discovery_scoring_aggregates_write_disabled`
+- current interpretation: the scoring fact writer seam is not currently
+  proving a writer bug; the live config intentionally has aggregate writes and
+  reads disabled, and aggregate coverage markers are absent, so the next
+  bounded step must follow the aggregate-scoring activation contract
+- the older all-zero-score metric-bucket evidence has been superseded by the
+  `31836b2` live report: the latest metrics bucket now has a positive
+  `MAX(score)`, but it is still below the `min_score` threshold and aggregate
+  scoring facts are still absent
+- because all `wallet_scoring_*` fact/open-lot tables are empty while the live
+  config has aggregate writes and reads disabled, the next proof-first step is
+  the aggregate-scoring backfill/readiness activation contract, not a writer
+  bug fix and not a selector/scoring threshold change
 - current bounded work should now target why the fresh persisted metrics/raw
   evidence produce zero publishable wallets, using persisted metrics evidence
   only; stale persisted freshness evidence and cached-summary conflict are no
