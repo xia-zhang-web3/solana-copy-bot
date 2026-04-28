@@ -207,9 +207,10 @@ Record facts, not vague status language.
 
 ## Current State Snapshot
 
-As of `2026-04-28T11:35:27Z`, Stage 3 production discovery truth remains
-fail-closed, but the active blocker has moved past raw-history recovery and
-past aggregate-scoring materialization.
+As of `2026-04-28T12:39:19Z`, Stage 3 production discovery truth remains
+fail-closed. Raw-history recovery and the one-shot aggregate-scoring
+materialization are no longer the active blocker, but the attempted aggregate
+runtime enablement exposed a new live writer/coverage freshness seam.
 
 Current interpretation:
 
@@ -219,8 +220,9 @@ Current interpretation:
   the active production blocker.
 - The aggregate-scoring materialization lane has been unblocked and run on
   production.
-- Current active evidence is `raw_window_zero_publishable_universe` with fresh
-  persisted raw truth and persisted aggregate-scoring facts.
+- Current active evidence is still `raw_window_zero_publishable_universe`, but
+  aggregate reads cannot be enabled yet because aggregate coverage becomes stale
+  when live observed-swap persistence is saturated.
 - Do not reduce `scoring_window_days` or weaken fail-closed semantics to route
   around this result.
 
@@ -230,9 +232,9 @@ Latest confirmed live snapshot:
 - service restarts: `NRestarts = 0`
 - server repo and origin include:
   - `a566402` (`Bound scoring prepare market stats`)
-  - `ce48d5f` (`Record scoring prepare blocker proof`)
-- `backfill_discovery_scoring` was rebuilt on production only; the main
-  service was not restarted for that binary update
+  - `1722c36` (`Record aggregate scoring materialization result`)
+- `backfill_discovery_scoring` and `copybot-app` have both been rebuilt on
+  production
 - aggregate scoring backfill completed and marked coverage:
   - `covered_since = 2026-04-23T11:30:20.851433259Z`
   - `covered_through = 2026-04-28T11:28:26.020910509Z`
@@ -266,6 +268,31 @@ Latest confirmed live snapshot:
   - `open_position_distribution.wallets_with_open_position = 11376`
   - `selector_zero_universe_claimed = false`
   - `production_green = false`
+- aggregate config rollout attempt:
+  - `scoring_aggregates_write_enabled` and `scoring_aggregates_enabled` were
+    temporarily set to `true`
+  - `solana-copy-bot.service` was restarted and stayed `active`
+  - with both flags enabled, aggregate readiness reported
+    `writes_enabled = true`, `reads_enabled = true`,
+    `covered_through_lag_seconds = 4195`,
+    `effective_writes_ready = true`, `effective_reads_ready = false`
+  - the read blocker was `covered_through_too_stale_for_runtime_gate`
+  - `backfill_discovery_scoring` refused to run while aggregate writes/reads
+    were enabled, with:
+    `backfill requires discovery.scoring_aggregates_write_enabled=false in the target runtime config`
+  - direct read-only SQL showed `observed_swaps` had no rows newer than
+    `2026-04-28T11:28:26.020910509Z`
+  - service logs showed observed-swap persistence deferral with
+    `observed_swap_writer_pending_requests = 128` and aggregate queue depth `0`
+- the aggregate config rollout was rolled back to `false` / `false` from
+  `/etc/solana-copy-bot/live.server.toml.backup-20260428T114128Z-before-aggregate-enable`
+- post-rollback service state:
+  - `solana-copy-bot.service = active`
+  - `MainPID = 1559057`
+  - `NRestarts = 0`
+  - aggregate readiness is back to config blockers plus stale coverage:
+    `writes_disabled_by_config`, `reads_disabled_by_config`,
+    `covered_through_too_stale_for_runtime_gate`
 
 Operational reading:
 
@@ -273,8 +300,9 @@ Operational reading:
 - do not run restore/gap-fill work as the next step unless new raw-history
   evidence appears
 - do not mark production green from operator observability alone
-- next batches should target the proven zero-publishable-universe / aggregate
-  readiness seam, not historical raw recovery
+- next batches should target the proven live observed-swap writer/backpressure
+  seam that prevents aggregate coverage freshness, not historical raw recovery
+  and not selector threshold changes
 
 ## Current Development Accounting
 
@@ -392,16 +420,17 @@ Operator semantics:
 
 Deployment status:
 
-- aggregate-scoring storage is ready for runtime gate, but live config still
-  has aggregate writes and reads disabled
-- enabling config / restarting service is a separate production rollout
-  decision; do not do it just because the backfill completed
+- aggregate-scoring storage was ready for the runtime gate immediately after
+  the backfill, but runtime enablement was rolled back because live coverage
+  freshness did not advance under observed-swap writer saturation
+- do not re-enable aggregate reads/writes until the writer/backpressure seam is
+  corrected and live readiness proves `effective_reads_ready = true`
 - emergency-stop CLI remains a manual safety surface only; it is not a Stage 3
   production-green signal
 
 Current sync status:
 
-- current accepted commits have reached `origin/main` through `a566402`
+- current accepted commits have reached `origin/main` through `1722c36`
 - server checkout has been advanced to the current docs/code head when noted in
   the live update; still check `git status` and `git log -1` at session start
 

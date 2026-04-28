@@ -6,9 +6,10 @@ Status: Active historical roadmap with 2026-03-27 production-readiness and live 
 ## Live Update (`2026-04-28`)
 
 Current Stage 3 production-discovery truth remains fail-closed. Raw-history
-recovery is no longer the active lane, and aggregate-scoring materialization is
-now proven and covered on production. The active blocker is the fresh
-zero-publishable-universe result plus aggregate runtime config gates.
+recovery is no longer the active lane, and aggregate-scoring materialization was
+proven and covered on production. A controlled aggregate runtime enablement was
+attempted and rolled back because live aggregate coverage freshness did not
+advance under observed-swap writer saturation.
 
 Latest accepted and deployed operator batch:
 
@@ -135,13 +136,49 @@ Follow-up accepted batch and live result:
 
 Current next bounded seam:
 
-- aggregate storage is ready, but production config still has aggregate writes
-  and reads disabled
-- do not enable config as a silent shortcut; treat it as a separate production
-  rollout decision
-- the next coding batch should be proof-first around the remaining
-  zero-publishable-universe result from persisted aggregate metrics, not
-  another raw-history/gap-fill batch
+- aggregate storage was ready immediately after materialization, but production
+  runtime enablement is not safe yet
+- the next coding batch should be proof-first around the live observed-swap
+  writer/backpressure seam that prevents aggregate coverage freshness, not
+  another raw-history/gap-fill batch and not selector threshold changes
+
+Aggregate runtime enablement attempt and rollback (`2026-04-28`):
+
+- `copybot-app` was rebuilt on production and the main service was restarted
+  with:
+  - `scoring_aggregates_write_enabled = true`
+  - `scoring_aggregates_enabled = true`
+- service stayed healthy after restart:
+  - `solana-copy-bot.service = active`
+  - `NRestarts = 0`
+- readiness with both aggregate flags enabled:
+  - `writes_enabled = true`
+  - `reads_enabled = true`
+  - `effective_writes_ready = true`
+  - `effective_reads_ready = false`
+  - `covered_through_lag_seconds = 4195`
+  - read blocker: `covered_through_too_stale_for_runtime_gate`
+- `backfill_discovery_scoring` refused to run while aggregate writes were
+  enabled:
+  `backfill requires discovery.scoring_aggregates_write_enabled=false in the target runtime config`
+- direct read-only SQL showed no `observed_swaps` rows newer than the aggregate
+  coverage cursor:
+  `2026-04-28T11:28:26.020910509Z`
+- live service logs showed observed-swap persistence deferrals with:
+  - `observed_swap_writer_pending_requests = 128`
+  - `observed_swap_writer_aggregate_queue_depth_batches = 0`
+  - `yellowstone_output_queue_depth = 0`
+- interpretation:
+  - aggregate materialized facts exist and coverage had been marked
+  - aggregate runtime reads still fail closed because the live coverage cursor
+    goes stale after enablement
+  - the proven seam is live observed-swap writer/backpressure freshness, not
+    raw-history recovery or selector thresholds
+- rollback:
+  - restored
+    `/etc/solana-copy-bot/live.server.toml.backup-20260428T114128Z-before-aggregate-enable`
+  - aggregate flags are back to `false` / `false`
+  - post-rollback service stayed `active`, `MainPID = 1559057`, `NRestarts = 0`
 
 ## Live Update (`2026-04-27`)
 
