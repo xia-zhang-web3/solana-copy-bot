@@ -5,9 +5,10 @@ Status: Active historical roadmap with 2026-03-27 production-readiness and live 
 
 ## Live Update (`2026-04-28`)
 
-Current Stage 3 production-discovery truth remains fail-closed. The active
-post-gap-fill blocker is now the aggregate-scoring materialization lane, not
-raw-history recovery and not selector/scoring thresholds.
+Current Stage 3 production-discovery truth remains fail-closed. Raw-history
+recovery is no longer the active lane, and aggregate-scoring materialization is
+now proven and covered on production. The active blocker is the fresh
+zero-publishable-universe result plus aggregate runtime config gates.
 
 Latest accepted and deployed operator batch:
 
@@ -73,6 +74,74 @@ Next bounded development seam:
   narrower diagnostic is needed first
 - do not mark aggregate scoring coverage unless a real checkpointed replay
   reaches a valid completion contract
+
+Follow-up accepted batch and live result:
+
+- commit `a566402` (`Bound scoring prepare market stats`) removed the private
+  discovery-scoring lifetime token-history scans from
+  `token_market_stats_on_conn`
+- local reviewer checks passed:
+  - `cargo test -j 1 -p copybot-storage --bin backfill_discovery_scoring`
+  - `cargo check -j 1 -p copybot-storage --bin backfill_discovery_scoring`
+  - `rustfmt --check --edition 2021 crates/storage/src/discovery_scoring.rs crates/storage/src/bin/backfill_discovery_scoring.rs`
+  - `git diff --check -- crates/storage/src/discovery_scoring.rs crates/storage/src/bin/backfill_discovery_scoring.rs`
+- production rollout rebuilt only
+  `target/release/backfill_discovery_scoring`; the main service was not
+  restarted
+- bounded probe after rollout:
+  - report dir: `/tmp/aggregate-scoring-probe-20260428T113020Z`
+  - `prepare_ms = 252`
+  - `apply_ms = 6`
+  - `checkpoint_persisted`
+  - `rows = 250`
+  - `coverage_marked = false`
+- exact resume run after the probe:
+  - report dir: `/tmp/aggregate-scoring-resume-20260428T113209Z`
+  - used exact `--resume-ts`, `--resume-slot`, and `--resume-signature`
+  - `summary outcome = completed_and_marked_covered`
+  - `stop_reason = completed_source_exhausted`
+  - `coverage_marked = true`
+  - `total_rows = 32285`
+  - `batches = 33`
+  - `covered_since = 2026-04-23T11:30:20.851433259Z`
+  - `covered_through = 2026-04-28T11:28:26.020910509Z`
+- aggregate readiness after resume:
+  - `backfill_progress = null`
+  - `backfill_active = false`
+  - `materialization_gap_cursor = null`
+  - `scoring_horizon_covered = true`
+  - `covered_through_within_runtime_lag = true`
+  - `storage_ready_for_runtime_gate = true`
+  - remaining blockers: `writes_disabled_by_config`,
+    `reads_disabled_by_config`
+- live scoring fact counts after materialization:
+  - `wallet_scoring_days = 16717`
+  - `wallet_scoring_buy_facts = 26593`
+  - `wallet_scoring_open_lots = 25111`
+  - `wallet_scoring_close_facts = 2123`
+  - `wallet_scoring_carryover_lots = 0`
+- live read-only reports after materialization:
+  - `copybot_discovery_scoring_fact_writer_blocker_report` returned
+    `blocker_reason = discovery_scoring_aggregates_write_disabled`
+  - `discovery_publication_zero_universe_report` still returned
+    `production_green = false`
+  - fresh raw truth remained
+    `raw_window_zero_publishable_universe`
+  - `wallets_seen = 14351`
+  - `persisted_metrics.metrics_rows = 14351`
+  - `post_threshold_candidate_wallets = 0`
+  - `score_distribution.max_score = 0.2406280107272889`
+  - `open_position_distribution.wallets_with_open_position = 11376`
+
+Current next bounded seam:
+
+- aggregate storage is ready, but production config still has aggregate writes
+  and reads disabled
+- do not enable config as a silent shortcut; treat it as a separate production
+  rollout decision
+- the next coding batch should be proof-first around the remaining
+  zero-publishable-universe result from persisted aggregate metrics, not
+  another raw-history/gap-fill batch
 
 ## Live Update (`2026-04-27`)
 

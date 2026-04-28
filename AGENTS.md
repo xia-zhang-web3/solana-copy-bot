@@ -207,55 +207,74 @@ Record facts, not vague status language.
 
 ## Current State Snapshot
 
-As of `2026-04-26T16:13:17Z`, the exact-window `program_history` backfill and
-the broad explicit-missing repair scan have reached the requested raw-history
-interval end, but Stage 3 remains fail-closed because explicit boundary missing
-segments remain:
-
-- `start = 2026-04-18T16:56:04Z`
-- `end = 2026-04-23T15:59:39.857189405Z`
+As of `2026-04-28T11:35:27Z`, Stage 3 production discovery truth remains
+fail-closed, but the active blocker has moved past raw-history recovery and
+past aggregate-scoring materialization.
 
 Current interpretation:
 
-- Stage 3 production discovery truth remains fail-closed.
-- The broad exact-window `program_history` backfill frontier has reached the
-  requested end.
-- The broad provider-blocked explicit missing root segment has been scanned and
-  removed.
-- The current active lane is targeted repair of remaining prefix/suffix
-  boundary missing segments.
+- Stage 3 production discovery truth is still red.
 - The old live raw frontier/source-starvation blocker is closed.
-- The current blocker is not selector starvation and not "wait five days".
-- The current blocker is not broad backfill progress; it is missing-segment
-  honesty.
+- The old long-running `program_history` raw-history backfill lane is no longer
+  the active production blocker.
+- The aggregate-scoring materialization lane has been unblocked and run on
+  production.
+- Current active evidence is `raw_window_zero_publishable_universe` with fresh
+  persisted raw truth and persisted aggregate-scoring facts.
+- Do not reduce `scoring_window_days` or weaken fail-closed semantics to route
+  around this result.
 
 Latest confirmed live snapshot:
 
 - `solana-copy-bot.service = active`
-- transient `copybot-gap-repair-loop-next.service` stopped after reaching
-  `completed_with_explicit_missing_segments` with only boundary/non-target
-  evidence remaining
-- `copybot-discovery-recent-raw-snapshot.timer = active`
-- `copybot-discovery-runtime-export.timer = active`
 - service restarts: `NRestarts = 0`
-- disk: `360G used / 108G available / 78%`
-- gap-fill attempt: `2261`
-- `covered_through = 2026-04-23T15:59:39Z`
-- `next_batch_start_slot = 415159799`
-- `current_phase = completed_with_explicit_missing_segments`
-- `verdict = not_proven_due_to_provider_throttling`
-- `reason = program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain`
-- `staged_rows = 45771784`
-- `missing_segments_count = 8`
-- `replayable_output = false`
+- server repo and origin include:
+  - `a566402` (`Bound scoring prepare market stats`)
+  - `ce48d5f` (`Record scoring prepare blocker proof`)
+- `backfill_discovery_scoring` was rebuilt on production only; the main
+  service was not restarted for that binary update
+- aggregate scoring backfill completed and marked coverage:
+  - `covered_since = 2026-04-23T11:30:20.851433259Z`
+  - `covered_through = 2026-04-28T11:28:26.020910509Z`
+  - `covered_through_slot = 416210014`
+  - `covered_through_signature =
+    3RYyrPyHBSsve51YzYtiEVgDvCjYNMhWJQZSLyAr4ciJacSE2t2Y6J8wUoobdzP7KRd8zU2dSwHCK1NgPLd8X7ba`
+- aggregate readiness after backfill:
+  - `backfill_progress = null`
+  - `backfill_active = false`
+  - `materialization_gap_cursor = null`
+  - `scoring_horizon_covered = true`
+  - `covered_through_within_runtime_lag = true`
+  - `storage_ready_for_runtime_gate = true`
+  - remaining readiness blockers are config-only:
+    `writes_disabled_by_config`, `reads_disabled_by_config`
+- live scoring fact counts:
+  - `wallet_scoring_days = 16717`
+  - `wallet_scoring_buy_facts = 26593`
+  - `wallet_scoring_open_lots = 25111`
+  - `wallet_scoring_close_facts = 2123`
+  - `wallet_scoring_carryover_lots = 0`
+- read-only zero-universe report after aggregate materialization:
+  - `publication.reason = raw_window_zero_publishable_universe`
+  - `raw_window.persisted_raw_truth_sufficient = false`
+  - `raw_window.persisted_raw_truth_reason = raw_window_zero_publishable_universe`
+  - `raw_window.wallets_seen = 14351`
+  - `persisted_metrics.metrics_rows = 14351`
+  - `persisted_metrics.threshold_counts_proven = true`
+  - `post_threshold_candidate_wallets = 0`
+  - `score_distribution.max_score = 0.2406280107272889`
+  - `open_position_distribution.wallets_with_open_position = 11376`
+  - `selector_zero_universe_claimed = false`
+  - `production_green = false`
 
 Operational reading:
 
-- do not run runtime restore from the current artifact
-- do not restart the broad loop just because the artifact is not replayable
-- repair only the explicit boundary missing segments with a bounded operator
-  path
-- production green requires `replayable_output=true` and no `missing_segments`
+- do not restart old raw-history gap-fill loops for the current blocker
+- do not run restore/gap-fill work as the next step unless new raw-history
+  evidence appears
+- do not mark production green from operator observability alone
+- next batches should target the proven zero-publishable-universe / aggregate
+  readiness seam, not historical raw recovery
 
 ## Current Development Accounting
 
@@ -286,6 +305,13 @@ Accepted local/repo work for the current lane:
   `crates/app/src/bin/copybot_operator_emergency_stop.rs`
 - targeted explicit-missing repair mode:
   `discovery_raw_gap_fill_program_history --repair-explicit-missing-segments`
+- aggregate-scoring stage diagnostics:
+  `crates/storage/src/bin/backfill_discovery_scoring.rs`,
+  `crates/storage/src/discovery_scoring.rs`
+- bounded private scoring prepare market stats:
+  `token_market_stats_on_conn` no longer runs lifetime token `MIN(ts)` or
+  lifetime `COUNT(DISTINCT wallet_id)` scans in the private aggregate
+  materialization path
 
 Operator semantics:
 
@@ -356,28 +382,28 @@ Operator semantics:
   read-only decision-surface report only: it quantifies irreducible boundary
   residue, always keeps `restore_ready=false` and `production_green=false`, and
   does not weaken restore gates or fail-closed semantics
+- `backfill_discovery_scoring` requires exact resume cursor semantics after a
+  partial run; it refuses non-idempotent replay without `--reset`, seeded reset,
+  or exact `--resume-*`
+- aggregate-scoring coverage was marked only after `completed_source_exhausted`
+  and durable checkpoints; partial probe runs did not mark coverage
+- bounded production backfill used `--mark-covered`, but coverage was actually
+  written only on full source exhaustion
 
 Deployment status:
 
-- the broad repair live loop is currently stopped after proving only boundary
-  evidence remains
-- deploy the boundary-capable explicit-missing repair binary only after reviewer
-  acceptance
-- status operator is observability only and does not change restore semantics
-- restore preflight is a fail-closed post-backfill gate helper; it does not
-  apply restore or mark production green
-- handoff report is a human review helper only; it does not apply restore,
-  start the gap-fill child, or mark production green
-- emergency-stop CLI is a manual safety surface only; it is not a Stage 3
-  production-green signal and should not be deployed or used as an activation
-  shortcut
+- aggregate-scoring storage is ready for runtime gate, but live config still
+  has aggregate writes and reads disabled
+- enabling config / restarting service is a separate production rollout
+  decision; do not do it just because the backfill completed
+- emergency-stop CLI remains a manual safety surface only; it is not a Stage 3
+  production-green signal
 
 Current sync status:
 
-- current gap-fill / restore operator commits have reached `origin/main`
-  through `21b56db`
-- before duplicating work in a new session, still check whether equivalent
-  files already exist on `origin/main`
+- current accepted commits have reached `origin/main` through `a566402`
+- server checkout has been advanced to the current docs/code head when noted in
+  the live update; still check `git status` and `git log -1` at session start
 
 ## If A New Session Starts Elsewhere
 
