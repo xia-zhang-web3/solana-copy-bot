@@ -1410,6 +1410,8 @@ fn discovery_aggregate_writer_loop(
         }
     }
     let mut gap_cursor_observed_since_last_clear = false;
+    let mut gap_replay_resume_gap_cursor: Option<DiscoveryRuntimeCursor> = None;
+    let mut gap_replay_resume_after_cursor: Option<DiscoveryRuntimeCursor> = None;
 
     loop {
         match receiver.recv_timeout(OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_POLL_INTERVAL) {
@@ -1435,11 +1437,33 @@ fn discovery_aggregate_writer_loop(
                 if config.aggregate_gap_fallback_enabled
                     && config.aggregate_idle_replay_max_pages > 0
                 {
+                    let current_gap_cursor =
+                        store.load_discovery_scoring_materialization_gap_cursor()?;
+                    let resume_after_cursor = match (
+                        current_gap_cursor.as_ref(),
+                        gap_replay_resume_gap_cursor.as_ref(),
+                        gap_replay_resume_after_cursor.as_ref(),
+                    ) {
+                        (Some(current), Some(resume_gap), Some(resume_after))
+                            if compare_discovery_runtime_cursors(current, resume_gap)
+                                == std::cmp::Ordering::Equal =>
+                        {
+                            Some(resume_after)
+                        }
+                        _ => {
+                            gap_cursor_observed_since_last_clear = false;
+                            gap_replay_resume_gap_cursor = None;
+                            gap_replay_resume_after_cursor = None;
+                            None
+                        }
+                    };
                     telemetry.set_aggregate_worker_busy(true);
-                    let result = run_aggregate_gap_replay(
+                    let result = run_aggregate_gap_replay_with_resume(
                         &store,
                         &config,
                         Some(config.aggregate_idle_replay_max_pages),
+                        resume_after_cursor,
+                        gap_cursor_observed_since_last_clear,
                     );
                     telemetry.set_aggregate_worker_busy(false);
                     let replay_progress = result?;
@@ -1453,6 +1477,15 @@ fn discovery_aggregate_writer_loop(
                             )?;
                         }
                         gap_cursor_observed_since_last_clear = false;
+                        gap_replay_resume_gap_cursor = None;
+                        gap_replay_resume_after_cursor = None;
+                    } else if let Some(current_gap_cursor) =
+                        store.load_discovery_scoring_materialization_gap_cursor()?
+                    {
+                        if let Some(last_replay_cursor) = replay_progress.last_replay_cursor {
+                            gap_replay_resume_gap_cursor = Some(current_gap_cursor);
+                            gap_replay_resume_after_cursor = Some(last_replay_cursor);
+                        }
                     }
                     telemetry.set_aggregate_gap_active(
                         store
@@ -2329,21 +2362,72 @@ fn observed_swap_retention_protection_load_error_requires_abort(error: &anyhow::
 #[derive(Default)]
 struct AggregateReplayProgress {
     page_count: usize,
+    gap_cursor_loaded: bool,
     gap_cursor_observed: bool,
     caught_up_to_tail: bool,
+    last_replay_cursor: Option<DiscoveryRuntimeCursor>,
+}
+
+fn compare_discovery_runtime_cursors(
+    left: &DiscoveryRuntimeCursor,
+    right: &DiscoveryRuntimeCursor,
+) -> std::cmp::Ordering {
+    left.ts_utc
+        .cmp(&right.ts_utc)
+        .then_with(|| left.slot.cmp(&right.slot))
+        .then_with(|| left.signature.cmp(&right.signature))
+}
+
+fn aggregate_replay_cursor_before(cursor: &DiscoveryRuntimeCursor) -> DiscoveryRuntimeCursor {
+    if cursor.slot > 0 {
+        return DiscoveryRuntimeCursor {
+            ts_utc: cursor.ts_utc,
+            slot: cursor.slot - 1,
+            signature: String::new(),
+        };
+    }
+
+    DiscoveryRuntimeCursor {
+        ts_utc: cursor
+            .ts_utc
+            .checked_sub_signed(ChronoDuration::nanoseconds(1))
+            .unwrap_or(cursor.ts_utc),
+        slot: u64::MAX,
+        signature: String::new(),
+    }
 }
 
 fn run_aggregate_startup_replay(
     store: &SqliteStore,
     config: &ObservedSwapWriterConfig,
 ) -> Result<()> {
-    run_aggregate_gap_replay(store, config, None).map(|_| ())
+    loop {
+        let progress = run_aggregate_gap_replay(store, config, None)?;
+        let Some(_current_gap_cursor) =
+            store.load_discovery_scoring_materialization_gap_cursor()?
+        else {
+            return Ok(());
+        };
+        if progress.gap_cursor_loaded {
+            return Ok(());
+        }
+    }
 }
 
 fn run_aggregate_gap_replay(
     store: &SqliteStore,
     config: &ObservedSwapWriterConfig,
     max_pages: Option<usize>,
+) -> Result<AggregateReplayProgress> {
+    run_aggregate_gap_replay_with_resume(store, config, max_pages, None, false)
+}
+
+fn run_aggregate_gap_replay_with_resume(
+    store: &SqliteStore,
+    config: &ObservedSwapWriterConfig,
+    max_pages: Option<usize>,
+    resume_after_cursor: Option<&DiscoveryRuntimeCursor>,
+    gap_cursor_observed_before: bool,
 ) -> Result<AggregateReplayProgress> {
     if !config.aggregate_writes_enabled {
         return Ok(AggregateReplayProgress::default());
@@ -2362,8 +2446,18 @@ fn run_aggregate_gap_replay(
         }
     };
     let gap_cursor = store.load_discovery_scoring_materialization_gap_cursor()?;
-    let mut gap_cursor_observed = false;
-    let mut progress = AggregateReplayProgress::default();
+    let mut progress = AggregateReplayProgress {
+        gap_cursor_loaded: gap_cursor.is_some(),
+        ..AggregateReplayProgress::default()
+    };
+    if let Some(resume_after_cursor) = resume_after_cursor {
+        cursor = resume_after_cursor.clone();
+    } else if let Some(gap_cursor) = gap_cursor.as_ref() {
+        if compare_discovery_runtime_cursors(gap_cursor, &cursor) != std::cmp::Ordering::Greater {
+            cursor = aggregate_replay_cursor_before(gap_cursor);
+        }
+    }
+    let mut gap_cursor_observed = gap_cursor_observed_before;
 
     loop {
         if max_pages.is_some_and(|limit| progress.page_count >= limit.max(1)) {
@@ -2435,6 +2529,7 @@ fn run_aggregate_gap_replay(
             slot: last_swap.slot,
             signature: last_swap.signature.clone(),
         };
+        progress.last_replay_cursor = Some(cursor.clone());
         store.set_discovery_scoring_covered_through_cursor(&cursor)?;
         progress.page_count = progress.page_count.saturating_add(1);
 
@@ -2544,6 +2639,23 @@ mod tests {
             signature: signature.to_string(),
             slot,
             ts_utc: DateTime::parse_from_rfc3339("2026-04-28T12:30:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        }
+    }
+
+    fn aggregate_gap_replay_test_swap(signature: &str, slot: u64, ts_utc: &str) -> SwapEvent {
+        SwapEvent {
+            wallet: "wallet-aggregate-gap-replay-test".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-aggregate-gap-replay-test".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: signature.to_string(),
+            slot,
+            ts_utc: DateTime::parse_from_rfc3339(ts_utc)
                 .expect("timestamp")
                 .with_timezone(&Utc),
             exact_amounts: None,
@@ -3787,6 +3899,183 @@ mod tests {
     }
 
     #[test]
+    fn observed_swap_writer_aggregate_gap_replay_clears_gap_behind_covered_through_after_observing_exact_row_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-observed-swap-gap-behind-covered-clear",
+        )?;
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let gap_swap = aggregate_gap_replay_test_swap(
+            "sig-gap-behind-covered-exact",
+            800,
+            "2026-04-28T13:00:00Z",
+        );
+        let tail_swap = aggregate_gap_replay_test_swap(
+            "sig-gap-behind-covered-tail",
+            801,
+            "2026-04-28T13:00:05Z",
+        );
+        store.insert_observed_swaps_batch(&[gap_swap.clone(), tail_swap.clone()])?;
+        let gap_cursor = DiscoveryRuntimeCursor {
+            ts_utc: gap_swap.ts_utc,
+            slot: gap_swap.slot,
+            signature: gap_swap.signature.clone(),
+        };
+        let tail_cursor = DiscoveryRuntimeCursor {
+            ts_utc: tail_swap.ts_utc,
+            slot: tail_swap.slot,
+            signature: tail_swap.signature.clone(),
+        };
+        store.set_discovery_scoring_covered_through_cursor(&tail_cursor)?;
+        store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
+
+        let progress = super::run_aggregate_gap_replay(
+            &store,
+            &ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
+            None,
+        )?;
+
+        assert!(
+            progress.gap_cursor_observed,
+            "gap replay must observe the exact latched row before clearing"
+        );
+        assert!(
+            progress.caught_up_to_tail,
+            "unbounded gap replay should catch up to tail before clearing"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            None,
+            "gap cursor behind covered_through should clear only after exact row observation and tail catch-up"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(tail_cursor),
+            "gap replay must not move covered_through backwards"
+        );
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_aggregate_gap_replay_keeps_gap_behind_covered_through_when_exact_row_missing_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-observed-swap-gap-behind-covered-missing",
+        )?;
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let missing_gap = aggregate_gap_replay_test_swap(
+            "sig-gap-behind-covered-missing",
+            810,
+            "2026-04-28T13:05:00Z",
+        );
+        let tail_swap = aggregate_gap_replay_test_swap(
+            "sig-gap-behind-covered-missing-tail",
+            811,
+            "2026-04-28T13:05:05Z",
+        );
+        store.insert_observed_swaps_batch(&[tail_swap.clone()])?;
+        let gap_cursor = DiscoveryRuntimeCursor {
+            ts_utc: missing_gap.ts_utc,
+            slot: missing_gap.slot,
+            signature: missing_gap.signature.clone(),
+        };
+        let tail_cursor = DiscoveryRuntimeCursor {
+            ts_utc: tail_swap.ts_utc,
+            slot: tail_swap.slot,
+            signature: tail_swap.signature.clone(),
+        };
+        store.set_discovery_scoring_covered_through_cursor(&tail_cursor)?;
+        store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
+
+        let progress = super::run_aggregate_gap_replay(
+            &store,
+            &ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
+            None,
+        )?;
+
+        assert!(
+            !progress.gap_cursor_observed,
+            "gap replay must not claim observation when the exact latched row is absent"
+        );
+        assert!(
+            progress.caught_up_to_tail,
+            "replay can catch tail while still keeping missing exact-gap evidence latched"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(gap_cursor),
+            "missing exact latched row must keep materialization gap fail-closed"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(tail_cursor),
+            "missing-gap replay must not regress covered_through"
+        );
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_aggregate_gap_replay_partial_gap_behind_covered_through_does_not_move_coverage_backwards_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-observed-swap-gap-behind-covered-partial",
+        )?;
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let gap_swap = aggregate_gap_replay_test_swap(
+            "sig-gap-behind-covered-partial",
+            820,
+            "2026-04-28T13:10:00Z",
+        );
+        let tail_swap = aggregate_gap_replay_test_swap(
+            "sig-gap-behind-covered-partial-tail",
+            821,
+            "2026-04-28T13:10:05Z",
+        );
+        store.insert_observed_swaps_batch(&[gap_swap.clone(), tail_swap.clone()])?;
+        let gap_cursor = DiscoveryRuntimeCursor {
+            ts_utc: gap_swap.ts_utc,
+            slot: gap_swap.slot,
+            signature: gap_swap.signature.clone(),
+        };
+        let tail_cursor = DiscoveryRuntimeCursor {
+            ts_utc: tail_swap.ts_utc,
+            slot: tail_swap.slot,
+            signature: tail_swap.signature.clone(),
+        };
+        store.set_discovery_scoring_covered_through_cursor(&tail_cursor)?;
+        store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
+
+        let progress = super::run_aggregate_gap_replay(
+            &store,
+            &ObservedSwapWriterConfig::for_test(16, 1, true, aggregate_write_config(), None),
+            Some(1),
+        )?;
+
+        assert!(
+            progress.gap_cursor_observed,
+            "partial replay should still observe the exact latched row when starting from the gap boundary"
+        );
+        assert!(
+            !progress.caught_up_to_tail,
+            "one-row bounded replay should not claim tail catch-up"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(gap_cursor),
+            "partial replay must keep gap latched until tail catch-up"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(tail_cursor),
+            "bounded replay from behind covered_through must not regress covered_through"
+        );
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
     fn observed_swap_writer_snapshot_clears_pending_after_fast_successful_enqueue() -> Result<()> {
         let unique = format!(
             "copybot-app-observed-swap-fast-snapshot-{}-{}",
@@ -4119,12 +4408,8 @@ mod tests {
         };
 
         runtime.block_on(async { writer.enqueue(&failing_swap).await })?;
-        std::thread::sleep(StdDuration::from_millis(50));
 
-        let error = writer
-            .ensure_running()
-            .expect_err("terminal async writer failure should be latched before next enqueue");
-        let error_chain = format!("{error:#}");
+        let error_chain = wait_for_writer_terminal_failure(&writer)?;
         assert!(
             error_chain.contains(super::OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT),
             "unexpected terminal failure health-check error: {error_chain}"
@@ -4405,12 +4690,8 @@ mod tests {
         };
 
         runtime.block_on(async { writer.enqueue(&failing_swap).await })?;
-        std::thread::sleep(StdDuration::from_millis(50));
 
-        let error = writer
-            .ensure_running()
-            .expect_err("fatal discovery scoring gap cursor failure must latch");
-        let error_chain = format!("{error:#}");
+        let error_chain = wait_for_writer_terminal_failure(&writer)?;
         assert!(
             error_chain.contains(super::OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT),
             "unexpected terminal gap-cursor failure error: {error_chain}"
