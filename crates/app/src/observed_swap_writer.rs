@@ -30,6 +30,7 @@ pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_COALESCE_MAX_BATCHES: us
 pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_CAPACITY_MULTIPLIER: usize = 4;
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_MULTIPLIER: usize = 8;
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_CAP: usize = 512;
+const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_ROWS_CAP: usize = 16_384;
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_WINDOW: StdDuration =
     StdDuration::from_millis(10);
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_POLL: StdDuration =
@@ -1914,12 +1915,16 @@ fn recent_raw_journal_writer_loop(
         }
     }
 
+    let adaptive_coalesce_max_batches =
+        recent_raw_journal_adaptive_write_coalesce_max_batches(&config);
+    let adaptive_coalesce_max_rows = recent_raw_journal_adaptive_write_coalesce_max_rows(&config);
     while let Ok(request) = receiver.recv() {
         let collected_batch = collect_recent_raw_journal_write_batch(
             &receiver,
             request,
             config.write_coalesce_max_batches,
-            recent_raw_journal_adaptive_write_coalesce_max_batches(&config),
+            adaptive_coalesce_max_batches,
+            adaptive_coalesce_max_rows,
             &telemetry,
         );
         let inserted_swaps = collected_batch.inserted_swaps;
@@ -1931,6 +1936,7 @@ fn recent_raw_journal_writer_loop(
             journal_batch_rows = inserted_swaps.len(),
             journal_request_batches = collected_batch.request_batches,
             journal_coalesce_elapsed_ms = collected_batch.coalesce_elapsed_ms,
+            journal_coalesce_limit_rows = collected_batch.coalesce_limit_rows,
             journal_queue_depth_batches = telemetry.journal_queue_depth_batches(),
             journal_queue_row_debt = telemetry.journal_queue_row_debt(),
             journal_overflow_depth_batches = telemetry
@@ -2082,6 +2088,7 @@ struct RecentRawJournalCollectedWriteBatch {
     inserted_swaps: Vec<SwapEvent>,
     request_batches: usize,
     coalesce_elapsed_ms: u64,
+    coalesce_limit_rows: usize,
 }
 
 fn recent_raw_journal_adaptive_write_coalesce_max_batches(
@@ -2093,6 +2100,18 @@ fn recent_raw_journal_adaptive_write_coalesce_max_batches(
         .saturating_mul(OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_MULTIPLIER)
         .min(OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_CAP)
         .max(config.write_coalesce_max_batches.max(1))
+}
+
+fn recent_raw_journal_adaptive_write_coalesce_max_rows(
+    config: &ObservedSwapRecentRawJournalConfig,
+) -> usize {
+    OBSERVED_SWAP_BATCH_MAX_SIZE
+        .max(1)
+        .saturating_mul(recent_raw_journal_adaptive_write_coalesce_max_batches(
+            config,
+        ))
+        .min(OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_ROWS_CAP)
+        .max(OBSERVED_SWAP_BATCH_MAX_SIZE.max(1))
 }
 
 fn recent_raw_journal_adaptive_coalesce_pressure(telemetry: &ObservedSwapWriterTelemetry) -> bool {
@@ -2110,6 +2129,7 @@ fn collect_recent_raw_journal_write_batch(
     first_request: RecentRawJournalWriteRequest,
     max_batches: usize,
     adaptive_max_batches: usize,
+    adaptive_max_rows: usize,
     telemetry: &ObservedSwapWriterTelemetry,
 ) -> RecentRawJournalCollectedWriteBatch {
     let coalesce_started = Instant::now();
@@ -2117,8 +2137,9 @@ fn collect_recent_raw_journal_write_batch(
     telemetry.note_journal_queue_dequeued(first_request_rows);
     let mut inserted_swaps = first_request.inserted_swaps;
     let drain_limit = adaptive_max_batches.max(max_batches.max(1));
+    let row_limit = adaptive_max_rows.max(1);
     let mut drained_batches = 1usize;
-    while drained_batches < drain_limit {
+    while drained_batches < drain_limit && inserted_swaps.len() < row_limit {
         match receiver.try_recv() {
             Ok(request) => {
                 let request_rows = request.row_count();
@@ -2160,6 +2181,7 @@ fn collect_recent_raw_journal_write_batch(
         inserted_swaps,
         request_batches: drained_batches,
         coalesce_elapsed_ms: elapsed_ms_ceil(coalesce_started.elapsed()),
+        coalesce_limit_rows: row_limit,
     }
 }
 
@@ -7746,6 +7768,7 @@ mod tests {
             first_request,
             32,
             32,
+            64,
             &telemetry,
         );
         let inserted_swaps = collected_batch.inserted_swaps;
@@ -7952,6 +7975,7 @@ mod tests {
             first_request,
             1,
             16,
+            16,
             &telemetry,
         );
         producer
@@ -7978,6 +8002,90 @@ mod tests {
                     .saturating_add(5) as u64,
             "adaptive coalescing must use only the tiny bounded wait window: {collected_batch:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_writer_coalesces_queued_tiny_requests_to_row_cap_under_pressure_stage1(
+    ) -> Result<()> {
+        let telemetry = ObservedSwapWriterTelemetry::default();
+        telemetry
+            .journal_queue_capacity_batches
+            .store(128, Ordering::Relaxed);
+        telemetry
+            .journal_overflow_depth_batches
+            .store(1, Ordering::Relaxed);
+        let (journal_sender, journal_receiver) =
+            std_mpsc::sync_channel::<super::RecentRawJournalWriteRequest>(128);
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-28T20:22:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        for idx in 0..64usize {
+            let request = recent_raw_journal_write_request_for_test(idx, 1, scenario_now);
+            let request_rows = request.row_count();
+            journal_sender.send(request)?;
+            telemetry.note_journal_queue_enqueued(request_rows);
+        }
+
+        let first_request = journal_receiver.recv()?;
+        let collected_batch = super::collect_recent_raw_journal_write_batch(
+            &journal_receiver,
+            first_request,
+            4,
+            64,
+            32,
+            &telemetry,
+        );
+
+        assert_eq!(
+            collected_batch.inserted_swaps.len(),
+            32,
+            "writer-side coalescing under pressure should drain queued tiny requests into a fat bounded row batch"
+        );
+        assert_eq!(collected_batch.request_batches, 32);
+        assert_eq!(collected_batch.coalesce_limit_rows, 32);
+        let snapshot = telemetry.snapshot();
+        assert_eq!(
+            snapshot.journal_queue_depth_batches, 32,
+            "row-capped writer drain should leave the remaining queued requests visible"
+        );
+        assert_eq!(snapshot.journal_queue_row_debt, 32);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_writer_no_pressure_path_collects_only_available_request_stage1(
+    ) -> Result<()> {
+        let telemetry = ObservedSwapWriterTelemetry::default();
+        telemetry
+            .journal_queue_capacity_batches
+            .store(8, Ordering::Relaxed);
+        let (journal_sender, journal_receiver) =
+            std_mpsc::sync_channel::<super::RecentRawJournalWriteRequest>(8);
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-28T20:23:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let first_request = recent_raw_journal_write_request_for_test(0, 1, scenario_now);
+        let first_rows = first_request.row_count();
+        journal_sender.send(first_request)?;
+        telemetry.note_journal_queue_enqueued(first_rows);
+
+        let first_request = journal_receiver.recv()?;
+        let collected_batch = super::collect_recent_raw_journal_write_batch(
+            &journal_receiver,
+            first_request,
+            4,
+            64,
+            32,
+            &telemetry,
+        );
+
+        assert_eq!(
+            collected_batch.request_batches, 1,
+            "without queue/overflow pressure and without immediately queued work, writer coalescing should not wait for more requests"
+        );
+        assert_eq!(collected_batch.inserted_swaps.len(), 1);
+        assert_eq!(telemetry.snapshot().journal_queue_depth_batches, 0);
         Ok(())
     }
 
