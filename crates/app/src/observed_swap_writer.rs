@@ -40,6 +40,8 @@ const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_ROW_DEBT_CAP_EXCEEDED: &str =
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE: StdDuration = StdDuration::from_secs(10);
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE_EXHAUSTED: &str =
     "observed_swap_writer_recent_raw_journal_write_deadline_exhausted";
+const OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_REPLAY_APPLY_SQLITE_LOCK_RETRYABLE: &str =
+    "observed_swap_writer_discovery_scoring_replay_apply_sqlite_lock_retryable";
 const OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_RUG_FINALIZE_SQLITE_LOCK_RETRYABLE: &str =
     "observed_swap_writer_discovery_scoring_rug_finalize_sqlite_lock_retryable";
 const RECENT_RAW_JOURNAL_PHASE_BATCH_COLLECTED: &str = "batch_collected";
@@ -2918,6 +2920,12 @@ fn observed_swap_writer_discovery_scoring_error_requires_abort(error: &anyhow::E
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn observed_swap_writer_discovery_scoring_replay_apply_error_is_retryable(
+    error: &anyhow::Error,
+) -> bool {
+    is_retryable_sqlite_anyhow_error(error) && !is_fatal_sqlite_anyhow_error(error)
+}
+
 fn observed_swap_writer_discovery_scoring_rug_finalize_error_is_retryable(
     error: &anyhow::Error,
 ) -> bool {
@@ -3299,6 +3307,9 @@ fn run_aggregate_gap_replay_with_resume(
         if let Err(error) =
             store.apply_discovery_scoring_batch(&page, &config.aggregate_write_config)
         {
+            let retryable_replay_apply_lock =
+                observed_swap_writer_discovery_scoring_replay_apply_error_is_retryable(&error);
+            let mut retryable_gap_latched = false;
             if let Some(first_gap_swap) = page.iter().min_by(|a, b| {
                 a.ts_utc
                     .cmp(&b.ts_utc)
@@ -3317,12 +3328,31 @@ fn run_aggregate_gap_replay_with_resume(
                             "observed swap writer startup replay stopping after fatal discovery scoring gap cursor failure",
                         );
                     }
-                    warn!(
-                        error = %gap_error,
-                        gap_since = %first_gap_swap.ts_utc,
-                        "failed to latch discovery scoring materialization gap during aggregate-writer startup replay",
-                    );
+                    if retryable_replay_apply_lock {
+                        return Err(gap_error).context(
+                            "observed swap writer startup replay stopping after retryable discovery scoring apply failure could not latch gap cursor",
+                        );
+                    } else {
+                        warn!(
+                            error = %gap_error,
+                            gap_since = %first_gap_swap.ts_utc,
+                            "failed to latch discovery scoring materialization gap during aggregate-writer startup replay",
+                        );
+                    }
+                } else {
+                    retryable_gap_latched = true;
                 }
+            }
+            if retryable_replay_apply_lock {
+                warn!(
+                    reason = OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_REPLAY_APPLY_SQLITE_LOCK_RETRYABLE,
+                    error = %error,
+                    gap_latched = retryable_gap_latched,
+                    "discovery scoring replay apply hit retryable sqlite lock; leaving coverage watermark unchanged",
+                );
+                progress.gap_cursor_loaded |= retryable_gap_latched;
+                progress.gap_cursor_observed = gap_cursor_observed;
+                return Ok(progress);
             }
             return Err(error).context(
                 "failed replaying discovery scoring rows during aggregate-writer startup catch-up",
@@ -6230,6 +6260,139 @@ mod tests {
     }
 
     #[test]
+    fn observed_swap_writer_discovery_scoring_replay_apply_sqlite_lock_is_retryable_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-observed-swap-replay-apply-lock-retryable",
+        )?;
+        let (covered_swap, first_replay_swap, _tail_replay_swap) =
+            seed_discovery_scoring_rug_finalize_replay_fixture(&db_path)?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for replay apply retryable trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_replay_apply_buy_fact_retryable
+             BEFORE INSERT ON wallet_scoring_buy_facts
+             WHEN NEW.buy_signature = 'sig-rug-finalize-replay-first'
+             BEGIN
+                 SELECT RAISE(FAIL, 'database is locked');
+             END;",
+        )?;
+
+        let writer = ObservedSwapWriter::start_with_config(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
+        )?;
+
+        let gap_cursor = wait_for_discovery_scoring_materialization_gap_cursor(&db_path)?;
+        assert_eq!(
+            gap_cursor,
+            DiscoveryRuntimeCursor {
+                ts_utc: first_replay_swap.ts_utc,
+                slot: first_replay_swap.slot,
+                signature: first_replay_swap.signature.clone(),
+            },
+            "retryable replay apply lock must latch the first failed replay row"
+        );
+        std::thread::sleep(StdDuration::from_millis(50));
+        writer
+            .ensure_running()
+            .context("retryable replay apply sqlite lock must not become terminal")?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        assert_eq!(
+            verify_store.load_discovery_scoring_covered_through_cursor()?,
+            Some(DiscoveryRuntimeCursor {
+                ts_utc: covered_swap.ts_utc,
+                slot: covered_swap.slot,
+                signature: covered_swap.signature.clone(),
+            }),
+            "coverage must not advance as if retryable replay apply completed"
+        );
+
+        writer.shutdown()?;
+        drop(trigger_conn);
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_discovery_scoring_replay_apply_unknown_error_remains_terminal_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-observed-swap-replay-apply-unknown-fatal",
+        )?;
+        let (covered_swap, first_replay_swap, _tail_replay_swap) =
+            seed_discovery_scoring_rug_finalize_replay_fixture(&db_path)?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for replay apply terminal trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_replay_apply_buy_fact_terminal
+             BEFORE INSERT ON wallet_scoring_buy_facts
+             WHEN NEW.buy_signature = 'sig-rug-finalize-replay-first'
+             BEGIN
+                 SELECT RAISE(FAIL, 'forced replay apply failure');
+             END;",
+        )?;
+
+        let writer = ObservedSwapWriter::start_with_config(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
+        )?;
+
+        let error_chain = wait_for_writer_terminal_failure(&writer)?;
+        assert!(
+            error_chain.contains(
+                "failed replaying discovery scoring rows during aggregate-writer startup catch-up"
+            ),
+            "unknown replay apply errors must keep explicit terminal context: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("forced replay apply failure"),
+            "unknown replay apply error detail must remain visible: {error_chain}"
+        );
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        assert_eq!(
+            verify_store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(DiscoveryRuntimeCursor {
+                ts_utc: first_replay_swap.ts_utc,
+                slot: first_replay_swap.slot,
+                signature: first_replay_swap.signature.clone(),
+            }),
+            "terminal replay apply failure should keep explicit gap evidence"
+        );
+        assert_eq!(
+            verify_store.load_discovery_scoring_covered_through_cursor()?,
+            Some(DiscoveryRuntimeCursor {
+                ts_utc: covered_swap.ts_utc,
+                slot: covered_swap.slot,
+                signature: covered_swap.signature.clone(),
+            }),
+            "terminal replay apply failure must not advance coverage"
+        );
+
+        let shutdown_error = writer
+            .shutdown()
+            .expect_err("shutdown should surface terminal replay apply failure");
+        let shutdown_chain = format!("{shutdown_error:#}");
+        assert!(
+            shutdown_chain.contains(
+                "failed replaying discovery scoring rows during aggregate-writer startup catch-up"
+            ),
+            "unexpected shutdown error: {shutdown_chain}"
+        );
+        drop(trigger_conn);
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
     fn observed_swap_writer_discovery_scoring_rug_finalize_unknown_error_remains_terminal_stage1(
     ) -> Result<()> {
         let db_path =
@@ -6834,6 +6997,32 @@ mod tests {
     #[test]
     fn observed_swap_writer_discovery_scoring_rug_finalize_retryable_classifier_matches_lock_only()
     {
+        let replay_apply_retryable = anyhow!(
+            "failed replaying discovery scoring rows during aggregate-writer startup catch-up: failed to run discovery scoring batch: failed to open discovery scoring batch transaction: database is locked"
+        );
+        assert!(
+            super::observed_swap_writer_discovery_scoring_replay_apply_error_is_retryable(
+                &replay_apply_retryable
+            )
+        );
+
+        let replay_apply_fatal = anyhow!(
+            "failed replaying discovery scoring rows during aggregate-writer startup catch-up: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(
+            !super::observed_swap_writer_discovery_scoring_replay_apply_error_is_retryable(
+                &replay_apply_fatal
+            )
+        );
+
+        let replay_apply_unknown =
+            anyhow!("failed replaying discovery scoring rows: forced replay apply failure");
+        assert!(
+            !super::observed_swap_writer_discovery_scoring_replay_apply_error_is_retryable(
+                &replay_apply_unknown
+            )
+        );
+
         let retryable = anyhow!(
             "failed to run discovery scoring rug finalize: failed to open discovery scoring rug finalize transaction: database is locked"
         );
