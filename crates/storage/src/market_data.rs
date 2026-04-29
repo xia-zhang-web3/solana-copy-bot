@@ -51,6 +51,10 @@ const OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_TABLE: &str =
     "temp_discovery_replay_candidate_wallets";
 const OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_META_TABLE: &str =
     "temp_discovery_replay_candidate_wallets_meta";
+const OBSERVED_SWAPS_TAIL_CURSOR_QUERY: &str = "SELECT ts, slot, signature
+             FROM observed_swaps INDEXED BY idx_observed_swaps_ts_slot_signature
+             ORDER BY ts DESC, slot DESC, signature DESC
+             LIMIT 1";
 const RECENT_RAW_JOURNAL_BULK_INSERT_PARAMS_PER_ROW: usize = 13;
 const RECENT_RAW_JOURNAL_BULK_INSERT_HARD_CAP_ROWS: usize = 512;
 
@@ -3961,6 +3965,34 @@ impl SqliteStore {
             covered_through_cursor,
             row_count: row_count.max(0) as usize,
         })
+    }
+
+    pub fn observed_swaps_tail_cursor_read_only(&self) -> Result<Option<DiscoveryRuntimeCursor>> {
+        if !self.sqlite_table_exists("observed_swaps")? {
+            return Ok(None);
+        }
+        let cursor_raw = self
+            .conn
+            .query_row(OBSERVED_SWAPS_TAIL_CURSOR_QUERY, [], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .optional()
+            .context("failed loading bounded observed_swaps tail cursor")?;
+        cursor_raw
+            .map(
+                |(ts_raw, slot_raw, signature)| -> Result<DiscoveryRuntimeCursor> {
+                    Ok(DiscoveryRuntimeCursor {
+                        ts_utc: parse_rfc3339_utc(&ts_raw, "observed_swaps tail ts")?,
+                        slot: slot_raw.max(0) as u64,
+                        signature,
+                    })
+                },
+            )
+            .transpose()
     }
 
     pub fn observed_swaps_row_count_since(&self, since: DateTime<Utc>) -> Result<u64> {

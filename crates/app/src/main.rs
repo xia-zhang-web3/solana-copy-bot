@@ -12,10 +12,10 @@ use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{FollowSnapshot, ShadowService};
 use copybot_storage::{
     is_fatal_sqlite_anyhow_error, report_startup_step_progress, run_observed_startup_step,
-    sqlite_contention_snapshot, DiscoveryAggregateWriteConfig, DiscoveryRuntimeMode, Lamports,
-    SignedLamports, SqliteContentionSnapshot, SqliteStartupPolicy, SqliteStore, StartupStepOutcome,
-    StartupStepProgress, StartupStepProgressReporter, StartupStepRuntimePolicy,
-    StartupStepTimeoutBehavior, SQLITE_DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
+    sqlite_contention_snapshot, DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor,
+    DiscoveryRuntimeMode, Lamports, SignedLamports, SqliteContentionSnapshot, SqliteStartupPolicy,
+    SqliteStore, StartupStepOutcome, StartupStepProgress, StartupStepProgressReporter,
+    StartupStepRuntimePolicy, StartupStepTimeoutBehavior, SQLITE_DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -110,6 +110,10 @@ const DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL: StdDuration 
     StdDuration::from_secs(5);
 const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG: &str =
     "discovery_cycle_deferred_due_to_recent_raw_journal_backlog";
+const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG: &str =
+    "discovery_cycle_deferred_due_to_recent_raw_journal_persisted_lag";
+const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_LAG_UNPROVEN: &str =
+    "discovery_cycle_deferred_due_to_recent_raw_journal_lag_unproven";
 const STARTUP_STEP_LOG_INTERVAL: StdDuration = StdDuration::from_secs(5);
 const STARTUP_REQUIRED_STEP_TIMEOUT: StdDuration = StdDuration::from_secs(120);
 const STARTUP_SQLITE_AUX_STEP_TIMEOUT: StdDuration = StdDuration::from_secs(30);
@@ -3715,7 +3719,7 @@ async fn run_app_loop(
     let mut discovery_catch_up_pending = false;
     let mut shadow_scheduler = ShadowScheduler::new();
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
-    let mut discovery_catch_up_recent_raw_journal_backlog_retry_at: Option<StdInstant> = None;
+    let mut discovery_catch_up_recent_raw_journal_defer_retry_at: Option<StdInstant> = None;
     let recent_raw_journal_writer_config = ObservedSwapRecentRawJournalConfig {
         sqlite_path: recent_raw_journal_config.path.clone(),
         retention_days: observed_swaps_retention_days.max(1).saturating_add(
@@ -3952,7 +3956,7 @@ async fn run_app_loop(
                             &observed_swap_writer_snapshot,
                             ingestion_snapshot.as_ref(),
                         );
-                        discovery_catch_up_recent_raw_journal_backlog_retry_at = None;
+                        discovery_catch_up_recent_raw_journal_defer_retry_at = None;
                         if discovery_catch_up_pending {
                             let pressure_override =
                                 discovery_output.persisted_stream_catch_up_pressure_override_requested;
@@ -4043,7 +4047,7 @@ async fn run_app_loop(
                     }
                     Ok(Err(error)) => {
                         discovery_catch_up_pending = false;
-                        discovery_catch_up_recent_raw_journal_backlog_retry_at = None;
+                        discovery_catch_up_recent_raw_journal_defer_retry_at = None;
                         warn!(
                             discovery_task_join_result = "task_error",
                             error = %error,
@@ -4057,7 +4061,7 @@ async fn run_app_loop(
                     }
                     Err(error) => {
                         discovery_catch_up_pending = false;
-                        discovery_catch_up_recent_raw_journal_backlog_retry_at = None;
+                        discovery_catch_up_recent_raw_journal_defer_retry_at = None;
                         warn!(
                             discovery_task_join_result = "join_error",
                             error = %error,
@@ -4067,7 +4071,7 @@ async fn run_app_loop(
                 }
             }
             _ = async {
-                if let Some(retry_at) = discovery_catch_up_recent_raw_journal_backlog_retry_at {
+                if let Some(retry_at) = discovery_catch_up_recent_raw_journal_defer_retry_at {
                     let now = StdInstant::now();
                     if retry_at > now {
                         time::sleep(retry_at.duration_since(now)).await;
@@ -4077,12 +4081,12 @@ async fn run_app_loop(
                 let observed_swap_writer_snapshot = observed_swap_writer.snapshot();
                 let catch_up_gate = discovery_catch_up_retrigger_recent_raw_journal_backlog_gate(
                     &observed_swap_writer_snapshot,
-                    discovery_catch_up_recent_raw_journal_backlog_retry_at,
+                    discovery_catch_up_recent_raw_journal_defer_retry_at,
                     StdInstant::now(),
                 );
                 if catch_up_gate.reason.is_some() {
                     discovery_catch_up_pending = catch_up_gate.keep_pending;
-                    discovery_catch_up_recent_raw_journal_backlog_retry_at =
+                    discovery_catch_up_recent_raw_journal_defer_retry_at =
                         catch_up_gate.next_retry_at;
                     warn_discovery_deferred_due_to_recent_raw_journal_backlog(
                         "catch_up_retrigger",
@@ -4092,12 +4096,31 @@ async fn run_app_loop(
                 }
                 if !catch_up_gate.should_start {
                     discovery_catch_up_pending = catch_up_gate.keep_pending;
-                    discovery_catch_up_recent_raw_journal_backlog_retry_at =
+                    discovery_catch_up_recent_raw_journal_defer_retry_at =
                         catch_up_gate.next_retry_at;
                     continue;
                 }
+                let persisted_lag_gate = load_discovery_recent_raw_journal_persisted_lag_gate(
+                    &store,
+                    &recent_raw_journal_config.path,
+                );
+                if let Some(reason) = persisted_lag_gate.reason {
+                    let catch_up_gate =
+                        discovery_catch_up_retrigger_recent_raw_journal_defer_gate(
+                            reason,
+                            StdInstant::now(),
+                        );
+                    discovery_catch_up_pending = catch_up_gate.keep_pending;
+                    discovery_catch_up_recent_raw_journal_defer_retry_at =
+                        catch_up_gate.next_retry_at;
+                    warn_discovery_deferred_due_to_recent_raw_journal_persisted_lag(
+                        "catch_up_retrigger",
+                        &persisted_lag_gate,
+                    );
+                    continue;
+                }
                 discovery_catch_up_pending = false;
-                discovery_catch_up_recent_raw_journal_backlog_retry_at = None;
+                discovery_catch_up_recent_raw_journal_defer_retry_at = None;
                 discovery_handle = Some(spawn_logged_discovery_task(
                     sqlite_path.clone(),
                     recent_raw_journal_config.path.clone(),
@@ -5377,8 +5400,19 @@ async fn run_app_loop(
                     );
                     continue;
                 }
+                let persisted_lag_gate = load_discovery_recent_raw_journal_persisted_lag_gate(
+                    &store,
+                    &recent_raw_journal_config.path,
+                );
+                if persisted_lag_gate.reason.is_some() {
+                    warn_discovery_deferred_due_to_recent_raw_journal_persisted_lag(
+                        "scheduled_tick",
+                        &persisted_lag_gate,
+                    );
+                    continue;
+                }
                 discovery_catch_up_pending = false;
-                discovery_catch_up_recent_raw_journal_backlog_retry_at = None;
+                discovery_catch_up_recent_raw_journal_defer_retry_at = None;
                 discovery_handle = Some(spawn_logged_discovery_task(
                     sqlite_path.clone(),
                     recent_raw_journal_config.path.clone(),
@@ -5601,12 +5635,129 @@ fn discovery_recent_raw_journal_backlog_defer_reason(
     None
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiscoveryRecentRawJournalPersistedLagGate {
+    reason: Option<&'static str>,
+    observed_tail_cursor: Option<DiscoveryRuntimeCursor>,
+    journal_covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+    lag_seconds: Option<i64>,
+    error: Option<String>,
+}
+
+fn discovery_observed_tail_cursor_cmp_for_recent_raw_gate(
+    left: &DiscoveryRuntimeCursor,
+    right: &DiscoveryRuntimeCursor,
+) -> std::cmp::Ordering {
+    left.ts_utc
+        .cmp(&right.ts_utc)
+        .then_with(|| left.slot.cmp(&right.slot))
+        .then_with(|| left.signature.cmp(&right.signature))
+}
+
+fn discovery_recent_raw_journal_persisted_lag_gate_from_cursors(
+    observed_tail_cursor: Option<DiscoveryRuntimeCursor>,
+    journal_covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+) -> DiscoveryRecentRawJournalPersistedLagGate {
+    let lag_seconds = match (&observed_tail_cursor, &journal_covered_through_cursor) {
+        (Some(observed_tail_cursor), Some(journal_cursor)) => Some(
+            observed_tail_cursor
+                .ts_utc
+                .signed_duration_since(journal_cursor.ts_utc)
+                .num_seconds()
+                .max(0),
+        ),
+        _ => None,
+    };
+    let reason = match (&observed_tail_cursor, &journal_covered_through_cursor) {
+        (None, _) => None,
+        (Some(_), None) => Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG),
+        (Some(observed_tail_cursor), Some(journal_cursor))
+            if discovery_observed_tail_cursor_cmp_for_recent_raw_gate(
+                journal_cursor,
+                observed_tail_cursor,
+            ) == std::cmp::Ordering::Less =>
+        {
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG)
+        }
+        (Some(_), Some(_)) => None,
+    };
+
+    DiscoveryRecentRawJournalPersistedLagGate {
+        reason,
+        observed_tail_cursor,
+        journal_covered_through_cursor,
+        lag_seconds,
+        error: None,
+    }
+}
+
+fn discovery_recent_raw_journal_persisted_lag_unproven_gate(
+    error: impl Into<String>,
+) -> DiscoveryRecentRawJournalPersistedLagGate {
+    DiscoveryRecentRawJournalPersistedLagGate {
+        reason: Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_LAG_UNPROVEN),
+        observed_tail_cursor: None,
+        journal_covered_through_cursor: None,
+        lag_seconds: None,
+        error: Some(error.into()),
+    }
+}
+
+fn load_discovery_recent_raw_journal_persisted_lag_gate(
+    runtime_store: &SqliteStore,
+    recent_raw_journal_path: &str,
+) -> DiscoveryRecentRawJournalPersistedLagGate {
+    let load_result =
+        (|| -> Result<(Option<DiscoveryRuntimeCursor>, Option<DiscoveryRuntimeCursor>)> {
+            let observed_tail_cursor = runtime_store
+                .observed_swaps_tail_cursor_read_only()
+                .context("failed loading bounded observed_swaps tail cursor")?;
+            if observed_tail_cursor.is_none() {
+                return Ok((None, None));
+            }
+            let journal_store = SqliteStore::open_read_only(Path::new(recent_raw_journal_path))
+                .with_context(|| {
+                    format!(
+                        "failed opening recent_raw journal db read-only: {recent_raw_journal_path}"
+                    )
+                })?;
+            let journal_state = journal_store
+                .recent_raw_journal_state_cached_read_only_required()
+                .context("failed loading cached recent_raw journal state")?;
+            Ok((observed_tail_cursor, journal_state.covered_through_cursor))
+        })();
+
+    match load_result {
+        Ok((observed_tail_cursor, journal_covered_through_cursor)) => {
+            discovery_recent_raw_journal_persisted_lag_gate_from_cursors(
+                observed_tail_cursor,
+                journal_covered_through_cursor,
+            )
+        }
+        Err(error) => {
+            discovery_recent_raw_journal_persisted_lag_unproven_gate(format!("{error:#}"))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DiscoveryCatchUpRetriggerBacklogGate {
     should_start: bool,
     keep_pending: bool,
     next_retry_at: Option<StdInstant>,
     reason: Option<&'static str>,
+}
+
+fn discovery_catch_up_retrigger_recent_raw_journal_defer_gate(
+    reason: &'static str,
+    now: StdInstant,
+) -> DiscoveryCatchUpRetriggerBacklogGate {
+    DiscoveryCatchUpRetriggerBacklogGate {
+        should_start: false,
+        keep_pending: true,
+        next_retry_at: Some(now + DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL),
+        reason: Some(reason),
+    }
 }
 
 fn discovery_catch_up_retrigger_recent_raw_journal_backlog_gate(
@@ -5628,12 +5779,7 @@ fn discovery_catch_up_retrigger_recent_raw_journal_backlog_gate(
     if let Some(reason) =
         discovery_recent_raw_journal_backlog_defer_reason(observed_swap_writer_snapshot)
     {
-        return DiscoveryCatchUpRetriggerBacklogGate {
-            should_start: false,
-            keep_pending: true,
-            next_retry_at: Some(now + DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL),
-            reason: Some(reason),
-        };
+        return discovery_catch_up_retrigger_recent_raw_journal_defer_gate(reason, now);
     }
 
     DiscoveryCatchUpRetriggerBacklogGate {
@@ -5642,6 +5788,51 @@ fn discovery_catch_up_retrigger_recent_raw_journal_backlog_gate(
         next_retry_at: None,
         reason: None,
     }
+}
+
+fn warn_discovery_deferred_due_to_recent_raw_journal_persisted_lag(
+    trigger: &'static str,
+    persisted_lag_gate: &DiscoveryRecentRawJournalPersistedLagGate,
+) {
+    let observed_tail_cursor_ts = persisted_lag_gate
+        .observed_tail_cursor
+        .as_ref()
+        .map(|cursor| cursor.ts_utc.to_rfc3339());
+    let observed_tail_cursor_slot = persisted_lag_gate
+        .observed_tail_cursor
+        .as_ref()
+        .map(|cursor| cursor.slot);
+    let observed_tail_cursor_signature = persisted_lag_gate
+        .observed_tail_cursor
+        .as_ref()
+        .map(|cursor| cursor.signature.as_str());
+    let journal_cursor_ts = persisted_lag_gate
+        .journal_covered_through_cursor
+        .as_ref()
+        .map(|cursor| cursor.ts_utc.to_rfc3339());
+    let journal_cursor_slot = persisted_lag_gate
+        .journal_covered_through_cursor
+        .as_ref()
+        .map(|cursor| cursor.slot);
+    let journal_cursor_signature = persisted_lag_gate
+        .journal_covered_through_cursor
+        .as_ref()
+        .map(|cursor| cursor.signature.as_str());
+    warn!(
+        reason = persisted_lag_gate
+            .reason
+            .unwrap_or(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_LAG_UNPROVEN),
+        discovery_task_trigger = trigger,
+        observed_swaps_tail_ts_utc = observed_tail_cursor_ts.as_deref(),
+        observed_swaps_tail_slot = observed_tail_cursor_slot,
+        observed_swaps_tail_signature = observed_tail_cursor_signature,
+        recent_raw_journal_covered_through_ts_utc = journal_cursor_ts.as_deref(),
+        recent_raw_journal_covered_through_slot = journal_cursor_slot,
+        recent_raw_journal_covered_through_signature = journal_cursor_signature,
+        recent_raw_journal_lag_seconds = persisted_lag_gate.lag_seconds,
+        recent_raw_journal_lag_check_error = persisted_lag_gate.error.as_deref(),
+        "discovery scheduled/background cycle deferred because recent_raw journal persisted coverage is not proven current"
+    );
 }
 
 fn warn_discovery_deferred_due_to_recent_raw_journal_backlog(
@@ -8722,6 +8913,257 @@ mod app_tests {
             discovery_recent_raw_journal_backlog_defer_reason(&writer_snapshot),
             None,
             "recent_raw backlog gate must not stop raw writer flow solely because raw requests are pending"
+        );
+    }
+
+    fn recent_raw_journal_gate_cursor(
+        ts: &str,
+        slot: u64,
+        signature: &str,
+    ) -> DiscoveryRuntimeCursor {
+        DiscoveryRuntimeCursor {
+            ts_utc: DateTime::parse_from_rfc3339(ts)
+                .expect("valid test cursor ts")
+                .with_timezone(&Utc),
+            slot,
+            signature: signature.to_string(),
+        }
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_persisted_lag_allows_scheduled_when_journal_covers_runtime_stage1(
+    ) {
+        let writer_snapshot = maintenance_test_writer_snapshot();
+        let runtime_cursor =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:00Z", 100, "sig-runtime");
+        let journal_cursor =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:00Z", 100, "sig-runtime");
+
+        let persisted_gate = discovery_recent_raw_journal_persisted_lag_gate_from_cursors(
+            Some(runtime_cursor),
+            Some(journal_cursor),
+        );
+
+        assert_eq!(
+            discovery_recent_raw_journal_backlog_defer_reason(&writer_snapshot),
+            None
+        );
+        assert_eq!(
+            persisted_gate.reason, None,
+            "scheduled discovery may start only when in-memory backlog is clear and persisted recent_raw covers runtime"
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_persisted_lag_allows_scheduled_when_observed_tail_absent_stage1(
+    ) {
+        let persisted_gate =
+            discovery_recent_raw_journal_persisted_lag_gate_from_cursors(None, None);
+
+        assert_eq!(
+            persisted_gate.reason, None,
+            "absent runtime raw cursor means there is no current runtime raw tail for the journal to cover"
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_bounded_observed_tail_helper_returns_latest_cursor_stage1(
+    ) -> Result<()> {
+        let (store, db_path) = make_test_store("recent-raw-journal-observed-tail-helper")?;
+        assert_eq!(
+            store.observed_swaps_tail_cursor_read_only()?,
+            None,
+            "empty observed_swaps has no raw tail to cover"
+        );
+
+        let same_ts = DateTime::parse_from_rfc3339("2026-04-29T09:00:00Z")
+            .expect("valid test ts")
+            .with_timezone(&Utc);
+        let mut lower_slot = test_swap("sig-tail-lower-slot");
+        lower_slot.ts_utc = same_ts;
+        lower_slot.slot = 100;
+        let mut higher_slot = test_swap("sig-tail-higher-slot");
+        higher_slot.ts_utc = same_ts;
+        higher_slot.slot = 101;
+        store.insert_observed_swap(&lower_slot)?;
+        store.insert_observed_swap(&higher_slot)?;
+
+        assert_eq!(
+            store.observed_swaps_tail_cursor_read_only()?,
+            Some(DiscoveryRuntimeCursor {
+                ts_utc: higher_slot.ts_utc,
+                slot: higher_slot.slot,
+                signature: higher_slot.signature.clone(),
+            }),
+            "bounded observed_swaps tail helper must use ts/slot/signature descending cursor order"
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_persisted_lag_uses_observed_tail_not_stale_discovery_runtime_state_stage1(
+    ) -> Result<()> {
+        let (runtime_store, runtime_db_path) =
+            make_test_store("recent-raw-journal-observed-tail-gate")?;
+        let journal_db_path = runtime_db_path.with_extension("recent-raw.sqlite");
+        let stale_cursor =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:00Z", 100, "sig-stale-runtime");
+        let observed_tail =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:10Z", 110, "sig-observed-tail");
+
+        runtime_store.upsert_discovery_runtime_cursor(&stale_cursor)?;
+        let mut live_swap = test_swap("sig-observed-tail");
+        live_swap.ts_utc = observed_tail.ts_utc;
+        live_swap.slot = observed_tail.slot;
+        runtime_store.insert_observed_swap(&live_swap)?;
+
+        let journal_store = SqliteStore::open(&journal_db_path)?;
+        let mut journal_swap = test_swap("sig-stale-runtime");
+        journal_swap.ts_utc = stale_cursor.ts_utc;
+        journal_swap.slot = stale_cursor.slot;
+        journal_store.insert_recent_raw_journal_batch(&[journal_swap], Utc::now())?;
+        drop(journal_store);
+
+        let gate = load_discovery_recent_raw_journal_persisted_lag_gate(
+            &runtime_store,
+            journal_db_path
+                .to_str()
+                .context("journal db path must be valid utf-8")?,
+        );
+
+        assert_eq!(
+            gate.reason,
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG),
+            "journal coverage that only reaches stale discovery_runtime_state must not satisfy the observed_swaps tail gate"
+        );
+        assert_eq!(gate.observed_tail_cursor, Some(observed_tail));
+        assert_eq!(gate.journal_covered_through_cursor, Some(stale_cursor));
+
+        let _ = std::fs::remove_file(&runtime_db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", runtime_db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", runtime_db_path.display()));
+        let _ = std::fs::remove_file(&journal_db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", journal_db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", journal_db_path.display()));
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_persisted_lag_blocks_scheduled_when_journal_cursor_missing_stage1(
+    ) {
+        let runtime_cursor =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:00Z", 100, "sig-runtime");
+
+        let persisted_gate = discovery_recent_raw_journal_persisted_lag_gate_from_cursors(
+            Some(runtime_cursor),
+            None,
+        );
+
+        assert_eq!(
+            persisted_gate.reason,
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG)
+        );
+        assert_eq!(persisted_gate.lag_seconds, None);
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_persisted_lag_blocks_scheduled_when_journal_is_behind_stage1(
+    ) {
+        let runtime_cursor =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:10Z", 110, "sig-runtime");
+        let journal_cursor =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:00Z", 100, "sig-journal");
+
+        let persisted_gate = discovery_recent_raw_journal_persisted_lag_gate_from_cursors(
+            Some(runtime_cursor),
+            Some(journal_cursor),
+        );
+
+        assert_eq!(
+            persisted_gate.reason,
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG)
+        );
+        assert_eq!(persisted_gate.lag_seconds, Some(10));
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_persisted_lag_catch_up_preserves_pending_stage1(
+    ) {
+        let runtime_cursor =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:10Z", 110, "sig-runtime");
+        let journal_cursor =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:00Z", 100, "sig-journal");
+        let persisted_gate = discovery_recent_raw_journal_persisted_lag_gate_from_cursors(
+            Some(runtime_cursor),
+            Some(journal_cursor),
+        );
+        let now = StdInstant::now();
+
+        let catch_up_gate = discovery_catch_up_retrigger_recent_raw_journal_defer_gate(
+            persisted_gate.reason.expect("lag should defer"),
+            now,
+        );
+
+        assert!(!catch_up_gate.should_start);
+        assert!(
+            catch_up_gate.keep_pending,
+            "catch-up intent must remain pending while persisted recent_raw lag defers retrigger"
+        );
+        assert!(catch_up_gate.next_retry_at.is_some_and(|retry_at| retry_at
+            >= now + DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL));
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_persisted_lag_catch_up_starts_when_lag_clears_and_retry_due_stage1(
+    ) {
+        let writer_snapshot = maintenance_test_writer_snapshot();
+        let runtime_cursor =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:00Z", 100, "sig-runtime");
+        let journal_cursor =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:00Z", 100, "sig-runtime");
+        let persisted_gate = discovery_recent_raw_journal_persisted_lag_gate_from_cursors(
+            Some(runtime_cursor),
+            Some(journal_cursor),
+        );
+        let now = StdInstant::now();
+        let catch_up_gate = discovery_catch_up_retrigger_recent_raw_journal_backlog_gate(
+            &writer_snapshot,
+            Some(now),
+            now,
+        );
+
+        assert!(
+            catch_up_gate.should_start,
+            "catch-up backlog retry gate should allow start once retry is due"
+        );
+        assert_eq!(persisted_gate.reason, None);
+        assert!(!catch_up_gate.keep_pending);
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_lag_unproven_blocks_start_stage1() {
+        let persisted_gate =
+            discovery_recent_raw_journal_persisted_lag_unproven_gate("synthetic read-only error");
+        let now = StdInstant::now();
+
+        let catch_up_gate = discovery_catch_up_retrigger_recent_raw_journal_defer_gate(
+            persisted_gate.reason.expect("unproven lag should defer"),
+            now,
+        );
+
+        assert_eq!(
+            persisted_gate.reason,
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_LAG_UNPROVEN)
+        );
+        assert!(!catch_up_gate.should_start);
+        assert!(catch_up_gate.keep_pending);
+        assert_eq!(
+            catch_up_gate.reason,
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_LAG_UNPROVEN)
         );
     }
 
