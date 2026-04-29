@@ -49,6 +49,8 @@ const RECENT_RAW_JOURNAL_PHASE_PRUNE_START: &str = "prune_start";
 const RECENT_RAW_JOURNAL_PHASE_PRUNE_END: &str = "prune_end";
 const RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED: &str = "prune_skipped";
 const RECENT_RAW_JOURNAL_PHASE_BATCH_DONE: &str = "batch_done";
+const RECENT_RAW_JOURNAL_HOT_WRITER_PRUNE_DEFERRED: &str =
+    "recent_raw_journal_hot_writer_prune_deferred";
 pub(crate) const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration =
     StdDuration::from_secs(15 * 60);
 pub(crate) const OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL: StdDuration =
@@ -1893,6 +1895,7 @@ fn flush_recent_raw_journal_overflow_blocking(
 
 fn log_recent_raw_journal_phase(
     current_phase: &'static str,
+    reason: Option<&'static str>,
     batch_rows: usize,
     request_batches: usize,
     coalesce_elapsed_ms: u64,
@@ -1906,6 +1909,7 @@ fn log_recent_raw_journal_phase(
     }
     info!(
         current_phase,
+        reason,
         journal_batch_rows = batch_rows,
         journal_request_batches = request_batches,
         journal_coalesce_elapsed_ms = coalesce_elapsed_ms,
@@ -1995,6 +1999,7 @@ fn recent_raw_journal_writer_loop(
         telemetry.note_journal_writer_inflight_started(inserted_swaps.len());
         log_recent_raw_journal_phase(
             RECENT_RAW_JOURNAL_PHASE_BATCH_COLLECTED,
+            None,
             inserted_swaps.len(),
             collected_batch.request_batches,
             collected_batch.coalesce_elapsed_ms,
@@ -2039,6 +2044,7 @@ fn write_recent_raw_journal_batch_with_deadline(
     let batch_rows = inserted_swaps.len();
     log_recent_raw_journal_phase(
         RECENT_RAW_JOURNAL_PHASE_WRITE_START,
+        None,
         batch_rows,
         request_batches,
         coalesce_elapsed_ms,
@@ -2057,6 +2063,7 @@ fn write_recent_raw_journal_batch_with_deadline(
     );
     log_recent_raw_journal_phase(
         RECENT_RAW_JOURNAL_PHASE_WRITE_END,
+        None,
         batch_rows,
         request_batches,
         coalesce_elapsed_ms,
@@ -2069,6 +2076,7 @@ fn write_recent_raw_journal_batch_with_deadline(
     let prune_check_started = Instant::now();
     log_recent_raw_journal_phase(
         RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_START,
+        None,
         batch_rows,
         request_batches,
         coalesce_elapsed_ms,
@@ -2076,13 +2084,19 @@ fn write_recent_raw_journal_batch_with_deadline(
         0,
         telemetry,
     );
-    let prune_due = if recent_raw_journal_prune_backlog_skip_reason(config, telemetry).is_some() {
+    let prune_skip_reason = if config.skip_prune_while_backlogged {
+        Some(RECENT_RAW_JOURNAL_HOT_WRITER_PRUNE_DEFERRED)
+    } else {
+        recent_raw_journal_prune_backlog_skip_reason(config, telemetry)
+    };
+    let prune_due = if prune_skip_reason.is_some() {
         false
     } else {
         recent_raw_journal_prune_due(store, config, telemetry, completed_at)?
     };
     log_recent_raw_journal_phase(
         RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_END,
+        prune_skip_reason,
         batch_rows,
         request_batches,
         coalesce_elapsed_ms,
@@ -2094,6 +2108,7 @@ fn write_recent_raw_journal_batch_with_deadline(
         let prune_started = Instant::now();
         log_recent_raw_journal_phase(
             RECENT_RAW_JOURNAL_PHASE_PRUNE_START,
+            None,
             batch_rows,
             request_batches,
             coalesce_elapsed_ms,
@@ -2105,6 +2120,7 @@ fn write_recent_raw_journal_batch_with_deadline(
             prune_recent_raw_journal_with_budget(store, config.retention_days, completed_at)?;
         log_recent_raw_journal_phase(
             RECENT_RAW_JOURNAL_PHASE_PRUNE_END,
+            None,
             batch_rows,
             request_batches,
             coalesce_elapsed_ms,
@@ -2115,6 +2131,7 @@ fn write_recent_raw_journal_batch_with_deadline(
     } else {
         log_recent_raw_journal_phase(
             RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED,
+            prune_skip_reason,
             batch_rows,
             request_batches,
             coalesce_elapsed_ms,
@@ -2125,6 +2142,7 @@ fn write_recent_raw_journal_batch_with_deadline(
     }
     log_recent_raw_journal_phase(
         RECENT_RAW_JOURNAL_PHASE_BATCH_DONE,
+        None,
         batch_rows,
         request_batches,
         coalesce_elapsed_ms,
@@ -7330,19 +7348,21 @@ mod tests {
             .load_observed_swaps_since(journal_now - ChronoDuration::days(30))?;
         assert_eq!(
             rows_after_write.len(),
-            1,
-            "bounded retention prune should remain available after the live write commits"
+            2,
+            "hot recent_raw writer must defer retention prune when skip_prune_while_backlogged=true"
         );
-        assert_eq!(
-            rows_after_write[0].signature,
-            "sig-recent-raw-journal-startup-prune-fresh"
-        );
+        assert!(rows_after_write
+            .iter()
+            .any(|row| row.signature == "sig-recent-raw-journal-startup-prune-fresh"));
         let journal_state = journal_store_after_write.recent_raw_journal_state()?;
         assert_eq!(
-            journal_state.row_count, 1,
-            "journal state must reflect only actually committed rows after deferred prune"
+            journal_state.row_count, 2,
+            "journal state must reflect committed hot writer rows plus retained rows when prune is deferred"
         );
-        assert!(journal_state.last_pruned_at.is_some());
+        assert!(
+            journal_state.last_pruned_at.is_none(),
+            "hot writer must not mark retention prune when prune is deferred"
+        );
 
         remove_sqlite_test_files(&journal_db_path);
         Ok(())
@@ -7423,6 +7443,78 @@ mod tests {
             journal_state.row_count, 3,
             "phase telemetry must not replace commit-only journal state advancement"
         );
+        remove_sqlite_test_files(&journal_db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_hot_writer_deferred_prune_emits_skipped_without_prune_start_stage1(
+    ) -> Result<()> {
+        super::clear_recent_raw_journal_phase_events_for_test();
+        let unique = format!(
+            "copybot-app-recent-raw-journal-phase-skip-prune-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
+        let (journal_sender, journal_receiver) =
+            std_mpsc::sync_channel::<super::RecentRawJournalWriteRequest>(8);
+        let (startup_sender, startup_receiver) =
+            std_mpsc::channel::<std::result::Result<(), String>>();
+        let telemetry = Arc::new(ObservedSwapWriterTelemetry::default());
+        let config = ObservedSwapRecentRawJournalConfig {
+            sqlite_path: journal_db_path
+                .to_str()
+                .context("journal sqlite path must be valid utf-8")?
+                .to_string(),
+            retention_days: 8,
+            writer_queue_capacity_batches: 8,
+            write_coalesce_max_batches: 4,
+            overflow_capacity_batches: 8,
+            skip_prune_while_backlogged: true,
+            skip_startup_prune: true,
+        };
+        let writer_handle = thread::spawn(move || {
+            super::recent_raw_journal_writer_loop(
+                journal_receiver,
+                startup_sender,
+                config,
+                telemetry,
+            )
+        });
+        startup_receiver
+            .recv_timeout(StdDuration::from_secs(2))
+            .context("recent_raw journal writer did not signal startup")?
+            .map_err(|error| anyhow!(error))?;
+
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-29T18:55:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        journal_sender.send(recent_raw_journal_write_request_for_test(
+            0,
+            3,
+            scenario_now,
+        ))?;
+        drop(journal_sender);
+        writer_handle
+            .join()
+            .map_err(|payload| anyhow!(super::panic_payload_to_string(payload.as_ref())))??;
+
+        let events = super::recent_raw_journal_phase_events_for_test();
+        assert!(
+            events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED),
+            "hot writer should emit prune_skipped when prune is deferred: {events:?}"
+        );
+        assert!(
+            !events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_START),
+            "hot writer must not enter prune_start when skip_prune_while_backlogged=true: {events:?}"
+        );
+        let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        let journal_state = journal_store.recent_raw_journal_state()?;
+        assert_eq!(journal_state.row_count, 3);
+        assert!(journal_state.last_pruned_at.is_none());
         remove_sqlite_test_files(&journal_db_path);
         Ok(())
     }
@@ -7604,7 +7696,7 @@ mod tests {
     }
 
     #[test]
-    fn recent_raw_journal_writer_prunes_rows_older_than_retention_horizon() -> Result<()> {
+    fn recent_raw_journal_hot_writer_defers_rows_older_than_retention_horizon() -> Result<()> {
         let unique = format!(
             "copybot-app-recent-raw-journal-prune-{}-{}",
             std::process::id(),
@@ -7683,11 +7775,17 @@ mod tests {
 
         let journal_rows =
             journal_store.load_observed_swaps_since(journal_now - ChronoDuration::days(30))?;
-        assert_eq!(journal_rows.len(), 1);
-        assert_eq!(journal_rows[0].signature, "sig-recent-raw-journal-fresh");
+        assert_eq!(
+            journal_rows.len(),
+            2,
+            "hot recent_raw writer must not run retention prune when skip_prune_while_backlogged=true"
+        );
+        assert!(journal_rows
+            .iter()
+            .any(|row| row.signature == "sig-recent-raw-journal-fresh"));
         let journal_state = journal_store.recent_raw_journal_state()?;
-        assert_eq!(journal_state.row_count, 1);
-        assert!(journal_state.last_pruned_at.is_some());
+        assert_eq!(journal_state.row_count, 2);
+        assert!(journal_state.last_pruned_at.is_none());
         let _ = std::fs::remove_file(runtime_db_path);
         let _ = std::fs::remove_file(journal_db_path);
         Ok(())
