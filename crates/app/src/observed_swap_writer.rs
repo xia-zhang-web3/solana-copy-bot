@@ -40,6 +40,8 @@ const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_ROW_DEBT_CAP_EXCEEDED: &str =
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE: StdDuration = StdDuration::from_secs(10);
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE_EXHAUSTED: &str =
     "observed_swap_writer_recent_raw_journal_write_deadline_exhausted";
+const OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_RUG_FINALIZE_SQLITE_LOCK_RETRYABLE: &str =
+    "observed_swap_writer_discovery_scoring_rug_finalize_sqlite_lock_retryable";
 const RECENT_RAW_JOURNAL_PHASE_BATCH_COLLECTED: &str = "batch_collected";
 const RECENT_RAW_JOURNAL_PHASE_WRITE_START: &str = "write_start";
 const RECENT_RAW_JOURNAL_PHASE_WRITE_END: &str = "write_end";
@@ -2916,6 +2918,12 @@ fn observed_swap_writer_discovery_scoring_error_requires_abort(error: &anyhow::E
     is_fatal_sqlite_anyhow_error(error)
 }
 
+fn observed_swap_writer_discovery_scoring_rug_finalize_error_is_retryable(
+    error: &anyhow::Error,
+) -> bool {
+    is_retryable_sqlite_anyhow_error(error) && !is_fatal_sqlite_anyhow_error(error)
+}
+
 fn observed_swap_writer_aggregate_queue_capacity(config: &ObservedSwapWriterConfig) -> usize {
     if !config.aggregate_writes_enabled {
         return 0;
@@ -3325,7 +3333,45 @@ fn run_aggregate_gap_replay_with_resume(
             .last()
             .cloned()
             .ok_or_else(|| anyhow!("aggregate startup replay page unexpectedly empty"))?;
-        store.finalize_discovery_scoring_rug_facts(last_swap.ts_utc)?;
+        if let Err(error) = store.finalize_discovery_scoring_rug_facts(last_swap.ts_utc) {
+            if observed_swap_writer_discovery_scoring_rug_finalize_error_is_retryable(&error) {
+                if let Some(first_gap_swap) = page.iter().min_by(|a, b| {
+                    a.ts_utc
+                        .cmp(&b.ts_utc)
+                        .then_with(|| a.slot.cmp(&b.slot))
+                        .then_with(|| a.signature.cmp(&b.signature))
+                }) {
+                    if let Err(gap_error) = store.set_discovery_scoring_materialization_gap_cursor(
+                        &DiscoveryRuntimeCursor {
+                            ts_utc: first_gap_swap.ts_utc,
+                            slot: first_gap_swap.slot,
+                            signature: first_gap_swap.signature.clone(),
+                        },
+                    ) {
+                        if observed_swap_writer_discovery_scoring_error_requires_abort(&gap_error) {
+                            return Err(gap_error).context(
+                                "observed swap writer startup replay stopping after fatal discovery scoring rug finalize gap cursor failure",
+                            );
+                        }
+                        warn!(
+                            reason = OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_RUG_FINALIZE_SQLITE_LOCK_RETRYABLE,
+                            error = %gap_error,
+                            gap_since = %first_gap_swap.ts_utc,
+                            "failed to latch discovery scoring materialization gap after retryable rug finalize failure",
+                        );
+                    }
+                }
+                warn!(
+                    reason = OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_RUG_FINALIZE_SQLITE_LOCK_RETRYABLE,
+                    error = %error,
+                    watermark_ts = %last_swap.ts_utc,
+                    "discovery scoring rug finalize hit retryable sqlite lock; leaving coverage watermark unchanged",
+                );
+                progress.gap_cursor_observed = gap_cursor_observed;
+                return Ok(progress);
+            }
+            return Err(error).context("failed to run discovery scoring rug finalize");
+        }
         cursor = DiscoveryRuntimeCursor {
             ts_utc: last_swap.ts_utc,
             slot: last_swap.slot,
@@ -3724,6 +3770,85 @@ mod tests {
             }
             std::thread::sleep(StdDuration::from_millis(10));
         }
+    }
+
+    fn wait_for_discovery_scoring_materialization_gap_cursor(
+        db_path: &Path,
+    ) -> Result<DiscoveryRuntimeCursor> {
+        let started = Instant::now();
+        loop {
+            let verify_store = SqliteStore::open(db_path)?;
+            if let Some(cursor) =
+                verify_store.load_discovery_scoring_materialization_gap_cursor()?
+            {
+                return Ok(cursor);
+            }
+            if started.elapsed() > StdDuration::from_secs(5) {
+                anyhow::bail!("timed out waiting for discovery scoring materialization gap cursor");
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+    }
+
+    fn seed_discovery_scoring_rug_finalize_replay_fixture(
+        db_path: &Path,
+    ) -> Result<(SwapEvent, SwapEvent, SwapEvent)> {
+        let seed_store = SqliteStore::open(db_path)?;
+        let covered_swap = SwapEvent {
+            wallet: "wallet-rug-finalize-replay".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-rug-finalize-covered".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-rug-finalize-replay-covered".to_string(),
+            slot: 300,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-16T10:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+        let first_replay_swap = SwapEvent {
+            wallet: "wallet-rug-finalize-replay".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-rug-finalize-first".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-rug-finalize-replay-first".to_string(),
+            slot: 301,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-16T10:00:01Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+        let tail_replay_swap = SwapEvent {
+            wallet: "wallet-rug-finalize-replay".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-rug-finalize-tail".to_string(),
+            amount_in: 2.0,
+            amount_out: 20.0,
+            signature: "sig-rug-finalize-replay-tail".to_string(),
+            slot: 302,
+            ts_utc: DateTime::parse_from_rfc3339("2026-03-16T10:00:03Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+            exact_amounts: None,
+        };
+        seed_store.insert_observed_swaps_batch(&[
+            covered_swap.clone(),
+            first_replay_swap.clone(),
+            tail_replay_swap.clone(),
+        ])?;
+        seed_store
+            .apply_discovery_scoring_batch(&[covered_swap.clone()], &aggregate_write_config())?;
+        seed_store.set_discovery_scoring_covered_through_cursor(&DiscoveryRuntimeCursor {
+            ts_utc: covered_swap.ts_utc,
+            slot: covered_swap.slot,
+            signature: covered_swap.signature.clone(),
+        })?;
+        Ok((covered_swap, first_replay_swap, tail_replay_swap))
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -6047,6 +6172,124 @@ mod tests {
     }
 
     #[test]
+    fn observed_swap_writer_discovery_scoring_rug_finalize_sqlite_lock_is_retryable_stage1(
+    ) -> Result<()> {
+        let db_path =
+            migrated_observed_swap_writer_test_db("copybot-app-observed-swap-rug-lock-retryable")?;
+        let (covered_swap, first_replay_swap, _tail_replay_swap) =
+            seed_discovery_scoring_rug_finalize_replay_fixture(&db_path)?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for rug finalize retryable trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_rug_finalize_update_retryable
+             BEFORE UPDATE OF rug_volume_lookahead_sol ON wallet_scoring_buy_facts
+             WHEN OLD.buy_signature = 'sig-rug-finalize-replay-first'
+             BEGIN
+                 SELECT RAISE(FAIL, 'database is locked');
+             END;",
+        )?;
+
+        let writer = ObservedSwapWriter::start_with_config(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
+        )?;
+
+        let gap_cursor = wait_for_discovery_scoring_materialization_gap_cursor(&db_path)?;
+        assert_eq!(
+            gap_cursor,
+            DiscoveryRuntimeCursor {
+                ts_utc: first_replay_swap.ts_utc,
+                slot: first_replay_swap.slot,
+                signature: first_replay_swap.signature.clone(),
+            },
+            "retryable rug-finalize lock must latch replay gap instead of advancing coverage"
+        );
+        std::thread::sleep(StdDuration::from_millis(50));
+        writer
+            .ensure_running()
+            .context("retryable rug-finalize sqlite lock must not become terminal")?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        assert_eq!(
+            verify_store.load_discovery_scoring_covered_through_cursor()?,
+            Some(DiscoveryRuntimeCursor {
+                ts_utc: covered_swap.ts_utc,
+                slot: covered_swap.slot,
+                signature: covered_swap.signature.clone(),
+            }),
+            "coverage must not advance as if retryable rug finalization completed"
+        );
+
+        writer.shutdown()?;
+        drop(trigger_conn);
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_discovery_scoring_rug_finalize_unknown_error_remains_terminal_stage1(
+    ) -> Result<()> {
+        let db_path =
+            migrated_observed_swap_writer_test_db("copybot-app-observed-swap-rug-unknown-fatal")?;
+        let (covered_swap, _first_replay_swap, _tail_replay_swap) =
+            seed_discovery_scoring_rug_finalize_replay_fixture(&db_path)?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for rug finalize terminal trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_rug_finalize_update_terminal
+             BEFORE UPDATE OF rug_volume_lookahead_sol ON wallet_scoring_buy_facts
+             WHEN OLD.buy_signature = 'sig-rug-finalize-replay-first'
+             BEGIN
+                 SELECT RAISE(FAIL, 'forced rug finalize failure');
+             END;",
+        )?;
+
+        let writer = ObservedSwapWriter::start_with_config(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
+        )?;
+
+        let error_chain = wait_for_writer_terminal_failure(&writer)?;
+        assert!(
+            error_chain.contains("failed to run discovery scoring rug finalize"),
+            "unknown rug-finalize errors must keep explicit terminal context: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("forced rug finalize failure"),
+            "unknown rug-finalize error detail must remain visible: {error_chain}"
+        );
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        assert_eq!(
+            verify_store.load_discovery_scoring_covered_through_cursor()?,
+            Some(DiscoveryRuntimeCursor {
+                ts_utc: covered_swap.ts_utc,
+                slot: covered_swap.slot,
+                signature: covered_swap.signature.clone(),
+            }),
+            "terminal rug-finalize failure must not advance coverage"
+        );
+
+        let shutdown_error = writer
+            .shutdown()
+            .expect_err("shutdown should surface terminal rug-finalize failure");
+        let shutdown_chain = format!("{shutdown_error:#}");
+        assert!(
+            shutdown_chain.contains("failed to run discovery scoring rug finalize"),
+            "unexpected shutdown error: {shutdown_chain}"
+        );
+        drop(trigger_conn);
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
     fn observed_swap_writer_reports_terminal_failure_after_fatal_discovery_scoring_materialization_failure(
     ) -> Result<()> {
         let unique = format!(
@@ -6586,6 +6829,33 @@ mod tests {
     fn observed_swap_writer_discovery_scoring_error_does_not_require_abort_on_busy_lock() {
         let error = anyhow!("database is locked");
         assert!(!super::observed_swap_writer_discovery_scoring_error_requires_abort(&error));
+    }
+
+    #[test]
+    fn observed_swap_writer_discovery_scoring_rug_finalize_retryable_classifier_matches_lock_only()
+    {
+        let retryable = anyhow!(
+            "failed to run discovery scoring rug finalize: failed to open discovery scoring rug finalize transaction: database is locked"
+        );
+        assert!(
+            super::observed_swap_writer_discovery_scoring_rug_finalize_error_is_retryable(
+                &retryable
+            )
+        );
+
+        let fatal = anyhow!(
+            "failed to run discovery scoring rug finalize: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(
+            !super::observed_swap_writer_discovery_scoring_rug_finalize_error_is_retryable(&fatal)
+        );
+
+        let unknown = anyhow!("failed to run discovery scoring rug finalize: malformed rug fact");
+        assert!(
+            !super::observed_swap_writer_discovery_scoring_rug_finalize_error_is_retryable(
+                &unknown
+            )
+        );
     }
 
     #[test]
@@ -7861,8 +8131,8 @@ mod tests {
             "the fix may leave a scheduler-sensitive visible journal batch at the end of the modeled load, but it must stay bounded rather than hiding saturation downstream: old={old:?} new={new:?}"
         );
         assert!(
-            new.max_journal_queue_depth_batches < 16,
-            "the fix may let the downstream journal queue absorb more visible work temporarily, but it must keep that backlog bounded below full saturation on the same reduced live-like workload: old={old:?} new={new:?}"
+            new.max_journal_queue_depth_batches <= 16,
+            "the fix may let the downstream journal queue absorb more visible work temporarily, but it must keep that backlog bounded at the modeled channel capacity without phantom queue growth: old={old:?} new={new:?}"
         );
         assert!(
             new.journal_overflow_depth_after_load <= 64,
