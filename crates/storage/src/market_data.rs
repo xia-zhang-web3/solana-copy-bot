@@ -55,6 +55,13 @@ const OBSERVED_SWAPS_TAIL_CURSOR_QUERY: &str = "SELECT ts, slot, signature
              FROM observed_swaps INDEXED BY idx_observed_swaps_ts_slot_signature
              ORDER BY ts DESC, slot DESC, signature DESC
              LIMIT 1";
+const OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY: &str =
+    "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+                 FROM observed_swaps INDEXED BY idx_observed_swaps_ts_slot_signature
+                 WHERE (ts, slot, signature) > (?1, ?2, ?3)
+                 ORDER BY ts ASC, slot ASC, signature ASC
+                 LIMIT ?4";
 const RECENT_RAW_JOURNAL_BULK_INSERT_PARAMS_PER_ROW: usize = 13;
 const RECENT_RAW_JOURNAL_BULK_INSERT_HARD_CAP_ROWS: usize = 512;
 
@@ -3841,14 +3848,7 @@ impl SqliteStore {
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
-                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
-                 FROM observed_swaps
-                 WHERE (ts, slot, signature) > (?1, ?2, ?3)
-                 ORDER BY ts ASC, slot ASC, signature ASC
-                 LIMIT ?4",
-            )
+            .prepare(OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY)
             .context("failed to prepare observed_swaps cursor query")?;
         let mut rows = stmt
             .query(params![
@@ -3993,6 +3993,61 @@ impl SqliteStore {
                 },
             )
             .transpose()
+    }
+
+    pub fn load_observed_swaps_after_cursor_page_read_only(
+        &self,
+        cursor: &DiscoveryRuntimeCursor,
+        limit: usize,
+        deadline: Instant,
+    ) -> Result<(Vec<SwapEvent>, bool)> {
+        if limit == 0 || !self.sqlite_table_exists("observed_swaps")? {
+            return Ok((Vec::new(), false));
+        }
+        if Instant::now() >= deadline {
+            return Ok((Vec::new(), true));
+        }
+
+        let limit = (limit.min(i64::MAX as usize)) as i64;
+        let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
+        let mut stmt = self
+            .conn
+            .prepare(OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY)
+            .context("failed to prepare bounded observed_swaps after-cursor page query")?;
+        let mut rows = stmt
+            .query(params![
+                cursor.ts_utc.to_rfc3339(),
+                cursor.slot as i64,
+                cursor.signature.as_str(),
+                limit,
+            ])
+            .context("failed querying bounded observed_swaps after-cursor page")?;
+
+        let mut swaps = Vec::new();
+        let mut time_budget_exhausted = false;
+        loop {
+            if Instant::now() >= deadline {
+                time_budget_exhausted = true;
+                break;
+            }
+            let next_row = match rows.next() {
+                Ok(row) => row,
+                Err(error) => {
+                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                        time_budget_exhausted = true;
+                        break;
+                    }
+                    return Err(error)
+                        .context("failed iterating bounded observed_swaps after-cursor rows");
+                }
+            };
+            let Some(row) = next_row else {
+                break;
+            };
+            swaps.push(Self::row_to_swap_event(row)?);
+        }
+
+        Ok((swaps, time_budget_exhausted))
     }
 
     pub fn observed_swaps_row_count_since(&self, since: DateTime<Utc>) -> Result<u64> {
@@ -8465,6 +8520,105 @@ mod tests {
                 .to_string()
                 .contains("cached recent raw journal state row id=1 is missing"),
             "{error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_runtime_page_query_is_indexed_bounded_and_not_full_scan() {
+        assert!(
+            OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY
+                .contains("INDEXED BY idx_observed_swaps_ts_slot_signature"),
+            "{OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY}"
+        );
+        assert!(
+            OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY
+                .contains("ORDER BY ts ASC, slot ASC, signature ASC"),
+            "{OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY}"
+        );
+        assert!(
+            OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY.contains("LIMIT ?4"),
+            "{OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY}"
+        );
+        let upper = OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY.to_ascii_uppercase();
+        assert!(
+            !upper.contains("COUNT("),
+            "{OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY}"
+        );
+        assert!(
+            !upper.contains("MIN("),
+            "{OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY}"
+        );
+        assert!(
+            !upper.contains("MAX("),
+            "{OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY}"
+        );
+    }
+
+    #[test]
+    fn recent_raw_journal_runtime_page_helper_preserves_cursor_order_and_page_boundary(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("recent-raw-runtime-page-helper.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+        let base = DateTime::parse_from_rfc3339("2026-04-29T08:00:00Z")
+            .expect("ts")
+            .with_timezone(&Utc);
+        let swaps = vec![
+            swap(
+                "sig-runtime-page-cursor",
+                "wallet-runtime-page",
+                base,
+                SOL_MINT,
+                "TokenRecentRawRuntimePage111111111111",
+                10,
+            ),
+            swap(
+                "sig-runtime-page-b",
+                "wallet-runtime-page",
+                base + Duration::seconds(1),
+                SOL_MINT,
+                "TokenRecentRawRuntimePage111111111111",
+                12,
+            ),
+            swap(
+                "sig-runtime-page-a",
+                "wallet-runtime-page",
+                base + Duration::seconds(1),
+                SOL_MINT,
+                "TokenRecentRawRuntimePage111111111111",
+                12,
+            ),
+            swap(
+                "sig-runtime-page-c",
+                "wallet-runtime-page",
+                base + Duration::seconds(2),
+                SOL_MINT,
+                "TokenRecentRawRuntimePage111111111111",
+                13,
+            ),
+        ];
+        store.insert_observed_swaps_batch_with_activity_days(&swaps)?;
+
+        let cursor = DiscoveryRuntimeCursor {
+            ts_utc: base,
+            slot: 10,
+            signature: "sig-runtime-page-cursor".to_string(),
+        };
+        let (page, time_budget_exhausted) = store.load_observed_swaps_after_cursor_page_read_only(
+            &cursor,
+            2,
+            Instant::now() + StdDuration::from_secs(5),
+        )?;
+
+        assert!(!time_budget_exhausted);
+        assert_eq!(
+            page.iter()
+                .map(|swap| swap.signature.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sig-runtime-page-a", "sig-runtime-page-b"]
         );
         Ok(())
     }
