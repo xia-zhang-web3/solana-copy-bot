@@ -2139,7 +2139,10 @@ impl SqliteStore {
             max_tx_per_minute,
             deadline,
         )?;
-        if page.time_budget_exhausted && page.rows_seen == 0 && !wallet_id_page.wallet_ids.is_empty() {
+        if page.time_budget_exhausted
+            && page.rows_seen == 0
+            && !wallet_id_page.wallet_ids.is_empty()
+        {
             page.wallet_id_page_wallets_seen = wallet_id_page.wallet_ids.len();
             page.wallet_id_page_cursor_after = wallet_id_page.wallet_ids.last().cloned();
             page.wallet_id_page_wallet_ids = wallet_id_page.wallet_ids;

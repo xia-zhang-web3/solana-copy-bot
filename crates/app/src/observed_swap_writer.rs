@@ -4,8 +4,8 @@ use copybot_core_types::SwapEvent;
 use copybot_ingestion::IngestionRuntimeSnapshot;
 use copybot_storage::{
     is_fatal_sqlite_anyhow_error, is_retryable_sqlite_anyhow_error, sqlite_contention_snapshot,
-    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, SqliteBatchedDeleteSummary,
-    SqliteContentionSnapshot, SqliteStore,
+    DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, RecentRawJournalWriteSummary,
+    SqliteBatchedDeleteSummary, SqliteContentionSnapshot, SqliteStore,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::collections::VecDeque;
@@ -30,6 +30,9 @@ pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_COALESCE_MAX_BATCHES: us
 pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_CAPACITY_MULTIPLIER: usize = 4;
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_ROW_DEBT_CAP_EXCEEDED: &str =
     "observed_swap_writer_recent_raw_journal_overflow_row_debt_capacity_exceeded";
+const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE: StdDuration = StdDuration::from_secs(10);
+const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE_EXHAUSTED: &str =
+    "observed_swap_writer_recent_raw_journal_write_deadline_exhausted";
 pub(crate) const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration =
     StdDuration::from_secs(15 * 60);
 pub(crate) const OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL: StdDuration =
@@ -1860,11 +1863,13 @@ fn recent_raw_journal_writer_loop(
         let completed_at = Utc::now();
         telemetry.note_journal_writer_inflight_started(inserted_swaps.len());
         let write_result = (|| -> Result<()> {
-            store.insert_recent_raw_journal_batch(&inserted_swaps, completed_at)?;
-            if recent_raw_journal_prune_due(&store, &config, &telemetry, completed_at)? {
-                prune_recent_raw_journal_with_budget(&store, config.retention_days, completed_at)?;
-            }
-            Ok(())
+            write_recent_raw_journal_batch_with_deadline(
+                &store,
+                &config,
+                &telemetry,
+                &inserted_swaps,
+                completed_at,
+            )
         })();
         telemetry.note_journal_writer_inflight_finished();
         write_result?;
@@ -1875,6 +1880,124 @@ fn recent_raw_journal_writer_loop(
     }
 
     Ok(())
+}
+
+fn write_recent_raw_journal_batch_with_deadline(
+    store: &SqliteStore,
+    config: &ObservedSwapRecentRawJournalConfig,
+    telemetry: &ObservedSwapWriterTelemetry,
+    inserted_swaps: &[SwapEvent],
+    completed_at: DateTime<Utc>,
+) -> Result<()> {
+    write_recent_raw_journal_batch_with_deadline_attempts(
+        telemetry,
+        inserted_swaps,
+        || Instant::now() + OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE,
+        |suffix, deadline| {
+            store.insert_recent_raw_journal_batch_bulk_with_deadline(suffix, completed_at, deadline)
+        },
+    )?;
+    if recent_raw_journal_prune_due(store, config, telemetry, completed_at)? {
+        prune_recent_raw_journal_with_budget(store, config.retention_days, completed_at)?;
+    }
+    Ok(())
+}
+
+fn write_recent_raw_journal_batch_with_deadline_attempts<DeadlineFn, WriteFn>(
+    telemetry: &ObservedSwapWriterTelemetry,
+    inserted_swaps: &[SwapEvent],
+    mut deadline_for_attempt: DeadlineFn,
+    mut write_attempt: WriteFn,
+) -> Result<()>
+where
+    DeadlineFn: FnMut() -> Instant,
+    WriteFn: FnMut(&[SwapEvent], Instant) -> Result<(RecentRawJournalWriteSummary, bool)>,
+{
+    let batch_rows = inserted_swaps.len();
+    let mut batch_offset = 0usize;
+    let mut attempt_index = 0usize;
+    while batch_offset < batch_rows {
+        attempt_index = attempt_index.saturating_add(1);
+        let suffix = &inserted_swaps[batch_offset..];
+        let write_started = Instant::now();
+        let (summary, time_budget_exhausted) = write_attempt(suffix, deadline_for_attempt())?;
+        let elapsed_ms = elapsed_ms_ceil(write_started.elapsed());
+        let processed_rows = recent_raw_journal_summary_processed_rows(&summary).min(suffix.len());
+        if time_budget_exhausted {
+            let committed_rows = batch_offset.saturating_add(processed_rows);
+            let unproven_rows = batch_rows.saturating_sub(committed_rows);
+            warn!(
+                reason = OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE_EXHAUSTED,
+                attempt_index,
+                batch_rows,
+                batch_offset,
+                suffix_rows = suffix.len(),
+                processed_rows,
+                committed_rows,
+                inserted_rows = summary.inserted_rows,
+                unproven_rows,
+                elapsed_ms,
+                queue_depth_batches = telemetry.journal_queue_depth_batches(),
+                queue_row_debt = telemetry.journal_queue_row_debt(),
+                overflow_depth_batches = telemetry
+                    .journal_overflow_depth_batches
+                    .load(Ordering::Relaxed),
+                overflow_row_debt = telemetry.journal_overflow_row_debt.load(Ordering::Relaxed),
+                bulk_statement_count = summary.recent_raw_bulk_statement_count,
+                bulk_rows_processed = summary.recent_raw_bulk_rows_processed,
+                bulk_rows_inserted = summary.recent_raw_bulk_rows_inserted,
+                bulk_value_build_duration_ms = summary.recent_raw_bulk_value_build_duration_ms,
+                bulk_prepare_duration_ms = summary.recent_raw_bulk_prepare_duration_ms,
+                bulk_execute_duration_ms = summary.recent_raw_bulk_execute_duration_ms,
+                bulk_state_refresh_duration_ms = summary.recent_raw_bulk_state_refresh_duration_ms,
+                bulk_state_upsert_duration_ms = summary.recent_raw_bulk_state_upsert_duration_ms,
+                bulk_transaction_duration_ms = summary.recent_raw_bulk_transaction_duration_ms,
+                bulk_deadline_exhausted_before_statement =
+                    summary.recent_raw_bulk_deadline_exhausted_before_statement,
+                bulk_deadline_exhausted_during_execute =
+                    summary.recent_raw_bulk_deadline_exhausted_during_execute,
+                "recent raw journal write deadline exhausted"
+            );
+            if processed_rows == 0 {
+                return Err(anyhow!(
+                    "{OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE_EXHAUSTED}: batch_rows={batch_rows} committed_rows={committed_rows} inserted_rows={} unproven_rows={unproven_rows} elapsed_ms={elapsed_ms}",
+                    summary.inserted_rows
+                ));
+            }
+            batch_offset = committed_rows;
+            if batch_offset < batch_rows {
+                thread::sleep(OBSERVED_SWAP_WRITER_RETRYABLE_LOCK_BACKOFF);
+            }
+            continue;
+        }
+        if processed_rows != suffix.len() {
+            let committed_rows = batch_offset.saturating_add(processed_rows);
+            let unproven_rows = batch_rows.saturating_sub(committed_rows);
+            return Err(anyhow!(
+                "observed_swap_writer_recent_raw_journal_write_partial_without_deadline_exhaustion: batch_rows={batch_rows} committed_rows={committed_rows} inserted_rows={} unproven_rows={unproven_rows} elapsed_ms={elapsed_ms}",
+                summary.inserted_rows
+            ));
+        }
+        batch_offset = batch_rows;
+        debug!(
+            attempt_index,
+            batch_rows,
+            committed_rows = batch_offset,
+            inserted_rows = summary.inserted_rows,
+            elapsed_ms,
+            bulk_statement_count = summary.recent_raw_bulk_statement_count,
+            bulk_rows_processed = summary.recent_raw_bulk_rows_processed,
+            bulk_rows_inserted = summary.recent_raw_bulk_rows_inserted,
+            "recent raw journal batch write completed within deadline"
+        );
+    }
+    Ok(())
+}
+
+fn recent_raw_journal_summary_processed_rows(summary: &RecentRawJournalWriteSummary) -> usize {
+    summary
+        .recent_raw_bulk_rows_processed
+        .max(summary.batch_rows)
 }
 
 fn collect_recent_raw_journal_write_batch(
@@ -2922,7 +3045,7 @@ mod tests {
     use copybot_core_types::SwapEvent;
     use copybot_storage::{
         sqlite_contention_snapshot, DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor,
-        SqliteContentionSnapshot, SqliteStore,
+        RecentRawJournalWriteSummary, SqliteContentionSnapshot, SqliteStore,
     };
     use rusqlite::Connection;
     use std::path::{Path, PathBuf};
@@ -3292,6 +3415,19 @@ mod tests {
             slot: 10_000 + idx as u64,
             ts_utc: ts + ChronoDuration::milliseconds(idx as i64),
             exact_amounts: None,
+        }
+    }
+
+    fn recent_raw_journal_write_summary_for_test(
+        processed_rows: usize,
+        inserted_rows: usize,
+    ) -> RecentRawJournalWriteSummary {
+        RecentRawJournalWriteSummary {
+            batch_rows: processed_rows,
+            inserted_rows,
+            recent_raw_bulk_rows_processed: processed_rows,
+            recent_raw_bulk_rows_inserted: inserted_rows,
+            ..RecentRawJournalWriteSummary::default()
         }
     }
 
@@ -6856,6 +6992,182 @@ mod tests {
         assert!(journal_state.last_pruned_at.is_some());
 
         remove_sqlite_test_files(&journal_db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_write_deadline_exhaustion_fails_closed_without_unproven_state_stage1(
+    ) -> Result<()> {
+        let unique = format!(
+            "copybot-app-recent-raw-journal-write-deadline-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
+        let store = SqliteStore::open(Path::new(&journal_db_path))?;
+        store.ensure_recent_raw_journal_tables()?;
+        let completed_at = Utc::now();
+        let swaps = (0..4usize)
+            .map(|idx| SwapEvent {
+                wallet: format!("wallet-journal-deadline-{idx}"),
+                dex: "raydium".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: format!("token-journal-deadline-{idx}"),
+                amount_in: 1.0,
+                amount_out: 10.0,
+                signature: format!("sig-recent-raw-journal-deadline-{idx}"),
+                slot: 1_000 + idx as u64,
+                ts_utc: completed_at + ChronoDuration::milliseconds(idx as i64),
+                exact_amounts: None,
+            })
+            .collect::<Vec<_>>();
+        let telemetry = ObservedSwapWriterTelemetry::default();
+
+        let error = super::write_recent_raw_journal_batch_with_deadline_attempts(
+            &telemetry,
+            &swaps,
+            || Instant::now(),
+            |_suffix, _deadline| Ok((recent_raw_journal_write_summary_for_test(0, 0), true)),
+        )
+        .expect_err("expired recent_raw journal write deadline must fail closed");
+        let error_message = format!("{error:#}");
+        assert!(
+            error_message
+                .contains(super::OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE_EXHAUSTED),
+            "deadline failure must expose stable fail-closed reason; error={error_message}"
+        );
+
+        let rows = store.load_observed_swaps_since(completed_at - ChronoDuration::seconds(1))?;
+        assert_eq!(
+            rows.len(),
+            0,
+            "rows not proven committed before deadline exhaustion must not appear in the journal"
+        );
+        let journal_state = store.recent_raw_journal_state_cached()?;
+        assert_eq!(journal_state.row_count, 0);
+        assert_eq!(journal_state.last_batch_rows, 0);
+        assert!(journal_state.covered_through_cursor.is_none());
+        std::thread::sleep(StdDuration::from_millis(50));
+        let delayed_rows =
+            store.load_observed_swaps_since(completed_at - ChronoDuration::seconds(1))?;
+        let delayed_state = store.recent_raw_journal_state_cached()?;
+        assert_eq!(
+            delayed_rows.len(),
+            0,
+            "deadline path must not leave any detached writer that can commit rows after fail-closed return"
+        );
+        assert_eq!(
+            delayed_state.row_count, 0,
+            "deadline path must not leave any detached writer that can advance journal state after fail-closed return"
+        );
+
+        remove_sqlite_test_files(&journal_db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_partial_deadline_exhaustion_retries_unprocessed_suffix_stage1(
+    ) -> Result<()> {
+        let telemetry = ObservedSwapWriterTelemetry::default();
+        let scenario_now = Utc::now();
+        let swaps = (0..5usize)
+            .map(|idx| recent_raw_journal_backpressure_swap(idx, scenario_now))
+            .collect::<Vec<_>>();
+        let mut attempt_signatures = Vec::<Vec<String>>::new();
+        let mut attempt_index = 0usize;
+
+        super::write_recent_raw_journal_batch_with_deadline_attempts(
+            &telemetry,
+            &swaps,
+            || Instant::now() + StdDuration::from_secs(5),
+            |suffix, _deadline| {
+                attempt_index = attempt_index.saturating_add(1);
+                attempt_signatures.push(
+                    suffix
+                        .iter()
+                        .map(|swap| swap.signature.clone())
+                        .collect::<Vec<_>>(),
+                );
+                match attempt_index {
+                    1 => Ok((recent_raw_journal_write_summary_for_test(2, 2), true)),
+                    2 => Ok((recent_raw_journal_write_summary_for_test(3, 3), false)),
+                    _ => Err(anyhow!("unexpected extra recent_raw journal write attempt")),
+                }
+            },
+        )?;
+
+        assert_eq!(attempt_signatures.len(), 2);
+        assert_eq!(
+            attempt_signatures[0],
+            swaps
+                .iter()
+                .map(|swap| swap.signature.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            attempt_signatures[1],
+            swaps[2..]
+                .iter()
+                .map(|swap| swap.signature.clone())
+                .collect::<Vec<_>>(),
+            "deadline exhaustion after a committed prefix must retry only the unprocessed suffix"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_deadline_exhaustion_without_suffix_progress_blocks_later_batches_stage1(
+    ) -> Result<()> {
+        let telemetry = ObservedSwapWriterTelemetry::default();
+        let scenario_now = Utc::now();
+        let swaps = (0..5usize)
+            .map(|idx| recent_raw_journal_backpressure_swap(idx, scenario_now))
+            .collect::<Vec<_>>();
+        let mut attempt_signatures = Vec::<Vec<String>>::new();
+        let mut attempt_index = 0usize;
+
+        let error = super::write_recent_raw_journal_batch_with_deadline_attempts(
+            &telemetry,
+            &swaps,
+            || Instant::now() + StdDuration::from_secs(5),
+            |suffix, _deadline| {
+                attempt_index = attempt_index.saturating_add(1);
+                attempt_signatures.push(
+                    suffix
+                        .iter()
+                        .map(|swap| swap.signature.clone())
+                        .collect::<Vec<_>>(),
+                );
+                match attempt_index {
+                    1 => Ok((recent_raw_journal_write_summary_for_test(2, 2), true)),
+                    2 => Ok((recent_raw_journal_write_summary_for_test(0, 0), true)),
+                    _ => Err(anyhow!(
+                        "writer must not process future journal batches while suffix ownership is unresolved"
+                    )),
+                }
+            },
+        )
+        .expect_err("zero-progress suffix deadline exhaustion must fail closed");
+        let error_message = format!("{error:#}");
+        assert!(
+            error_message
+                .contains(super::OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE_EXHAUSTED),
+            "zero-progress suffix failure must expose stable deadline reason; error={error_message}"
+        );
+        assert_eq!(
+            attempt_signatures.len(),
+            2,
+            "writer must stop on unprocessed suffix instead of advancing to any later journal batch"
+        );
+        assert_eq!(
+            attempt_signatures[1],
+            swaps[2..]
+                .iter()
+                .map(|swap| swap.signature.clone())
+                .collect::<Vec<_>>()
+        );
         Ok(())
     }
 
