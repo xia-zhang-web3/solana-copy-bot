@@ -1183,6 +1183,11 @@ fn observed_swap_writer_loop(
         .as_ref()
         .map(|journal| recent_raw_journal_overflow_row_capacity(config.batch_max_size, journal))
         .unwrap_or(0);
+    let journal_overflow_drain_coalesce_max_batches = config
+        .recent_raw_journal
+        .as_ref()
+        .map(recent_raw_journal_adaptive_write_coalesce_max_batches)
+        .unwrap_or(1);
     let mut journal_overflow = VecDeque::with_capacity(journal_overflow_capacity_batches);
     let mut aggregate_startup_receiver = aggregate_startup_receiver;
     let mut journal_startup_receiver = journal_startup_receiver;
@@ -1211,6 +1216,7 @@ fn observed_swap_writer_loop(
                         drain_recent_raw_journal_overflow_nonblocking(
                             journal_sender,
                             &mut journal_overflow,
+                            journal_overflow_drain_coalesce_max_batches,
                             &telemetry,
                         )?;
                         if journal_overflow.is_empty() {
@@ -1384,6 +1390,7 @@ fn observed_swap_writer_loop(
                                 &mut journal_overflow,
                                 journal_overflow_capacity_batches,
                                 journal_overflow_row_capacity,
+                                journal_overflow_drain_coalesce_max_batches,
                                 RecentRawJournalWriteRequest { inserted_swaps },
                                 &telemetry,
                             ) {
@@ -1551,10 +1558,16 @@ fn enqueue_recent_raw_journal_request(
     journal_overflow: &mut VecDeque<RecentRawJournalWriteRequest>,
     journal_overflow_capacity_batches: usize,
     journal_overflow_row_capacity: usize,
+    journal_overflow_drain_coalesce_max_batches: usize,
     request: RecentRawJournalWriteRequest,
     telemetry: &ObservedSwapWriterTelemetry,
 ) -> Result<()> {
-    drain_recent_raw_journal_overflow_nonblocking(journal_sender, journal_overflow, telemetry)?;
+    drain_recent_raw_journal_overflow_nonblocking(
+        journal_sender,
+        journal_overflow,
+        journal_overflow_drain_coalesce_max_batches,
+        telemetry,
+    )?;
     let request_rows = request.row_count();
     if journal_overflow.is_empty() {
         match journal_sender.try_send(request) {
@@ -1784,24 +1797,68 @@ fn flush_discovery_aggregate_overflow_blocking(
 fn drain_recent_raw_journal_overflow_nonblocking(
     journal_sender: &std_mpsc::SyncSender<RecentRawJournalWriteRequest>,
     journal_overflow: &mut VecDeque<RecentRawJournalWriteRequest>,
+    max_coalesced_batches: usize,
     telemetry: &ObservedSwapWriterTelemetry,
 ) -> Result<()> {
-    while let Some(request) = journal_overflow.pop_front() {
-        let request_rows = request.row_count();
-        telemetry.note_journal_overflow_dequeued(request_rows);
-        match journal_sender.try_send(request) {
+    while let Some(drain_batch) = collect_recent_raw_journal_overflow_drain_batch(
+        journal_overflow,
+        max_coalesced_batches,
+        telemetry,
+    ) {
+        let request_rows = drain_batch.request.row_count();
+        let request_batches = drain_batch.request_batches;
+        debug!(
+            journal_request_batches = request_batches,
+            journal_batch_rows = request_rows,
+            journal_overflow_depth_batches = journal_overflow.len(),
+            journal_overflow_row_debt = telemetry.journal_overflow_row_debt.load(Ordering::Relaxed),
+            "recent raw journal overflow drain coalesced bounded request before channel send"
+        );
+        match journal_sender.try_send(drain_batch.request) {
             Ok(()) => telemetry.note_journal_queue_enqueued(request_rows),
             Err(std_mpsc::TrySendError::Full(request)) => {
                 journal_overflow.push_front(request);
                 telemetry.note_journal_overflow_enqueued(request_rows);
                 break;
             }
-            Err(std_mpsc::TrySendError::Disconnected(_request)) => {
+            Err(std_mpsc::TrySendError::Disconnected(request)) => {
+                journal_overflow.push_front(request);
+                telemetry.note_journal_overflow_enqueued(request_rows);
                 return Err(anyhow!("recent raw journal writer channel closed"));
             }
         }
     }
     Ok(())
+}
+
+struct RecentRawJournalOverflowDrainBatch {
+    request: RecentRawJournalWriteRequest,
+    request_batches: usize,
+}
+
+fn collect_recent_raw_journal_overflow_drain_batch(
+    journal_overflow: &mut VecDeque<RecentRawJournalWriteRequest>,
+    max_coalesced_batches: usize,
+    telemetry: &ObservedSwapWriterTelemetry,
+) -> Option<RecentRawJournalOverflowDrainBatch> {
+    let mut request = journal_overflow.pop_front()?;
+    let mut request_batches = 1usize;
+    let request_rows = request.row_count();
+    telemetry.note_journal_overflow_dequeued(request_rows);
+    let max_coalesced_batches = max_coalesced_batches.max(1);
+    while request_batches < max_coalesced_batches {
+        let Some(next_request) = journal_overflow.pop_front() else {
+            break;
+        };
+        let next_rows = next_request.row_count();
+        telemetry.note_journal_overflow_dequeued(next_rows);
+        request.inserted_swaps.extend(next_request.inserted_swaps);
+        request_batches = request_batches.saturating_add(1);
+    }
+    Some(RecentRawJournalOverflowDrainBatch {
+        request,
+        request_batches,
+    })
 }
 
 fn flush_recent_raw_journal_overflow_blocking(
@@ -3496,6 +3553,18 @@ mod tests {
             slot: 10_000 + idx as u64,
             ts_utc: ts + ChronoDuration::milliseconds(idx as i64),
             exact_amounts: None,
+        }
+    }
+
+    fn recent_raw_journal_write_request_for_test(
+        start_idx: usize,
+        rows: usize,
+        ts: DateTime<Utc>,
+    ) -> super::RecentRawJournalWriteRequest {
+        super::RecentRawJournalWriteRequest {
+            inserted_swaps: (start_idx..start_idx.saturating_add(rows))
+                .map(|idx| recent_raw_journal_backpressure_swap(idx, ts))
+                .collect(),
         }
     }
 
@@ -7661,6 +7730,7 @@ mod tests {
         super::drain_recent_raw_journal_overflow_nonblocking(
             &journal_sender,
             &mut journal_overflow,
+            32,
             &telemetry,
         )?;
         let queued_snapshot = telemetry.snapshot();
@@ -7690,6 +7760,152 @@ mod tests {
         assert_eq!(inflight_snapshot.journal_writer_inflight_rows, 7);
         telemetry.note_journal_writer_inflight_finished();
         assert_eq!(telemetry.snapshot().journal_writer_inflight_rows, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_overflow_drain_coalesces_fat_request_when_channel_has_capacity_stage1(
+    ) -> Result<()> {
+        let telemetry = ObservedSwapWriterTelemetry::default();
+        telemetry
+            .journal_overflow_row_debt_capacity
+            .store(64, Ordering::Relaxed);
+        let (journal_sender, journal_receiver) =
+            std_mpsc::sync_channel::<super::RecentRawJournalWriteRequest>(4);
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-28T20:20:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let mut journal_overflow = std::collections::VecDeque::new();
+        for (start_idx, rows) in [(0usize, 2usize), (10, 3), (20, 4)] {
+            let request = recent_raw_journal_write_request_for_test(start_idx, rows, scenario_now);
+            telemetry.note_journal_overflow_enqueued(request.row_count());
+            journal_overflow.push_back(request);
+        }
+
+        super::drain_recent_raw_journal_overflow_nonblocking(
+            &journal_sender,
+            &mut journal_overflow,
+            8,
+            &telemetry,
+        )?;
+
+        assert!(
+            journal_overflow.is_empty(),
+            "all overflow requests should be drained into one bounded fat channel request"
+        );
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot.journal_overflow_depth_batches, 0);
+        assert_eq!(snapshot.journal_overflow_row_debt, 0);
+        assert_eq!(snapshot.journal_queue_depth_batches, 1);
+        assert_eq!(snapshot.journal_queue_row_debt, 9);
+
+        let request = journal_receiver.recv()?;
+        assert_eq!(
+            request.row_count(),
+            9,
+            "overflow drain should send one fat request instead of replaying tiny batches"
+        );
+        let signatures = request
+            .inserted_swaps
+            .iter()
+            .map(|swap| swap.signature.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            signatures,
+            vec![
+                "sig-journal-backpressure-00000",
+                "sig-journal-backpressure-00001",
+                "sig-journal-backpressure-00010",
+                "sig-journal-backpressure-00011",
+                "sig-journal-backpressure-00012",
+                "sig-journal-backpressure-00020",
+                "sig-journal-backpressure-00021",
+                "sig-journal-backpressure-00022",
+                "sig-journal-backpressure-00023",
+            ],
+            "coalesced overflow drain must preserve source order"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_overflow_drain_channel_full_restores_coalesced_front_without_loss_stage1(
+    ) -> Result<()> {
+        let telemetry = ObservedSwapWriterTelemetry::default();
+        telemetry
+            .journal_overflow_row_debt_capacity
+            .store(64, Ordering::Relaxed);
+        let (journal_sender, journal_receiver) =
+            std_mpsc::sync_channel::<super::RecentRawJournalWriteRequest>(1);
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-28T20:21:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+
+        let prefilled_request = recent_raw_journal_write_request_for_test(99, 1, scenario_now);
+        let prefilled_rows = prefilled_request.row_count();
+        journal_sender
+            .try_send(prefilled_request)
+            .map_err(|error| anyhow!("failed to prefill recent_raw journal channel: {error}"))?;
+        telemetry.note_journal_queue_enqueued(prefilled_rows);
+
+        let mut journal_overflow = std::collections::VecDeque::new();
+        for (start_idx, rows) in [(0usize, 2usize), (10, 3), (20, 4)] {
+            let request = recent_raw_journal_write_request_for_test(start_idx, rows, scenario_now);
+            telemetry.note_journal_overflow_enqueued(request.row_count());
+            journal_overflow.push_back(request);
+        }
+        let before = telemetry.snapshot();
+        assert_eq!(before.journal_overflow_depth_batches, 3);
+        assert_eq!(before.journal_overflow_row_debt, 9);
+
+        super::drain_recent_raw_journal_overflow_nonblocking(
+            &journal_sender,
+            &mut journal_overflow,
+            8,
+            &telemetry,
+        )?;
+
+        let blocked_snapshot = telemetry.snapshot();
+        assert_eq!(
+            blocked_snapshot.journal_queue_depth_batches, 1,
+            "full channel should keep the original queued request visible"
+        );
+        assert_eq!(
+            blocked_snapshot.journal_overflow_depth_batches, 1,
+            "full channel should restore one coalesced request to the overflow front"
+        );
+        assert_eq!(
+            blocked_snapshot.journal_overflow_row_debt, 9,
+            "full channel path must not lose overflow rows"
+        );
+        assert_eq!(
+            super::recent_raw_journal_overflow_row_debt(&journal_overflow),
+            9,
+            "in-memory overflow row debt must match telemetry after coalesced restore"
+        );
+
+        let prefilled = journal_receiver.recv()?;
+        telemetry.note_journal_queue_dequeued(prefilled.row_count());
+        assert_eq!(prefilled.row_count(), 1);
+        super::drain_recent_raw_journal_overflow_nonblocking(
+            &journal_sender,
+            &mut journal_overflow,
+            8,
+            &telemetry,
+        )?;
+        assert!(
+            journal_overflow.is_empty(),
+            "coalesced overflow request should drain after channel capacity returns"
+        );
+        let restored = journal_receiver.recv()?;
+        assert_eq!(
+            restored.row_count(),
+            9,
+            "all rows from the full-channel coalesced request must remain retryable"
+        );
+        let final_snapshot = telemetry.snapshot();
+        assert_eq!(final_snapshot.journal_overflow_depth_batches, 0);
+        assert_eq!(final_snapshot.journal_overflow_row_debt, 0);
         Ok(())
     }
 
