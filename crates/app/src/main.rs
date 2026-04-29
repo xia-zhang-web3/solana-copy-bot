@@ -114,6 +114,15 @@ const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG: &str =
     "discovery_cycle_deferred_due_to_recent_raw_journal_persisted_lag";
 const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_LAG_UNPROVEN: &str =
     "discovery_cycle_deferred_due_to_recent_raw_journal_lag_unproven";
+const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_SETTLE_WINDOW: &str =
+    "discovery_cycle_deferred_due_to_recent_raw_journal_settle_window";
+const DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG: &str =
+    "discovery_cycle_aborted_due_to_recent_raw_journal_backlog";
+const DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG: &str =
+    "discovery_cycle_aborted_due_to_recent_raw_journal_persisted_lag";
+const DISCOVERY_RECENT_RAW_JOURNAL_SETTLE_WINDOW: StdDuration = StdDuration::from_secs(60);
+const DISCOVERY_RECENT_RAW_JOURNAL_SETTLE_CONSECUTIVE_CHECKS: u32 = 2;
+const DISCOVERY_RECENT_RAW_JOURNAL_RUNNING_WATCH_INTERVAL: Duration = Duration::from_secs(1);
 const STARTUP_STEP_LOG_INTERVAL: StdDuration = StdDuration::from_secs(5);
 const STARTUP_REQUIRED_STEP_TIMEOUT: StdDuration = StdDuration::from_secs(120);
 const STARTUP_SQLITE_AUX_STEP_TIMEOUT: StdDuration = StdDuration::from_secs(30);
@@ -3716,10 +3725,14 @@ async fn run_app_loop(
     discovery_critical_target_buy_mints_backpressure_refresh_state
         .note_refresh_attempt(StdInstant::now());
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
+    let mut discovery_running_trigger: Option<&'static str> = None;
+    let mut discovery_recent_raw_journal_abort_reason: Option<&'static str> = None;
     let mut discovery_catch_up_pending = false;
     let mut shadow_scheduler = ShadowScheduler::new();
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
     let mut discovery_catch_up_recent_raw_journal_defer_retry_at: Option<StdInstant> = None;
+    let mut discovery_recent_raw_journal_safety_settle =
+        DiscoveryRecentRawJournalSafetySettleState::default();
     let recent_raw_journal_writer_config = ObservedSwapRecentRawJournalConfig {
         sqlite_path: recent_raw_journal_config.path.clone(),
         retention_days: observed_swaps_retention_days.max(1).saturating_add(
@@ -3881,8 +3894,50 @@ async fn run_app_loop(
                 }
             }, if discovery_handle.is_some() => {
                 discovery_handle = None;
+                let discovery_abort_reason = discovery_recent_raw_journal_abort_reason.take();
+                let discovery_task_trigger = discovery_running_trigger.take().unwrap_or("unknown");
+                if let Some(reason) = discovery_abort_reason {
+                    warn!(
+                        reason,
+                        discovery_task_trigger,
+                        "discovery task result ignored because recent_raw journal became unsafe while the task was running"
+                    );
+                    if discovery_task_trigger == "catch_up_retrigger" {
+                        discovery_catch_up_pending = true;
+                        discovery_catch_up_recent_raw_journal_defer_retry_at = Some(
+                            StdInstant::now()
+                                + DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL,
+                        );
+                    }
+                    continue;
+                }
                 match discovery_result.expect("guard ensures discovery task exists") {
                     Ok(Ok(discovery_output)) => {
+                        let observed_swap_writer_snapshot = observed_swap_writer.snapshot();
+                        let persisted_lag_gate =
+                            load_discovery_recent_raw_journal_persisted_lag_gate(
+                                &store,
+                                &recent_raw_journal_config.path,
+                            );
+                        if let Some(reason) = discovery_recent_raw_journal_abort_reason_from_gates(
+                            &observed_swap_writer_snapshot,
+                            &persisted_lag_gate,
+                        ) {
+                            discovery_recent_raw_journal_safety_settle.reset();
+                            warn!(
+                                reason,
+                                discovery_task_trigger,
+                                "discovery task success output ignored because recent_raw journal is unsafe at join"
+                            );
+                            if discovery_task_trigger == "catch_up_retrigger" {
+                                discovery_catch_up_pending = true;
+                                discovery_catch_up_recent_raw_journal_defer_retry_at = Some(
+                                    StdInstant::now()
+                                        + DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL,
+                                );
+                            }
+                            continue;
+                        }
                         info!(
                             discovery_task_join_result = "success",
                             discovery_runtime_mode = discovery_output.runtime_mode.as_str(),
@@ -4046,6 +4101,7 @@ async fn run_app_loop(
                             .note_refresh_attempt(StdInstant::now());
                     }
                     Ok(Err(error)) => {
+                        discovery_running_trigger = None;
                         discovery_catch_up_pending = false;
                         discovery_catch_up_recent_raw_journal_defer_retry_at = None;
                         warn!(
@@ -4060,12 +4116,41 @@ async fn run_app_loop(
                         warn!(error = %error, "discovery cycle failed");
                     }
                     Err(error) => {
+                        discovery_running_trigger = None;
                         discovery_catch_up_pending = false;
                         discovery_catch_up_recent_raw_journal_defer_retry_at = None;
                         warn!(
                             discovery_task_join_result = "join_error",
                             error = %error,
                             "discovery task join failed"
+                        );
+                    }
+                }
+            }
+            _ = time::sleep(DISCOVERY_RECENT_RAW_JOURNAL_RUNNING_WATCH_INTERVAL), if discovery_handle.is_some() && discovery_recent_raw_journal_abort_reason.is_none() => {
+                let observed_swap_writer_snapshot = observed_swap_writer.snapshot();
+                let persisted_lag_gate = load_discovery_recent_raw_journal_persisted_lag_gate(
+                    &store,
+                    &recent_raw_journal_config.path,
+                );
+                if let Some(reason) = discovery_recent_raw_journal_abort_reason_from_gates(
+                    &observed_swap_writer_snapshot,
+                    &persisted_lag_gate,
+                ) {
+                    discovery_recent_raw_journal_safety_settle.reset();
+                    discovery_recent_raw_journal_abort_reason = Some(reason);
+                    if let Some(handle) = &discovery_handle {
+                        handle.abort();
+                    }
+                    if reason == DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG {
+                        warn_discovery_aborted_due_to_recent_raw_journal_backlog(
+                            discovery_running_trigger.unwrap_or("unknown"),
+                            &observed_swap_writer_snapshot,
+                        );
+                    } else {
+                        warn_discovery_aborted_due_to_recent_raw_journal_persisted_lag(
+                            discovery_running_trigger.unwrap_or("unknown"),
+                            &persisted_lag_gate,
                         );
                     }
                 }
@@ -4085,6 +4170,7 @@ async fn run_app_loop(
                     StdInstant::now(),
                 );
                 if catch_up_gate.reason.is_some() {
+                    discovery_recent_raw_journal_safety_settle.reset();
                     discovery_catch_up_pending = catch_up_gate.keep_pending;
                     discovery_catch_up_recent_raw_journal_defer_retry_at =
                         catch_up_gate.next_retry_at;
@@ -4105,6 +4191,7 @@ async fn run_app_loop(
                     &recent_raw_journal_config.path,
                 );
                 if let Some(reason) = persisted_lag_gate.reason {
+                    discovery_recent_raw_journal_safety_settle.reset();
                     let catch_up_gate =
                         discovery_catch_up_retrigger_recent_raw_journal_defer_gate(
                             reason,
@@ -4119,8 +4206,29 @@ async fn run_app_loop(
                     );
                     continue;
                 }
+                let settle_gate = discovery_recent_raw_journal_safety_settle_start_gate(
+                    &mut discovery_recent_raw_journal_safety_settle,
+                    StdInstant::now(),
+                );
+                if !settle_gate.should_start {
+                    let catch_up_gate =
+                        discovery_catch_up_retrigger_recent_raw_journal_defer_gate(
+                            settle_gate.reason.expect("settle deferral reason"),
+                            StdInstant::now(),
+                        );
+                    discovery_catch_up_pending = catch_up_gate.keep_pending;
+                    discovery_catch_up_recent_raw_journal_defer_retry_at =
+                        catch_up_gate.next_retry_at;
+                    warn_discovery_deferred_due_to_recent_raw_journal_settle_window(
+                        "catch_up_retrigger",
+                        &settle_gate,
+                    );
+                    continue;
+                }
                 discovery_catch_up_pending = false;
                 discovery_catch_up_recent_raw_journal_defer_retry_at = None;
+                discovery_recent_raw_journal_abort_reason = None;
+                discovery_running_trigger = Some("catch_up_retrigger");
                 discovery_handle = Some(spawn_logged_discovery_task(
                     sqlite_path.clone(),
                     recent_raw_journal_config.path.clone(),
@@ -5394,6 +5502,7 @@ async fn run_app_loop(
                 )
                 .is_some()
                 {
+                    discovery_recent_raw_journal_safety_settle.reset();
                     warn_discovery_deferred_due_to_recent_raw_journal_backlog(
                         "scheduled_tick",
                         &observed_swap_writer_snapshot,
@@ -5405,14 +5514,28 @@ async fn run_app_loop(
                     &recent_raw_journal_config.path,
                 );
                 if persisted_lag_gate.reason.is_some() {
+                    discovery_recent_raw_journal_safety_settle.reset();
                     warn_discovery_deferred_due_to_recent_raw_journal_persisted_lag(
                         "scheduled_tick",
                         &persisted_lag_gate,
                     );
                     continue;
                 }
+                let settle_gate = discovery_recent_raw_journal_safety_settle_start_gate(
+                    &mut discovery_recent_raw_journal_safety_settle,
+                    StdInstant::now(),
+                );
+                if !settle_gate.should_start {
+                    warn_discovery_deferred_due_to_recent_raw_journal_settle_window(
+                        "scheduled_tick",
+                        &settle_gate,
+                    );
+                    continue;
+                }
                 discovery_catch_up_pending = false;
                 discovery_catch_up_recent_raw_journal_defer_retry_at = None;
+                discovery_recent_raw_journal_abort_reason = None;
+                discovery_running_trigger = Some("scheduled_tick");
                 discovery_handle = Some(spawn_logged_discovery_task(
                     sqlite_path.clone(),
                     recent_raw_journal_config.path.clone(),
@@ -5740,6 +5863,61 @@ fn load_discovery_recent_raw_journal_persisted_lag_gate(
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct DiscoveryRecentRawJournalSafetySettleState {
+    clean_since: Option<StdInstant>,
+    consecutive_clean_checks: u32,
+}
+
+impl DiscoveryRecentRawJournalSafetySettleState {
+    fn reset(&mut self) {
+        self.clean_since = None;
+        self.consecutive_clean_checks = 0;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DiscoveryRecentRawJournalSafetySettleGate {
+    should_start: bool,
+    reason: Option<&'static str>,
+    clean_since: Option<StdInstant>,
+    consecutive_clean_checks: u32,
+    stable_for: Option<StdDuration>,
+}
+
+fn discovery_recent_raw_journal_safety_settle_start_gate(
+    settle_state: &mut DiscoveryRecentRawJournalSafetySettleState,
+    now: StdInstant,
+) -> DiscoveryRecentRawJournalSafetySettleGate {
+    let clean_since = *settle_state.clean_since.get_or_insert(now);
+    settle_state.consecutive_clean_checks = settle_state.consecutive_clean_checks.saturating_add(1);
+    let stable_for = now.saturating_duration_since(clean_since);
+    let should_start = settle_state.consecutive_clean_checks
+        >= DISCOVERY_RECENT_RAW_JOURNAL_SETTLE_CONSECUTIVE_CHECKS
+        || stable_for >= DISCOVERY_RECENT_RAW_JOURNAL_SETTLE_WINDOW;
+
+    DiscoveryRecentRawJournalSafetySettleGate {
+        should_start,
+        reason: (!should_start)
+            .then_some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_SETTLE_WINDOW),
+        clean_since: Some(clean_since),
+        consecutive_clean_checks: settle_state.consecutive_clean_checks,
+        stable_for: Some(stable_for),
+    }
+}
+
+fn discovery_recent_raw_journal_abort_reason_from_gates(
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+    persisted_lag_gate: &DiscoveryRecentRawJournalPersistedLagGate,
+) -> Option<&'static str> {
+    if discovery_recent_raw_journal_backlog_defer_reason(observed_swap_writer_snapshot).is_some() {
+        return Some(DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG);
+    }
+    persisted_lag_gate
+        .reason
+        .map(|_| DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DiscoveryCatchUpRetriggerBacklogGate {
     should_start: bool,
@@ -5835,6 +6013,28 @@ fn warn_discovery_deferred_due_to_recent_raw_journal_persisted_lag(
     );
 }
 
+fn warn_discovery_deferred_due_to_recent_raw_journal_settle_window(
+    trigger: &'static str,
+    settle_gate: &DiscoveryRecentRawJournalSafetySettleGate,
+) {
+    warn!(
+        reason = settle_gate
+            .reason
+            .unwrap_or(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_SETTLE_WINDOW),
+        discovery_task_trigger = trigger,
+        recent_raw_journal_clean_consecutive_checks = settle_gate.consecutive_clean_checks,
+        recent_raw_journal_required_consecutive_checks =
+            DISCOVERY_RECENT_RAW_JOURNAL_SETTLE_CONSECUTIVE_CHECKS,
+        recent_raw_journal_stable_for_seconds = settle_gate
+            .stable_for
+            .map(|duration| duration.as_secs()),
+        recent_raw_journal_required_stable_seconds =
+            DISCOVERY_RECENT_RAW_JOURNAL_SETTLE_WINDOW.as_secs(),
+        recent_raw_journal_clean_since_known = settle_gate.clean_since.is_some(),
+        "discovery scheduled/background cycle deferred until recent_raw journal safety remains stable"
+    );
+}
+
 fn warn_discovery_deferred_due_to_recent_raw_journal_backlog(
     trigger: &'static str,
     observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
@@ -5859,6 +6059,76 @@ fn warn_discovery_deferred_due_to_recent_raw_journal_backlog(
         observed_swap_writer_journal_writer_inflight_rows =
             observed_swap_writer_snapshot.journal_writer_inflight_rows,
         "discovery scheduled/background cycle deferred because recent_raw journal backlog is unsafe"
+    );
+}
+
+fn warn_discovery_aborted_due_to_recent_raw_journal_persisted_lag(
+    trigger: &'static str,
+    persisted_lag_gate: &DiscoveryRecentRawJournalPersistedLagGate,
+) {
+    let observed_tail_cursor_ts = persisted_lag_gate
+        .observed_tail_cursor
+        .as_ref()
+        .map(|cursor| cursor.ts_utc.to_rfc3339());
+    let observed_tail_cursor_slot = persisted_lag_gate
+        .observed_tail_cursor
+        .as_ref()
+        .map(|cursor| cursor.slot);
+    let observed_tail_cursor_signature = persisted_lag_gate
+        .observed_tail_cursor
+        .as_ref()
+        .map(|cursor| cursor.signature.as_str());
+    let journal_cursor_ts = persisted_lag_gate
+        .journal_covered_through_cursor
+        .as_ref()
+        .map(|cursor| cursor.ts_utc.to_rfc3339());
+    let journal_cursor_slot = persisted_lag_gate
+        .journal_covered_through_cursor
+        .as_ref()
+        .map(|cursor| cursor.slot);
+    let journal_cursor_signature = persisted_lag_gate
+        .journal_covered_through_cursor
+        .as_ref()
+        .map(|cursor| cursor.signature.as_str());
+    warn!(
+        reason = DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG,
+        discovery_task_trigger = trigger,
+        observed_swaps_tail_ts_utc = observed_tail_cursor_ts.as_deref(),
+        observed_swaps_tail_slot = observed_tail_cursor_slot,
+        observed_swaps_tail_signature = observed_tail_cursor_signature,
+        recent_raw_journal_covered_through_ts_utc = journal_cursor_ts.as_deref(),
+        recent_raw_journal_covered_through_slot = journal_cursor_slot,
+        recent_raw_journal_covered_through_signature = journal_cursor_signature,
+        recent_raw_journal_lag_seconds = persisted_lag_gate.lag_seconds,
+        recent_raw_journal_lag_check_error = persisted_lag_gate.error.as_deref(),
+        "discovery task aborted because recent_raw journal persisted coverage became unsafe while discovery was running"
+    );
+}
+
+fn warn_discovery_aborted_due_to_recent_raw_journal_backlog(
+    trigger: &'static str,
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+) {
+    warn!(
+        reason = DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG,
+        discovery_task_trigger = trigger,
+        observed_swap_writer_journal_queue_depth_batches =
+            observed_swap_writer_snapshot.journal_queue_depth_batches,
+        observed_swap_writer_journal_queue_capacity_batches =
+            observed_swap_writer_snapshot.journal_queue_capacity_batches,
+        observed_swap_writer_journal_overflow_depth_batches =
+            observed_swap_writer_snapshot.journal_overflow_depth_batches,
+        observed_swap_writer_journal_overflow_capacity_batches =
+            observed_swap_writer_snapshot.journal_overflow_capacity_batches,
+        observed_swap_writer_journal_queue_row_debt =
+            observed_swap_writer_snapshot.journal_queue_row_debt,
+        observed_swap_writer_journal_overflow_row_debt =
+            observed_swap_writer_snapshot.journal_overflow_row_debt,
+        observed_swap_writer_journal_overflow_row_debt_capacity =
+            observed_swap_writer_snapshot.journal_overflow_row_debt_capacity,
+        observed_swap_writer_journal_writer_inflight_rows =
+            observed_swap_writer_snapshot.journal_writer_inflight_rows,
+        "discovery task aborted because recent_raw journal backlog became unsafe while discovery was running"
     );
 }
 
@@ -8916,6 +9186,75 @@ mod app_tests {
         );
     }
 
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_startup_first_clean_snapshot_waits_for_settle_stage1(
+    ) {
+        let mut settle_state = DiscoveryRecentRawJournalSafetySettleState::default();
+        let now = StdInstant::now();
+
+        let first_gate =
+            discovery_recent_raw_journal_safety_settle_start_gate(&mut settle_state, now);
+        let second_gate = discovery_recent_raw_journal_safety_settle_start_gate(
+            &mut settle_state,
+            now + StdDuration::from_secs(1),
+        );
+
+        assert!(!first_gate.should_start);
+        assert_eq!(
+            first_gate.reason,
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_SETTLE_WINDOW)
+        );
+        assert_eq!(first_gate.consecutive_clean_checks, 1);
+        assert!(
+            second_gate.should_start,
+            "second consecutive clean recent_raw safety check may start discovery"
+        );
+        assert_eq!(second_gate.consecutive_clean_checks, 2);
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_clean_then_backlog_resets_settle_stage1()
+    {
+        let mut settle_state = DiscoveryRecentRawJournalSafetySettleState::default();
+        let now = StdInstant::now();
+        let first_gate =
+            discovery_recent_raw_journal_safety_settle_start_gate(&mut settle_state, now);
+        assert!(!first_gate.should_start);
+
+        settle_state.reset();
+        let after_backlog_clears_gate = discovery_recent_raw_journal_safety_settle_start_gate(
+            &mut settle_state,
+            now + StdDuration::from_secs(2),
+        );
+
+        assert!(!after_backlog_clears_gate.should_start);
+        assert_eq!(after_backlog_clears_gate.consecutive_clean_checks, 1);
+        assert_eq!(
+            after_backlog_clears_gate.reason,
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_SETTLE_WINDOW)
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_settle_allows_after_stable_window_stage1()
+    {
+        let mut settle_state = DiscoveryRecentRawJournalSafetySettleState::default();
+        let now = StdInstant::now();
+        let first_gate =
+            discovery_recent_raw_journal_safety_settle_start_gate(&mut settle_state, now);
+        assert!(!first_gate.should_start);
+
+        let stable_gate = discovery_recent_raw_journal_safety_settle_start_gate(
+            &mut settle_state,
+            now + DISCOVERY_RECENT_RAW_JOURNAL_SETTLE_WINDOW,
+        );
+
+        assert!(
+            stable_gate.should_start,
+            "a clean recent_raw journal state that remains stable for the full settle window may start discovery"
+        );
+    }
+
     fn recent_raw_journal_gate_cursor(
         ts: &str,
         slot: u64,
@@ -9197,6 +9536,30 @@ mod app_tests {
     }
 
     #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_settle_catch_up_preserves_pending_stage1()
+    {
+        let mut settle_state = DiscoveryRecentRawJournalSafetySettleState::default();
+        let now = StdInstant::now();
+        let settle_gate =
+            discovery_recent_raw_journal_safety_settle_start_gate(&mut settle_state, now);
+        let catch_up_gate = discovery_catch_up_retrigger_recent_raw_journal_defer_gate(
+            settle_gate.reason.expect("first clean check should defer"),
+            now,
+        );
+
+        assert!(!catch_up_gate.should_start);
+        assert!(
+            catch_up_gate.keep_pending,
+            "catch-up intent must remain pending while recent_raw safety settle window defers retrigger"
+        );
+        assert_eq!(
+            catch_up_gate.reason,
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_SETTLE_WINDOW)
+        );
+        assert!(catch_up_gate.next_retry_at.is_some());
+    }
+
+    #[test]
     fn discovery_cycle_deferred_due_to_recent_raw_journal_backlog_catch_up_retry_throttles_stage1()
     {
         let writer_snapshot = maintenance_test_writer_snapshot();
@@ -9262,6 +9625,39 @@ mod app_tests {
             gate.next_retry_at.is_some_and(|retry_at| retry_at
                 >= now + DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL),
             "due retry with continuing backlog should move the retry deadline forward"
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_running_backlog_aborts_success_path_stage1(
+    ) {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.journal_overflow_depth_batches = 1;
+        let persisted_gate =
+            discovery_recent_raw_journal_persisted_lag_gate_from_cursors(None, None);
+
+        assert_eq!(
+            discovery_recent_raw_journal_abort_reason_from_gates(&writer_snapshot, &persisted_gate,),
+            Some(DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG)
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_running_persisted_lag_aborts_success_path_stage1(
+    ) {
+        let writer_snapshot = maintenance_test_writer_snapshot();
+        let runtime_cursor =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:10Z", 110, "sig-runtime");
+        let journal_cursor =
+            recent_raw_journal_gate_cursor("2026-04-29T09:00:00Z", 100, "sig-journal");
+        let persisted_gate = discovery_recent_raw_journal_persisted_lag_gate_from_cursors(
+            Some(runtime_cursor),
+            Some(journal_cursor),
+        );
+
+        assert_eq!(
+            discovery_recent_raw_journal_abort_reason_from_gates(&writer_snapshot, &persisted_gate,),
+            Some(DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG)
         );
     }
 
