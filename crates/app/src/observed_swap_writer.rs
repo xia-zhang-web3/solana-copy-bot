@@ -1835,7 +1835,10 @@ fn recent_raw_journal_writer_loop(
     match store.ensure_recent_raw_journal_tables() {
         Ok(()) => {
             if !config.skip_startup_prune {
-                prune_recent_raw_journal_with_budget(&store, config.retention_days, Utc::now())?;
+                debug!(
+                    retention_days = config.retention_days,
+                    "recent raw journal startup prune deferred until post-write bounded prune"
+                );
             }
             let _ = startup_sender.send(Ok(()));
         }
@@ -6656,6 +6659,7 @@ mod tests {
         seed_store.run_migrations(&migration_dir)?;
 
         let runtime = Builder::new_current_thread().enable_all().build()?;
+        let recent_ts = Utc::now() - ChronoDuration::days(1);
         runtime.block_on(async {
             let writer = ObservedSwapWriter::start_with_config(
                 runtime_db_path
@@ -6691,9 +6695,7 @@ mod tests {
                 amount_out: 10.0,
                 signature: "sig-recent-raw-journal".to_string(),
                 slot: 500,
-                ts_utc: DateTime::parse_from_rfc3339("2026-03-23T11:55:00Z")
-                    .expect("timestamp")
-                    .with_timezone(&Utc),
+                ts_utc: recent_ts,
                 exact_amounts: None,
             };
 
@@ -6707,11 +6709,8 @@ mod tests {
         })?;
 
         let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
-        let journal_rows = journal_store.load_observed_swaps_since(
-            DateTime::parse_from_rfc3339("2026-03-23T00:00:00Z")
-                .expect("timestamp")
-                .with_timezone(&Utc),
-        )?;
+        let journal_rows =
+            journal_store.load_observed_swaps_since(recent_ts - ChronoDuration::hours(1))?;
         assert_eq!(journal_rows.len(), 1);
         assert_eq!(journal_rows[0].signature, "sig-recent-raw-journal");
         let journal_state = journal_store.recent_raw_journal_state()?;
@@ -6719,6 +6718,144 @@ mod tests {
         assert_eq!(journal_state.last_batch_rows, 1);
         let _ = std::fs::remove_file(runtime_db_path);
         let _ = std::fs::remove_file(journal_db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_startup_prune_is_deferred_until_after_live_write_stage1() -> Result<()> {
+        let unique = format!(
+            "copybot-app-recent-raw-journal-deferred-startup-prune-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
+        let journal_now = Utc::now();
+        let stale_swap = SwapEvent {
+            wallet: "wallet-journal-startup-prune-stale".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-journal-startup-prune-stale".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-recent-raw-journal-startup-prune-stale".to_string(),
+            slot: 450,
+            ts_utc: journal_now - ChronoDuration::days(10),
+            exact_amounts: None,
+        };
+        let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        journal_store.insert_recent_raw_journal_batch(
+            std::slice::from_ref(&stale_swap),
+            stale_swap.ts_utc,
+        )?;
+        journal_store.checkpoint_wal_truncate()?;
+        drop(journal_store);
+
+        let (journal_sender, journal_receiver) =
+            std_mpsc::sync_channel::<super::RecentRawJournalWriteRequest>(8);
+        let (startup_sender, startup_receiver) =
+            std_mpsc::channel::<std::result::Result<(), String>>();
+        let telemetry = Arc::new(ObservedSwapWriterTelemetry::default());
+        let config = ObservedSwapRecentRawJournalConfig {
+            sqlite_path: journal_db_path
+                .to_str()
+                .context("journal sqlite path must be valid utf-8")?
+                .to_string(),
+            retention_days: 8,
+            writer_queue_capacity_batches: 8,
+            write_coalesce_max_batches:
+                super::OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_COALESCE_MAX_BATCHES,
+            overflow_capacity_batches: 32,
+            skip_prune_while_backlogged: true,
+            skip_startup_prune: false,
+        };
+        let writer_handle = thread::spawn(move || {
+            super::recent_raw_journal_writer_loop(
+                journal_receiver,
+                startup_sender,
+                config,
+                telemetry,
+            )
+        });
+        startup_receiver
+            .recv_timeout(StdDuration::from_secs(2))
+            .context("recent_raw journal writer did not signal startup before pruning")?
+            .map_err(|error| anyhow!(error))?;
+
+        let journal_store_after_startup = SqliteStore::open(Path::new(&journal_db_path))?;
+        let rows_after_startup = journal_store_after_startup
+            .load_observed_swaps_since(journal_now - ChronoDuration::days(30))?;
+        assert_eq!(
+            rows_after_startup.len(),
+            1,
+            "startup must only open/ensure journal tables and must not prune before the writer can receive live rows"
+        );
+        assert_eq!(
+            rows_after_startup[0].signature,
+            "sig-recent-raw-journal-startup-prune-stale"
+        );
+        drop(journal_store_after_startup);
+
+        let fresh_swap = SwapEvent {
+            wallet: "wallet-journal-startup-prune-fresh".to_string(),
+            dex: "raydium".to_string(),
+            token_in: "So11111111111111111111111111111111111111112".to_string(),
+            token_out: "token-journal-startup-prune-fresh".to_string(),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            signature: "sig-recent-raw-journal-startup-prune-fresh".to_string(),
+            slot: 451,
+            ts_utc: journal_now - ChronoDuration::seconds(30),
+            exact_amounts: None,
+        };
+        journal_sender.send(super::RecentRawJournalWriteRequest {
+            inserted_swaps: vec![fresh_swap],
+        })?;
+        drop(journal_sender);
+
+        let live_write_started = Instant::now();
+        loop {
+            let verify_store = SqliteStore::open(Path::new(&journal_db_path))?;
+            let rows =
+                verify_store.load_observed_swaps_since(journal_now - ChronoDuration::days(30))?;
+            if rows
+                .iter()
+                .any(|row| row.signature == "sig-recent-raw-journal-startup-prune-fresh")
+            {
+                break;
+            }
+            if live_write_started.elapsed() > StdDuration::from_secs(2) {
+                anyhow::bail!(
+                    "recent_raw journal writer did not persist first live row after startup signal"
+                );
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+
+        writer_handle
+            .join()
+            .map_err(|payload| anyhow!(super::panic_payload_to_string(payload.as_ref())))??;
+        let journal_store_after_write = SqliteStore::open(Path::new(&journal_db_path))?;
+        let rows_after_write = journal_store_after_write
+            .load_observed_swaps_since(journal_now - ChronoDuration::days(30))?;
+        assert_eq!(
+            rows_after_write.len(),
+            1,
+            "bounded retention prune should remain available after the live write commits"
+        );
+        assert_eq!(
+            rows_after_write[0].signature,
+            "sig-recent-raw-journal-startup-prune-fresh"
+        );
+        let journal_state = journal_store_after_write.recent_raw_journal_state()?;
+        assert_eq!(
+            journal_state.row_count, 1,
+            "journal state must reflect only actually committed rows after deferred prune"
+        );
+        assert!(journal_state.last_pruned_at.is_some());
+
+        remove_sqlite_test_files(&journal_db_path);
         Ok(())
     }
 
@@ -6738,9 +6875,7 @@ mod tests {
         seed_store.run_migrations(&migration_dir)?;
 
         let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
-        let journal_now = DateTime::parse_from_rfc3339("2026-03-24T12:00:00Z")
-            .expect("timestamp")
-            .with_timezone(&Utc);
+        let journal_now = Utc::now();
         journal_store.insert_recent_raw_journal_batch(
             &[SwapEvent {
                 wallet: "wallet-journal-old".to_string(),
