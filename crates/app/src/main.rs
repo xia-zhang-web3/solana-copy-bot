@@ -106,6 +106,10 @@ const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 const OBSERVED_SWAP_WRITER_BACKPRESSURE_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const OBSERVED_SWAP_WRITER_BACKPRESSURE_LOG_THROTTLE: StdDuration = StdDuration::from_secs(5);
 const DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD: usize = 128;
+const DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL: StdDuration =
+    StdDuration::from_secs(5);
+const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG: &str =
+    "discovery_cycle_deferred_due_to_recent_raw_journal_backlog";
 const STARTUP_STEP_LOG_INTERVAL: StdDuration = StdDuration::from_secs(5);
 const STARTUP_REQUIRED_STEP_TIMEOUT: StdDuration = StdDuration::from_secs(120);
 const STARTUP_SQLITE_AUX_STEP_TIMEOUT: StdDuration = StdDuration::from_secs(30);
@@ -3711,6 +3715,7 @@ async fn run_app_loop(
     let mut discovery_catch_up_pending = false;
     let mut shadow_scheduler = ShadowScheduler::new();
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
+    let mut discovery_catch_up_recent_raw_journal_backlog_retry_at: Option<StdInstant> = None;
     let recent_raw_journal_writer_config = ObservedSwapRecentRawJournalConfig {
         sqlite_path: recent_raw_journal_config.path.clone(),
         retention_days: observed_swaps_retention_days.max(1).saturating_add(
@@ -3947,6 +3952,7 @@ async fn run_app_loop(
                             &observed_swap_writer_snapshot,
                             ingestion_snapshot.as_ref(),
                         );
+                        discovery_catch_up_recent_raw_journal_backlog_retry_at = None;
                         if discovery_catch_up_pending {
                             let pressure_override =
                                 discovery_output.persisted_stream_catch_up_pressure_override_requested;
@@ -4037,6 +4043,7 @@ async fn run_app_loop(
                     }
                     Ok(Err(error)) => {
                         discovery_catch_up_pending = false;
+                        discovery_catch_up_recent_raw_journal_backlog_retry_at = None;
                         warn!(
                             discovery_task_join_result = "task_error",
                             error = %error,
@@ -4050,6 +4057,7 @@ async fn run_app_loop(
                     }
                     Err(error) => {
                         discovery_catch_up_pending = false;
+                        discovery_catch_up_recent_raw_journal_backlog_retry_at = None;
                         warn!(
                             discovery_task_join_result = "join_error",
                             error = %error,
@@ -4058,8 +4066,38 @@ async fn run_app_loop(
                     }
                 }
             }
-            _ = async {}, if discovery_catch_up_pending && discovery_handle.is_none() => {
+            _ = async {
+                if let Some(retry_at) = discovery_catch_up_recent_raw_journal_backlog_retry_at {
+                    let now = StdInstant::now();
+                    if retry_at > now {
+                        time::sleep(retry_at.duration_since(now)).await;
+                    }
+                }
+            }, if discovery_catch_up_pending && discovery_handle.is_none() => {
+                let observed_swap_writer_snapshot = observed_swap_writer.snapshot();
+                let catch_up_gate = discovery_catch_up_retrigger_recent_raw_journal_backlog_gate(
+                    &observed_swap_writer_snapshot,
+                    discovery_catch_up_recent_raw_journal_backlog_retry_at,
+                    StdInstant::now(),
+                );
+                if catch_up_gate.reason.is_some() {
+                    discovery_catch_up_pending = catch_up_gate.keep_pending;
+                    discovery_catch_up_recent_raw_journal_backlog_retry_at =
+                        catch_up_gate.next_retry_at;
+                    warn_discovery_deferred_due_to_recent_raw_journal_backlog(
+                        "catch_up_retrigger",
+                        &observed_swap_writer_snapshot,
+                    );
+                    continue;
+                }
+                if !catch_up_gate.should_start {
+                    discovery_catch_up_pending = catch_up_gate.keep_pending;
+                    discovery_catch_up_recent_raw_journal_backlog_retry_at =
+                        catch_up_gate.next_retry_at;
+                    continue;
+                }
                 discovery_catch_up_pending = false;
+                discovery_catch_up_recent_raw_journal_backlog_retry_at = None;
                 discovery_handle = Some(spawn_logged_discovery_task(
                     sqlite_path.clone(),
                     recent_raw_journal_config.path.clone(),
@@ -5327,7 +5365,20 @@ async fn run_app_loop(
                     warn!("discovery cycle still running, skipping scheduled trigger");
                     continue;
                 }
+                let observed_swap_writer_snapshot = observed_swap_writer.snapshot();
+                if discovery_recent_raw_journal_backlog_defer_reason(
+                    &observed_swap_writer_snapshot,
+                )
+                .is_some()
+                {
+                    warn_discovery_deferred_due_to_recent_raw_journal_backlog(
+                        "scheduled_tick",
+                        &observed_swap_writer_snapshot,
+                    );
+                    continue;
+                }
                 discovery_catch_up_pending = false;
+                discovery_catch_up_recent_raw_journal_backlog_retry_at = None;
                 discovery_handle = Some(spawn_logged_discovery_task(
                     sqlite_path.clone(),
                     recent_raw_journal_config.path.clone(),
@@ -5534,6 +5585,90 @@ fn discovery_catch_up_has_writer_queue_pressure(
         || observed_swap_writer_snapshot.aggregate_overflow_depth_batches > 0
         || observed_swap_writer_snapshot.journal_queue_depth_batches > 0
         || observed_swap_writer_snapshot.journal_overflow_depth_batches > 0
+}
+
+fn discovery_recent_raw_journal_backlog_defer_reason(
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+) -> Option<&'static str> {
+    if observed_swap_writer_snapshot.journal_queue_depth_batches > 0
+        || observed_swap_writer_snapshot.journal_overflow_depth_batches > 0
+        || observed_swap_writer_snapshot.journal_queue_row_debt > 0
+        || observed_swap_writer_snapshot.journal_overflow_row_debt > 0
+        || observed_swap_writer_snapshot.journal_writer_inflight_rows > 0
+    {
+        return Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG);
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DiscoveryCatchUpRetriggerBacklogGate {
+    should_start: bool,
+    keep_pending: bool,
+    next_retry_at: Option<StdInstant>,
+    reason: Option<&'static str>,
+}
+
+fn discovery_catch_up_retrigger_recent_raw_journal_backlog_gate(
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+    retry_at: Option<StdInstant>,
+    now: StdInstant,
+) -> DiscoveryCatchUpRetriggerBacklogGate {
+    if let Some(retry_at) = retry_at {
+        if now < retry_at {
+            return DiscoveryCatchUpRetriggerBacklogGate {
+                should_start: false,
+                keep_pending: true,
+                next_retry_at: Some(retry_at),
+                reason: None,
+            };
+        }
+    }
+
+    if let Some(reason) =
+        discovery_recent_raw_journal_backlog_defer_reason(observed_swap_writer_snapshot)
+    {
+        return DiscoveryCatchUpRetriggerBacklogGate {
+            should_start: false,
+            keep_pending: true,
+            next_retry_at: Some(now + DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL),
+            reason: Some(reason),
+        };
+    }
+
+    DiscoveryCatchUpRetriggerBacklogGate {
+        should_start: true,
+        keep_pending: false,
+        next_retry_at: None,
+        reason: None,
+    }
+}
+
+fn warn_discovery_deferred_due_to_recent_raw_journal_backlog(
+    trigger: &'static str,
+    observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
+) {
+    warn!(
+        reason = DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG,
+        discovery_task_trigger = trigger,
+        observed_swap_writer_journal_queue_depth_batches =
+            observed_swap_writer_snapshot.journal_queue_depth_batches,
+        observed_swap_writer_journal_queue_capacity_batches =
+            observed_swap_writer_snapshot.journal_queue_capacity_batches,
+        observed_swap_writer_journal_overflow_depth_batches =
+            observed_swap_writer_snapshot.journal_overflow_depth_batches,
+        observed_swap_writer_journal_overflow_capacity_batches =
+            observed_swap_writer_snapshot.journal_overflow_capacity_batches,
+        observed_swap_writer_journal_queue_row_debt =
+            observed_swap_writer_snapshot.journal_queue_row_debt,
+        observed_swap_writer_journal_overflow_row_debt =
+            observed_swap_writer_snapshot.journal_overflow_row_debt,
+        observed_swap_writer_journal_overflow_row_debt_capacity =
+            observed_swap_writer_snapshot.journal_overflow_row_debt_capacity,
+        observed_swap_writer_journal_writer_inflight_rows =
+            observed_swap_writer_snapshot.journal_writer_inflight_rows,
+        "discovery scheduled/background cycle deferred because recent_raw journal backlog is unsafe"
+    );
 }
 
 fn discovery_catch_up_has_ingestion_pressure(
@@ -8509,6 +8644,183 @@ mod app_tests {
             &writer_snapshot,
             Some(&maintenance_test_ingestion_snapshot(0.0)),
         ));
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_backlog_allows_zero_backlog_stage1() {
+        let writer_snapshot = maintenance_test_writer_snapshot();
+
+        assert_eq!(
+            discovery_recent_raw_journal_backlog_defer_reason(&writer_snapshot),
+            None
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_backlog_blocks_queue_depth_stage1() {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.journal_queue_depth_batches = 1;
+
+        assert_eq!(
+            discovery_recent_raw_journal_backlog_defer_reason(&writer_snapshot),
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG)
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_backlog_blocks_overflow_depth_stage1() {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.journal_overflow_depth_batches = 1;
+
+        assert_eq!(
+            discovery_recent_raw_journal_backlog_defer_reason(&writer_snapshot),
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG)
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_backlog_blocks_queue_row_debt_stage1() {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.journal_queue_row_debt = 1;
+
+        assert_eq!(
+            discovery_recent_raw_journal_backlog_defer_reason(&writer_snapshot),
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG)
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_backlog_blocks_overflow_row_debt_stage1()
+    {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.journal_overflow_row_debt = 1;
+
+        assert_eq!(
+            discovery_recent_raw_journal_backlog_defer_reason(&writer_snapshot),
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG)
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_backlog_blocks_inflight_rows_stage1() {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.journal_writer_inflight_rows = 1;
+
+        assert_eq!(
+            discovery_recent_raw_journal_backlog_defer_reason(&writer_snapshot),
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG)
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_backlog_does_not_block_raw_writer_pending_only_stage1(
+    ) {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.pending_requests = OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY / 2;
+
+        assert_eq!(
+            discovery_recent_raw_journal_backlog_defer_reason(&writer_snapshot),
+            None,
+            "recent_raw backlog gate must not stop raw writer flow solely because raw requests are pending"
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_backlog_catch_up_preserves_pending_stage1(
+    ) {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.journal_queue_depth_batches = 1;
+        let now = StdInstant::now();
+
+        let gate = discovery_catch_up_retrigger_recent_raw_journal_backlog_gate(
+            &writer_snapshot,
+            None,
+            now,
+        );
+
+        assert!(!gate.should_start);
+        assert!(
+            gate.keep_pending,
+            "catch-up intent must remain pending while recent_raw backlog defers retrigger"
+        );
+        assert_eq!(
+            gate.reason,
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG)
+        );
+        assert!(
+            gate.next_retry_at.is_some_and(|retry_at| retry_at
+                >= now + DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL),
+            "backlog deferral must set a bounded retry deadline"
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_backlog_catch_up_retry_throttles_stage1()
+    {
+        let writer_snapshot = maintenance_test_writer_snapshot();
+        let now = StdInstant::now();
+        let retry_at = now + DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL;
+
+        let gate = discovery_catch_up_retrigger_recent_raw_journal_backlog_gate(
+            &writer_snapshot,
+            Some(retry_at),
+            now,
+        );
+
+        assert!(!gate.should_start);
+        assert!(gate.keep_pending);
+        assert_eq!(gate.next_retry_at, Some(retry_at));
+        assert_eq!(
+            gate.reason, None,
+            "not-yet-due retry must not log another backlog deferral or busy-loop"
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_backlog_catch_up_starts_when_clear_and_due_stage1(
+    ) {
+        let writer_snapshot = maintenance_test_writer_snapshot();
+        let now = StdInstant::now();
+
+        let gate = discovery_catch_up_retrigger_recent_raw_journal_backlog_gate(
+            &writer_snapshot,
+            Some(now),
+            now,
+        );
+
+        assert!(
+            gate.should_start,
+            "catch-up retrigger should start once recent_raw backlog is clear and retry is due"
+        );
+        assert!(!gate.keep_pending);
+        assert_eq!(gate.next_retry_at, None);
+        assert_eq!(gate.reason, None);
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_backlog_catch_up_reschedules_when_due_but_still_backlogged_stage1(
+    ) {
+        let mut writer_snapshot = maintenance_test_writer_snapshot();
+        writer_snapshot.journal_writer_inflight_rows = 1;
+        let now = StdInstant::now();
+
+        let gate = discovery_catch_up_retrigger_recent_raw_journal_backlog_gate(
+            &writer_snapshot,
+            Some(now),
+            now,
+        );
+
+        assert!(!gate.should_start);
+        assert!(gate.keep_pending);
+        assert_eq!(
+            gate.reason,
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG)
+        );
+        assert!(
+            gate.next_retry_at.is_some_and(|retry_at| retry_at
+                >= now + DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL),
+            "due retry with continuing backlog should move the retry deadline forward"
+        );
     }
 
     #[test]
