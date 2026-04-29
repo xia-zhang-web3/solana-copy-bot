@@ -270,6 +270,57 @@ Follow-up update as of `2026-04-29T20:03:24Z`:
 - The new retryable rug-finalize reason has not yet fired on live after
   rollout; keep monitoring before declaring that seam closed.
 
+Follow-up update as of `2026-04-29T20:55:42Z`:
+
+- The next observed-writer seam was accepted and deployed:
+  `cf156af` (`Retry aggregate replay apply locks`), touching only
+  `crates/app/src/observed_swap_writer.rs`.
+- Implemented behavior:
+  - SQLite busy/locked during aggregate startup/gap replay
+    `apply_discovery_scoring_batch` is retryable and non-terminal.
+  - Stable reason:
+    `observed_swap_writer_discovery_scoring_replay_apply_sqlite_lock_retryable`.
+  - On retryable replay-apply lock, the writer latches
+    `discovery_scoring_materialization_gap_cursor` to the first failed replay
+    row and leaves `covered_through` unchanged.
+  - Unknown/non-lock apply errors remain terminal.
+- Local reviewer checks passed:
+  `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer -- --test-threads=1`,
+  `cargo check -j 1 -p copybot-app --bin copybot-app`,
+  `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`,
+  and `git diff --check -- crates/app/src/observed_swap_writer.rs`.
+- Production rollout advanced the server checkout to `cf156af`, rebuilt only
+  `copybot-app`, and restarted `solana-copy-bot.service`.
+- Rollout incident:
+  - the first restart entered a startup ABRT loop before app runtime handoff
+  - failing stage:
+    `sqlite_pragma_journal_mode_wal`
+  - each process timed out at `30s` and aborted with `status=6/ABRT`
+  - `NRestarts` reached `10`
+  - runtime WAL was large:
+    `live_runtime_20260324T134339Z.db-wal = 11G`
+- Operator recovery:
+  - stopped `solana-copy-bot.service`
+  - ran SQLite-managed `PRAGMA wal_checkpoint(TRUNCATE)` as `copybot`
+  - checkpoint returned `0|0|0`
+  - runtime WAL/SHM were removed by SQLite and the recreated WAL was `9.6M`
+  - read-only `PRAGMA journal_mode` returned `wal` quickly
+- Post-recovery snapshot:
+  - `solana-copy-bot.service = active`
+  - `MainPID = 1606959`
+  - `NRestarts = 0` after recovered restart
+  - disk: `378G used / 89G available / 82%`
+  - runtime and recent_raw journal tails both reached
+    `2026-04-29T20:55:41.204062169Z / 416514723`
+  - startup WAL timeout count: `0`
+  - replay-apply retryable count: `0`
+  - rug-finalize retryable count: `0`
+  - terminal failure count: `0`
+- Do not manually delete SQLite WAL/SHM files. If this recurs, stop the service
+  and use SQLite-managed checkpoint/truncate before restarting.
+- The replay-apply retryable reason has not yet fired after recovery; keep
+  monitoring before declaring that seam closed.
+
 Older historical snapshot follows.
 
 As of `2026-04-28T20:02:16Z`, Stage 3 production discovery truth remains

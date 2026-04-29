@@ -95,6 +95,72 @@ Follow-up accepted and deployed batch:
 - the retryable rug-finalize reason has not yet fired after rollout; continue
   monitoring before considering this seam closed
 
+Second follow-up accepted and deployed batch:
+
+- commit `cf156af` (`Retry aggregate replay apply locks`)
+- touched only:
+  - `crates/app/src/observed_swap_writer.rs`
+- live trigger:
+  - after `835fd7b`, the next live seam was SQLite busy/locked during
+    aggregate startup/gap replay `apply_discovery_scoring_batch`
+  - the intended behavior was to avoid a terminal observed-writer failure when
+    the replay apply transaction cannot open because SQLite is locked
+- implemented behavior:
+  - SQLite busy/locked during aggregate startup/gap replay apply is retryable
+    and non-terminal
+  - stable reason:
+    `observed_swap_writer_discovery_scoring_replay_apply_sqlite_lock_retryable`
+  - on retryable replay-apply lock, the writer latches
+    `discovery_scoring_materialization_gap_cursor` to the first failed replay
+    row and leaves `covered_through` unchanged
+  - unknown/non-lock apply errors remain terminal
+- local reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer -- --test-threads=1`
+  - `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`
+  - `git diff --check -- crates/app/src/observed_swap_writer.rs`
+- production rollout:
+  - server checkout advanced to `cf156af`
+  - rebuilt only `copybot-app`
+  - restarted `solana-copy-bot.service`
+- rollout incident:
+  - the first restart entered an ABRT loop before app runtime handoff
+  - repeated failing stage:
+    `sqlite_pragma_journal_mode_wal`
+  - each process timed out at `30s` and aborted with `status=6/ABRT`
+  - `NRestarts` reached `10`
+  - runtime DB had a large uncheckpointed WAL:
+    `live_runtime_20260324T134339Z.db-wal = 11G`
+- operator recovery:
+  - stopped `solana-copy-bot.service` to end the ABRT loop
+  - ran SQLite-managed checkpoint as `copybot`:
+    `PRAGMA wal_checkpoint(TRUNCATE)`
+  - checkpoint returned `0|0|0`
+  - runtime WAL/SHM were removed by SQLite, and the recreated runtime WAL was
+    `9.6M`
+  - read-only runtime DB checks then completed quickly:
+    `PRAGMA journal_mode = wal`
+- post-recovery snapshot:
+  - `solana-copy-bot.service = active`
+  - `MainPID = 1606959`
+  - `NRestarts = 0` after the recovered restart
+  - disk: `378G used / 89G available / 82%`
+  - runtime and recent_raw journal tails both reached
+    `2026-04-29T20:55:41.204062169Z / 416514723`
+  - post-recovery counts over the first control window:
+    - startup WAL timeout count: `0`
+    - replay-apply retryable count: `0`
+    - rug-finalize retryable count: `0`
+    - terminal failure count: `0`
+- operational interpretation:
+  - the `cf156af` code rollout is deployed and the service is currently stable
+  - the replay-apply retryable seam has not fired yet after recovery, so keep
+    monitoring before declaring that seam closed
+  - the rollout incident was a separate runtime WAL maintenance seam, not a
+    production-green signal
+  - do not delete SQLite WAL/SHM files manually; if this recurs, stop the
+    service and use SQLite-managed checkpoint/truncate
+
 ## Live Update (`2026-04-28`)
 
 Current Stage 3 production-discovery truth remains fail-closed. Raw-history
