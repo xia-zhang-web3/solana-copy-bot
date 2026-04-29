@@ -243,6 +243,33 @@ Latest update as of `2026-04-29T19:27:41Z`:
   recent_raw freshness and only then decide whether a separate bounded prune
   operator/lane is needed outside the hot writer path.
 
+Follow-up update as of `2026-04-29T20:03:24Z`:
+
+- After the recent_raw hot-writer fix, one live restart occurred at
+  `2026-04-29T19:40:40Z`.
+- Restart reason:
+  `observed swap writer terminal failure` caused by
+  `failed to run discovery scoring rug finalize: failed to open discovery scoring rug finalize transaction: database is locked`.
+- The next bounded fix was accepted and deployed:
+  `835fd7b` (`Retry rug finalize sqlite locks`), touching only
+  `crates/app/src/observed_swap_writer.rs`.
+- Local reviewer checks passed:
+  `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer -- --test-threads=1`,
+  `cargo check -j 1 -p copybot-app --bin copybot-app`,
+  `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`,
+  and `git diff --check -- crates/app/src/observed_swap_writer.rs`.
+- Post-rollout snapshot:
+  - `solana-copy-bot.service = active`
+  - `MainPID = 1604802`
+  - `NRestarts = 0` after manual restart
+  - runtime and recent_raw journal tails both at
+    `2026-04-29T20:03:23.039251401Z / 416506772`
+  - `prune_start_count = 0`
+  - `terminal_failure_count = 0`
+  - no warning entries in the first post-rollout window
+- The new retryable rug-finalize reason has not yet fired on live after
+  rollout; keep monitoring before declaring that seam closed.
+
 Older historical snapshot follows.
 
 As of `2026-04-28T20:02:16Z`, Stage 3 production discovery truth remains

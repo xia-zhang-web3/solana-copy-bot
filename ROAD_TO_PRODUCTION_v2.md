@@ -59,6 +59,42 @@ Operational interpretation:
   retention becomes the next concrete blocker, add a separate bounded prune
   lane outside the hot writer path
 
+Follow-up accepted and deployed batch:
+
+- commit `835fd7b` (`Retry rug finalize sqlite locks`)
+- touched only:
+  - `crates/app/src/observed_swap_writer.rs`
+- live trigger:
+  - after `cb659e8`, recent_raw stayed healthy but the app restarted once at
+    `2026-04-29T19:40:40Z`
+  - terminal reason:
+    `failed to run discovery scoring rug finalize: failed to open discovery scoring rug finalize transaction: database is locked`
+- implemented behavior:
+  - SQLite busy/locked during discovery scoring rug finalization is retryable
+    and non-terminal for the observed writer
+  - stable reason:
+    `observed_swap_writer_discovery_scoring_rug_finalize_sqlite_lock_retryable`
+  - coverage is not advanced on retryable rug-finalize failure
+  - a materialization gap cursor is latched when possible so aggregate
+    readiness remains fail-closed and replay can retry honestly
+  - unknown/non-lock rug-finalize failures remain terminal
+- local reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer -- --test-threads=1`
+  - `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`
+  - `git diff --check -- crates/app/src/observed_swap_writer.rs`
+- post-rollout snapshot:
+  - `solana-copy-bot.service = active`
+  - `MainPID = 1604802`
+  - `NRestarts = 0` after manual restart
+  - runtime and recent_raw journal tails both at
+    `2026-04-29T20:03:23.039251401Z / 416506772`
+  - `prune_start_count = 0`
+  - `terminal_failure_count = 0`
+  - no warning entries in the first post-rollout window
+- the retryable rug-finalize reason has not yet fired after rollout; continue
+  monitoring before considering this seam closed
+
 ## Live Update (`2026-04-28`)
 
 Current Stage 3 production-discovery truth remains fail-closed. Raw-history
