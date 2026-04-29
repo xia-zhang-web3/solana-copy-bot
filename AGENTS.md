@@ -207,6 +207,44 @@ Record facts, not vague status language.
 
 ## Current State Snapshot
 
+Latest update as of `2026-04-29T19:27:41Z`:
+
+- Stage 3 production discovery truth remains fail-closed.
+- Raw-history recovery and the old `program_history` broad backfill lane are
+  not the active blocker.
+- Yellowstone request-first subscribe is working; source-open is not the active
+  blocker.
+- The current live seam is recent_raw journal safety/freshness on the
+  observed-swap writer path.
+- `3765b25` added recent_raw writer phase telemetry and proved the live stall
+  was inside hot writer retention pruning: `prune_start` appeared without a
+  matching `prune_end`.
+- `cb659e8` (`Defer recent raw hot writer prune`) was accepted, pushed, and
+  deployed by rebuilding only `copybot-app`.
+- Pre-restart bounded catch-up committed `37,459` journal rows and reported
+  `catch_up_complete=true`.
+- Post-rollout live proof:
+  - `solana-copy-bot.service = active`
+  - `MainPID = 1603047`
+  - `NRestarts = 0`
+  - timers `copybot-discovery-recent-raw-snapshot.timer` and
+    `copybot-discovery-runtime-export.timer` are active
+  - disk: `377G used / 90G available / 81%`
+  - `prune_start_count = 0` over the first 5-minute post-rollout window
+  - `prune_skipped_count = 3623` with reason
+    `recent_raw_journal_hot_writer_prune_deferred`
+  - recent_raw journal tail was within about one slot of runtime tail:
+    runtime `2026-04-29T19:27:21.650754072Z / 416501293`,
+    journal `2026-04-29T19:27:21.424326107Z / 416501292`
+- The hot writer now intentionally defers retention prune when
+  `skip_prune_while_backlogged=true`; journal state still advances only after
+  committed rows.
+- This is not production green. The next proof step is to monitor sustained
+  recent_raw freshness and only then decide whether a separate bounded prune
+  operator/lane is needed outside the hot writer path.
+
+Older historical snapshot follows.
+
 As of `2026-04-28T20:02:16Z`, Stage 3 production discovery truth remains
 fail-closed. Raw-history recovery and the one-shot aggregate-scoring
 materialization are no longer the active blocker. The aggregate

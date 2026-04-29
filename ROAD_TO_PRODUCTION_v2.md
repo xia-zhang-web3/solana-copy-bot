@@ -3,6 +3,62 @@
 Date: 2026-03-17
 Status: Active historical roadmap with 2026-03-27 production-readiness and live Stage 3 accumulation addendum
 
+## Live Update (`2026-04-29`)
+
+Stage 3 production discovery truth remains fail-closed. The active live seam
+has moved from Yellowstone/source-open and broad raw-history recovery to
+recent_raw journal safety on the observed-swap writer path.
+
+Accepted and deployed batch:
+
+- commit `cb659e8` (`Defer recent raw hot writer prune`)
+- touched only:
+  - `crates/app/src/observed_swap_writer.rs`
+- local reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer -- --test-threads=1`
+  - `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`
+  - `git diff --check -- crates/app/src/observed_swap_writer.rs`
+- production rollout rebuilt only `copybot-app`
+
+Live proof before the batch:
+
+- commit `3765b25` phase telemetry showed the recent_raw writer entering
+  `prune_start` with no matching `prune_end`
+- runtime/source had resumed, but recent_raw journal safety remained the
+  blocker
+
+Live proof after rollout:
+
+- bounded pre-restart catch-up committed `37,459` recent_raw journal rows and
+  returned `catch_up_complete=true`
+- `solana-copy-bot.service = active`
+- `MainPID = 1603047`
+- `NRestarts = 0`
+- recent_raw snapshot/export timers are active
+- disk: `377G used / 90G available / 81%`
+- over the first 5-minute post-rollout window:
+  - `prune_start_count = 0`
+  - `prune_skipped_count = 3623`
+  - skipped reason:
+    `recent_raw_journal_hot_writer_prune_deferred`
+- journal tail stayed near runtime tail:
+  - runtime tail:
+    `2026-04-29T19:27:21.650754072Z / 416501293`
+  - journal tail:
+    `2026-04-29T19:27:21.424326107Z / 416501292`
+
+Operational interpretation:
+
+- the previously proven hot-writer retention-prune stall is closed on live
+- recent_raw journal state still advances only after committed rows
+- hot writer retention prune is intentionally deferred when
+  `skip_prune_while_backlogged=true`
+- this is not production green and does not weaken Stage 3 fail-closed
+- next bounded step is monitoring sustained recent_raw freshness; if disk or
+  retention becomes the next concrete blocker, add a separate bounded prune
+  lane outside the hot writer path
+
 ## Live Update (`2026-04-28`)
 
 Current Stage 3 production-discovery truth remains fail-closed. Raw-history
