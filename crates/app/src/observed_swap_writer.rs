@@ -40,6 +40,15 @@ const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_ROW_DEBT_CAP_EXCEEDED: &str =
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE: StdDuration = StdDuration::from_secs(10);
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE_EXHAUSTED: &str =
     "observed_swap_writer_recent_raw_journal_write_deadline_exhausted";
+const RECENT_RAW_JOURNAL_PHASE_BATCH_COLLECTED: &str = "batch_collected";
+const RECENT_RAW_JOURNAL_PHASE_WRITE_START: &str = "write_start";
+const RECENT_RAW_JOURNAL_PHASE_WRITE_END: &str = "write_end";
+const RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_START: &str = "prune_check_start";
+const RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_END: &str = "prune_check_end";
+const RECENT_RAW_JOURNAL_PHASE_PRUNE_START: &str = "prune_start";
+const RECENT_RAW_JOURNAL_PHASE_PRUNE_END: &str = "prune_end";
+const RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED: &str = "prune_skipped";
+const RECENT_RAW_JOURNAL_PHASE_BATCH_DONE: &str = "batch_done";
 pub(crate) const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration =
     StdDuration::from_secs(15 * 60);
 pub(crate) const OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL: StdDuration =
@@ -57,6 +66,10 @@ const RECENT_RAW_JOURNAL_RETENTION_DELETE_BATCH_SIZE: usize = 500;
 const RECENT_RAW_JOURNAL_RETENTION_MAX_DELETE_BATCHES_PER_RUN: usize = 8;
 const OBSERVED_SWAP_WRITER_RETRYABLE_LOCK_BACKOFF: StdDuration = StdDuration::from_millis(250);
 const OBSERVED_SWAP_WRITER_RETRYABLE_LOCK_LOG_INTERVAL: StdDuration = StdDuration::from_secs(5);
+
+#[cfg(test)]
+static RECENT_RAW_JOURNAL_PHASE_EVENTS_FOR_TEST: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
 pub(crate) const OBSERVED_SWAP_RETENTION_PARTIAL_RETRY_INTERVAL: StdDuration =
     StdDuration::from_secs(60);
 const SQLITE_MAINTENANCE_MAX_YELLOWSTONE_OUTPUT_QUEUE_FILL_RATIO: f64 = 0.25;
@@ -1878,6 +1891,54 @@ fn flush_recent_raw_journal_overflow_blocking(
     Ok(())
 }
 
+fn log_recent_raw_journal_phase(
+    current_phase: &'static str,
+    batch_rows: usize,
+    request_batches: usize,
+    coalesce_elapsed_ms: u64,
+    coalesce_limit_rows: usize,
+    phase_elapsed_ms: u64,
+    telemetry: &ObservedSwapWriterTelemetry,
+) {
+    #[cfg(test)]
+    if let Ok(mut events) = RECENT_RAW_JOURNAL_PHASE_EVENTS_FOR_TEST.lock() {
+        events.push(current_phase);
+    }
+    info!(
+        current_phase,
+        journal_batch_rows = batch_rows,
+        journal_request_batches = request_batches,
+        journal_coalesce_elapsed_ms = coalesce_elapsed_ms,
+        journal_coalesce_limit_rows = coalesce_limit_rows,
+        journal_queue_depth_batches = telemetry.journal_queue_depth_batches(),
+        journal_queue_row_debt = telemetry.journal_queue_row_debt(),
+        journal_overflow_depth_batches = telemetry
+            .journal_overflow_depth_batches
+            .load(Ordering::Relaxed),
+        journal_overflow_row_debt = telemetry.journal_overflow_row_debt.load(Ordering::Relaxed),
+        journal_writer_inflight_rows = telemetry
+            .journal_writer_inflight_rows
+            .load(Ordering::Relaxed),
+        elapsed_ms = phase_elapsed_ms,
+        "recent raw journal writer phase"
+    );
+}
+
+#[cfg(test)]
+fn clear_recent_raw_journal_phase_events_for_test() {
+    if let Ok(mut events) = RECENT_RAW_JOURNAL_PHASE_EVENTS_FOR_TEST.lock() {
+        events.clear();
+    }
+}
+
+#[cfg(test)]
+fn recent_raw_journal_phase_events_for_test() -> Vec<&'static str> {
+    RECENT_RAW_JOURNAL_PHASE_EVENTS_FOR_TEST
+        .lock()
+        .map(|events| events.clone())
+        .unwrap_or_default()
+}
+
 fn recent_raw_journal_writer_loop(
     receiver: std_mpsc::Receiver<RecentRawJournalWriteRequest>,
     startup_sender: std_mpsc::Sender<std::result::Result<(), String>>,
@@ -1932,18 +1993,14 @@ fn recent_raw_journal_writer_loop(
         let contention_before = sqlite_contention_snapshot();
         let completed_at = Utc::now();
         telemetry.note_journal_writer_inflight_started(inserted_swaps.len());
-        debug!(
-            journal_batch_rows = inserted_swaps.len(),
-            journal_request_batches = collected_batch.request_batches,
-            journal_coalesce_elapsed_ms = collected_batch.coalesce_elapsed_ms,
-            journal_coalesce_limit_rows = collected_batch.coalesce_limit_rows,
-            journal_queue_depth_batches = telemetry.journal_queue_depth_batches(),
-            journal_queue_row_debt = telemetry.journal_queue_row_debt(),
-            journal_overflow_depth_batches = telemetry
-                .journal_overflow_depth_batches
-                .load(Ordering::Relaxed),
-            journal_overflow_row_debt = telemetry.journal_overflow_row_debt.load(Ordering::Relaxed),
-            "recent raw journal writer coalesced bounded write batch"
+        log_recent_raw_journal_phase(
+            RECENT_RAW_JOURNAL_PHASE_BATCH_COLLECTED,
+            inserted_swaps.len(),
+            collected_batch.request_batches,
+            collected_batch.coalesce_elapsed_ms,
+            collected_batch.coalesce_limit_rows,
+            collected_batch.coalesce_elapsed_ms,
+            &telemetry,
         );
         let write_result = (|| -> Result<()> {
             write_recent_raw_journal_batch_with_deadline(
@@ -1951,6 +2008,9 @@ fn recent_raw_journal_writer_loop(
                 &config,
                 &telemetry,
                 &inserted_swaps,
+                collected_batch.request_batches,
+                collected_batch.coalesce_elapsed_ms,
+                collected_batch.coalesce_limit_rows,
                 completed_at,
             )
         })();
@@ -1970,19 +2030,108 @@ fn write_recent_raw_journal_batch_with_deadline(
     config: &ObservedSwapRecentRawJournalConfig,
     telemetry: &ObservedSwapWriterTelemetry,
     inserted_swaps: &[SwapEvent],
+    request_batches: usize,
+    coalesce_elapsed_ms: u64,
+    coalesce_limit_rows: usize,
     completed_at: DateTime<Utc>,
 ) -> Result<()> {
-    write_recent_raw_journal_batch_with_deadline_attempts(
+    let batch_phase_started = Instant::now();
+    let batch_rows = inserted_swaps.len();
+    log_recent_raw_journal_phase(
+        RECENT_RAW_JOURNAL_PHASE_WRITE_START,
+        batch_rows,
+        request_batches,
+        coalesce_elapsed_ms,
+        coalesce_limit_rows,
+        0,
+        telemetry,
+    );
+    let write_started = Instant::now();
+    let write_result = write_recent_raw_journal_batch_with_deadline_attempts(
         telemetry,
         inserted_swaps,
         || Instant::now() + OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE,
         |suffix, deadline| {
             store.insert_recent_raw_journal_batch_bulk_with_deadline(suffix, completed_at, deadline)
         },
-    )?;
-    if recent_raw_journal_prune_due(store, config, telemetry, completed_at)? {
-        prune_recent_raw_journal_with_budget(store, config.retention_days, completed_at)?;
+    );
+    log_recent_raw_journal_phase(
+        RECENT_RAW_JOURNAL_PHASE_WRITE_END,
+        batch_rows,
+        request_batches,
+        coalesce_elapsed_ms,
+        coalesce_limit_rows,
+        elapsed_ms_ceil(write_started.elapsed()),
+        telemetry,
+    );
+    write_result?;
+
+    let prune_check_started = Instant::now();
+    log_recent_raw_journal_phase(
+        RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_START,
+        batch_rows,
+        request_batches,
+        coalesce_elapsed_ms,
+        coalesce_limit_rows,
+        0,
+        telemetry,
+    );
+    let prune_due = if recent_raw_journal_prune_backlog_skip_reason(config, telemetry).is_some() {
+        false
+    } else {
+        recent_raw_journal_prune_due(store, config, telemetry, completed_at)?
+    };
+    log_recent_raw_journal_phase(
+        RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_END,
+        batch_rows,
+        request_batches,
+        coalesce_elapsed_ms,
+        coalesce_limit_rows,
+        elapsed_ms_ceil(prune_check_started.elapsed()),
+        telemetry,
+    );
+    if prune_due {
+        let prune_started = Instant::now();
+        log_recent_raw_journal_phase(
+            RECENT_RAW_JOURNAL_PHASE_PRUNE_START,
+            batch_rows,
+            request_batches,
+            coalesce_elapsed_ms,
+            coalesce_limit_rows,
+            0,
+            telemetry,
+        );
+        let _summary =
+            prune_recent_raw_journal_with_budget(store, config.retention_days, completed_at)?;
+        log_recent_raw_journal_phase(
+            RECENT_RAW_JOURNAL_PHASE_PRUNE_END,
+            batch_rows,
+            request_batches,
+            coalesce_elapsed_ms,
+            coalesce_limit_rows,
+            elapsed_ms_ceil(prune_started.elapsed()),
+            telemetry,
+        );
+    } else {
+        log_recent_raw_journal_phase(
+            RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED,
+            batch_rows,
+            request_batches,
+            coalesce_elapsed_ms,
+            coalesce_limit_rows,
+            elapsed_ms_ceil(prune_check_started.elapsed()),
+            telemetry,
+        );
     }
+    log_recent_raw_journal_phase(
+        RECENT_RAW_JOURNAL_PHASE_BATCH_DONE,
+        batch_rows,
+        request_batches,
+        coalesce_elapsed_ms,
+        coalesce_limit_rows,
+        elapsed_ms_ceil(batch_phase_started.elapsed()),
+        telemetry,
+    );
     Ok(())
 }
 
@@ -2237,28 +2386,60 @@ fn prune_recent_raw_journal_with_budget(
     Ok(summary)
 }
 
+fn recent_raw_journal_prune_backlog_skip_reason(
+    config: &ObservedSwapRecentRawJournalConfig,
+    telemetry: &ObservedSwapWriterTelemetry,
+) -> Option<&'static str> {
+    if !config.skip_prune_while_backlogged {
+        return None;
+    }
+    let pending_requests = telemetry.pending_requests.load(Ordering::Relaxed);
+    let queue_depth_batches = telemetry.journal_queue_depth_batches();
+    let queue_row_debt = telemetry.journal_queue_row_debt();
+    let overflow_depth_batches = telemetry
+        .journal_overflow_depth_batches
+        .load(Ordering::Relaxed);
+    let overflow_row_debt = telemetry.journal_overflow_row_debt.load(Ordering::Relaxed);
+    let inflight_rows = telemetry
+        .journal_writer_inflight_rows
+        .load(Ordering::Relaxed);
+    if pending_requests > 0 {
+        return Some("pending_requests");
+    }
+    if queue_depth_batches > 0 {
+        return Some("journal_queue_depth_batches");
+    }
+    if queue_row_debt > 0 {
+        return Some("journal_queue_row_debt");
+    }
+    if overflow_depth_batches > 0 {
+        return Some("journal_overflow_depth_batches");
+    }
+    if overflow_row_debt > 0 {
+        return Some("journal_overflow_row_debt");
+    }
+    if inflight_rows > 0
+        && (queue_depth_batches > 0
+            || queue_row_debt > 0
+            || overflow_depth_batches > 0
+            || overflow_row_debt > 0)
+    {
+        return Some("journal_writer_inflight_rows");
+    }
+    None
+}
+
 fn recent_raw_journal_prune_due(
     store: &SqliteStore,
     config: &ObservedSwapRecentRawJournalConfig,
     telemetry: &ObservedSwapWriterTelemetry,
     now: DateTime<Utc>,
 ) -> Result<bool> {
+    if recent_raw_journal_prune_backlog_skip_reason(config, telemetry).is_some() {
+        return Ok(false);
+    }
     if !config.skip_prune_while_backlogged {
         return Ok(true);
-    }
-
-    if telemetry.pending_requests.load(Ordering::Relaxed) > 0 {
-        return Ok(false);
-    }
-    if telemetry.journal_queue_depth_batches() > 0 {
-        return Ok(false);
-    }
-    if telemetry
-        .journal_overflow_depth_batches
-        .load(Ordering::Relaxed)
-        > 0
-    {
-        return Ok(false);
     }
     let state = store.recent_raw_journal_state_cached()?;
     Ok(state.last_pruned_at.map_or(true, |last_pruned_at| {
@@ -7168,6 +7349,85 @@ mod tests {
     }
 
     #[test]
+    fn recent_raw_journal_writer_phase_telemetry_orders_write_and_prune_stage1() -> Result<()> {
+        super::clear_recent_raw_journal_phase_events_for_test();
+        let unique = format!(
+            "copybot-app-recent-raw-journal-phase-order-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        );
+        let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
+        let (journal_sender, journal_receiver) =
+            std_mpsc::sync_channel::<super::RecentRawJournalWriteRequest>(8);
+        let (startup_sender, startup_receiver) =
+            std_mpsc::channel::<std::result::Result<(), String>>();
+        let telemetry = Arc::new(ObservedSwapWriterTelemetry::default());
+        let config = ObservedSwapRecentRawJournalConfig {
+            sqlite_path: journal_db_path
+                .to_str()
+                .context("journal sqlite path must be valid utf-8")?
+                .to_string(),
+            retention_days: 8,
+            writer_queue_capacity_batches: 8,
+            write_coalesce_max_batches: 4,
+            overflow_capacity_batches: 8,
+            skip_prune_while_backlogged: false,
+            skip_startup_prune: true,
+        };
+        let writer_handle = thread::spawn(move || {
+            super::recent_raw_journal_writer_loop(
+                journal_receiver,
+                startup_sender,
+                config,
+                telemetry,
+            )
+        });
+        startup_receiver
+            .recv_timeout(StdDuration::from_secs(2))
+            .context("recent_raw journal writer did not signal startup")?
+            .map_err(|error| anyhow!(error))?;
+
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-29T18:50:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        journal_sender.send(recent_raw_journal_write_request_for_test(
+            0,
+            3,
+            scenario_now,
+        ))?;
+        drop(journal_sender);
+        writer_handle
+            .join()
+            .map_err(|payload| anyhow!(super::panic_payload_to_string(payload.as_ref())))??;
+
+        let events = super::recent_raw_journal_phase_events_for_test();
+        let expected = vec![
+            super::RECENT_RAW_JOURNAL_PHASE_BATCH_COLLECTED,
+            super::RECENT_RAW_JOURNAL_PHASE_WRITE_START,
+            super::RECENT_RAW_JOURNAL_PHASE_WRITE_END,
+            super::RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_START,
+            super::RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_END,
+            super::RECENT_RAW_JOURNAL_PHASE_PRUNE_START,
+            super::RECENT_RAW_JOURNAL_PHASE_PRUNE_END,
+            super::RECENT_RAW_JOURNAL_PHASE_BATCH_DONE,
+        ];
+        assert_eq!(
+            events, expected,
+            "recent_raw journal phase telemetry must expose exact write/prune order"
+        );
+        let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        let journal_state = journal_store.recent_raw_journal_state()?;
+        assert_eq!(
+            journal_state.row_count, 3,
+            "phase telemetry must not replace commit-only journal state advancement"
+        );
+        remove_sqlite_test_files(&journal_db_path);
+        Ok(())
+    }
+
+    #[test]
     fn recent_raw_journal_write_deadline_exhaustion_fails_closed_without_unproven_state_stage1(
     ) -> Result<()> {
         let unique = format!(
@@ -8398,6 +8658,30 @@ mod tests {
         assert!(
             !should_prune,
             "recent_raw journal prune must stay paused while overflow backlog still represents unflushed hot-path work"
+        );
+        let inflight_telemetry = ObservedSwapWriterTelemetry::default();
+        inflight_telemetry.note_journal_queue_enqueued(1);
+        inflight_telemetry.note_journal_writer_inflight_started(4);
+        let should_prune_while_inflight = recent_raw_journal_prune_due(
+            &journal_store,
+            &ObservedSwapRecentRawJournalConfig {
+                sqlite_path: journal_db_path
+                    .to_str()
+                    .context("journal sqlite path must be valid utf-8")?
+                    .to_string(),
+                retention_days: 8,
+                writer_queue_capacity_batches: 16,
+                write_coalesce_max_batches: 1,
+                overflow_capacity_batches: 64,
+                skip_prune_while_backlogged: true,
+                skip_startup_prune: true,
+            },
+            &inflight_telemetry,
+            now,
+        )?;
+        assert!(
+            !should_prune_while_inflight,
+            "recent_raw journal prune/check must stay paused while a hot-path journal write is still inflight"
         );
         let _ = std::fs::remove_file(journal_db_path);
         Ok(())
