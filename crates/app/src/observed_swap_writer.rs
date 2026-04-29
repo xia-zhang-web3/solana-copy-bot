@@ -28,6 +28,12 @@ const OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_POLL_INTERVAL: StdDuration =
 const OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_MAX_PAGES: usize = 8;
 pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_COALESCE_MAX_BATCHES: usize = 32;
 pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_CAPACITY_MULTIPLIER: usize = 4;
+const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_MULTIPLIER: usize = 8;
+const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_CAP: usize = 512;
+const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_WINDOW: StdDuration =
+    StdDuration::from_millis(10);
+const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_POLL: StdDuration =
+    StdDuration::from_millis(2);
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_ROW_DEBT_CAP_EXCEEDED: &str =
     "observed_swap_writer_recent_raw_journal_overflow_row_debt_capacity_exceeded";
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE: StdDuration = StdDuration::from_secs(10);
@@ -1852,16 +1858,30 @@ fn recent_raw_journal_writer_loop(
     }
 
     while let Ok(request) = receiver.recv() {
-        let inserted_swaps = collect_recent_raw_journal_write_batch(
+        let collected_batch = collect_recent_raw_journal_write_batch(
             &receiver,
             request,
             config.write_coalesce_max_batches,
+            recent_raw_journal_adaptive_write_coalesce_max_batches(&config),
             &telemetry,
         );
+        let inserted_swaps = collected_batch.inserted_swaps;
         let journal_batch_started = Instant::now();
         let contention_before = sqlite_contention_snapshot();
         let completed_at = Utc::now();
         telemetry.note_journal_writer_inflight_started(inserted_swaps.len());
+        debug!(
+            journal_batch_rows = inserted_swaps.len(),
+            journal_request_batches = collected_batch.request_batches,
+            journal_coalesce_elapsed_ms = collected_batch.coalesce_elapsed_ms,
+            journal_queue_depth_batches = telemetry.journal_queue_depth_batches(),
+            journal_queue_row_debt = telemetry.journal_queue_row_debt(),
+            journal_overflow_depth_batches = telemetry
+                .journal_overflow_depth_batches
+                .load(Ordering::Relaxed),
+            journal_overflow_row_debt = telemetry.journal_overflow_row_debt.load(Ordering::Relaxed),
+            "recent raw journal writer coalesced bounded write batch"
+        );
         let write_result = (|| -> Result<()> {
             write_recent_raw_journal_batch_with_deadline(
                 &store,
@@ -2000,16 +2020,46 @@ fn recent_raw_journal_summary_processed_rows(summary: &RecentRawJournalWriteSumm
         .max(summary.batch_rows)
 }
 
+#[derive(Debug)]
+struct RecentRawJournalCollectedWriteBatch {
+    inserted_swaps: Vec<SwapEvent>,
+    request_batches: usize,
+    coalesce_elapsed_ms: u64,
+}
+
+fn recent_raw_journal_adaptive_write_coalesce_max_batches(
+    config: &ObservedSwapRecentRawJournalConfig,
+) -> usize {
+    config
+        .write_coalesce_max_batches
+        .max(1)
+        .saturating_mul(OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_MULTIPLIER)
+        .min(OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_CAP)
+        .max(config.write_coalesce_max_batches.max(1))
+}
+
+fn recent_raw_journal_adaptive_coalesce_pressure(telemetry: &ObservedSwapWriterTelemetry) -> bool {
+    telemetry.journal_queue_depth_batches() > 0
+        || telemetry.journal_queue_row_debt() > 0
+        || telemetry
+            .journal_overflow_depth_batches
+            .load(Ordering::Relaxed)
+            > 0
+        || telemetry.journal_overflow_row_debt.load(Ordering::Relaxed) > 0
+}
+
 fn collect_recent_raw_journal_write_batch(
     receiver: &std_mpsc::Receiver<RecentRawJournalWriteRequest>,
     first_request: RecentRawJournalWriteRequest,
     max_batches: usize,
+    adaptive_max_batches: usize,
     telemetry: &ObservedSwapWriterTelemetry,
-) -> Vec<SwapEvent> {
+) -> RecentRawJournalCollectedWriteBatch {
+    let coalesce_started = Instant::now();
     let first_request_rows = first_request.row_count();
     telemetry.note_journal_queue_dequeued(first_request_rows);
     let mut inserted_swaps = first_request.inserted_swaps;
-    let drain_limit = max_batches.max(1);
+    let drain_limit = adaptive_max_batches.max(max_batches.max(1));
     let mut drained_batches = 1usize;
     while drained_batches < drain_limit {
         match receiver.try_recv() {
@@ -2019,10 +2069,41 @@ fn collect_recent_raw_journal_write_batch(
                 inserted_swaps.extend(request.inserted_swaps);
                 drained_batches = drained_batches.saturating_add(1);
             }
-            Err(std_mpsc::TryRecvError::Empty | std_mpsc::TryRecvError::Disconnected) => break,
+            Err(std_mpsc::TryRecvError::Empty) => {
+                if !recent_raw_journal_adaptive_coalesce_pressure(telemetry) {
+                    break;
+                }
+                let elapsed = coalesce_started.elapsed();
+                if elapsed >= OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_WINDOW {
+                    break;
+                }
+                let remaining = OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_WINDOW - elapsed;
+                let wait_for =
+                    remaining.min(OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_POLL);
+                match receiver.recv_timeout(wait_for) {
+                    Ok(request) => {
+                        let request_rows = request.row_count();
+                        telemetry.note_journal_queue_dequeued(request_rows);
+                        inserted_swaps.extend(request.inserted_swaps);
+                        drained_batches = drained_batches.saturating_add(1);
+                    }
+                    Err(std_mpsc::RecvTimeoutError::Timeout)
+                        if recent_raw_journal_adaptive_coalesce_pressure(telemetry) =>
+                    {
+                        continue;
+                    }
+                    Err(std_mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(std_mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            Err(std_mpsc::TryRecvError::Disconnected) => break,
         }
     }
-    inserted_swaps
+    RecentRawJournalCollectedWriteBatch {
+        inserted_swaps,
+        request_batches: drained_batches,
+        coalesce_elapsed_ms: elapsed_ms_ceil(coalesce_started.elapsed()),
+    }
 }
 
 fn collect_discovery_aggregate_write_batch(
@@ -7454,12 +7535,23 @@ mod tests {
         let runtime_rows_while_blocked = runtime_store
             .load_observed_swaps_since(scenario_now - ChronoDuration::minutes(1))?
             .len();
+        let backlog_visible_started = Instant::now();
+        let mut snapshot_while_blocked = writer.snapshot();
+        while snapshot_while_blocked.journal_queue_depth_batches == 0
+            && snapshot_while_blocked.journal_overflow_depth_batches == 0
+            && snapshot_while_blocked.journal_queue_row_debt == 0
+            && snapshot_while_blocked.journal_overflow_row_debt == 0
+            && snapshot_while_blocked.journal_writer_inflight_rows == 0
+            && backlog_visible_started.elapsed() < StdDuration::from_secs(2)
+        {
+            std::thread::sleep(StdDuration::from_millis(10));
+            snapshot_while_blocked = writer.snapshot();
+        }
         let journal_store_while_blocked = SqliteStore::open(Path::new(&journal_db_path))?;
         let journal_rows_while_blocked = journal_store_while_blocked
             .load_observed_swaps_since(scenario_now - ChronoDuration::minutes(1))?
             .len();
         let journal_state_while_blocked = journal_store_while_blocked.recent_raw_journal_state()?;
-        let snapshot_while_blocked = writer.snapshot();
         blocker_conn.execute_batch("COMMIT")?;
         drop(blocker_conn);
 
@@ -7468,24 +7560,23 @@ mod tests {
             runtime_rows_while_blocked >= 42,
             "raw observed_swaps should keep advancing while recent_raw journal is blocked; runtime_rows={runtime_rows_while_blocked}"
         );
-        assert_eq!(
-            snapshot_while_blocked.journal_overflow_depth_batches, 2,
-            "journal overflow should stay at its bounded visible capacity while excess rows coalesce"
+        assert!(
+            snapshot_while_blocked.journal_queue_depth_batches > 0
+                || snapshot_while_blocked.journal_overflow_depth_batches > 0
+                || snapshot_while_blocked.journal_writer_inflight_rows > 0,
+            "journal backlog should remain visible while downstream writer is blocked, whether it is still in overflow or has moved into queue/inflight: snapshot={snapshot_while_blocked:?}"
         );
         assert!(
-            snapshot_while_blocked.journal_queue_depth_batches > 0,
-            "journal queue backlog should remain visible while downstream writer is blocked"
+            snapshot_while_blocked.journal_overflow_depth_batches
+                <= snapshot_while_blocked.journal_overflow_capacity_batches,
+            "journal overflow batch depth must stay bounded while adaptive coalescing moves backlog into writes: snapshot={snapshot_while_blocked:?}"
         );
         assert!(
             snapshot_while_blocked.journal_queue_row_debt
                 + snapshot_while_blocked.journal_writer_inflight_rows
+                + snapshot_while_blocked.journal_overflow_row_debt
                 > 0,
-            "snapshot should expose row debt that has already moved from the journal channel into queue or inflight write state: snapshot={snapshot_while_blocked:?}"
-        );
-        assert!(
-            snapshot_while_blocked.journal_overflow_row_debt
-                > snapshot_while_blocked.journal_overflow_depth_batches,
-            "row-debt telemetry should expose that coalesced overflow contains many rows, not only its bounded batch depth: snapshot={snapshot_while_blocked:?}"
+            "snapshot should expose row debt that is still queued, overflowed, or inflight: snapshot={snapshot_while_blocked:?}"
         );
         assert!(
             snapshot_while_blocked.journal_overflow_row_debt
@@ -7580,12 +7671,14 @@ mod tests {
         assert_eq!(queued_snapshot.journal_writer_inflight_rows, 0);
 
         let first_request = journal_receiver.recv()?;
-        let inserted_swaps = super::collect_recent_raw_journal_write_batch(
+        let collected_batch = super::collect_recent_raw_journal_write_batch(
             &journal_receiver,
             first_request,
             32,
+            32,
             &telemetry,
         );
+        let inserted_swaps = collected_batch.inserted_swaps;
         assert_eq!(inserted_swaps.len(), 7);
         let dequeued_snapshot = telemetry.snapshot();
         assert_eq!(dequeued_snapshot.journal_queue_depth_batches, 0);
@@ -7597,6 +7690,78 @@ mod tests {
         assert_eq!(inflight_snapshot.journal_writer_inflight_rows, 7);
         telemetry.note_journal_writer_inflight_finished();
         assert_eq!(telemetry.snapshot().journal_writer_inflight_rows, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn recent_raw_journal_adaptive_coalesce_collects_refilling_small_requests_stage1() -> Result<()>
+    {
+        let telemetry = ObservedSwapWriterTelemetry::default();
+        telemetry
+            .journal_queue_capacity_batches
+            .store(64, Ordering::Relaxed);
+        telemetry
+            .journal_overflow_depth_batches
+            .store(1, Ordering::Relaxed);
+        let (journal_sender, journal_receiver) =
+            std_mpsc::sync_channel::<super::RecentRawJournalWriteRequest>(64);
+        let scenario_now = DateTime::parse_from_rfc3339("2026-04-28T20:12:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let first_request = super::RecentRawJournalWriteRequest {
+            inserted_swaps: vec![recent_raw_journal_backpressure_swap(0, scenario_now)],
+        };
+        let first_rows = first_request.row_count();
+        journal_sender.send(first_request)?;
+        telemetry.note_journal_queue_enqueued(first_rows);
+
+        let refill_sender = journal_sender.clone();
+        let (refill_started_tx, refill_started_rx) = std_mpsc::channel::<()>();
+        let producer = std::thread::spawn(move || -> Result<()> {
+            let _ = refill_started_tx.send(());
+            std::thread::sleep(StdDuration::from_millis(1));
+            for idx in 1..17usize {
+                let request = super::RecentRawJournalWriteRequest {
+                    inserted_swaps: vec![recent_raw_journal_backpressure_swap(idx, scenario_now)],
+                };
+                refill_sender.send(request)?;
+            }
+            Ok(())
+        });
+        refill_started_rx.recv()?;
+
+        let first_request = journal_receiver.recv()?;
+        let collected_batch = super::collect_recent_raw_journal_write_batch(
+            &journal_receiver,
+            first_request,
+            1,
+            16,
+            &telemetry,
+        );
+        producer
+            .join()
+            .expect("refill producer thread panicked")
+            .context("refill producer failed")?;
+
+        assert!(
+            collected_batch.request_batches > 1,
+            "adaptive recent_raw journal coalescing must collect requests that arrive shortly after the first dequeue: {collected_batch:?}"
+        );
+        assert_eq!(
+            collected_batch.inserted_swaps.len(),
+            collected_batch.request_batches
+        );
+        assert!(
+            collected_batch.request_batches <= 16,
+            "adaptive coalescing must remain bounded by the explicit adaptive limit: {collected_batch:?}"
+        );
+        assert!(
+            collected_batch.coalesce_elapsed_ms
+                <= super::OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_WINDOW
+                    .as_millis()
+                    .saturating_add(5) as u64,
+            "adaptive coalescing must use only the tiny bounded wait window: {collected_batch:?}"
+        );
         Ok(())
     }
 
@@ -7671,8 +7836,8 @@ mod tests {
                         .to_string(),
                     retention_days: 8,
                     writer_queue_capacity_batches: 1,
-                    write_coalesce_max_batches: 2,
-                    overflow_capacity_batches: 2,
+                    write_coalesce_max_batches: 1,
+                    overflow_capacity_batches: 1,
                     skip_prune_while_backlogged: true,
                     skip_startup_prune: true,
                 }),
@@ -7680,7 +7845,7 @@ mod tests {
         )?;
         assert_eq!(
             writer.snapshot().journal_overflow_row_debt_capacity,
-            4,
+            1,
             "cap fixture should be small enough to prove terminal row-debt overflow"
         );
 
@@ -7711,10 +7876,10 @@ mod tests {
             .context("failed setting journal blocker busy timeout")?;
         blocker_conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
 
-        for idx in 1..16usize {
+        for idx in 1..128usize {
             let swap = recent_raw_journal_backpressure_swap(idx, scenario_now);
             let _ = runtime.block_on(async {
-                timeout(StdDuration::from_millis(250), writer.write(&swap)).await
+                timeout(StdDuration::from_millis(100), writer.write(&swap)).await
             });
             if writer.ensure_running().is_err() {
                 break;
