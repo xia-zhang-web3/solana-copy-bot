@@ -364,6 +364,47 @@ Accepted read-only WAL pressure operator:
     maintenance window or a separate bounded maintenance-path batch; do not
     hide it inside discovery/selector changes
 
+Manual runtime WAL maintenance (`2026-04-30T12:28Z`):
+
+- pre-maintenance state:
+  - `solana-copy-bot.service = active`
+  - `MainPID = 1613459`
+  - `NRestarts = 0`
+  - memory current: about `7.3G`
+  - runtime WAL: `9.2G`
+  - runtime and recent_raw journal tails both reached
+    `2026-04-30T12:27:15.645970039+00:00 / 416656742`
+- operator action:
+  - stopped `solana-copy-bot.service`
+  - verified `copybot-app` was not running
+  - ran SQLite-managed checkpoint/truncate as `copybot`:
+    `PRAGMA busy_timeout=300000; PRAGMA wal_checkpoint(TRUNCATE);`
+  - checkpoint returned:
+    `0|0|0`
+  - no WAL/SHM files were manually deleted
+  - restarted `solana-copy-bot.service`
+- post-maintenance state:
+  - `solana-copy-bot.service = active`
+  - `MainPID = 1616163`
+  - `NRestarts = 0`
+  - memory current after first control window: about `1.25G`
+  - runtime WAL after restart: about `9.4M`
+  - startup completed without timeout or ABRT
+  - runtime and recent_raw journal tails both reached
+    `2026-04-30T12:29:50.961910276+00:00 / 416657134`
+  - recent_raw journal row_count: `62101831`
+- post-maintenance WAL pressure report:
+  - `wal_pressure_level = none`
+  - `wal_pressure_reason = runtime_sqlite_wal_pressure_none`
+  - `wal_bytes = 25675872`
+  - `manual_operator_action_required = false`
+- operational interpretation:
+  - the critical runtime WAL pressure was cleared by controlled SQLite-managed
+    maintenance
+  - this does not mark Stage 3 production green
+  - continued monitoring is still required because WAL growth can recur during
+    live runtime
+
 ## Live Update (`2026-04-28`)
 
 Current Stage 3 production-discovery truth remains fail-closed. Raw-history
