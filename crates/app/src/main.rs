@@ -120,6 +120,13 @@ const DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG: &str =
     "discovery_cycle_aborted_due_to_recent_raw_journal_backlog";
 const DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG: &str =
     "discovery_cycle_aborted_due_to_recent_raw_journal_persisted_lag";
+const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RUNTIME_MEMORY_PRESSURE: &str =
+    "discovery_cycle_deferred_due_to_runtime_memory_pressure";
+const DISCOVERY_CYCLE_ABORTED_DUE_TO_RUNTIME_MEMORY_PRESSURE: &str =
+    "discovery_cycle_aborted_due_to_runtime_memory_pressure";
+const DISCOVERY_RUNTIME_MEMORY_PRESSURE_PROCESS_RSS_THRESHOLD_BYTES: u64 = 6 * 1024 * 1024 * 1024;
+const DISCOVERY_RUNTIME_MEMORY_PRESSURE_SYSTEM_AVAILABLE_THRESHOLD_BYTES: u64 = 768 * 1024 * 1024;
+const DISCOVERY_RUNTIME_MEMORY_PRESSURE_SYSTEM_AVAILABLE_MIN_BPS: u64 = 1_000;
 const DISCOVERY_RECENT_RAW_JOURNAL_SETTLE_WINDOW: StdDuration = StdDuration::from_secs(60);
 const DISCOVERY_RECENT_RAW_JOURNAL_SETTLE_CONSECUTIVE_CHECKS: u32 = 2;
 const DISCOVERY_RECENT_RAW_JOURNAL_RUNNING_WATCH_INTERVAL: Duration = Duration::from_secs(1);
@@ -3727,6 +3734,7 @@ async fn run_app_loop(
     let mut discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>> = None;
     let mut discovery_running_trigger: Option<&'static str> = None;
     let mut discovery_recent_raw_journal_abort_reason: Option<&'static str> = None;
+    let mut discovery_runtime_memory_abort_reason: Option<&'static str> = None;
     let mut discovery_catch_up_pending = false;
     let mut shadow_scheduler = ShadowScheduler::new();
     let mut execution_handle: Option<JoinHandle<Result<ExecutionBatchReport>>> = None;
@@ -3894,15 +3902,20 @@ async fn run_app_loop(
                 }
             }, if discovery_handle.is_some() => {
                 discovery_handle = None;
-                let discovery_abort_reason = discovery_recent_raw_journal_abort_reason.take();
+                let discovery_abort_reason = discovery_recent_raw_journal_abort_reason
+                    .take()
+                    .or_else(|| discovery_runtime_memory_abort_reason.take());
                 let discovery_task_trigger = discovery_running_trigger.take().unwrap_or("unknown");
-                if let Some(reason) = discovery_abort_reason {
+                if discovery_task_output_should_be_ignored_due_to_abort_reason(
+                    discovery_abort_reason,
+                ) {
+                    let reason = discovery_abort_reason.expect("checked abort reason");
                     warn!(
                         reason,
                         discovery_task_trigger,
-                        "discovery task result ignored because recent_raw journal became unsafe while the task was running"
+                        "discovery task result ignored because runtime safety gate became unsafe while the task was running"
                     );
-                    if discovery_task_trigger == "catch_up_retrigger" {
+                    if discovery_task_abort_preserves_catch_up_pending(discovery_task_trigger) {
                         discovery_catch_up_pending = true;
                         discovery_catch_up_recent_raw_journal_defer_retry_at = Some(
                             StdInstant::now()
@@ -3930,6 +3943,23 @@ async fn run_app_loop(
                                 "discovery task success output ignored because recent_raw journal is unsafe at join"
                             );
                             if discovery_task_trigger == "catch_up_retrigger" {
+                                discovery_catch_up_pending = true;
+                                discovery_catch_up_recent_raw_journal_defer_retry_at = Some(
+                                    StdInstant::now()
+                                        + DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL,
+                                );
+                            }
+                            continue;
+                        }
+                        let memory_gate = load_discovery_runtime_memory_pressure_gate();
+                        if discovery_runtime_memory_pressure_defer_reason(&memory_gate).is_some() {
+                            warn_discovery_aborted_due_to_runtime_memory_pressure(
+                                discovery_task_trigger,
+                                &memory_gate,
+                            );
+                            if discovery_task_abort_preserves_catch_up_pending(
+                                discovery_task_trigger,
+                            ) {
                                 discovery_catch_up_pending = true;
                                 discovery_catch_up_recent_raw_journal_defer_retry_at = Some(
                                     StdInstant::now()
@@ -4127,7 +4157,7 @@ async fn run_app_loop(
                     }
                 }
             }
-            _ = time::sleep(DISCOVERY_RECENT_RAW_JOURNAL_RUNNING_WATCH_INTERVAL), if discovery_handle.is_some() && discovery_recent_raw_journal_abort_reason.is_none() => {
+            _ = time::sleep(DISCOVERY_RECENT_RAW_JOURNAL_RUNNING_WATCH_INTERVAL), if discovery_handle.is_some() && discovery_recent_raw_journal_abort_reason.is_none() && discovery_runtime_memory_abort_reason.is_none() => {
                 let observed_swap_writer_snapshot = observed_swap_writer.snapshot();
                 let persisted_lag_gate = load_discovery_recent_raw_journal_persisted_lag_gate(
                     &store,
@@ -4153,6 +4183,19 @@ async fn run_app_loop(
                             &persisted_lag_gate,
                         );
                     }
+                    continue;
+                }
+                let memory_gate = load_discovery_runtime_memory_pressure_gate();
+                if let Some(reason) = discovery_runtime_memory_pressure_abort_reason(&memory_gate)
+                {
+                    discovery_runtime_memory_abort_reason = Some(reason);
+                    if let Some(handle) = &discovery_handle {
+                        handle.abort();
+                    }
+                    warn_discovery_aborted_due_to_runtime_memory_pressure(
+                        discovery_running_trigger.unwrap_or("unknown"),
+                        &memory_gate,
+                    );
                 }
             }
             _ = async {
@@ -4206,6 +4249,23 @@ async fn run_app_loop(
                     );
                     continue;
                 }
+                let memory_gate = load_discovery_runtime_memory_pressure_gate();
+                if let Some(reason) = discovery_runtime_memory_pressure_defer_reason(&memory_gate)
+                {
+                    let catch_up_gate =
+                        discovery_catch_up_retrigger_recent_raw_journal_defer_gate(
+                            reason,
+                            StdInstant::now(),
+                        );
+                    discovery_catch_up_pending = catch_up_gate.keep_pending;
+                    discovery_catch_up_recent_raw_journal_defer_retry_at =
+                        catch_up_gate.next_retry_at;
+                    warn_discovery_deferred_due_to_runtime_memory_pressure(
+                        "catch_up_retrigger",
+                        &memory_gate,
+                    );
+                    continue;
+                }
                 let settle_gate = discovery_recent_raw_journal_safety_settle_start_gate(
                     &mut discovery_recent_raw_journal_safety_settle,
                     StdInstant::now(),
@@ -4228,6 +4288,7 @@ async fn run_app_loop(
                 discovery_catch_up_pending = false;
                 discovery_catch_up_recent_raw_journal_defer_retry_at = None;
                 discovery_recent_raw_journal_abort_reason = None;
+                discovery_runtime_memory_abort_reason = None;
                 discovery_running_trigger = Some("catch_up_retrigger");
                 discovery_handle = Some(spawn_logged_discovery_task(
                     sqlite_path.clone(),
@@ -5521,6 +5582,14 @@ async fn run_app_loop(
                     );
                     continue;
                 }
+                let memory_gate = load_discovery_runtime_memory_pressure_gate();
+                if discovery_runtime_memory_pressure_defer_reason(&memory_gate).is_some() {
+                    warn_discovery_deferred_due_to_runtime_memory_pressure(
+                        "scheduled_tick",
+                        &memory_gate,
+                    );
+                    continue;
+                }
                 let settle_gate = discovery_recent_raw_journal_safety_settle_start_gate(
                     &mut discovery_recent_raw_journal_safety_settle,
                     StdInstant::now(),
@@ -5535,6 +5604,7 @@ async fn run_app_loop(
                 discovery_catch_up_pending = false;
                 discovery_catch_up_recent_raw_journal_defer_retry_at = None;
                 discovery_recent_raw_journal_abort_reason = None;
+                discovery_runtime_memory_abort_reason = None;
                 discovery_running_trigger = Some("scheduled_tick");
                 discovery_handle = Some(spawn_logged_discovery_task(
                     sqlite_path.clone(),
@@ -5742,6 +5812,142 @@ fn discovery_catch_up_has_writer_queue_pressure(
         || observed_swap_writer_snapshot.aggregate_overflow_depth_batches > 0
         || observed_swap_writer_snapshot.journal_queue_depth_batches > 0
         || observed_swap_writer_snapshot.journal_overflow_depth_batches > 0
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiscoveryRuntimeMemoryPressureGate {
+    pressure_reason: Option<&'static str>,
+    process_rss_bytes: Option<u64>,
+    process_rss_threshold_bytes: u64,
+    system_available_bytes: Option<u64>,
+    system_available_threshold_bytes: u64,
+    system_total_bytes: Option<u64>,
+    system_available_bps: Option<u64>,
+    system_available_min_bps: u64,
+    error: Option<String>,
+}
+
+fn discovery_runtime_memory_pressure_gate_from_snapshot(
+    process_rss_bytes: Option<u64>,
+    system_available_bytes: Option<u64>,
+    system_total_bytes: Option<u64>,
+    error: Option<String>,
+) -> DiscoveryRuntimeMemoryPressureGate {
+    let system_available_bps = match (system_available_bytes, system_total_bytes) {
+        (Some(available), Some(total)) if total > 0 => {
+            Some(available.saturating_mul(10_000) / total)
+        }
+        _ => None,
+    };
+    let pressure_reason = if process_rss_bytes
+        .is_some_and(|rss| rss >= DISCOVERY_RUNTIME_MEMORY_PRESSURE_PROCESS_RSS_THRESHOLD_BYTES)
+    {
+        Some("process_rss_over_threshold")
+    } else if system_available_bytes.is_some_and(|available| {
+        available <= DISCOVERY_RUNTIME_MEMORY_PRESSURE_SYSTEM_AVAILABLE_THRESHOLD_BYTES
+    }) {
+        Some("system_available_below_threshold")
+    } else if system_available_bps
+        .is_some_and(|bps| bps <= DISCOVERY_RUNTIME_MEMORY_PRESSURE_SYSTEM_AVAILABLE_MIN_BPS)
+    {
+        Some("system_available_fraction_below_threshold")
+    } else {
+        None
+    };
+
+    DiscoveryRuntimeMemoryPressureGate {
+        pressure_reason,
+        process_rss_bytes,
+        process_rss_threshold_bytes: DISCOVERY_RUNTIME_MEMORY_PRESSURE_PROCESS_RSS_THRESHOLD_BYTES,
+        system_available_bytes,
+        system_available_threshold_bytes:
+            DISCOVERY_RUNTIME_MEMORY_PRESSURE_SYSTEM_AVAILABLE_THRESHOLD_BYTES,
+        system_total_bytes,
+        system_available_bps,
+        system_available_min_bps: DISCOVERY_RUNTIME_MEMORY_PRESSURE_SYSTEM_AVAILABLE_MIN_BPS,
+        error,
+    }
+}
+
+fn parse_proc_status_vmrss_bytes(contents: &str) -> Option<u64> {
+    contents.lines().find_map(|line| {
+        let rest = line.strip_prefix("VmRSS:")?.trim();
+        let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+        Some(kb.saturating_mul(1024))
+    })
+}
+
+fn parse_proc_meminfo_bytes(contents: &str, key: &str) -> Option<u64> {
+    let prefix = format!("{key}:");
+    contents.lines().find_map(|line| {
+        let rest = line.strip_prefix(&prefix)?.trim();
+        let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+        Some(kb.saturating_mul(1024))
+    })
+}
+
+fn read_proc_file_if_present(path: &str) -> Result<Option<String>> {
+    let path = Path::new(path);
+    if !path.exists() {
+        return Ok(None);
+    }
+    fs::read_to_string(path)
+        .map(Some)
+        .with_context(|| format!("failed reading {}", path.display()))
+}
+
+fn load_discovery_runtime_memory_pressure_gate() -> DiscoveryRuntimeMemoryPressureGate {
+    let mut errors = Vec::new();
+    let process_rss_bytes = match read_proc_file_if_present("/proc/self/status") {
+        Ok(Some(contents)) => parse_proc_status_vmrss_bytes(&contents),
+        Ok(None) => None,
+        Err(error) => {
+            errors.push(format!("{error:#}"));
+            None
+        }
+    };
+    let (system_available_bytes, system_total_bytes) =
+        match read_proc_file_if_present("/proc/meminfo") {
+            Ok(Some(contents)) => (
+                parse_proc_meminfo_bytes(&contents, "MemAvailable"),
+                parse_proc_meminfo_bytes(&contents, "MemTotal"),
+            ),
+            Ok(None) => (None, None),
+            Err(error) => {
+                errors.push(format!("{error:#}"));
+                (None, None)
+            }
+        };
+    discovery_runtime_memory_pressure_gate_from_snapshot(
+        process_rss_bytes,
+        system_available_bytes,
+        system_total_bytes,
+        (!errors.is_empty()).then(|| errors.join("; ")),
+    )
+}
+
+fn discovery_runtime_memory_pressure_defer_reason(
+    gate: &DiscoveryRuntimeMemoryPressureGate,
+) -> Option<&'static str> {
+    gate.pressure_reason
+        .map(|_| DISCOVERY_CYCLE_DEFERRED_DUE_TO_RUNTIME_MEMORY_PRESSURE)
+}
+
+fn discovery_runtime_memory_pressure_abort_reason(
+    gate: &DiscoveryRuntimeMemoryPressureGate,
+) -> Option<&'static str> {
+    gate.pressure_reason
+        .map(|_| DISCOVERY_CYCLE_ABORTED_DUE_TO_RUNTIME_MEMORY_PRESSURE)
+}
+
+fn discovery_task_abort_preserves_catch_up_pending(trigger: &'static str) -> bool {
+    trigger == "catch_up_retrigger"
+}
+
+fn discovery_task_output_should_be_ignored_due_to_abort_reason(
+    abort_reason: Option<&'static str>,
+) -> bool {
+    abort_reason.is_some()
 }
 
 fn discovery_recent_raw_journal_backlog_defer_reason(
@@ -6062,6 +6268,26 @@ fn warn_discovery_deferred_due_to_recent_raw_journal_backlog(
     );
 }
 
+fn warn_discovery_deferred_due_to_runtime_memory_pressure(
+    trigger: &'static str,
+    memory_gate: &DiscoveryRuntimeMemoryPressureGate,
+) {
+    warn!(
+        reason = DISCOVERY_CYCLE_DEFERRED_DUE_TO_RUNTIME_MEMORY_PRESSURE,
+        discovery_task_trigger = trigger,
+        runtime_memory_pressure_reason = memory_gate.pressure_reason,
+        process_rss_bytes = memory_gate.process_rss_bytes,
+        process_rss_threshold_bytes = memory_gate.process_rss_threshold_bytes,
+        system_available_bytes = memory_gate.system_available_bytes,
+        system_available_threshold_bytes = memory_gate.system_available_threshold_bytes,
+        system_total_bytes = memory_gate.system_total_bytes,
+        system_available_bps = memory_gate.system_available_bps,
+        system_available_min_bps = memory_gate.system_available_min_bps,
+        runtime_memory_pressure_error = memory_gate.error.as_deref(),
+        "discovery scheduled/background cycle deferred because runtime memory pressure is unsafe"
+    );
+}
+
 fn warn_discovery_aborted_due_to_recent_raw_journal_persisted_lag(
     trigger: &'static str,
     persisted_lag_gate: &DiscoveryRecentRawJournalPersistedLagGate,
@@ -6102,6 +6328,26 @@ fn warn_discovery_aborted_due_to_recent_raw_journal_persisted_lag(
         recent_raw_journal_lag_seconds = persisted_lag_gate.lag_seconds,
         recent_raw_journal_lag_check_error = persisted_lag_gate.error.as_deref(),
         "discovery task aborted because recent_raw journal persisted coverage became unsafe while discovery was running"
+    );
+}
+
+fn warn_discovery_aborted_due_to_runtime_memory_pressure(
+    trigger: &'static str,
+    memory_gate: &DiscoveryRuntimeMemoryPressureGate,
+) {
+    warn!(
+        reason = DISCOVERY_CYCLE_ABORTED_DUE_TO_RUNTIME_MEMORY_PRESSURE,
+        discovery_task_trigger = trigger,
+        runtime_memory_pressure_reason = memory_gate.pressure_reason,
+        process_rss_bytes = memory_gate.process_rss_bytes,
+        process_rss_threshold_bytes = memory_gate.process_rss_threshold_bytes,
+        system_available_bytes = memory_gate.system_available_bytes,
+        system_available_threshold_bytes = memory_gate.system_available_threshold_bytes,
+        system_total_bytes = memory_gate.system_total_bytes,
+        system_available_bps = memory_gate.system_available_bps,
+        system_available_min_bps = memory_gate.system_available_min_bps,
+        runtime_memory_pressure_error = memory_gate.error.as_deref(),
+        "discovery task aborted because runtime memory pressure became unsafe while discovery was running"
     );
 }
 
@@ -9183,6 +9429,107 @@ mod app_tests {
             discovery_recent_raw_journal_backlog_defer_reason(&writer_snapshot),
             None,
             "recent_raw backlog gate must not stop raw writer flow solely because raw requests are pending"
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_runtime_memory_pressure_blocks_pre_start_stage1(
+    ) {
+        let gate = discovery_runtime_memory_pressure_gate_from_snapshot(
+            Some(DISCOVERY_RUNTIME_MEMORY_PRESSURE_PROCESS_RSS_THRESHOLD_BYTES),
+            Some(4 * 1024 * 1024 * 1024),
+            Some(8 * 1024 * 1024 * 1024),
+            None,
+        );
+
+        assert_eq!(gate.pressure_reason, Some("process_rss_over_threshold"));
+        assert_eq!(
+            discovery_runtime_memory_pressure_defer_reason(&gate),
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RUNTIME_MEMORY_PRESSURE)
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_runtime_memory_pressure_blocks_low_available_stage1(
+    ) {
+        let gate = discovery_runtime_memory_pressure_gate_from_snapshot(
+            Some(256 * 1024 * 1024),
+            Some(DISCOVERY_RUNTIME_MEMORY_PRESSURE_SYSTEM_AVAILABLE_THRESHOLD_BYTES),
+            Some(8 * 1024 * 1024 * 1024),
+            None,
+        );
+
+        assert_eq!(
+            gate.pressure_reason,
+            Some("system_available_below_threshold")
+        );
+        assert_eq!(
+            discovery_runtime_memory_pressure_defer_reason(&gate),
+            Some(DISCOVERY_CYCLE_DEFERRED_DUE_TO_RUNTIME_MEMORY_PRESSURE)
+        );
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_runtime_memory_pressure_aborts_running_stage1(
+    ) {
+        let gate = discovery_runtime_memory_pressure_gate_from_snapshot(
+            Some(DISCOVERY_RUNTIME_MEMORY_PRESSURE_PROCESS_RSS_THRESHOLD_BYTES + 1),
+            Some(4 * 1024 * 1024 * 1024),
+            Some(8 * 1024 * 1024 * 1024),
+            None,
+        );
+
+        assert_eq!(
+            discovery_runtime_memory_pressure_abort_reason(&gate),
+            Some(DISCOVERY_CYCLE_ABORTED_DUE_TO_RUNTIME_MEMORY_PRESSURE)
+        );
+        assert!(discovery_task_output_should_be_ignored_due_to_abort_reason(
+            discovery_runtime_memory_pressure_abort_reason(&gate)
+        ));
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_runtime_memory_pressure_catch_up_preserves_pending_stage1(
+    ) {
+        let now = StdInstant::now();
+        let gate = discovery_runtime_memory_pressure_gate_from_snapshot(
+            Some(DISCOVERY_RUNTIME_MEMORY_PRESSURE_PROCESS_RSS_THRESHOLD_BYTES),
+            None,
+            None,
+            None,
+        );
+        let catch_up_gate = discovery_catch_up_retrigger_recent_raw_journal_defer_gate(
+            discovery_runtime_memory_pressure_defer_reason(&gate).expect("memory pressure"),
+            now,
+        );
+
+        assert!(!catch_up_gate.should_start);
+        assert!(catch_up_gate.keep_pending);
+        assert!(catch_up_gate.next_retry_at.is_some());
+        assert!(discovery_task_abort_preserves_catch_up_pending(
+            "catch_up_retrigger"
+        ));
+    }
+
+    #[test]
+    fn discovery_cycle_deferred_due_to_recent_raw_journal_runtime_memory_pressure_ignored_output_does_not_update_follow_state_stage1(
+    ) {
+        let mut follow_snapshot = FollowSnapshot::default();
+        let discovery_output = live_like_published_discovery_output(Utc::now(), 3, 3, true);
+        let abort_reason = Some(DISCOVERY_CYCLE_ABORTED_DUE_TO_RUNTIME_MEMORY_PRESSURE);
+
+        if !discovery_task_output_should_be_ignored_due_to_abort_reason(abort_reason) {
+            apply_follow_snapshot_update(
+                &mut follow_snapshot,
+                discovery_output.active_wallets,
+                discovery_output.cycle_ts,
+                StdDuration::from_secs(60),
+            );
+        }
+
+        assert!(
+            follow_snapshot.active.is_empty(),
+            "aborted discovery output must not update runtime follow state"
         );
     }
 

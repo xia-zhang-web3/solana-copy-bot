@@ -42,6 +42,8 @@ const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE_EXHAUSTED: &str =
     "observed_swap_writer_recent_raw_journal_write_deadline_exhausted";
 const OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_REPLAY_APPLY_SQLITE_LOCK_RETRYABLE: &str =
     "observed_swap_writer_discovery_scoring_replay_apply_sqlite_lock_retryable";
+const OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_COVERED_THROUGH_UPDATE_SQLITE_LOCK_RETRYABLE: &str =
+    "observed_swap_writer_discovery_scoring_covered_through_update_sqlite_lock_retryable";
 const OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_RUG_FINALIZE_SQLITE_LOCK_RETRYABLE: &str =
     "observed_swap_writer_discovery_scoring_rug_finalize_sqlite_lock_retryable";
 const RECENT_RAW_JOURNAL_PHASE_BATCH_COLLECTED: &str = "batch_collected";
@@ -2537,17 +2539,37 @@ fn process_discovery_aggregate_write_request(
                 signature: max_swap.signature.clone(),
             })
         {
-            if observed_swap_writer_discovery_scoring_error_requires_abort(&error) {
+            if observed_swap_writer_discovery_scoring_covered_through_update_error_is_retryable(
+                &error,
+            ) {
+                if let Err(gap_error) =
+                    latch_discovery_scoring_materialization_gap_from_swaps(store, inserted_swaps)
+                {
+                    if observed_swap_writer_discovery_scoring_error_requires_abort(&gap_error) {
+                        telemetry
+                            .note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
+                        return Err(gap_error).context(
+                            "observed swap writer stopping after fatal discovery scoring covered_through retry gap cursor failure",
+                        );
+                    }
+                    warn!(
+                        reason = OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_COVERED_THROUGH_UPDATE_SQLITE_LOCK_RETRYABLE,
+                        error = %gap_error,
+                        "failed to latch discovery scoring materialization gap after retryable covered_through cursor update failure",
+                    );
+                }
+                warn!(
+                    reason = OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_COVERED_THROUGH_UPDATE_SQLITE_LOCK_RETRYABLE,
+                    error = %error,
+                    covered_through = %max_swap.ts_utc,
+                    "discovery scoring covered_through cursor update hit retryable sqlite lock; leaving coverage watermark unchanged",
+                );
+            } else {
                 telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
                 return Err(error).context(
                     "observed swap writer stopping after fatal discovery scoring coverage watermark failure",
                 );
             }
-            warn!(
-                error = %error,
-                covered_through = %max_swap.ts_utc,
-                "observed swap batch materialized discovery scoring aggregates but failed to advance coverage watermark"
-            );
         }
     }
 
@@ -2921,6 +2943,12 @@ fn observed_swap_writer_discovery_scoring_error_requires_abort(error: &anyhow::E
 }
 
 fn observed_swap_writer_discovery_scoring_replay_apply_error_is_retryable(
+    error: &anyhow::Error,
+) -> bool {
+    is_retryable_sqlite_anyhow_error(error) && !is_fatal_sqlite_anyhow_error(error)
+}
+
+fn observed_swap_writer_discovery_scoring_covered_through_update_error_is_retryable(
     error: &anyhow::Error,
 ) -> bool {
     is_retryable_sqlite_anyhow_error(error) && !is_fatal_sqlite_anyhow_error(error)
@@ -3407,8 +3435,37 @@ fn run_aggregate_gap_replay_with_resume(
             slot: last_swap.slot,
             signature: last_swap.signature.clone(),
         };
+        if let Err(error) = store.set_discovery_scoring_covered_through_cursor(&cursor) {
+            if observed_swap_writer_discovery_scoring_covered_through_update_error_is_retryable(
+                &error,
+            ) {
+                if let Err(gap_error) =
+                    latch_discovery_scoring_materialization_gap_from_swaps(store, &page)
+                {
+                    if observed_swap_writer_discovery_scoring_error_requires_abort(&gap_error) {
+                        return Err(gap_error).context(
+                            "observed swap writer startup replay stopping after fatal discovery scoring covered_through retry gap cursor failure",
+                        );
+                    }
+                    warn!(
+                        reason = OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_COVERED_THROUGH_UPDATE_SQLITE_LOCK_RETRYABLE,
+                        error = %gap_error,
+                        "failed to latch discovery scoring materialization gap after retryable covered_through cursor update failure",
+                    );
+                }
+                warn!(
+                    reason = OBSERVED_SWAP_WRITER_DISCOVERY_SCORING_COVERED_THROUGH_UPDATE_SQLITE_LOCK_RETRYABLE,
+                    error = %error,
+                    covered_through = %cursor.ts_utc,
+                    "discovery scoring covered_through cursor update hit retryable sqlite lock during replay; leaving coverage watermark unchanged",
+                );
+                progress.gap_cursor_observed = gap_cursor_observed;
+                return Ok(progress);
+            }
+            return Err(error)
+                .context("failed to run discovery scoring covered_through cursor update");
+        }
         progress.last_replay_cursor = Some(cursor.clone());
-        store.set_discovery_scoring_covered_through_cursor(&cursor)?;
         progress.page_count = progress.page_count.saturating_add(1);
 
         if repair_target_cursor.is_some_and(|target| {
@@ -6393,6 +6450,127 @@ mod tests {
     }
 
     #[test]
+    fn observed_swap_writer_discovery_scoring_covered_through_update_sqlite_lock_is_retryable_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-observed-swap-covered-through-lock-retryable",
+        )?;
+        let (covered_swap, first_replay_swap, _tail_replay_swap) =
+            seed_discovery_scoring_rug_finalize_replay_fixture(&db_path)?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for covered-through retryable trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_covered_through_update_retryable
+             BEFORE UPDATE ON discovery_scoring_state
+             WHEN OLD.state_key = 'covered_through_ts'
+             BEGIN
+                 SELECT RAISE(FAIL, 'database is locked');
+             END;",
+        )?;
+
+        let writer = ObservedSwapWriter::start_with_config(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
+        )?;
+
+        let gap_cursor = wait_for_discovery_scoring_materialization_gap_cursor(&db_path)?;
+        assert_eq!(
+            gap_cursor,
+            DiscoveryRuntimeCursor {
+                ts_utc: first_replay_swap.ts_utc,
+                slot: first_replay_swap.slot,
+                signature: first_replay_swap.signature.clone(),
+            },
+            "retryable covered-through update lock must latch the first replay row"
+        );
+        std::thread::sleep(StdDuration::from_millis(50));
+        writer
+            .ensure_running()
+            .context("retryable covered-through sqlite lock must not become terminal")?;
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        assert_eq!(
+            verify_store.load_discovery_scoring_covered_through_cursor()?,
+            Some(DiscoveryRuntimeCursor {
+                ts_utc: covered_swap.ts_utc,
+                slot: covered_swap.slot,
+                signature: covered_swap.signature.clone(),
+            }),
+            "coverage must not advance when covered-through cursor update is retryably locked"
+        );
+
+        writer.shutdown()?;
+        drop(trigger_conn);
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_discovery_scoring_covered_through_update_unknown_error_remains_terminal_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-observed-swap-covered-through-unknown-fatal",
+        )?;
+        let (covered_swap, _first_replay_swap, _tail_replay_swap) =
+            seed_discovery_scoring_rug_finalize_replay_fixture(&db_path)?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for covered-through terminal trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_covered_through_update_terminal
+             BEFORE UPDATE ON discovery_scoring_state
+             WHEN OLD.state_key = 'covered_through_ts'
+             BEGIN
+                 SELECT RAISE(FAIL, 'forced covered_through update failure');
+             END;",
+        )?;
+
+        let writer = ObservedSwapWriter::start_with_config(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?
+                .to_string(),
+            ObservedSwapWriterConfig::for_test(16, 8, true, aggregate_write_config(), None),
+        )?;
+
+        let error_chain = wait_for_writer_terminal_failure(&writer)?;
+        assert!(
+            error_chain.contains("failed to run discovery scoring covered_through cursor update"),
+            "unknown covered-through update errors must keep explicit terminal context: {error_chain}"
+        );
+        assert!(
+            error_chain.contains("forced covered_through update failure"),
+            "unknown covered-through update error detail must remain visible: {error_chain}"
+        );
+
+        let verify_store = SqliteStore::open(Path::new(&db_path))?;
+        assert_eq!(
+            verify_store.load_discovery_scoring_covered_through_cursor()?,
+            Some(DiscoveryRuntimeCursor {
+                ts_utc: covered_swap.ts_utc,
+                slot: covered_swap.slot,
+                signature: covered_swap.signature.clone(),
+            }),
+            "terminal covered-through update failure must not advance coverage"
+        );
+
+        let shutdown_error = writer
+            .shutdown()
+            .expect_err("shutdown should surface terminal covered-through update failure");
+        let shutdown_chain = format!("{shutdown_error:#}");
+        assert!(
+            shutdown_chain
+                .contains("failed to run discovery scoring covered_through cursor update"),
+            "unexpected shutdown error: {shutdown_chain}"
+        );
+        drop(trigger_conn);
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
     fn observed_swap_writer_discovery_scoring_rug_finalize_unknown_error_remains_terminal_stage1(
     ) -> Result<()> {
         let db_path =
@@ -7020,6 +7198,33 @@ mod tests {
         assert!(
             !super::observed_swap_writer_discovery_scoring_replay_apply_error_is_retryable(
                 &replay_apply_unknown
+            )
+        );
+
+        let covered_update_retryable = anyhow!(
+            "failed to run discovery scoring covered_through cursor update: failed to open discovery scoring covered_through cursor update transaction: database is locked"
+        );
+        assert!(
+            super::observed_swap_writer_discovery_scoring_covered_through_update_error_is_retryable(
+                &covered_update_retryable
+            )
+        );
+
+        let covered_update_fatal = anyhow!(
+            "failed to run discovery scoring covered_through cursor update: disk I/O error: Error code 4874: I/O error within the xShmMap method"
+        );
+        assert!(
+            !super::observed_swap_writer_discovery_scoring_covered_through_update_error_is_retryable(
+                &covered_update_fatal
+            )
+        );
+
+        let covered_update_unknown = anyhow!(
+            "failed to run discovery scoring covered_through cursor update: malformed cursor"
+        );
+        assert!(
+            !super::observed_swap_writer_discovery_scoring_covered_through_update_error_is_retryable(
+                &covered_update_unknown
             )
         );
 
