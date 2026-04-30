@@ -202,6 +202,58 @@ Morning live status (`2026-04-30T07:56:51Z`):
   - next coding batch should stay narrow to observed-writer resource guard /
     covered-through lock retryability; do not move to selector/scoring fixes
 
+Accepted and deployed resource-pressure follow-up:
+
+- commit `1309a55` (`Gate discovery on runtime memory pressure`)
+- touched only:
+  - `crates/app/src/main.rs`
+  - `crates/app/src/observed_swap_writer.rs`
+- implemented behavior:
+  - scheduled and catch-up discovery are deferred when runtime memory pressure
+    is unsafe, with reason
+    `discovery_cycle_deferred_due_to_runtime_memory_pressure`
+  - running discovery output is aborted/ignored when runtime memory pressure
+    becomes unsafe, with reason
+    `discovery_cycle_aborted_due_to_runtime_memory_pressure`
+  - catch-up pending is preserved across memory-pressure deferral/abort
+  - SQLite busy/locked during discovery scoring covered-through cursor update
+    is retryable and non-terminal, with reason
+    `observed_swap_writer_discovery_scoring_covered_through_update_sqlite_lock_retryable`
+  - covered-through is not advanced on retryable covered-through update lock
+  - unknown/non-lock covered-through update errors remain terminal
+- reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot-app discovery_cycle_deferred_due_to_recent_raw_journal`
+  - `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer -- --test-threads=1`
+  - `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - `rustfmt --check --edition 2021 crates/app/src/main.rs crates/app/src/observed_swap_writer.rs`
+  - `git diff --check -- crates/app/src/main.rs crates/app/src/observed_swap_writer.rs`
+- production rollout:
+  - server checkout advanced to `1309a55`
+  - rebuilt only `copybot-app`
+  - restarted `solana-copy-bot.service`
+- post-rollout snapshot after the first control window:
+  - `solana-copy-bot.service = active`
+  - `MainPID = 1611613`
+  - `NRestarts = 0`
+  - memory current: `2.7G`
+  - memory peak: `3.8G`
+  - runtime and recent_raw journal tails both reached
+    `2026-04-30T08:26:25.274000063Z / 416620061`
+  - runtime WAL remained large at `8.3G`
+  - post-rollout counts:
+    - memory-pressure defer count: `0`
+    - memory-pressure abort count: `0`
+    - covered-through retryable lock count: `0`
+    - observed-writer terminal failure count: `0`
+    - OOM count: `0`
+- operational interpretation:
+  - the resource-pressure guard is deployed but has not yet fired in the first
+    short control window
+  - the covered-through retryable reason is deployed but has not yet fired in
+    the first short control window
+  - live raw/recent_raw remains healthy and synchronized
+  - the large runtime WAL remains a separate maintenance/startup-risk seam
+
 ## Live Update (`2026-04-28`)
 
 Current Stage 3 production-discovery truth remains fail-closed. Raw-history
