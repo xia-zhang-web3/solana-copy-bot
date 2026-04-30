@@ -3,6 +3,81 @@
 Date: 2026-03-17
 Status: Active historical roadmap with 2026-03-27 production-readiness and live Stage 3 accumulation addendum
 
+## Live Update (`2026-04-30`)
+
+Stage 3 production discovery truth remains fail-closed. Runtime raw ingestion
+and recent_raw journal truth are currently healthy, but aggregate-scoring
+materialization remains the active blocker.
+
+Accepted and deployed batch:
+
+- commit `8549ec6` (`Retry aggregate replay sqlite locks`)
+- touched only:
+  - `crates/app/src/observed_swap_writer.rs`
+- local reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer -- --test-threads=1`
+  - `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`
+  - `git diff --check -- crates/app/src/observed_swap_writer.rs`
+- production rollout rebuilt only `copybot-app`
+
+Live proof before the batch:
+
+- `solana-copy-bot.service = active`
+- raw runtime tail and recent_raw journal tail matched exactly at
+  `2026-04-30T16:10:51.652972806Z / 416690751`
+- WAL pressure was not the active blocker:
+  - `wal_pressure_level = none`
+  - `wal_bytes = 13.5M` after SQLite-managed checkpoint/restart behavior
+- aggregate readiness remained fail-closed:
+  - `storage_ready_for_runtime_gate = false`
+  - `effective_writes_ready = false`
+  - `effective_reads_ready = false`
+  - `covered_through = 2026-04-29T10:25:32.366822487Z`
+  - `materialization_gap_cursor = 2026-04-29T02:30:58.295525837Z / 416346850`
+  - blockers included `materialization_gap_latched`
+- live logs repeatedly showed the non-terminal retryable reason:
+  `observed_swap_writer_discovery_scoring_replay_apply_sqlite_lock_retryable`
+
+Implemented behavior:
+
+- aggregate replay apply, rug-finalize, and covered-through cursor update now
+  have bounded retry/backoff for existing retryable SQLite busy/locked
+  classifications
+- retry exhaustion preserves the existing non-terminal fail-closed behavior:
+  materialization gap evidence remains, `covered_through` is not advanced, and
+  aggregate readiness stays blocked
+- unknown/non-lock errors remain terminal
+
+Post-rollout snapshot:
+
+- `solana-copy-bot.service = active`
+- new `MainPID = 1622392`
+- `NRestarts = 0` after rollout restart
+- runtime and recent_raw tails matched exactly at
+  `2026-04-30T17:12:19.039104379Z / 416700101`
+- WAL pressure remained clear:
+  - `wal_pressure_level = none`
+  - `wal_bytes = 9.4M`
+- aggregate readiness still reported the same fail-closed materialization
+  blocker shortly after rollout:
+  - `covered_through = 2026-04-29T10:25:32.366822487Z`
+  - `materialization_gap_cursor = 2026-04-29T02:30:58.295525837Z / 416346850`
+  - `write_blockers = ["materialization_gap_latched"]`
+  - `read_blockers` included `covered_through_too_stale_for_runtime_gate`,
+    `materialization_gap_latched`, and
+    `covered_through_too_stale_for_audit_lag`
+
+Operational interpretation:
+
+- this rollout is safe: it did not fake coverage, did not clear the
+  materialization gap, and did not destabilize raw/recent_raw
+- the current active blocker is not WAL pressure and not raw-history recovery
+- the next bounded batch should target aggregate materialization-gap repair
+  observability/progress: prove whether repair slices are being skipped,
+  starved, budget-limited, or still exhausted by SQLite locks
+- do not move to selector/scoring threshold changes from this evidence
+
 ## Live Update (`2026-04-29`)
 
 Stage 3 production discovery truth remains fail-closed. The active live seam
