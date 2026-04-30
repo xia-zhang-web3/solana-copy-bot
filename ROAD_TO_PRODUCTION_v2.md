@@ -254,6 +254,41 @@ Accepted and deployed resource-pressure follow-up:
   - live raw/recent_raw remains healthy and synchronized
   - the large runtime WAL remains a separate maintenance/startup-risk seam
 
+Accepted startup-WAL guard follow-up:
+
+- touched only:
+  - `crates/storage/src/lib.rs`
+  - `crates/app/src/main.rs`
+- implemented behavior:
+  - startup now inspects the runtime SQLite `<db>-wal` file before
+    `sqlite_pragma_journal_mode_wal`
+  - if the WAL is missing or below
+    `SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES`, startup emits an
+    explicit skipped event and continues
+  - if the WAL is large, startup runs SQLite-managed
+    `PRAGMA wal_checkpoint(TRUNCATE)` before app runtime handoff
+  - large-WAL checkpoint uses a dedicated
+    `SqliteStartupPolicy.large_wal_checkpoint_step`, not the short
+    `pragma_step`
+  - production app startup gives the large-WAL checkpoint a bounded 15-minute
+    budget instead of the 30-second SQLite pragma budget
+  - busy/error/timeout remains fail-closed before startup handoff
+  - no code manually deletes SQLite WAL/SHM files
+  - startup telemetry records before/after WAL size and checkpoint result in a
+    single terminal completion event
+- reviewer checks passed:
+  - `cargo test -j 1 -p copybot-storage startup`
+  - `cargo test -j 1 -p copybot-app --bin copybot-app startup`
+  - `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - `rustfmt --check --edition 2021 crates/storage/src/lib.rs crates/app/src/main.rs`
+  - `git diff --check -- crates/storage/src/lib.rs crates/app/src/main.rs`
+- operational interpretation:
+  - this addresses the live `sqlite_pragma_journal_mode_wal` ABRT-loop class
+    caused by a large uncheckpointed runtime WAL
+  - it does not mark Stage 3 production green
+  - it does not change selector/scoring thresholds, `scoring_window_days`,
+    restore/gap-fill, configs/systemd, execution, or trading
+
 ## Live Update (`2026-04-28`)
 
 Current Stage 3 production-discovery truth remains fail-closed. Raw-history

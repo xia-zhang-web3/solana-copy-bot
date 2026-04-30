@@ -4,7 +4,7 @@ use rusqlite::backup::{Backup, StepResult};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration as StdDuration, Instant};
@@ -80,6 +80,9 @@ pub struct SqliteStore {
 }
 
 pub const SQLITE_DEFAULT_WAL_AUTOCHECKPOINT_PAGES: i64 = 1_000;
+pub const SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE: &str =
+    "sqlite_startup_large_wal_checkpoint_truncate";
+pub const SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqliteSnapshotRetryReason {
@@ -280,6 +283,59 @@ fn build_sqlite_immutable_read_only_uri(path: &Path) -> String {
     }
 }
 
+fn sqlite_wal_path(path: &Path) -> PathBuf {
+    let mut wal_path = path.as_os_str().to_os_string();
+    wal_path.push("-wal");
+    PathBuf::from(wal_path)
+}
+
+fn sqlite_wal_size_bytes(path: &Path) -> Result<Option<u64>> {
+    let wal_path = sqlite_wal_path(path);
+    match fs::metadata(&wal_path) {
+        Ok(metadata) => Ok(Some(metadata.len())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to inspect sqlite wal file {}", wal_path.display())),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SqliteStartupLargeWalCheckpointSummary {
+    pub threshold_bytes: u64,
+    pub before_wal_bytes: u64,
+    pub after_wal_bytes: u64,
+    pub busy: i64,
+    pub log_frames: i64,
+    pub checkpointed_frames: i64,
+}
+
+fn sqlite_startup_large_wal_checkpoint_detail(
+    summary: SqliteStartupLargeWalCheckpointSummary,
+) -> String {
+    format!(
+        "threshold_bytes={} before_wal_bytes={} after_wal_bytes={} busy={} log_frames={} checkpointed_frames={}",
+        summary.threshold_bytes,
+        summary.before_wal_bytes,
+        summary.after_wal_bytes,
+        summary.busy,
+        summary.log_frames,
+        summary.checkpointed_frames
+    )
+}
+
+fn sqlite_startup_large_wal_checkpoint_skip_detail(
+    reason: &str,
+    threshold_bytes: u64,
+    before_wal_bytes: Option<u64>,
+) -> String {
+    format!(
+        "reason={} threshold_bytes={} before_wal_bytes={}",
+        reason,
+        threshold_bytes,
+        before_wal_bytes.unwrap_or(0)
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartupStepOutcome {
     Started,
@@ -398,9 +454,11 @@ pub struct SqliteBatchedDeleteSummaryWithCompletion {
 pub struct SqliteStartupPolicy {
     pub open_step: StartupStepRuntimePolicy,
     pub pragma_step: StartupStepRuntimePolicy,
+    pub large_wal_checkpoint_step: StartupStepRuntimePolicy,
     pub schema_bootstrap_step: StartupStepRuntimePolicy,
     pub migrations_scan_step: StartupStepRuntimePolicy,
     pub migrations_apply_step: StartupStepRuntimePolicy,
+    pub large_wal_checkpoint_threshold_bytes: u64,
 }
 
 impl Default for SqliteStartupPolicy {
@@ -414,6 +472,10 @@ impl Default for SqliteStartupPolicy {
                 StdDuration::from_secs(5),
                 Some(StdDuration::from_secs(30)),
             ),
+            large_wal_checkpoint_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_secs(5),
+                Some(StdDuration::from_secs(15 * 60)),
+            ),
             schema_bootstrap_step: StartupStepRuntimePolicy::new(
                 StdDuration::from_secs(5),
                 Some(StdDuration::from_secs(30)),
@@ -426,6 +488,8 @@ impl Default for SqliteStartupPolicy {
                 StdDuration::from_secs(5),
                 Some(StdDuration::from_secs(120)),
             ),
+            large_wal_checkpoint_threshold_bytes:
+                SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES,
         }
     }
 }
@@ -552,6 +616,21 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T> + Send + 'static,
 {
+    run_observed_startup_step_with_completion_detail(stage, policy, reporter, operation, |_| None)
+}
+
+fn run_observed_startup_step_with_completion_detail<T, F, D>(
+    stage: &'static str,
+    policy: StartupStepRuntimePolicy,
+    reporter: Option<&StartupStepProgressReporter>,
+    operation: F,
+    completion_detail: D,
+) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+    D: Fn(&T) -> Option<String>,
+{
     report_startup_step_progress(
         reporter,
         stage,
@@ -626,13 +705,14 @@ where
                 let elapsed = started_at.elapsed();
                 match result {
                     Ok(value) => {
+                        let detail = completion_detail(&value);
                         report_startup_step_progress(
                             reporter,
                             stage,
                             StartupStepOutcome::Completed,
                             elapsed,
                             policy.timeout,
-                            None,
+                            detail,
                         );
                         return Ok(value);
                     }
@@ -674,6 +754,96 @@ where
             }
         }
     }
+}
+
+fn checkpoint_large_startup_wal_if_needed(
+    path: &Path,
+    conn: Connection,
+    policy: StartupStepRuntimePolicy,
+    reporter: Option<&StartupStepProgressReporter>,
+    threshold_bytes: u64,
+) -> Result<Connection> {
+    let before_wal_bytes = sqlite_wal_size_bytes(path)?;
+    let should_checkpoint = before_wal_bytes
+        .map(|bytes| bytes >= threshold_bytes)
+        .unwrap_or(false);
+    if !should_checkpoint {
+        let started_at = Instant::now();
+        report_startup_step_progress(
+            reporter,
+            SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE,
+            StartupStepOutcome::Started,
+            StdDuration::ZERO,
+            policy.timeout,
+            None,
+        );
+        let reason = if before_wal_bytes.is_some() {
+            "wal_below_threshold"
+        } else {
+            "wal_missing"
+        };
+        report_startup_step_progress(
+            reporter,
+            SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE,
+            StartupStepOutcome::Skipped,
+            started_at.elapsed(),
+            policy.timeout,
+            Some(sqlite_startup_large_wal_checkpoint_skip_detail(
+                reason,
+                threshold_bytes,
+                before_wal_bytes,
+            )),
+        );
+        return Ok(conn);
+    }
+
+    let sqlite_path = path.to_path_buf();
+    let (conn, _) = run_observed_startup_step_with_completion_detail(
+        SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE,
+        policy,
+        reporter,
+        move || {
+            let operation_started = Instant::now();
+            let before_wal_bytes = sqlite_wal_size_bytes(&sqlite_path)?.unwrap_or(0);
+            let (busy, log_frames, checkpointed_frames): (i64, i64, i64) = {
+                let mut stmt = conn
+                    .prepare("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .context("failed preparing sqlite startup large WAL checkpoint truncate")?;
+                stmt.query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                    .context("failed running sqlite startup large WAL checkpoint truncate")?
+            };
+            let after_wal_bytes = sqlite_wal_size_bytes(&sqlite_path)?.unwrap_or(0);
+            let summary = SqliteStartupLargeWalCheckpointSummary {
+                threshold_bytes,
+                before_wal_bytes,
+                after_wal_bytes,
+                busy,
+                log_frames,
+                checkpointed_frames,
+            };
+            let elapsed_ms = startup_step_elapsed_ms(operation_started.elapsed());
+            tracing::info!(
+                startup_stage = SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE,
+                before_wal_bytes = summary.before_wal_bytes,
+                after_wal_bytes = summary.after_wal_bytes,
+                threshold_bytes = summary.threshold_bytes,
+                wal_checkpoint_busy = summary.busy,
+                wal_log_frames = summary.log_frames,
+                wal_checkpointed_frames = summary.checkpointed_frames,
+                startup_stage_elapsed_ms = elapsed_ms,
+                "sqlite startup large WAL checkpoint truncate completed"
+            );
+            if busy != 0 {
+                anyhow::bail!(
+                    "sqlite startup large WAL checkpoint truncate remained busy: {}",
+                    sqlite_startup_large_wal_checkpoint_detail(summary)
+                );
+            }
+            Ok((conn, summary))
+        },
+        |(_, summary)| Some(sqlite_startup_large_wal_checkpoint_detail(*summary)),
+    )?;
+    Ok(conn)
 }
 
 pub fn note_sqlite_write_retry() {
@@ -2290,6 +2460,13 @@ impl SqliteStore {
                     .context("failed to set sqlite busy_timeout")?;
                 Ok(conn)
             },
+        )?;
+        let conn = checkpoint_large_startup_wal_if_needed(
+            path,
+            conn,
+            policy.large_wal_checkpoint_step,
+            reporter,
+            policy.large_wal_checkpoint_threshold_bytes,
         )?;
         let conn = run_observed_startup_step(
             "sqlite_pragma_journal_mode_wal",
@@ -8804,7 +8981,7 @@ mod tests {
             min_token_age_hint_seconds: None,
         };
 
-        crate::discovery_scoring::set_discovery_scoring_atomic_checkpoint_failpoint(true);
+        SqliteStore::set_discovery_scoring_atomic_checkpoint_failpoint_for_tests(true);
         let error = failing_store
             .apply_discovery_scoring_batch_and_checkpoint_with_timings(
                 &swaps,
@@ -12596,6 +12773,331 @@ mod tests {
         );
     }
 
+    fn sqlite_startup_test_policy(threshold_bytes: u64) -> SqliteStartupPolicy {
+        SqliteStartupPolicy {
+            open_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            pragma_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            large_wal_checkpoint_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            schema_bootstrap_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            migrations_scan_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            migrations_apply_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
+            large_wal_checkpoint_threshold_bytes: threshold_bytes,
+        }
+    }
+
+    fn collect_startup_events() -> (
+        std::sync::Arc<std::sync::Mutex<Vec<StartupStepProgress>>>,
+        StartupStepProgressReporter,
+    ) {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reporter_events = events.clone();
+        let reporter: StartupStepProgressReporter = std::sync::Arc::new(move |event| {
+            reporter_events
+                .lock()
+                .expect("startup reporter mutex poisoned")
+                .push(event);
+        });
+        (events, reporter)
+    }
+
+    fn seed_startup_wal_file(db_path: &Path, rows: usize) -> Result<Connection> {
+        let conn = Connection::open(db_path)
+            .with_context(|| format!("failed opening startup wal seed db {}", db_path.display()))?;
+        conn.busy_timeout(StdDuration::from_millis(250))
+            .context("failed setting startup wal seed busy timeout")?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .context("failed enabling WAL for startup wal seed")?;
+        conn.pragma_update(None, "wal_autocheckpoint", 0_i64)
+            .context("failed disabling wal_autocheckpoint for startup wal seed")?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS startup_wal_seed(
+                id INTEGER PRIMARY KEY,
+                payload TEXT NOT NULL
+            );",
+        )?;
+        let payload = "startup-large-wal-checkpoint-ballast".repeat(16);
+        for idx in 0..rows.max(1) {
+            conn.execute(
+                "INSERT INTO startup_wal_seed(id, payload) VALUES (?1, ?2)",
+                params![idx as i64, payload],
+            )
+            .with_context(|| format!("failed inserting startup wal seed row {idx}"))?;
+        }
+        Ok(conn)
+    }
+
+    fn startup_event_index(
+        events: &[StartupStepProgress],
+        stage: &'static str,
+        outcome: StartupStepOutcome,
+    ) -> Option<usize> {
+        events
+            .iter()
+            .position(|event| event.stage == stage && event.outcome == outcome)
+    }
+
+    #[test]
+    fn sqlite_startup_large_wal_checkpoint_skips_missing_wal_before_journal_mode_stage(
+    ) -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("startup-large-wal-missing.db");
+        let (events, reporter) = collect_startup_events();
+        let policy = sqlite_startup_test_policy(1);
+
+        let store = SqliteStore::open_for_startup(&db_path, &policy, Some(&reporter))?;
+        drop(store);
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        let skip_idx = startup_event_index(
+            &recorded,
+            SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE,
+            StartupStepOutcome::Skipped,
+        )
+        .expect("missing WAL must emit a skipped checkpoint event");
+        let journal_idx = startup_event_index(
+            &recorded,
+            "sqlite_pragma_journal_mode_wal",
+            StartupStepOutcome::Started,
+        )
+        .expect("startup must continue to journal_mode WAL stage after skipped checkpoint");
+        assert!(
+            skip_idx < journal_idx,
+            "large-WAL guard must run before sqlite_pragma_journal_mode_wal"
+        );
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE
+                    && event.outcome == StartupStepOutcome::Skipped
+                    && event.detail.as_deref().is_some_and(|detail| {
+                        detail.contains("reason=wal_missing")
+                            && detail.contains("before_wal_bytes=0")
+                    })
+            }),
+            "missing-WAL skip must report the inspected WAL size"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_startup_large_wal_checkpoint_skips_small_wal() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("startup-large-wal-small.db");
+        let _seed_conn = seed_startup_wal_file(&db_path, 1)?;
+        let before_wal_bytes = sqlite_wal_size_bytes(&db_path)?.unwrap_or(0);
+        assert!(
+            before_wal_bytes > 0,
+            "test setup must leave a WAL file to prove the small-WAL skip path"
+        );
+        let (events, reporter) = collect_startup_events();
+        let policy = sqlite_startup_test_policy(before_wal_bytes + 1);
+
+        let store = SqliteStore::open_for_startup(&db_path, &policy, Some(&reporter))?;
+        drop(store);
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE
+                    && event.outcome == StartupStepOutcome::Skipped
+                    && event.detail.as_deref().is_some_and(|detail| {
+                        detail.contains("reason=wal_below_threshold")
+                            && detail.contains(&format!("before_wal_bytes={before_wal_bytes}"))
+                    })
+            }),
+            "small-WAL skip must include the observed WAL size"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_startup_large_wal_checkpoint_truncates_before_journal_mode_stage() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("startup-large-wal-truncate.db");
+        let _seed_conn = seed_startup_wal_file(&db_path, 16)?;
+        let before_wal_bytes = sqlite_wal_size_bytes(&db_path)?.unwrap_or(0);
+        assert!(before_wal_bytes > 1, "test setup must create a WAL file");
+        let (events, reporter) = collect_startup_events();
+        let policy = sqlite_startup_test_policy(1);
+
+        let store = SqliteStore::open_for_startup(&db_path, &policy, Some(&reporter))?;
+        let journal_mode: String = store
+            .conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+        drop(store);
+
+        let after_wal_bytes = sqlite_wal_size_bytes(&db_path)?.unwrap_or(0);
+        assert!(
+            after_wal_bytes <= before_wal_bytes,
+            "SQLite-managed checkpoint should not grow the WAL: before={before_wal_bytes} after={after_wal_bytes}"
+        );
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        let checkpoint_started_idx = startup_event_index(
+            &recorded,
+            SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE,
+            StartupStepOutcome::Started,
+        )
+        .expect("large WAL checkpoint must emit started progress");
+        let journal_started_idx = startup_event_index(
+            &recorded,
+            "sqlite_pragma_journal_mode_wal",
+            StartupStepOutcome::Started,
+        )
+        .expect("startup must continue to journal_mode WAL after successful checkpoint");
+        assert!(
+            checkpoint_started_idx < journal_started_idx,
+            "large-WAL checkpoint must run before sqlite_pragma_journal_mode_wal"
+        );
+        assert!(
+            recorded.iter().any(|event| {
+                event.stage == SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE
+                    && event.outcome == StartupStepOutcome::Completed
+                    && event.detail.as_deref().is_some_and(|detail| {
+                        detail.contains(&format!("before_wal_bytes={before_wal_bytes}"))
+                            && detail.contains("after_wal_bytes=")
+                            && detail.contains("busy=0")
+                    })
+            }),
+            "successful checkpoint must report before/after WAL size and checkpoint result"
+        );
+        let completed_count = recorded
+            .iter()
+            .filter(|event| {
+                event.stage == SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE
+                    && event.outcome == StartupStepOutcome::Completed
+            })
+            .count();
+        assert_eq!(
+            completed_count, 1,
+            "checkpoint stage must emit exactly one terminal Completed event"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_startup_large_wal_checkpoint_uses_dedicated_policy_not_pragma_step() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("startup-large-wal-dedicated-policy.db");
+        let _seed_conn = seed_startup_wal_file(&db_path, 16)?;
+        let (events, reporter) = collect_startup_events();
+        let mut policy = sqlite_startup_test_policy(1);
+        policy.pragma_step = StartupStepRuntimePolicy::new(
+            StdDuration::from_millis(10),
+            Some(StdDuration::from_millis(123)),
+        );
+        policy.large_wal_checkpoint_step = StartupStepRuntimePolicy::new(
+            StdDuration::from_millis(10),
+            Some(StdDuration::from_millis(4_567)),
+        );
+
+        let store = SqliteStore::open_for_startup(&db_path, &policy, Some(&reporter))?;
+        drop(store);
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        let checkpoint_started = recorded
+            .iter()
+            .find(|event| {
+                event.stage == SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE
+                    && event.outcome == StartupStepOutcome::Started
+            })
+            .expect("large WAL checkpoint must emit started progress");
+        assert_eq!(
+            checkpoint_started.budget_ms,
+            Some(4_567),
+            "large WAL checkpoint must use its dedicated timeout budget"
+        );
+        let journal_started = recorded
+            .iter()
+            .find(|event| {
+                event.stage == "sqlite_pragma_journal_mode_wal"
+                    && event.outcome == StartupStepOutcome::Started
+            })
+            .expect("startup must continue to journal pragma after checkpoint");
+        assert_eq!(
+            journal_started.budget_ms,
+            Some(123),
+            "journal pragma must keep the shorter pragma budget"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_startup_large_wal_checkpoint_busy_fails_before_journal_mode_stage() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("startup-large-wal-busy.db");
+        let seed_conn = seed_startup_wal_file(&db_path, 8)?;
+        let reader = Connection::open(&db_path)
+            .with_context(|| format!("failed opening busy reader {}", db_path.display()))?;
+        reader.pragma_update(None, "journal_mode", "WAL")?;
+        reader.execute_batch("BEGIN")?;
+        let _: i64 = reader.query_row("SELECT COUNT(*) FROM startup_wal_seed", [], |row| {
+            row.get(0)
+        })?;
+        seed_conn.execute(
+            "INSERT INTO startup_wal_seed(payload) VALUES ('post-reader-frame')",
+            [],
+        )?;
+
+        let (events, reporter) = collect_startup_events();
+        let mut policy = sqlite_startup_test_policy(1);
+        policy.large_wal_checkpoint_step = StartupStepRuntimePolicy::new(
+            StdDuration::from_millis(10),
+            Some(StdDuration::from_secs(7)),
+        );
+        let error = match SqliteStore::open_for_startup(&db_path, &policy, Some(&reporter)) {
+            Ok(_) => {
+                anyhow::bail!("busy large-WAL checkpoint must fail closed before startup handoff")
+            }
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:#}")
+                .contains("sqlite startup large WAL checkpoint truncate remained busy"),
+            "unexpected startup checkpoint error: {error:#}"
+        );
+
+        let recorded = events.lock().expect("startup reporter mutex poisoned");
+        assert!(
+            startup_event_index(
+                &recorded,
+                SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE,
+                StartupStepOutcome::Failed,
+            )
+            .is_some(),
+            "busy checkpoint must emit failed startup progress"
+        );
+        assert!(
+            startup_event_index(
+                &recorded,
+                "sqlite_pragma_journal_mode_wal",
+                StartupStepOutcome::Started,
+            )
+            .is_none(),
+            "startup must fail closed before sqlite_pragma_journal_mode_wal when checkpoint is busy"
+        );
+        reader.execute_batch("ROLLBACK")?;
+        Ok(())
+    }
+
     #[test]
     fn sqlite_startup_bootstrap_reports_stage_progress() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
@@ -12618,6 +13120,10 @@ mod tests {
                 StdDuration::from_millis(10),
                 Some(StdDuration::from_secs(1)),
             ),
+            large_wal_checkpoint_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
             schema_bootstrap_step: StartupStepRuntimePolicy::new(
                 StdDuration::from_millis(10),
                 Some(StdDuration::from_secs(1)),
@@ -12630,6 +13136,8 @@ mod tests {
                 StdDuration::from_millis(10),
                 Some(StdDuration::from_secs(3)),
             ),
+            large_wal_checkpoint_threshold_bytes:
+                SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES,
         };
 
         let bootstrap = SqliteStore::open_and_migrate_for_startup(
@@ -12691,6 +13199,10 @@ mod tests {
                 StdDuration::from_millis(10),
                 Some(StdDuration::from_secs(1)),
             ),
+            large_wal_checkpoint_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
             schema_bootstrap_step: StartupStepRuntimePolicy::new(
                 StdDuration::from_millis(10),
                 Some(StdDuration::from_secs(1)),
@@ -12703,6 +13215,8 @@ mod tests {
                 StdDuration::from_millis(10),
                 Some(StdDuration::from_secs(1)),
             ),
+            large_wal_checkpoint_threshold_bytes:
+                SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES,
         };
 
         let bootstrap = SqliteStore::open_and_migrate_for_startup(
@@ -12774,6 +13288,10 @@ mod tests {
                 StdDuration::from_millis(10),
                 Some(StdDuration::from_secs(1)),
             ),
+            large_wal_checkpoint_step: StartupStepRuntimePolicy::new(
+                StdDuration::from_millis(10),
+                Some(StdDuration::from_secs(1)),
+            ),
             schema_bootstrap_step: StartupStepRuntimePolicy::new(
                 StdDuration::from_millis(10),
                 Some(StdDuration::from_secs(1)),
@@ -12786,6 +13304,8 @@ mod tests {
                 StdDuration::from_millis(10),
                 Some(StdDuration::from_secs(1)),
             ),
+            large_wal_checkpoint_threshold_bytes:
+                SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES,
         };
 
         let bootstrap = SqliteStore::open_and_migrate_for_startup(
