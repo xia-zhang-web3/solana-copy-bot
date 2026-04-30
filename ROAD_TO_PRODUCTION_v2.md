@@ -323,6 +323,47 @@ Production rollout result (`2026-04-30`, commit `2afde6c`):
   - it did prove the dedicated 15-minute startup budget is wired and the
     previous 30-second `sqlite_pragma_journal_mode_wal` ABRT loop did not recur
 
+Accepted read-only WAL pressure operator:
+
+- commit `130e5f7` (`Add runtime WAL pressure report`)
+- touched only:
+  - `crates/app/src/bin/copybot_runtime_sqlite_wal_pressure_report.rs`
+- implemented behavior:
+  - reads runtime SQLite DB, WAL, and SHM file metadata only
+  - does not open SQLite
+  - does not run `PRAGMA wal_checkpoint`
+  - does not delete or mutate any file
+  - always emits `production_green=false`
+  - classifies WAL pressure as `none`, `large`, `critical`, or `unproven`
+- reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot_runtime_sqlite_wal_pressure_report`
+  - `cargo check -j 1 -p copybot-app --bin copybot_runtime_sqlite_wal_pressure_report`
+  - `rustfmt --check --edition 2021 crates/app/src/bin/copybot_runtime_sqlite_wal_pressure_report.rs`
+  - `git diff --check -- crates/app/src/bin/copybot_runtime_sqlite_wal_pressure_report.rs crates/app/Cargo.toml`
+- production rollout:
+  - server checkout advanced to `130e5f7`
+  - rebuilt only `copybot_runtime_sqlite_wal_pressure_report`
+  - did not restart `solana-copy-bot.service`
+- live report (`2026-04-30T12:25Z`):
+  - `wal_pressure_level = critical`
+  - `wal_pressure_reason = runtime_sqlite_wal_pressure_critical`
+  - `db_bytes = 89534709760`
+  - `wal_bytes = 9805657712`
+  - `shm_bytes = 19070976`
+  - `manual_operator_action_required = true`
+  - `service_safe_next_action` is a manual maintenance-window instruction:
+    stop service, run SQLite-managed checkpoint/truncate as `copybot`,
+    restart, and verify tails
+  - service stayed active after the operator run:
+    `MainPID = 1613459`, `NRestarts = 0`
+- operational interpretation:
+  - runtime WAL pressure is now proven critical by a read-only production
+    operator
+  - this is not Stage 3 production green
+  - next mutating action, if chosen, should be an operator-controlled
+    maintenance window or a separate bounded maintenance-path batch; do not
+    hide it inside discovery/selector changes
+
 ## Live Update (`2026-04-28`)
 
 Current Stage 3 production-discovery truth remains fail-closed. Raw-history
