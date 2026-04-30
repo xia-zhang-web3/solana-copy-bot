@@ -321,6 +321,46 @@ Follow-up update as of `2026-04-29T20:55:42Z`:
 - The replay-apply retryable reason has not yet fired after recovery; keep
   monitoring before declaring that seam closed.
 
+Morning update as of `2026-04-30T07:56:51Z`:
+
+- `solana-copy-bot.service = active`
+- `MainPID = 1610242`
+- `NRestarts = 3`
+- current process started at `2026-04-30T06:47:00Z`
+- runtime and recent_raw journal tails both reached
+  `2026-04-30T07:56:47.989748492Z / 416615563`
+- disk: `400G used / 67G available / 86%`
+- runtime DB/WAL:
+  - `live_runtime_20260324T134339Z.db = 83G`
+  - `live_runtime_20260324T134339Z.db-wal = 8.3G`
+- memory:
+  - host RAM: `7.6GiB`
+  - swap: `0B`
+  - current service memory: `5.5G`
+  - peak service memory: `7.4G`
+- overnight failures:
+  - `2026-04-30T01:03:41Z`: observed-writer terminal failure from
+    `failed to run discovery scoring covered_through cursor update: failed to open discovery scoring covered_through cursor update transaction: database is locked`
+  - `2026-04-30T04:14:12Z`: kernel OOM killed `copybot-app`, anon RSS about
+    `7.3G`
+  - `2026-04-30T06:46:58Z`: kernel OOM killed `copybot-app`, anon RSS about
+    `7.3G`
+- Current-process proof since `2026-04-30T06:47:00Z`:
+  - replay-apply retryable lock reason fired `11` times and did not kill the
+    service
+  - discovery was aborted due to recent_raw journal backlog `5` times
+  - observed-writer terminal failures: `0`
+  - OOM kills: `0`
+- Current interpretation:
+  - `cf156af` is useful on live because replay-apply lock is now non-terminal.
+  - The next blocker is runtime resource pressure around observed-writer /
+    discovery rebuild: OOM risk, saturated pending request bursts, large WAL
+    growth, and one remaining terminal SQLite lock in the
+    `covered_through` cursor update path.
+  - Do not move to selector/scoring fixes. The next coding prompt should stay
+    bounded to observed-writer resource guard / covered-through lock
+    retryability.
+
 Older historical snapshot follows.
 
 As of `2026-04-28T20:02:16Z`, Stage 3 production discovery truth remains
