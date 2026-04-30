@@ -289,6 +289,40 @@ Accepted startup-WAL guard follow-up:
   - it does not change selector/scoring thresholds, `scoring_window_days`,
     restore/gap-fill, configs/systemd, execution, or trading
 
+Production rollout result (`2026-04-30`, commit `2afde6c`):
+
+- server checkout advanced to `2afde6c`
+- `copybot-app` release build completed in `49m09s`
+- because the live process RSS was near the host memory limit and the host had
+  no swap, `solana-copy-bot.service` was stopped during the release build to
+  avoid a kernel OOM kill during compilation
+- after start:
+  - `solana-copy-bot.service = active`
+  - `MainPID = 1613459`
+  - `NRestarts = 0`
+  - memory current after the first control window: about `786M`
+  - runtime WAL after startup: `8.1K`
+  - runtime SHM after startup: `32K`
+- startup proof:
+  - `sqlite_startup_large_wal_checkpoint_truncate` emitted
+    `startup_stage_budget_ms = 900000`
+  - the stage skipped with `reason=wal_missing` because the clean service stop
+    had already allowed SQLite to checkpoint/remove the previous large WAL
+  - `sqlite_pragma_journal_mode_wal` completed in the normal 30-second budget
+  - no startup timeout or ABRT loop occurred
+- post-start runtime/raw proof:
+  - runtime observed-swap tail:
+    `2026-04-30T10:00:14.772791510+00:00 / 416634377`
+  - recent_raw journal tail:
+    `2026-04-30T10:00:14.772791510+00:00 / 416634377`
+  - recent_raw journal row_count: `61330855`
+- operational interpretation:
+  - the large-WAL startup guard is deployed
+  - this rollout did not prove the large-WAL checkpoint branch on live because
+    the WAL was gone by the time the new binary started
+  - it did prove the dedicated 15-minute startup budget is wired and the
+    previous 30-second `sqlite_pragma_journal_mode_wal` ABRT loop did not recur
+
 ## Live Update (`2026-04-28`)
 
 Current Stage 3 production-discovery truth remains fail-closed. Raw-history
