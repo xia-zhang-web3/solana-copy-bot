@@ -405,6 +405,51 @@ Manual runtime WAL maintenance (`2026-04-30T12:28Z`):
   - continued monitoring is still required because WAL growth can recur during
     live runtime
 
+Accepted runtime WAL maintenance operator:
+
+- commit `10a26b7` (`Add runtime WAL maintenance operator`)
+- touched only:
+  - `crates/app/src/bin/copybot_runtime_sqlite_wal_maintenance.rs`
+- implemented behavior:
+  - explicit operator action for SQLite-managed runtime WAL checkpoint/truncate
+  - does not start or stop systemd
+  - does not delete WAL/SHM files manually
+  - default safety gate requires `systemctl show` `ActiveState=inactive`
+    before any SQLite checkpoint is attempted
+  - `ActiveState=active` fails with:
+    `runtime_sqlite_wal_maintenance_service_active`
+  - transitional or unsafe non-inactive states such as `activating`,
+    `deactivating`, `reloading`, or `failed` fail with:
+    `runtime_sqlite_wal_maintenance_service_not_inactive`
+  - `--allow-service-active` is the explicit bypass for non-inactive service
+    states
+  - successful maintenance runs only SQLite-managed
+    `PRAGMA wal_checkpoint(TRUNCATE)`
+  - always emits `production_green=false`
+- reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot_runtime_sqlite_wal_maintenance`
+  - `cargo check -j 1 -p copybot-app --bin copybot_runtime_sqlite_wal_maintenance`
+  - `rustfmt --check --edition 2021 crates/app/src/bin/copybot_runtime_sqlite_wal_maintenance.rs`
+  - `git diff --check -- crates/app/src/bin/copybot_runtime_sqlite_wal_maintenance.rs crates/app/Cargo.toml`
+- production rollout:
+  - server checkout advanced to `10a26b7`
+  - rebuilt only `copybot_runtime_sqlite_wal_maintenance`
+  - did not restart `solana-copy-bot.service`
+- live safety proof with service active:
+  - `service_active_state = active`
+  - `service_substate = running`
+  - `maintenance_outcome = failed_service_active`
+  - `reason = runtime_sqlite_wal_maintenance_service_active`
+  - `checkpoint_attempted = false`
+  - `final_wal_pressure_level = large`
+  - `before_wal_bytes = 7911116912`
+- operational interpretation:
+  - the repeated manual WAL maintenance path is now encoded as a
+    test-covered operator
+  - it still requires an explicit maintenance window because it refuses to
+    mutate while the main service is active by default
+  - WAL pressure was still `large` at live proof time, but not yet `critical`
+
 ## Live Update (`2026-04-28`)
 
 Current Stage 3 production-discovery truth remains fail-closed. Raw-history
