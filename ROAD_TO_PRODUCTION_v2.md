@@ -78,6 +78,65 @@ Operational interpretation:
   starved, budget-limited, or still exhausted by SQLite locks
 - do not move to selector/scoring threshold changes from this evidence
 
+Follow-up accepted and deployed batch:
+
+- commit `a30a801` (`Bound aggregate gap startup replay`)
+- touched only:
+  - `crates/app/src/observed_swap_writer.rs`
+- implemented behavior:
+  - aggregate startup replay is bounded when a materialization gap already
+    exists
+  - startup sends `Ok(())` after one bounded startup replay slice and then the
+    existing bounded repair loop continues
+  - aggregate phase telemetry now records startup replay, repair-slice, page
+    fetch, apply, rug-finalize, and covered-through update stages
+  - existing SQLite lock retry/backoff and fail-closed gap semantics remain
+    intact
+- local reviewer checks passed:
+  - `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer -- --test-threads=1`
+  - `cargo check -j 1 -p copybot-app --bin copybot-app`
+  - `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`
+  - `git diff --check -- crates/app/src/observed_swap_writer.rs`
+- production rollout rebuilt only `copybot-app`
+
+Post-rollout proof:
+
+- `solana-copy-bot.service = active`
+- new `MainPID = 1623663`
+- `NRestarts = 0` after rollout restart
+- runtime and recent_raw tails remained exact-synced
+- WAL pressure remained clear:
+  - `wal_pressure_level = none`
+  - `wal_bytes = 9.3M`
+- aggregate repair telemetry is now visible on production
+- first observed startup/repair slice:
+  - `aggregate_startup_replay_start`
+  - materialization gap:
+    `2026-04-29T02:30:58.295525837Z / 416346850`
+  - repair target:
+    `2026-04-30T17:42:19.206593114Z / 416704663`
+  - page fetch returned `128` rows
+  - apply completed in about `2954ms`
+  - rug finalize and covered-through update completed
+- continued repair slices showed forward movement:
+  - `aggregate_gap_repair_slice_end`
+  - page count per slice: `8`
+  - page rows: `128`
+  - cursor progressed from `2026-04-29T02:30:58Z` to at least
+    `2026-04-29T02:34:18.709999068Z / 416347358`
+
+Operational interpretation:
+
+- aggregate materialization repair is no longer opaque or skipped; it is
+  running and making bounded forward progress
+- aggregate readiness remains fail-closed until the gap cursor is cleared and
+  `covered_through` catches up
+- the next operator action is monitoring repair-slice progress, not another
+  speculative code batch
+- if progress stalls, the next coding prompt should target the exact observed
+  phase where it stalls
+- do not move to selector/scoring threshold changes from this evidence
+
 ## Live Update (`2026-04-29`)
 
 Stage 3 production discovery truth remains fail-closed. The active live seam
