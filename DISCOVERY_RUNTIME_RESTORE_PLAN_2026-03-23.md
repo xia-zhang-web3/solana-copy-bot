@@ -2918,3 +2918,65 @@ Live validation:
   - the live hard-failure regression is closed
   - Stage 3 remains blocked until the replacement candidate completes and a
     newer latest surface is promoted
+
+## 2026-05-01 Aggregate Materialization Gap Repair Acceleration
+
+Accepted and deployed commit: `28b7940`.
+
+Scope:
+
+- `crates/app/src/observed_swap_writer.rs`
+
+Live context:
+
+- `solana-copy-bot.service` was active with `NRestarts=0`.
+- Runtime raw and `recent_raw` journal tails were fresh.
+- Aggregate readiness remained fail-closed on
+  `materialization_gap_latched`.
+- The materialization gap cursor was
+  `2026-04-29T02:30:58.295525837Z / slot 416346850`.
+- Before rollout, persisted aggregate coverage had advanced to roughly
+  `2026-04-29T16:39:26Z`.
+
+Repository change:
+
+- aggregate gap repair page cap was raised from `8` to `64`
+- restart-safe repair resume now uses persisted `covered_through` only when it
+  is strictly after the materialization gap cursor
+- reconstructed gap-row proof is allowed only after a bounded read-only exact
+  `observed_swaps` lookup confirms the gap row by timestamp, slot, and
+  signature
+- missing exact gap rows keep the gap latch fail-closed
+- latch clearing still requires the existing guarded path after reaching the
+  frozen repair target
+
+Acceptance checks:
+
+- `cargo test -j 1 -p copybot-app --bin copybot-app observed_swap_writer -- --test-threads=1`
+  passed: 87 tests
+- `cargo check -j 1 -p copybot-app --bin copybot-app` passed with existing
+  dead-code warnings
+- `rustfmt --check --edition 2021 crates/app/src/observed_swap_writer.rs`
+  passed
+- `git diff --check -- crates/app/src/observed_swap_writer.rs` passed
+
+Rollout result:
+
+- server checkout was fast-forwarded to `28b7940`
+- `copybot-app` was rebuilt in release mode
+- `solana-copy-bot.service` was restarted after build and came up active
+- post-rollout service state:
+  - `MainPID=1631954`
+  - `NRestarts=0`
+  - `ActiveState=active`
+  - `SubState=running`
+- startup telemetry proved restart-safe resume:
+  - `repair_resume_source="persisted_covered_through"`
+  - `reconstructed_gap_row_observed=true`
+  - `repair_page_limit=64`
+  - `resume_cursor_ts="2026-04-29T16:39:26.947436348+00:00"`
+- because the service restart started a new repair epoch, the repair target was
+  refrozen at the live tail visible after restart:
+  `2026-05-01T07:46:31.003351223Z`
+- Stage 3/aggregate readiness remains fail-closed until
+  `materialization_gap_latched` is honestly cleared
