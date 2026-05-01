@@ -14,7 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration as StdDuration, Instant};
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
@@ -25,6 +25,9 @@ const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
 const DISCOVERY_SCORING_PREPARE_PROGRESS_OPS: i32 = 10_000;
 const DISCOVERY_SCORING_PREPARE_RUNTIME_BUDGET_EXHAUSTED_REASON: &str =
     "discovery_scoring_prepare_runtime_budget_exhausted";
+const DISCOVERY_AGGREGATE_REPAIR_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS: &str =
+    "discovery_aggregate_repair_lock_first_budget_exhausted_without_progress";
+const DISCOVERY_SCORING_LOCK_FIRST_REPAIR_QUERY_PAGE_ROWS: usize = 512;
 
 #[derive(Debug, Clone)]
 struct OpenLotRow {
@@ -92,6 +95,8 @@ thread_local! {
         const { Cell::new(false) };
     static DISCOVERY_SCORING_FORCE_PREPARE_RUNTIME_BUDGET_EXHAUSTED: Cell<bool> =
         const { Cell::new(false) };
+    static DISCOVERY_SCORING_LOCK_FIRST_REPAIR_BUDGET_AFTER_ROWS: Cell<Option<usize>> =
+        const { Cell::new(None) };
 }
 
 #[cfg(debug_assertions)]
@@ -131,6 +136,13 @@ impl SqliteStore {
     pub fn set_discovery_scoring_prepare_runtime_budget_failpoint_for_tests(enabled: bool) {
         DISCOVERY_SCORING_FORCE_PREPARE_RUNTIME_BUDGET_EXHAUSTED
             .with(|failpoint| failpoint.set(enabled));
+    }
+
+    #[doc(hidden)]
+    pub fn set_discovery_scoring_lock_first_repair_budget_after_rows_for_tests(
+        rows: Option<usize>,
+    ) {
+        DISCOVERY_SCORING_LOCK_FIRST_REPAIR_BUDGET_AFTER_ROWS.with(|failpoint| failpoint.set(rows));
     }
 }
 
@@ -470,6 +482,27 @@ fn load_observed_swaps_after_cursor_for_repair_on_conn(
         }
     }
     Ok((swaps, reached_target))
+}
+
+#[cfg(debug_assertions)]
+fn lock_first_repair_budget_after_rows_for_tests() -> Option<usize> {
+    DISCOVERY_SCORING_LOCK_FIRST_REPAIR_BUDGET_AFTER_ROWS.with(|failpoint| failpoint.get())
+}
+
+#[cfg(not(debug_assertions))]
+fn lock_first_repair_budget_after_rows_for_tests() -> Option<usize> {
+    None
+}
+
+fn lock_first_repair_budget_reached(collected_rows: usize) -> bool {
+    lock_first_repair_budget_after_rows_for_tests().is_some_and(|limit| collected_rows >= limit)
+}
+
+fn check_lock_first_repair_deadline(deadline: Instant) -> Result<()> {
+    if Instant::now() >= deadline {
+        anyhow::bail!(DISCOVERY_AGGREGATE_REPAIR_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS);
+    }
+    Ok(())
 }
 
 fn upsert_discovery_scoring_materialization_gap_repair_target_on_conn(
@@ -2028,7 +2061,8 @@ impl SqliteStore {
         config: &DiscoveryAggregateWriteConfig,
         expected_gap_cursor: &DiscoveryRuntimeCursor,
         expected_repair_target: &DiscoveryRuntimeCursor,
-        micro_rows: usize,
+        max_rows: usize,
+        max_lock_duration: StdDuration,
     ) -> Result<(
         &'static str,
         Option<DiscoveryRuntimeCursor>,
@@ -2040,6 +2074,17 @@ impl SqliteStore {
         self.with_immediate_transaction_retry(
             "discovery scoring aggregate repair lock-first micro commit",
             |conn| {
+                let lock_started = Instant::now();
+                let lock_deadline = lock_started
+                    .checked_add(max_lock_duration)
+                    .unwrap_or(lock_started);
+                let collect_budget_ms = ((max_lock_duration.as_millis().saturating_mul(4)) / 5)
+                    .max(1)
+                    .min(u128::from(u64::MAX)) as u64;
+                let collect_deadline = lock_started
+                    .checked_add(StdDuration::from_millis(collect_budget_ms))
+                    .unwrap_or(lock_deadline);
+                check_lock_first_repair_deadline(lock_deadline)?;
                 let current = load_discovery_scoring_cursor_state_exact_on_conn(
                     conn,
                     "covered_through_ts",
@@ -2124,13 +2169,66 @@ impl SqliteStore {
                     ));
                 }
 
-                let (swaps, reached_target) = load_observed_swaps_after_cursor_for_repair_on_conn(
-                    conn,
-                    &current,
-                    &repair_target,
-                    micro_rows,
-                )?;
+                let mut swaps = Vec::with_capacity(max_rows.min(1_024));
+                let mut page_cursor = current.clone();
+                let mut reached_target = false;
+                let mut collection_budget_exhausted = false;
+                {
+                    let _query_progress_guard =
+                        DiscoveryScoringPrepareProgressGuard::install(conn, lock_deadline);
+                    while swaps.len() < max_rows && !reached_target {
+                        if lock_first_repair_budget_reached(swaps.len())
+                            || Instant::now() >= collect_deadline
+                        {
+                            collection_budget_exhausted = true;
+                            break;
+                        }
+                        let mut page_limit = max_rows
+                            .saturating_sub(swaps.len())
+                            .min(DISCOVERY_SCORING_LOCK_FIRST_REPAIR_QUERY_PAGE_ROWS);
+                        if let Some(test_budget_rows) =
+                            lock_first_repair_budget_after_rows_for_tests()
+                        {
+                            page_limit =
+                                page_limit.min(test_budget_rows.saturating_sub(swaps.len()));
+                        }
+                        if page_limit == 0 {
+                            break;
+                        }
+                        let (page, page_reached_target) =
+                            load_observed_swaps_after_cursor_for_repair_on_conn(
+                                conn,
+                                &page_cursor,
+                                &repair_target,
+                                page_limit,
+                            )?;
+                        if page.is_empty() {
+                            break;
+                        }
+                        page_cursor = DiscoveryRuntimeCursor {
+                            ts_utc: page.last().expect("non-empty repair page").ts_utc,
+                            slot: page.last().expect("non-empty repair page").slot,
+                            signature: page
+                                .last()
+                                .expect("non-empty repair page")
+                                .signature
+                                .clone(),
+                        };
+                        reached_target |= page_reached_target;
+                        swaps.extend(page);
+                    }
+                }
                 if swaps.is_empty() {
+                    if collection_budget_exhausted || Instant::now() >= collect_deadline {
+                        return Ok((
+                            "budget_exhausted_without_progress",
+                            Some(current.clone()),
+                            Some(current),
+                            0,
+                            false,
+                            gap_observed_before,
+                        ));
+                    }
                     return Ok((
                         "no_rows",
                         Some(current.clone()),
@@ -2161,9 +2259,30 @@ impl SqliteStore {
                         ) == Ordering::Equal
                     });
 
-                let prepared = prepare_discovery_scoring_swaps(conn, &swaps, config)?;
+                if Instant::now() >= lock_deadline {
+                    return Ok((
+                        "budget_exhausted_without_progress",
+                        Some(current.clone()),
+                        Some(current),
+                        0,
+                        false,
+                        gap_observed_before,
+                    ));
+                }
+                let prepared = prepare_discovery_scoring_swaps_with_diagnostics(
+                    conn,
+                    &swaps,
+                    config,
+                    &mut |_| {},
+                    Some(lock_deadline),
+                )?;
+                check_lock_first_repair_deadline(lock_deadline)?;
+                let _write_progress_guard =
+                    DiscoveryScoringPrepareProgressGuard::install(conn, lock_deadline);
                 apply_discovery_scoring_swaps_on_conn(conn, &prepared)?;
+                check_lock_first_repair_deadline(lock_deadline)?;
                 finalize_mature_rug_facts_on_conn(conn, last_cursor.ts_utc)?;
+                check_lock_first_repair_deadline(lock_deadline)?;
                 let now = Utc::now().to_rfc3339();
                 upsert_discovery_scoring_cursor_state_on_conn(
                     conn,
