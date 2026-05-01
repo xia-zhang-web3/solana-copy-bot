@@ -5,6 +5,7 @@ use super::{
     TokenMarketStats, WalletScoringBuyFactRow, WalletScoringCloseFactRow, WalletScoringDayRow,
     WalletScoringQualitySource, WalletScoringSnapshot,
 };
+use crate::market_data::OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY;
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_core_types::SwapEvent;
@@ -360,6 +361,115 @@ fn load_discovery_scoring_cursor_state_exact_on_conn(
             "discovery_scoring_state.{label} cursor is partially populated"
         )),
     }
+}
+
+fn load_discovery_scoring_materialization_gap_cursor_on_conn(
+    conn: &Connection,
+) -> Result<Option<DiscoveryRuntimeCursor>> {
+    load_discovery_scoring_cursor_state_exact_on_conn(
+        conn,
+        "materialization_gap_since_ts",
+        "materialization_gap_since_slot",
+        "materialization_gap_since_signature",
+        "materialization_gap_since",
+    )
+}
+
+fn load_discovery_scoring_materialization_gap_repair_target_on_conn(
+    conn: &Connection,
+) -> Result<Option<(DiscoveryRuntimeCursor, DiscoveryRuntimeCursor)>> {
+    let gap_cursor = load_discovery_scoring_cursor_state_exact_on_conn(
+        conn,
+        "materialization_gap_repair_gap_ts",
+        "materialization_gap_repair_gap_slot",
+        "materialization_gap_repair_gap_signature",
+        "materialization_gap_repair_gap",
+    )?;
+    let target_cursor = load_discovery_scoring_cursor_state_exact_on_conn(
+        conn,
+        "materialization_gap_repair_target_ts",
+        "materialization_gap_repair_target_slot",
+        "materialization_gap_repair_target_signature",
+        "materialization_gap_repair_target",
+    )?;
+    match (gap_cursor, target_cursor) {
+        (None, None) => Ok(None),
+        (Some(gap_cursor), Some(target_cursor)) => Ok(Some((gap_cursor, target_cursor))),
+        _ => Err(anyhow!(
+            "discovery_scoring_state.materialization_gap_repair target is partially populated"
+        )),
+    }
+}
+
+fn observed_swap_exact_cursor_exists_on_conn(
+    conn: &Connection,
+    cursor: &DiscoveryRuntimeCursor,
+) -> Result<bool> {
+    let slot = i64::try_from(cursor.slot).with_context(|| {
+        format!(
+            "observed_swaps exact cursor slot overflows i64: {}",
+            cursor.slot
+        )
+    })?;
+    let found = conn
+        .query_row(
+            "SELECT 1
+             FROM observed_swaps INDEXED BY idx_observed_swaps_ts_slot_signature
+             WHERE ts = ?1 AND slot = ?2 AND signature = ?3
+             LIMIT 1",
+            params![cursor.ts_utc.to_rfc3339(), slot, cursor.signature.as_str()],
+            |_row| Ok(()),
+        )
+        .optional()
+        .context("failed loading observed_swaps exact cursor row")?
+        .is_some();
+    Ok(found)
+}
+
+fn load_observed_swaps_after_cursor_for_repair_on_conn(
+    conn: &Connection,
+    cursor: &DiscoveryRuntimeCursor,
+    repair_target: &DiscoveryRuntimeCursor,
+    limit: usize,
+) -> Result<(Vec<SwapEvent>, bool)> {
+    if limit == 0 {
+        return Ok((Vec::new(), false));
+    }
+    let limit = (limit.min(i64::MAX as usize)) as i64;
+    let mut stmt = conn
+        .prepare(OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY)
+        .context("failed to prepare observed_swaps repair micro page query")?;
+    let mut rows = stmt
+        .query(params![
+            cursor.ts_utc.to_rfc3339(),
+            cursor.slot as i64,
+            cursor.signature.as_str(),
+            limit,
+        ])
+        .context("failed querying observed_swaps repair micro page")?;
+    let mut swaps = Vec::new();
+    let mut reached_target = false;
+    while let Some(row) = rows
+        .next()
+        .context("failed iterating observed_swaps repair micro page rows")?
+    {
+        let swap = SqliteStore::row_to_swap_event(row)?;
+        let swap_cursor = DiscoveryRuntimeCursor {
+            ts_utc: swap.ts_utc,
+            slot: swap.slot,
+            signature: swap.signature.clone(),
+        };
+        match cmp_cursor_order(&swap_cursor, repair_target) {
+            Ordering::Greater => break,
+            Ordering::Equal => {
+                reached_target = true;
+                swaps.push(swap);
+                break;
+            }
+            Ordering::Less => swaps.push(swap),
+        }
+    }
+    Ok((swaps, reached_target))
 }
 
 fn upsert_discovery_scoring_materialization_gap_repair_target_on_conn(
@@ -1909,6 +2019,168 @@ impl SqliteStore {
                     &now,
                 )?;
                 Ok("committed")
+            },
+        )
+    }
+
+    pub fn apply_discovery_scoring_repair_micro_commit_lock_first(
+        &self,
+        config: &DiscoveryAggregateWriteConfig,
+        expected_gap_cursor: &DiscoveryRuntimeCursor,
+        expected_repair_target: &DiscoveryRuntimeCursor,
+        micro_rows: usize,
+    ) -> Result<(
+        &'static str,
+        Option<DiscoveryRuntimeCursor>,
+        Option<DiscoveryRuntimeCursor>,
+        usize,
+        bool,
+        bool,
+    )> {
+        self.with_immediate_transaction_retry(
+            "discovery scoring aggregate repair lock-first micro commit",
+            |conn| {
+                let current = load_discovery_scoring_cursor_state_exact_on_conn(
+                    conn,
+                    "covered_through_ts",
+                    "covered_through_slot",
+                    "covered_through_signature",
+                    "covered_through",
+                )?;
+                let Some(current) = current else {
+                    return Ok(("covered_missing", None, None, 0, false, false));
+                };
+
+                let Some(gap_cursor) =
+                    load_discovery_scoring_materialization_gap_cursor_on_conn(conn)?
+                else {
+                    return Ok((
+                        "gap_missing",
+                        Some(current.clone()),
+                        Some(current),
+                        0,
+                        false,
+                        false,
+                    ));
+                };
+                if cmp_cursor_order(&gap_cursor, expected_gap_cursor) != Ordering::Equal {
+                    return Ok((
+                        "state_mismatch",
+                        Some(current.clone()),
+                        Some(current),
+                        0,
+                        false,
+                        false,
+                    ));
+                }
+
+                let Some((target_gap_cursor, repair_target)) =
+                    load_discovery_scoring_materialization_gap_repair_target_on_conn(conn)?
+                else {
+                    return Ok((
+                        "target_missing",
+                        Some(current.clone()),
+                        Some(current),
+                        0,
+                        false,
+                        false,
+                    ));
+                };
+                if cmp_cursor_order(&target_gap_cursor, expected_gap_cursor) != Ordering::Equal
+                    || cmp_cursor_order(&repair_target, expected_repair_target) != Ordering::Equal
+                {
+                    return Ok((
+                        "state_mismatch",
+                        Some(current.clone()),
+                        Some(current),
+                        0,
+                        false,
+                        false,
+                    ));
+                }
+
+                let exact_gap_exists =
+                    observed_swap_exact_cursor_exists_on_conn(conn, &gap_cursor)?;
+                if !exact_gap_exists {
+                    return Ok((
+                        "exact_gap_missing",
+                        Some(current.clone()),
+                        Some(current),
+                        0,
+                        false,
+                        false,
+                    ));
+                }
+
+                let gap_observed_before = cmp_cursor_order(&current, &gap_cursor) != Ordering::Less;
+                if cmp_cursor_order(&current, &repair_target) != Ordering::Less {
+                    return Ok((
+                        "already_at_target",
+                        Some(current.clone()),
+                        Some(current),
+                        0,
+                        true,
+                        gap_observed_before,
+                    ));
+                }
+
+                let (swaps, reached_target) = load_observed_swaps_after_cursor_for_repair_on_conn(
+                    conn,
+                    &current,
+                    &repair_target,
+                    micro_rows,
+                )?;
+                if swaps.is_empty() {
+                    return Ok((
+                        "no_rows",
+                        Some(current.clone()),
+                        Some(current),
+                        0,
+                        false,
+                        gap_observed_before,
+                    ));
+                }
+                let last_cursor = DiscoveryRuntimeCursor {
+                    ts_utc: swaps.last().expect("non-empty repair swaps").ts_utc,
+                    slot: swaps.last().expect("non-empty repair swaps").slot,
+                    signature: swaps
+                        .last()
+                        .expect("non-empty repair swaps")
+                        .signature
+                        .clone(),
+                };
+                let gap_observed = gap_observed_before
+                    || swaps.iter().any(|swap| {
+                        cmp_cursor_order(
+                            &DiscoveryRuntimeCursor {
+                                ts_utc: swap.ts_utc,
+                                slot: swap.slot,
+                                signature: swap.signature.clone(),
+                            },
+                            &gap_cursor,
+                        ) == Ordering::Equal
+                    });
+
+                let prepared = prepare_discovery_scoring_swaps(conn, &swaps, config)?;
+                apply_discovery_scoring_swaps_on_conn(conn, &prepared)?;
+                finalize_mature_rug_facts_on_conn(conn, last_cursor.ts_utc)?;
+                let now = Utc::now().to_rfc3339();
+                upsert_discovery_scoring_cursor_state_on_conn(
+                    conn,
+                    "covered_through_ts",
+                    "covered_through_slot",
+                    "covered_through_signature",
+                    &last_cursor,
+                    &now,
+                )?;
+                Ok((
+                    "committed",
+                    Some(current),
+                    Some(last_cursor),
+                    swaps.len(),
+                    reached_target,
+                    gap_observed,
+                ))
             },
         )
     }

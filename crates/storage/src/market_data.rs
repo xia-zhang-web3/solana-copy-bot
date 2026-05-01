@@ -55,7 +55,7 @@ const OBSERVED_SWAPS_TAIL_CURSOR_QUERY: &str = "SELECT ts, slot, signature
              FROM observed_swaps INDEXED BY idx_observed_swaps_ts_slot_signature
              ORDER BY ts DESC, slot DESC, signature DESC
              LIMIT 1";
-const OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY: &str =
+pub(crate) const OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY: &str =
     "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
                         qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
                  FROM observed_swaps INDEXED BY idx_observed_swaps_ts_slot_signature
@@ -6812,7 +6812,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn row_to_swap_event(row: &rusqlite::Row<'_>) -> Result<SwapEvent> {
+    pub(crate) fn row_to_swap_event(row: &rusqlite::Row<'_>) -> Result<SwapEvent> {
         let ts_raw: String = row.get(8).context("failed reading observed_swaps.ts")?;
         let ts_utc = DateTime::parse_from_rfc3339(&ts_raw)
             .map(|dt| dt.with_timezone(&Utc))

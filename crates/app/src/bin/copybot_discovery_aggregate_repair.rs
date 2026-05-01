@@ -13,14 +13,17 @@ use std::env;
 use std::path::PathBuf;
 use std::time::{Duration as StdDuration, Instant};
 
-const USAGE: &str = "usage: copybot_discovery_aggregate_repair --config <live config toml> --db-path <runtime sqlite db> [--max-pages <n>] [--page-size <n>] [--max-seconds <n>] [--json] [--dry-run]";
+const USAGE: &str = "usage: copybot_discovery_aggregate_repair --config <live config toml> --db-path <runtime sqlite db> [--max-pages <n>] [--page-size <n>] [--max-seconds <n>] [--lock-first-micro-commit] [--micro-rows <n>] [--busy-timeout-ms <n>] [--json] [--dry-run]";
 
 const DEFAULT_MAX_PAGES: usize = 256;
 const DEFAULT_PAGE_SIZE: usize = 512;
 const DEFAULT_MAX_SECONDS: u64 = 120;
+const DEFAULT_MICRO_ROWS: usize = 64;
+const MICRO_ROWS_HARD_MAX: usize = 512;
+const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
+const BUSY_TIMEOUT_MS_HARD_MAX: u64 = 30_000;
 const COMMIT_GROUP_MAX_PAGES: usize = 8;
 const COMMIT_GROUP_MAX_ROWS: usize = 4_096;
-const OPERATOR_BUSY_TIMEOUT: StdDuration = StdDuration::from_millis(250);
 
 const REASON_NOT_RUN: &str = "discovery_aggregate_repair_not_run";
 const REASON_DRY_RUN: &str = "discovery_aggregate_repair_dry_run";
@@ -63,6 +66,9 @@ struct Cli {
     max_pages: usize,
     page_size: usize,
     max_seconds: u64,
+    lock_first_micro_commit: bool,
+    micro_rows: usize,
+    busy_timeout_ms: u64,
     dry_run: bool,
 }
 
@@ -166,6 +172,9 @@ where
     let mut max_pages = DEFAULT_MAX_PAGES;
     let mut page_size = DEFAULT_PAGE_SIZE;
     let mut max_seconds = DEFAULT_MAX_SECONDS;
+    let mut lock_first_micro_commit = false;
+    let mut micro_rows = DEFAULT_MICRO_ROWS;
+    let mut busy_timeout_ms = DEFAULT_BUSY_TIMEOUT_MS;
     let mut json = false;
     let mut dry_run = false;
 
@@ -180,6 +189,18 @@ where
             "--max-pages" => max_pages = parse_positive_usize_arg("--max-pages", args.next())?,
             "--page-size" => page_size = parse_positive_usize_arg("--page-size", args.next())?,
             "--max-seconds" => max_seconds = parse_u64_arg("--max-seconds", args.next())?,
+            "--lock-first-micro-commit" => lock_first_micro_commit = true,
+            "--micro-rows" => {
+                micro_rows =
+                    parse_capped_usize_arg("--micro-rows", args.next(), MICRO_ROWS_HARD_MAX)?
+            }
+            "--busy-timeout-ms" => {
+                busy_timeout_ms = parse_capped_u64_arg(
+                    "--busy-timeout-ms",
+                    args.next(),
+                    BUSY_TIMEOUT_MS_HARD_MAX,
+                )?
+            }
             "--json" => json = true,
             "--dry-run" => dry_run = true,
             "--help" | "-h" => return Ok(None),
@@ -197,6 +218,9 @@ where
         max_pages,
         page_size,
         max_seconds,
+        lock_first_micro_commit,
+        micro_rows,
+        busy_timeout_ms,
         dry_run,
     }))
 }
@@ -225,6 +249,25 @@ fn parse_u64_arg(flag: &str, value: Option<String>) -> Result<u64> {
     let raw = parse_string_arg(flag, value)?;
     raw.parse::<u64>()
         .with_context(|| format!("invalid integer for {flag}: {raw}"))
+}
+
+fn parse_capped_usize_arg(flag: &str, value: Option<String>, max: usize) -> Result<usize> {
+    let parsed = parse_positive_usize_arg(flag, value)?;
+    if parsed > max {
+        bail!("{flag} must be <= {max}");
+    }
+    Ok(parsed)
+}
+
+fn parse_capped_u64_arg(flag: &str, value: Option<String>, max: u64) -> Result<u64> {
+    let parsed = parse_u64_arg(flag, value)?;
+    if parsed == 0 {
+        bail!("{flag} must be positive");
+    }
+    if parsed > max {
+        bail!("{flag} must be <= {max}");
+    }
+    Ok(parsed)
 }
 
 fn run(cli: &Cli) -> AggregateRepairReport {
@@ -262,7 +305,7 @@ fn run(cli: &Cli) -> AggregateRepairReport {
             );
         }
     };
-    if let Err(error) = store.set_busy_timeout(OPERATOR_BUSY_TIMEOUT) {
+    if let Err(error) = store.set_busy_timeout(StdDuration::from_millis(cli.busy_timeout_ms)) {
         return report.fail(
             REASON_DB_OPEN_FAILED,
             ACTION_FIX_INPUT,
@@ -344,6 +387,19 @@ fn run(cli: &Cli) -> AggregateRepairReport {
         report.reason = REASON_DRY_RUN.to_string();
         report.recommended_next_action = ACTION_DRY_RUN.to_string();
         return report.finish(started);
+    }
+
+    if cli.lock_first_micro_commit {
+        return run_lock_first_micro_commit(
+            report,
+            &store,
+            &aggregate_write_config,
+            &gap_cursor,
+            &repair_target,
+            cli,
+            started,
+            deadline,
+        );
     }
 
     let mut cursor = start_covered_through.clone();
@@ -492,6 +548,81 @@ fn run(cli: &Cli) -> AggregateRepairReport {
         report.fail(REASON_MAX_SECONDS, ACTION_RERUN, None, started)
     } else {
         report.fail(REASON_NO_PROGRESS, ACTION_FIX_INPUT, None, started)
+    }
+}
+
+fn run_lock_first_micro_commit(
+    mut report: AggregateRepairReport,
+    store: &SqliteStore,
+    aggregate_write_config: &DiscoveryAggregateWriteConfig,
+    gap_cursor: &DiscoveryRuntimeCursor,
+    repair_target: &DiscoveryRuntimeCursor,
+    cli: &Cli,
+    started: Instant,
+    deadline: Instant,
+) -> AggregateRepairReport {
+    if Instant::now() >= deadline {
+        return report.fail(REASON_MAX_SECONDS, ACTION_RERUN, None, started);
+    }
+
+    let (outcome, start_cursor, end_cursor, row_count, reached_target, gap_observed) = match store
+        .apply_discovery_scoring_repair_micro_commit_lock_first(
+            aggregate_write_config,
+            gap_cursor,
+            repair_target,
+            cli.micro_rows,
+        ) {
+        Ok(result) => result,
+        Err(error) => return classify_write_error(report, error, started),
+    };
+
+    if let Some(start_cursor) = start_cursor {
+        report.start_covered_through = Some(start_cursor);
+    }
+    if let Some(end_cursor) = end_cursor {
+        report.end_covered_through = Some(end_cursor);
+    }
+    match outcome {
+        "committed" => {
+            report.pages_processed = 1;
+            report.rows_processed = row_count;
+            report.commit_groups_processed = 1;
+            report.reached_target = reached_target;
+            if reached_target {
+                if gap_observed {
+                    clear_latch_after_target_if_proven(report, store, gap_cursor, cli, started)
+                } else {
+                    report.fail(REASON_EXACT_GAP_MISSING, ACTION_FIX_INPUT, None, started)
+                }
+            } else {
+                report.ok = true;
+                report.reason = REASON_PROGRESS.to_string();
+                report.recommended_next_action = ACTION_RERUN.to_string();
+                report.finish(started)
+            }
+        }
+        "already_at_target" => {
+            report.reached_target = true;
+            clear_latch_after_target_if_proven(report, store, gap_cursor, cli, started)
+        }
+        "gap_missing" => report.fail(REASON_NO_GAP, ACTION_READINESS, None, started),
+        "target_missing" => report.fail(REASON_NO_TARGET, ACTION_FIX_INPUT, None, started),
+        "state_mismatch" => {
+            report.fail(REASON_TARGET_GAP_MISMATCH, ACTION_FIX_INPUT, None, started)
+        }
+        "covered_missing" => {
+            report.fail(REASON_NO_COVERED_THROUGH, ACTION_FIX_INPUT, None, started)
+        }
+        "exact_gap_missing" => {
+            report.fail(REASON_EXACT_GAP_MISSING, ACTION_FIX_INPUT, None, started)
+        }
+        "no_rows" => report.fail(REASON_NO_PROGRESS, ACTION_FIX_INPUT, None, started),
+        other => report.fail(
+            REASON_UNKNOWN_ERROR,
+            ACTION_FIX_INPUT,
+            Some(format!("unexpected lock-first repair outcome: {other}")),
+            started,
+        ),
     }
 }
 
@@ -792,8 +923,18 @@ mod tests {
             max_pages: 256,
             page_size: 2,
             max_seconds: 120,
+            lock_first_micro_commit: false,
+            micro_rows: DEFAULT_MICRO_ROWS,
+            busy_timeout_ms: DEFAULT_BUSY_TIMEOUT_MS,
             dry_run: false,
         })
+    }
+
+    fn lock_first_cli(db_path: &Path, micro_rows: usize) -> Result<Cli> {
+        let mut cli = test_cli(db_path)?;
+        cli.lock_first_micro_commit = true;
+        cli.micro_rows = micro_rows;
+        Ok(cli)
     }
 
     fn repair_buy_fact_count(db_path: &Path) -> Result<i64> {
@@ -835,6 +976,21 @@ mod tests {
         let result = parse_args_from([
             "--db-path".to_string(),
             "runtime.sqlite".to_string(),
+            "--json".to_string(),
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn micro_rows_cap_is_enforced() {
+        let result = parse_args_from([
+            "--config".to_string(),
+            "live.toml".to_string(),
+            "--db-path".to_string(),
+            "runtime.sqlite".to_string(),
+            "--lock-first-micro-commit".to_string(),
+            "--micro-rows".to_string(),
+            (MICRO_ROWS_HARD_MAX + 1).to_string(),
             "--json".to_string(),
         ]);
         assert!(result.is_err());
@@ -1105,6 +1261,144 @@ mod tests {
         assert!(!report.ok);
         assert_eq!(report.reason, REASON_MAX_SECONDS);
         assert_eq!(report.rows_processed, 0);
+        assert!(!report.production_green);
+        remove_sqlite_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn lock_first_micro_commit_commits_rows_and_advances_covered_through() -> Result<()> {
+        let (db_path, gap_cursor, _target_cursor, swaps) =
+            seed_repair_fixture("copybot-aggregate-repair-lock-first-progress", 4)?;
+        let cli = lock_first_cli(&db_path, 2)?;
+
+        let report = run(&cli);
+
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.reason, REASON_PROGRESS);
+        assert_eq!(report.rows_processed, 2);
+        assert_eq!(report.commit_groups_processed, 1);
+        assert!(!report.latch_cleared);
+        assert!(!report.production_green);
+        let store = SqliteStore::open(&db_path)?;
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(cursor_for_swap(&swaps[2]))
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(gap_cursor)
+        );
+        assert_eq!(repair_buy_fact_count(&db_path)?, 2);
+        remove_sqlite_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn lock_first_mode_does_not_duplicate_rows_when_current_cursor_changed_before_lock(
+    ) -> Result<()> {
+        let (db_path, _gap_cursor, _target_cursor, swaps) =
+            seed_repair_fixture("copybot-aggregate-repair-lock-first-current-changed", 4)?;
+        let store = SqliteStore::open(&db_path)?;
+        let config = aggregate_config_for_tests();
+        store.apply_discovery_scoring_batch(&[swaps[1].clone(), swaps[2].clone()], &config)?;
+        store.set_discovery_scoring_covered_through_cursor(&cursor_for_swap(&swaps[2]))?;
+        assert_eq!(repair_buy_fact_count(&db_path)?, 2);
+        assert_eq!(wallet_day_trades(&db_path)?, 3);
+        let cli = lock_first_cli(&db_path, 4)?;
+
+        let report = run(&cli);
+
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.reason, REASON_COMPLETED);
+        assert_eq!(repair_buy_fact_count(&db_path)?, 4);
+        assert_eq!(wallet_day_trades(&db_path)?, 5);
+        let store = SqliteStore::open(&db_path)?;
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(cursor_for_swap(&swaps[4]))
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            None
+        );
+        remove_sqlite_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn lock_first_busy_locked_returns_retryable_with_no_writes() -> Result<()> {
+        let (db_path, _gap_cursor, _target_cursor, swaps) =
+            seed_repair_fixture("copybot-aggregate-repair-lock-first-busy", 4)?;
+        let covered = cursor_for_swap(&swaps[0]);
+        let blocker = Connection::open(&db_path)?;
+        blocker.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
+        let mut cli = lock_first_cli(&db_path, 2)?;
+        cli.busy_timeout_ms = 1;
+
+        let report = run(&cli);
+
+        blocker.execute_batch("ROLLBACK")?;
+        assert!(!report.ok, "{report:?}");
+        assert_eq!(report.reason, REASON_SQLITE_LOCK_RETRYABLE);
+        let store = SqliteStore::open(&db_path)?;
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(covered)
+        );
+        assert_eq!(repair_buy_fact_count(&db_path)?, 0);
+        remove_sqlite_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn lock_first_target_reached_clears_latch_only_via_guarded_exact_gap_proof() -> Result<()> {
+        let (db_path, _gap_cursor, target_cursor, _swaps) =
+            seed_repair_fixture("copybot-aggregate-repair-lock-first-complete", 4)?;
+        let cli = lock_first_cli(&db_path, 4)?;
+
+        let report = run(&cli);
+
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.reason, REASON_COMPLETED);
+        assert!(report.reached_target);
+        assert!(report.latch_cleared);
+        let store = SqliteStore::open(&db_path)?;
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(target_cursor)
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            None
+        );
+        assert!(!report.production_green);
+        remove_sqlite_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn lock_first_dry_run_writes_nothing() -> Result<()> {
+        let (db_path, gap_cursor, _target_cursor, swaps) =
+            seed_repair_fixture("copybot-aggregate-repair-lock-first-dry-run", 4)?;
+        let covered = cursor_for_swap(&swaps[0]);
+        let mut cli = lock_first_cli(&db_path, 4)?;
+        cli.dry_run = true;
+
+        let report = run(&cli);
+
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.reason, REASON_DRY_RUN);
+        let store = SqliteStore::open(&db_path)?;
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(covered)
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(gap_cursor)
+        );
+        assert_eq!(repair_buy_fact_count(&db_path)?, 0);
         assert!(!report.production_green);
         remove_sqlite_files(&db_path);
         Ok(())
