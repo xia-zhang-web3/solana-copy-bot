@@ -3755,6 +3755,32 @@ impl SqliteStore {
             .rows_seen)
     }
 
+    pub fn observed_swap_exact_cursor_exists(
+        &self,
+        cursor: &DiscoveryRuntimeCursor,
+    ) -> Result<bool> {
+        let slot = i64::try_from(cursor.slot).with_context(|| {
+            format!(
+                "observed_swaps exact cursor slot overflows i64: {}",
+                cursor.slot
+            )
+        })?;
+        let found = self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM observed_swaps INDEXED BY idx_observed_swaps_ts_slot_signature
+                 WHERE ts = ?1 AND slot = ?2 AND signature = ?3
+                 LIMIT 1",
+                params![cursor.ts_utc.to_rfc3339(), slot, cursor.signature.as_str()],
+                |_row| Ok(()),
+            )
+            .optional()
+            .context("failed loading observed_swaps exact cursor row")?
+            .is_some();
+        Ok(found)
+    }
+
     pub fn for_each_observed_swap_after_cursor_with_budget<F>(
         &self,
         cursor_ts: DateTime<Utc>,

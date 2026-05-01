@@ -318,6 +318,50 @@ fn clear_discovery_scoring_materialization_gap_repair_target_on_conn(
     Ok(())
 }
 
+fn load_discovery_scoring_state_value_on_conn(
+    conn: &Connection,
+    state_key: &str,
+) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT state_value
+         FROM discovery_scoring_state
+         WHERE state_key = ?1",
+        params![state_key],
+        |row| row.get(0),
+    )
+    .optional()
+    .with_context(|| format!("failed querying discovery_scoring_state.{state_key}"))
+}
+
+fn load_discovery_scoring_cursor_state_exact_on_conn(
+    conn: &Connection,
+    ts_key: &str,
+    slot_key: &str,
+    signature_key: &str,
+    label: &str,
+) -> Result<Option<DiscoveryRuntimeCursor>> {
+    let ts_raw = load_discovery_scoring_state_value_on_conn(conn, ts_key)?;
+    let slot_raw = load_discovery_scoring_state_value_on_conn(conn, slot_key)?;
+    let signature = load_discovery_scoring_state_value_on_conn(conn, signature_key)?;
+    match (ts_raw, slot_raw, signature) {
+        (None, None, None) => Ok(None),
+        (Some(ts_raw), Some(slot_raw), Some(signature)) => {
+            let ts_utc = parse_ts(&ts_raw, &format!("discovery_scoring_state.{ts_key}"))?;
+            let slot = slot_raw.parse::<u64>().with_context(|| {
+                format!("invalid discovery_scoring_state.{slot_key} value: {slot_raw}")
+            })?;
+            Ok(Some(DiscoveryRuntimeCursor {
+                ts_utc,
+                slot,
+                signature,
+            }))
+        }
+        _ => Err(anyhow!(
+            "discovery_scoring_state.{label} cursor is partially populated"
+        )),
+    }
+}
+
 fn upsert_discovery_scoring_materialization_gap_repair_target_on_conn(
     conn: &Connection,
     gap_cursor: &DiscoveryRuntimeCursor,
@@ -1813,6 +1857,60 @@ impl SqliteStore {
         self.with_immediate_transaction_retry("discovery scoring batch", |conn| {
             apply_discovery_scoring_swaps_on_conn(conn, &prepared)
         })
+    }
+
+    pub fn apply_discovery_scoring_repair_commit_group(
+        &self,
+        swaps: &[SwapEvent],
+        config: &DiscoveryAggregateWriteConfig,
+        expected_start_cursor: &DiscoveryRuntimeCursor,
+        covered_through_cursor: &DiscoveryRuntimeCursor,
+    ) -> Result<&'static str> {
+        let prepared = prepare_discovery_scoring_swaps(&self.conn, swaps, config)?;
+        self.with_immediate_transaction_retry(
+            "discovery scoring aggregate repair commit group",
+            |conn| {
+                let current = load_discovery_scoring_cursor_state_exact_on_conn(
+                    conn,
+                    "covered_through_ts",
+                    "covered_through_slot",
+                    "covered_through_signature",
+                    "covered_through",
+                )?;
+                let Some(current) = current else {
+                    anyhow::bail!(
+                        "discovery scoring covered_through cursor missing before repair commit group"
+                    );
+                };
+                match cmp_cursor_order(&current, expected_start_cursor) {
+                    Ordering::Equal => {}
+                    Ordering::Greater => {
+                        if cmp_cursor_order(&current, covered_through_cursor) != Ordering::Less {
+                            return Ok("already_covered");
+                        }
+                        return Ok("concurrent_progress");
+                    }
+                    Ordering::Less => {
+                        anyhow::bail!(
+                            "discovery scoring covered_through cursor is before expected repair start cursor"
+                        );
+                    }
+                }
+
+                apply_discovery_scoring_swaps_on_conn(conn, &prepared)?;
+                finalize_mature_rug_facts_on_conn(conn, covered_through_cursor.ts_utc)?;
+                let now = Utc::now().to_rfc3339();
+                upsert_discovery_scoring_cursor_state_on_conn(
+                    conn,
+                    "covered_through_ts",
+                    "covered_through_slot",
+                    "covered_through_signature",
+                    covered_through_cursor,
+                    &now,
+                )?;
+                Ok("committed")
+            },
+        )
     }
 
     pub fn apply_discovery_scoring_batch_with_timings(

@@ -2548,6 +2548,13 @@ impl SqliteStore {
         Ok(Self { conn })
     }
 
+    pub fn set_busy_timeout(&self, timeout: StdDuration) -> Result<()> {
+        self.conn
+            .busy_timeout(timeout)
+            .context("failed to set sqlite busy_timeout")?;
+        Ok(())
+    }
+
     #[doc(hidden)]
     pub fn set_sqlite_length_limit_for_test(&self, new_val: i32) -> i32 {
         unsafe {
