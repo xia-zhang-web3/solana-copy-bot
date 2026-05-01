@@ -25,7 +25,7 @@ pub(crate) const OBSERVED_SWAP_DISCOVERY_AGGREGATE_WRITE_COALESCE_MAX_BATCHES: u
 pub(crate) const OBSERVED_SWAP_DISCOVERY_AGGREGATE_OVERFLOW_CAPACITY_MULTIPLIER: usize = 4;
 const OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_POLL_INTERVAL: StdDuration =
     StdDuration::from_millis(25);
-const OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_MAX_PAGES: usize = 8;
+const OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_MAX_PAGES: usize = 64;
 pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_COALESCE_MAX_BATCHES: usize = 32;
 pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_CAPACITY_MULTIPLIER: usize = 4;
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_MULTIPLIER: usize = 8;
@@ -66,6 +66,9 @@ const DISCOVERY_AGGREGATE_PHASE_COVERED_THROUGH_UPDATE_START: &str = "covered_th
 const DISCOVERY_AGGREGATE_PHASE_COVERED_THROUGH_UPDATE_END: &str = "covered_through_update_end";
 const DISCOVERY_AGGREGATE_REASON_AGGREGATE_WRITES_DISABLED: &str = "aggregate_writes_disabled";
 const DISCOVERY_AGGREGATE_REASON_MATERIALIZATION_GAP_LATCHED: &str = "materialization_gap_latched";
+const DISCOVERY_AGGREGATE_REPAIR_RESUME_SOURCE_GAP_CURSOR: &str = "gap_cursor";
+const DISCOVERY_AGGREGATE_REPAIR_RESUME_SOURCE_PERSISTED_COVERED_THROUGH: &str =
+    "persisted_covered_through";
 const RECENT_RAW_JOURNAL_PHASE_BATCH_COLLECTED: &str = "batch_collected";
 const RECENT_RAW_JOURNAL_PHASE_WRITE_START: &str = "write_start";
 const RECENT_RAW_JOURNAL_PHASE_WRITE_END: &str = "write_end";
@@ -2498,8 +2501,12 @@ fn log_discovery_aggregate_phase(
     current_phase: &'static str,
     reason: Option<&'static str>,
     current_gap_cursor: Option<&DiscoveryRuntimeCursor>,
+    persisted_covered_through_cursor: Option<&DiscoveryRuntimeCursor>,
     repair_target_cursor: Option<&DiscoveryRuntimeCursor>,
     resume_cursor: Option<&DiscoveryRuntimeCursor>,
+    repair_resume_source: Option<&'static str>,
+    reconstructed_gap_row_observed: bool,
+    repair_page_limit: Option<usize>,
     page_rows: Option<usize>,
     page_count: usize,
     last_replay_cursor: Option<&DiscoveryRuntimeCursor>,
@@ -2518,12 +2525,20 @@ fn log_discovery_aggregate_phase(
         materialization_gap_ts = current_gap_cursor.map(|cursor| cursor.ts_utc.to_rfc3339()),
         materialization_gap_slot = current_gap_cursor.map(|cursor| cursor.slot),
         materialization_gap_signature = current_gap_cursor.map(|cursor| cursor.signature.as_str()),
+        persisted_covered_through_ts =
+            persisted_covered_through_cursor.map(|cursor| cursor.ts_utc.to_rfc3339()),
+        persisted_covered_through_slot = persisted_covered_through_cursor.map(|cursor| cursor.slot),
+        persisted_covered_through_signature =
+            persisted_covered_through_cursor.map(|cursor| cursor.signature.as_str()),
         repair_target_ts = repair_target_cursor.map(|cursor| cursor.ts_utc.to_rfc3339()),
         repair_target_slot = repair_target_cursor.map(|cursor| cursor.slot),
         repair_target_signature = repair_target_cursor.map(|cursor| cursor.signature.as_str()),
         resume_cursor_ts = resume_cursor.map(|cursor| cursor.ts_utc.to_rfc3339()),
         resume_cursor_slot = resume_cursor.map(|cursor| cursor.slot),
         resume_cursor_signature = resume_cursor.map(|cursor| cursor.signature.as_str()),
+        repair_resume_source,
+        reconstructed_gap_row_observed,
+        repair_page_limit,
         page_rows,
         page_count,
         last_replay_cursor_ts = last_replay_cursor.map(|cursor| cursor.ts_utc.to_rfc3339()),
@@ -3160,6 +3175,9 @@ struct DiscoveryAggregateGapRepairEpoch {
     repair_target_cursor: Option<DiscoveryRuntimeCursor>,
     gap_cursor_observed: bool,
     resume_after_cursor: Option<DiscoveryRuntimeCursor>,
+    repair_resume_source: Option<&'static str>,
+    reconstructed_gap_row_observed: bool,
+    persisted_covered_through_cursor: Option<DiscoveryRuntimeCursor>,
 }
 
 impl DiscoveryAggregateGapRepairEpoch {
@@ -3168,17 +3186,24 @@ impl DiscoveryAggregateGapRepairEpoch {
         self.repair_target_cursor = None;
         self.gap_cursor_observed = false;
         self.resume_after_cursor = None;
+        self.repair_resume_source = None;
+        self.reconstructed_gap_row_observed = false;
+        self.persisted_covered_through_cursor = None;
     }
 
     fn reset_for_gap(
         &mut self,
         gap_cursor: DiscoveryRuntimeCursor,
         repair_target_cursor: Option<DiscoveryRuntimeCursor>,
+        resume_decision: DiscoveryAggregateRepairResumeDecision,
     ) {
         self.gap_cursor = Some(gap_cursor);
         self.repair_target_cursor = repair_target_cursor;
-        self.gap_cursor_observed = false;
-        self.resume_after_cursor = None;
+        self.gap_cursor_observed = resume_decision.gap_cursor_observed;
+        self.resume_after_cursor = resume_decision.resume_after_cursor;
+        self.repair_resume_source = Some(resume_decision.repair_resume_source);
+        self.reconstructed_gap_row_observed = resume_decision.reconstructed_gap_row_observed;
+        self.persisted_covered_through_cursor = resume_decision.persisted_covered_through_cursor;
     }
 
     fn matches_gap(&self, gap_cursor: &DiscoveryRuntimeCursor) -> bool {
@@ -3186,6 +3211,92 @@ impl DiscoveryAggregateGapRepairEpoch {
             compare_discovery_runtime_cursors(current, gap_cursor) == std::cmp::Ordering::Equal
         })
     }
+}
+
+struct DiscoveryAggregateRepairResumeDecision {
+    resume_after_cursor: Option<DiscoveryRuntimeCursor>,
+    gap_cursor_observed: bool,
+    repair_resume_source: &'static str,
+    reconstructed_gap_row_observed: bool,
+    persisted_covered_through_cursor: Option<DiscoveryRuntimeCursor>,
+}
+
+fn discovery_aggregate_repair_resume_decision(
+    sqlite_path: &str,
+    store: &SqliteStore,
+    gap_cursor: Option<&DiscoveryRuntimeCursor>,
+) -> Result<DiscoveryAggregateRepairResumeDecision> {
+    let persisted_covered_through_cursor = store.load_discovery_scoring_covered_through_cursor()?;
+    if let (Some(gap_cursor), Some(covered_through_cursor)) =
+        (gap_cursor, persisted_covered_through_cursor.as_ref())
+    {
+        if compare_discovery_runtime_cursors(covered_through_cursor, gap_cursor)
+            == std::cmp::Ordering::Greater
+        {
+            if observed_swap_exact_cursor_exists(sqlite_path, gap_cursor)? {
+                return Ok(DiscoveryAggregateRepairResumeDecision {
+                    resume_after_cursor: Some(covered_through_cursor.clone()),
+                    gap_cursor_observed: true,
+                    repair_resume_source:
+                        DISCOVERY_AGGREGATE_REPAIR_RESUME_SOURCE_PERSISTED_COVERED_THROUGH,
+                    reconstructed_gap_row_observed: true,
+                    persisted_covered_through_cursor,
+                });
+            }
+            warn!(
+                materialization_gap_ts = %gap_cursor.ts_utc,
+                materialization_gap_slot = gap_cursor.slot,
+                materialization_gap_signature = %gap_cursor.signature,
+                persisted_covered_through_ts = %covered_through_cursor.ts_utc,
+                persisted_covered_through_slot = covered_through_cursor.slot,
+                persisted_covered_through_signature = %covered_through_cursor.signature,
+                "discovery aggregate repair found persisted coverage after materialization gap but exact gap row is absent; not reconstructing gap proof",
+            );
+        }
+    }
+
+    Ok(DiscoveryAggregateRepairResumeDecision {
+        resume_after_cursor: None,
+        gap_cursor_observed: false,
+        repair_resume_source: DISCOVERY_AGGREGATE_REPAIR_RESUME_SOURCE_GAP_CURSOR,
+        reconstructed_gap_row_observed: false,
+        persisted_covered_through_cursor,
+    })
+}
+
+fn observed_swap_exact_cursor_exists(
+    sqlite_path: &str,
+    cursor: &DiscoveryRuntimeCursor,
+) -> Result<bool> {
+    let conn = Connection::open_with_flags(sqlite_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| {
+            format!(
+                "failed to open sqlite db read-only for observed_swaps exact cursor: {sqlite_path}"
+            )
+        })?;
+    conn.busy_timeout(StdDuration::from_millis(250))
+        .context("failed setting observed_swaps exact cursor read-only busy timeout")?;
+    conn.pragma_update(None, "query_only", true)
+        .context("failed enabling observed_swaps exact cursor read-only query_only mode")?;
+    let slot = i64::try_from(cursor.slot).with_context(|| {
+        format!(
+            "observed_swaps exact cursor slot overflows i64: {}",
+            cursor.slot
+        )
+    })?;
+    let found = conn
+        .query_row(
+            "SELECT 1
+             FROM observed_swaps INDEXED BY idx_observed_swaps_ts_slot_signature
+             WHERE ts = ?1 AND slot = ?2 AND signature = ?3
+             LIMIT 1",
+            rusqlite::params![cursor.ts_utc.to_rfc3339(), slot, cursor.signature.as_str()],
+            |_| Ok(()),
+        )
+        .optional()
+        .context("failed loading observed_swaps exact materialization gap row")?
+        .is_some();
+    Ok(found)
 }
 
 fn run_discovery_aggregate_gap_repair_slice(
@@ -3213,16 +3324,40 @@ fn run_discovery_aggregate_gap_repair_slice(
     if let Some(current_gap_cursor) = current_gap_cursor.as_ref() {
         if !repair_epoch.matches_gap(current_gap_cursor) {
             let repair_target_cursor = load_observed_swaps_tail_cursor(sqlite_path)?;
-            debug!(
+            let resume_decision = discovery_aggregate_repair_resume_decision(
+                sqlite_path,
+                store,
+                Some(current_gap_cursor),
+            )?;
+            info!(
                 materialization_gap_ts = %current_gap_cursor.ts_utc,
                 materialization_gap_slot = current_gap_cursor.slot,
                 materialization_gap_signature = %current_gap_cursor.signature,
+                persisted_covered_through_ts = resume_decision
+                    .persisted_covered_through_cursor
+                    .as_ref()
+                    .map(|cursor| cursor.ts_utc.to_rfc3339()),
+                persisted_covered_through_slot = resume_decision
+                    .persisted_covered_through_cursor
+                    .as_ref()
+                    .map(|cursor| cursor.slot),
+                persisted_covered_through_signature = resume_decision
+                    .persisted_covered_through_cursor
+                    .as_ref()
+                    .map(|cursor| cursor.signature.as_str()),
+                repair_resume_source = resume_decision.repair_resume_source,
+                reconstructed_gap_row_observed = resume_decision.reconstructed_gap_row_observed,
+                repair_page_limit = config.aggregate_idle_replay_max_pages,
                 repair_target_ts = repair_target_cursor.as_ref().map(|cursor| cursor.ts_utc.to_rfc3339()),
                 repair_target_slot = repair_target_cursor.as_ref().map(|cursor| cursor.slot),
                 repair_target_signature = repair_target_cursor.as_ref().map(|cursor| cursor.signature.as_str()),
                 "discovery aggregate materialization gap repair epoch started"
             );
-            repair_epoch.reset_for_gap(current_gap_cursor.clone(), repair_target_cursor);
+            repair_epoch.reset_for_gap(
+                current_gap_cursor.clone(),
+                repair_target_cursor,
+                resume_decision,
+            );
         }
     }
 
@@ -3234,8 +3369,12 @@ fn run_discovery_aggregate_gap_repair_slice(
         DISCOVERY_AGGREGATE_PHASE_GAP_REPAIR_SLICE_START,
         Some(DISCOVERY_AGGREGATE_REASON_MATERIALIZATION_GAP_LATCHED),
         current_gap_cursor.as_ref(),
+        repair_epoch.persisted_covered_through_cursor.as_ref(),
         repair_target_cursor,
         resume_after_cursor,
+        repair_epoch.repair_resume_source,
+        repair_epoch.reconstructed_gap_row_observed,
+        Some(config.aggregate_idle_replay_max_pages),
         None,
         0,
         None,
@@ -3264,8 +3403,12 @@ fn run_discovery_aggregate_gap_repair_slice(
         DISCOVERY_AGGREGATE_PHASE_GAP_REPAIR_SLICE_END,
         Some(DISCOVERY_AGGREGATE_REASON_MATERIALIZATION_GAP_LATCHED),
         current_gap_cursor.as_ref(),
+        repair_epoch.persisted_covered_through_cursor.as_ref(),
         repair_target_cursor,
         resume_after_cursor,
+        repair_epoch.repair_resume_source,
+        repair_epoch.reconstructed_gap_row_observed,
+        Some(config.aggregate_idle_replay_max_pages),
         Some(replay_progress.last_page_rows),
         replay_progress.page_count,
         replay_progress.last_replay_cursor.as_ref(),
@@ -3390,6 +3533,10 @@ fn run_aggregate_startup_replay(
             None,
             None,
             None,
+            None,
+            false,
+            None,
+            None,
             0,
             None,
             false,
@@ -3401,6 +3548,11 @@ fn run_aggregate_startup_replay(
     }
 
     let current_gap_cursor = store.load_discovery_scoring_materialization_gap_cursor()?;
+    let resume_decision = discovery_aggregate_repair_resume_decision(
+        sqlite_path,
+        store,
+        current_gap_cursor.as_ref(),
+    )?;
     let repair_target_cursor = if current_gap_cursor.is_some() {
         load_observed_swaps_tail_cursor(sqlite_path)?
     } else {
@@ -3412,8 +3564,16 @@ fn run_aggregate_startup_replay(
             .as_ref()
             .map(|_| DISCOVERY_AGGREGATE_REASON_MATERIALIZATION_GAP_LATCHED),
         current_gap_cursor.as_ref(),
+        resume_decision.persisted_covered_through_cursor.as_ref(),
         repair_target_cursor.as_ref(),
-        None,
+        resume_decision.resume_after_cursor.as_ref(),
+        current_gap_cursor
+            .as_ref()
+            .map(|_| resume_decision.repair_resume_source),
+        resume_decision.reconstructed_gap_row_observed,
+        current_gap_cursor
+            .as_ref()
+            .map(|_| config.aggregate_idle_replay_max_pages.max(1)),
         None,
         0,
         None,
@@ -3430,8 +3590,8 @@ fn run_aggregate_startup_replay(
         store,
         config,
         max_pages,
-        None,
-        false,
+        resume_decision.resume_after_cursor.as_ref(),
+        resume_decision.gap_cursor_observed,
         repair_target_cursor.as_ref(),
     )?;
     let remaining_gap_cursor = store.load_discovery_scoring_materialization_gap_cursor()?;
@@ -3442,8 +3602,16 @@ fn run_aggregate_startup_replay(
             .as_ref()
             .map(|_| DISCOVERY_AGGREGATE_REASON_MATERIALIZATION_GAP_LATCHED),
         current_gap_cursor.as_ref(),
+        resume_decision.persisted_covered_through_cursor.as_ref(),
         repair_target_cursor.as_ref(),
-        None,
+        resume_decision.resume_after_cursor.as_ref(),
+        current_gap_cursor
+            .as_ref()
+            .map(|_| resume_decision.repair_resume_source),
+        resume_decision.reconstructed_gap_row_observed,
+        current_gap_cursor
+            .as_ref()
+            .map(|_| config.aggregate_idle_replay_max_pages.max(1)),
         Some(progress.last_page_rows),
         progress.page_count,
         progress.last_replay_cursor.as_ref(),
@@ -3519,8 +3687,12 @@ fn run_aggregate_gap_replay_with_resume(
             DISCOVERY_AGGREGATE_PHASE_PAGE_FETCH_START,
             None,
             gap_cursor.as_ref(),
+            None,
             repair_target_cursor,
             Some(&cursor),
+            None,
+            gap_cursor_observed_before,
+            max_pages,
             None,
             progress.page_count,
             progress.last_replay_cursor.as_ref(),
@@ -3568,8 +3740,12 @@ fn run_aggregate_gap_replay_with_resume(
             DISCOVERY_AGGREGATE_PHASE_PAGE_FETCH_END,
             None,
             gap_cursor.as_ref(),
+            None,
             repair_target_cursor,
             Some(&cursor),
+            None,
+            gap_cursor_observed_before,
+            max_pages,
             Some(page.len()),
             progress.page_count,
             progress.last_replay_cursor.as_ref(),
@@ -3582,14 +3758,42 @@ fn run_aggregate_gap_replay_with_resume(
             progress.caught_up_to_tail = !saw_row_after_repair_target;
             break;
         }
+        if let Some(gap_cursor) = gap_cursor.as_ref() {
+            if !gap_cursor_observed
+                && page.iter().any(|swap| {
+                    compare_discovery_runtime_cursors(
+                        &DiscoveryRuntimeCursor {
+                            ts_utc: swap.ts_utc,
+                            slot: swap.slot,
+                            signature: swap.signature.clone(),
+                        },
+                        gap_cursor,
+                    ) == std::cmp::Ordering::Greater
+                })
+            {
+                warn!(
+                    materialization_gap_ts = %gap_cursor.ts_utc,
+                    materialization_gap_slot = gap_cursor.slot,
+                    materialization_gap_signature = %gap_cursor.signature,
+                    page_rows = page.len(),
+                    "discovery scoring aggregate replay reached rows after an unobserved materialization gap; leaving coverage and gap latch unchanged",
+                );
+                progress.gap_cursor_observed = false;
+                break;
+            }
+        }
 
         let apply_started = Instant::now();
         log_discovery_aggregate_phase(
             DISCOVERY_AGGREGATE_PHASE_APPLY_START,
             None,
             gap_cursor.as_ref(),
+            None,
             repair_target_cursor,
             Some(&cursor),
+            None,
+            gap_cursor_observed_before,
+            max_pages,
             Some(page.len()),
             progress.page_count,
             progress.last_replay_cursor.as_ref(),
@@ -3613,8 +3817,12 @@ fn run_aggregate_gap_replay_with_resume(
                     )
             }),
             gap_cursor.as_ref(),
+            None,
             repair_target_cursor,
             Some(&cursor),
+            None,
+            gap_cursor_observed_before,
+            max_pages,
             Some(page.len()),
             progress.page_count,
             progress.last_replay_cursor.as_ref(),
@@ -3692,8 +3900,12 @@ fn run_aggregate_gap_replay_with_resume(
             DISCOVERY_AGGREGATE_PHASE_RUG_FINALIZE_START,
             None,
             gap_cursor.as_ref(),
+            None,
             repair_target_cursor,
             Some(&cursor),
+            None,
+            gap_cursor_observed_before,
+            max_pages,
             Some(page.len()),
             progress.page_count,
             progress.last_replay_cursor.as_ref(),
@@ -3717,8 +3929,12 @@ fn run_aggregate_gap_replay_with_resume(
                     )
             }),
             gap_cursor.as_ref(),
+            None,
             repair_target_cursor,
             Some(&cursor),
+            None,
+            gap_cursor_observed_before,
+            max_pages,
             Some(page.len()),
             progress.page_count,
             progress.last_replay_cursor.as_ref(),
@@ -3776,8 +3992,12 @@ fn run_aggregate_gap_replay_with_resume(
             DISCOVERY_AGGREGATE_PHASE_COVERED_THROUGH_UPDATE_START,
             None,
             gap_cursor.as_ref(),
+            None,
             repair_target_cursor,
             Some(&cursor),
+            None,
+            gap_cursor_observed_before,
+            max_pages,
             Some(page.len()),
             progress.page_count,
             progress.last_replay_cursor.as_ref(),
@@ -3807,8 +4027,12 @@ fn run_aggregate_gap_replay_with_resume(
                     )
                 }),
             gap_cursor.as_ref(),
+            None,
             repair_target_cursor,
             Some(&cursor),
+            None,
+            gap_cursor_observed_before,
+            max_pages,
             Some(page.len()),
             progress.page_count,
             progress.last_replay_cursor.as_ref(),
@@ -5594,8 +5818,8 @@ mod tests {
             "gap replay must not claim observation when the exact latched row is absent"
         );
         assert!(
-            progress.caught_up_to_tail,
-            "replay can catch tail while still keeping missing exact-gap evidence latched"
+            !progress.caught_up_to_tail,
+            "replay must stop before claiming tail catch-up when the exact latched gap row is missing"
         );
         assert_eq!(
             store.load_discovery_scoring_materialization_gap_cursor()?,
@@ -5677,6 +5901,11 @@ mod tests {
             "copybot-app-observed-swap-gap-frozen-target-tail-moves",
         )?;
         let store = SqliteStore::open(Path::new(&db_path))?;
+        let covered_swap = aggregate_gap_replay_test_swap(
+            "sig-gap-frozen-target-covered",
+            824,
+            "2026-04-28T13:11:55Z",
+        );
         let gap_swap = aggregate_gap_replay_test_swap(
             "sig-gap-frozen-target-exact",
             825,
@@ -5687,7 +5916,12 @@ mod tests {
             826,
             "2026-04-28T13:12:05Z",
         );
-        store.insert_observed_swaps_batch(&[gap_swap.clone(), target_swap.clone()])?;
+        store.insert_observed_swaps_batch(&[
+            covered_swap.clone(),
+            gap_swap.clone(),
+            target_swap.clone(),
+        ])?;
+        store.apply_discovery_scoring_batch(&[covered_swap.clone()], &aggregate_write_config())?;
         let gap_cursor = DiscoveryRuntimeCursor {
             ts_utc: gap_swap.ts_utc,
             slot: gap_swap.slot,
@@ -5698,7 +5932,9 @@ mod tests {
             slot: target_swap.slot,
             signature: target_swap.signature.clone(),
         };
-        store.set_discovery_scoring_covered_through_cursor(&target_cursor)?;
+        store.set_discovery_scoring_covered_through_cursor(&discovery_runtime_cursor_for_swap(
+            &covered_swap,
+        ))?;
         store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
         let config = ObservedSwapWriterConfig::for_test_with_aggregate_tuning(
             16,
@@ -5778,8 +6014,8 @@ mod tests {
             "copybot-app-observed-swap-gap-repair-epoch-reset",
         )?;
         let store = SqliteStore::open(Path::new(&db_path))?;
-        let earlier_gap_swap = aggregate_gap_replay_test_swap(
-            "sig-gap-epoch-reset-earlier",
+        let covered_swap = aggregate_gap_replay_test_swap(
+            "sig-gap-epoch-reset-covered",
             824,
             "2026-04-28T13:11:55Z",
         );
@@ -5788,32 +6024,36 @@ mod tests {
             825,
             "2026-04-28T13:12:00Z",
         );
-        let target_swap = aggregate_gap_replay_test_swap(
-            "sig-gap-epoch-reset-target",
+        let second_gap_swap = aggregate_gap_replay_test_swap(
+            "sig-gap-epoch-reset-second",
             826,
             "2026-04-28T13:12:05Z",
         );
+        let target_swap = aggregate_gap_replay_test_swap(
+            "sig-gap-epoch-reset-target",
+            827,
+            "2026-04-28T13:12:10Z",
+        );
         store.insert_observed_swaps_batch(&[
-            earlier_gap_swap.clone(),
+            covered_swap.clone(),
             first_gap_swap.clone(),
+            second_gap_swap.clone(),
             target_swap.clone(),
         ])?;
-        let earlier_gap_cursor = DiscoveryRuntimeCursor {
-            ts_utc: earlier_gap_swap.ts_utc,
-            slot: earlier_gap_swap.slot,
-            signature: earlier_gap_swap.signature.clone(),
+        store.apply_discovery_scoring_batch(&[covered_swap.clone()], &aggregate_write_config())?;
+        let second_gap_cursor = DiscoveryRuntimeCursor {
+            ts_utc: second_gap_swap.ts_utc,
+            slot: second_gap_swap.slot,
+            signature: second_gap_swap.signature.clone(),
         };
         let first_gap_cursor = DiscoveryRuntimeCursor {
             ts_utc: first_gap_swap.ts_utc,
             slot: first_gap_swap.slot,
             signature: first_gap_swap.signature.clone(),
         };
-        let target_cursor = DiscoveryRuntimeCursor {
-            ts_utc: target_swap.ts_utc,
-            slot: target_swap.slot,
-            signature: target_swap.signature.clone(),
-        };
-        store.set_discovery_scoring_covered_through_cursor(&target_cursor)?;
+        store.set_discovery_scoring_covered_through_cursor(&discovery_runtime_cursor_for_swap(
+            &covered_swap,
+        ))?;
         store.set_discovery_scoring_materialization_gap_cursor(&first_gap_cursor)?;
         let config = ObservedSwapWriterConfig::for_test_with_aggregate_tuning(
             16,
@@ -5838,7 +6078,7 @@ mod tests {
             true,
             &mut repair_epoch,
         )?;
-        assert_eq!(repair_epoch.gap_cursor, Some(first_gap_cursor));
+        assert_eq!(repair_epoch.gap_cursor, Some(first_gap_cursor.clone()));
         assert_eq!(
             repair_epoch
                 .resume_after_cursor
@@ -5847,7 +6087,8 @@ mod tests {
             Some("sig-gap-epoch-reset-first")
         );
 
-        store.set_discovery_scoring_materialization_gap_cursor(&earlier_gap_cursor)?;
+        store.clear_discovery_scoring_materialization_gap_if_cursor_observed(&first_gap_cursor)?;
+        store.set_discovery_scoring_materialization_gap_cursor(&second_gap_cursor)?;
         super::run_discovery_aggregate_gap_repair_slice(
             db_path
                 .to_str()
@@ -5860,7 +6101,7 @@ mod tests {
         )?;
         assert_eq!(
             repair_epoch.gap_cursor,
-            Some(earlier_gap_cursor.clone()),
+            Some(second_gap_cursor.clone()),
             "changed gap cursor must discard the previous repair epoch"
         );
         assert_eq!(
@@ -5868,12 +6109,12 @@ mod tests {
                 .resume_after_cursor
                 .as_ref()
                 .map(|cursor| cursor.signature.as_str()),
-            Some("sig-gap-epoch-reset-earlier"),
+            Some("sig-gap-epoch-reset-second"),
             "new epoch must resume from the new gap cursor, not the stale old cursor"
         );
         assert_eq!(
             store.load_discovery_scoring_materialization_gap_cursor()?,
-            Some(earlier_gap_cursor),
+            Some(second_gap_cursor),
             "one bounded slice must not clear before the frozen target is reached"
         );
         remove_sqlite_test_files(&db_path);
@@ -5887,6 +6128,11 @@ mod tests {
             "copybot-app-observed-swap-gap-repair-partial-target",
         )?;
         let store = SqliteStore::open(Path::new(&db_path))?;
+        let covered_swap = aggregate_gap_replay_test_swap(
+            "sig-gap-partial-target-covered",
+            824,
+            "2026-04-28T13:11:55Z",
+        );
         let gap_swap = aggregate_gap_replay_test_swap(
             "sig-gap-partial-target-exact",
             825,
@@ -5903,21 +6149,20 @@ mod tests {
             "2026-04-28T13:12:10Z",
         );
         store.insert_observed_swaps_batch(&[
+            covered_swap.clone(),
             gap_swap.clone(),
             middle_swap.clone(),
             target_swap.clone(),
         ])?;
+        store.apply_discovery_scoring_batch(&[covered_swap.clone()], &aggregate_write_config())?;
         let gap_cursor = DiscoveryRuntimeCursor {
             ts_utc: gap_swap.ts_utc,
             slot: gap_swap.slot,
             signature: gap_swap.signature.clone(),
         };
-        let target_cursor = DiscoveryRuntimeCursor {
-            ts_utc: target_swap.ts_utc,
-            slot: target_swap.slot,
-            signature: target_swap.signature.clone(),
-        };
-        store.set_discovery_scoring_covered_through_cursor(&target_cursor)?;
+        store.set_discovery_scoring_covered_through_cursor(&discovery_runtime_cursor_for_swap(
+            &covered_swap,
+        ))?;
         store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
         let config = ObservedSwapWriterConfig::for_test_with_aggregate_tuning(
             16,
@@ -5975,6 +6220,146 @@ mod tests {
             None,
             "repair should clear only after the frozen target row is replayed"
         );
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_aggregate_gap_repair_uses_larger_bounded_page_limit_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-observed-swap-gap-repair-page-limit",
+        )?;
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let covered_swap = aggregate_gap_replay_test_swap(
+            "sig-gap-page-limit-covered",
+            860,
+            "2026-04-28T13:29:55Z",
+        );
+        let replay_swaps = (0..10)
+            .map(|idx| {
+                aggregate_gap_replay_test_swap(
+                    &format!("sig-gap-page-limit-{idx:02}"),
+                    861 + idx as u64,
+                    &format!("2026-04-28T13:30:{idx:02}Z"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let gap_cursor = discovery_runtime_cursor_for_swap(
+            replay_swaps
+                .first()
+                .context("test replay swaps should not be empty")?,
+        );
+        let tail_cursor = discovery_runtime_cursor_for_swap(
+            replay_swaps
+                .last()
+                .context("test replay swaps should not be empty")?,
+        );
+        let mut all_swaps = vec![covered_swap.clone()];
+        all_swaps.extend(replay_swaps.iter().cloned());
+        store.insert_observed_swaps_batch(&all_swaps)?;
+        store.apply_discovery_scoring_batch(&[covered_swap.clone()], &aggregate_write_config())?;
+        store.set_discovery_scoring_covered_through_cursor(&discovery_runtime_cursor_for_swap(
+            &covered_swap,
+        ))?;
+        store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
+        let config =
+            ObservedSwapWriterConfig::for_test(16, 1, true, aggregate_write_config(), None);
+        assert!(
+            config.aggregate_idle_replay_max_pages > 8,
+            "repair page limit should be raised above the old conservative cap"
+        );
+        let telemetry = ObservedSwapWriterTelemetry::default();
+        let mut repair_epoch = super::DiscoveryAggregateGapRepairEpoch::default();
+        super::clear_discovery_aggregate_phase_events_for_test();
+
+        let ran_slice = super::run_discovery_aggregate_gap_repair_slice(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?,
+            &store,
+            &config,
+            &telemetry,
+            true,
+            &mut repair_epoch,
+        )?;
+
+        assert!(ran_slice);
+        let events = super::discovery_aggregate_phase_events_for_test();
+        let page_fetch_end_count = events
+            .iter()
+            .filter(|event| **event == super::DISCOVERY_AGGREGATE_PHASE_PAGE_FETCH_END)
+            .count();
+        assert!(
+            page_fetch_end_count > 8,
+            "one repair slice should process more than eight bounded pages when needed"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            None,
+            "larger bounded slice should reach the frozen target and clear honest gap evidence"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(tail_cursor),
+            "larger bounded repair slice must still advance coverage only through committed pages"
+        );
+
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_aggregate_gap_repair_retryable_apply_lock_preserves_latch_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-observed-swap-gap-repair-apply-lock",
+        )?;
+        let (covered_swap, first_replay_swap, _tail_replay_swap) =
+            seed_discovery_scoring_rug_finalize_replay_fixture(&db_path)?;
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        store.set_discovery_scoring_materialization_gap_cursor(
+            &discovery_runtime_cursor_for_swap(&first_replay_swap),
+        )?;
+        let trigger_conn = Connection::open(Path::new(&db_path))
+            .context("failed to open sqlite db for accelerated repair apply lock trigger")?;
+        trigger_conn.execute_batch(
+            "CREATE TRIGGER fail_accelerated_repair_apply_day_retryable
+             BEFORE INSERT ON wallet_scoring_days
+             WHEN NEW.wallet_id = 'wallet-rug-finalize-replay'
+             BEGIN
+                 SELECT RAISE(ROLLBACK, 'database is locked');
+             END;",
+        )?;
+        let config =
+            ObservedSwapWriterConfig::for_test(16, 1, true, aggregate_write_config(), None);
+        assert!(config.aggregate_idle_replay_max_pages > 8);
+        let mut repair_epoch = super::DiscoveryAggregateGapRepairEpoch::default();
+
+        let ran_slice = super::run_discovery_aggregate_gap_repair_slice(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?,
+            &store,
+            &config,
+            &ObservedSwapWriterTelemetry::default(),
+            true,
+            &mut repair_epoch,
+        )?;
+
+        assert!(ran_slice);
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(discovery_runtime_cursor_for_swap(&first_replay_swap)),
+            "retryable apply lock during an accelerated repair slice must keep gap evidence latched"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(discovery_runtime_cursor_for_swap(&covered_swap)),
+            "retryable apply lock must not advance covered_through"
+        );
+
+        drop(trigger_conn);
         remove_sqlite_test_files(&db_path);
         Ok(())
     }
@@ -6135,6 +6520,11 @@ mod tests {
             "copybot-app-observed-swap-hot-gap-repair-missing",
         )?;
         let store = SqliteStore::open(Path::new(&db_path))?;
+        let covered_swap = aggregate_gap_replay_test_swap(
+            "sig-hot-gap-repair-missing-covered",
+            849,
+            "2026-04-28T13:24:55Z",
+        );
         let missing_gap = aggregate_gap_replay_test_swap(
             "sig-hot-gap-repair-missing",
             850,
@@ -6145,7 +6535,8 @@ mod tests {
             851,
             "2026-04-28T13:25:05Z",
         );
-        store.insert_observed_swaps_batch(&[tail_swap.clone()])?;
+        store.insert_observed_swaps_batch(&[covered_swap.clone(), tail_swap.clone()])?;
+        store.apply_discovery_scoring_batch(&[covered_swap.clone()], &aggregate_write_config())?;
         let gap_cursor = DiscoveryRuntimeCursor {
             ts_utc: missing_gap.ts_utc,
             slot: missing_gap.slot,
@@ -6156,7 +6547,10 @@ mod tests {
             slot: tail_swap.slot,
             signature: tail_swap.signature.clone(),
         };
-        store.set_discovery_scoring_covered_through_cursor(&tail_cursor)?;
+        store.set_discovery_scoring_covered_through_cursor(&discovery_runtime_cursor_for_swap(
+            &covered_swap,
+        ))?;
+        store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
         let (aggregate_sender, aggregate_worker) = start_discovery_aggregate_writer_loop_for_test(
             &db_path,
             ObservedSwapWriterConfig::for_test_with_aggregate_tuning(
@@ -6172,7 +6566,6 @@ mod tests {
             ),
             128,
         )?;
-        store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
 
         let stop = Arc::new(AtomicBool::new(false));
         let sent_count = Arc::new(AtomicUsize::new(0));
@@ -6975,6 +7368,260 @@ mod tests {
             store.load_discovery_scoring_covered_through_cursor()?,
             Some(discovery_runtime_cursor_for_swap(&pre_gap_swap)),
             "startup bounded replay should advance only through the completed pre-gap page"
+        );
+
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_aggregate_startup_replay_resumes_from_persisted_covered_through_after_gap_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-aggregate-startup-resume-covered-through",
+        )?;
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let covered_swap = aggregate_gap_replay_test_swap(
+            "sig-startup-resume-covered-base",
+            900,
+            "2026-04-29T02:30:55Z",
+        );
+        let gap_swap = aggregate_gap_replay_test_swap(
+            "sig-startup-resume-gap",
+            901,
+            "2026-04-29T02:30:58.295525837Z",
+        );
+        let persisted_covered_swap = aggregate_gap_replay_test_swap(
+            "sig-startup-resume-persisted-covered",
+            902,
+            "2026-04-29T02:31:00Z",
+        );
+        let tail_swap =
+            aggregate_gap_replay_test_swap("sig-startup-resume-tail", 903, "2026-04-29T02:31:05Z");
+        store.insert_observed_swaps_batch(&[
+            covered_swap.clone(),
+            gap_swap.clone(),
+            persisted_covered_swap.clone(),
+            tail_swap.clone(),
+        ])?;
+        store.apply_discovery_scoring_batch(
+            &[
+                covered_swap.clone(),
+                gap_swap.clone(),
+                persisted_covered_swap.clone(),
+            ],
+            &aggregate_write_config(),
+        )?;
+        store.finalize_discovery_scoring_rug_facts(persisted_covered_swap.ts_utc)?;
+        store.set_discovery_scoring_covered_through_cursor(&discovery_runtime_cursor_for_swap(
+            &persisted_covered_swap,
+        ))?;
+        store.set_discovery_scoring_materialization_gap_cursor(
+            &discovery_runtime_cursor_for_swap(&gap_swap),
+        )?;
+        let config = ObservedSwapWriterConfig::for_test_with_aggregate_tuning(
+            16,
+            1,
+            true,
+            aggregate_write_config(),
+            OBSERVED_SWAP_DISCOVERY_AGGREGATE_WRITE_COALESCE_MAX_BATCHES,
+            8,
+            true,
+            1,
+            None,
+        );
+
+        let progress = super::run_aggregate_startup_replay(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?,
+            &store,
+            &config,
+        )?;
+
+        assert_eq!(
+            progress.page_count, 1,
+            "restart-safe startup replay should resume after persisted covered_through and only replay the remaining tail page"
+        );
+        assert!(
+            progress.gap_cursor_observed,
+            "persisted coverage beyond the gap reconstructs exact-gap-row proof"
+        );
+        assert!(
+            progress.reached_repair_target,
+            "startup replay should reach the frozen repair target from the persisted resume cursor"
+        );
+        assert_eq!(
+            progress
+                .last_replay_cursor
+                .as_ref()
+                .map(|cursor| cursor.signature.as_str()),
+            Some(tail_swap.signature.as_str()),
+            "startup replay must not restart from the original gap cursor"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            None,
+            "reconstructed gap proof may clear only after replay reaches the repair target"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(discovery_runtime_cursor_for_swap(&tail_swap)),
+            "covered_through advances only after the remaining page fully succeeds"
+        );
+
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_aggregate_startup_replay_does_not_reconstruct_gap_proof_when_exact_row_missing_stage1(
+    ) -> Result<()> {
+        let db_path = migrated_observed_swap_writer_test_db(
+            "copybot-app-aggregate-startup-resume-missing-gap",
+        )?;
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let covered_swap = aggregate_gap_replay_test_swap(
+            "sig-startup-missing-gap-covered-base",
+            920,
+            "2026-04-29T02:45:55Z",
+        );
+        let missing_gap_swap = aggregate_gap_replay_test_swap(
+            "sig-startup-missing-gap-exact",
+            921,
+            "2026-04-29T02:45:58.295525837Z",
+        );
+        let persisted_covered_swap = aggregate_gap_replay_test_swap(
+            "sig-startup-missing-gap-persisted-covered",
+            922,
+            "2026-04-29T02:46:00Z",
+        );
+        let tail_swap = aggregate_gap_replay_test_swap(
+            "sig-startup-missing-gap-tail",
+            923,
+            "2026-04-29T02:46:05Z",
+        );
+        store.insert_observed_swaps_batch(&[
+            covered_swap.clone(),
+            persisted_covered_swap.clone(),
+            tail_swap.clone(),
+        ])?;
+        store.apply_discovery_scoring_batch(
+            &[covered_swap.clone(), persisted_covered_swap.clone()],
+            &aggregate_write_config(),
+        )?;
+        store.finalize_discovery_scoring_rug_facts(persisted_covered_swap.ts_utc)?;
+        store.set_discovery_scoring_covered_through_cursor(&discovery_runtime_cursor_for_swap(
+            &persisted_covered_swap,
+        ))?;
+        store.set_discovery_scoring_materialization_gap_cursor(
+            &discovery_runtime_cursor_for_swap(&missing_gap_swap),
+        )?;
+        let config = ObservedSwapWriterConfig::for_test_with_aggregate_tuning(
+            16,
+            1,
+            true,
+            aggregate_write_config(),
+            OBSERVED_SWAP_DISCOVERY_AGGREGATE_WRITE_COALESCE_MAX_BATCHES,
+            8,
+            true,
+            1,
+            None,
+        );
+
+        let progress = super::run_aggregate_startup_replay(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?,
+            &store,
+            &config,
+        )?;
+
+        assert_eq!(
+            progress.page_count, 0,
+            "missing exact gap row must prevent replay from resuming after persisted covered_through"
+        );
+        assert!(
+            !progress.gap_cursor_observed,
+            "missing exact gap row must not reconstruct gap proof from coverage alone"
+        );
+        assert!(
+            !progress.reached_repair_target,
+            "missing exact gap row must not allow repair target completion"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(discovery_runtime_cursor_for_swap(&missing_gap_swap)),
+            "missing exact gap row must keep materialization gap latched"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(discovery_runtime_cursor_for_swap(&persisted_covered_swap)),
+            "missing exact gap row must not advance coverage to later tail rows"
+        );
+
+        remove_sqlite_test_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_swap_writer_aggregate_startup_replay_equal_covered_through_starts_from_gap_stage1(
+    ) -> Result<()> {
+        let db_path =
+            migrated_observed_swap_writer_test_db("copybot-app-aggregate-startup-equal-gap")?;
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        let gap_swap =
+            aggregate_gap_replay_test_swap("sig-startup-equal-gap", 910, "2026-04-29T02:40:00Z");
+        let tail_swap =
+            aggregate_gap_replay_test_swap("sig-startup-equal-tail", 911, "2026-04-29T02:40:05Z");
+        store.insert_observed_swaps_batch(&[gap_swap.clone(), tail_swap.clone()])?;
+        store.set_discovery_scoring_covered_through_cursor(&discovery_runtime_cursor_for_swap(
+            &gap_swap,
+        ))?;
+        store.set_discovery_scoring_materialization_gap_cursor(
+            &discovery_runtime_cursor_for_swap(&gap_swap),
+        )?;
+        let config = ObservedSwapWriterConfig::for_test_with_aggregate_tuning(
+            16,
+            1,
+            true,
+            aggregate_write_config(),
+            OBSERVED_SWAP_DISCOVERY_AGGREGATE_WRITE_COALESCE_MAX_BATCHES,
+            8,
+            true,
+            1,
+            None,
+        );
+
+        let progress = super::run_aggregate_startup_replay(
+            db_path
+                .to_str()
+                .context("sqlite path must be valid utf-8")?,
+            &store,
+            &config,
+        )?;
+
+        assert_eq!(progress.page_count, 1);
+        assert!(
+            progress.gap_cursor_observed,
+            "equal covered_through must not reconstruct proof; it must replay and observe the gap row"
+        );
+        assert!(
+            !progress.reached_repair_target,
+            "one bounded page from the gap must not reach the later target"
+        );
+        assert_eq!(
+            progress
+                .last_replay_cursor
+                .as_ref()
+                .map(|cursor| cursor.signature.as_str()),
+            Some(gap_swap.signature.as_str()),
+            "equal covered_through should start from the gap boundary, not skip to tail"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(discovery_runtime_cursor_for_swap(&gap_swap)),
+            "equal covered_through must keep the latch until target replay completes"
         );
 
         remove_sqlite_test_files(&db_path);
