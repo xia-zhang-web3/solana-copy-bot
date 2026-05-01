@@ -299,6 +299,50 @@ fn upsert_discovery_scoring_materialization_gap_cursor_on_conn(
     Ok(())
 }
 
+fn clear_discovery_scoring_materialization_gap_repair_target_on_conn(
+    conn: &Connection,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM discovery_scoring_state
+         WHERE state_key IN (
+            'materialization_gap_repair_gap_ts',
+            'materialization_gap_repair_gap_slot',
+            'materialization_gap_repair_gap_signature',
+            'materialization_gap_repair_target_ts',
+            'materialization_gap_repair_target_slot',
+            'materialization_gap_repair_target_signature'
+         )",
+        [],
+    )
+    .context("failed clearing discovery_scoring_state.materialization_gap repair target")?;
+    Ok(())
+}
+
+fn upsert_discovery_scoring_materialization_gap_repair_target_on_conn(
+    conn: &Connection,
+    gap_cursor: &DiscoveryRuntimeCursor,
+    target_cursor: &DiscoveryRuntimeCursor,
+    updated_at: &str,
+) -> Result<()> {
+    upsert_discovery_scoring_cursor_state_on_conn(
+        conn,
+        "materialization_gap_repair_gap_ts",
+        "materialization_gap_repair_gap_slot",
+        "materialization_gap_repair_gap_signature",
+        gap_cursor,
+        updated_at,
+    )?;
+    upsert_discovery_scoring_cursor_state_on_conn(
+        conn,
+        "materialization_gap_repair_target_ts",
+        "materialization_gap_repair_target_slot",
+        "materialization_gap_repair_target_signature",
+        target_cursor,
+        updated_at,
+    )?;
+    Ok(())
+}
+
 fn wallet_scoring_carryover_lot_count_on_conn(conn: &Connection) -> Result<usize> {
     let count: i64 = conn
         .query_row(
@@ -1719,6 +1763,47 @@ impl SqliteStore {
             .transpose()
     }
 
+    fn load_discovery_scoring_state_value(&self, state_key: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT state_value
+                 FROM discovery_scoring_state
+                 WHERE state_key = ?1",
+                params![state_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .with_context(|| format!("failed querying discovery_scoring_state.{state_key}"))
+    }
+
+    fn load_discovery_scoring_cursor_state_exact(
+        &self,
+        ts_key: &str,
+        slot_key: &str,
+        signature_key: &str,
+        label: &str,
+    ) -> Result<Option<DiscoveryRuntimeCursor>> {
+        let ts_utc = self.load_discovery_scoring_state_ts(ts_key)?;
+        let slot_raw = self.load_discovery_scoring_state_value(slot_key)?;
+        let signature = self.load_discovery_scoring_state_value(signature_key)?;
+        match (ts_utc, slot_raw, signature) {
+            (None, None, None) => Ok(None),
+            (Some(ts_utc), Some(slot_raw), Some(signature)) => {
+                let slot = slot_raw.parse::<u64>().with_context(|| {
+                    format!("invalid discovery_scoring_state.{slot_key} value: {slot_raw}")
+                })?;
+                Ok(Some(DiscoveryRuntimeCursor {
+                    ts_utc,
+                    slot,
+                    signature,
+                }))
+            }
+            _ => Err(anyhow!(
+                "discovery_scoring_state.{label} cursor is partially populated"
+            )),
+        }
+    }
+
     pub fn apply_discovery_scoring_batch(
         &self,
         swaps: &[SwapEvent],
@@ -2111,7 +2196,40 @@ impl SqliteStore {
             "discovery scoring materialization gap update",
             |conn| {
                 let now = Utc::now().to_rfc3339();
+                clear_discovery_scoring_materialization_gap_repair_target_on_conn(conn)?;
                 upsert_discovery_scoring_materialization_gap_cursor_on_conn(conn, cursor, &now)?;
+                Ok(0usize)
+            },
+        )?;
+        Ok(())
+    }
+
+    pub fn set_discovery_scoring_materialization_gap_repair_target(
+        &self,
+        gap_cursor: &DiscoveryRuntimeCursor,
+        target_cursor: &DiscoveryRuntimeCursor,
+    ) -> Result<()> {
+        self.with_immediate_transaction_retry(
+            "discovery scoring materialization gap repair target update",
+            |conn| {
+                let now = Utc::now().to_rfc3339();
+                upsert_discovery_scoring_materialization_gap_repair_target_on_conn(
+                    conn,
+                    gap_cursor,
+                    target_cursor,
+                    &now,
+                )?;
+                Ok(0usize)
+            },
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_discovery_scoring_materialization_gap_repair_target(&self) -> Result<()> {
+        self.with_immediate_transaction_retry(
+            "discovery scoring materialization gap repair target clear",
+            |conn| {
+                clear_discovery_scoring_materialization_gap_repair_target_on_conn(conn)?;
                 Ok(0usize)
             },
         )?;
@@ -2184,7 +2302,13 @@ impl SqliteStore {
                  WHERE state_key IN (
                     'materialization_gap_since_ts',
                     'materialization_gap_since_slot',
-                    'materialization_gap_since_signature'
+                    'materialization_gap_since_signature',
+                    'materialization_gap_repair_gap_ts',
+                    'materialization_gap_repair_gap_slot',
+                    'materialization_gap_repair_gap_signature',
+                    'materialization_gap_repair_target_ts',
+                    'materialization_gap_repair_target_slot',
+                    'materialization_gap_repair_target_signature'
                  )",
                     [],
                 )
@@ -2432,6 +2556,30 @@ impl SqliteStore {
                 slot: 0,
                 signature: String::new(),
             })),
+        }
+    }
+
+    pub fn load_discovery_scoring_materialization_gap_repair_target(
+        &self,
+    ) -> Result<Option<(DiscoveryRuntimeCursor, DiscoveryRuntimeCursor)>> {
+        let gap_cursor = self.load_discovery_scoring_cursor_state_exact(
+            "materialization_gap_repair_gap_ts",
+            "materialization_gap_repair_gap_slot",
+            "materialization_gap_repair_gap_signature",
+            "materialization_gap_repair_gap",
+        )?;
+        let target_cursor = self.load_discovery_scoring_cursor_state_exact(
+            "materialization_gap_repair_target_ts",
+            "materialization_gap_repair_target_slot",
+            "materialization_gap_repair_target_signature",
+            "materialization_gap_repair_target",
+        )?;
+        match (gap_cursor, target_cursor) {
+            (None, None) => Ok(None),
+            (Some(gap_cursor), Some(target_cursor)) => Ok(Some((gap_cursor, target_cursor))),
+            _ => Err(anyhow!(
+                "discovery_scoring_state.materialization_gap_repair target is partially populated"
+            )),
         }
     }
 
