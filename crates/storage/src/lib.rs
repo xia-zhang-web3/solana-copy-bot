@@ -8595,6 +8595,79 @@ mod tests {
     }
 
     #[test]
+    fn discovery_scoring_materialization_gap_repair_target_tracks_current_gap() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp.path().join("discovery-scoring-gap-repair-target.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        store.run_migrations(&migration_dir)?;
+
+        let gap_cursor = DiscoveryRuntimeCursor {
+            ts_utc: DateTime::parse_from_rfc3339("2026-04-29T02:30:58.295525837Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+            slot: 416346850,
+            signature: "gap-a".to_string(),
+        };
+        let target_cursor = DiscoveryRuntimeCursor {
+            ts_utc: DateTime::parse_from_rfc3339("2026-04-30T17:44:20.734423474Z")
+                .expect("ts")
+                .with_timezone(&Utc),
+            slot: 416900001,
+            signature: "target-a".to_string(),
+        };
+        store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
+        store
+            .set_discovery_scoring_materialization_gap_repair_target(&gap_cursor, &target_cursor)?;
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_repair_target()?,
+            Some((gap_cursor.clone(), target_cursor.clone())),
+            "repair target must be durable and tied to its materialization gap cursor"
+        );
+
+        let earlier_gap_cursor = DiscoveryRuntimeCursor {
+            ts_utc: gap_cursor.ts_utc - Duration::minutes(1),
+            slot: gap_cursor.slot - 1,
+            signature: "gap-earlier".to_string(),
+        };
+        store.set_discovery_scoring_materialization_gap_cursor(&earlier_gap_cursor)?;
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(earlier_gap_cursor.clone()),
+            "earlier materialization gap evidence should replace the old gap"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_repair_target()?,
+            None,
+            "changing the materialization gap cursor must clear stale repair target state"
+        );
+
+        let second_target_cursor = DiscoveryRuntimeCursor {
+            ts_utc: target_cursor.ts_utc + Duration::minutes(10),
+            slot: target_cursor.slot + 1,
+            signature: "target-b".to_string(),
+        };
+        store.set_discovery_scoring_materialization_gap_repair_target(
+            &earlier_gap_cursor,
+            &second_target_cursor,
+        )?;
+        store
+            .clear_discovery_scoring_materialization_gap_if_cursor_observed(&earlier_gap_cursor)?;
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            None,
+            "observing the exact gap cursor clears the materialization gap"
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_repair_target()?,
+            None,
+            "clearing the materialization gap must clear the persisted repair target"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn apply_discovery_scoring_batch_records_fifo_buy_and_close_facts() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("discovery-scoring-batch.db");
