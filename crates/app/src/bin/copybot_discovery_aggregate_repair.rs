@@ -52,6 +52,8 @@ const REASON_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS: &str =
     "discovery_aggregate_repair_lock_first_budget_exhausted_without_progress";
 const REASON_ADAPTIVE_ROW_CAP_AFTER_RUG_LOOKAHEAD_BUDGET: &str =
     "discovery_aggregate_repair_adaptive_row_cap_after_rug_lookahead_budget";
+const REASON_REPAIR_RUG_LOOKAHEAD_DEFERRED_DUE_TO_BUDGET_HOTSPOT: &str =
+    "aggregate_repair_rug_lookahead_deferred_due_to_budget_hotspot";
 const REASON_SQLITE_LOCK_RETRYABLE: &str = "discovery_aggregate_repair_sqlite_lock_retryable";
 const REASON_UNKNOWN_ERROR: &str = "discovery_aggregate_repair_unknown_error";
 
@@ -99,6 +101,8 @@ struct AggregateRepairReport {
     requested_lock_first_max_rows: Option<usize>,
     effective_lock_first_max_rows: Option<usize>,
     adaptive_row_cap_reason: Option<String>,
+    repair_rug_lookahead_deferred: bool,
+    repair_rug_lookahead_policy: Option<String>,
     elapsed_ms: u64,
     recommended_next_action: String,
     error: Option<String>,
@@ -124,6 +128,8 @@ impl AggregateRepairReport {
             requested_lock_first_max_rows: None,
             effective_lock_first_max_rows: None,
             adaptive_row_cap_reason: None,
+            repair_rug_lookahead_deferred: false,
+            repair_rug_lookahead_policy: None,
             elapsed_ms: 0,
             recommended_next_action: ACTION_FIX_INPUT.to_string(),
             error: None,
@@ -612,6 +618,7 @@ fn run_lock_first_micro_commit(
             repair_target,
             cap,
             StdDuration::from_secs(cli.lock_first_max_lock_seconds),
+            false,
         );
         match result {
             Ok(result) => {
@@ -642,11 +649,18 @@ fn run_lock_first_micro_commit(
                         adaptive_attempted = true;
                         continue;
                     }
-                    return report.fail(
-                        REASON_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS,
-                        ACTION_RERUN,
-                        last_adaptive_budget_error,
+                    return run_lock_first_deferred_rug_lookahead_micro_commit(
+                        report,
+                        store,
+                        aggregate_write_config,
+                        gap_cursor,
+                        repair_target,
+                        cli,
                         started,
+                        requested_cap,
+                        cap,
+                        adaptive_attempted,
+                        last_adaptive_budget_error,
                     );
                 }
                 return classify_write_error(report, error, started);
@@ -662,6 +676,63 @@ fn run_lock_first_micro_commit(
     )
 }
 
+fn run_lock_first_deferred_rug_lookahead_micro_commit(
+    mut report: AggregateRepairReport,
+    store: &SqliteStore,
+    aggregate_write_config: &DiscoveryAggregateWriteConfig,
+    gap_cursor: &DiscoveryRuntimeCursor,
+    repair_target: &DiscoveryRuntimeCursor,
+    cli: &Cli,
+    started: Instant,
+    requested_cap: usize,
+    effective_cap: usize,
+    adaptive_attempted: bool,
+    budget_error: Option<String>,
+) -> AggregateRepairReport {
+    let result = store.apply_discovery_scoring_repair_micro_commit_lock_first(
+        aggregate_write_config,
+        gap_cursor,
+        repair_target,
+        effective_cap,
+        StdDuration::from_secs(cli.lock_first_max_lock_seconds),
+        true,
+    );
+    match result {
+        Ok(result) => {
+            if adaptive_attempted && effective_cap != requested_cap {
+                report.adaptive_row_cap_applied = true;
+                report.requested_lock_first_max_rows = Some(requested_cap);
+                report.effective_lock_first_max_rows = Some(effective_cap);
+                report.adaptive_row_cap_reason =
+                    Some(REASON_ADAPTIVE_ROW_CAP_AFTER_RUG_LOOKAHEAD_BUDGET.to_string());
+            }
+            finish_lock_first_micro_commit_outcome(report, store, gap_cursor, cli, started, result)
+        }
+        Err(error) => {
+            let error_text = format!("{error:#}");
+            if is_retryable_sqlite_anyhow_error(&error) {
+                return report.fail(
+                    REASON_SQLITE_LOCK_RETRYABLE,
+                    ACTION_RERUN,
+                    Some(error_text),
+                    started,
+                );
+            }
+            if is_adaptive_rug_lookahead_budget_error(&error_text)
+                || is_lock_first_budget_error(&error_text)
+            {
+                return report.fail(
+                    REASON_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS,
+                    ACTION_RERUN,
+                    budget_error.or(Some(error_text)),
+                    started,
+                );
+            }
+            classify_write_error(report, error, started)
+        }
+    }
+}
+
 fn finish_lock_first_micro_commit_outcome(
     mut report: AggregateRepairReport,
     store: &SqliteStore,
@@ -675,15 +746,29 @@ fn finish_lock_first_micro_commit_outcome(
         usize,
         bool,
         bool,
+        bool,
     ),
 ) -> AggregateRepairReport {
-    let (outcome, start_cursor, end_cursor, row_count, reached_target, gap_observed) = result;
+    let (
+        outcome,
+        start_cursor,
+        end_cursor,
+        row_count,
+        reached_target,
+        gap_observed,
+        rug_lookahead_deferred,
+    ) = result;
 
     if let Some(start_cursor) = start_cursor {
         report.start_covered_through = Some(start_cursor);
     }
     if let Some(end_cursor) = end_cursor {
         report.end_covered_through = Some(end_cursor);
+    }
+    if rug_lookahead_deferred {
+        report.repair_rug_lookahead_deferred = true;
+        report.repair_rug_lookahead_policy =
+            Some(REASON_REPAIR_RUG_LOOKAHEAD_DEFERRED_DUE_TO_BUDGET_HOTSPOT.to_string());
     }
     match outcome {
         "committed" => {
@@ -1190,6 +1275,105 @@ mod tests {
         .context("failed counting large repair buy facts")
     }
 
+    fn large_repair_deferred_rug_default_count(db_path: &Path) -> Result<i64> {
+        let conn = Connection::open(db_path)?;
+        conn.query_row(
+            "SELECT COUNT(*)
+             FROM wallet_scoring_buy_facts
+             WHERE buy_signature LIKE 'sig-rugcap-%'
+               AND buy_signature <> 'sig-rugcap-00000'
+               AND rug_volume_lookahead_sol = 0.0
+               AND rug_unique_traders_lookahead = 0",
+            [],
+            |row| row.get(0),
+        )
+        .context("failed counting deferred rug lookahead default facts")
+    }
+
+    fn repair_null_rug_fact_count(db_path: &Path) -> Result<i64> {
+        let conn = Connection::open(db_path)?;
+        conn.query_row(
+            "SELECT COUNT(*)
+             FROM wallet_scoring_buy_facts
+             WHERE rug_volume_lookahead_sol IS NULL
+                OR rug_unique_traders_lookahead IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .context("failed counting null rug lookahead facts")
+    }
+
+    fn large_repair_null_rug_fact_count(db_path: &Path) -> Result<i64> {
+        let conn = Connection::open(db_path)?;
+        conn.query_row(
+            "SELECT COUNT(*)
+             FROM wallet_scoring_buy_facts
+             WHERE buy_signature LIKE 'sig-rugcap-%'
+               AND buy_signature <> 'sig-rugcap-00000'
+               AND (rug_volume_lookahead_sol IS NULL
+                    OR rug_unique_traders_lookahead IS NULL)",
+            [],
+            |row| row.get(0),
+        )
+        .context("failed counting null large repair rug lookahead facts")
+    }
+
+    fn insert_unrelated_pending_rug_fact(db_path: &Path) -> Result<()> {
+        let conn = Connection::open(db_path)?;
+        conn.execute(
+            "INSERT INTO wallet_scoring_buy_facts(
+                buy_signature,
+                wallet_id,
+                token,
+                ts,
+                activity_day,
+                notional_sol,
+                market_volume_5m_sol,
+                market_unique_traders_5m,
+                market_liquidity_proxy_sol,
+                quality_source,
+                quality_token_age_seconds,
+                quality_holders,
+                quality_liquidity_sol,
+                rug_check_after_ts,
+                rug_volume_lookahead_sol,
+                rug_unique_traders_lookahead
+             ) VALUES (
+                'sig-unrelated-pending-rug',
+                'wallet-unrelated-pending-rug',
+                'token-unrelated-pending-rug',
+                '2026-04-29T00:00:00+00:00',
+                '2026-04-29',
+                1.0,
+                0.0,
+                0,
+                0.0,
+                'missing',
+                NULL,
+                NULL,
+                NULL,
+                '2026-04-29T00:00:01+00:00',
+                NULL,
+                NULL
+             )",
+            [],
+        )
+        .context("failed inserting unrelated pending rug fact")?;
+        Ok(())
+    }
+
+    fn unrelated_pending_rug_fact_values(db_path: &Path) -> Result<(Option<f64>, Option<i64>)> {
+        let conn = Connection::open(db_path)?;
+        conn.query_row(
+            "SELECT rug_volume_lookahead_sol, rug_unique_traders_lookahead
+             FROM wallet_scoring_buy_facts
+             WHERE buy_signature = 'sig-unrelated-pending-rug'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .context("failed loading unrelated pending rug fact")
+    }
+
     fn wallet_day_trades(db_path: &Path) -> Result<i64> {
         let conn = Connection::open(db_path)?;
         conn.query_row(
@@ -1690,34 +1874,72 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_row_cap_all_caps_fail_keeps_coverage_and_latch() -> Result<()> {
-        let (db_path, gap_cursor, _target_cursor, swaps) = seed_large_buy_repair_fixture(
+    fn repair_rug_lookahead_deferral_commits_prefix_when_min_cap_budget_fails() -> Result<()> {
+        let (db_path, _gap_cursor, _target_cursor, swaps) = seed_large_buy_repair_fixture(
             "copybot-aggregate-repair-adaptive-rug-budget-all-fail",
             4,
         )?;
-        let covered = cursor_for_swap(&swaps[0]);
+        let expected_cursor = cursor_for_swap(&swaps[4]);
         let _failpoint = rug_lookahead_budget_fail_above(0);
         let cli = lock_first_cli(&db_path, 2_048)?;
 
         let report = run(&cli);
 
-        assert!(!report.ok, "{report:?}");
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.reason, REASON_COMPLETED);
+        assert!(report.adaptive_row_cap_applied);
+        assert_eq!(report.requested_lock_first_max_rows, Some(2_048));
+        assert_eq!(report.effective_lock_first_max_rows, Some(256));
+        assert!(report.repair_rug_lookahead_deferred);
         assert_eq!(
-            report.reason,
-            REASON_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS
+            report.repair_rug_lookahead_policy.as_deref(),
+            Some(REASON_REPAIR_RUG_LOOKAHEAD_DEFERRED_DUE_TO_BUDGET_HOTSPOT)
         );
-        assert!(!report.adaptive_row_cap_applied);
-        assert!(!report.latch_cleared);
+        assert_eq!(report.rows_processed, 4);
+        assert!(report.reached_target);
+        assert!(report.latch_cleared);
         let store = SqliteStore::open(&db_path)?;
         assert_eq!(
             store.load_discovery_scoring_covered_through_cursor()?,
-            Some(covered)
+            Some(expected_cursor)
         );
         assert_eq!(
             store.load_discovery_scoring_materialization_gap_cursor()?,
-            Some(gap_cursor)
+            None
         );
-        assert_eq!(large_repair_buy_fact_count(&db_path)?, 0);
+        assert_eq!(large_repair_buy_fact_count(&db_path)?, 4);
+        assert_eq!(large_repair_deferred_rug_default_count(&db_path)?, 4);
+        assert_eq!(large_repair_null_rug_fact_count(&db_path)?, 0);
+        assert!(!report.production_green);
+        remove_sqlite_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn repair_rug_lookahead_deferral_does_not_zero_unrelated_pending_facts() -> Result<()> {
+        let (db_path, _gap_cursor, _target_cursor, swaps) =
+            seed_large_buy_repair_fixture("copybot-aggregate-repair-rug-deferral-prefix-only", 4)?;
+        insert_unrelated_pending_rug_fact(&db_path)?;
+        let expected_cursor = cursor_for_swap(&swaps[4]);
+        let _failpoint = rug_lookahead_budget_fail_above(0);
+        let cli = lock_first_cli(&db_path, 2_048)?;
+
+        let report = run(&cli);
+
+        assert!(report.ok, "{report:?}");
+        assert!(report.repair_rug_lookahead_deferred);
+        assert_eq!(
+            report.repair_rug_lookahead_policy.as_deref(),
+            Some(REASON_REPAIR_RUG_LOOKAHEAD_DEFERRED_DUE_TO_BUDGET_HOTSPOT)
+        );
+        assert_eq!(report.rows_processed, 4);
+        let store = SqliteStore::open(&db_path)?;
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(expected_cursor)
+        );
+        assert_eq!(large_repair_deferred_rug_default_count(&db_path)?, 4);
+        assert_eq!(unrelated_pending_rug_fact_values(&db_path)?, (None, None));
         assert!(!report.production_green);
         remove_sqlite_files(&db_path);
         Ok(())
@@ -1747,6 +1969,35 @@ mod tests {
         );
         assert_eq!(large_repair_buy_fact_count(&db_path)?, 0);
         assert!(!report.production_green);
+        remove_sqlite_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn normal_rug_finalize_attempts_lookahead_and_does_not_use_repair_deferral() -> Result<()> {
+        let (db_path, gap_cursor, _target_cursor, swaps) =
+            seed_repair_fixture("copybot-aggregate-repair-normal-rug-not-deferred", 4)?;
+        let store = SqliteStore::open(&db_path)?;
+        let config = aggregate_config_for_tests();
+        store.finalize_discovery_scoring_rug_facts(swaps[0].ts_utc + ChronoDuration::seconds(1))?;
+        store.apply_discovery_scoring_batch(&[swaps[1].clone()], &config)?;
+        let _failpoint = rug_lookahead_unknown_failpoint();
+
+        let error = store
+            .finalize_discovery_scoring_rug_facts(swaps[1].ts_utc + ChronoDuration::seconds(1))
+            .expect_err("normal rug finalization must attempt lookahead and fail");
+
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("test failpoint: discovery scoring rug lookahead unknown failure"),
+            "{error_text}"
+        );
+        assert_eq!(repair_buy_fact_count(&db_path)?, 1);
+        assert_eq!(repair_null_rug_fact_count(&db_path)?, 1);
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(gap_cursor)
+        );
         remove_sqlite_files(&db_path);
         Ok(())
     }

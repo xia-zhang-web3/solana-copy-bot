@@ -107,6 +107,11 @@ struct CarryoverLotRow {
     oldest_opened_ts: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct RugLookaheadFinalizeOutcome {
+    deferred_due_to_budget_hotspot: bool,
+}
+
 #[cfg(debug_assertions)]
 thread_local! {
     static DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT: Cell<bool> =
@@ -1843,6 +1848,65 @@ fn finalize_mature_rug_facts_on_conn(conn: &Connection, watermark_ts: DateTime<U
     Ok(())
 }
 
+fn finalize_repair_prefix_rug_facts_defer_budget_hotspot_on_conn(
+    conn: &Connection,
+    swaps: &[SwapEvent],
+) -> Result<RugLookaheadFinalizeOutcome> {
+    let mut outcome = RugLookaheadFinalizeOutcome::default();
+    for swap in swaps.iter().filter(|swap| is_sol_buy(swap)) {
+        let pending = conn
+            .query_row(
+                "SELECT token, ts, rug_check_after_ts
+                 FROM wallet_scoring_buy_facts
+                 WHERE buy_signature = ?1
+                   AND (rug_volume_lookahead_sol IS NULL
+                        OR rug_unique_traders_lookahead IS NULL)",
+                params![swap.signature.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed loading current repair rug fact by buy signature")?;
+        let Some((token, buy_ts_raw, check_after_raw)) = pending else {
+            continue;
+        };
+        let buy_ts = parse_ts(&buy_ts_raw, "wallet_scoring_buy_facts.ts")?;
+        let check_after_ts = parse_ts(
+            &check_after_raw,
+            "wallet_scoring_buy_facts.rug_check_after_ts",
+        )?;
+        let stats = rug_lookahead_stats_on_conn(conn, &token, buy_ts, check_after_ts);
+        let (volume_sol, unique_traders) = match stats {
+            Ok(stats) => stats,
+            Err(error) if rug_lookahead_error_is_budget_hotspot(&error) => {
+                outcome.deferred_due_to_budget_hotspot = true;
+                (0.0, 0)
+            }
+            Err(error) => return Err(error),
+        };
+        conn.execute(
+            "UPDATE wallet_scoring_buy_facts
+             SET rug_volume_lookahead_sol = ?2,
+                 rug_unique_traders_lookahead = ?3
+             WHERE buy_signature = ?1",
+            params![swap.signature.as_str(), volume_sol, unique_traders as i64],
+        )
+        .context("failed updating current repair rug fact")?;
+    }
+    Ok(outcome)
+}
+
+fn rug_lookahead_error_is_budget_hotspot(error: &anyhow::Error) -> bool {
+    let lowered = format!("{error:#}").to_ascii_lowercase();
+    lowered.contains(DISCOVERY_AGGREGATE_REPAIR_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS)
+        || lowered.contains("interrupted")
+}
+
 fn apply_discovery_scoring_swaps_on_conn(
     conn: &Connection,
     prepared_swaps: &[PreparedScoringSwap],
@@ -2147,11 +2211,13 @@ impl SqliteStore {
         expected_repair_target: &DiscoveryRuntimeCursor,
         max_rows: usize,
         max_lock_duration: StdDuration,
+        defer_rug_lookahead_on_budget_hotspot: bool,
     ) -> Result<(
         &'static str,
         Option<DiscoveryRuntimeCursor>,
         Option<DiscoveryRuntimeCursor>,
         usize,
+        bool,
         bool,
         bool,
     )> {
@@ -2177,7 +2243,7 @@ impl SqliteStore {
                     "covered_through",
                 )?;
                 let Some(current) = current else {
-                    return Ok(("covered_missing", None, None, 0, false, false));
+                    return Ok(("covered_missing", None, None, 0, false, false, false));
                 };
 
                 let Some(gap_cursor) =
@@ -2190,6 +2256,7 @@ impl SqliteStore {
                         0,
                         false,
                         false,
+                        false,
                     ));
                 };
                 if cmp_cursor_order(&gap_cursor, expected_gap_cursor) != Ordering::Equal {
@@ -2198,6 +2265,7 @@ impl SqliteStore {
                         Some(current.clone()),
                         Some(current),
                         0,
+                        false,
                         false,
                         false,
                     ));
@@ -2213,6 +2281,7 @@ impl SqliteStore {
                         0,
                         false,
                         false,
+                        false,
                     ));
                 };
                 if cmp_cursor_order(&target_gap_cursor, expected_gap_cursor) != Ordering::Equal
@@ -2223,6 +2292,7 @@ impl SqliteStore {
                         Some(current.clone()),
                         Some(current),
                         0,
+                        false,
                         false,
                         false,
                     ));
@@ -2238,6 +2308,7 @@ impl SqliteStore {
                         0,
                         false,
                         false,
+                        false,
                     ));
                 }
 
@@ -2250,6 +2321,7 @@ impl SqliteStore {
                         0,
                         true,
                         gap_observed_before,
+                        false,
                     ));
                 }
 
@@ -2311,6 +2383,7 @@ impl SqliteStore {
                             0,
                             false,
                             gap_observed_before,
+                            false,
                         ));
                     }
                     return Ok((
@@ -2320,6 +2393,7 @@ impl SqliteStore {
                         0,
                         false,
                         gap_observed_before,
+                        false,
                     ));
                 }
                 let last_cursor = DiscoveryRuntimeCursor {
@@ -2351,6 +2425,7 @@ impl SqliteStore {
                         0,
                         false,
                         gap_observed_before,
+                        false,
                     ));
                 }
                 let prepared = prepare_discovery_scoring_swaps_with_diagnostics(
@@ -2366,7 +2441,12 @@ impl SqliteStore {
                 apply_discovery_scoring_swaps_on_conn(conn, &prepared)?;
                 check_lock_first_repair_deadline(lock_deadline)?;
                 let _repair_rows_guard = LockFirstRepairCurrentRowsGuard::install(swaps.len());
-                finalize_mature_rug_facts_on_conn(conn, last_cursor.ts_utc)?;
+                let rug_finalize_outcome = if defer_rug_lookahead_on_budget_hotspot {
+                    finalize_repair_prefix_rug_facts_defer_budget_hotspot_on_conn(conn, &swaps)?
+                } else {
+                    finalize_mature_rug_facts_on_conn(conn, last_cursor.ts_utc)?;
+                    RugLookaheadFinalizeOutcome::default()
+                };
                 check_lock_first_repair_deadline(lock_deadline)?;
                 let now = Utc::now().to_rfc3339();
                 upsert_discovery_scoring_cursor_state_on_conn(
@@ -2384,6 +2464,7 @@ impl SqliteStore {
                     swaps.len(),
                     reached_target,
                     gap_observed,
+                    rug_finalize_outcome.deferred_due_to_budget_hotspot,
                 ))
             },
         )
