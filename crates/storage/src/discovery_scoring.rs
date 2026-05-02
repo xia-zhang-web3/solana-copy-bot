@@ -115,6 +115,12 @@ thread_local! {
         const { Cell::new(false) };
     static DISCOVERY_SCORING_LOCK_FIRST_REPAIR_BUDGET_AFTER_ROWS: Cell<Option<usize>> =
         const { Cell::new(None) };
+    static DISCOVERY_SCORING_RUG_LOOKAHEAD_BUDGET_FAIL_ABOVE_ROWS: Cell<Option<usize>> =
+        const { Cell::new(None) };
+    static DISCOVERY_SCORING_RUG_LOOKAHEAD_UNKNOWN_FAILPOINT: Cell<bool> =
+        const { Cell::new(false) };
+    static DISCOVERY_SCORING_LOCK_FIRST_REPAIR_CURRENT_ROWS: Cell<usize> =
+        const { Cell::new(0) };
 }
 
 #[cfg(debug_assertions)]
@@ -161,6 +167,19 @@ impl SqliteStore {
         rows: Option<usize>,
     ) {
         DISCOVERY_SCORING_LOCK_FIRST_REPAIR_BUDGET_AFTER_ROWS.with(|failpoint| failpoint.set(rows));
+    }
+
+    #[doc(hidden)]
+    pub fn set_discovery_scoring_rug_lookahead_budget_fail_above_rows_for_tests(
+        rows: Option<usize>,
+    ) {
+        DISCOVERY_SCORING_RUG_LOOKAHEAD_BUDGET_FAIL_ABOVE_ROWS
+            .with(|failpoint| failpoint.set(rows));
+    }
+
+    #[doc(hidden)]
+    pub fn set_discovery_scoring_rug_lookahead_unknown_failpoint_for_tests(enabled: bool) {
+        DISCOVERY_SCORING_RUG_LOOKAHEAD_UNKNOWN_FAILPOINT.with(|failpoint| failpoint.set(enabled));
     }
 }
 
@@ -514,6 +533,58 @@ fn lock_first_repair_budget_after_rows_for_tests() -> Option<usize> {
 
 fn lock_first_repair_budget_reached(collected_rows: usize) -> bool {
     lock_first_repair_budget_after_rows_for_tests().is_some_and(|limit| collected_rows >= limit)
+}
+
+#[cfg(debug_assertions)]
+struct LockFirstRepairCurrentRowsGuard;
+
+#[cfg(debug_assertions)]
+impl LockFirstRepairCurrentRowsGuard {
+    fn install(rows: usize) -> Self {
+        DISCOVERY_SCORING_LOCK_FIRST_REPAIR_CURRENT_ROWS.with(|current| current.set(rows));
+        Self
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for LockFirstRepairCurrentRowsGuard {
+    fn drop(&mut self) {
+        DISCOVERY_SCORING_LOCK_FIRST_REPAIR_CURRENT_ROWS.with(|current| current.set(0));
+    }
+}
+
+#[cfg(not(debug_assertions))]
+struct LockFirstRepairCurrentRowsGuard;
+
+#[cfg(not(debug_assertions))]
+impl LockFirstRepairCurrentRowsGuard {
+    fn install(_rows: usize) -> Self {
+        Self
+    }
+}
+
+#[cfg(debug_assertions)]
+fn rug_lookahead_budget_failpoint_triggered() -> bool {
+    let current_rows =
+        DISCOVERY_SCORING_LOCK_FIRST_REPAIR_CURRENT_ROWS.with(|current| current.get());
+    DISCOVERY_SCORING_RUG_LOOKAHEAD_BUDGET_FAIL_ABOVE_ROWS
+        .with(|limit| limit.get())
+        .is_some_and(|limit| current_rows > limit)
+}
+
+#[cfg(not(debug_assertions))]
+fn rug_lookahead_budget_failpoint_triggered() -> bool {
+    false
+}
+
+#[cfg(debug_assertions)]
+fn rug_lookahead_unknown_failpoint_triggered() -> bool {
+    DISCOVERY_SCORING_RUG_LOOKAHEAD_UNKNOWN_FAILPOINT.with(|failpoint| failpoint.get())
+}
+
+#[cfg(not(debug_assertions))]
+fn rug_lookahead_unknown_failpoint_triggered() -> bool {
+    false
 }
 
 fn check_lock_first_repair_deadline(deadline: Instant) -> Result<()> {
@@ -1696,6 +1767,18 @@ fn rug_lookahead_stats_on_conn(
     buy_ts: DateTime<Utc>,
     lookahead_end: DateTime<Utc>,
 ) -> Result<(f64, u32)> {
+    if rug_lookahead_unknown_failpoint_triggered() {
+        return Err(anyhow!(
+            "test failpoint: discovery scoring rug lookahead unknown failure"
+        ))
+        .context("failed querying discovery scoring rug lookahead stats");
+    }
+    if rug_lookahead_budget_failpoint_triggered() {
+        return Err(anyhow!(
+            DISCOVERY_AGGREGATE_REPAIR_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS
+        ))
+        .context("failed querying discovery scoring rug lookahead stats");
+    }
     let (volume_sol, unique_traders_raw): (f64, i64) = conn
         .query_row(
             RUG_LOOKAHEAD_STATS_QUERY,
@@ -2282,6 +2365,7 @@ impl SqliteStore {
                     DiscoveryScoringPrepareProgressGuard::install(conn, lock_deadline);
                 apply_discovery_scoring_swaps_on_conn(conn, &prepared)?;
                 check_lock_first_repair_deadline(lock_deadline)?;
+                let _repair_rows_guard = LockFirstRepairCurrentRowsGuard::install(swaps.len());
                 finalize_mature_rug_facts_on_conn(conn, last_cursor.ts_utc)?;
                 check_lock_first_repair_deadline(lock_deadline)?;
                 let now = Utc::now().to_rfc3339();

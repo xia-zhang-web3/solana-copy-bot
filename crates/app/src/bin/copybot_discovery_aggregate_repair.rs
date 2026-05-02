@@ -50,6 +50,8 @@ const REASON_CONCURRENT_COVERED_THROUGH_ADVANCED: &str =
     "discovery_aggregate_repair_concurrent_covered_through_advanced";
 const REASON_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS: &str =
     "discovery_aggregate_repair_lock_first_budget_exhausted_without_progress";
+const REASON_ADAPTIVE_ROW_CAP_AFTER_RUG_LOOKAHEAD_BUDGET: &str =
+    "discovery_aggregate_repair_adaptive_row_cap_after_rug_lookahead_budget";
 const REASON_SQLITE_LOCK_RETRYABLE: &str = "discovery_aggregate_repair_sqlite_lock_retryable";
 const REASON_UNKNOWN_ERROR: &str = "discovery_aggregate_repair_unknown_error";
 
@@ -93,6 +95,10 @@ struct AggregateRepairReport {
     commit_groups_processed: usize,
     reached_target: bool,
     latch_cleared: bool,
+    adaptive_row_cap_applied: bool,
+    requested_lock_first_max_rows: Option<usize>,
+    effective_lock_first_max_rows: Option<usize>,
+    adaptive_row_cap_reason: Option<String>,
     elapsed_ms: u64,
     recommended_next_action: String,
     error: Option<String>,
@@ -114,6 +120,10 @@ impl AggregateRepairReport {
             commit_groups_processed: 0,
             reached_target: false,
             latch_cleared: false,
+            adaptive_row_cap_applied: false,
+            requested_lock_first_max_rows: None,
+            effective_lock_first_max_rows: None,
+            adaptive_row_cap_reason: None,
             elapsed_ms: 0,
             recommended_next_action: ACTION_FIX_INPUT.to_string(),
             error: None,
@@ -587,17 +597,87 @@ fn run_lock_first_micro_commit(
         return report.fail(REASON_MAX_SECONDS, ACTION_RERUN, None, started);
     }
 
-    let (outcome, start_cursor, end_cursor, row_count, reached_target, gap_observed) = match store
-        .apply_discovery_scoring_repair_micro_commit_lock_first(
+    let requested_cap = cli.lock_first_max_rows;
+    let attempt_caps = adaptive_lock_first_attempt_caps(requested_cap);
+    let mut adaptive_attempted = false;
+    let mut last_adaptive_budget_error = None;
+
+    for cap in attempt_caps {
+        if Instant::now() >= deadline {
+            return report.fail(REASON_MAX_SECONDS, ACTION_RERUN, None, started);
+        }
+        let result = store.apply_discovery_scoring_repair_micro_commit_lock_first(
             aggregate_write_config,
             gap_cursor,
             repair_target,
-            cli.lock_first_max_rows,
+            cap,
             StdDuration::from_secs(cli.lock_first_max_lock_seconds),
-        ) {
-        Ok(result) => result,
-        Err(error) => return classify_write_error(report, error, started),
-    };
+        );
+        match result {
+            Ok(result) => {
+                if adaptive_attempted && cap != requested_cap {
+                    report.adaptive_row_cap_applied = true;
+                    report.requested_lock_first_max_rows = Some(requested_cap);
+                    report.effective_lock_first_max_rows = Some(cap);
+                    report.adaptive_row_cap_reason =
+                        Some(REASON_ADAPTIVE_ROW_CAP_AFTER_RUG_LOOKAHEAD_BUDGET.to_string());
+                }
+                return finish_lock_first_micro_commit_outcome(
+                    report, store, gap_cursor, cli, started, result,
+                );
+            }
+            Err(error) => {
+                let error_text = format!("{error:#}");
+                if is_retryable_sqlite_anyhow_error(&error) {
+                    return report.fail(
+                        REASON_SQLITE_LOCK_RETRYABLE,
+                        ACTION_RERUN,
+                        Some(error_text),
+                        started,
+                    );
+                }
+                if is_adaptive_rug_lookahead_budget_error(&error_text) {
+                    last_adaptive_budget_error = Some(error_text);
+                    if cap > 256 {
+                        adaptive_attempted = true;
+                        continue;
+                    }
+                    return report.fail(
+                        REASON_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS,
+                        ACTION_RERUN,
+                        last_adaptive_budget_error,
+                        started,
+                    );
+                }
+                return classify_write_error(report, error, started);
+            }
+        }
+    }
+
+    report.fail(
+        REASON_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS,
+        ACTION_RERUN,
+        last_adaptive_budget_error,
+        started,
+    )
+}
+
+fn finish_lock_first_micro_commit_outcome(
+    mut report: AggregateRepairReport,
+    store: &SqliteStore,
+    gap_cursor: &DiscoveryRuntimeCursor,
+    cli: &Cli,
+    started: Instant,
+    result: (
+        &'static str,
+        Option<DiscoveryRuntimeCursor>,
+        Option<DiscoveryRuntimeCursor>,
+        usize,
+        bool,
+        bool,
+    ),
+) -> AggregateRepairReport {
+    let (outcome, start_cursor, end_cursor, row_count, reached_target, gap_observed) = result;
 
     if let Some(start_cursor) = start_cursor {
         report.start_covered_through = Some(start_cursor);
@@ -653,6 +733,16 @@ fn run_lock_first_micro_commit(
             started,
         ),
     }
+}
+
+fn adaptive_lock_first_attempt_caps(requested_cap: usize) -> Vec<usize> {
+    let mut caps = vec![requested_cap];
+    for fallback in [1_024usize, 512, 256] {
+        if fallback < requested_cap && !caps.contains(&fallback) {
+            caps.push(fallback);
+        }
+    }
+    caps
 }
 
 #[cfg(test)]
@@ -751,6 +841,12 @@ fn is_lock_first_budget_error(error_text: &str) -> bool {
     let lowered = error_text.to_ascii_lowercase();
     lowered.contains(REASON_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS)
         || lowered.contains("interrupted")
+}
+
+fn is_adaptive_rug_lookahead_budget_error(error_text: &str) -> bool {
+    let lowered = error_text.to_ascii_lowercase();
+    lowered.contains("failed querying discovery scoring rug lookahead stats")
+        && is_lock_first_budget_error(&lowered)
 }
 
 fn collect_commit_group(
@@ -863,6 +959,27 @@ mod tests {
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
     use rusqlite::Connection;
     use std::path::Path;
+
+    struct RugLookaheadFailpointGuard;
+
+    impl Drop for RugLookaheadFailpointGuard {
+        fn drop(&mut self) {
+            SqliteStore::set_discovery_scoring_rug_lookahead_budget_fail_above_rows_for_tests(None);
+            SqliteStore::set_discovery_scoring_rug_lookahead_unknown_failpoint_for_tests(false);
+        }
+    }
+
+    fn rug_lookahead_budget_fail_above(rows: usize) -> RugLookaheadFailpointGuard {
+        SqliteStore::set_discovery_scoring_rug_lookahead_budget_fail_above_rows_for_tests(Some(
+            rows,
+        ));
+        RugLookaheadFailpointGuard
+    }
+
+    fn rug_lookahead_unknown_failpoint() -> RugLookaheadFailpointGuard {
+        SqliteStore::set_discovery_scoring_rug_lookahead_unknown_failpoint_for_tests(true);
+        RugLookaheadFailpointGuard
+    }
 
     fn unique_db_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -979,6 +1096,37 @@ mod tests {
         Ok((db_path, gap_cursor, target_cursor))
     }
 
+    fn seed_large_buy_repair_fixture(
+        name: &str,
+        repair_rows: usize,
+    ) -> Result<(
+        PathBuf,
+        DiscoveryRuntimeCursor,
+        DiscoveryRuntimeCursor,
+        Vec<SwapEvent>,
+    )> {
+        let (db_path, store) = migrated_store(name)?;
+        let base_ts = DateTime::parse_from_rfc3339("2026-04-29T00:00:00Z")?.with_timezone(&Utc);
+        let mut swaps = Vec::with_capacity(repair_rows.saturating_add(1));
+        for index in 0..=repair_rows {
+            swaps.push(test_swap(
+                &format!("sig-rugcap-{index:05}"),
+                20_000 + index as u64,
+                &(base_ts + ChronoDuration::seconds(index as i64)).to_rfc3339(),
+            ));
+        }
+        store.insert_observed_swaps_batch(&swaps)?;
+        store.apply_discovery_scoring_batch(&[swaps[0].clone()], &aggregate_config_for_tests())?;
+        let covered_cursor = cursor_for_swap(&swaps[0]);
+        let gap_cursor = cursor_for_swap(&swaps[1]);
+        let target_cursor = cursor_for_swap(swaps.last().expect("target swap"));
+        store.set_discovery_scoring_covered_through_cursor(&covered_cursor)?;
+        store.set_discovery_scoring_materialization_gap_cursor(&gap_cursor)?;
+        store
+            .set_discovery_scoring_materialization_gap_repair_target(&gap_cursor, &target_cursor)?;
+        Ok((db_path, gap_cursor, target_cursor, swaps))
+    }
+
     fn write_test_config(db_path: &Path, rug_lookahead_seconds: u64) -> Result<PathBuf> {
         let config_path = PathBuf::from(format!("{}.toml", db_path.display()));
         std::fs::write(
@@ -1027,6 +1175,19 @@ mod tests {
             |row| row.get(0),
         )
         .context("failed counting repair buy facts")
+    }
+
+    fn large_repair_buy_fact_count(db_path: &Path) -> Result<i64> {
+        let conn = Connection::open(db_path)?;
+        conn.query_row(
+            "SELECT COUNT(*)
+             FROM wallet_scoring_buy_facts
+             WHERE buy_signature LIKE 'sig-rugcap-%'
+               AND buy_signature <> 'sig-rugcap-00000'",
+            [],
+            |row| row.get(0),
+        )
+        .context("failed counting large repair buy facts")
     }
 
     fn wallet_day_trades(db_path: &Path) -> Result<i64> {
@@ -1482,6 +1643,109 @@ mod tests {
             Some(cursor_for_swap(&swaps[2]))
         );
         assert_eq!(repair_buy_fact_count(&db_path)?, 2);
+        assert!(!report.production_green);
+        remove_sqlite_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_row_cap_falls_back_after_rug_lookahead_budget_and_commits_prefix() -> Result<()> {
+        let repair_rows = 520;
+        let (db_path, _gap_cursor, _target_cursor, swaps) = seed_large_buy_repair_fixture(
+            "copybot-aggregate-repair-adaptive-rug-budget",
+            repair_rows,
+        )?;
+        let covered = cursor_for_swap(&swaps[0]);
+        let expected_prefix = cursor_for_swap(&swaps[512]);
+        let _failpoint = rug_lookahead_budget_fail_above(512);
+        let cli = lock_first_cli(&db_path, 2_048)?;
+
+        let report = run(&cli);
+
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.reason, REASON_PROGRESS);
+        assert!(report.adaptive_row_cap_applied);
+        assert_eq!(report.requested_lock_first_max_rows, Some(2_048));
+        assert_eq!(report.effective_lock_first_max_rows, Some(512));
+        assert_eq!(
+            report.adaptive_row_cap_reason.as_deref(),
+            Some(REASON_ADAPTIVE_ROW_CAP_AFTER_RUG_LOOKAHEAD_BUDGET)
+        );
+        assert_eq!(report.rows_processed, 512);
+        assert!(!report.reached_target);
+        assert!(!report.latch_cleared);
+        let store = SqliteStore::open(&db_path)?;
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(expected_prefix)
+        );
+        assert_ne!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(covered)
+        );
+        assert_eq!(large_repair_buy_fact_count(&db_path)?, 512);
+        assert!(!report.production_green);
+        remove_sqlite_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_row_cap_all_caps_fail_keeps_coverage_and_latch() -> Result<()> {
+        let (db_path, gap_cursor, _target_cursor, swaps) = seed_large_buy_repair_fixture(
+            "copybot-aggregate-repair-adaptive-rug-budget-all-fail",
+            4,
+        )?;
+        let covered = cursor_for_swap(&swaps[0]);
+        let _failpoint = rug_lookahead_budget_fail_above(0);
+        let cli = lock_first_cli(&db_path, 2_048)?;
+
+        let report = run(&cli);
+
+        assert!(!report.ok, "{report:?}");
+        assert_eq!(
+            report.reason,
+            REASON_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS
+        );
+        assert!(!report.adaptive_row_cap_applied);
+        assert!(!report.latch_cleared);
+        let store = SqliteStore::open(&db_path)?;
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(covered)
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(gap_cursor)
+        );
+        assert_eq!(large_repair_buy_fact_count(&db_path)?, 0);
+        assert!(!report.production_green);
+        remove_sqlite_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn adaptive_row_cap_does_not_trigger_for_unknown_rug_lookahead_error() -> Result<()> {
+        let (db_path, gap_cursor, _target_cursor, swaps) =
+            seed_large_buy_repair_fixture("copybot-aggregate-repair-adaptive-rug-unknown", 4)?;
+        let covered = cursor_for_swap(&swaps[0]);
+        let _failpoint = rug_lookahead_unknown_failpoint();
+        let cli = lock_first_cli(&db_path, 2_048)?;
+
+        let report = run(&cli);
+
+        assert!(!report.ok, "{report:?}");
+        assert_eq!(report.reason, REASON_UNKNOWN_ERROR);
+        assert!(!report.adaptive_row_cap_applied);
+        let store = SqliteStore::open(&db_path)?;
+        assert_eq!(
+            store.load_discovery_scoring_covered_through_cursor()?,
+            Some(covered)
+        );
+        assert_eq!(
+            store.load_discovery_scoring_materialization_gap_cursor()?,
+            Some(gap_cursor)
+        );
+        assert_eq!(large_repair_buy_fact_count(&db_path)?, 0);
         assert!(!report.production_green);
         remove_sqlite_files(&db_path);
         Ok(())
