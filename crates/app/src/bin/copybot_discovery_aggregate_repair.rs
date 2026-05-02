@@ -103,6 +103,9 @@ struct AggregateRepairReport {
     adaptive_row_cap_reason: Option<String>,
     repair_rug_lookahead_deferred: bool,
     repair_rug_lookahead_policy: Option<String>,
+    repair_rug_lookahead_batch_prefetch_used: bool,
+    repair_rug_lookahead_exact_count: usize,
+    repair_rug_lookahead_deferred_count: usize,
     elapsed_ms: u64,
     recommended_next_action: String,
     error: Option<String>,
@@ -130,6 +133,9 @@ impl AggregateRepairReport {
             adaptive_row_cap_reason: None,
             repair_rug_lookahead_deferred: false,
             repair_rug_lookahead_policy: None,
+            repair_rug_lookahead_batch_prefetch_used: false,
+            repair_rug_lookahead_exact_count: 0,
+            repair_rug_lookahead_deferred_count: 0,
             elapsed_ms: 0,
             recommended_next_action: ACTION_FIX_INPUT.to_string(),
             error: None,
@@ -747,6 +753,9 @@ fn finish_lock_first_micro_commit_outcome(
         bool,
         bool,
         bool,
+        bool,
+        usize,
+        usize,
     ),
 ) -> AggregateRepairReport {
     let (
@@ -757,6 +766,9 @@ fn finish_lock_first_micro_commit_outcome(
         reached_target,
         gap_observed,
         rug_lookahead_deferred,
+        rug_lookahead_batch_prefetch_used,
+        rug_lookahead_exact_count,
+        rug_lookahead_deferred_count,
     ) = result;
 
     if let Some(start_cursor) = start_cursor {
@@ -770,6 +782,9 @@ fn finish_lock_first_micro_commit_outcome(
         report.repair_rug_lookahead_policy =
             Some(REASON_REPAIR_RUG_LOOKAHEAD_DEFERRED_DUE_TO_BUDGET_HOTSPOT.to_string());
     }
+    report.repair_rug_lookahead_batch_prefetch_used = rug_lookahead_batch_prefetch_used;
+    report.repair_rug_lookahead_exact_count = rug_lookahead_exact_count;
+    report.repair_rug_lookahead_deferred_count = rug_lookahead_deferred_count;
     match outcome {
         "committed" => {
             report.pages_processed = 1;
@@ -1050,6 +1065,9 @@ mod tests {
     impl Drop for RugLookaheadFailpointGuard {
         fn drop(&mut self) {
             SqliteStore::set_discovery_scoring_rug_lookahead_budget_fail_above_rows_for_tests(None);
+            SqliteStore::set_discovery_scoring_rug_lookahead_batch_budget_fail_above_rows_for_tests(
+                None,
+            );
             SqliteStore::set_discovery_scoring_rug_lookahead_unknown_failpoint_for_tests(false);
         }
     }
@@ -1058,6 +1076,16 @@ mod tests {
         SqliteStore::set_discovery_scoring_rug_lookahead_budget_fail_above_rows_for_tests(Some(
             rows,
         ));
+        RugLookaheadFailpointGuard
+    }
+
+    fn rug_lookahead_budget_and_batch_fail_above(rows: usize) -> RugLookaheadFailpointGuard {
+        SqliteStore::set_discovery_scoring_rug_lookahead_budget_fail_above_rows_for_tests(Some(
+            rows,
+        ));
+        SqliteStore::set_discovery_scoring_rug_lookahead_batch_budget_fail_above_rows_for_tests(
+            Some(rows),
+        );
         RugLookaheadFailpointGuard
     }
 
@@ -1868,6 +1896,9 @@ mod tests {
             Some(covered)
         );
         assert_eq!(large_repair_buy_fact_count(&db_path)?, 512);
+        assert!(!report.repair_rug_lookahead_batch_prefetch_used);
+        assert_eq!(report.repair_rug_lookahead_exact_count, 0);
+        assert_eq!(report.repair_rug_lookahead_deferred_count, 0);
         assert!(!report.production_green);
         remove_sqlite_files(&db_path);
         Ok(())
@@ -1880,7 +1911,7 @@ mod tests {
             4,
         )?;
         let expected_cursor = cursor_for_swap(&swaps[4]);
-        let _failpoint = rug_lookahead_budget_fail_above(0);
+        let _failpoint = rug_lookahead_budget_and_batch_fail_above(0);
         let cli = lock_first_cli(&db_path, 2_048)?;
 
         let report = run(&cli);
@@ -1891,6 +1922,9 @@ mod tests {
         assert_eq!(report.requested_lock_first_max_rows, Some(2_048));
         assert_eq!(report.effective_lock_first_max_rows, Some(256));
         assert!(report.repair_rug_lookahead_deferred);
+        assert!(report.repair_rug_lookahead_batch_prefetch_used);
+        assert_eq!(report.repair_rug_lookahead_exact_count, 0);
+        assert_eq!(report.repair_rug_lookahead_deferred_count, 4);
         assert_eq!(
             report.repair_rug_lookahead_policy.as_deref(),
             Some(REASON_REPAIR_RUG_LOOKAHEAD_DEFERRED_DUE_TO_BUDGET_HOTSPOT)
@@ -1916,18 +1950,66 @@ mod tests {
     }
 
     #[test]
+    fn repair_rug_lookahead_batch_prefetch_exact_path_avoids_per_row_stats() -> Result<()> {
+        let (db_path, gap_cursor, target_cursor, _swaps) =
+            seed_large_buy_repair_fixture("copybot-aggregate-repair-rug-batch-prefetch-exact", 4)?;
+        let store = SqliteStore::open(&db_path)?;
+        SqliteStore::take_discovery_scoring_rug_lookahead_stats_call_count_for_tests();
+
+        let (
+            outcome,
+            _start_cursor,
+            end_cursor,
+            row_count,
+            reached_target,
+            _gap_observed,
+            deferred,
+            batch_prefetch_used,
+            exact_count,
+            deferred_count,
+        ) = store.apply_discovery_scoring_repair_micro_commit_lock_first(
+            &aggregate_config_for_tests(),
+            &gap_cursor,
+            &target_cursor,
+            4,
+            StdDuration::from_secs(DEFAULT_LOCK_FIRST_MAX_LOCK_SECONDS),
+            true,
+        )?;
+
+        assert_eq!(outcome, "committed");
+        assert_eq!(end_cursor, Some(target_cursor));
+        assert_eq!(row_count, 4);
+        assert!(reached_target);
+        assert!(!deferred);
+        assert!(batch_prefetch_used);
+        assert_eq!(exact_count, 4);
+        assert_eq!(deferred_count, 0);
+        assert_eq!(
+            SqliteStore::take_discovery_scoring_rug_lookahead_stats_call_count_for_tests(),
+            0
+        );
+        assert_eq!(large_repair_buy_fact_count(&db_path)?, 4);
+        assert_eq!(large_repair_null_rug_fact_count(&db_path)?, 0);
+        remove_sqlite_files(&db_path);
+        Ok(())
+    }
+
+    #[test]
     fn repair_rug_lookahead_deferral_does_not_zero_unrelated_pending_facts() -> Result<()> {
         let (db_path, _gap_cursor, _target_cursor, swaps) =
             seed_large_buy_repair_fixture("copybot-aggregate-repair-rug-deferral-prefix-only", 4)?;
         insert_unrelated_pending_rug_fact(&db_path)?;
         let expected_cursor = cursor_for_swap(&swaps[4]);
-        let _failpoint = rug_lookahead_budget_fail_above(0);
+        let _failpoint = rug_lookahead_budget_and_batch_fail_above(0);
         let cli = lock_first_cli(&db_path, 2_048)?;
 
         let report = run(&cli);
 
         assert!(report.ok, "{report:?}");
         assert!(report.repair_rug_lookahead_deferred);
+        assert!(report.repair_rug_lookahead_batch_prefetch_used);
+        assert_eq!(report.repair_rug_lookahead_exact_count, 0);
+        assert_eq!(report.repair_rug_lookahead_deferred_count, 4);
         assert_eq!(
             report.repair_rug_lookahead_policy.as_deref(),
             Some(REASON_REPAIR_RUG_LOOKAHEAD_DEFERRED_DUE_TO_BUDGET_HOTSPOT)

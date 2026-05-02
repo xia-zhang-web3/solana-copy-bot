@@ -13,7 +13,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 #[cfg(debug_assertions)]
 use std::cell::Cell;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration as StdDuration, Instant};
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -110,6 +110,24 @@ struct CarryoverLotRow {
 #[derive(Debug, Clone, Copy, Default)]
 struct RugLookaheadFinalizeOutcome {
     deferred_due_to_budget_hotspot: bool,
+    batch_prefetch_used: bool,
+    exact_count: usize,
+    deferred_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct RepairRugFact {
+    buy_signature: String,
+    token: String,
+    buy_ts: DateTime<Utc>,
+    check_after_ts: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+struct RepairRugLookaheadEvent {
+    wallet_id: String,
+    ts: DateTime<Utc>,
+    sol_notional: f64,
 }
 
 #[cfg(debug_assertions)]
@@ -122,9 +140,13 @@ thread_local! {
         const { Cell::new(None) };
     static DISCOVERY_SCORING_RUG_LOOKAHEAD_BUDGET_FAIL_ABOVE_ROWS: Cell<Option<usize>> =
         const { Cell::new(None) };
+    static DISCOVERY_SCORING_RUG_LOOKAHEAD_BATCH_BUDGET_FAIL_ABOVE_ROWS: Cell<Option<usize>> =
+        const { Cell::new(None) };
     static DISCOVERY_SCORING_RUG_LOOKAHEAD_UNKNOWN_FAILPOINT: Cell<bool> =
         const { Cell::new(false) };
     static DISCOVERY_SCORING_LOCK_FIRST_REPAIR_CURRENT_ROWS: Cell<usize> =
+        const { Cell::new(0) };
+    static DISCOVERY_SCORING_RUG_LOOKAHEAD_STATS_CALL_COUNT: Cell<usize> =
         const { Cell::new(0) };
 }
 
@@ -183,8 +205,25 @@ impl SqliteStore {
     }
 
     #[doc(hidden)]
+    pub fn set_discovery_scoring_rug_lookahead_batch_budget_fail_above_rows_for_tests(
+        rows: Option<usize>,
+    ) {
+        DISCOVERY_SCORING_RUG_LOOKAHEAD_BATCH_BUDGET_FAIL_ABOVE_ROWS
+            .with(|failpoint| failpoint.set(rows));
+    }
+
+    #[doc(hidden)]
     pub fn set_discovery_scoring_rug_lookahead_unknown_failpoint_for_tests(enabled: bool) {
         DISCOVERY_SCORING_RUG_LOOKAHEAD_UNKNOWN_FAILPOINT.with(|failpoint| failpoint.set(enabled));
+    }
+
+    #[doc(hidden)]
+    pub fn take_discovery_scoring_rug_lookahead_stats_call_count_for_tests() -> usize {
+        DISCOVERY_SCORING_RUG_LOOKAHEAD_STATS_CALL_COUNT.with(|counter| {
+            let count = counter.get();
+            counter.set(0);
+            count
+        })
     }
 }
 
@@ -583,6 +622,20 @@ fn rug_lookahead_budget_failpoint_triggered() -> bool {
 }
 
 #[cfg(debug_assertions)]
+fn rug_lookahead_batch_budget_failpoint_triggered() -> bool {
+    let current_rows =
+        DISCOVERY_SCORING_LOCK_FIRST_REPAIR_CURRENT_ROWS.with(|current| current.get());
+    DISCOVERY_SCORING_RUG_LOOKAHEAD_BATCH_BUDGET_FAIL_ABOVE_ROWS
+        .with(|limit| limit.get())
+        .is_some_and(|limit| current_rows > limit)
+}
+
+#[cfg(not(debug_assertions))]
+fn rug_lookahead_batch_budget_failpoint_triggered() -> bool {
+    false
+}
+
+#[cfg(debug_assertions)]
 fn rug_lookahead_unknown_failpoint_triggered() -> bool {
     DISCOVERY_SCORING_RUG_LOOKAHEAD_UNKNOWN_FAILPOINT.with(|failpoint| failpoint.get())
 }
@@ -591,6 +644,15 @@ fn rug_lookahead_unknown_failpoint_triggered() -> bool {
 fn rug_lookahead_unknown_failpoint_triggered() -> bool {
     false
 }
+
+#[cfg(debug_assertions)]
+fn note_rug_lookahead_stats_call_for_tests() {
+    DISCOVERY_SCORING_RUG_LOOKAHEAD_STATS_CALL_COUNT
+        .with(|counter| counter.set(counter.get().saturating_add(1)));
+}
+
+#[cfg(not(debug_assertions))]
+fn note_rug_lookahead_stats_call_for_tests() {}
 
 fn check_lock_first_repair_deadline(deadline: Instant) -> Result<()> {
     if Instant::now() >= deadline {
@@ -1772,6 +1834,7 @@ fn rug_lookahead_stats_on_conn(
     buy_ts: DateTime<Utc>,
     lookahead_end: DateTime<Utc>,
 ) -> Result<(f64, u32)> {
+    note_rug_lookahead_stats_call_for_tests();
     if rug_lookahead_unknown_failpoint_triggered() {
         return Err(anyhow!(
             "test failpoint: discovery scoring rug lookahead unknown failure"
@@ -1852,7 +1915,61 @@ fn finalize_repair_prefix_rug_facts_defer_budget_hotspot_on_conn(
     conn: &Connection,
     swaps: &[SwapEvent],
 ) -> Result<RugLookaheadFinalizeOutcome> {
-    let mut outcome = RugLookaheadFinalizeOutcome::default();
+    let facts = load_current_repair_prefix_pending_rug_facts_on_conn(conn, swaps)?;
+    if facts.is_empty() {
+        return Ok(RugLookaheadFinalizeOutcome::default());
+    }
+    let mut outcome = RugLookaheadFinalizeOutcome {
+        batch_prefetch_used: true,
+        ..RugLookaheadFinalizeOutcome::default()
+    };
+    let batch_stats = repair_prefix_rug_lookahead_stats_batch_on_conn(conn, &facts);
+    let stats_by_signature = match batch_stats {
+        Ok(stats) => stats,
+        Err(error) if rug_lookahead_error_is_budget_hotspot(&error) => {
+            outcome.deferred_due_to_budget_hotspot = true;
+            for fact in &facts {
+                conn.execute(
+                    "UPDATE wallet_scoring_buy_facts
+                     SET rug_volume_lookahead_sol = 0.0,
+                         rug_unique_traders_lookahead = 0
+                     WHERE buy_signature = ?1",
+                    params![fact.buy_signature.as_str()],
+                )
+                .context("failed deferring current repair rug fact")?;
+            }
+            outcome.deferred_count = facts.len();
+            return Ok(outcome);
+        }
+        Err(error) => return Err(error),
+    };
+    for fact in &facts {
+        let (volume_sol, unique_traders) = stats_by_signature
+            .get(fact.buy_signature.as_str())
+            .copied()
+            .unwrap_or((0.0, 0));
+        conn.execute(
+            "UPDATE wallet_scoring_buy_facts
+             SET rug_volume_lookahead_sol = ?2,
+                 rug_unique_traders_lookahead = ?3
+             WHERE buy_signature = ?1",
+            params![
+                fact.buy_signature.as_str(),
+                volume_sol,
+                unique_traders as i64
+            ],
+        )
+        .context("failed updating current repair rug fact")?;
+        outcome.exact_count = outcome.exact_count.saturating_add(1);
+    }
+    Ok(outcome)
+}
+
+fn load_current_repair_prefix_pending_rug_facts_on_conn(
+    conn: &Connection,
+    swaps: &[SwapEvent],
+) -> Result<Vec<RepairRugFact>> {
+    let mut facts = Vec::new();
     for swap in swaps.iter().filter(|swap| is_sol_buy(swap)) {
         let pending = conn
             .query_row(
@@ -1880,25 +1997,130 @@ fn finalize_repair_prefix_rug_facts_defer_budget_hotspot_on_conn(
             &check_after_raw,
             "wallet_scoring_buy_facts.rug_check_after_ts",
         )?;
-        let stats = rug_lookahead_stats_on_conn(conn, &token, buy_ts, check_after_ts);
-        let (volume_sol, unique_traders) = match stats {
-            Ok(stats) => stats,
-            Err(error) if rug_lookahead_error_is_budget_hotspot(&error) => {
-                outcome.deferred_due_to_budget_hotspot = true;
-                (0.0, 0)
-            }
-            Err(error) => return Err(error),
-        };
-        conn.execute(
-            "UPDATE wallet_scoring_buy_facts
-             SET rug_volume_lookahead_sol = ?2,
-                 rug_unique_traders_lookahead = ?3
-             WHERE buy_signature = ?1",
-            params![swap.signature.as_str(), volume_sol, unique_traders as i64],
-        )
-        .context("failed updating current repair rug fact")?;
+        facts.push(RepairRugFact {
+            buy_signature: swap.signature.clone(),
+            token,
+            buy_ts,
+            check_after_ts,
+        });
     }
-    Ok(outcome)
+    Ok(facts)
+}
+
+fn repair_prefix_rug_lookahead_stats_batch_on_conn(
+    conn: &Connection,
+    facts: &[RepairRugFact],
+) -> Result<HashMap<String, (f64, u32)>> {
+    if rug_lookahead_unknown_failpoint_triggered() {
+        return Err(anyhow!(
+            "test failpoint: discovery scoring rug lookahead unknown failure"
+        ))
+        .context("failed querying discovery scoring rug lookahead stats batch");
+    }
+    if rug_lookahead_batch_budget_failpoint_triggered() {
+        return Err(anyhow!(
+            DISCOVERY_AGGREGATE_REPAIR_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS
+        ))
+        .context("failed querying discovery scoring rug lookahead stats batch");
+    }
+
+    let mut token_windows: HashMap<String, (DateTime<Utc>, DateTime<Utc>)> = HashMap::new();
+    for fact in facts {
+        token_windows
+            .entry(fact.token.clone())
+            .and_modify(|(start, end)| {
+                *start = (*start).min(fact.buy_ts);
+                *end = (*end).max(fact.check_after_ts);
+            })
+            .or_insert((fact.buy_ts, fact.check_after_ts));
+    }
+
+    let mut events_by_token: HashMap<String, Vec<RepairRugLookaheadEvent>> = HashMap::new();
+    for (token, (window_start, window_end)) in token_windows {
+        events_by_token.insert(
+            token.clone(),
+            load_repair_rug_lookahead_events_for_token_on_conn(
+                conn,
+                &token,
+                window_start,
+                window_end,
+            )?,
+        );
+    }
+
+    let mut stats_by_signature = HashMap::new();
+    for fact in facts {
+        let mut volume_sol = 0.0f64;
+        let mut unique_wallets = HashSet::new();
+        if let Some(events) = events_by_token.get(&fact.token) {
+            for event in events {
+                if event.ts >= fact.buy_ts && event.ts <= fact.check_after_ts {
+                    volume_sol += event.sol_notional.max(0.0);
+                    unique_wallets.insert(event.wallet_id.as_str());
+                }
+            }
+        }
+        stats_by_signature.insert(
+            fact.buy_signature.clone(),
+            (volume_sol.max(0.0), unique_wallets.len() as u32),
+        );
+    }
+    Ok(stats_by_signature)
+}
+
+fn load_repair_rug_lookahead_events_for_token_on_conn(
+    conn: &Connection,
+    token: &str,
+    window_start: DateTime<Utc>,
+    window_end: DateTime<Utc>,
+) -> Result<Vec<RepairRugLookaheadEvent>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT wallet_id, ts, sol_notional
+             FROM (
+                SELECT wallet_id, ts, qty_out AS sol_notional
+                FROM observed_swaps INDEXED BY idx_observed_swaps_token_in_out_ts
+                WHERE token_in = ?1
+                  AND token_out = ?2
+                  AND ts >= ?3
+                  AND ts <= ?4
+                UNION ALL
+                SELECT wallet_id, ts, qty_in AS sol_notional
+                FROM observed_swaps INDEXED BY idx_observed_swaps_token_out_in_ts
+                WHERE token_out = ?1
+                  AND token_in = ?2
+                  AND ts >= ?3
+                  AND ts <= ?4
+             )",
+        )
+        .context("failed preparing discovery scoring rug lookahead stats batch query")?;
+    let mut rows = stmt
+        .query(params![
+            token,
+            SOL_MINT,
+            window_start.to_rfc3339(),
+            window_end.to_rfc3339()
+        ])
+        .context("failed querying discovery scoring rug lookahead stats batch")?;
+    let mut events = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .context("failed iterating discovery scoring rug lookahead stats batch")?
+    {
+        let ts_raw: String = row
+            .get(1)
+            .context("failed reading rug lookahead batch ts")?;
+        events.push(RepairRugLookaheadEvent {
+            wallet_id: row
+                .get(0)
+                .context("failed reading rug lookahead batch wallet_id")?,
+            ts: parse_ts(&ts_raw, "observed_swaps.ts")?,
+            sol_notional: row
+                .get::<_, f64>(2)
+                .context("failed reading rug lookahead batch sol_notional")?,
+        });
+    }
+    Ok(events)
 }
 
 fn rug_lookahead_error_is_budget_hotspot(error: &anyhow::Error) -> bool {
@@ -2220,6 +2442,9 @@ impl SqliteStore {
         bool,
         bool,
         bool,
+        bool,
+        usize,
+        usize,
     )> {
         self.with_immediate_transaction_retry(
             "discovery scoring aggregate repair lock-first micro commit",
@@ -2243,7 +2468,18 @@ impl SqliteStore {
                     "covered_through",
                 )?;
                 let Some(current) = current else {
-                    return Ok(("covered_missing", None, None, 0, false, false, false));
+                    return Ok((
+                        "covered_missing",
+                        None,
+                        None,
+                        0,
+                        false,
+                        false,
+                        false,
+                        false,
+                        0,
+                        0,
+                    ));
                 };
 
                 let Some(gap_cursor) =
@@ -2257,6 +2493,9 @@ impl SqliteStore {
                         false,
                         false,
                         false,
+                        false,
+                        0,
+                        0,
                     ));
                 };
                 if cmp_cursor_order(&gap_cursor, expected_gap_cursor) != Ordering::Equal {
@@ -2268,6 +2507,9 @@ impl SqliteStore {
                         false,
                         false,
                         false,
+                        false,
+                        0,
+                        0,
                     ));
                 }
 
@@ -2282,6 +2524,9 @@ impl SqliteStore {
                         false,
                         false,
                         false,
+                        false,
+                        0,
+                        0,
                     ));
                 };
                 if cmp_cursor_order(&target_gap_cursor, expected_gap_cursor) != Ordering::Equal
@@ -2295,6 +2540,9 @@ impl SqliteStore {
                         false,
                         false,
                         false,
+                        false,
+                        0,
+                        0,
                     ));
                 }
 
@@ -2309,6 +2557,9 @@ impl SqliteStore {
                         false,
                         false,
                         false,
+                        false,
+                        0,
+                        0,
                     ));
                 }
 
@@ -2322,6 +2573,9 @@ impl SqliteStore {
                         true,
                         gap_observed_before,
                         false,
+                        false,
+                        0,
+                        0,
                     ));
                 }
 
@@ -2384,6 +2638,9 @@ impl SqliteStore {
                             false,
                             gap_observed_before,
                             false,
+                            false,
+                            0,
+                            0,
                         ));
                     }
                     return Ok((
@@ -2394,6 +2651,9 @@ impl SqliteStore {
                         false,
                         gap_observed_before,
                         false,
+                        false,
+                        0,
+                        0,
                     ));
                 }
                 let last_cursor = DiscoveryRuntimeCursor {
@@ -2426,6 +2686,9 @@ impl SqliteStore {
                         false,
                         gap_observed_before,
                         false,
+                        false,
+                        0,
+                        0,
                     ));
                 }
                 let prepared = prepare_discovery_scoring_swaps_with_diagnostics(
@@ -2465,6 +2728,9 @@ impl SqliteStore {
                     reached_target,
                     gap_observed,
                     rug_finalize_outcome.deferred_due_to_budget_hotspot,
+                    rug_finalize_outcome.batch_prefetch_used,
+                    rug_finalize_outcome.exact_count,
+                    rug_finalize_outcome.deferred_count,
                 ))
             },
         )
