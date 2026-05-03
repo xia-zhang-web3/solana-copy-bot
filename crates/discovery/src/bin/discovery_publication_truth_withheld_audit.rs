@@ -763,7 +763,7 @@ mod tests {
     ) -> Result<()> {
         let audit = WalletFreshnessAuditReport {
             now: captured_at,
-            window_start: captured_at - Duration::days(5),
+            window_start: captured_at - Duration::days(2),
             verdict: WalletFreshnessVerdict::StalePublicationTruth,
             reason: reason.to_string(),
             follow_top_n: 15,
@@ -772,7 +772,7 @@ mod tests {
             publication_recent_under_gate: recent_under_gate,
             latest_publication_ts: Some(captured_at - Duration::minutes(30)),
             publication_age_seconds: Some(1800),
-            latest_publication_window_start: Some(captured_at - Duration::days(5)),
+            latest_publication_window_start: Some(captured_at - Duration::days(2)),
             published_scoring_source: scoring_source.map(str::to_string),
             published_wallet_ids: published_wallet_ids.clone(),
             active_follow_wallet_ids: active_follow_wallet_ids.clone(),
@@ -794,7 +794,7 @@ mod tests {
                 eligible_wallet_count: current_raw_top_wallet_ids.len(),
                 top_wallet_count: current_raw_top_wallet_ids.len(),
                 short_retention_configured: false,
-                covered_since: Some(captured_at - Duration::days(5)),
+                covered_since: Some(captured_at - Duration::days(2)),
                 covered_through_cursor: None,
                 covered_through_lag_seconds: Some(60),
                 tail_fresh_within_runtime_lag: raw_window_complete,
@@ -814,7 +814,7 @@ mod tests {
                 unique_wallet_count_across_cycles: current_raw_top_wallet_ids.len(),
                 samples: vec![WalletFreshnessRawCycleSample {
                     sample_now: captured_at,
-                    window_start: captured_at - Duration::days(5),
+                    window_start: captured_at - Duration::days(2),
                     observed_swaps_loaded: current_raw_top_wallet_ids.len(),
                     eligible_wallet_count: current_raw_top_wallet_ids.len(),
                     top_wallet_ids: current_raw_top_wallet_ids.clone(),

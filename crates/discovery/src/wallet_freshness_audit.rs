@@ -2335,8 +2335,8 @@ mod tests {
 
     fn freshness_test_config() -> DiscoveryConfig {
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.observed_swaps_retention_days = 14;
         config.refresh_seconds = 600;
         config.metric_snapshot_interval_seconds = 60;
@@ -2394,7 +2394,7 @@ mod tests {
         now: DateTime<Utc>,
         wallets: &[(&str, &str, usize, i64)],
     ) -> Result<()> {
-        let coverage_start = now - Duration::days(5);
+        let coverage_start = now - Duration::days(2);
         for (wallet_idx, (wallet_id, mint, trades, offset_minutes)) in wallets.iter().enumerate() {
             if *trades == 0 {
                 continue;
@@ -2520,7 +2520,7 @@ mod tests {
             recent_cycles: 3,
             audit: WalletFreshnessAuditReport {
                 now: captured_at,
-                window_start: captured_at - Duration::days(5),
+                window_start: captured_at - Duration::days(2),
                 verdict: audit_verdict,
                 reason: audit_reason(audit_verdict).to_string(),
                 follow_top_n: current_raw_top_wallet_ids.len(),
@@ -2529,7 +2529,7 @@ mod tests {
                 publication_recent_under_gate: true,
                 latest_publication_ts: Some(captured_at - Duration::seconds(60)),
                 publication_age_seconds: Some(60),
-                latest_publication_window_start: Some(captured_at - Duration::days(5)),
+                latest_publication_window_start: Some(captured_at - Duration::days(2)),
                 published_scoring_source: Some("raw_window_persisted_stream".to_string()),
                 published_wallet_ids: published_wallet_ids.clone(),
                 active_follow_wallet_ids: active_follow_wallet_ids.clone(),
@@ -2581,7 +2581,7 @@ mod tests {
                     eligible_wallet_count: current_raw_top_wallet_ids.len(),
                     top_wallet_count: current_raw_top_wallet_ids.len(),
                     short_retention_configured: false,
-                    covered_since: Some(captured_at - Duration::days(5)),
+                    covered_since: Some(captured_at - Duration::days(2)),
                     covered_through_cursor: Some(DiscoveryRuntimeCursor {
                         ts_utc: captured_at,
                         slot: 1,
@@ -2607,7 +2607,7 @@ mod tests {
                         + rotation_entered.len(),
                     samples: vec![WalletFreshnessRawCycleSample {
                         sample_now: captured_at,
-                        window_start: captured_at - Duration::days(5),
+                        window_start: captured_at - Duration::days(2),
                         observed_swaps_loaded: 10,
                         eligible_wallet_count: current_raw_top_wallet_ids.len(),
                         top_wallet_ids: current_raw_top_wallet_ids.clone(),

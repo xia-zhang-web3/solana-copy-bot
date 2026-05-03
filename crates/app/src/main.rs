@@ -6678,7 +6678,7 @@ mod app_tests {
             .with_timezone(&Utc);
         store.upsert_discovery_persisted_rebuild_state(&DiscoveryPersistedRebuildStateRow {
             phase: DiscoveryPersistedRebuildPhase::CollectBuyMints,
-            window_start: now - chrono::Duration::days(5),
+            window_start: now - chrono::Duration::days(2),
             horizon_end: now,
             metrics_window_start: now - chrono::Duration::hours(1),
             phase_cursor: None,
@@ -12142,7 +12142,7 @@ mod app_tests {
 
         let reason = guard
             .compute_infra_block_reason(now)
-            .expect("parser-stall pattern over full window must trigger block");
+            .expect("parser-stall pattern over broad window must trigger block");
         assert!(
             reason.contains("parser_stall_for=20m"),
             "unexpected reason: {}",
@@ -15771,7 +15771,7 @@ mod app_tests {
             .expect("timestamp")
             .with_timezone(&Utc);
         let mut config = copybot_config::DiscoveryConfig::default();
-        config.scoring_window_days = 5;
+        config.scoring_window_days = 2;
         config.metric_snapshot_interval_seconds = 30 * 60;
         config.follow_top_n = 1;
         config.min_score = 0.1;
@@ -15857,7 +15857,7 @@ mod app_tests {
             .expect("timestamp")
             .with_timezone(&Utc);
         let mut config = copybot_config::DiscoveryConfig::default();
-        config.scoring_window_days = 5;
+        config.scoring_window_days = 2;
         config.refresh_seconds = 600;
         config.metric_snapshot_interval_seconds = 30 * 60;
         config.follow_top_n = 1;

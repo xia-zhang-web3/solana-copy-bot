@@ -1323,7 +1323,7 @@ mod tests {
                 "[sqlite]\n",
                 "path = \"{}\"\n\n",
                 "[discovery]\n",
-                "scoring_window_days = 5\n",
+                "scoring_window_days = 2\n",
                 "refresh_seconds = 600\n",
                 "metric_snapshot_interval_seconds = 1800\n",
                 "max_window_swaps_in_memory = 10000\n",

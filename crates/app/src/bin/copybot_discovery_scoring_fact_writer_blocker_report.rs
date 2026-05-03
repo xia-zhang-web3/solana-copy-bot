@@ -874,7 +874,7 @@ mod tests {
         ])?;
         store.insert_wallet_metric(&WalletMetricRow {
             wallet_id: wallet.to_string(),
-            window_start: now - Duration::days(5),
+            window_start: now - Duration::days(2),
             pnl: 0.0,
             win_rate: 0.0,
             trades: 2,
@@ -892,7 +892,7 @@ mod tests {
         db_path: &Path,
         now: DateTime<Utc>,
     ) -> ScoringFactWriterBlockerReport {
-        let (evidence, errors) = load_runtime_evidence(db_path, now - Duration::days(5), now);
+        let (evidence, errors) = load_runtime_evidence(db_path, now - Duration::days(2), now);
         build_report(
             "config.toml".to_string(),
             db_path.display().to_string(),

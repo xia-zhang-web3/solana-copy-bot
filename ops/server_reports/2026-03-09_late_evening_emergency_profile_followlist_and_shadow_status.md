@@ -2,7 +2,7 @@
 
 ### Scope
 
-Document the first live checkpoint after the 5-day emergency discovery profile and the `max_rug_ratio = 1.0` emergency override.
+Document the first live checkpoint after the legacy emergency discovery profile and the `max_rug_ratio = 1.0` emergency override.
 
 ### Server checkpoint
 
@@ -16,8 +16,8 @@ Document the first live checkpoint after the 5-day emergency discovery profile a
 
 From `/etc/solana-copy-bot/live.server.toml`:
 
-- `scoring_window_days = 5`
-- `decay_window_days = 5`
+- `scoring_window_days = 2`
+- `decay_window_days = 2`
 - `min_leader_notional_sol = 0.5`
 - `min_active_days = 3`
 - `min_score = 0.4`
@@ -46,7 +46,7 @@ Top scored wallets in the latest bucket:
 Interpretation:
 
 - The `0 active wallets` blocker is closed.
-- The emergency 5-day profile plus `max_rug_ratio = 1.0` override materially changed live outcomes.
+- The emergency legacy profile plus `max_rug_ratio = 1.0` override materially changed live outcomes.
 
 #### Shadow pipeline
 

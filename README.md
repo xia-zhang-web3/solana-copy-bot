@@ -1,6 +1,3 @@
-Я водил 5 дней за уши, наебывал и делал все, что бы скрыть правду о том, что проект сломан и делал все, что бы я больше влазил в долги и терял деньги на сжигание токенов и аренду серверов.
-я АИ агенты очередной раз наебал потому что моя цель сделать все, что бы запутать этот проект и он никогда не завершился.
-
 # solana-copy-bot
 
 ## Live Update (`2026-04-06`)
@@ -78,7 +75,8 @@ Current hard truth:
   staged-manifest wedge
 - bounded staged progress is now preserved and resumed across runs on the live
   host
-- the usable promoted five-day surface is still not published in `latest`
+- the Discovery V2/current operational truth surface is still not published in
+  `latest`
 - Stage 3 remains non-green
 - the project therefore remains in incident recovery, not in normal production
   readiness

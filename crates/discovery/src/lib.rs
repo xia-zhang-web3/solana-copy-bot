@@ -46,6 +46,7 @@ use std::time::{Duration as StdDuration, Instant};
 use tracing::{info, warn};
 
 pub mod cutover_readiness;
+pub mod discovery_v2;
 mod followlist;
 pub mod operator_status;
 pub mod perf_harness;
@@ -25221,8 +25222,8 @@ mod tests {
 
     fn live_shadow_blocker_discovery_config_for_tests() -> DiscoveryConfig {
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.observed_swaps_retention_days = 7;
         config.follow_top_n = 15;
         config.min_leader_notional_sol = 0.5;
@@ -25369,8 +25370,8 @@ mod tests {
             .iter_mut()
             .find(|(wallet_id, _)| wallet_id == "wallet_pass_09")
             .expect("borderline decay fixture wallet should exist");
-        acc.first_seen = Some(now - Duration::days(5) + Duration::minutes(10));
-        acc.last_seen = Some(now - Duration::days(5) + Duration::minutes(50));
+        acc.first_seen = Some(now - Duration::days(2) + Duration::minutes(10));
+        acc.last_seen = Some(now - Duration::days(2) + Duration::minutes(50));
         wallets
     }
 
@@ -28132,7 +28133,7 @@ mod tests {
         assert_eq!(
             smallest_surface_count_reaching_fifteen,
             Some(5),
-            "there is no one/two/three/four-surface discovery policy tweak that reaches 15+ on the live-like reduced field; the minimal path is already five surfaces wide"
+            "there is no one/two/three/four-surface discovery policy tweak that reaches 15+ on the live-like reduced field; the minimal path is already multiple surfaces wide"
         );
         assert!(
             five_surface_combos_reaching_fifteen.iter().any(|combo| combo
@@ -40451,7 +40452,7 @@ mod tests {
             deep_contract
                 .replay_wallet_stats_phase_page_limit_override
                 .is_some_and(|limit| limit > 92),
-            "once the same replay checkpoint is still stuck in sol_leg, the widened contract should carry the larger bounded budget through the replay lane instead of leaving sol_leg on the old five-page ceiling"
+            "once the same replay checkpoint is still stuck in sol_leg, the widened contract should carry the larger bounded budget through the replay lane instead of leaving sol_leg on the old bounded-page ceiling"
         );
         assert_eq!(
             deep_contract.reason,
@@ -41484,7 +41485,7 @@ mod tests {
                     .saturating_add(
                         config.max_fetch_swaps_per_cycle * config.max_fetch_pages_per_cycle
                 ),
-            "fixture must leave more than one ordinary five-page sol-leg suffix so the resumed live checkpoint reproduces the exact page-budget blocker"
+            "fixture must leave more than one ordinary bounded-page sol-leg suffix so the resumed live checkpoint reproduces the exact page-budget blocker"
         );
         runtime_store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryService::persisted_stream_rebuild_row(&replay_state, now)?,
@@ -44053,7 +44054,7 @@ mod tests {
         );
         assert!(
             exact_target_only_swaps.len() < full_swaps.len(),
-            "the post-02e5132 repro must still leave a broad full-window tail behind the exact candidate-wallet set"
+            "the post-02e5132 repro must still leave a broad broad-window tail behind the exact candidate-wallet set"
         );
 
         let window_start = now - Duration::days(config.scoring_window_days.max(1) as i64);
@@ -44154,7 +44155,7 @@ mod tests {
         assert_eq!(
             old_like_budget_exhausted_reason,
             Some(PersistedStreamBudgetExhaustedReason::PageBudget),
-            "old broad candidate-wallet activity backfill must spend the entire five-page lane on the full observed swap window before it can exhaust the source"
+            "old broad candidate-wallet activity backfill must spend the entire bounded-page lane on the full observed swap window before it can exhaust the source"
         );
         assert_eq!(
             DiscoveryService::persisted_stream_publishable_checkpoint_blocker_from_state(
@@ -44934,7 +44935,7 @@ mod tests {
         assert!(
             telemetry.prepass_rows_processed
                 <= COLLECT_BUY_MINTS_FRESH_SCAN_BATCH_CAP * config.max_fetch_pages_per_cycle,
-            "baseline live contract should still stop near the old five-page fresh-scan ceiling before token quality starts"
+            "baseline live contract should still stop near the old bounded-page fresh-scan ceiling before token quality starts"
         );
         assert!(
             telemetry.quality_next_mint_index <= telemetry.unique_buy_mints,
@@ -44971,7 +44972,7 @@ mod tests {
         assert_ne!(
             rebuild.phase,
             DiscoveryPersistedRebuildPhase::CollectBuyMints,
-            "run_cycle should reuse the widened fail-closed publication recovery contract instead of leaving the live-like rebuild stuck in fresh_scan after the old five-page prepass"
+            "run_cycle should reuse the widened fail-closed publication recovery contract instead of leaving the live-like rebuild stuck in fresh_scan after the old bounded-page prepass"
         );
         assert!(
             rebuild.prepass_rows_processed >= 6_000,
@@ -46043,8 +46044,8 @@ mod tests {
             .expect("valid timestamp")
             .with_timezone(&Utc);
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.observed_swaps_retention_days = 7;
         config.follow_top_n = 1;
         config.min_score = 0.1;
@@ -46137,8 +46138,8 @@ mod tests {
             .expect("valid timestamp")
             .with_timezone(&Utc);
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.observed_swaps_retention_days = 7;
         config.follow_top_n = 15;
 
@@ -46207,8 +46208,8 @@ mod tests {
             .with_timezone(&Utc);
         let restart_now = now + Duration::minutes(1);
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.observed_swaps_retention_days = 7;
         config.follow_top_n = 15;
 
@@ -46295,8 +46296,8 @@ mod tests {
             .with_timezone(&Utc);
         let next_cycle_now = now + Duration::minutes(1);
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.observed_swaps_retention_days = 7;
         config.follow_top_n = 1;
         config.min_leader_notional_sol = 0.5;
@@ -46473,8 +46474,8 @@ mod tests {
             .expect("valid timestamp")
             .with_timezone(&Utc);
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.observed_swaps_retention_days = 7;
         config.follow_top_n = 1;
         config.min_leader_notional_sol = 0.5;
@@ -46550,8 +46551,8 @@ mod tests {
             .with_timezone(&Utc);
         let next_cycle_now = now + Duration::minutes(1);
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.observed_swaps_retention_days = 7;
         config.follow_top_n = 1;
         config.min_score = 0.0;
@@ -46648,8 +46649,8 @@ mod tests {
             .expect("valid timestamp")
             .with_timezone(&Utc);
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.max_bootstrap_snapshot_age_seconds = 60 * 60;
         config.metric_snapshot_interval_seconds = 30 * 60;
         config.min_score = 0.0;
@@ -46729,8 +46730,8 @@ mod tests {
             .expect("valid timestamp")
             .with_timezone(&Utc);
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.follow_top_n = 1;
         config.min_score = 0.0;
         config.metric_snapshot_interval_seconds = 30 * 60;
@@ -46824,8 +46825,8 @@ mod tests {
             .expect("valid timestamp")
             .with_timezone(&Utc);
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.follow_top_n = 1;
         config.min_score = 0.0;
         config.metric_snapshot_interval_seconds = 30 * 60;
@@ -46921,8 +46922,8 @@ mod tests {
             .expect("valid timestamp")
             .with_timezone(&Utc);
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.follow_top_n = 1;
         config.min_score = 0.0;
         config.metric_snapshot_interval_seconds = 30 * 60;
@@ -47023,8 +47024,8 @@ mod tests {
             .expect("valid timestamp")
             .with_timezone(&Utc);
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.follow_top_n = 1;
         config.min_score = 0.0;
         config.metric_snapshot_interval_seconds = 30 * 60;
@@ -47319,8 +47320,8 @@ mod tests {
             .expect("valid timestamp")
             .with_timezone(&Utc);
         let mut config = DiscoveryConfig::default();
-        config.scoring_window_days = 5;
-        config.decay_window_days = 5;
+        config.scoring_window_days = 2;
+        config.decay_window_days = 2;
         config.follow_top_n = 1;
         config.min_score = 0.0;
         config.metric_snapshot_interval_seconds = 30 * 60;
@@ -47738,7 +47739,7 @@ mod tests {
 
         assert!(
             (snapshot.rug_ratio - 0.2).abs() < 1e-9,
-            "one fresh buy out of five total buys must contribute to rug_ratio denominator"
+            "one fresh buy out of the total buys must contribute to rug_ratio denominator"
         );
         assert!(
             snapshot.eligible,
@@ -49712,7 +49713,7 @@ mod tests {
                 replay_wallet_stats_complete,
                 false,
             ),
-            window_start: now - Duration::days(5),
+            window_start: now - Duration::days(2),
             horizon_end: now,
             metrics_window_start: now,
             phase_cursor: None,

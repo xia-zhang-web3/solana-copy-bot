@@ -27,7 +27,7 @@ The separate diagnosis mentioning very high `iowait`, high PSI I/O pressure, and
 
 ## Why this looks like a code/storage problem
 
-### 1. Discovery still does expensive full-window work every cycle
+### 1. Discovery still does expensive broad-window work every cycle
 
 Discovery still:
 

@@ -58,7 +58,7 @@ Out of scope:
 ## Mandatory Verification Points
 
 1. Parser-stall gate behavior (`crates/app/src/main.rs`)
-   1. blocks only when full-window no output progress + tx updates move + parser/decode error ratio high
+   1. blocks only when broad-window no output progress + tx updates move + parser/decode error ratio high
    2. does not block when ratio stays below threshold
 2. Stale-close price hardening (`crates/storage/src/lib.rs`, `crates/app/src/main.rs`)
    1. stale close uses reliable price aggregation, not raw last swap

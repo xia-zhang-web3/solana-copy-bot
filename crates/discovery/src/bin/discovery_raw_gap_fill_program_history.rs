@@ -5621,13 +5621,13 @@ mod tests {
         let source = resumable_source(window_start, window_end);
 
         let error = run_output_with_source(repair_config(base_config), &source)
-            .expect_err("synthetic full-window reason must not be a repair root");
+            .expect_err("synthetic legacy-window reason must not be a repair root");
         assert!(error.to_string().contains(
             "program_history_gap_fill_repair_explicit_missing_segments_no_target_segments"
         ));
         assert!(
             source.list_requests().is_empty(),
-            "repair mode must not scan synthetic full-window segment"
+            "repair mode must not scan synthetic legacy-window segment"
         );
         Ok(())
     }

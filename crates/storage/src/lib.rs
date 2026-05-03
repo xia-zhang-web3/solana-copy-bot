@@ -7996,7 +7996,7 @@ mod tests {
             .expect("timestamp")
             .with_timezone(&Utc);
         let source_window_start = effective_window_start - Duration::hours(2);
-        let now = source_window_start + Duration::days(5) + Duration::hours(2);
+        let now = source_window_start + Duration::days(2) + Duration::hours(2);
         let snapshot_write = TrustedWalletMetricsSnapshotWrite {
             snapshot_id: "wallet_metrics:clone_latest_bridge:2026-03-10T21:00:00+00:00".to_string(),
             source_snapshot_id: Some("wallet_metrics:source:2026-03-10T19:00:00+00:00".to_string()),

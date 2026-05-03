@@ -7,7 +7,7 @@ Type: `production-critical Stage 3 blocker`
 The primary Stage 3 path is operationally blocked.
 
 Live swap ingestion is still running, but the bounded `recent_raw` snapshot path
-that must accumulate the usable 5-day raw window is no longer advancing.
+that must accumulate the usable legacy raw window is no longer advancing.
 
 This is not a “wait another 3 days” situation.
 
@@ -57,7 +57,7 @@ Current promoted bounded raw snapshot:
 - `covered_through = 2026-03-26T07:33:59.609580569Z`
 - `last_batch_completed_at = 2026-03-26T07:35:10.023741560Z`
 
-That is only about `1d 19h 27m` of usable bounded raw coverage, not 5 days.
+That is only about `1d 19h 27m` of usable bounded raw coverage, not legacys.
 
 ## Stage 3 Evidence State
 
@@ -125,7 +125,7 @@ Treat this as a production-critical incident on the primary readiness path.
 
 The correct next step is to fix the bounded `recent_raw` snapshot policy/path so
 that a fresh `latest.sqlite` can complete and promote again. Waiting for “day 4”
-or “day 5” by itself will not resolve the blocker while the snapshot service
+or “legacy day” by itself will not resolve the blocker while the snapshot service
 keeps returning `attempt_duration_budget_exhausted`.
 
 Update after rollout:

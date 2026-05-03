@@ -257,19 +257,19 @@ solana-copy-bot/
 
 ## 12) Delivery Plan (No Overbuild)
 
-Phase 0 (3-5 days):
+Phase 0 (3-legacys):
 - Workspace skeleton, config loader, structured logging, SQLite migrations.
 
-Phase 1 (5-7 days):
+Phase 1 (multi-day):
 - Ingestion + parser + persistence of observed swaps.
 - Wallet metrics job + scoring + follow-list updates.
 - Shadow mode only (no trading).
 
-Phase 2 (5-7 days):
+Phase 2 (multi-day):
 - Signal + risk + execution adapters.
 - Paper trading mode with full telemetry.
 
-Phase 3 (5-7 days):
+Phase 3 (multi-day):
 - Small capital canary (strict caps), kill-switch validated.
 - Post-trade analytics and wallet demotion automation.
 

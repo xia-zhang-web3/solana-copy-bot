@@ -602,7 +602,7 @@ mod tests {
                     "writer_queue_capacity_batches = 64\n",
                     "replay_batch_size = 1024\n\n",
                     "[discovery]\n",
-                    "scoring_window_days = 5\n",
+                    "scoring_window_days = 2\n",
                     "refresh_seconds = 600\n",
                     "metric_snapshot_interval_seconds = 3600\n",
                     "max_window_swaps_in_memory = 128\n",
@@ -655,7 +655,7 @@ mod tests {
         let now = DateTime::parse_from_rfc3339("2026-04-21T16:07:06Z")
             .expect("valid ts")
             .with_timezone(&Utc);
-        let required_window_start = now - Duration::days(5);
+        let required_window_start = now - Duration::days(2);
         let journal_swaps = vec![
             swap("sig-gap-0", "wallet-gap-a", required_window_start, 100),
             swap(

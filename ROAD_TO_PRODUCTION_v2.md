@@ -1,7 +1,78 @@
 # ROAD TO PRODUCTION v2
 
 Date: 2026-03-17
-Status: Active historical roadmap with 2026-03-27 production-readiness and live Stage 3 accumulation addendum
+Status: Active historical roadmap; current direction is the 2026-05-03
+Discovery architecture pivot
+
+## Live Update (`2026-05-03`)
+
+Production discovery truth remains fail-closed. The active contract is the
+Discovery V2/current operational truth pivot: prove fresh raw/recent_raw and
+exact publication truth without requiring legacy scoring-window acceptance or
+letting a derived aggregate repair lane own production readiness.
+
+Current production snapshot:
+
+- `solana-copy-bot.service = active`
+- `MainPID = 1637934`
+- `NRestarts = 0`
+- disk: `36G used / 110G available / 25%`
+- memory: `5.1Gi available`
+- swap: `2.2G / 8.0G` used
+
+Aggregate materialization repair state:
+
+- `materialization_gap_since =
+  2026-04-29T02:30:58.295525837+00:00 / 416346850`
+- `covered_through =
+  2026-04-30T03:46:14.822460878+00:00 / 416577327`
+- `materialization_gap_repair_target =
+  2026-05-01T09:26:59.969619366+00:00 / 416848267`
+- progress from gap start to frozen target is roughly `45.97%`
+- the overnight sidecar loop moved only about `0.15%`
+
+Interpretation:
+
+- the service is alive and resources are not the active blocker
+- raw ingestion and recent_raw freshness have repeatedly been proven live
+- Yellowstone source-open, old raw-history recovery, WAL pressure, and provider
+  starvation are not the active blocker
+- the active blocker is architectural: aggregate scoring repair is a derived
+  projection, but legacy readiness treats its materialization gap as a primary
+  production-discovery blocker
+- continuing the historical aggregate repair loop as the main path is not
+  acceptable because it has no practical production SLA
+
+Architecture decision:
+
+- stop treating aggregate materialization repair as the primary path to
+  production discovery truth unless the user explicitly re-approves that plan
+- keep legacy Stage 3 fail-closed while designing a replacement or decoupled
+  production discovery path
+- preserve the Discovery V2/current operational truth contract and fail-closed
+  semantics
+- do not enable execution/trading
+- do not delete production databases or clear gap evidence manually
+
+Candidate replacement direction:
+
+1. Decouple production discovery truth from aggregate repair.
+2. Define production truth around fresh raw/recent_raw coverage plus exact
+   fresh publication truth.
+3. Move aggregate scoring/materialization to projection status, where it can
+   block aggregate reads but not silently own production discovery readiness.
+4. If the current publication path cannot prove truth without aggregate repair,
+   build Discovery V2 beside legacy Stage 3:
+   - durable append-only raw ledger
+   - atomic raw watermark
+   - bounded current operational truth window builder
+   - staging snapshot tables
+   - atomic publisher with policy fingerprint and non-empty wallet set
+   - read-only status gate that never reports production green from stale or
+     derived projection evidence
+
+Next accepted work should be architecture-level, not another micro-patch to
+the current aggregate repair loop.
 
 ## Live Update (`2026-04-30`)
 
@@ -420,7 +491,7 @@ Accepted startup-WAL guard follow-up:
   - this addresses the live `sqlite_pragma_journal_mode_wal` ABRT-loop class
     caused by a large uncheckpointed runtime WAL
   - it does not mark Stage 3 production green
-  - it does not change selector/scoring thresholds, `scoring_window_days`,
+  - it does not use legacy scoring-window acceptance, selector/scoring thresholds,
     restore/gap-fill, configs/systemd, execution, or trading
 
 Production rollout result (`2026-04-30`, commit `2afde6c`):
@@ -653,7 +724,7 @@ Concrete live blocker now proven:
 Next bounded development seam:
 
 - keep Stage 3 fail-closed
-- do not change selector thresholds, `scoring_window_days`, restore/gap-fill,
+- do not use legacy scoring-window acceptance, selector thresholds, restore/gap-fill,
   configs, systemd, or trading
 - make `discovery_scoring` prepare avoid unbounded per-buy token-history scans
   in the private scoring materialization path, or prove the exact subquery if a
@@ -785,7 +856,7 @@ Yellowstone request-first rollout and live result (`2026-04-28`):
   - request-first subscribe fixed the source-open blocker
   - the active blocker moved to live observed-swap writer/journal overflow and
     raw frontier freshness after source resume
-  - Stage 3 remains fail-closed; do not change `scoring_window_days`,
+  - Stage 3 remains fail-closed; do not use legacy scoring-window acceptance,
     selector thresholds, restore/gap-fill, configs, or execution/trading to
     route around this
 
@@ -1109,8 +1180,8 @@ Current next bounded seam:
 
 - keep `3ca9a53`; it cleared the latched-gap seam without fake-clearing
   coverage
-- do not reduce `scoring_window_days`, weaken fail-closed gates, or touch
-  selector thresholds
+- do not weaken fail-closed gates, do not use legacy scoring-window acceptance,
+  and do not touch selector thresholds
 - next coding batch should extend the read-only Yellowstone probe with
   endpoint/auth/add-on checks or a fallback-source decision surface; the
   current four-mode result points to provider/add-on/session/endpoint failure
@@ -1346,7 +1417,7 @@ Current engineering interpretation:
 - first post-rollout report invocation with a `60s` guard produced no JSON and
   timed out; targeted read-only SQL profiling then showed the remaining report
   queries were individually bounded enough on warm cache:
-  - five-day indexed `observed_swaps` aggregate:
+  - Discovery V2/current operational truth indexed `observed_swaps` aggregate:
     `29450 total / 24035 buys / 5415 sells`, `elapsed_s = 0`
   - `wallet_activity_days` coverage:
     `5030095 rows`, `max_day = 2026-04-28`, `elapsed_s = 3`
@@ -1386,7 +1457,7 @@ Current engineering interpretation:
   evidence produce zero publishable wallets, using persisted metrics evidence
   only; stale persisted freshness evidence and cached-summary conflict are no
   longer the active blockers
-- do not change selector thresholds, `scoring_window_days`, fail-closed
+- do not use legacy scoring-window acceptance, selector thresholds, fail-closed
   semantics, restore/gap-fill, or trading until that zero-universe cause is
   proven
 
@@ -1430,7 +1501,7 @@ Current engineering interpretation:
   explicit boundary missing segments:
   `requested_window_prefix_uncovered_after_start_slot_adjustment` and
   `requested_window_suffix_uncovered_after_end_slot_adjustment`
-- the synthetic full-window reason
+- the synthetic legacy-window reason
   `program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain`
   is not a segment to scan directly
 - restore/trading/selector/scoring remain out of scope until the artifact is
@@ -1456,7 +1527,7 @@ Development accounting:
   the broad provider-blocked root segment is removed and replaced by narrower
   boundary missing evidence instead of being retried forever
 - boundary segments are removed only after bounded scan proof; synthetic
-  full-window reasons are never scanned as repair targets
+  broad-window reasons are never scanned as repair targets
 - if a completed boundary repair scan regenerates unchanged or non-narrower
   boundary evidence, the operator now stops with explicit terminal incomplete
   reason
@@ -1467,14 +1538,14 @@ Development accounting:
   the remaining boundary evidence, always reports `restore_ready=false` and
   `production_green=false`, and requires an explicit human contract decision
   rather than marking the artifact replayable
-- no selector/scoring, `scoring_window_days`, restore gate, systemd config,
+- no selector/scoring, legacy scoring-window acceptance, restore gate, systemd config,
   Stage 4, trading, or fail-closed relaxation was part of this batch
 
 ## Live Update (`2026-04-24`)
 
 Current Stage 3 production-discovery truth remains fail-closed. The active
 operator lane is no longer selector starvation, replay `sol_leg`, or a passive
-"wait five days" accumulation theory. The live blocker is the exact recent raw
+"wait legacys" accumulation theory. The live blocker is the exact recent raw
 history gap:
 
 - missing interval:
@@ -1543,7 +1614,7 @@ Current engineering interpretation:
   long-running exact-window operator backfill through provider attrition
 - continue bounded exact-window program-history reruns / loop attempts while
   they keep advancing and while disk remains above the guard threshold
-- do not reduce `scoring_window_days`, do not weaken fail-closed, and do not
+- do not use legacy scoring-window acceptance, do not weaken fail-closed, and do not
   route around the missing raw-history gap with selector/scoring fixes
 - no live degradation was observed in the latest read-only check; the current
   action is continued operator monitoring, not a corrective deploy
@@ -1738,7 +1809,7 @@ Template hardening acceptance (`2026-04-15`):
   - `thin_market_min_volume_sol = 3.0`
   - `thin_market_min_unique_traders = 10`
 - `execution.enabled = false` remains preserved in the template.
-- `scoring_window_days = 5` remains unchanged.
+- `scoring_window_days = 1` remains unchanged.
 - `copybot-config` now has a regression that parses
   `ops/server_templates/live.server.toml.example`, asserts the four publication
   quality gates exactly, asserts `execution.enabled=false`, and compares those
@@ -1760,7 +1831,7 @@ Publication-quality gate proof acceptance (`2026-04-15`):
   - `thin_market_min_volume_sol >= 3.0`
   - `thin_market_min_unique_traders >= 10`
   - `execution.enabled = false`
-  - `scoring_window_days = 5`
+  - `scoring_window_days = 1`
 - Missing or unparseable config evidence is `unproven`, not green, and missing
   explicit fields do not pass through schema defaults.
 - Local verification against `configs/live.toml` returned
@@ -1864,7 +1935,7 @@ investigation is still the active restore plan, which it is not.
    - Stage 3 is not blocked because Stage 3 code is missing
    - Stage 3 is blocked because the live bounded raw window has not yet
      accumulated and promoted enough recent evidence
-   - without backfill or rule changes, the earliest honest five-day threshold
+   - without backfill or rule changes, the earliest honest Discovery V2/current operational truth threshold
      from the current `covered_since` is `2026-03-29T12:07:11Z`
 6. What to write next while Stage 3 accumulates:
    - do incident-driven hardening only if the live `recent_raw` recovery path
@@ -1883,7 +1954,7 @@ investigation is still the active restore plan, which it is not.
 
 ## 1B. Current emergency verdict (`2026-03-29`)
 
-1. The current blocker is not "time remaining until the five-day window closes."
+1. The current blocker is not "time remaining until the Discovery V2/current operational truth window closes."
 2. The current blocker is that the live `recent_raw` snapshot path is in a
    failing incident shape:
    - `copybot-discovery-recent-raw-snapshot.service` is timing out repeatedly
@@ -2115,7 +2186,7 @@ Recommended operational posture now:
   - latest stopped-host aggregate validation checkout:
     `ae688b7fb84cead93185f6f5bbd50ac32f59f452`
 - Current live host config relevant to restore:
-  - `scoring_window_days = 5`
+  - `scoring_window_days = 1`
   - `metric_snapshot_interval_seconds = 3600`
   - `scoring_aggregates_write_enabled = false`
   - `scoring_aggregates_enabled = false`
@@ -2415,7 +2486,9 @@ Recommended operational posture now:
     - no emitted `summary outcome=...`
     - no `seed_boundary_install_*`
     - throughput remains too low for this path to be considered operationally closed
-- Observed data scale: `SELECT COUNT(*) FROM observed_swaps WHERE ts >= datetime('now', '-5 days')` returned `48,386,266`; the failed `3`-day bridge was expected to shrink this to roughly `~29M`, but the bridge still did not close Stage 1 durably
+- Observed data scale under the former fixed-window SQL count returned
+  `48,386,266`; the failed `3`-day bridge was expected to shrink this to
+  roughly `~29M`, but the bridge still did not close Stage 1 durably
 - Observed during validation window:
   - corrected raw replay fast path was validated before the bridge experiments:
     - live deploy of `70e959d` stayed healthy overnight
@@ -2513,7 +2586,7 @@ Recommended operational posture now:
           - `effective_reads_ready = true`
           - `effective_writes_ready = true`
   - raw-bridge experiment sequence is now complete:
-    - initial `scoring_window_days = 3` restart stayed pinned behind stale persisted rebuild state from the old `5`-day window
+    - initial `scoring_window_days = 3` restart stayed pinned behind stale persisted rebuild state from the old legacy window
     - clearing only `discovery_persisted_rebuild_state` correctly restarted a fresh 3-day rebuild
     - that fresh restart reached:
       - bounded observed-swaps prepass completion
@@ -2593,7 +2666,7 @@ Recommended operational posture now:
 - `live_copybot.db-wal`: ranged from `0` during the stopped-service cold clone up to ~`2.0 GB` during later live runtime
 - `live_copybot.db-shm`: ~3.4 MB
 - `observed_swaps_retention_days`: 7
-- `scoring_window_days`: failed emergency bridge used `3`; stabilized stopped host is reverted to `5`
+- `scoring_window_days`: failed emergency bridge used `3`; stabilized stopped host is reverted to the legacy value
 - `max_window_swaps_in_memory`: 100,000
 
 ## 3. Production principles
@@ -4583,7 +4656,7 @@ Acceptance update (`2026-03-30`, review-receipt-native immutable activation tick
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_activation_ticket`
@@ -4635,7 +4708,7 @@ Acceptance update (`2026-03-30`, activation-ticket-native immutable release caps
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_release_capsule`
@@ -4689,7 +4762,7 @@ Acceptance update (`2026-03-30`, release-capsule-native immutable attestation se
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_attestation_seal`
@@ -4748,7 +4821,7 @@ Acceptance update (`2026-03-30`, attestation-seal-native immutable provenance ce
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_provenance_certificate`
@@ -4801,7 +4874,7 @@ Acceptance update (`2026-03-30`, provenance-certificate-native immutable notariz
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_notarization_receipt`
@@ -4853,7 +4926,7 @@ Acceptance update (`2026-03-30`, notarization-receipt-native immutable registry 
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_registry_entry`
@@ -4908,7 +4981,7 @@ Acceptance update (`2026-03-30`, registry-entry-native immutable filing certific
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_filing_certificate`
@@ -4965,7 +5038,7 @@ Acceptance update (`2026-03-30`, filing-certificate-native immutable archive rec
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_archive_receipt`
@@ -5020,7 +5093,7 @@ Acceptance update (`2026-03-30`, archive-receipt-native immutable closure certif
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_closure_certificate`
@@ -5077,7 +5150,7 @@ Acceptance update (`2026-03-30`, closure-certificate-native immutable finality r
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_finality_receipt`
@@ -5136,7 +5209,7 @@ Acceptance update (`2026-03-30`, finality-receipt-native immutable consummation 
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_consummation_record`
@@ -5195,7 +5268,7 @@ Acceptance update (`2026-03-30`, consummation-record-native immutable completion
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_completion_certificate`
@@ -5257,7 +5330,7 @@ Acceptance update (`2026-03-31`, completion-certificate-native immutable culmina
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_culmination_receipt`
@@ -5320,7 +5393,7 @@ Acceptance update (`2026-03-31`, culmination-receipt-native immutable summit cer
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_summit_certificate`
@@ -5385,7 +5458,7 @@ Acceptance update (`2026-03-31`, summit-certificate-native immutable pinnacle re
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_pinnacle_receipt`
@@ -5451,7 +5524,7 @@ Acceptance update (`2026-03-31`, pinnacle-receipt-native immutable capstone cert
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_capstone_certificate`
@@ -5519,7 +5592,7 @@ Acceptance update (`2026-03-31`, capstone-certificate-native immutable keystone 
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_keystone_receipt`
@@ -5588,7 +5661,7 @@ Acceptance update (`2026-03-31`, keystone-receipt-native immutable cornerstone c
    - it never enables production execution on the real host
    - it never submits real trades
    - current real-host usage still remains refused while Stage 3 / promoted
-     5-day truth is non-green
+     Discovery V2/current operational truth is non-green
 6. Acceptance stayed bounded and intentionally avoided the heavy `turn_green`
    compile/test surface:
    - `cargo check -j 1 -p copybot-app --bin copybot_tiny_live_activation_package_cornerstone_certificate`
@@ -6607,7 +6680,7 @@ Their useful conclusions are already absorbed here:
   - service stop / process audit on the production host
 - Done:
   - `solana-copy-bot.service` was stopped and left inactive
-  - `scoring_window_days` in `/etc/solana-copy-bot/live.server.toml` was reverted from `3` back to `5`
+  - `scoring_window_days` in `/etc/solana-copy-bot/live.server.toml` was reverted from `3` back to the legacy value
   - other config invariants remained unchanged:
     - `metric_snapshot_interval_seconds = 3600`
     - `scoring_aggregates_write_enabled = false`
@@ -6662,7 +6735,7 @@ Their useful conclusions are already absorbed here:
       - `2026-03-21T17:55:17.404683Z -> rebuild_replay_wallet_stats_rows_processed = 55257`
       - `2026-03-21T17:59:00.608178Z -> rebuild_replay_wallet_stats_rows_processed = 130568`
 - Acceptance criteria closed:
-  - the 3-day bridge was given a fair fresh-start test instead of being judged through stale persisted state from the prior 5-day run
+  - the 3-day bridge was given a fair fresh-start test instead of being judged through stale persisted state from the prior Discovery V2/current operational truth run
   - stale persisted rebuild state is now proven to be a separate operational hazard that must be cleared when changing the scoring window
 - Blocked:
   - the bridge still failed on the decisive next bucket:
@@ -6694,7 +6767,7 @@ Their useful conclusions are already absorbed here:
   - live config rollout validation on `solana-copy-bot.service`
 - Done:
   - live config was changed only by:
-    - `scoring_window_days = 5 -> 3`
+    - `scoring_window_days fixed-window bridge -> 3`
   - other invariants stayed unchanged:
     - `metric_snapshot_interval_seconds = 3600`
     - `scoring_aggregates_write_enabled = false`
@@ -6706,7 +6779,7 @@ Their useful conclusions are already absorbed here:
 - Acceptance criteria closed:
   - the config-only bridge was validated under production runtime conditions instead of by arithmetic alone
 - Blocked:
-  - the bridge did not even reach `Replay` because runtime remained frozen behind stale persisted rebuild state from the old 5-day run:
+  - the bridge did not even reach `Replay` because runtime remained frozen behind stale persisted rebuild state from the old Discovery V2/current operational truth run:
     - first sample already showed `collect_buy_mints / reconcile_expired_head`
     - after two buckets `rebuild_phase = replay` still never appeared
     - `restart_reason = metrics_window_start_changed_awaiting_exact_carry_forward_checkpoint` returned
@@ -7981,7 +8054,7 @@ Their useful conclusions are already absorbed here:
   - carry-forward across metrics bucket rollover remained validated on live at `16:00 UTC`, `16:30 UTC`, and `17:30 UTC`
   - runtime telemetry now proves the new replay contract is wired:
     - `rebuild_replay_mode = wallet_stats_then_sol_leg`
-    - no sign of fallback to legacy full-window replay mode
+    - no sign of fallback to legacy broad-window replay mode
 - Blocked:
   - the rollout still did not reach the first actual replay slice
   - by `2026-03-18 17:50 UTC` runtime remained in `CollectBuyMints` with:
@@ -8074,7 +8147,7 @@ Their useful conclusions are already absorbed here:
   - `cargo test -p copybot-discovery --lib persisted_stream_replay_zero_progress_legacy_checkpoint_upgrades_to_optimized_mode_stage1 -- --nocapture`
   - broader replay/discovery coverage rerun before commit
 - Done:
-  - fixed the rollout-relevant upgrade edge case where a persisted legacy `Replay` checkpoint with zero local replay progress could bypass repair and still execute the old full-window replay path
+  - fixed the rollout-relevant upgrade edge case where a persisted legacy `Replay` checkpoint with zero local replay progress could bypass repair and still execute the old broad-window replay path
   - legacy `Replay` checkpoints now upgrade onto `wallet_stats_then_sol_leg` even when `replay_rows_processed = 0`, `phase_cursor = None`, and replay-local maps are still empty
   - the repair remains narrow:
     - it preserves canonical mint membership
@@ -8791,7 +8864,7 @@ Operational incident update (`2026-03-26`, live recent_raw snapshot stall):
 1. The primary Stage 3 path is currently blocked by a live bounded snapshot
    incident, not by passive “we still need three more days” waiting:
    - live swap ingest is still running
-   - the bounded `recent_raw` snapshot surface required for the usable 5-day
+   - the bounded `recent_raw` snapshot surface required for the Discovery V2/current operational truth
      window is no longer advancing
 2. Current promoted bounded snapshot frontier on the production host:
    - `covered_since = 2026-03-24T12:07:11.775090344Z`
@@ -10028,7 +10101,7 @@ Acceptance update, foundation-receipt / diadem-seal layer (`2026-03-31`):
      `copybot_tiny_live_activation_package_foundation_receipt`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -10380,7 +10453,7 @@ Acceptance update, pedestal-certificate / imprint-seal layer (`2026-03-31`):
      `copybot_tiny_live_activation_package_pedestal_certificate`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -10426,7 +10499,7 @@ Acceptance update, dais-receipt / hallmark-seal layer (`2026-03-31`):
      `copybot_tiny_live_activation_package_dais_receipt`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -10472,7 +10545,7 @@ Acceptance update, rostrum-certificate / escutcheon-seal layer (`2026-03-31`):
      `copybot_tiny_live_activation_package_rostrum_certificate`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -10518,7 +10591,7 @@ Acceptance update, podium-receipt / blazon-seal layer (`2026-03-31`):
      `copybot_tiny_live_activation_package_podium_receipt`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -10564,7 +10637,7 @@ Acceptance update, pulpit-receipt / crest-seal layer (`2026-03-31`):
      `copybot_tiny_live_activation_package_pulpit_receipt`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -10610,7 +10683,7 @@ Acceptance update, lectern-certificate / armorial-seal layer (`2026-03-31`):
      `copybot_tiny_live_activation_package_lectern_certificate`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -10657,7 +10730,7 @@ Acceptance update, transept-certificate / guidon-seal layer (`2026-04-01`):
      `copybot_tiny_live_activation_package_transept_certificate`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth remains a separate blocker for actual production activation
    - this batch does not authorize or perform production activation
 
@@ -13920,7 +13993,7 @@ Acceptance update, nave-receipt / pennant-seal layer (`2026-04-01`):
      `copybot_tiny_live_activation_package_nave_receipt`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -13966,7 +14039,7 @@ Acceptance update, sanctuary-certificate / banner-seal layer (`2026-04-01`):
      `copybot_tiny_live_activation_package_sanctuary_certificate`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -14012,7 +14085,7 @@ Acceptance update, apse-receipt / standard-seal layer (`2026-04-01`):
      `copybot_tiny_live_activation_package_apse_receipt`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -14058,7 +14131,7 @@ Acceptance update, chancel-certificate / herald-seal layer (`2026-03-31`):
      `copybot_tiny_live_activation_package_chancel_certificate`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -14103,7 +14176,7 @@ Acceptance update, bedrock-certificate / coronet-seal layer (`2026-03-31`):
      `copybot_tiny_live_activation_package_bedrock_certificate`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -14148,7 +14221,7 @@ Acceptance update, basal-receipt / circlet-seal layer (`2026-03-31`):
      `copybot_tiny_live_activation_package_basal_receipt`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -14193,7 +14266,7 @@ Acceptance update, substructure-certificate / signet-seal layer (`2026-03-31`):
      `copybot_tiny_live_activation_package_substructure_certificate`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 
@@ -14238,7 +14311,7 @@ Acceptance update, plinth-receipt / cachet-seal layer (`2026-03-31`):
      `copybot_tiny_live_activation_package_plinth_receipt`
    - no heavy `turn_green` compile/test dependency was reintroduced
 7. Current production status remains unchanged:
-   - the real host still remains non-green while Stage 3 / promoted 5-day
+   - the real host still remains non-green while Stage 3 / Discovery V2/current operational truth
      truth is blocked by the separate live recent_raw incident
    - this batch does not authorize or perform production activation
 

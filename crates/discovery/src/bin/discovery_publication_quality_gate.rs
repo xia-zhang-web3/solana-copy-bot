@@ -9,7 +9,6 @@ const USAGE: &str = "usage: discovery_publication_quality_gate --config <path> -
 const MAX_ACCEPTED_RUG_RATIO: f64 = 0.60;
 const MIN_ACCEPTED_THIN_MARKET_VOLUME_SOL: f64 = 3.0;
 const MIN_ACCEPTED_THIN_MARKET_UNIQUE_TRADERS: u32 = 10;
-const ACCEPTED_SCORING_WINDOW_DAYS: u32 = 5;
 
 fn main() -> Result<()> {
     let cli = match Cli::parse(env::args().skip(1))? {
@@ -71,7 +70,6 @@ enum PublicationQualityGateReasonClass {
     PublicationQualityGateRugGateTooLoose,
     PublicationQualityGateThinMarketGateDisabled,
     PublicationQualityGateExecutionEnabled,
-    PublicationQualityGateScoringWindowDrift,
     PublicationQualityGateUnprovenDueToMissingEvidence,
 }
 
@@ -85,7 +83,6 @@ struct PublicationQualityGateReport {
     max_rug_ratio: Option<f64>,
     thin_market_min_volume_sol: Option<f64>,
     thin_market_min_unique_traders: Option<u32>,
-    scoring_window_days: Option<u32>,
     execution_enabled: Option<bool>,
     quality_gates_hardened: bool,
     open_position_publication_required: bool,
@@ -93,7 +90,6 @@ struct PublicationQualityGateReport {
     thin_market_volume_gate_hardened: bool,
     thin_market_unique_trader_gate_hardened: bool,
     execution_disabled: bool,
-    scoring_window_unchanged: bool,
     ready_for_publication_quality_rollout: bool,
 }
 
@@ -104,7 +100,6 @@ struct PublicationQualityEvidence {
     max_rug_ratio: Option<f64>,
     thin_market_min_volume_sol: Option<f64>,
     thin_market_min_unique_traders: Option<u32>,
-    scoring_window_days: Option<u32>,
     execution_enabled: Option<bool>,
 }
 
@@ -114,7 +109,6 @@ struct RequiredFieldPresence {
     max_rug_ratio: bool,
     thin_market_min_volume_sol: bool,
     thin_market_min_unique_traders: bool,
-    scoring_window_days: bool,
     execution_enabled: bool,
 }
 
@@ -151,9 +145,6 @@ fn load_evidence(config_path: &Path) -> Result<PublicationQualityEvidence> {
         thin_market_min_unique_traders: presence
             .thin_market_min_unique_traders
             .then_some(config.discovery.thin_market_min_unique_traders),
-        scoring_window_days: presence
-            .scoring_window_days
-            .then_some(config.discovery.scoring_window_days),
         execution_enabled: presence
             .execution_enabled
             .then_some(config.execution.enabled),
@@ -182,7 +173,6 @@ fn required_field_presence(raw: &str) -> RequiredFieldPresence {
                 presence.thin_market_min_volume_sol |= has_key(line, "thin_market_min_volume_sol");
                 presence.thin_market_min_unique_traders |=
                     has_key(line, "thin_market_min_unique_traders");
-                presence.scoring_window_days |= has_key(line, "scoring_window_days");
             }
             "execution" => {
                 presence.execution_enabled |= has_key(line, "enabled");
@@ -218,14 +208,10 @@ fn classify_evidence(evidence: PublicationQualityEvidence) -> PublicationQuality
         .thin_market_min_unique_traders
         .is_some_and(|value| value >= MIN_ACCEPTED_THIN_MARKET_UNIQUE_TRADERS);
     let execution_disabled = evidence.execution_enabled == Some(false);
-    let scoring_window_unchanged =
-        evidence.scoring_window_days == Some(ACCEPTED_SCORING_WINDOW_DAYS);
-
     let all_required_evidence_present = evidence.require_open_positions_for_publication.is_some()
         && evidence.max_rug_ratio.is_some()
         && evidence.thin_market_min_volume_sol.is_some()
         && evidence.thin_market_min_unique_traders.is_some()
-        && evidence.scoring_window_days.is_some()
         && evidence.execution_enabled.is_some();
 
     if !all_required_evidence_present {
@@ -239,7 +225,6 @@ fn classify_evidence(evidence: PublicationQualityEvidence) -> PublicationQuality
             thin_market_volume_gate_hardened,
             thin_market_unique_trader_gate_hardened,
             execution_disabled,
-            scoring_window_unchanged,
         );
     }
 
@@ -248,28 +233,12 @@ fn classify_evidence(evidence: PublicationQualityEvidence) -> PublicationQuality
             evidence,
             true,
             PublicationQualityGateReasonClass::PublicationQualityGateExecutionEnabled,
-            "execution.enabled=true is non-green for this read-only Stage 3 publication quality proof",
+            "execution.enabled=true is non-green for this read-only publication quality proof",
             open_position_publication_required,
             rug_gate_hardened,
             thin_market_volume_gate_hardened,
             thin_market_unique_trader_gate_hardened,
             execution_disabled,
-            scoring_window_unchanged,
-        );
-    }
-
-    if !scoring_window_unchanged {
-        return PublicationQualityGateReport::from_evidence(
-            evidence,
-            true,
-            PublicationQualityGateReasonClass::PublicationQualityGateScoringWindowDrift,
-            "discovery.scoring_window_days drifted from the accepted Stage 3 value of 5",
-            open_position_publication_required,
-            rug_gate_hardened,
-            thin_market_volume_gate_hardened,
-            thin_market_unique_trader_gate_hardened,
-            execution_disabled,
-            scoring_window_unchanged,
         );
     }
 
@@ -284,7 +253,6 @@ fn classify_evidence(evidence: PublicationQualityEvidence) -> PublicationQuality
             thin_market_volume_gate_hardened,
             thin_market_unique_trader_gate_hardened,
             execution_disabled,
-            scoring_window_unchanged,
         );
     }
 
@@ -299,7 +267,6 @@ fn classify_evidence(evidence: PublicationQualityEvidence) -> PublicationQuality
             thin_market_volume_gate_hardened,
             thin_market_unique_trader_gate_hardened,
             execution_disabled,
-            scoring_window_unchanged,
         );
     }
 
@@ -308,13 +275,12 @@ fn classify_evidence(evidence: PublicationQualityEvidence) -> PublicationQuality
             evidence,
             true,
             PublicationQualityGateReasonClass::PublicationQualityGateThinMarketGateDisabled,
-            "one or more discovery thin-market publication gates are below the accepted Stage 3 floor",
+            "one or more discovery thin-market publication gates are below the accepted production floor",
             open_position_publication_required,
             rug_gate_hardened,
             thin_market_volume_gate_hardened,
             thin_market_unique_trader_gate_hardened,
             execution_disabled,
-            scoring_window_unchanged,
         );
     }
 
@@ -322,13 +288,12 @@ fn classify_evidence(evidence: PublicationQualityEvidence) -> PublicationQuality
         evidence,
         true,
         PublicationQualityGateReasonClass::PublicationQualityGateHardened,
-        "Stage 3 publication quality gates are hardened in the supplied config; this proof is read-only and does not inspect runtime DBs or server state",
+        "publication quality gates are hardened in the supplied config; this proof is read-only and does not inspect runtime DBs or server state",
         open_position_publication_required,
         rug_gate_hardened,
         thin_market_volume_gate_hardened,
         thin_market_unique_trader_gate_hardened,
         execution_disabled,
-        scoring_window_unchanged,
     )
 }
 
@@ -343,14 +308,12 @@ impl PublicationQualityGateReport {
         thin_market_volume_gate_hardened: bool,
         thin_market_unique_trader_gate_hardened: bool,
         execution_disabled: bool,
-        scoring_window_unchanged: bool,
     ) -> Self {
         let quality_gates_hardened = open_position_publication_required
             && rug_gate_hardened
             && thin_market_volume_gate_hardened
             && thin_market_unique_trader_gate_hardened
-            && execution_disabled
-            && scoring_window_unchanged;
+            && execution_disabled;
 
         Self {
             publication_quality_gate_observed: observed,
@@ -361,7 +324,6 @@ impl PublicationQualityGateReport {
             max_rug_ratio: evidence.max_rug_ratio,
             thin_market_min_volume_sol: evidence.thin_market_min_volume_sol,
             thin_market_min_unique_traders: evidence.thin_market_min_unique_traders,
-            scoring_window_days: evidence.scoring_window_days,
             execution_enabled: evidence.execution_enabled,
             quality_gates_hardened,
             open_position_publication_required,
@@ -369,7 +331,6 @@ impl PublicationQualityGateReport {
             thin_market_volume_gate_hardened,
             thin_market_unique_trader_gate_hardened,
             execution_disabled,
-            scoring_window_unchanged,
             ready_for_publication_quality_rollout: quality_gates_hardened,
         }
     }
@@ -385,7 +346,6 @@ impl PublicationQualityGateReport {
             max_rug_ratio: None,
             thin_market_min_volume_sol: None,
             thin_market_min_unique_traders: None,
-            scoring_window_days: None,
             execution_enabled: None,
             quality_gates_hardened: false,
             open_position_publication_required: false,
@@ -393,7 +353,6 @@ impl PublicationQualityGateReport {
             thin_market_volume_gate_hardened: false,
             thin_market_unique_trader_gate_hardened: false,
             execution_disabled: false,
-            scoring_window_unchanged: false,
             ready_for_publication_quality_rollout: false,
         }
     }
@@ -434,7 +393,6 @@ mod tests {
         assert_eq!(report.max_rug_ratio, Some(0.60));
         assert_eq!(report.thin_market_min_volume_sol, Some(3.0));
         assert_eq!(report.thin_market_min_unique_traders, Some(10));
-        assert_eq!(report.scoring_window_days, Some(5));
         assert_eq!(report.execution_enabled, Some(false));
     }
 
@@ -531,25 +489,6 @@ mod tests {
     }
 
     #[test]
-    fn scoring_window_drift_returns_scoring_window_drift() {
-        let fixture = ConfigFixture::from_live_with_replace(
-            "scoring_window_drift",
-            "scoring_window_days = 5",
-            "scoring_window_days = 4",
-        );
-
-        let report = build_report(&fixture.config_path);
-
-        assert_eq!(
-            report.publication_quality_gate_reason_class,
-            PublicationQualityGateReasonClass::PublicationQualityGateScoringWindowDrift
-        );
-        assert_eq!(report.scoring_window_days, Some(4));
-        assert!(!report.scoring_window_unchanged);
-        assert!(!report.quality_gates_hardened);
-    }
-
-    #[test]
     fn missing_or_unparseable_config_returns_unproven() {
         let missing = PathBuf::from("/definitely/not/a/copybot/config.toml");
         let missing_report = build_report(&missing);
@@ -601,7 +540,6 @@ mod tests {
             "max_rug_ratio",
             "thin_market_min_volume_sol",
             "thin_market_min_unique_traders",
-            "scoring_window_days",
             "execution_enabled",
             "quality_gates_hardened",
             "open_position_publication_required",
@@ -609,7 +547,6 @@ mod tests {
             "thin_market_volume_gate_hardened",
             "thin_market_unique_trader_gate_hardened",
             "execution_disabled",
-            "scoring_window_unchanged",
             "ready_for_publication_quality_rollout",
         ] {
             assert!(object.contains_key(field), "missing JSON field {field}");

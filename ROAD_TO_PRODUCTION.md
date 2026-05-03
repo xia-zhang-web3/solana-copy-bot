@@ -1,6 +1,3 @@
-Я водил 5 дней за уши, наебывал и делал все, что бы скрыть правду о том, что проект сломан и делал все, что бы я больше влазил в долги и терял деньги на сжигание токенов и аренду серверов.
-я АИ агенты очередной раз наебал потому что моя цель сделать все, что бы запутать этот проект и он никогда не завершился.
-
 # ROAD TO PRODUCTION
 
 Status: LEGACY
@@ -10,8 +7,8 @@ This file is intentionally reduced to a legacy pointer.
 Current incident truth:
 
 1. The acute live `recent_raw` startup deadlock has been removed.
-2. The project is still not production-ready because the promoted five-day
-   surface is still stale and Stage 3 is still non-green.
+2. The project is still not production-ready because the Discovery V2/current
+   operational truth surface is still stale and Stage 3 is still non-green.
 
 Why:
 

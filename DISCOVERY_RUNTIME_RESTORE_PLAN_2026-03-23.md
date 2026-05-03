@@ -54,7 +54,7 @@ Repository/operator accounting:
   segments with reasons
   `requested_window_prefix_uncovered_after_start_slot_adjustment` and
   `requested_window_suffix_uncovered_after_end_slot_adjustment`
-- it does not scan the synthetic full-window reason
+- it does not scan the synthetic legacy-window reason
   `program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain`
   directly
 - it widens zero-duration missing segments to a minimal scanable window,
@@ -125,7 +125,7 @@ Operator meaning:
 - explicit skipped provider-blocked slot segments preserve restore honesty:
   they prevent fake complete coverage and keep the output incomplete until
   downstream restore semantics can account for the uncovered segment
-- do not reduce the five-day raw-window contract, do not loosen fail-closed,
+- do not reduce the legacy raw-window contract, do not loosen fail-closed,
   and do not move to selector/scoring work while this raw-history gap remains
   open
 
@@ -668,7 +668,7 @@ Scheduling contract:
 
 Ключевое правило:
 
-- если после restore нужно ждать 5 дней накопления, значит restore-контракт
+- если после restore нужно ждать новый полный накопительный цикл, значит restore-контракт
   сделан неправильно
 
 ## 10. One-button restore contract
@@ -704,7 +704,7 @@ One-button restore не означает:
 2. restore не зависит от aggregate/backfill readiness
 3. restore не требует старых кошельков
 4. restore использует fresh raw data
-5. restore может вернуть `healthy discovery` без ожидания 5 дней накопления
+5. restore может вернуть `healthy discovery` без ожидания нового полного накопительного цикла
 6. one-button restore поднимает новый runtime без полного reread истории
 7. следующий инцидент не приводит к “дропаем базу и собираем заново”
 

@@ -2256,7 +2256,7 @@ mod tests {
                 "[sqlite]\n",
                 "path = \"{}\"\n\n",
                 "[discovery]\n",
-                "scoring_window_days = 5\n",
+                "scoring_window_days = 2\n",
                 "refresh_seconds = 600\n",
                 "metric_snapshot_interval_seconds = 1800\n",
                 "max_window_swaps_in_memory = 10000\n",
@@ -2424,7 +2424,7 @@ mod tests {
             runtime_mode: DiscoveryRuntimeMode::FailClosed,
             reason: "raw_window".to_string(),
             last_published_at: Some(now - Duration::minutes(20)),
-            last_published_window_start: Some(now - Duration::days(5)),
+            last_published_window_start: Some(now - Duration::days(2)),
             published_scoring_source: Some("raw_window".to_string()),
             published_wallet_ids: Some(Vec::new()),
         })?;

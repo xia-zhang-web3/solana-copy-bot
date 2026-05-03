@@ -372,7 +372,7 @@ mod tests {
         fs::write(
             &config_path,
             format!(
-                "[sqlite]\npath = \"{}\"\n\n[discovery]\nscoring_window_days = 5\nrefresh_seconds = 600\nmetric_snapshot_interval_seconds = 1800\nmax_window_swaps_in_memory = 128\nmax_fetch_swaps_per_cycle = 128\nmax_fetch_pages_per_cycle = 8\nfetch_time_budget_ms = 1000\nobserved_swaps_retention_days = 14\nfollow_top_n = 20\nmin_score = 0.0\nmin_trades = 1\nmin_active_days = 1\nmin_leader_notional_sol = 0.0\nmin_buy_count = 1\nmin_tradable_ratio = 0.0\nmax_rug_ratio = 1.0\nthin_market_min_unique_traders = 1\n\n[execution]\nenabled = false\n",
+                "[sqlite]\npath = \"{}\"\n\n[discovery]\nscoring_window_days = 2\nrefresh_seconds = 600\nmetric_snapshot_interval_seconds = 1800\nmax_window_swaps_in_memory = 128\nmax_fetch_swaps_per_cycle = 128\nmax_fetch_pages_per_cycle = 8\nfetch_time_budget_ms = 1000\nobserved_swaps_retention_days = 14\nfollow_top_n = 20\nmin_score = 0.0\nmin_trades = 1\nmin_active_days = 1\nmin_leader_notional_sol = 0.0\nmin_buy_count = 1\nmin_tradable_ratio = 0.0\nmax_rug_ratio = 1.0\nthin_market_min_unique_traders = 1\n\n[execution]\nenabled = false\n",
                 db_path.display()
             ),
         )?;
@@ -400,7 +400,7 @@ mod tests {
     }
 
     fn seed_ranked_wallet_window(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
-        let coverage_start = now - Duration::days(5);
+        let coverage_start = now - Duration::days(2);
         for (wallet_idx, (wallet_id, mint, trades, offset_minutes)) in [
             ("wallet-alpha", "mint-a", 3usize, 0i64),
             ("wallet-beta", "mint-b", 2usize, 10i64),
@@ -451,7 +451,7 @@ mod tests {
             runtime_mode: DiscoveryRuntimeMode::Healthy,
             reason: "test-publication".to_string(),
             last_published_at: Some(now - Duration::seconds(60)),
-            last_published_window_start: Some(bucketed_now - Duration::days(5)),
+            last_published_window_start: Some(bucketed_now - Duration::days(2)),
             published_scoring_source: Some("raw_window_persisted_stream".to_string()),
             published_wallet_ids: Some(vec!["wallet-alpha".to_string(), "wallet-beta".to_string()]),
         })

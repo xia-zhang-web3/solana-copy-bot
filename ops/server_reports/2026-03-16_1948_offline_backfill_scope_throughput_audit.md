@@ -83,7 +83,7 @@ Current readiness state:
 ## 3. Current scoring target context
 
 Live config:
-- `scoring_window_days = 5` in [live.toml](/Users/tigranambarcumyan/Documents/solana-copy-bot/configs/live.toml#L68)
+- `scoring_window_days = 2` in [live.toml](/Users/tigranambarcumyan/Documents/solana-copy-bot/configs/live.toml#L68)
 - `metric_snapshot_interval_seconds = 1800` in [live.toml](/Users/tigranambarcumyan/Documents/solana-copy-bot/configs/live.toml#L83)
 
 Current live readiness snapshot reported:

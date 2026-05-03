@@ -22,19 +22,25 @@ roadmap disciplined.
 
 These rules remain true unless the user explicitly changes the project plan:
 
-- Stage 3 production discovery truth is the hard gate.
-- Stage 4 planning-safe execution and policy surfaces do not override Stage 3.
+- Production discovery truth is the hard gate. The legacy Stage 3
+  implementation remains fail-closed, but it is no longer assumed to be the
+  only acceptable architecture for that truth.
+- Stage 4 planning-safe execution and policy surfaces do not override
+  production discovery truth.
 - Non-prod drills, devnet evidence, stale evidence, and local-only evidence do
   not authorize production activation.
 - `execution.enabled` must not be enabled as part of roadmap or diagnostic
   work.
 - Do not weaken fail-closed behavior.
-- Do not reduce `scoring_window_days`.
-- Do not propose selector/scoring/quality fixes while the current raw-history
-  gap remains unclosed.
+- Discovery V2 must not depend on legacy scoring-window acceptance as a
+  production-green gate.
+- Do not route around raw/recent_raw freshness or exact publication truth with
+  selector/scoring/quality tweaks.
 - Do not treat operator observability as production green.
 - Do not deploy accepted code just because it exists; deploy only when the
   batch needs live rollout.
+- Do not continue long-running aggregate/materialization repair as the primary
+  production-readiness path without a new explicit user decision.
 
 ## Roles
 
@@ -110,7 +116,7 @@ Every coding-batch prompt should include:
 Typical out-of-scope constraints:
 
 - do not touch restore / gap-fill / snapshot branches unless that is the batch
-- do not touch `scoring_window_days`
+- do not use legacy scoring-window acceptance to bypass production discovery truth
 - do not touch selector/scoring unless raw-history gap closure is already
   proven
 - do not enable `execution.enabled`
@@ -207,7 +213,58 @@ Record facts, not vague status language.
 
 ## Current State Snapshot
 
-Latest update as of `2026-04-29T19:27:41Z`:
+Latest update as of `2026-05-03T09:50:00Z`:
+
+- Production discovery truth remains fail-closed.
+- The active operational contract is the Discovery V2/current operational truth pivot:
+  prove fresh raw/recent_raw and exact publication truth without letting a
+  derived aggregate repair lane own production readiness.
+- The active conclusion changed: continuing the current aggregate
+  materialization repair loop as the primary production path is not acceptable.
+  It is too slow and operationally unbounded.
+- Live service snapshot:
+  - `solana-copy-bot.service = active`
+  - `MainPID = 1637934`
+  - `NRestarts = 0`
+  - disk: `36G used / 110G available / 25%`
+  - memory: `5.1Gi available`, swap enabled with `2.2G / 8.0G` used
+- Aggregate repair state on production:
+  - `materialization_gap_since =
+    2026-04-29T02:30:58.295525837+00:00 / 416346850`
+  - `covered_through =
+    2026-04-30T03:46:14.822460878+00:00 / 416577327`
+  - `materialization_gap_repair_target =
+    2026-05-01T09:26:59.969619366+00:00 / 416848267`
+  - progress is roughly `45.97%` from gap start to frozen target; overnight
+    sidecar/loop progress was about `0.15%`, which is not production-grade.
+- Current architectural verdict:
+  - raw ingestion / recent_raw freshness have repeatedly been proven healthy
+    on live
+  - the active blocker is not provider starvation, not Yellowstone source
+    open, not WAL pressure, and not a raw-history provider gap
+  - the blocker is architectural coupling: runtime raw persistence,
+    recent_raw, aggregate scoring, materialization-gap latch, rug lookahead,
+    publication gates, and readiness surfaces are tied together tightly enough
+    that a slow derived projection can block production discovery indefinitely
+- Current direction:
+  - do not keep adding micro-patches to speed up the historical aggregate
+    repair loop as the primary plan
+  - keep legacy Stage 3 fail-closed while designing a replacement or
+    decoupled production discovery path
+  - next work must be architecture-level: separate production discovery truth
+    from aggregate repair, or introduce a Discovery V2 control plane with a
+    durable raw ledger, bounded current-window builder, and atomic publisher
+  - aggregate scoring/materialization may remain a projection or analytics
+    lane, but it must not be able to create fake green or silently override
+    raw/recent_raw/publication truth
+- Do not delete databases, reset production state, or run destructive cleanup
+  from this conclusion alone.
+- Do not enable execution/trading.
+
+Older retained incident history begins below. It is useful context, but the
+current working decision is the 2026-05-03 architecture pivot above.
+
+Older update as of `2026-04-29T19:27:41Z`:
 
 - Stage 3 production discovery truth remains fail-closed.
 - Raw-history recovery and the old `program_history` broad backfill lane are
@@ -449,7 +506,7 @@ Current interpretation:
   `reconnect_count = 0`,
   `ws_notifications_dropped = 0`,
   `yellowstone_output_queue_depth = 0`.
-- Do not reduce `scoring_window_days` or weaken fail-closed semantics to route
+- Do not use legacy scoring-window acceptance or weaken fail-closed semantics to route
   around this result.
 
 Latest confirmed live snapshot:
@@ -715,7 +772,7 @@ Operational reading:
 - do not mark production green from operator observability alone
 - next batch should target the proven observed-swap writer/journal overflow
   freshness seam after source resume; do not go back to provider/add-on,
-  raw-history gap-fill, selector thresholds, or `scoring_window_days`
+  raw-history gap-fill, selector thresholds, or legacy scoring-window acceptance
 
 ## Current Development Accounting
 
@@ -811,7 +868,7 @@ Operator semantics:
 - explicit-missing repair targets root provider-blocked missing segments first;
   once those roots are gone it can target explicit prefix/suffix boundary
   missing segments
-- it does not scan synthetic full-window reasons such as
+- it does not scan synthetic legacy-window reasons such as
   `program_history_gap_fill_repair_explicit_missing_segments_non_target_segments_remain`
   directly
 - retryable provider/source/budget attrition during repair stays

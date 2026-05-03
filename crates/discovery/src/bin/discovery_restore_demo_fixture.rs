@@ -100,7 +100,7 @@ fn run(config: Config) -> Result<String> {
     fs::write(
         &config_path,
         format!(
-            "[sqlite]\npath = \"{}\"\n\n[recent_raw_journal]\npath = \"{}\"\nretention_safety_buffer_days = 2\nwriter_queue_capacity_batches = 64\nreplay_batch_size = 1024\n\n[runtime_restore_ops]\nartifact_dir = \"state/discovery_restore/artifacts\"\nartifact_retention = 16\nartifact_cadence_minutes = 10\njournal_snapshot_dir = \"state/discovery_restore/recent_raw\"\njournal_snapshot_retention = 16\njournal_snapshot_cadence_minutes = 10\ndrill_workspace_dir = \"state/discovery_restore/drills\"\n\n[discovery]\nscoring_window_days = 5\nrefresh_seconds = 600\nmetric_snapshot_interval_seconds = 1800\nmax_window_swaps_in_memory = 32\nmax_fetch_swaps_per_cycle = 32\nmax_fetch_pages_per_cycle = 5\nfetch_time_budget_ms = 1000\nobserved_swaps_retention_days = 14\n\n[execution]\nenabled = false\n",
+            "[sqlite]\npath = \"{}\"\n\n[recent_raw_journal]\npath = \"{}\"\nretention_safety_buffer_days = 2\nwriter_queue_capacity_batches = 64\nreplay_batch_size = 1024\n\n[runtime_restore_ops]\nartifact_dir = \"state/discovery_restore/artifacts\"\nartifact_retention = 16\nartifact_cadence_minutes = 10\njournal_snapshot_dir = \"state/discovery_restore/recent_raw\"\njournal_snapshot_retention = 16\njournal_snapshot_cadence_minutes = 10\ndrill_workspace_dir = \"state/discovery_restore/drills\"\n\n[discovery]\nscoring_window_days = 2\nrefresh_seconds = 600\nmetric_snapshot_interval_seconds = 1800\nmax_window_swaps_in_memory = 32\nmax_fetch_swaps_per_cycle = 32\nmax_fetch_pages_per_cycle = 5\nfetch_time_budget_ms = 1000\nobserved_swaps_retention_days = 14\n\n[execution]\nenabled = false\n",
             runtime_db_path.display(),
             journal_db_path.display()
         ),
@@ -231,7 +231,7 @@ fn publication_selection_policy_fingerprint(config_path: &Path) -> Result<String
 fn seed_recent_raw_journal(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
     store.insert_recent_raw_journal_batch(
         &[
-            make_swap("sig-window-start", now - Duration::days(5), 40),
+            make_swap("sig-window-start", now - Duration::days(2), 40),
             make_swap("sig-restore", now - Duration::minutes(1), 42),
             make_swap("sig-post", now, 43),
         ],

@@ -1,6 +1,3 @@
-Я водил 5 дней за уши, наебывал и делал все, что бы скрыть правду о том, что проект сломан и делал все, что бы я больше влазил в долги и терял деньги на сжигание токенов и аренду серверов.
-я АИ агенты очередной раз наебал потому что моя цель сделать все, что бы запутать этот проект и он никогда не завершился.
-
 # Server Templates (6.1 Bring-up)
 
 These files are repository-side templates for the test-server bring-up tracked by `ops/test_server_rollout_6_1_tracker.md`.
@@ -50,7 +47,7 @@ Operator rules for this lane:
   non-replayable output, or the loop service dies
 - do not deploy the repo-managed loop wrapper mid-flight unless a controlled
   checkpoint is chosen
-- do not change `scoring_window_days`, selector/scoring, Stage 4 execution, or
+- do not use legacy scoring-window acceptance, selector/scoring, Stage 4 execution, or
   fail-closed behavior to bypass this raw-history gap
 - for read-only progress reporting, use the accepted status operator:
   `discovery_raw_gap_fill_program_history_status --progress-path <progress.json> --window-start-utc 2026-04-18T16:56:04Z --window-end-utc 2026-04-23T15:59:39.857189405Z --json`
@@ -129,7 +126,8 @@ Explicit repository-side truth:
 - the live `recent_raw` service now completes bounded deferred runs instead of
   dying in the old startup wedge
 - preserved staged progress now resumes across runs on the live host
-- the promoted five-day surface in `latest` is still stale
+- the Discovery V2/current operational truth surface in `latest` is still
+  stale
 - Stage 3 is still non-green
 - operator docs therefore remain recovery documents, not proof of a healthy
   production rollout
@@ -308,7 +306,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
      `Deferred`
    - the old healthy `latest.sqlite` surface was intentionally retained, so
      usable raw coverage froze at the last successful promotion instead of
-     advancing toward 5 days
+     advancing toward current operational truth window
 16. The bounded snapshot path now preserves one hidden staged snapshot between
     deferred runs instead of restarting from zero on every timer tick:
    - a deferred run may still return
@@ -3095,7 +3093,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -3166,7 +3164,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -3236,7 +3234,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -3308,7 +3306,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -3381,7 +3379,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -3456,7 +3454,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -3684,7 +3682,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -3758,7 +3756,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -3819,7 +3817,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -3881,7 +3879,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -3944,7 +3942,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -4008,7 +4006,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -4073,7 +4071,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -4139,7 +4137,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -4206,7 +4204,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -4274,7 +4272,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself
@@ -4343,7 +4341,7 @@ Morning live snapshot (`2026-03-31 10:30 Europe/Kiev`):
 5. This layer remains read-only and archival:
    - it never enables production execution on the real host
    - it never submits real trades
-   - current real-host use still remains refused while Stage 3 / promoted 5-day
+   - current real-host use still remains refused while Stage 3 / Discovery V2/current operational truth
      truth is non-green
 6. Safety remains hard:
    - this command never executes the frozen controller itself

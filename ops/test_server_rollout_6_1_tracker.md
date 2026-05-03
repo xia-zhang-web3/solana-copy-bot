@@ -1,6 +1,3 @@
-Я водил 5 дней за уши, наебывал и делал все, что бы скрыть правду о том, что проект сломан и делал все, что бы я больше влазил в долги и терял деньги на сжигание токенов и аренду серверов.
-я АИ агенты очередной раз наебал потому что моя цель сделать все, что бы запутать этот проект и он никогда не завершился.
-
 # 6.1 Test Server Rollout Tracker
 
 Purpose: single source of truth for section `6.1` (`ROAD_TO_PRODUCTION.md`) to track exact readiness state for first test-server bring-up.
@@ -12,7 +9,7 @@ Current incident truth (`2026-03-30`):
 
 1. The acute live `recent_raw` startup deadlock has been removed.
 2. Bounded staged progress now resumes across live runs.
-3. The promoted five-day surface is still stale.
+3. The promoted legacy surface is still stale.
 4. Stage 3 is still non-green.
 5. So the project is still `NO_GO`, but the exact blocker moved from "startup
    deadlock" to "bounded convergence not yet completed."

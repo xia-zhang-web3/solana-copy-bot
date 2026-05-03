@@ -2753,7 +2753,7 @@ mod tests {
                 ],
                 audit_json: serde_json::json!({
                     "now": captured_at,
-                    "window_start": captured_at - chrono::Duration::days(5),
+                    "window_start": captured_at - chrono::Duration::days(2),
                     "verdict": audit_verdict,
                     "reason": "seed",
                     "follow_top_n": 2,
@@ -2762,7 +2762,7 @@ mod tests {
                     "publication_recent_under_gate": true,
                     "latest_publication_ts": captured_at,
                     "publication_age_seconds": 60,
-                    "latest_publication_window_start": captured_at - chrono::Duration::days(5),
+                    "latest_publication_window_start": captured_at - chrono::Duration::days(2),
                     "published_scoring_source": "raw_window_persisted_stream",
                     "published_wallet_ids": ["wallet-alpha", "wallet-beta"],
                     "active_follow_wallet_ids": ["wallet-alpha", "wallet-beta"],
@@ -2798,7 +2798,7 @@ mod tests {
                         "eligible_wallet_count": 2,
                         "top_wallet_count": 2,
                         "short_retention_configured": false,
-                        "covered_since": captured_at - chrono::Duration::days(5),
+                        "covered_since": captured_at - chrono::Duration::days(2),
                         "covered_through_cursor": {
                             "ts_utc": captured_at,
                             "slot": 1,

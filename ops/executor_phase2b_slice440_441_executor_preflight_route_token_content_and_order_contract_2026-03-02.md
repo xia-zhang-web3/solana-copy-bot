@@ -42,7 +42,7 @@ Smoke pins added for:
 
 ## Slice 441 — Route ordering determinism
 
-`executor_preflight.sh` now enforces lexicographic sorted order for all five route arrays above.
+`executor_preflight.sh` now enforces lexicographic sorted order for all route arrays above.
 
 1. unsorted arrays now fail with explicit `got ... expected ...` diagnostics.
 2. fake health defaults updated to sorted order to mirror runtime payload:

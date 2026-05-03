@@ -835,7 +835,7 @@ fn operator_checklist_summary(
 ) -> String {
     match result {
         LivePackageDecisionPacketResult::RefusedNowByStage3 => {
-            "Checklist: do not run the frozen controller; wait for promoted 5-day / Stage 3 truth to turn green; rerun turn_green, execute_frozen, and regenerate this final decision packet.".to_string()
+            "Checklist: do not run the frozen controller; wait for Discovery V2/current operational truth to turn green; rerun turn_green, execute_frozen, and regenerate this final decision packet.".to_string()
         }
         LivePackageDecisionPacketResult::RefusedNowByPreActivationGate => {
             "Checklist: do not run the frozen controller; clear the current pre-activation gate blocker; rerun turn_green, execute_frozen, and regenerate this final decision packet.".to_string()
@@ -855,7 +855,7 @@ fn operator_runbook_summary(
 ) -> String {
     match result {
         LivePackageDecisionPacketResult::RefusedNowByStage3 => {
-            "Runbook: remain read-only; monitor promoted 5-day / Stage 3 recovery; rerun the packet-native refresh surfaces only after Stage 3 turns green.".to_string()
+            "Runbook: remain read-only; monitor Discovery V2/current operational truth recovery; rerun the packet-native refresh surfaces only after production discovery truth turns green.".to_string()
         }
         LivePackageDecisionPacketResult::RefusedNowByPreActivationGate => {
             "Runbook: remain read-only; resolve the current pre-activation gate blocker; rerun turn_green, execute_frozen, and this final packet after the gate turns green.".to_string()

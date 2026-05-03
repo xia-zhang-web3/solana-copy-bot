@@ -272,7 +272,7 @@ mod tests {
         fs::write(
             &config_path,
             format!(
-                "[sqlite]\npath = \"{}\"\n\n[discovery]\nscoring_window_days = 5\nrefresh_seconds = 600\nmetric_snapshot_interval_seconds = 1800\nmax_window_swaps_in_memory = 128\nmax_fetch_swaps_per_cycle = 128\nmax_fetch_pages_per_cycle = 8\nfetch_time_budget_ms = 1000\nobserved_swaps_retention_days = 14\nfollow_top_n = 20\nmin_score = 0.0\nmin_trades = 1\nmin_active_days = 1\nmin_leader_notional_sol = 0.0\nmin_buy_count = 1\nmin_tradable_ratio = 0.0\nmax_rug_ratio = 1.0\nthin_market_min_unique_traders = 1\n\n[execution]\nenabled = false\n",
+                "[sqlite]\npath = \"{}\"\n\n[discovery]\nscoring_window_days = 2\nrefresh_seconds = 600\nmetric_snapshot_interval_seconds = 1800\nmax_window_swaps_in_memory = 128\nmax_fetch_swaps_per_cycle = 128\nmax_fetch_pages_per_cycle = 8\nfetch_time_budget_ms = 1000\nobserved_swaps_retention_days = 14\nfollow_top_n = 20\nmin_score = 0.0\nmin_trades = 1\nmin_active_days = 1\nmin_leader_notional_sol = 0.0\nmin_buy_count = 1\nmin_tradable_ratio = 0.0\nmax_rug_ratio = 1.0\nthin_market_min_unique_traders = 1\n\n[execution]\nenabled = false\n",
                 db_path.display()
             ),
         )?;
@@ -318,7 +318,7 @@ mod tests {
             current_raw_top_wallet_ids: vec!["wallet-alpha".to_string(), "wallet-beta".to_string()],
             audit_json: serde_json::json!({
                 "now": captured_at,
-                "window_start": captured_at - chrono::Duration::days(5),
+                "window_start": captured_at - chrono::Duration::days(2),
                 "verdict": verdict,
                 "reason": "seed",
                 "follow_top_n": 2,
@@ -327,7 +327,7 @@ mod tests {
                 "publication_recent_under_gate": true,
                 "latest_publication_ts": captured_at,
                 "publication_age_seconds": 60,
-                "latest_publication_window_start": captured_at - chrono::Duration::days(5),
+                "latest_publication_window_start": captured_at - chrono::Duration::days(2),
                 "published_scoring_source": "raw_window_persisted_stream",
                 "published_wallet_ids": ["wallet-alpha", "wallet-beta"],
                 "active_follow_wallet_ids": ["wallet-alpha", "wallet-beta"],
@@ -363,7 +363,7 @@ mod tests {
                     "eligible_wallet_count": 2,
                     "top_wallet_count": 2,
                     "short_retention_configured": false,
-                    "covered_since": captured_at - chrono::Duration::days(5),
+                    "covered_since": captured_at - chrono::Duration::days(2),
                     "covered_through_cursor": {
                         "ts_utc": captured_at,
                         "slot": 1,

@@ -511,9 +511,11 @@ fn live_server_template_locks_publication_quality_gates() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let template_path = manifest_dir.join("../../ops/server_templates/live.server.toml.example");
     let live_path = manifest_dir.join("../../configs/live.toml");
+    let prod_path = manifest_dir.join("../../configs/prod.toml");
 
     let template = load_from_path(&template_path).expect("live server template must parse");
     let live = load_from_path(&live_path).expect("live config must parse");
+    let prod = load_from_path(&prod_path).expect("prod config must parse");
 
     assert!(template.discovery.require_open_positions_for_publication);
     assert_eq!(template.discovery.max_rug_ratio, 0.60);
@@ -536,6 +538,23 @@ fn live_server_template_locks_publication_quality_gates() {
     assert_eq!(
         template.discovery.thin_market_min_unique_traders,
         live.discovery.thin_market_min_unique_traders
+    );
+
+    assert_eq!(
+        template.discovery.require_open_positions_for_publication,
+        prod.discovery.require_open_positions_for_publication
+    );
+    assert_eq!(
+        template.discovery.max_rug_ratio,
+        prod.discovery.max_rug_ratio
+    );
+    assert_eq!(
+        template.discovery.thin_market_min_volume_sol,
+        prod.discovery.thin_market_min_volume_sol
+    );
+    assert_eq!(
+        template.discovery.thin_market_min_unique_traders,
+        prod.discovery.thin_market_min_unique_traders
     );
 }
 

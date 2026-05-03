@@ -507,7 +507,7 @@ mod tests {
                     "writer_queue_capacity_batches = 64\n",
                     "replay_batch_size = 1024\n\n",
                     "[discovery]\n",
-                    "scoring_window_days = 5\n",
+                    "scoring_window_days = 2\n",
                     "refresh_seconds = 600\n",
                     "metric_snapshot_interval_seconds = 3600\n",
                     "max_window_swaps_in_memory = 128\n",

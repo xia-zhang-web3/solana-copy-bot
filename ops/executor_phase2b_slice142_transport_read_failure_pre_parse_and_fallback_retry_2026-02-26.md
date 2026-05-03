@@ -25,7 +25,7 @@
    - `send_signed_transaction_via_rpc_uses_fallback_after_primary_response_read_failure`
    - `verify_submit_signature_treats_partial_valid_json_body_as_response_read_failed`
 5. Smoke registry:
-   - added all five guards to `tools/executor_contract_smoke_test.sh`
+   - added all route guards to `tools/executor_contract_smoke_test.sh`
 
 ## Files
 
