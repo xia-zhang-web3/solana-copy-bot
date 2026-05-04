@@ -1,3 +1,0 @@
-observed_swaps_rows=7880934
-observed_swaps_rows=7883702
-observed_swaps_rows=7889132

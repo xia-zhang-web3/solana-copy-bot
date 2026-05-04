@@ -85,30 +85,10 @@ table_exists() {
   [[ "$(sqlite3 -noheader "$DB_PATH" "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '$table' LIMIT 1;")" == "1" ]]
 }
 
-order_column_exists() {
-  local column="$1"
-  [[ "$(sqlite3 -noheader "$DB_PATH" "PRAGMA table_info('orders');" | awk -F'|' -v column="$column" '$2 == column { print 1; exit }')" == "1" ]]
-}
-
 shadow_lot_column_exists() {
   local column="$1"
   [[ "$(sqlite3 -noheader "$DB_PATH" "PRAGMA table_info('shadow_lots');" | awk -F'|' -v column="$column" '$2 == column { print 1; exit }')" == "1" ]]
 }
-
-order_column_expr_or_zero() {
-  local column="$1"
-  if order_column_exists "$column"; then
-    printf "COALESCE(o.%s, 0)" "$column"
-  else
-    printf "0"
-  fi
-}
-
-APPLIED_TIP_EXPR="$(order_column_expr_or_zero applied_tip_lamports)"
-ATA_RENT_EXPR="$(order_column_expr_or_zero ata_create_rent_lamports)"
-NETWORK_FEE_HINT_EXPR="$(order_column_expr_or_zero network_fee_lamports_hint)"
-BASE_FEE_HINT_EXPR="$(order_column_expr_or_zero base_fee_lamports_hint)"
-PRIORITY_FEE_HINT_EXPR="$(order_column_expr_or_zero priority_fee_lamports_hint)"
 
 SHADOW_LOT_RISK_CONTEXT_EXPR="'market'"
 if shadow_lot_column_exists risk_context; then
@@ -135,34 +115,6 @@ fi
 SOFT_CAP_SOL="$(cfg_value risk shadow_soft_exposure_cap_sol)"
 HARD_CAP_SOL="$(cfg_value risk shadow_hard_exposure_cap_sol)"
 KILLSWITCH_ENABLED="$(cfg_value risk shadow_killswitch_enabled)"
-PRETRADE_MIN_SOL_RESERVE="$(cfg_or_env_string execution pretrade_min_sol_reserve SOLANA_COPY_BOT_EXECUTION_PRETRADE_MIN_SOL_RESERVE "")"
-PRETRADE_MAX_FEE_OVERHEAD_BPS="$(cfg_or_env_string execution pretrade_max_fee_overhead_bps SOLANA_COPY_BOT_EXECUTION_PRETRADE_MAX_FEE_OVERHEAD_BPS "")"
-PRETRADE_MIN_SOL_RESERVE_LAMPORTS="n/a"
-PRETRADE_FEE_RESERVE_GUARD_ENABLED="unknown"
-PRETRADE_FEE_OVERHEAD_GUARD_ENABLED="unknown"
-
-pretrade_min_sol_reserve_trimmed="$(trim_string "${PRETRADE_MIN_SOL_RESERVE:-}")"
-if [[ -n "$pretrade_min_sol_reserve_trimmed" ]]; then
-  if pretrade_min_sol_reserve_lamports_parsed="$(sol_to_lamports_ceil_strict "$pretrade_min_sol_reserve_trimmed" 2>/dev/null)"; then
-    PRETRADE_MIN_SOL_RESERVE_LAMPORTS="$pretrade_min_sol_reserve_lamports_parsed"
-    if [[ "$pretrade_min_sol_reserve_lamports_parsed" == "0" ]]; then
-      PRETRADE_FEE_RESERVE_GUARD_ENABLED="false"
-    else
-      PRETRADE_FEE_RESERVE_GUARD_ENABLED="true"
-    fi
-  fi
-fi
-
-pretrade_max_fee_overhead_bps_trimmed="$(trim_string "${PRETRADE_MAX_FEE_OVERHEAD_BPS:-}")"
-if [[ -n "$pretrade_max_fee_overhead_bps_trimmed" ]]; then
-  if pretrade_max_fee_overhead_bps_parsed="$(parse_u64_token_strict "$pretrade_max_fee_overhead_bps_trimmed" 2>/dev/null)"; then
-    if [[ "$pretrade_max_fee_overhead_bps_parsed" == "0" ]]; then
-      PRETRADE_FEE_OVERHEAD_GUARD_ENABLED="false"
-    else
-      PRETRADE_FEE_OVERHEAD_GUARD_ENABLED="true"
-    fi
-  fi
-fi
 
 sql_row() {
   sqlite3 -noheader -separator '|' "$DB_PATH" "$1"
@@ -433,11 +385,6 @@ echo "max_hold_hours: ${MAX_HOLD_HOURS:-n/a}"
 echo "shadow_stale_close_recovery_zero_price_enabled: ${STALE_CLOSE_RECOVERY_ZERO_PRICE_ENABLED:-false}"
 echo "stale_open_lots_now: $STALE_LOTS"
 echo "stale_open_notional_sol_now: $STALE_NOTIONAL_SOL"
-echo "execution_pretrade_min_sol_reserve: ${PRETRADE_MIN_SOL_RESERVE:-n/a}"
-echo "execution_pretrade_min_sol_reserve_lamports: ${PRETRADE_MIN_SOL_RESERVE_LAMPORTS:-n/a}"
-echo "execution_pretrade_fee_reserve_guard_enabled: ${PRETRADE_FEE_RESERVE_GUARD_ENABLED:-unknown}"
-echo "execution_pretrade_max_fee_overhead_bps: ${PRETRADE_MAX_FEE_OVERHEAD_BPS:-n/a}"
-echo "execution_pretrade_fee_overhead_guard_enabled: ${PRETRADE_FEE_OVERHEAD_GUARD_ENABLED:-unknown}"
 echo
 echo "=== Shadow Risk State ==="
 while IFS= read -r line; do
@@ -453,40 +400,6 @@ FROM copy_signals
 WHERE datetime(ts) >= datetime('now', '-${WINDOW_HOURS} hours')
 GROUP BY status
 ORDER BY cnt DESC;
-SQL
-
-echo
-echo "=== Execution Fee Breakdown by Route (${WINDOW_HOURS}h) ==="
-sqlite3 "$DB_PATH" <<SQL
-.headers on
-.mode column
-WITH confirmed_orders AS (
-  SELECT
-    o.order_id,
-    o.route,
-    ${APPLIED_TIP_EXPR} AS applied_tip_lamports,
-    ${ATA_RENT_EXPR} AS ata_create_rent_lamports,
-    ${NETWORK_FEE_HINT_EXPR} AS network_fee_lamports_hint,
-    ${BASE_FEE_HINT_EXPR} AS base_fee_lamports_hint,
-    ${PRIORITY_FEE_HINT_EXPR} AS priority_fee_lamports_hint
-  FROM orders o
-  WHERE o.status = 'execution_confirmed'
-    AND o.confirm_ts IS NOT NULL
-    AND datetime(o.confirm_ts) >= datetime('now', '-${WINDOW_HOURS} hours')
-)
-SELECT
-  route,
-  COUNT(*) AS confirmed_orders,
-  COALESCE(SUM(COALESCE(f.fee, 0.0)), 0.0) AS fee_sol_sum,
-  SUM(applied_tip_lamports) AS tip_lamports_sum,
-  SUM(ata_create_rent_lamports) AS ata_rent_lamports_sum,
-  SUM(network_fee_lamports_hint) AS network_fee_hint_lamports_sum,
-  SUM(base_fee_lamports_hint) AS base_fee_hint_lamports_sum,
-  SUM(priority_fee_lamports_hint) AS priority_fee_hint_lamports_sum
-FROM confirmed_orders o
-LEFT JOIN fills f ON f.order_id = o.order_id
-GROUP BY route
-ORDER BY confirmed_orders DESC, route ASC;
 SQL
 
 echo
@@ -523,7 +436,6 @@ import sys
 text = sys.argv[1]
 rows = []
 sqlite_rows = []
-execution_rows = []
 discovery_rows = []
 for line in text.splitlines():
     m = re.search(r'(\{.*\})\s*$', line)
@@ -537,47 +449,8 @@ for line in text.splitlines():
         rows.append(payload)
     elif "sqlite contention counters" in line:
         sqlite_rows.append(payload)
-    elif "execution batch processed" in line:
-        execution_rows.append(payload)
     elif "discovery cycle completed" in line:
         discovery_rows.append(payload)
-
-def emit_execution_sample(rows):
-    if rows:
-        print("execution_batch_sample_available: true")
-        execution_last = rows[-1]
-        keys = [
-            "attempted",
-            "confirmed",
-            "dropped",
-            "failed",
-            "skipped",
-        ]
-        for key in keys:
-            print(f"{key}: {execution_last.get(key)}")
-        map_keys = [
-            "submit_attempted_by_route",
-            "submit_retry_scheduled_by_route",
-            "submit_failed_by_route",
-            "submit_dynamic_cu_policy_enabled_by_route",
-            "submit_dynamic_cu_hint_used_by_route",
-            "submit_dynamic_cu_hint_api_by_route",
-            "submit_dynamic_cu_hint_rpc_by_route",
-            "submit_dynamic_cu_price_applied_by_route",
-            "submit_dynamic_cu_static_fallback_by_route",
-            "submit_dynamic_tip_policy_enabled_by_route",
-            "submit_dynamic_tip_applied_by_route",
-            "submit_dynamic_tip_static_floor_by_route",
-        ]
-        for map_key in map_keys:
-            value = execution_last.get(map_key)
-            if isinstance(value, dict) and value:
-                ordered = {key: value[key] for key in sorted(value)}
-                print(f"{map_key}: {json.dumps(ordered, sort_keys=True)}")
-            else:
-                print(f"{map_key}: {{}}")
-    else:
-        print("execution_batch_sample_available: false")
 
 def emit_discovery_sample(rows):
     if not rows:
@@ -660,7 +533,6 @@ def emit_discovery_sample(rows):
 if not rows:
     print("no ingestion metric samples found")
     emit_discovery_sample(discovery_rows)
-    emit_execution_sample(execution_rows)
     raise SystemExit(0)
 
 last = rows[-1]
@@ -706,7 +578,6 @@ if sqlite_rows:
     print(f"sqlite_busy_error_total: {sqlite_last.get('sqlite_busy_error_total')}")
 
 emit_discovery_sample(discovery_rows)
-emit_execution_sample(execution_rows)
 PY
 else
   echo "journal access unavailable for service '$SERVICE' (try running with sudo)"

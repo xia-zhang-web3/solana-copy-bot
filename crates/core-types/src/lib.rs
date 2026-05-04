@@ -199,53 +199,6 @@ pub struct CopySignalRow {
 pub const COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS: &str = "leader_exact_lamports";
 pub const COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE: &str = "leader_approximate";
 
-#[derive(Debug, Clone)]
-pub struct ExecutionOrderRow {
-    pub order_id: String,
-    pub signal_id: String,
-    pub client_order_id: String,
-    pub route: String,
-    pub applied_tip_lamports: Option<u64>,
-    pub ata_create_rent_lamports: Option<u64>,
-    pub network_fee_lamports_hint: Option<u64>,
-    pub base_fee_lamports_hint: Option<u64>,
-    pub priority_fee_lamports_hint: Option<u64>,
-    pub submit_ts: DateTime<Utc>,
-    pub confirm_ts: Option<DateTime<Utc>>,
-    pub status: String,
-    pub err_code: Option<String>,
-    pub tx_signature: Option<String>,
-    pub simulation_status: Option<String>,
-    pub simulation_error: Option<String>,
-    pub attempt: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InsertExecutionOrderPendingOutcome {
-    Inserted,
-    Duplicate,
-}
-
-pub const EXECUTION_SUBMITTED_RECONCILE_PENDING_STATUS: &str =
-    "execution_submitted_reconcile_pending";
-pub const EXECUTION_CONFIRMED_RECONCILE_PENDING_STATUS: &str =
-    "execution_confirmed_reconcile_pending";
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ExecutionConfirmStateSnapshot {
-    pub total_exposure_lamports: Lamports,
-    pub total_exposure_sol: f64,
-    pub token_exposure_lamports: Lamports,
-    pub token_exposure_sol: f64,
-    pub open_positions: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FinalizeExecutionConfirmOutcome {
-    Applied(ExecutionConfirmStateSnapshot),
-    AlreadyConfirmed,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenQualityCacheRow {
     pub mint: String,

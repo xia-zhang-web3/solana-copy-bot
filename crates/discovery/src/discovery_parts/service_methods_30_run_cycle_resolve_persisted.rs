@@ -1,0 +1,25 @@
+{
+                return self.resolve_run_cycle_persisted_recompute(
+                    store,
+                    now,
+                    cycle_started,
+                    window_start,
+                    metrics_window_start,
+                    fetch_limit,
+                    fetch_page_limit,
+                    fetch_time_budget,
+                    swaps_window,
+                    fetch_progress,
+                    delta_fetched,
+                    swaps_warm_loaded,
+                    swaps_evicted_due_cap,
+                    cap_truncation_telemetry,
+                    publish_due,
+                    scoring_source,
+                    empty_window_degraded_scoring_source,
+                    empty_window_bootstrap_degraded_scoring_source,
+                    empty_window_unusable_scoring_source,
+                    recent_published_follow_wallets,
+                    bootstrap_degraded_follow_wallets,
+                );
+}

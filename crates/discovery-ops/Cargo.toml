@@ -1,0 +1,27 @@
+[package]
+name = "copybot-discovery-ops"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "discovery_recent_raw_snapshot"
+path = "src/bin/discovery_recent_raw_snapshot.rs"
+
+[[bin]]
+name = "discovery_runtime_export"
+path = "src/bin/discovery_runtime_export.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+copybot-config = { path = "../config" }
+copybot-core-types = { path = "../core-types" }
+copybot-runtime-artifacts = { path = "../runtime-artifacts" }
+copybot-storage-core = { path = "../storage-core" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json = "1.0"
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

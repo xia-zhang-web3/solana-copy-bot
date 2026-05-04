@@ -1,0 +1,24 @@
+[package]
+name = "copybot-operators"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "copybot_operators"
+path = "src/lib.rs"
+
+[[bin]]
+name = "copybot_yellowstone_source_probe"
+path = "src/bin/copybot_yellowstone_source_probe.rs"
+
+[dependencies]
+anyhow.workspace = true
+copybot-config = { path = "../config" }
+futures-util = "0.3.31"
+serde.workspace = true
+serde_json = "1.0"
+tokio.workspace = true
+tonic = "=0.14.4"
+url.workspace = true
+yellowstone-grpc-client = "=12.0.0"
+yellowstone-grpc-proto = "=12.0.0"

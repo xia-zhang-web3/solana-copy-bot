@@ -1,0 +1,120 @@
+name: Operator Artifacts
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/operator-artifacts.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/config/**"
+      - "crates/core-types/**"
+      - "crates/discovery-ops/**"
+      - "crates/discovery-v2/**"
+      - "crates/live-ops/**"
+      - "crates/operators/**"
+      - "crates/runtime-artifacts/**"
+      - "crates/storage-core/**"
+      - "crates/storage-ops/**"
+      - "tools/architecture_guard.sh"
+      - "tools/build_manifest.py"
+      - "tools/build_operator_artifacts.sh"
+      - "tools/install_operator_artifacts.sh"
+      - "tools/verify_operator_artifact.py"
+  push:
+    paths:
+      - ".github/workflows/operator-artifacts.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/config/**"
+      - "crates/core-types/**"
+      - "crates/discovery-ops/**"
+      - "crates/discovery-v2/**"
+      - "crates/live-ops/**"
+      - "crates/operators/**"
+      - "crates/runtime-artifacts/**"
+      - "crates/storage-core/**"
+      - "crates/storage-ops/**"
+      - "tools/architecture_guard.sh"
+      - "tools/build_manifest.py"
+      - "tools/build_operator_artifacts.sh"
+      - "tools/install_operator_artifacts.sh"
+      - "tools/verify_operator_artifact.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: operator-artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  operator-artifacts:
+    name: ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Discovery V2 operators
+            package: copybot-discovery-v2
+            wanted_bins: discovery_v2_status discovery_v2_publish
+            artifact_name: discovery-v2-operators
+          - label: Discovery scheduled operators
+            package: copybot-discovery-ops
+            wanted_bins: discovery_runtime_export discovery_recent_raw_snapshot
+            artifact_name: discovery-scheduled-operators
+          - label: Source operators
+            package: copybot-operators
+            wanted_bins: copybot_yellowstone_source_probe
+            artifact_name: source-operators
+          - label: Live operators
+            package: copybot-live-ops
+            wanted_bins: copybot_operator_emergency_stop copybot_live_service_control_wrapper
+            artifact_name: live-operators
+          - label: Storage operators
+            package: copybot-storage-ops
+            wanted_bins: copybot_runtime_sqlite_wal_maintenance copybot_runtime_sqlite_wal_pressure_report
+            artifact_name: storage-operators
+    env:
+      ARTIFACT_ARCH: linux-x86_64
+      CARGO_TERM_COLOR: always
+      FORCE: "1"
+      PACKAGE: ${{ matrix.package }}
+      PROFILE: operator-release
+      RUN_CHECKS: "1"
+      TARGET: x86_64-unknown-linux-gnu
+      WANTED_BINS: ${{ matrix.wanted_bins }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust versions
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Build, test, and package operators
+        run: tools/build_operator_artifacts.sh
+
+      - name: Verify packaged artifact
+        run: python3 tools/verify_operator_artifact.py artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }} --expect-package "${{ matrix.package }}"
+
+      - name: Dry-run operator install
+        run: |
+          tools/install_operator_artifacts.sh \
+            --dry-run \
+            --expect-package "${{ matrix.package }}" \
+            --install-dir /tmp/copybot-operator-bin \
+            artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}.tar.gz
+
+      - name: Upload operator artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: ${{ matrix.artifact_name }}-${{ github.sha }}-linux-x86_64
+          path: |
+            artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}/
+            artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}.tar.gz
+          retention-days: 14

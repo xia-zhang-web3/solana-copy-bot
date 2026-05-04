@@ -1,0 +1,63 @@
+impl SqliteStore {
+    pub fn export_discovery_runtime_artifact(
+        &self,
+        exported_at: DateTime<Utc>,
+        export_gate: DiscoveryPublicationFreshnessGate,
+    ) -> Result<DiscoveryRuntimeArtifact> {
+        self.with_deferred_transaction("discovery runtime artifact export", |_conn| {
+            let publication_state = self
+                .discovery_publication_state_read_only()?
+                .ok_or_else(|| anyhow::anyhow!("discovery runtime artifact export requires persisted publication truth"))?;
+            let truth_detail =
+                runtime_artifact_export_truth_detail(&publication_state, export_gate, exported_at);
+            if !publication_state.has_complete_publication_truth() {
+                return Err(anyhow::anyhow!(
+                    "discovery runtime artifact export requires complete publication truth ({truth_detail})"
+                ));
+            }
+            if !publication_state.is_fresh_under_gate(export_gate, exported_at) {
+                return Err(anyhow::anyhow!(
+                    "discovery runtime artifact export requires fresh publication truth under export gate ({truth_detail})"
+                ));
+            }
+            let runtime_cursor: Option<(String, i64, String)> = self
+                .conn
+                .query_row(
+                    "SELECT cursor_ts, cursor_slot, cursor_signature
+                     FROM discovery_runtime_state
+                     WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .context("failed reading discovery runtime cursor for artifact export")?;
+            let Some((cursor_ts_raw, cursor_slot_raw, cursor_signature)) = runtime_cursor else {
+                return Err(anyhow::anyhow!(
+                    "discovery runtime artifact export requires a persisted discovery runtime cursor ({truth_detail})"
+                ));
+            };
+            let runtime_cursor = super::DiscoveryRuntimeCursor {
+                ts_utc: parse_rfc3339_utc(
+                    &cursor_ts_raw,
+                    "discovery_runtime_state.cursor_ts",
+                )?,
+                slot: cursor_slot_raw.max(0) as u64,
+                signature: cursor_signature,
+            };
+            let published_window_start = publication_state
+                .last_published_window_start
+                .expect("validated complete publication truth above");
+            let artifact = DiscoveryRuntimeArtifact {
+                format_version: DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
+                exported_at,
+                export_gate,
+                publication_state,
+                runtime_cursor,
+                published_wallet_metrics_snapshot: self
+                    .load_wallet_metric_snapshots_for_window(published_window_start)?,
+            };
+            validate_runtime_artifact_snapshot_shape(&artifact)?;
+            Ok(artifact)
+        })
+    }
+}

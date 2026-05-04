@@ -1,0 +1,235 @@
+impl ShadowRiskGuard {
+    #[cfg(test)]
+    fn new(config: RiskConfig) -> Self {
+        Self::new_with_ingestion_source(config, "mock")
+    }
+
+    fn new_with_ingestion_source(config: RiskConfig, ingestion_source: impl Into<String>) -> Self {
+        Self {
+            config,
+            ingestion_source: ingestion_source.into(),
+            ..Self::default()
+        }
+    }
+
+    fn restore_pause_from_store(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+        if !self.config.shadow_killswitch_enabled {
+            return Ok(());
+        }
+        let restore_result = (|| -> Result<Vec<(String, DateTime<Utc>, String)>> {
+            let pause_events = store.list_risk_events_by_type_desc("shadow_risk_pause")?;
+            if pause_events.is_empty() {
+                return Ok(Vec::new());
+            }
+            let cleared_events =
+                store.list_risk_events_by_type_desc("shadow_risk_pause_cleared")?;
+
+            let mut latest_clear_by_type: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
+            let mut wildcard_clear_rowid: Option<i64> = None;
+            for cleared_event in cleared_events {
+                let cleared_pause_type = cleared_event
+                    .details_json
+                    .as_deref()
+                    .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+                    .and_then(|value| {
+                        value
+                            .get("pause_type")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    });
+                match cleared_pause_type {
+                    Some(pause_type) => {
+                        latest_clear_by_type
+                            .entry(pause_type)
+                            .or_insert(cleared_event.rowid);
+                    }
+                    None => {
+                        wildcard_clear_rowid.get_or_insert(cleared_event.rowid);
+                    }
+                }
+            }
+
+            let mut restored_pause_types = std::collections::HashSet::new();
+            let mut restored_pauses = Vec::new();
+            for pause_event in pause_events {
+                let pause_details_json = pause_event
+                    .details_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("shadow_risk_pause missing details_json"))?;
+                let pause_details: serde_json::Value = serde_json::from_str(pause_details_json)
+                    .context("failed to parse shadow_risk_pause details_json")?;
+                let pause_type = pause_details
+                    .get("pause_type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("timed_pause")
+                    .to_string();
+                if !restored_pause_types.insert(pause_type.clone()) {
+                    continue;
+                }
+                if wildcard_clear_rowid.is_some_and(|rowid| rowid > pause_event.rowid) {
+                    continue;
+                }
+                if latest_clear_by_type
+                    .get(pause_type.as_str())
+                    .copied()
+                    .is_some_and(|rowid| rowid > pause_event.rowid)
+                {
+                    continue;
+                }
+                let until_raw = pause_details
+                    .get("until")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| anyhow!("shadow_risk_pause missing until"))?;
+                let until = DateTime::parse_from_rfc3339(until_raw)
+                    .context("failed to parse shadow_risk_pause until")?
+                    .with_timezone(&Utc);
+                if pause_type != "exposure_soft_cap" && until <= now {
+                    continue;
+                }
+                let detail = pause_details
+                    .get("detail")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| {
+                        format!("restored_from_risk_event_rowid={}", pause_event.rowid)
+                    });
+                restored_pauses.push((
+                    pause_type.clone(),
+                    until,
+                    format!("{pause_type}: {detail}; until={}", until.to_rfc3339()),
+                ));
+            }
+
+            Ok(restored_pauses)
+        })();
+        match restore_result {
+            Ok(restored_pauses) => {
+                for (pause_type, until, reason) in restored_pauses {
+                    if pause_type == "exposure_soft_cap" {
+                        self.soft_exposure_pause_latched = true;
+                        self.soft_exposure_pause_until = Some(until);
+                        self.soft_exposure_pause_reason = Some(reason.clone());
+                    } else if self.pause_until.map(|value| until > value).unwrap_or(true) {
+                        self.pause_until = Some(until);
+                        self.pause_reason = Some(reason.clone());
+                    }
+                    info!(
+                        reason = %reason,
+                        until = %until.to_rfc3339(),
+                        "restored shadow risk timed pause from durable state"
+                    );
+                }
+            }
+            Err(error) => {
+                if shadow_risk_pause_restore_error_requires_restart(&error) {
+                    return Err(error).context(
+                        "failed to restore shadow risk timed pause with fatal sqlite I/O",
+                    );
+                }
+                warn!(error = %error, "failed to restore shadow risk timed pause");
+            }
+        }
+        Ok(())
+    }
+
+    fn shadow_soft_exposure_cap_lamports(&self) -> Result<Lamports> {
+        sol_to_lamports_floor(
+            self.config.shadow_soft_exposure_cap_sol,
+            "risk.shadow_soft_exposure_cap_sol",
+        )
+    }
+
+    fn shadow_soft_exposure_resume_below_lamports(&self) -> Result<Lamports> {
+        sol_to_lamports_floor(
+            self.config.shadow_soft_exposure_resume_below_sol,
+            "risk.shadow_soft_exposure_resume_below_sol",
+        )
+    }
+
+    fn shadow_hard_exposure_cap_lamports(&self) -> Result<Lamports> {
+        sol_to_lamports_floor(
+            self.config.shadow_hard_exposure_cap_sol,
+            "risk.shadow_hard_exposure_cap_sol",
+        )
+    }
+
+    fn shadow_drawdown_stop_lamports(&self, stop_sol: f64, label: &str) -> Result<SignedLamports> {
+        sol_to_signed_lamports_conservative(stop_sol, label)
+    }
+
+    fn build_universe_stop_details_json(
+        &self,
+        eligible_wallets: usize,
+        active_follow_wallets: usize,
+        discovery_output: Option<&DiscoveryTaskOutput>,
+    ) -> Result<String> {
+        let mut details = serde_json::Map::new();
+        details.insert(
+            "active_follow_wallets".to_string(),
+            serde_json::Value::from(active_follow_wallets as u64),
+        );
+        details.insert(
+            "eligible_wallets".to_string(),
+            serde_json::Value::from(eligible_wallets as u64),
+        );
+        details.insert(
+            "streak".to_string(),
+            serde_json::Value::from(self.universe_breach_streak),
+        );
+        details.insert(
+            "min_active_follow_wallets".to_string(),
+            serde_json::Value::from(self.config.shadow_universe_min_active_follow_wallets),
+        );
+        details.insert(
+            "min_eligible_wallets".to_string(),
+            serde_json::Value::from(self.config.shadow_universe_min_eligible_wallets),
+        );
+        if let Some(discovery_output) = discovery_output {
+            details.insert(
+                "discovery_runtime_mode".to_string(),
+                serde_json::Value::from(discovery_output.runtime_mode.as_str()),
+            );
+            if discovery_output_has_raw_window_cap_truncation_context(discovery_output) {
+                details.insert(
+                    "raw_window_cap_truncated".to_string(),
+                    serde_json::Value::Bool(true),
+                );
+                details.insert(
+                    "cap_truncation_deactivation_guard_active".to_string(),
+                    serde_json::Value::Bool(
+                        discovery_output.cap_truncation_deactivation_guard_active,
+                    ),
+                );
+                if let Some(reason) = discovery_output.cap_truncation_deactivation_guard_reason {
+                    details.insert(
+                        "cap_truncation_deactivation_guard_reason".to_string(),
+                        serde_json::Value::from(reason),
+                    );
+                }
+                if let Some(started_at) =
+                    discovery_output.cap_truncation_deactivation_guard_started_at
+                {
+                    details.insert(
+                        "cap_truncation_deactivation_guard_started_at".to_string(),
+                        serde_json::Value::from(started_at.to_rfc3339()),
+                    );
+                }
+                if let Some(floor_ts) = discovery_output.cap_truncation_floor_ts_utc {
+                    details.insert(
+                        "cap_truncation_floor_ts".to_string(),
+                        serde_json::Value::from(floor_ts.to_rfc3339()),
+                    );
+                }
+                if let Some(signature) = discovery_output.cap_truncation_floor_signature.as_deref()
+                {
+                    details.insert(
+                        "cap_truncation_floor_signature".to_string(),
+                        serde_json::Value::from(signature),
+                    );
+                }
+            }
+        }
+        serde_json::to_string(&details).context("failed to serialize universe stop details")
+    }
+}

@@ -1,319 +1,104 @@
 # solana-copy-bot
 
-## Live Update (`2026-04-06`)
+Rust workspace for live Solana copy-trading research and Discovery V2
+publication safety.
 
-The Stage 3 discovery fail-closed publication recovery incident is now closed
-on the live host, but shadow trading is still intentionally blocked because the
-current published wallet universe looks low-quality.
+Current priority is Discovery V2 and build-architecture cleanup. The project is
+operated fail-closed: discovery must prove fresh raw truth and publication
+quality before any production activation can be trusted.
 
-Current live truth:
+## Current Contract
 
-- `copybot-discovery-runtime-export.service` successfully wrote runtime
-  artifacts at:
-  - `2026-04-06 09:01:33 Europe/Kiev`
-  - `2026-04-06 09:13:02 Europe/Kiev`
-- exact publication truth now exists on live:
-  - `publication_truth_complete = true`
-  - earlier exact publishes reached `published_wallet_count = 10`
-- a later degraded artifact on
-  `2026-04-06 15:07:22 Europe/Kiev` still surfaced a real exact published
-  universe, but only `9` wallets:
-  - `publication_state.runtime_mode = Degraded`
-  - `publication_state.reason = published_universe_raw_window_degraded`
-  - `published_wallet_ids.len() = 9`
-- temporary policy experiment `8302bcd` lowered shadow universe minimums from
-  `15/80` to `9/9` and correctly proved the active shadow blocker was purely
-  threshold-driven:
-  - `active_follow_wallets = 9`
-  - `eligible_wallets = 9`
-  - the old `shadow risk universe stop activated` warning disappeared
-  - no lots opened during the experiment
-- manual live wallet inspection then showed the published 9-wallet universe was
-  low-quality:
-  - all sampled wallets had `SOL Balance = 0` and `Total Value = $0`
-  - they showed a highly similar synchronized unwind / drain pattern
-  - recent transfers and account closes happened at nearly the same times
-  - this looks like a clustered junk universe, not a trustworthy trading set
-- the threshold experiment was therefore rolled back with `41d0b7a`:
-  - `Restore shadow universe minimums`
-  - live config is back to `min_active_follow_wallets = 15`
-  - live config is back to `min_eligible_wallets = 80`
-  - rollback is live since `2026-04-06 15:26:07 Europe/Kiev`
-- practical result:
-  - Stage 3 recovery is closed
-  - the current blocker is no longer publication truth or shadow threshold
-    logic
-  - the current blocker is discovery selection quality: exclude drained /
-    clustered junk wallets before they enter the published universe
-  - current local causal proof points to live discovery policy explicitly
-    disabling the existing rug / thin-market gate:
-    - previous live config had `max_rug_ratio = 1.0`
-    - previous live config had `thin_market_min_volume_sol = 0.0`
-    - previous live config had `thin_market_min_unique_traders = 0`
-    - local reduced repro now shows that this exact policy hole allows the
-      clustered thin-market cohort to publish
-  - live rollout `84ae773` restored those rug / thin-market gates and partially
-    worked:
-    - the junk cluster shrank from `9` wallets to `6`
-    - runtime export stayed `healthy` / `publication_truth_complete = true`
-    - but the surviving `6` were still the same drained cluster
-  - the currently accepted next fix is to require actionable open tracked lots
-    for publication on live:
-    - `require_open_positions_for_publication = true`
-    - local reduced repro proves this excludes the surviving drained cluster
-      while preserving independent wallets with real open positions
-  - shadow trading should remain blocked until that quality issue is fixed
+1. `execution.enabled` stays `false` unless the user explicitly authorizes a
+   separate execution rollout.
+2. Production hosts are not normal build machines. Build artifacts locally or
+   in CI and deploy the verified binaries.
+3. `copybot-app` owns live runtime only; do not add operator bins under
+   `crates/app/src/bin`.
+4. Discovery V2 proof and publish surfaces live in `crates/discovery-v2`.
+5. Legacy raw-history/program-history restore, aggregate backfill gates,
+   standalone adapter/executor services, and activation-package lanes are not
+   active procedure.
 
-## Incident Update (`2026-03-30`)
+## Workspace
 
-The acute `recent_raw` startup deadlock on the live host has been removed, but
-the project is still not production-usable yet.
+Active crates:
 
-Current hard truth:
-
-- the live `recent_raw` snapshot service no longer dies in the old startup
-  staged-manifest wedge
-- bounded staged progress is now preserved and resumed across runs on the live
-  host
-- the Discovery V2/current operational truth surface is still not published in
-  `latest`
-- Stage 3 remains non-green
-- the project therefore remains in incident recovery, not in normal production
-  readiness
-
-Do not read this repo as a working production system yet. The correct current
-state is "the hard deadlock was removed and convergence is active", not
-"incident fully closed."
-
-Phase 0 skeleton for Solana copy bot in Rust:
-- workspace layout,
-- configuration loader,
-- structured logging,
-- SQLite bootstrap with migrations,
-- app heartbeat loop.
-
-Phase 1 scaffold included:
-- ingestion service (`mock` + `helius_ws` + `yellowstone_grpc` source modes),
-- Raydium/PumpSwap swap parser by program IDs,
-- observed swaps persistence into SQLite (`observed_swaps` table).
-
-Phase 1 runtime additions:
-- rolling wallet metrics + scoring writes (`wallet_metrics`),
-- top-N follow-list promotion/demotion (`followlist`),
-- hard gates for min trades/active days/notional and tx-per-minute spam filter.
+1. `crates/app` — live runtime
+2. `crates/config` — config loading and validation
+3. `crates/core-types` — shared DTOs
+4. `crates/discovery` — retained legacy runtime export / snapshot support
+5. `crates/discovery-v2` — current discovery proof and publication operators
+6. `crates/ingestion` — swap ingestion sources
+7. `crates/live-ops` — bounded live-service operators
+8. `crates/operators` — dedicated operator crate
+9. `crates/shadow` — shadow accounting / risk helpers
+10. `crates/storage` — legacy runtime storage
+11. `crates/storage-core` — lightweight storage facade for operators
+13. `crates/storage-ops` — storage operators
 
 ## Quick Start
 
 ```bash
-cd solana-copy-bot
 cargo run -p copybot-app -- --config configs/dev.toml
 ```
 
-Alternative config path via env:
+Alternative config path:
 
 ```bash
-cd solana-copy-bot
 SOLANA_COPY_BOT_CONFIG=configs/paper.toml cargo run -p copybot-app
 ```
 
-Config profiles:
-- `configs/dev.toml` — local development defaults.
-- `configs/paper.toml` — paper/runtime-ops profile.
-- `configs/prod.toml` — production scaffold with execution disabled.
-- `configs/live.toml` — Stage D/E live-path baseline (`adapter_submit_confirm`, `jito/rpc`, tiny-live limits, optional dynamic CU-price/tip policy knobs including external Priority Fee API hint endpoint, `submit_fastlane_enabled=false` by default), execution disabled by default.
-
-Run adapter backend (contract gateway for `adapter_submit_confirm` mode):
+Run Discovery V2 status:
 
 ```bash
-cd solana-copy-bot
-COPYBOT_ADAPTER_BIND_ADDR=127.0.0.1:8080 \
-COPYBOT_ADAPTER_CONTRACT_VERSION=v1 \
-COPYBOT_ADAPTER_SIGNER_PUBKEY=<YOUR_SIGNER_PUBKEY> \
-COPYBOT_ADAPTER_ROUTE_ALLOWLIST=rpc,paper \
-COPYBOT_ADAPTER_UPSTREAM_SUBMIT_URL=https://<UPSTREAM_EXECUTOR>/submit \
-COPYBOT_ADAPTER_UPSTREAM_SIMULATE_URL=https://<UPSTREAM_EXECUTOR>/simulate \
-COPYBOT_ADAPTER_UPSTREAM_SUBMIT_FALLBACK_URL=https://<UPSTREAM_EXECUTOR_FALLBACK>/submit \
-COPYBOT_ADAPTER_UPSTREAM_SIMULATE_FALLBACK_URL=https://<UPSTREAM_EXECUTOR_FALLBACK>/simulate \
-COPYBOT_ADAPTER_UPSTREAM_FALLBACK_AUTH_TOKEN=<UPSTREAM_FALLBACK_AUTH_TOKEN> \
-COPYBOT_ADAPTER_SEND_RPC_URL=https://<SEND_RPC_ENDPOINT> \
-COPYBOT_ADAPTER_SEND_RPC_FALLBACK_URL=https://<SEND_RPC_ENDPOINT_FALLBACK> \
-COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_URL=https://<RPC_URL_FOR_SIGNATURE_VISIBILITY> \
-COPYBOT_ADAPTER_SUBMIT_VERIFY_RPC_FALLBACK_URL=https://<RPC_URL_FALLBACK> \
-COPYBOT_ADAPTER_SUBMIT_VERIFY_ATTEMPTS=3 \
-COPYBOT_ADAPTER_SUBMIT_VERIFY_INTERVAL_MS=250 \
-COPYBOT_ADAPTER_SUBMIT_VERIFY_STRICT=false \
-COPYBOT_ADAPTER_BEARER_TOKEN=<INBOUND_AUTH_TOKEN> \
-cargo run -p copybot-adapter
+cargo run -p copybot-discovery-v2 --bin discovery_v2_status -- --config configs/prod.toml
 ```
 
-Adapter startup is fail-closed without inbound auth by default.
-Set Bearer token or HMAC pair, or explicitly set `COPYBOT_ADAPTER_ALLOW_UNAUTHENTICATED=true` only for controlled local tests.
-File-based secret sources are also supported:
-`COPYBOT_ADAPTER_BEARER_TOKEN_FILE`, `COPYBOT_ADAPTER_HMAC_SECRET_FILE`,
-`COPYBOT_ADAPTER_UPSTREAM_AUTH_TOKEN_FILE`,
-`COPYBOT_ADAPTER_ROUTE_<ROUTE>_AUTH_TOKEN_FILE`.
-
-Run shadow ingestion against Helius WebSocket + HTTP RPC (no execution logic, only ingest + persist):
+Run Discovery V2 publish dry-run:
 
 ```bash
-cd solana-copy-bot
-SOLANA_COPY_BOT_CONFIG=configs/paper.toml \
-SOLANA_COPY_BOT_INGESTION_SOURCE=helius_ws \
-SOLANA_COPY_BOT_HELIUS_WS_URL="wss://mainnet.helius-rpc.com/?api-key=<YOUR_KEY>" \
-SOLANA_COPY_BOT_HELIUS_HTTP_URL="https://mainnet.helius-rpc.com/?api-key=<YOUR_KEY>" \
-cargo run -p copybot-app
+cargo run -p copybot-discovery-v2 --bin discovery_v2_publish -- --config configs/prod.toml
 ```
 
-Run shadow ingestion against QuickNode Yellowstone gRPC (primary path) with Helius HTTP fallback for quality refresh:
+## Config Profiles
+
+1. `configs/dev.toml` — local development defaults
+2. `configs/paper.toml` — paper/runtime-ops profile
+3. `configs/prod.toml` — production scaffold with execution disabled
+4. `configs/live.toml` — live template baseline, execution disabled
+
+## Production Templates
+
+Active systemd/config templates are in `ops/server_templates`.
+
+The active template set is intentionally small:
+
+1. app service
+2. app env
+3. live config example
+4. runtime export service/timer
+5. recent_raw snapshot service/timer
+
+## Build Policy
+
+Read these before adding operators, crates, or release process changes:
+
+1. `BUILD_POLICY.md`
+2. `BUILD_REFACTOR_ROADMAP.md`
+3. `ARTIFACT_DEPLOY.md`
+4. `BUILD_ARCHITECTURE_REDESIGN_NO_HOUR_BUILDS.md`
+5. `ARCHITECTURE_WAIVERS.md`
+
+Run the architecture guard after large cleanup or boundary changes:
 
 ```bash
-cd solana-copy-bot
-SOLANA_COPY_BOT_CONFIG=configs/paper.toml \
-SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone_grpc \
-SOLANA_COPY_BOT_YELLOWSTONE_GRPC_URL="https://<YOUR_QUICKNODE_GRPC_HOST>:10000" \
-SOLANA_COPY_BOT_YELLOWSTONE_X_TOKEN="<YOUR_QUICKNODE_X_TOKEN>" \
-SOLANA_COPY_BOT_HELIUS_HTTP_URL="https://mainnet.helius-rpc.com/?api-key=<YOUR_KEY>" \
-cargo run -p copybot-app
+./tools/architecture_guard.sh
 ```
 
-Use the exact scheme/host provided by your gRPC vendor (`https://...` for TLS endpoints, `http://...` only for explicit plaintext/local setups).
+## Roadmap
 
-Use dedicated HTTP RPC endpoints for quality-refresh workloads (recommended):
+The active roadmap summary is `ROAD_TO_PRODUCTION_v2.md`.
 
-```bash
-SOLANA_COPY_BOT_DISCOVERY_HELIUS_HTTP_URL="https://mainnet.helius-rpc.com/?api-key=<DISCOVERY_KEY>" \
-SOLANA_COPY_BOT_SHADOW_HELIUS_HTTP_URL="https://mainnet.helius-rpc.com/?api-key=<SHADOW_KEY>"
-```
-
-Tune ingestion parallel pipeline from env:
-
-```bash
-SOLANA_COPY_BOT_INGESTION_FETCH_CONCURRENCY=3 \
-SOLANA_COPY_BOT_INGESTION_WS_QUEUE_CAPACITY=512 \
-SOLANA_COPY_BOT_INGESTION_OUTPUT_QUEUE_CAPACITY=2048 \
-SOLANA_COPY_BOT_INGESTION_PREFETCH_STALE_DROP_MS=30000 \
-SOLANA_COPY_BOT_INGESTION_SEEN_SIGNATURES_TTL_MS=600000 \
-SOLANA_COPY_BOT_INGESTION_QUEUE_OVERFLOW_POLICY=drop_oldest \
-SOLANA_COPY_BOT_INGESTION_REORDER_HOLD_MS=1500 \
-SOLANA_COPY_BOT_INGESTION_REORDER_MAX_BUFFER=1024 \
-SOLANA_COPY_BOT_INGESTION_GLOBAL_RPC_RPS_LIMIT=45 \
-SOLANA_COPY_BOT_INGESTION_PER_ENDPOINT_RPC_RPS_LIMIT=16 \
-SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRY_DELAY_MS=500 \
-SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRY_MAX_MS=2000 \
-SOLANA_COPY_BOT_INGESTION_TX_FETCH_RETRY_JITTER_MS=150 \
-SOLANA_COPY_BOT_INGESTION_TELEMETRY_REPORT_SECONDS=30
-```
-
-Bound discovery memory and per-cycle catch-up load:
-
-```bash
-SOLANA_COPY_BOT_DISCOVERY_MAX_WINDOW_SWAPS_IN_MEMORY=120000 \
-SOLANA_COPY_BOT_DISCOVERY_MAX_FETCH_SWAPS_PER_CYCLE=120000
-```
-
-Optional: load-balance ingestion `getTransaction` calls across multiple Helius keys:
-
-```bash
-SOLANA_COPY_BOT_INGESTION_HELIUS_HTTP_URLS="https://mainnet.helius-rpc.com/?api-key=<KEY1>,https://mainnet.helius-rpc.com/?api-key=<KEY2>,https://mainnet.helius-rpc.com/?api-key=<KEY3>"
-```
-
-Optional sell causal holdback controls:
-
-```bash
-SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_ENABLED=true \
-SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_MS=2500
-```
-
-Optional program filters override:
-
-```bash
-SOLANA_COPY_BOT_PROGRAM_IDS="675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8,pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
-```
-
-Optional Yellowstone-specific overrides:
-
-```bash
-SOLANA_COPY_BOT_YELLOWSTONE_CONNECT_TIMEOUT_MS=5000 \
-SOLANA_COPY_BOT_YELLOWSTONE_SUBSCRIBE_TIMEOUT_MS=15000 \
-SOLANA_COPY_BOT_YELLOWSTONE_STREAM_BUFFER_CAPACITY=512 \
-SOLANA_COPY_BOT_YELLOWSTONE_RECONNECT_INITIAL_MS=500 \
-SOLANA_COPY_BOT_YELLOWSTONE_RECONNECT_MAX_MS=8000 \
-SOLANA_COPY_BOT_YELLOWSTONE_PROGRAM_IDS="675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8,pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
-```
-
-Watchdog failover helper (writes `state/ingestion_source_override.env` and optional restart):
-
-```bash
-cd solana-copy-bot
-POLICY_FILE=ops/ingestion_failover_policy.toml \
-CONFIG_PATH=configs/paper.toml \
-./tools/ingestion_failover_watchdog.sh
-```
-
-Systemd wiring example for watchdog and override profile:
-
-- `ops/ingestion_failover_watchdog.md`
-
-Quick recovery from failover:
-
-```bash
-rm -f state/ingestion_source_override.env state/ingestion_failover_cooldown.json
-```
-
-A/B gate report for replay or live canary (`control` vs `candidate`):
-
-```bash
-cd solana-copy-bot
-./tools/ingestion_ab_report.sh \
-  --control-config configs/paper.toml \
-  --candidate-config configs/paper.toml \
-  --mode replay \
-  --fixture-id replay-2026-02-18 \
-  --fixture-sha256 <FIXTURE_SHA256> \
-  --output-json state/ab_report.json
-```
-
-Live canary variant with telemetry gates from journald:
-
-```bash
-./tools/ingestion_ab_report.sh \
-  --control-config configs/paper.toml \
-  --candidate-config configs/paper-canary-yellowstone.toml \
-  --control-service solana-copy-bot \
-  --candidate-service solana-copy-bot-canary \
-  --mode live \
-  --window-minutes 360 \
-  --output-json state/ab_report_live.json
-```
-
-Cutover runbook:
-
-- `ops/yellowstone_rollout_runbook.md`
-- `ops/execution_manual_reconcile_runbook.md` (`execution_price_unavailable_fallback_used` handling)
-
-## Layout
-
-- `crates/app`: runtime entrypoint.
-- `crates/config`: typed TOML config loader.
-- `crates/storage`: SQLite store + migration runner.
-- `crates/core-types`: shared event and domain types.
-- `crates/adapter`: adapter backend HTTP service (`/simulate`, `/submit`, `/healthz`).
-- `migrations`: SQL schema files.
-- `configs`: dev/paper/prod presets.
-
-## Notes
-
-- `ingestion.source="mock"` generates synthetic swaps and stores them in SQLite.
-- `ingestion.source="helius_ws"` uses `logsSubscribe` for target program IDs and a bounded parallel `getTransaction` worker pool for full swap parsing.
-- `ingestion.source="yellowstone_grpc"` subscribes to transaction stream directly and removes per-event HTTP fetch from the hot path.
-- ws->fetch queue supports bounded policies (`block`/`drop_oldest`) to prioritize fresh traffic under overload.
-- ingestion includes bounded reorder-by-`(slot, arrival_seq, signature)` holdback to reduce out-of-order processing risk.
-- ingestion supports pre-fetch stale drop, signature dedupe TTL/LRU, and optional global/per-endpoint token-bucket HTTP rate limiting.
-- shadow scheduler supports per-`(wallet, token)` sell causal holdback before release into processing queue.
-- ingestion emits periodic pipeline metrics (`ws_to_fetch_queue_depth`, `ws_notifications_backpressured`, `fetch_latency_ms`, `ingestion_lag_ms`, `reorder_buffer_size`, RPC `429/5xx`, gRPC reconnect/decode/parse counters).
-- app emits SQLite contention counters (`sqlite_write_retry_total`, `sqlite_busy_error_total`) in heartbeat logs.
-- discovery cycle runs every `discovery.refresh_seconds` and recalculates score/follow-list.
-- If URLs are invalid/missing key, bot fails closed for entries and keeps retrying stream connection.
-- Execution runtime is implemented (paper lifecycle + adapter submit/confirm hardening path).
-- Adapter backend deploy/runbook: `ops/adapter_backend_runbook.md`.
-- Keep keys out of repository and mounted via environment/secret files.
+Historical incident docs and deleted operator lanes should be recovered from
+git history only when needed. They are not active operating instructions.

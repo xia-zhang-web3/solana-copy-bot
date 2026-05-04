@@ -78,38 +78,6 @@ quality_gates_enabled = true
 
 [execution]
 enabled = false
-mode = "paper"
-poll_interval_ms = 750
-batch_size = 32
-default_route = "paper"
-rpc_http_url = ""
-rpc_fallback_http_url = ""
-rpc_devnet_http_url = ""
-submit_adapter_http_url = ""
-submit_adapter_fallback_http_url = ""
-submit_adapter_auth_token = ""
-submit_adapter_auth_token_file = ""
-submit_adapter_hmac_key_id = ""
-submit_adapter_hmac_secret = ""
-submit_adapter_hmac_secret_file = ""
-submit_adapter_hmac_ttl_sec = 30
-submit_adapter_contract_version = "v1"
-submit_adapter_require_policy_echo = false
-submit_allowed_routes = ["paper"]
-submit_route_order = []
-submit_route_max_slippage_bps = { paper = 50.0 }
-submit_route_tip_lamports = { paper = 0 }
-submit_route_compute_unit_limit = { paper = 300000 }
-submit_route_compute_unit_price_micro_lamports = { paper = 1000 }
-submit_timeout_ms = 3000
-execution_signer_pubkey = ""
-pretrade_min_sol_reserve = 0.05
-pretrade_require_token_account = false
-pretrade_max_priority_fee_lamports = 0
-slippage_bps = 50.0
-max_confirm_seconds = 15
-max_submit_attempts = 3
-simulate_before_submit = true
 
 [risk]
 max_position_sol = 0.5

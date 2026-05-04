@@ -278,20 +278,6 @@ normalize_rotation_verdict() {
   esac
 }
 
-normalize_rehearsal_verdict() {
-  local raw
-  raw="$(trim_string "$1")"
-  raw="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]')"
-  case "$raw" in
-    GO|HOLD|NO_GO)
-      printf '%s' "$raw"
-      ;;
-    *)
-      printf 'UNKNOWN'
-      ;;
-  esac
-}
-
 sha256_file_value() {
   local path="$1"
   if command -v sha256sum >/dev/null 2>&1; then

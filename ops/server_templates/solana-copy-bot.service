@@ -1,8 +1,7 @@
 [Unit]
 Description=Solana Copy Bot Application
-After=network-online.target copybot-adapter.service
+After=network-online.target
 Wants=network-online.target
-Requires=copybot-adapter.service
 
 [Service]
 Type=simple

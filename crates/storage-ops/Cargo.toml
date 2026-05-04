@@ -1,0 +1,24 @@
+[package]
+name = "copybot-storage-ops"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "copybot_storage_ops"
+path = "src/lib.rs"
+
+[[bin]]
+name = "copybot_runtime_sqlite_wal_maintenance"
+path = "src/bin/copybot_runtime_sqlite_wal_maintenance.rs"
+
+[[bin]]
+name = "copybot_runtime_sqlite_wal_pressure_report"
+path = "src/bin/copybot_runtime_sqlite_wal_pressure_report.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+copybot-config = { path = "../config" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json = "1.0"
