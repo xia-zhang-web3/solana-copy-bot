@@ -5,10 +5,13 @@ use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::{SwapEvent, TokenQualityCacheRow};
 use std::collections::{HashMap, VecDeque};
 
+pub(crate) const TOKEN_ROLLING_MARKET_WINDOW_SECONDS: i64 = 5 * 60;
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum BuyTradability {
     Tradable,
     Rejected,
+    MissingQualityEvidence,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -116,32 +119,49 @@ fn evaluate_buy_tradability(
     {
         return BuyTradability::Rejected;
     }
-    if shadow.min_token_age_seconds > 0
-        && quality
-            .and_then(|row| row.token_age_seconds)
-            .is_none_or(|age| age < shadow.min_token_age_seconds)
-    {
-        return BuyTradability::Rejected;
-    }
-    if shadow.min_holders > 0
-        && quality
-            .and_then(|row| row.holders)
-            .is_none_or(|holders| holders < shadow.min_holders)
-    {
-        return BuyTradability::Rejected;
-    }
-    if shadow.min_liquidity_sol > 0.0
-        && quality
-            .and_then(|row| row.liquidity_sol)
-            .is_none_or(|liquidity| liquidity + 1e-12 < shadow.min_liquidity_sol)
-    {
-        return BuyTradability::Rejected;
+    let requires_cache_evidence = shadow.min_token_age_seconds > 0
+        || shadow.min_holders > 0
+        || shadow.min_liquidity_sol > 0.0;
+    if requires_cache_evidence {
+        let Some(quality) = quality else {
+            return BuyTradability::MissingQualityEvidence;
+        };
+        if shadow.min_token_age_seconds > 0 && quality.token_age_seconds.is_none() {
+            return BuyTradability::MissingQualityEvidence;
+        }
+        if shadow.min_holders > 0 && quality.holders.is_none() {
+            return BuyTradability::MissingQualityEvidence;
+        }
+        if shadow.min_liquidity_sol > 0.0 && quality.liquidity_sol.is_none() {
+            return BuyTradability::MissingQualityEvidence;
+        }
+        if shadow.min_token_age_seconds > 0
+            && quality
+                .token_age_seconds
+                .is_some_and(|age| age < shadow.min_token_age_seconds)
+        {
+            return BuyTradability::Rejected;
+        }
+        if shadow.min_holders > 0
+            && quality
+                .holders
+                .is_some_and(|holders| holders < shadow.min_holders)
+        {
+            return BuyTradability::Rejected;
+        }
+        if shadow.min_liquidity_sol > 0.0
+            && quality
+                .liquidity_sol
+                .is_some_and(|liquidity| liquidity + 1e-12 < shadow.min_liquidity_sol)
+        {
+            return BuyTradability::Rejected;
+        }
     }
     BuyTradability::Tradable
 }
 
 fn evict_expired_token_trades(state: &mut TokenRollingState, now: DateTime<Utc>) {
-    let cutoff = now - Duration::minutes(5);
+    let cutoff = now - Duration::seconds(TOKEN_ROLLING_MARKET_WINDOW_SECONDS);
     while state
         .sol_trades_5m
         .front()

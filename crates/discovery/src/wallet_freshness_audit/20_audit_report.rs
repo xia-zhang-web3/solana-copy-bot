@@ -15,7 +15,7 @@ impl DiscoveryService {
         let publication_truth = publication_truth_for_audit(publication_state.as_ref());
         let publication_recent_under_gate = publication_state
             .as_ref()
-            .is_some_and(|state| state.is_fresh_under_gate(self.publication_freshness_gate(), now));
+            .is_some_and(|state| state.is_fresh_under_gate(&self.publication_freshness_gate(), now));
         let active_follow_wallet_ids =
             sorted_wallets_from_iter(store.list_active_follow_wallets()?);
         let raw_coverage = store.observed_swaps_coverage_snapshot()?;

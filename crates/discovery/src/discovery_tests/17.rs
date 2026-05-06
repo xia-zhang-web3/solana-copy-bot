@@ -532,7 +532,7 @@
         );
         assert!(after.has_complete_publication_truth());
         assert!(
-            !after.is_fresh_under_gate(discovery.publication_freshness_gate(), now),
+            !after.is_fresh_under_gate(&discovery.publication_freshness_gate(), now),
             "the carried-forward row must still fail the freshness gate at the live timestamp"
         );
         assert!(

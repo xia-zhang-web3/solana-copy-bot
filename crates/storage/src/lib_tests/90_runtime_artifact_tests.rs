@@ -1,10 +1,9 @@
     use super::*;
     use chrono::Duration;
-    use std::collections::HashSet;
     use tempfile::tempdir;
 
     fn metrics_window_start_for_gate(
-        gate: DiscoveryPublicationFreshnessGate,
+        gate: &DiscoveryPublicationFreshnessGate,
         now: DateTime<Utc>,
     ) -> DateTime<Utc> {
         let interval_seconds = gate.metric_snapshot_interval_seconds.max(1) as i64;
@@ -13,19 +12,12 @@
         bucketed_now - Duration::days(gate.scoring_window_days.max(1))
     }
 
-    fn sorted_snapshot_rows(
-        mut rows: Vec<PersistedWalletMetricSnapshotRow>,
-    ) -> Vec<PersistedWalletMetricSnapshotRow> {
-        rows.sort_by(|left, right| left.wallet_id.cmp(&right.wallet_id));
-        rows
-    }
-
     fn seed_runtime_artifact_source_store(
         source_store: &SqliteStore,
         now: DateTime<Utc>,
         export_gate: DiscoveryPublicationFreshnessGate,
     ) -> Result<DiscoveryRuntimeArtifact> {
-        let metrics_window_start = metrics_window_start_for_gate(export_gate, now);
+        let metrics_window_start = metrics_window_start_for_gate(&export_gate, now);
         let published_at = now - Duration::minutes(5);
         let published_wallet_ids = vec!["wallet-alpha".to_string()];
 
@@ -78,33 +70,34 @@
             published_at,
             "seed_runtime_artifact_roundtrip",
         )?;
-        source_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
-            runtime_mode: DiscoveryRuntimeMode::Healthy,
-            reason: "seed_runtime_artifact_roundtrip".to_string(),
-            last_published_at: Some(published_at),
-            last_published_window_start: Some(metrics_window_start),
-            published_scoring_source: Some("raw_window".to_string()),
-            published_wallet_ids: Some(published_wallet_ids.clone()),
-        })?;
         let runtime_cursor = DiscoveryRuntimeCursor {
             ts_utc: now - Duration::minutes(1),
             slot: 77,
             signature: "runtime-artifact-cursor".to_string(),
         };
         source_store.upsert_discovery_runtime_cursor(&runtime_cursor)?;
+        source_store.set_discovery_publication_state_with_identity(
+            &DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "seed_runtime_artifact_roundtrip".to_string(),
+                last_published_at: Some(published_at),
+                last_published_window_start: Some(metrics_window_start),
+                published_scoring_source: Some("discovery_v2_operational_window".to_string()),
+                published_wallet_ids: Some(published_wallet_ids.clone()),
+            },
+            false,
+            Some("test-policy-fingerprint"),
+            Some(&runtime_cursor),
+        )?;
         source_store.export_discovery_runtime_artifact(now, export_gate)
     }
 
     #[test]
-    fn discovery_runtime_artifact_export_restore_roundtrip_preserves_consistent_snapshot(
-    ) -> Result<()> {
+    fn discovery_runtime_artifact_restore_rejects_fail_closed_artifact() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
-        let source_db_path = temp.path().join("runtime-artifact-source.db");
-        let restore_db_path = temp.path().join("runtime-artifact-restore.db");
+        let source_db_path = temp.path().join("runtime-artifact-source-fail-closed.db");
+        let restore_db_path = temp.path().join("runtime-artifact-restore-fail-closed.db");
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
-        let mut source_store = SqliteStore::open(Path::new(&source_db_path))?;
-        source_store.run_migrations(&migration_dir)?;
-
         let now = DateTime::parse_from_rfc3339("2026-03-23T12:10:00Z")
             .expect("timestamp")
             .with_timezone(&Utc);
@@ -112,59 +105,57 @@
             scoring_window_days: 7,
             metric_snapshot_interval_seconds: 1_800,
             refresh_seconds: 600,
+            expected_scoring_source: Some("discovery_v2_operational_window".to_string()),
+            expected_policy_fingerprint: Some("test-policy-fingerprint".to_string()),
         };
-        let metrics_window_start = metrics_window_start_for_gate(export_gate, now);
-        let artifact = seed_runtime_artifact_source_store(&source_store, now, export_gate)?;
+        let mut source_store = SqliteStore::open(Path::new(&source_db_path))?;
+        source_store.run_migrations(&migration_dir)?;
+        let mut artifact = seed_runtime_artifact_source_store(&source_store, now, export_gate)?;
+        artifact.publication_state.runtime_mode = DiscoveryRuntimeMode::FailClosed;
+        artifact.publication_state.reason = "blocked".to_string();
 
         let mut restore_store = SqliteStore::open(Path::new(&restore_db_path))?;
         restore_store.run_migrations(&migration_dir)?;
-        restore_store.restore_discovery_runtime_artifact(&artifact, now, false)?;
+        let error = restore_store
+            .restore_discovery_runtime_artifact(&artifact, now, false)
+            .expect_err("restore must reject non-healthy runtime artifact");
 
-        let restored_publication_state = restore_store
-            .discovery_publication_state()?
-            .expect("publication state should be restored");
-        assert_eq!(
-            restored_publication_state.runtime_mode,
-            artifact.publication_state.runtime_mode
-        );
-        assert_eq!(
-            restored_publication_state.reason,
-            artifact.publication_state.reason
-        );
-        assert_eq!(
-            restored_publication_state.last_published_at,
-            artifact.publication_state.last_published_at
-        );
-        assert_eq!(
-            restored_publication_state.last_published_window_start,
-            artifact.publication_state.last_published_window_start
-        );
-        assert_eq!(
-            restored_publication_state.published_scoring_source,
-            artifact.publication_state.published_scoring_source
-        );
-        assert_eq!(
-            restored_publication_state.published_wallet_ids,
-            artifact.publication_state.published_wallet_ids
-        );
-        assert_eq!(
-            restore_store.load_discovery_runtime_cursor()?,
-            Some(artifact.runtime_cursor.clone())
-        );
-        assert_eq!(
-            restore_store.discovery_bootstrap_degraded_state()?.active,
-            false
-        );
-        assert_eq!(
-            restore_store.list_active_follow_wallets()?,
-            HashSet::from(["wallet-alpha".to_string()])
-        );
-        assert_eq!(
-            sorted_snapshot_rows(
-                restore_store.load_wallet_metric_snapshots_for_window(metrics_window_start)?,
-            ),
-            sorted_snapshot_rows(artifact.published_wallet_metrics_snapshot.clone())
-        );
+        assert!(error
+            .to_string()
+            .contains("restore requires healthy publication state"));
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_runtime_artifact_restore_rejects_missing_publication_identity() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let source_db_path = temp.path().join("runtime-artifact-source-identity.db");
+        let restore_db_path = temp.path().join("runtime-artifact-restore-identity.db");
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let now = DateTime::parse_from_rfc3339("2026-03-23T12:10:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let export_gate = DiscoveryPublicationFreshnessGate {
+            scoring_window_days: 7,
+            metric_snapshot_interval_seconds: 1_800,
+            refresh_seconds: 600,
+            expected_scoring_source: Some("discovery_v2_operational_window".to_string()),
+            expected_policy_fingerprint: Some("test-policy-fingerprint".to_string()),
+        };
+        let mut source_store = SqliteStore::open(Path::new(&source_db_path))?;
+        source_store.run_migrations(&migration_dir)?;
+        let mut artifact = seed_runtime_artifact_source_store(&source_store, now, export_gate)?;
+        artifact.publication_state.publication_policy_fingerprint = None;
+
+        let mut restore_store = SqliteStore::open(Path::new(&restore_db_path))?;
+        restore_store.run_migrations(&migration_dir)?;
+        let error = restore_store
+            .restore_discovery_runtime_artifact(&artifact, now, false)
+            .expect_err("restore must reject runtime artifact without publication identity");
+
+        assert!(error
+            .to_string()
+            .contains("restore requires complete publication identity"));
         Ok(())
     }
 
@@ -211,6 +202,8 @@
             scoring_window_days: 7,
             metric_snapshot_interval_seconds: 1_800,
             refresh_seconds: 600,
+            expected_scoring_source: Some("discovery_v2_operational_window".to_string()),
+            expected_policy_fingerprint: Some("test-policy-fingerprint".to_string()),
         };
 
         let mut source_store = SqliteStore::open(Path::new(&source_db_path))?;
@@ -223,10 +216,10 @@
 
         let error = restore_store
             .restore_discovery_runtime_artifact(&artifact, now, false)
-            .expect_err("restore must reject dirty db with shadow_lots");
+            .expect_err("legacy restore must stay quarantined before dirty db inspection");
         assert!(error
             .to_string()
-            .contains("shadow_lots (shadow accounting)"));
+            .contains("legacy copybot-storage runtime artifact restore is quarantined"));
         Ok(())
     }
 
@@ -243,6 +236,8 @@
             scoring_window_days: 7,
             metric_snapshot_interval_seconds: 1_800,
             refresh_seconds: 600,
+            expected_scoring_source: Some("discovery_v2_operational_window".to_string()),
+            expected_policy_fingerprint: Some("test-policy-fingerprint".to_string()),
         };
 
         let mut source_store = SqliteStore::open(Path::new(&source_db_path))?;
@@ -260,8 +255,10 @@
 
         let error = restore_store
             .restore_discovery_runtime_artifact(&artifact, now, false)
-            .expect_err("restore must reject dirty db with risk_events");
-        assert!(error.to_string().contains("risk_events (risk gating)"));
+            .expect_err("legacy restore must stay quarantined before dirty db inspection");
+        assert!(error
+            .to_string()
+            .contains("legacy copybot-storage runtime artifact restore is quarantined"));
         Ok(())
     }
 

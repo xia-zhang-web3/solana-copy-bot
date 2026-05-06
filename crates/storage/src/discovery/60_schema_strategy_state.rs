@@ -21,6 +21,9 @@ impl SqliteStore {
                     publication_scoring_source TEXT,
                     publication_wallet_ids_json TEXT,
                     publication_policy_fingerprint TEXT,
+                    publication_runtime_cursor_ts TEXT,
+                    publication_runtime_cursor_slot INTEGER,
+                    publication_runtime_cursor_signature TEXT,
                     updated_at TEXT NOT NULL
                 )",
             )
@@ -177,6 +180,35 @@ impl SqliteStore {
                     [],
                 )
                 .context("failed adding discovery_strategy_state.publication_policy_fingerprint")?;
+        }
+        if !columns.contains("publication_runtime_cursor_ts") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN publication_runtime_cursor_ts TEXT",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.publication_runtime_cursor_ts")?;
+        }
+        if !columns.contains("publication_runtime_cursor_slot") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN publication_runtime_cursor_slot INTEGER",
+                    [],
+                )
+                .context("failed adding discovery_strategy_state.publication_runtime_cursor_slot")?;
+        }
+        if !columns.contains("publication_runtime_cursor_signature") {
+            self.conn
+                .execute(
+                    "ALTER TABLE discovery_strategy_state
+                     ADD COLUMN publication_runtime_cursor_signature TEXT",
+                    [],
+                )
+                .context(
+                    "failed adding discovery_strategy_state.publication_runtime_cursor_signature",
+                )?;
         }
         Ok(())
     }

@@ -6,14 +6,25 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration as StdDuration, Instant};
-use std::{fmt, thread};
 
 pub use copybot_core_types::{
     CopySignalRow, ExactSwapAmounts, Lamports, SignedLamports, TokenQualityCacheRow,
     TokenQualityRpcRow, TokenQuantity, WalletMetricRow, WalletUpsertRow,
     COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
+};
+pub use copybot_storage_core::{
+    report_startup_step_progress, run_observed_startup_step,
+    run_observed_startup_step_with_completion_detail, SqliteStartupPolicy, StartupStepOutcome,
+    StartupStepProgress, StartupStepProgressReporter, StartupStepRuntimePolicy, StartupStepTimeout,
+    StartupStepTimeoutBehavior, SHADOW_CLOSE_CONTEXT_MARKET,
+    SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY, SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
+    SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE, SHADOW_RISK_CONTEXT_MARKET,
+    SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY, STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES,
+    STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES, STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
+    STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
 };
 
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
@@ -23,16 +34,6 @@ const SQLITE_SNAPSHOT_PAUSE_BETWEEN_STEPS_MS: u64 = 25;
 const SQLITE_SNAPSHOT_BUSY_TIMEOUT_MS: u64 = 250;
 const SQLITE_SNAPSHOT_DEFAULT_MAX_ATTEMPT_DURATION_MS: u64 = 90_000;
 const DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS: i64 = 3;
-pub const STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES: i64 = 30;
-pub const STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL: f64 = 0.05;
-pub const STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES: usize = 3;
-pub const STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES: usize = 60;
-pub const SHADOW_CLOSE_CONTEXT_MARKET: &str = "market";
-pub const SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE: &str = "stale_terminal_zero_price";
-pub const SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE: &str = "recovery_terminal_zero_price";
-pub const SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY: &str = "quarantined_legacy";
-pub const SHADOW_RISK_CONTEXT_MARKET: &str = "market";
-pub const SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY: &str = "quarantined_legacy";
 pub(crate) const POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER: &str = "legacy_pre_cutover";
 pub(crate) const POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER: &str = "exact_post_cutover";
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
@@ -81,7 +82,6 @@ mod tests {
     use super::*;
     use chrono::Duration;
     use copybot_core_types::SwapEvent;
-    use std::collections::HashSet;
     use std::sync::atomic::AtomicBool;
     use tempfile::tempdir;
 

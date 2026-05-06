@@ -1,4 +1,9 @@
-fn blockers(
+use super::status_types::{
+    DiscoveryV2CoverageSample, DiscoveryV2ScanStatus, DiscoveryV2TailStatus,
+};
+use copybot_config::{DiscoveryConfig, ShadowConfig};
+
+pub(super) fn blockers(
     discovery: &DiscoveryConfig,
     shadow: &ShadowConfig,
     tail: &Option<DiscoveryV2TailStatus>,
@@ -6,12 +11,45 @@ fn blockers(
     scan: &DiscoveryV2ScanStatus,
     candidates: &[String],
     execution_enabled: bool,
+    window_minutes: u64,
 ) -> Vec<String> {
     let mut blockers = Vec::new();
+    let required_active_window_minutes =
+        u64::from(discovery.min_active_days.max(1)).saturating_mul(24 * 60);
+    push_if(
+        &mut blockers,
+        window_minutes < required_active_window_minutes,
+        "discovery_v2_active_days_unsatisfiable",
+    );
     push_if(
         &mut blockers,
         !shadow.quality_gates_enabled,
         "discovery_v2_quality_gates_disabled",
+    );
+    push_if(
+        &mut blockers,
+        shadow.min_token_age_seconds == 0,
+        "discovery_v2_quality_token_age_gate_disabled",
+    );
+    push_if(
+        &mut blockers,
+        shadow.min_holders == 0,
+        "discovery_v2_quality_holder_gate_disabled",
+    );
+    push_if(
+        &mut blockers,
+        shadow.min_liquidity_sol <= 0.0,
+        "discovery_v2_quality_liquidity_gate_disabled",
+    );
+    push_if(
+        &mut blockers,
+        shadow.min_volume_5m_sol <= 0.0,
+        "discovery_v2_quality_rolling_volume_gate_disabled",
+    );
+    push_if(
+        &mut blockers,
+        shadow.min_unique_traders_5m == 0,
+        "discovery_v2_quality_rolling_trader_gate_disabled",
     );
     push_if(
         &mut blockers,
@@ -35,6 +73,11 @@ fn blockers(
     );
     push_if(
         &mut blockers,
+        tail.as_ref().is_some_and(|status| status.future_dated),
+        "observed_swaps_tail_future_dated",
+    );
+    push_if(
+        &mut blockers,
         !tail.as_ref().is_some_and(|status| status.fresh),
         "observed_swaps_tail_stale_or_missing",
     );
@@ -52,6 +95,11 @@ fn blockers(
         &mut blockers,
         candidates.is_empty(),
         "discovery_v2_candidate_wallets_empty",
+    );
+    push_if(
+        &mut blockers,
+        candidates.len() < discovery.follow_top_n.max(1) as usize,
+        "discovery_v2_candidate_wallets_below_publish_floor",
     );
     push_if(&mut blockers, execution_enabled, "execution_enabled");
     push_if(

@@ -95,6 +95,7 @@ impl SqliteStore {
         discovery_recent_raw_restore_state_query(&self.conn)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn runtime_artifact_restore_dirty_tables(
         &self,
     ) -> Result<Vec<RuntimeArtifactRestoreDirtyTable>> {

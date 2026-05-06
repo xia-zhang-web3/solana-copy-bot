@@ -16,6 +16,7 @@ anyhow.workspace = true
 chrono.workspace = true
 copybot-config = { path = "../config" }
 copybot-core-types = { path = "../core-types" }
+copybot-discovery-v2 = { path = "../discovery-v2" }
 copybot-runtime-artifacts = { path = "../runtime-artifacts" }
 copybot-storage-core = { path = "../storage-core" }
 rusqlite.workspace = true

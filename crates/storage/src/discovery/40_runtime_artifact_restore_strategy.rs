@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 fn restore_runtime_artifact_publication_state_on_conn(
     conn: &Connection,
     artifact: &DiscoveryRuntimeArtifact,
@@ -111,6 +112,7 @@ fn restore_runtime_artifact_publication_state_on_conn(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn initialize_recent_raw_restore_state_from_artifact_on_conn(
     conn: &Connection,
     artifact: &DiscoveryRuntimeArtifact,

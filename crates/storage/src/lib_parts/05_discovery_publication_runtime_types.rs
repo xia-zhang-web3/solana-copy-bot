@@ -4,35 +4,7 @@ pub struct FollowlistUpdateResult {
     pub deactivated: usize,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DiscoveryRuntimeMode {
-    Healthy,
-    Degraded,
-    BootstrapDegraded,
-    #[default]
-    FailClosed,
-}
-
-impl DiscoveryRuntimeMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Healthy => "healthy",
-            Self::Degraded => "degraded",
-            Self::BootstrapDegraded => "bootstrap_degraded",
-            Self::FailClosed => "fail_closed",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Result<Self> {
-        match raw {
-            "healthy" => Ok(Self::Healthy),
-            "degraded" => Ok(Self::Degraded),
-            "bootstrap_degraded" => Ok(Self::BootstrapDegraded),
-            "fail_closed" => Ok(Self::FailClosed),
-            _ => Err(anyhow!("invalid discovery runtime mode: {raw}")),
-        }
-    }
-}
+pub use copybot_storage_core::DiscoveryRuntimeMode;
 
 #[derive(Debug, Clone)]
 pub struct WalletActivityDayRow {

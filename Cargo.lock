@@ -198,10 +198,11 @@ dependencies = [
  "chrono",
  "copybot-config",
  "copybot-core-types",
- "copybot-discovery",
+ "copybot-discovery-v2",
  "copybot-ingestion",
  "copybot-shadow",
  "copybot-storage",
+ "copybot-storage-core",
  "reqwest",
  "rusqlite",
  "serde",
@@ -255,6 +256,7 @@ dependencies = [
  "chrono",
  "copybot-config",
  "copybot-core-types",
+ "copybot-discovery-v2",
  "copybot-runtime-artifacts",
  "copybot-storage-core",
  "rusqlite",
@@ -357,6 +359,7 @@ dependencies = [
  "chrono",
  "copybot-config",
  "copybot-core-types",
+ "copybot-storage-core",
  "reqwest",
  "rusqlite",
  "serde",
@@ -377,6 +380,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

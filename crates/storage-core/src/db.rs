@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
@@ -9,6 +10,11 @@ pub struct SqliteDiscoveryStore {
 
 impl SqliteDiscoveryStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        if let Some(parent) = path.as_ref().parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create sqlite parent dir: {}", parent.display())
+            })?;
+        }
         let conn = Connection::open(path.as_ref()).with_context(|| {
             format!(
                 "failed opening discovery sqlite store {}",
@@ -46,11 +52,27 @@ impl SqliteDiscoveryStore {
 }
 
 fn configure_connection(conn: &Connection, read_only: bool) -> Result<()> {
-    conn.busy_timeout(Duration::from_secs(30))
+    conn.busy_timeout(Duration::from_secs(5))
         .context("failed setting sqlite busy timeout")?;
     if read_only {
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .context("failed enabling sqlite foreign keys")?;
         conn.pragma_update(None, "query_only", true)
             .context("failed setting sqlite query_only")?;
+    } else {
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .context("failed setting sqlite journal mode WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")
+            .context("failed setting sqlite synchronous NORMAL")?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .context("failed enabling sqlite foreign keys")?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );",
+        )
+        .context("failed creating schema_migrations table")?;
     }
     Ok(())
 }

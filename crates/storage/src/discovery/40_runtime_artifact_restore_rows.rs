@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 fn restore_runtime_artifact_wallets_on_conn(
     conn: &Connection,
     artifact: &DiscoveryRuntimeArtifact,
@@ -31,6 +32,7 @@ fn restore_runtime_artifact_wallets_on_conn(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn restore_runtime_artifact_wallet_metrics_on_conn(
     conn: &Connection,
     artifact: &DiscoveryRuntimeArtifact,
@@ -72,6 +74,7 @@ fn restore_runtime_artifact_wallet_metrics_on_conn(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn restore_runtime_artifact_followlist_on_conn(
     conn: &Connection,
     artifact: &DiscoveryRuntimeArtifact,
@@ -100,6 +103,7 @@ fn restore_runtime_artifact_followlist_on_conn(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn restore_runtime_artifact_cursor_on_conn(
     conn: &Connection,
     artifact: &DiscoveryRuntimeArtifact,

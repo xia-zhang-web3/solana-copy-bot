@@ -1,4 +1,14 @@
-fn upsert_wallets(conn: &rusqlite::Connection, wallets: &[WalletUpsertRow]) -> Result<()> {
+use crate::FollowlistUpdateResult;
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use copybot_core_types::{WalletMetricRow, WalletUpsertRow};
+use rusqlite::params;
+use std::collections::HashSet;
+
+pub(super) fn upsert_wallets(
+    conn: &rusqlite::Connection,
+    wallets: &[WalletUpsertRow],
+) -> Result<()> {
     let mut stmt = conn.prepare_cached(
         "INSERT INTO wallets(wallet_id, first_seen, last_seen, status)
          VALUES (?1, ?2, ?3, ?4)
@@ -18,7 +28,10 @@ fn upsert_wallets(conn: &rusqlite::Connection, wallets: &[WalletUpsertRow]) -> R
     Ok(())
 }
 
-fn insert_metrics(conn: &rusqlite::Connection, metrics: &[WalletMetricRow]) -> Result<()> {
+pub(super) fn insert_metrics(
+    conn: &rusqlite::Connection,
+    metrics: &[WalletMetricRow],
+) -> Result<()> {
     let mut stmt = conn.prepare_cached(
         "INSERT INTO wallet_metrics(
             wallet_id, window_start, pnl, win_rate, trades, closed_trades,
@@ -43,7 +56,7 @@ fn insert_metrics(conn: &rusqlite::Connection, metrics: &[WalletMetricRow]) -> R
     Ok(())
 }
 
-fn update_followlist(
+pub(super) fn update_followlist(
     conn: &rusqlite::Connection,
     desired_wallets: &[String],
     allow_activate: bool,
@@ -56,10 +69,11 @@ fn update_followlist(
         .map(String::as_str)
         .collect::<HashSet<_>>();
     let current = active_wallets_on_conn(conn)?;
+    let mut current_active = current.iter().cloned().collect::<HashSet<_>>();
     let now_raw = now.to_rfc3339();
     let mut result = FollowlistUpdateResult::default();
     if allow_deactivate {
-        for wallet_id in current {
+        for wallet_id in &current {
             if !desired.contains(wallet_id.as_str()) {
                 result.deactivated += conn.execute(
                     "UPDATE followlist SET active = 0, removed_at = ?1, reason = ?2
@@ -71,11 +85,15 @@ fn update_followlist(
     }
     if allow_activate {
         for wallet_id in desired_wallets {
+            if current_active.contains(wallet_id) {
+                continue;
+            }
             result.activated += conn.execute(
-                "INSERT OR IGNORE INTO followlist(wallet_id, added_at, reason, active)
+                "INSERT INTO followlist(wallet_id, added_at, reason, active)
                  VALUES (?1, ?2, ?3, 1)",
                 params![wallet_id, &now_raw, reason],
             )?;
+            current_active.insert(wallet_id.clone());
         }
     }
     Ok(result)

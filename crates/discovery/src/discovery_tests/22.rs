@@ -11,7 +11,7 @@
             .is_some_and(DiscoveryPublicationStateRow::has_complete_publication_truth);
         let publication_truth_fresh_before = publication_state
             .as_ref()
-            .is_some_and(|state| state.is_fresh_under_gate(gate, now));
+            .is_some_and(|state| state.is_fresh_under_gate(&gate, now));
         let runtime_window_complete_before = discovery
             .persisted_observed_swaps_cover_window(runtime_store, required_window_start)?;
         assert!(runtime_window_complete_before);
@@ -70,7 +70,7 @@
             .is_some_and(DiscoveryPublicationStateRow::has_complete_publication_truth);
         let publication_truth_fresh_before = publication_state
             .as_ref()
-            .is_some_and(|state| state.is_fresh_under_gate(gate, now));
+            .is_some_and(|state| state.is_fresh_under_gate(&gate, now));
         let runtime_window_complete_before = discovery
             .persisted_observed_swaps_cover_window(runtime_store, required_window_start)?;
         assert!(runtime_window_complete_before);
@@ -269,7 +269,7 @@
         );
         assert!(after.has_complete_publication_truth());
         assert!(
-            !after.is_fresh_under_gate(discovery.publication_freshness_gate(), now),
+            !after.is_fresh_under_gate(&discovery.publication_freshness_gate(), now),
             "refreshing the fail-closed runtime surface must not satisfy the export freshness gate"
         );
         Ok(())
@@ -344,7 +344,7 @@
             "the deferred repair must not fake complete publication truth when exact published wallet ids are still missing"
         );
         assert!(
-            !after.is_fresh_under_gate(discovery.publication_freshness_gate(), now),
+            !after.is_fresh_under_gate(&discovery.publication_freshness_gate(), now),
             "an honest fail-closed deferred refresh must still fail the freshness gate"
         );
         Ok(())
@@ -492,7 +492,7 @@
             stale_wallet_ids
         );
         assert!(
-            !after.is_fresh_under_gate(discovery.publication_freshness_gate(), now),
+            !after.is_fresh_under_gate(&discovery.publication_freshness_gate(), now),
             "respecting the helper deadline must not fake freshness under the export gate"
         );
         assert!(

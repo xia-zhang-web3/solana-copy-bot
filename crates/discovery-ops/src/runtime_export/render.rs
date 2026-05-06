@@ -1,4 +1,9 @@
-fn render_output(
+use super::types::ExportOutput;
+use chrono::{DateTime, Utc};
+use copybot_storage_core::DiscoveryRuntimeArtifact;
+use std::path::{Path, PathBuf};
+
+pub(super) fn render_output(
     state: &str,
     config_path: &Path,
     db_path: &Path,
@@ -28,6 +33,16 @@ fn render_output(
         publication_runtime_mode: artifact.publication_state.runtime_mode.as_str().to_string(),
         publication_reason: artifact.publication_state.reason.clone(),
         publication_truth_complete: artifact.publication_state.has_complete_publication_truth(),
+        publication_identity_matches: artifact
+            .publication_state
+            .matches_expected_publication_identity(&artifact.export_gate),
+        published_scoring_source: artifact.publication_state.published_scoring_source.clone(),
+        expected_scoring_source: artifact.export_gate.expected_scoring_source.clone(),
+        publication_policy_fingerprint: artifact
+            .publication_state
+            .publication_policy_fingerprint
+            .clone(),
+        expected_policy_fingerprint: artifact.export_gate.expected_policy_fingerprint.clone(),
         fresh_under_export_gate,
         last_published_at: artifact.publication_state.last_published_at,
         last_published_window_start: artifact.publication_state.last_published_window_start,
@@ -45,7 +60,7 @@ fn render_output(
     }
 }
 
-fn render_human(output: &ExportOutput) -> String {
+pub(super) fn render_human(output: &ExportOutput) -> String {
     [
         format!("event={}", output.event),
         format!("state={}", output.state),
@@ -80,6 +95,32 @@ fn render_human(output: &ExportOutput) -> String {
         format!(
             "publication_truth_complete={}",
             output.publication_truth_complete
+        ),
+        format!(
+            "publication_identity_matches={}",
+            output.publication_identity_matches
+        ),
+        format!(
+            "published_scoring_source={}",
+            output.published_scoring_source.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "expected_scoring_source={}",
+            output.expected_scoring_source.as_deref().unwrap_or("null")
+        ),
+        format!(
+            "publication_policy_fingerprint={}",
+            output
+                .publication_policy_fingerprint
+                .as_deref()
+                .unwrap_or("null")
+        ),
+        format!(
+            "expected_policy_fingerprint={}",
+            output
+                .expected_policy_fingerprint
+                .as_deref()
+                .unwrap_or("null")
         ),
         format!("fresh_under_export_gate={}", output.fresh_under_export_gate),
         format!(

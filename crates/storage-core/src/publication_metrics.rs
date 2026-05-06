@@ -1,4 +1,10 @@
-fn load_wallet_metric_snapshots_for_window_on_conn(
+use crate::observed::parse_rfc3339_utc;
+use crate::PersistedWalletMetricSnapshotRow;
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::params;
+
+pub(super) fn load_wallet_metric_snapshots_for_window_on_conn(
     conn: &rusqlite::Connection,
     window_start: DateTime<Utc>,
 ) -> Result<Vec<PersistedWalletMetricSnapshotRow>> {

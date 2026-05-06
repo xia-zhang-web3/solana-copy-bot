@@ -1,3 +1,9 @@
+use crate::filters::DiscoveryV2FilterStatus;
+use crate::metric::DiscoveryV2WalletMetric;
+use chrono::{DateTime, Utc};
+use copybot_storage_core::DiscoveryRuntimeCursor;
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryV2Status {
     pub source: String,
@@ -23,6 +29,7 @@ pub struct DiscoveryV2TailStatus {
     pub cursor: DiscoveryRuntimeCursor,
     pub lag_seconds: i64,
     pub fresh: bool,
+    pub future_dated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

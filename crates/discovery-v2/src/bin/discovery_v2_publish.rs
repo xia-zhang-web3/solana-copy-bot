@@ -5,7 +5,9 @@ use copybot_discovery_v2::{
     build_discovery_v2_status, publish_discovery_v2_status, DiscoveryV2BuildOptions,
     DiscoveryV2PublishReport,
 };
-use copybot_storage_core::SqliteDiscoveryStore;
+use copybot_storage_core::{
+    ensure_discovery_v2_schema, validate_discovery_v2_schema_read_only, SqliteDiscoveryStore,
+};
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -88,20 +90,45 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
         config.db_path.as_deref(),
         &loaded.sqlite.path,
     );
-    let store = if config.commit {
-        SqliteDiscoveryStore::open(&db_path)
-    } else {
-        SqliteDiscoveryStore::open_read_only(&db_path)
-    }
-    .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
     let mut options = DiscoveryV2BuildOptions::from_config(
         &loaded.discovery,
         loaded.execution.enabled,
         config.now,
     );
     apply_overrides(&mut options, &config)?;
-    let status = build_discovery_v2_status(&store, &loaded.discovery, &loaded.shadow, options)?;
-    publish_discovery_v2_status(&store, status, config.commit)
+    let read_store = SqliteDiscoveryStore::open_read_only(&db_path)
+        .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
+    validate_discovery_v2_schema_read_only(&read_store).with_context(|| {
+        format!(
+            "sqlite db is not ready for discovery v2 publish: {}; run schema preparation before --commit",
+            db_path.display()
+        )
+    })?;
+    let status = build_discovery_v2_status(
+        &read_store,
+        &loaded.discovery,
+        &loaded.shadow,
+        options.clone(),
+    )?;
+    if !config.commit {
+        return publish_discovery_v2_status(&read_store, status, false);
+    }
+    if !status.production_green {
+        return publish_discovery_v2_status(&read_store, status, true);
+    }
+    drop(read_store);
+
+    let write_store = SqliteDiscoveryStore::open(&db_path)
+        .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
+    ensure_discovery_v2_schema(&write_store).with_context(|| {
+        format!(
+            "failed ensuring discovery v2 schema for {}",
+            db_path.display()
+        )
+    })?;
+    let status =
+        build_discovery_v2_status(&write_store, &loaded.discovery, &loaded.shadow, options)?;
+    publish_discovery_v2_status(&write_store, status, true)
 }
 
 fn apply_overrides(options: &mut DiscoveryV2BuildOptions, config: &Config) -> Result<()> {

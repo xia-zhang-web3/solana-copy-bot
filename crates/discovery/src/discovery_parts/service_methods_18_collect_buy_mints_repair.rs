@@ -1,7 +1,7 @@
 impl DiscoveryService {
     fn persisted_stream_observed_swaps_loaded(state: &PersistedStreamRebuildState) -> usize {
         match state.payload.replay_mode {
-            ReplayMode::LegacyFullWindow => state.replay_rows_processed,
+            ReplayMode::LegacyCompleteReplay => state.replay_rows_processed,
             ReplayMode::WalletStatsThenSolLeg => state
                 .payload
                 .replay_wallet_stats_rows_processed

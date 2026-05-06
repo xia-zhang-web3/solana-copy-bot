@@ -41,11 +41,18 @@ fn parse_optional_runtime_cursor(
 ) -> Result<Option<DiscoveryRuntimeCursor>> {
     match (ts_raw, slot_raw, signature) {
         (None, None, None) => Ok(None),
-        (Some(ts_raw), Some(slot_raw), Some(signature)) => Ok(Some(DiscoveryRuntimeCursor {
-            ts_utc: parse_rfc3339_utc(&ts_raw, &format!("{field_prefix}_ts"))?,
-            slot: slot_raw.max(0) as u64,
-            signature,
-        })),
+        (Some(ts_raw), Some(slot_raw), Some(signature)) => {
+            if slot_raw < 0 {
+                return Err(anyhow::anyhow!(
+                    "invalid negative discovery runtime cursor slot for {field_prefix}: {slot_raw}"
+                ));
+            }
+            Ok(Some(DiscoveryRuntimeCursor {
+                ts_utc: parse_rfc3339_utc(&ts_raw, &format!("{field_prefix}_ts"))?,
+                slot: slot_raw as u64,
+                signature,
+            }))
+        }
         _ => Err(anyhow::anyhow!(
             "incomplete discovery runtime cursor payload for {field_prefix}"
         )),

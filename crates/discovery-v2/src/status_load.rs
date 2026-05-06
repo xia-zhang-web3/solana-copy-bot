@@ -1,4 +1,13 @@
-fn load_tail_status(
+use super::status_types::{DiscoveryV2CoverageSample, DiscoveryV2TailStatus};
+use super::TOKEN_QUALITY_TTL_SECONDS;
+use anyhow::{Context, Result};
+use chrono::{DateTime, Duration, Utc};
+use copybot_core_types::{SwapEvent, TokenQualityCacheRow};
+use copybot_storage_core::SqliteDiscoveryStore;
+use std::collections::{HashMap, HashSet};
+use std::time::Instant;
+
+pub(super) fn load_tail_status(
     store: &SqliteDiscoveryStore,
     now: DateTime<Utc>,
     max_tail_lag_seconds: u64,
@@ -6,18 +15,18 @@ fn load_tail_status(
     let Some(cursor) = store.observed_swaps_tail_cursor_read_only()? else {
         return Ok(None);
     };
-    let lag_seconds = now
-        .signed_duration_since(cursor.ts_utc)
-        .num_seconds()
-        .max(0);
+    let raw_lag_seconds = now.signed_duration_since(cursor.ts_utc).num_seconds();
+    let future_dated = raw_lag_seconds < 0;
+    let lag_seconds = raw_lag_seconds.max(0);
     Ok(Some(DiscoveryV2TailStatus {
         cursor,
         lag_seconds,
-        fresh: lag_seconds <= max_tail_lag_seconds.min(i64::MAX as u64) as i64,
+        fresh: !future_dated && lag_seconds <= max_tail_lag_seconds.min(i64::MAX as u64) as i64,
+        future_dated,
     }))
 }
 
-fn load_coverage_sample(
+pub(super) fn load_coverage_sample(
     store: &SqliteDiscoveryStore,
     window_start: DateTime<Utc>,
 ) -> Result<Option<DiscoveryV2CoverageSample>> {
@@ -35,7 +44,19 @@ fn load_coverage_sample(
         }))
 }
 
-fn load_token_quality_cache_for_swaps(
+pub(super) fn load_window_tail_swaps(
+    store: &SqliteDiscoveryStore,
+    window_start: DateTime<Utc>,
+    now: DateTime<Utc>,
+    max_rows: usize,
+    deadline: Instant,
+) -> Result<(Vec<SwapEvent>, bool, bool)> {
+    store
+        .load_recent_observed_swaps_in_window_with_budget(window_start, now, max_rows, deadline)
+        .context("failed loading discovery v2 current window tail")
+}
+
+pub(super) fn load_token_quality_cache_for_swaps(
     store: &SqliteDiscoveryStore,
     swaps: &[SwapEvent],
     now: DateTime<Utc>,
@@ -50,7 +71,7 @@ fn load_token_quality_cache_for_swaps(
     let mut cache = HashMap::new();
     for mint in mints {
         if let Some(row) = store.get_token_quality_cache(&mint)? {
-            if now - row.fetched_at <= ttl {
+            if row.fetched_at <= now && now - row.fetched_at <= ttl {
                 cache.insert(mint, row);
             }
         }

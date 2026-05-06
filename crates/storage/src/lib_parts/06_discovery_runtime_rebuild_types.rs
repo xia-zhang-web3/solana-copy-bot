@@ -1,9 +1,4 @@
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiscoveryRuntimeCursor {
-    pub ts_utc: DateTime<Utc>,
-    pub slot: u64,
-    pub signature: String,
-}
+pub use copybot_storage_core::DiscoveryRuntimeCursor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscoveryPersistedRebuildPhase {

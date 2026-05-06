@@ -10,7 +10,7 @@ impl DiscoveryService {
         deadline: Instant,
     ) -> Result<PersistedStreamPhaseAdvance> {
         match state.payload.replay_mode {
-            ReplayMode::LegacyFullWindow => self.advance_persisted_stream_replay_legacy(
+            ReplayMode::LegacyCompleteReplay => self.advance_persisted_stream_replay_legacy(
                 store,
                 state,
                 fetch_limit,

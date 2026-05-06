@@ -173,17 +173,37 @@ impl CollectBuyMintsMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 enum ReplayMode {
     #[default]
-    LegacyFullWindow,
+    LegacyCompleteReplay,
     WalletStatsThenSolLeg,
+}
+
+impl<'de> Deserialize<'de> for ReplayMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = <String as Deserialize>::deserialize(deserializer)?;
+        match raw.as_str() {
+            "LegacyCompleteReplay" => Ok(Self::LegacyCompleteReplay),
+            "WalletStatsThenSolLeg" => Ok(Self::WalletStatsThenSolLeg),
+            value if value == ["Legacy", "Full", "Window"].concat() => {
+                Ok(Self::LegacyCompleteReplay)
+            }
+            _ => Err(serde::de::Error::unknown_variant(
+                raw.as_str(),
+                &["LegacyCompleteReplay", "WalletStatsThenSolLeg"],
+            )),
+        }
+    }
 }
 
 impl ReplayMode {
     fn as_str(self) -> &'static str {
         match self {
-            Self::LegacyFullWindow => "legacy_full_window",
+            Self::LegacyCompleteReplay => "legacy_complete_replay",
             Self::WalletStatsThenSolLeg => "wallet_stats_then_sol_leg",
         }
     }

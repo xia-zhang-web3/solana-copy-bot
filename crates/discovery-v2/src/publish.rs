@@ -40,26 +40,32 @@ pub fn publish_discovery_v2_status(
                 status.blockers.join(",")
             );
         }
-        store.persist_discovery_cycle(
+        let runtime_cursor = status
+            .tail
+            .as_ref()
+            .map(|tail| tail.cursor.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "discovery v2 publication requires a fresh persisted runtime cursor"
+                )
+            })?;
+        let update = DiscoveryPublicationStateUpdate {
+            runtime_mode,
+            reason: reason.to_string(),
+            last_published_at: Some(status.now),
+            last_published_window_start: Some(status.window_start),
+            published_scoring_source: Some(DISCOVERY_V2_SCORING_SOURCE.to_string()),
+            published_wallet_ids: Some(status.candidate_wallets.clone()),
+        };
+        store.persist_discovery_v2_publication(
             &wallet_rows(&status),
             &metric_rows(&status),
             &status.candidate_wallets,
-            true,
-            true,
             status.now,
             reason,
-        )?;
-        store.set_discovery_publication_state_with_options(
-            &DiscoveryPublicationStateUpdate {
-                runtime_mode,
-                reason: reason.to_string(),
-                last_published_at: Some(status.now),
-                last_published_window_start: Some(status.window_start),
-                published_scoring_source: Some(DISCOVERY_V2_SCORING_SOURCE.to_string()),
-                published_wallet_ids: Some(status.candidate_wallets.clone()),
-            },
-            false,
-            Some(status.policy_fingerprint.as_str()),
+            &update,
+            status.policy_fingerprint.as_str(),
+            &runtime_cursor,
         )?;
     }
     Ok(DiscoveryV2PublishReport {

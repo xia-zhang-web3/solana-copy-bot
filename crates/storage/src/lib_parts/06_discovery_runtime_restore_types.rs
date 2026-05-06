@@ -50,14 +50,4 @@ pub struct DiscoveryRecentRawRestoreStateUpdate {
     pub replay_completed_at: Option<DateTime<Utc>>,
 }
 
-pub const DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION: u32 = 1;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiscoveryRuntimeArtifact {
-    pub format_version: u32,
-    pub exported_at: DateTime<Utc>,
-    pub export_gate: DiscoveryPublicationFreshnessGate,
-    pub publication_state: DiscoveryPublicationStateRow,
-    pub runtime_cursor: DiscoveryRuntimeCursor,
-    pub published_wallet_metrics_snapshot: Vec<PersistedWalletMetricSnapshotRow>,
-}
+pub use copybot_storage_core::{DiscoveryRuntimeArtifact, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION};

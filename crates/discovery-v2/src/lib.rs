@@ -8,7 +8,7 @@ mod status;
 mod token_market;
 mod tradability;
 
-pub use crate::policy::DiscoveryV2BuildOptions;
+pub use crate::policy::{discovery_v2_policy_fingerprint, DiscoveryV2BuildOptions};
 pub use crate::publish::{publish_discovery_v2_status, DiscoveryV2PublishReport};
 pub use crate::status::{
     build_discovery_v2_status, DiscoveryV2CoverageSample, DiscoveryV2FilterStatus,

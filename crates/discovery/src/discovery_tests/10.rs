@@ -29,7 +29,7 @@
             legacy_state.payload.unique_buy_mints[0].clone(),
             quality_cache::TokenQualityResolution::Deferred,
         );
-        legacy_state.payload.replay_mode = ReplayMode::LegacyFullWindow;
+        legacy_state.payload.replay_mode = ReplayMode::LegacyCompleteReplay;
         store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryService::persisted_stream_rebuild_row(&legacy_state, now)?,
         )?;
@@ -76,6 +76,15 @@
                 .contains_key(&legacy_state.payload.unique_buy_mints[0]),
             "upgrading a zero-progress legacy replay checkpoint must preserve the resolved token-quality cache"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_replay_mode_alias_deserializes() -> Result<()> {
+        let old_variant = ["Legacy", "Full", "Window"].concat();
+        let raw = serde_json::to_string(&old_variant)?;
+        let mode: ReplayMode = serde_json::from_str(&raw)?;
+        assert_eq!(mode, ReplayMode::LegacyCompleteReplay);
         Ok(())
     }
 

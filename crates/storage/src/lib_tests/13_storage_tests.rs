@@ -204,69 +204,44 @@
                 rug_ratio: 0.0,
             })?;
         }
-        source_store.set_discovery_publication_state(&DiscoveryPublicationStateUpdate {
-            runtime_mode: DiscoveryRuntimeMode::Healthy,
-            reason: "runtime_artifact_roundtrip".to_string(),
-            last_published_at: Some(now - Duration::minutes(10)),
-            last_published_window_start: Some(metrics_window_start),
-            published_scoring_source: Some("raw_window".to_string()),
-            published_wallet_ids: Some(vec![
-                "wallet_roundtrip_a".to_string(),
-                "wallet_roundtrip_b".to_string(),
-            ]),
-        })?;
-        source_store.upsert_discovery_runtime_cursor(&DiscoveryRuntimeCursor {
+        let runtime_cursor = DiscoveryRuntimeCursor {
             ts_utc: now - Duration::minutes(1),
             slot: 4242,
             signature: "runtime-artifact-roundtrip-cursor".to_string(),
-        })?;
+        };
+        source_store.upsert_discovery_runtime_cursor(&runtime_cursor)?;
+        source_store.set_discovery_publication_state_with_identity(
+            &DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "runtime_artifact_roundtrip".to_string(),
+                last_published_at: Some(now - Duration::minutes(10)),
+                last_published_window_start: Some(metrics_window_start),
+                published_scoring_source: Some("discovery_v2_operational_window".to_string()),
+                published_wallet_ids: Some(vec![
+                    "wallet_roundtrip_a".to_string(),
+                    "wallet_roundtrip_b".to_string(),
+                ]),
+            },
+            false,
+            Some("test-policy-fingerprint"),
+            Some(&runtime_cursor),
+        )?;
         let export_gate = DiscoveryPublicationFreshnessGate {
             scoring_window_days: 7,
             metric_snapshot_interval_seconds: 1800,
             refresh_seconds: 600,
+            expected_scoring_source: Some("discovery_v2_operational_window".to_string()),
+            expected_policy_fingerprint: Some("test-policy-fingerprint".to_string()),
         };
         let artifact = source_store.export_discovery_runtime_artifact(now, export_gate)?;
 
         let mut restored_store = SqliteStore::open(Path::new(&restored_db_path))?;
         restored_store.run_migrations(&migration_dir)?;
-        restored_store.restore_discovery_runtime_artifact(&artifact, now, false)?;
-
-        let restored_publication_state = restored_store
-            .discovery_publication_state()?
-            .expect("restored publication state must exist");
-        assert_eq!(
-            serde_json::to_value(&restored_publication_state)?,
-            serde_json::to_value(&artifact.publication_state)?,
-            "publication truth must roundtrip exactly through runtime artifact restore"
-        );
-        let restored_cursor = restored_store
-            .load_discovery_runtime_cursor()?
-            .expect("restored runtime cursor must exist");
-        assert_eq!(restored_cursor.ts_utc, artifact.runtime_cursor.ts_utc);
-        assert_eq!(restored_cursor.slot, artifact.runtime_cursor.slot);
-        assert_eq!(restored_cursor.signature, artifact.runtime_cursor.signature);
-        let restored_metrics = restored_store.load_wallet_metric_snapshots_for_window(
-            artifact
-                .publication_state
-                .last_published_window_start
-                .expect("artifact publication window start must exist"),
-        )?;
-        assert_eq!(
-            serde_json::to_value(&restored_metrics)?,
-            serde_json::to_value(&artifact.published_wallet_metrics_snapshot)?,
-            "wallet_metrics snapshot must roundtrip exactly through runtime artifact restore"
-        );
-        assert_eq!(
-            restored_store.list_active_follow_wallets()?,
-            HashSet::from([
-                "wallet_roundtrip_a".to_string(),
-                "wallet_roundtrip_b".to_string(),
-            ]),
-            "restore must recreate the exact published follow universe"
-        );
-        assert!(
-            !restored_store.discovery_bootstrap_degraded_state()?.active,
-            "normal runtime artifact restore must not arm bootstrap-degraded state"
-        );
+        let error = restored_store
+            .restore_discovery_runtime_artifact(&artifact, now, false)
+            .expect_err("legacy storage restore lane must stay quarantined");
+        assert!(error
+            .to_string()
+            .contains("legacy copybot-storage runtime artifact restore is quarantined"));
         Ok(())
     }

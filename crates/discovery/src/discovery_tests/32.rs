@@ -77,12 +77,12 @@
         let tightened_gate = tightened_discovery.publication_freshness_gate();
         assert!(publication_state_before.has_complete_publication_truth());
         assert!(
-            publication_state_before.is_fresh_under_gate(tightened_gate, now),
+            publication_state_before.is_fresh_under_gate(&tightened_gate, now),
             "under the old pre-fix contract, the old six-wallet exact publish would still have been considered recent enough to reuse after the policy change"
         );
         assert!(
             !publication_state_before.is_fresh_under_gate(
-                tightened_gate,
+                &tightened_gate,
                 old_publish_at + tightened_discovery.runtime_published_universe_max_age()
                     + Duration::seconds(1),
             ),
@@ -136,6 +136,53 @@
                 .expect("publication state should remain readable after fail-closed cycle")
                 .has_complete_publication_truth(),
             "with no recent exact truth left after policy mismatch invalidation, the tightened runtime must not end the cycle with a reusable published universe"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_policy_mismatch_does_not_invalidate_v2_publication_truth() -> Result<()> {
+        let temp = tempdir().context("failed to create tempdir")?;
+        let db_path = temp
+            .path()
+            .join("stage1-v2-publication-truth-owned-by-v2.db");
+        let mut store = SqliteStore::open(Path::new(&db_path))?;
+        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        store.run_migrations(&migration_dir)?;
+
+        let now = DateTime::parse_from_rfc3339("2026-04-06T14:49:22Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+        let config = live_restored_rug_policy_discovery_config_for_tests();
+        let published_at = now - Duration::minutes(1);
+        let metrics_window_start = metrics_window_start_for_test(&config, published_at);
+        store.set_discovery_publication_state_with_options(
+            &DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "discovery_v2_ready".to_string(),
+                last_published_at: Some(published_at),
+                last_published_window_start: Some(metrics_window_start),
+                published_scoring_source: Some("discovery_v2_operational_window".to_string()),
+                published_wallet_ids: Some(vec!["wallet-v2".to_string()]),
+            },
+            false,
+            Some("v2-policy-fingerprint"),
+        )?;
+
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let truth = discovery
+            .recent_runtime_publication_truth(&store, now)?
+            .expect("V2 publication truth must stay readable");
+        let state = store
+            .discovery_publication_state_read_only()?
+            .expect("publication state");
+
+        assert_eq!(truth.published_wallet_ids, vec!["wallet-v2".to_string()]);
+        assert_eq!(state.runtime_mode, DiscoveryRuntimeMode::Healthy);
+        assert_eq!(state.reason, "discovery_v2_ready");
+        assert_eq!(
+            state.publication_policy_fingerprint.as_deref(),
+            Some("v2-policy-fingerprint")
         );
         Ok(())
     }

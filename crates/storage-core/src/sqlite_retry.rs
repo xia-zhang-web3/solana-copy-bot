@@ -1,12 +1,48 @@
-use crate::SqliteDiscoveryStore;
+use crate::{SqliteContentionSnapshot, SqliteDiscoveryStore};
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{Connection, ErrorCode};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration as StdDuration;
 
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
 const SQLITE_WRITE_RETRY_BACKOFF_MS: [u64; SQLITE_WRITE_MAX_RETRIES] = [100, 300, 700];
+static SQLITE_WRITE_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 impl SqliteDiscoveryStore {
+    pub(crate) fn execute_with_retry<F>(&self, operation: F) -> rusqlite::Result<usize>
+    where
+        F: FnMut(&Connection) -> rusqlite::Result<usize>,
+    {
+        self.execute_with_retry_result(operation)
+    }
+
+    pub(crate) fn execute_with_retry_result<T, F>(&self, mut operation: F) -> rusqlite::Result<T>
+    where
+        F: FnMut(&Connection) -> rusqlite::Result<T>,
+    {
+        for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
+            match operation(&self.conn) {
+                Ok(result) => return Ok(result),
+                Err(error) => {
+                    let retryable = is_retryable_sqlite_error(&error);
+                    if retryable {
+                        note_sqlite_busy_error();
+                    }
+                    if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                        note_sqlite_write_retry();
+                        std::thread::sleep(StdDuration::from_millis(
+                            SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                        ));
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        unreachable!("retry loop must return on success or terminal error");
+    }
+
     pub(crate) fn with_immediate_transaction_retry<T, F>(
         &self,
         transaction_name: &str,
@@ -20,7 +56,11 @@ impl SqliteDiscoveryStore {
                 let error = anyhow!(error)
                     .context(format!("failed to open {transaction_name} transaction"));
                 let retryable = is_retryable_sqlite_anyhow_error(&error);
+                if retryable {
+                    note_sqlite_busy_error();
+                }
                 if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                    note_sqlite_write_retry();
                     std::thread::sleep(StdDuration::from_millis(
                         SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
                     ));
@@ -37,7 +77,11 @@ impl SqliteDiscoveryStore {
                             .context(format!("failed to commit {transaction_name} transaction"));
                         let _ = self.conn.execute_batch("ROLLBACK");
                         let retryable = is_retryable_sqlite_anyhow_error(&error);
+                        if retryable {
+                            note_sqlite_busy_error();
+                        }
                         if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                            note_sqlite_write_retry();
                             std::thread::sleep(StdDuration::from_millis(
                                 SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
                             ));
@@ -51,7 +95,11 @@ impl SqliteDiscoveryStore {
                 Err(error) => {
                     let _ = self.conn.execute_batch("ROLLBACK");
                     let retryable = is_retryable_sqlite_anyhow_error(&error);
+                    if retryable {
+                        note_sqlite_busy_error();
+                    }
                     if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                        note_sqlite_write_retry();
                         std::thread::sleep(StdDuration::from_millis(
                             SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
                         ));
@@ -63,6 +111,21 @@ impl SqliteDiscoveryStore {
         }
         unreachable!("retry loop must return on success or terminal error");
     }
+}
+
+pub fn sqlite_contention_snapshot() -> SqliteContentionSnapshot {
+    SqliteContentionSnapshot {
+        write_retry_total: SQLITE_WRITE_RETRY_TOTAL.load(Ordering::Relaxed),
+        busy_error_total: SQLITE_BUSY_ERROR_TOTAL.load(Ordering::Relaxed),
+    }
+}
+
+fn note_sqlite_write_retry() {
+    SQLITE_WRITE_RETRY_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+fn note_sqlite_busy_error() {
+    SQLITE_BUSY_ERROR_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 fn is_retryable_sqlite_message(message: &str) -> bool {

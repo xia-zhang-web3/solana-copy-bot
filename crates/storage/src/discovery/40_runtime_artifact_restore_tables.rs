@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 fn ensure_discovery_runtime_restore_tables_on_conn(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS discovery_runtime_state (
@@ -60,6 +61,7 @@ fn ensure_discovery_runtime_restore_tables_on_conn(conn: &Connection) -> Result<
     Ok(())
 }
 
+#[allow(dead_code)]
 fn fail_if_runtime_artifact_restore_dirty_on_conn(conn: &Connection) -> Result<()> {
     let dirty_tables = runtime_artifact_restore_dirty_tables_on_conn(conn)?;
     if dirty_tables.is_empty() {

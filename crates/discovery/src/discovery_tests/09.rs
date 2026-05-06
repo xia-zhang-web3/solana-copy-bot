@@ -397,7 +397,7 @@
         legacy_state.horizon_end = now;
         legacy_state.payload.unique_buy_mints =
             store.load_observed_buy_mints_in_window(window_start, now)?;
-        legacy_state.payload.replay_mode = ReplayMode::LegacyFullWindow;
+        legacy_state.payload.replay_mode = ReplayMode::LegacyCompleteReplay;
 
         let mut optimized_state = legacy_state.clone();
         optimized_state.payload.replay_mode = ReplayMode::WalletStatsThenSolLeg;
@@ -461,7 +461,7 @@
             legacy_state.payload.unique_buy_mints[0].clone(),
             quality_cache::TokenQualityResolution::Deferred,
         );
-        legacy_state.payload.replay_mode = ReplayMode::LegacyFullWindow;
+        legacy_state.payload.replay_mode = ReplayMode::LegacyCompleteReplay;
         legacy_state.phase_cursor = Some(DiscoveryRuntimeCursor {
             ts_utc: window_start + Duration::minutes(10),
             slot: 42,

@@ -1,3 +1,7 @@
+use super::types_runtime::DiscoveryRuntimeCursor;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecentRawJournalStateRow {
     pub covered_since: Option<DateTime<Utc>>,

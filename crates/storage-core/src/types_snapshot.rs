@@ -1,3 +1,5 @@
+use std::time::Duration as StdDuration;
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FollowlistUpdateResult {
     pub activated: usize,

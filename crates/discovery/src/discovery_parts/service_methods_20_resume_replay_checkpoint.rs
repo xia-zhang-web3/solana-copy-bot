@@ -84,7 +84,7 @@ impl DiscoveryService {
     ) -> bool {
         let mut changed = false;
         if state.phase == DiscoveryPersistedRebuildPhase::Replay
-            && state.payload.replay_mode == ReplayMode::LegacyFullWindow
+            && state.payload.replay_mode == ReplayMode::LegacyCompleteReplay
         {
             if Self::replay_checkpoint_has_local_progress(state) {
                 warn!(

@@ -31,6 +31,7 @@ pub(crate) struct BuyObservation {
     pub token: String,
     pub ts: DateTime<Utc>,
     pub tradable: bool,
+    pub missing_quality_evidence: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +39,7 @@ pub(crate) struct OpenLot {
     qty: f64,
     cost_sol: f64,
     opened_at: DateTime<Utc>,
+    tradable: bool,
 }
 
 impl WalletAccumulator {
@@ -100,9 +102,10 @@ impl WalletAccumulator {
         let max_age =
             self.actionable_open_position_max_age_seconds(metric_snapshot_interval_seconds);
         self.positions.values().flatten().any(|lot| {
-            lot.qty > 1e-12
+            lot.tradable
+                && lot.qty > 1e-12
                 && lot.cost_sol > 1e-12
-                && max_age.is_none_or(|limit| (now - lot.opened_at).num_seconds().max(0) <= limit)
+                && (now - lot.opened_at).num_seconds().max(0) <= max_age
         })
     }
 
@@ -124,6 +127,7 @@ impl WalletAccumulator {
             token: token.to_string(),
             ts,
             tradable: matches!(tradability, BuyTradability::Tradable),
+            missing_quality_evidence: matches!(tradability, BuyTradability::MissingQualityEvidence),
         });
         self.positions
             .entry(token.to_string())
@@ -132,6 +136,7 @@ impl WalletAccumulator {
                 qty,
                 cost_sol,
                 opened_at: ts,
+                tradable: matches!(tradability, BuyTradability::Tradable),
             });
     }
 
@@ -188,11 +193,11 @@ impl WalletAccumulator {
         }
     }
 
-    fn actionable_open_position_max_age_seconds(&self, cadence_seconds: u64) -> Option<i64> {
-        if self.hold_samples_sec.len() < 3 {
-            return None;
-        }
+    fn actionable_open_position_max_age_seconds(&self, cadence_seconds: u64) -> i64 {
         let cadence_floor = i64::try_from(cadence_seconds.max(1)).unwrap_or(i64::MAX);
+        if self.hold_samples_sec.len() < 3 {
+            return cadence_floor;
+        }
         let historical = self
             .hold_samples_sec
             .iter()
@@ -200,6 +205,6 @@ impl WalletAccumulator {
             .max()
             .unwrap_or(0)
             .saturating_mul(4);
-        Some(cadence_floor.max(historical))
+        cadence_floor.max(historical)
     }
 }

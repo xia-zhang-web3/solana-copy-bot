@@ -26,7 +26,7 @@ fn incomplete_publication_truth_fields(
 
 fn runtime_artifact_export_truth_detail(
     publication_state: &DiscoveryPublicationStateRow,
-    gate: DiscoveryPublicationFreshnessGate,
+    gate: &DiscoveryPublicationFreshnessGate,
     now: DateTime<Utc>,
 ) -> String {
     let missing_fields = incomplete_publication_truth_fields(publication_state);

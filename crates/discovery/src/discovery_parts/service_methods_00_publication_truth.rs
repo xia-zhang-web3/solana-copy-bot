@@ -15,6 +15,11 @@ impl DiscoveryService {
         if Self::runtime_publication_truth_from_state(publication_state.clone()).is_none() {
             return Ok(false);
         }
+        if publication_state.published_scoring_source.as_deref()
+            == Some("discovery_v2_operational_window")
+        {
+            return Ok(false);
+        }
 
         let current_policy_fingerprint = self.publication_selection_policy_fingerprint();
         if stored_policy_fingerprint.as_deref() == Some(current_policy_fingerprint.as_str()) {
@@ -87,7 +92,7 @@ impl DiscoveryService {
         else {
             return Ok(None);
         };
-        if publication_state.is_fresh_under_gate(self.publication_freshness_gate(), now) {
+        if publication_state.is_fresh_under_gate(&self.publication_freshness_gate(), now) {
             return Ok(Some(RuntimePublicationTruthResolution::Recent(
                 runtime_truth,
             )));

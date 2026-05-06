@@ -8,6 +8,7 @@ anyhow.workspace = true
 chrono.workspace = true
 copybot-config = { path = "../config" }
 copybot-core-types = { path = "../core-types" }
+copybot-storage-core = { path = "../storage-core" }
 reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite.workspace = true
 serde.workspace = true

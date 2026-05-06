@@ -10,12 +10,16 @@ impl SqliteStore {
         if !self.sqlite_table_exists("discovery_strategy_state")? {
             return Ok(None);
         }
+        if !self.discovery_strategy_state_has_publication_state_columns()? {
+            return Ok(None);
+        }
         self.discovery_publication_state_query()
     }
 
     fn discovery_publication_state_query_with_policy(
         &self,
     ) -> Result<Option<(DiscoveryPublicationStateRow, Option<String>)>> {
+        let publication_runtime_cursor = self.discovery_publication_runtime_cursor_query()?;
         let raw = self
             .conn
             .query_row(
@@ -75,6 +79,7 @@ impl SqliteStore {
                             "discovery_strategy_state.publication_wallet_ids_json",
                         )?,
                         publication_policy_fingerprint: publication_policy_fingerprint.clone(),
+                        publication_runtime_cursor: publication_runtime_cursor.clone(),
                         updated_at: parse_rfc3339_utc(
                             &updated_at_raw,
                             "discovery_strategy_state.updated_at",
@@ -106,6 +111,21 @@ impl SqliteStore {
         clear_published_truth: bool,
         policy_fingerprint: Option<&str>,
     ) -> Result<()> {
+        self.set_discovery_publication_state_with_identity(
+            update,
+            clear_published_truth,
+            policy_fingerprint,
+            None,
+        )
+    }
+
+    pub fn set_discovery_publication_state_with_identity(
+        &self,
+        update: &DiscoveryPublicationStateUpdate,
+        clear_published_truth: bool,
+        policy_fingerprint: Option<&str>,
+        publication_runtime_cursor: Option<&DiscoveryRuntimeCursor>,
+    ) -> Result<()> {
         self.ensure_discovery_strategy_state_table()?;
         let previous_state = self.discovery_publication_state_query()?;
         let published_wallet_ids_json = update
@@ -128,20 +148,23 @@ impl SqliteStore {
                     publication_scoring_source,
                     publication_wallet_ids_json,
                     publication_policy_fingerprint,
+                    publication_runtime_cursor_ts,
+                    publication_runtime_cursor_slot,
+                    publication_runtime_cursor_signature,
                     updated_at
-                 ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(id) DO UPDATE SET
                     publication_runtime_mode = excluded.publication_runtime_mode,
                     publication_reason = excluded.publication_reason,
                     publication_last_published_at = CASE
-                        WHEN ?9 THEN NULL
+                        WHEN ?12 THEN NULL
                         ELSE COALESCE(
                             excluded.publication_last_published_at,
                             discovery_strategy_state.publication_last_published_at
                         )
                     END,
                     publication_last_published_window_start = CASE
-                        WHEN ?9 THEN NULL
+                        WHEN ?12 THEN NULL
                         ELSE COALESCE(
                             excluded.publication_last_published_window_start,
                             discovery_strategy_state.publication_last_published_window_start
@@ -149,17 +172,38 @@ impl SqliteStore {
                     END,
                     publication_scoring_source = excluded.publication_scoring_source,
                     publication_wallet_ids_json = CASE
-                        WHEN ?9 THEN NULL
+                        WHEN ?12 THEN NULL
                         ELSE COALESCE(
                             excluded.publication_wallet_ids_json,
                             discovery_strategy_state.publication_wallet_ids_json
                         )
                     END,
                     publication_policy_fingerprint = CASE
-                        WHEN ?9 THEN NULL
+                        WHEN ?12 THEN NULL
                         ELSE COALESCE(
                             excluded.publication_policy_fingerprint,
                             discovery_strategy_state.publication_policy_fingerprint
+                        )
+                    END,
+                    publication_runtime_cursor_ts = CASE
+                        WHEN ?12 THEN NULL
+                        ELSE COALESCE(
+                            excluded.publication_runtime_cursor_ts,
+                            discovery_strategy_state.publication_runtime_cursor_ts
+                        )
+                    END,
+                    publication_runtime_cursor_slot = CASE
+                        WHEN ?12 THEN NULL
+                        ELSE COALESCE(
+                            excluded.publication_runtime_cursor_slot,
+                            discovery_strategy_state.publication_runtime_cursor_slot
+                        )
+                    END,
+                    publication_runtime_cursor_signature = CASE
+                        WHEN ?12 THEN NULL
+                        ELSE COALESCE(
+                            excluded.publication_runtime_cursor_signature,
+                            discovery_strategy_state.publication_runtime_cursor_signature
                         )
                     END,
                     updated_at = excluded.updated_at",
@@ -173,6 +217,9 @@ impl SqliteStore {
                     update.published_scoring_source.as_deref(),
                     published_wallet_ids_json.as_deref(),
                     policy_fingerprint,
+                    publication_runtime_cursor.map(|cursor| cursor.ts_utc.to_rfc3339()),
+                    publication_runtime_cursor.map(|cursor| cursor.slot as i64),
+                    publication_runtime_cursor.map(|cursor| cursor.signature.as_str()),
                     Utc::now().to_rfc3339(),
                     clear_published_truth,
                 ],
@@ -212,10 +259,81 @@ impl SqliteStore {
     pub fn discovery_publication_state_with_policy_read_only(
         &self,
     ) -> Result<Option<(DiscoveryPublicationStateRow, Option<String>)>> {
-        self.ensure_discovery_strategy_state_table()?;
         if !self.sqlite_table_exists("discovery_strategy_state")? {
             return Ok(None);
         }
+        if !self.discovery_strategy_state_has_publication_state_columns()? {
+            return Ok(None);
+        }
         self.discovery_publication_state_query_with_policy()
+    }
+
+    fn discovery_publication_runtime_cursor_query(&self) -> Result<Option<DiscoveryRuntimeCursor>> {
+        if !self.discovery_strategy_state_has_publication_cursor_columns()? {
+            return Ok(None);
+        }
+        let raw: Option<(Option<String>, Option<i64>, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT
+                    publication_runtime_cursor_ts,
+                    publication_runtime_cursor_slot,
+                    publication_runtime_cursor_signature
+                 FROM discovery_strategy_state
+                 WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .context("failed reading discovery publication runtime cursor")?;
+        let Some((ts, slot, signature)) = raw else {
+            return Ok(None);
+        };
+        parse_optional_runtime_cursor(ts, slot, signature, "publication_runtime_cursor")
+    }
+
+    fn discovery_strategy_state_has_publication_cursor_columns(&self) -> Result<bool> {
+        if !self.sqlite_table_exists("discovery_strategy_state")? {
+            return Ok(false);
+        }
+        let mut stmt = self
+            .conn
+            .prepare("PRAGMA table_info(discovery_strategy_state)")
+            .context("failed to prepare discovery_strategy_state cursor column introspection")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .context("failed querying discovery_strategy_state cursor columns")?
+            .collect::<rusqlite::Result<std::collections::HashSet<String>>>()
+            .context("failed collecting discovery_strategy_state cursor columns")?;
+        Ok(columns.contains("publication_runtime_cursor_ts")
+            && columns.contains("publication_runtime_cursor_slot")
+            && columns.contains("publication_runtime_cursor_signature"))
+    }
+
+    fn discovery_strategy_state_has_publication_state_columns(&self) -> Result<bool> {
+        if !self.sqlite_table_exists("discovery_strategy_state")? {
+            return Ok(false);
+        }
+        let mut stmt = self
+            .conn
+            .prepare("PRAGMA table_info(discovery_strategy_state)")
+            .context("failed to prepare discovery_strategy_state publication column introspection")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .context("failed querying discovery_strategy_state publication columns")?
+            .collect::<rusqlite::Result<std::collections::HashSet<String>>>()
+            .context("failed collecting discovery_strategy_state publication columns")?;
+        Ok([
+            "publication_runtime_mode",
+            "publication_reason",
+            "publication_last_published_at",
+            "publication_last_published_window_start",
+            "publication_scoring_source",
+            "publication_wallet_ids_json",
+            "publication_policy_fingerprint",
+            "updated_at",
+        ]
+        .into_iter()
+        .all(|column| columns.contains(column)))
     }
 }

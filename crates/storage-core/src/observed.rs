@@ -69,6 +69,97 @@ impl SqliteDiscoveryStore {
         Ok((swaps, truncated))
     }
 
+    pub fn load_observed_swaps_since(&self, since: DateTime<Utc>) -> Result<Vec<SwapEvent>> {
+        if !self.sqlite_table_exists("observed_swaps")? {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                    qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+             FROM observed_swaps
+             WHERE ts >= ?1
+             ORDER BY ts ASC, slot ASC, signature ASC",
+        )?;
+        let mut rows = stmt.query(params![since.to_rfc3339()])?;
+        let mut swaps = Vec::new();
+        while let Some(row) = rows.next()? {
+            swaps.push(row_to_swap_event(row)?);
+        }
+        Ok(swaps)
+    }
+
+    pub fn load_recent_observed_swaps_in_window(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<(Vec<SwapEvent>, bool)> {
+        if limit == 0 || !self.sqlite_table_exists("observed_swaps")? {
+            return Ok((Vec::new(), false));
+        }
+        let retained_limit = limit.min(i64::MAX as usize);
+        let query_limit = retained_limit.saturating_add(1).min(i64::MAX as usize) as i64;
+        let mut stmt = self.conn.prepare(
+            "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                    qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+             FROM observed_swaps
+             WHERE ts >= ?1 AND ts <= ?2
+             ORDER BY ts DESC, slot DESC, signature DESC
+             LIMIT ?3",
+        )?;
+        let mut rows = stmt.query(params![since.to_rfc3339(), until.to_rfc3339(), query_limit])?;
+        let mut swaps = Vec::new();
+        while let Some(row) = rows.next()? {
+            swaps.push(row_to_swap_event(row)?);
+        }
+        let truncated = swaps.len() > retained_limit;
+        if truncated {
+            swaps.truncate(retained_limit);
+        }
+        swaps.reverse();
+        Ok((swaps, truncated))
+    }
+
+    pub fn load_recent_observed_swaps_in_window_with_budget(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        limit: usize,
+        deadline: Instant,
+    ) -> Result<(Vec<SwapEvent>, bool, bool)> {
+        if limit == 0
+            || Instant::now() >= deadline
+            || !self.sqlite_table_exists("observed_swaps")?
+        {
+            return Ok((Vec::new(), false, Instant::now() >= deadline));
+        }
+        let retained_limit = limit.min(i64::MAX as usize);
+        let query_limit = retained_limit.saturating_add(1).min(i64::MAX as usize) as i64;
+        let mut stmt = self.conn.prepare(
+            "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                    qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+             FROM observed_swaps
+             WHERE ts >= ?1 AND ts <= ?2
+             ORDER BY ts DESC, slot DESC, signature DESC
+             LIMIT ?3",
+        )?;
+        let mut rows = stmt.query(params![since.to_rfc3339(), until.to_rfc3339(), query_limit])?;
+        let mut swaps = Vec::new();
+        while let Some(row) = rows.next()? {
+            if Instant::now() >= deadline {
+                swaps.reverse();
+                return Ok((swaps, false, true));
+            }
+            swaps.push(row_to_swap_event(row)?);
+        }
+        let truncated = swaps.len() > retained_limit;
+        if truncated {
+            swaps.truncate(retained_limit);
+        }
+        swaps.reverse();
+        Ok((swaps, truncated, false))
+    }
+
     pub fn for_each_observed_swap_in_window_after_cursor_with_budget<F>(
         &self,
         since: DateTime<Utc>,

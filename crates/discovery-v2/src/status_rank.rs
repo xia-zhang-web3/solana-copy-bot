@@ -1,4 +1,8 @@
-fn sort_wallet_metrics(metrics: &mut [DiscoveryV2WalletMetric]) {
+use super::status_types::DiscoveryV2ScanStatus;
+use crate::metric::DiscoveryV2WalletMetric;
+use copybot_config::DiscoveryConfig;
+
+pub(super) fn sort_wallet_metrics(metrics: &mut [DiscoveryV2WalletMetric]) {
     metrics.sort_by(|left, right| {
         right
             .score
@@ -9,7 +13,7 @@ fn sort_wallet_metrics(metrics: &mut [DiscoveryV2WalletMetric]) {
     });
 }
 
-fn candidate_wallets(
+pub(super) fn candidate_wallets(
     discovery: &DiscoveryConfig,
     metrics: &[DiscoveryV2WalletMetric],
 ) -> Vec<String> {
@@ -21,7 +25,7 @@ fn candidate_wallets(
         .collect()
 }
 
-fn scan_status(
+pub(super) fn scan_status(
     max_rows: usize,
     time_budget_ms: u64,
     accepted_rows: usize,

@@ -20,6 +20,7 @@ pub struct DiscoveryV2WalletMetric {
     pub hold_median_seconds: i64,
     pub buy_total: u32,
     pub tradable_ratio: f64,
+    pub missing_quality_evidence_buys: u32,
     pub rug_ratio: f64,
     pub rug_lookahead_evaluated: u32,
     pub rug_lookahead_unevaluated: u32,
@@ -60,6 +61,11 @@ pub(crate) fn wallet_metric_from_accumulator(
     } else {
         0.0
     };
+    let missing_quality_evidence_buys = acc
+        .buy_observations
+        .iter()
+        .filter(|buy| buy.missing_quality_evidence)
+        .count() as u32;
     let rug = compute_rug_evaluation(&acc.buy_observations, token_sol_history, discovery, now);
     let base_score = (0.35 * tanh01(acc.realized_pnl_sol / 2.0))
         + (0.20 * tanh01(roi * 3.0))
@@ -78,6 +84,7 @@ pub(crate) fn wallet_metric_from_accumulator(
         active_days,
         buy_total,
         tradable_ratio,
+        missing_quality_evidence_buys,
         rug.ratio,
         rug.unevaluated,
         discovery,
@@ -103,6 +110,7 @@ pub(crate) fn wallet_metric_from_accumulator(
         hold_median_seconds,
         buy_total,
         tradable_ratio,
+        missing_quality_evidence_buys,
         rug_ratio: rug.ratio,
         rug_lookahead_evaluated: rug.evaluated,
         rug_lookahead_unevaluated: rug.unevaluated,
@@ -119,6 +127,7 @@ fn reject_reasons(
     active_days: u32,
     buy_total: u32,
     tradable_ratio: f64,
+    missing_quality_evidence_buys: u32,
     rug_ratio: f64,
     unevaluated_rugs: u32,
     discovery: &DiscoveryConfig,
@@ -156,6 +165,11 @@ fn reject_reasons(
         &mut reasons,
         tradable_ratio < discovery.min_tradable_ratio,
         "low_tradable_ratio",
+    );
+    push_if(
+        &mut reasons,
+        missing_quality_evidence_buys > 0,
+        "token_quality_evidence_missing",
     );
     let rug_enabled = discovery.max_rug_ratio < 1.0;
     push_if(

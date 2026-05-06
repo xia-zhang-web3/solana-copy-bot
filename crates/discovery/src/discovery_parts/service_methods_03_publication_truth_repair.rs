@@ -19,7 +19,7 @@ impl DiscoveryService {
             .is_some_and(DiscoveryPublicationStateRow::has_complete_publication_truth);
         let publication_truth_fresh_before = publication_state
             .as_ref()
-            .is_some_and(|state| state.is_fresh_under_gate(gate, now));
+            .is_some_and(|state| state.is_fresh_under_gate(&gate, now));
         let runtime_cursor_before = runtime_store.load_discovery_runtime_cursor()?;
         let runtime_cursor_exists_before = runtime_cursor_before.is_some();
         let journal_store_exists = journal_store.is_some();

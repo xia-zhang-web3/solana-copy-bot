@@ -1,4 +1,3 @@
-use crate::observed::parse_rfc3339_utc;
 use crate::{
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow,
     DiscoveryPublicationStateUpdate, DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor,
@@ -8,13 +7,97 @@ use crate::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_core_types::{WalletMetricRow, WalletUpsertRow};
-use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 
-include!("publication_artifact.rs");
-include!("publication_followlist.rs");
-include!("publication_metrics.rs");
-include!("publication_state.rs");
+use publication_artifact::{
+    load_discovery_runtime_cursor_on_conn, runtime_artifact_export_truth_detail,
+    validate_runtime_artifact_snapshot_shape,
+};
+use publication_followlist::{insert_metrics, update_followlist, upsert_wallets};
+use publication_metrics::load_wallet_metric_snapshots_for_window_on_conn;
+use publication_state::{
+    publication_state_query, write_discovery_runtime_cursor_on_conn,
+    write_publication_state_on_conn,
+};
+
+#[path = "publication_artifact.rs"]
+mod publication_artifact;
+#[path = "publication_followlist.rs"]
+mod publication_followlist;
+#[path = "publication_metrics.rs"]
+mod publication_metrics;
+#[path = "publication_state.rs"]
+mod publication_state;
+
+pub fn validate_discovery_runtime_artifact_snapshot_shape(
+    artifact: &DiscoveryRuntimeArtifact,
+) -> Result<()> {
+    validate_runtime_artifact_snapshot_shape(artifact)
+}
+
+pub fn validate_discovery_runtime_artifact_export_readiness(
+    artifact: &DiscoveryRuntimeArtifact,
+    export_gate: &DiscoveryPublicationFreshnessGate,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let truth_detail =
+        runtime_artifact_export_truth_detail(&artifact.publication_state, export_gate, now);
+    if artifact.publication_state.runtime_mode != DiscoveryRuntimeMode::Healthy {
+        return Err(anyhow::anyhow!(
+            "discovery runtime artifact requires healthy publication state ({truth_detail})"
+        ));
+    }
+    if !artifact.publication_state.has_complete_publication_truth() {
+        return Err(anyhow::anyhow!(
+            "discovery runtime artifact requires complete publication truth ({truth_detail})"
+        ));
+    }
+    if export_gate.expected_scoring_source.is_none()
+        || export_gate.expected_policy_fingerprint.is_none()
+        || artifact
+            .publication_state
+            .published_scoring_source
+            .is_none()
+        || artifact
+            .publication_state
+            .publication_policy_fingerprint
+            .is_none()
+        || artifact
+            .publication_state
+            .publication_runtime_cursor
+            .is_none()
+    {
+        return Err(anyhow::anyhow!(
+            "discovery runtime artifact requires complete publication identity ({truth_detail})"
+        ));
+    }
+    if !artifact
+        .publication_state
+        .is_fresh_under_gate(export_gate, now)
+    {
+        return Err(anyhow::anyhow!(
+            "discovery runtime artifact requires fresh publication truth under export gate ({truth_detail})"
+        ));
+    }
+    if !artifact
+        .publication_state
+        .matches_expected_publication_identity(export_gate)
+    {
+        return Err(anyhow::anyhow!(
+            "discovery runtime artifact requires expected publication identity ({truth_detail})"
+        ));
+    }
+    if !artifact
+        .publication_state
+        .matches_publication_runtime_cursor(&artifact.runtime_cursor)
+    {
+        return Err(anyhow::anyhow!(
+            "discovery runtime artifact requires publication-bound runtime cursor ({truth_detail})"
+        ));
+    }
+    validate_runtime_artifact_snapshot_shape(artifact)
+}
+
 impl SqliteDiscoveryStore {
     pub fn persist_discovery_cycle(
         &self,
@@ -48,44 +131,41 @@ impl SqliteDiscoveryStore {
         clear_published_truth: bool,
         policy_fingerprint: Option<&str>,
     ) -> Result<()> {
-        let wallet_ids_json = update
-            .published_wallet_ids
-            .as_deref()
-            .map(canonical_wallet_ids_json)
-            .transpose()?;
-        self.conn.execute(
-            "INSERT INTO discovery_strategy_state(
-                id, publication_runtime_mode, publication_reason,
-                publication_last_published_at, publication_last_published_window_start,
-                publication_scoring_source, publication_wallet_ids_json,
-                publication_policy_fingerprint, updated_at
-             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(id) DO UPDATE SET
-                publication_runtime_mode = excluded.publication_runtime_mode,
-                publication_reason = excluded.publication_reason,
-                publication_last_published_at =
-                    CASE WHEN ?9 THEN NULL ELSE excluded.publication_last_published_at END,
-                publication_last_published_window_start =
-                    CASE WHEN ?9 THEN NULL ELSE excluded.publication_last_published_window_start END,
-                publication_scoring_source = excluded.publication_scoring_source,
-                publication_wallet_ids_json =
-                    CASE WHEN ?9 THEN NULL ELSE excluded.publication_wallet_ids_json END,
-                publication_policy_fingerprint =
-                    CASE WHEN ?9 THEN NULL ELSE excluded.publication_policy_fingerprint END,
-                updated_at = excluded.updated_at",
-            params![
-                update.runtime_mode.as_str(),
-                &update.reason,
-                update.last_published_at.map(|ts| ts.to_rfc3339()),
-                update.last_published_window_start.map(|ts| ts.to_rfc3339()),
-                update.published_scoring_source.as_deref(),
-                wallet_ids_json.as_deref(),
-                policy_fingerprint,
-                Utc::now().to_rfc3339(),
-                clear_published_truth,
-            ],
+        write_publication_state_on_conn(
+            &self.conn,
+            update,
+            clear_published_truth,
+            policy_fingerprint,
+            None,
+        )
+    }
+
+    pub fn persist_discovery_v2_publication(
+        &self,
+        wallets: &[WalletUpsertRow],
+        metrics: &[WalletMetricRow],
+        desired_wallets: &[String],
+        now: DateTime<Utc>,
+        reason: &str,
+        update: &DiscoveryPublicationStateUpdate,
+        policy_fingerprint: &str,
+        runtime_cursor: &DiscoveryRuntimeCursor,
+    ) -> Result<FollowlistUpdateResult> {
+        let tx = self.conn.unchecked_transaction()?;
+        upsert_wallets(&tx, wallets)?;
+        insert_metrics(&tx, metrics)?;
+        let result = update_followlist(&tx, desired_wallets, true, true, now, reason)?;
+        write_publication_state_on_conn(
+            &tx,
+            update,
+            false,
+            Some(policy_fingerprint),
+            Some(runtime_cursor),
         )?;
-        Ok(())
+        write_discovery_runtime_cursor_on_conn(&tx, runtime_cursor)?;
+        tx.commit()
+            .context("failed committing discovery v2 publication truth transaction")?;
+        Ok(result)
     }
 
     pub fn discovery_publication_state_read_only(
@@ -119,15 +199,35 @@ impl SqliteDiscoveryStore {
             )
         })?;
         let truth_detail =
-            runtime_artifact_export_truth_detail(&publication_state, export_gate, exported_at);
+            runtime_artifact_export_truth_detail(&publication_state, &export_gate, exported_at);
+        if publication_state.runtime_mode != DiscoveryRuntimeMode::Healthy {
+            return Err(anyhow::anyhow!(
+                "discovery runtime artifact export requires healthy publication state ({truth_detail})"
+            ));
+        }
         if !publication_state.has_complete_publication_truth() {
             return Err(anyhow::anyhow!(
                 "discovery runtime artifact export requires complete publication truth ({truth_detail})"
             ));
         }
-        if !publication_state.is_fresh_under_gate(export_gate, exported_at) {
+        if export_gate.expected_scoring_source.is_none()
+            || export_gate.expected_policy_fingerprint.is_none()
+            || publication_state.published_scoring_source.is_none()
+            || publication_state.publication_policy_fingerprint.is_none()
+            || publication_state.publication_runtime_cursor.is_none()
+        {
+            return Err(anyhow::anyhow!(
+                "discovery runtime artifact export requires complete publication identity ({truth_detail})"
+            ));
+        }
+        if !publication_state.is_fresh_under_gate(&export_gate, exported_at) {
             return Err(anyhow::anyhow!(
                 "discovery runtime artifact export requires fresh publication truth under export gate ({truth_detail})"
+            ));
+        }
+        if !publication_state.matches_expected_publication_identity(&export_gate) {
+            return Err(anyhow::anyhow!(
+                "discovery runtime artifact export requires expected publication identity ({truth_detail})"
             ));
         }
         let runtime_cursor = load_discovery_runtime_cursor_on_conn(&tx)?.ok_or_else(|| {
@@ -135,19 +235,31 @@ impl SqliteDiscoveryStore {
                     "discovery runtime artifact export requires a persisted discovery runtime cursor ({truth_detail})"
                 )
             })?;
+        if !publication_state.matches_publication_runtime_cursor(&runtime_cursor) {
+            return Err(anyhow::anyhow!(
+                "discovery runtime artifact export requires publication-bound runtime cursor ({truth_detail})"
+            ));
+        }
         let published_window_start = publication_state
             .last_published_window_start
             .expect("validated complete publication truth above");
+        let published_wallet_ids = publication_state
+            .published_wallet_ids
+            .as_ref()
+            .expect("validated complete publication truth above");
+        let published_wallet_ids = published_wallet_ids.iter().cloned().collect::<HashSet<_>>();
+        let published_wallet_metrics_snapshot =
+            load_wallet_metric_snapshots_for_window_on_conn(&tx, published_window_start)?
+                .into_iter()
+                .filter(|row| published_wallet_ids.contains(&row.wallet_id))
+                .collect();
         let artifact = DiscoveryRuntimeArtifact {
             format_version: DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
             exported_at,
             export_gate,
             publication_state,
             runtime_cursor,
-            published_wallet_metrics_snapshot: load_wallet_metric_snapshots_for_window_on_conn(
-                &tx,
-                published_window_start,
-            )?,
+            published_wallet_metrics_snapshot,
         };
         validate_runtime_artifact_snapshot_shape(&artifact)?;
         tx.commit()
@@ -156,7 +268,14 @@ impl SqliteDiscoveryStore {
     }
 
     pub fn load_discovery_runtime_cursor(&self) -> Result<Option<DiscoveryRuntimeCursor>> {
+        if !self.sqlite_table_exists("discovery_runtime_state")? {
+            return Ok(None);
+        }
         load_discovery_runtime_cursor_on_conn(&self.conn)
+    }
+
+    pub fn set_discovery_runtime_cursor(&self, cursor: &DiscoveryRuntimeCursor) -> Result<()> {
+        write_discovery_runtime_cursor_on_conn(&self.conn, cursor)
     }
 
     pub fn list_active_follow_wallets(&self) -> Result<HashSet<String>> {
@@ -172,5 +291,17 @@ impl SqliteDiscoveryStore {
             wallets.insert(row.get::<_, String>(0)?);
         }
         Ok(wallets)
+    }
+
+    pub fn active_follow_wallet_row_count(&self) -> Result<usize> {
+        if !self.sqlite_table_exists("followlist")? {
+            return Ok(0);
+        }
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM followlist WHERE active = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as usize)
     }
 }

@@ -25,7 +25,7 @@ impl DiscoveryService {
         let publication_truth_fresh = runtime_store
             .discovery_publication_state_read_only()?
             .as_ref()
-            .is_some_and(|state| state.is_fresh_under_gate(gate, now));
+            .is_some_and(|state| state.is_fresh_under_gate(&gate, now));
         if publication_truth_fresh {
             return Ok(StdDuration::from_millis(
                 DISCOVERY_PUBLICATION_TRUTH_REPAIR_DEFAULT_TIME_BUDGET_MS,
