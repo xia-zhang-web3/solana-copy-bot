@@ -75,7 +75,7 @@
             Err(error) => {
                 assert!(
                     error
-                        .downcast_ref::<copybot_storage::StartupStepTimeout>()
+                        .downcast_ref::<copybot_storage_core::StartupStepTimeout>()
                         .is_some(),
                     "unexpected error: {error:#}"
                 );
@@ -230,43 +230,6 @@
         )
         .expect("writer backlog should block sqlite maintenance");
         assert_eq!(reason, "writer_pending_requests=3");
-    }
-
-    #[test]
-    fn sqlite_maintenance_block_reason_blocks_on_aggregate_backlog() {
-        let mut writer_snapshot = maintenance_test_writer_snapshot();
-        writer_snapshot.aggregate_queue_depth_batches = 2;
-        let reason = sqlite_maintenance_block_reason(
-            SqliteMaintenanceTask::ObservedSwapRetention,
-            StdInstant::now()
-                - OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL
-                - std::time::Duration::from_secs(1),
-            StdInstant::now(),
-            &writer_snapshot,
-            SqliteContentionSnapshot::default(),
-            SqliteContentionSnapshot::default(),
-            None,
-        )
-        .expect("aggregate backlog should block sqlite maintenance");
-        assert_eq!(reason, "aggregate_queue_depth_batches=2");
-    }
-
-    #[test]
-    fn sqlite_maintenance_block_reason_blocks_on_aggregate_overflow_backlog() {
-        let mut writer_snapshot = maintenance_test_writer_snapshot();
-        writer_snapshot.aggregate_overflow_depth_batches = 3;
-        let reason = sqlite_maintenance_block_reason(
-            SqliteMaintenanceTask::ObservedSwapRetention,
-            StdInstant::now() - OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL,
-            StdInstant::now(),
-            &writer_snapshot,
-            SqliteContentionSnapshot::default(),
-            SqliteContentionSnapshot::default(),
-            None,
-        )
-        .expect("aggregate overflow backlog should block sqlite maintenance");
-
-        assert_eq!(reason, "aggregate_overflow_depth_batches=3");
     }
 
     #[test]

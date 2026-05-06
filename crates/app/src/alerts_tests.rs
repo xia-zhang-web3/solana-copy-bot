@@ -1,7 +1,7 @@
     use super::*;
     use anyhow::Result;
     use chrono::Utc;
-    use copybot_storage::SqliteStore;
+    use copybot_storage_core::SqliteStore;
     use rusqlite::params;
     use std::ffi::OsString;
     use std::path::Path;
@@ -91,9 +91,8 @@
                 .unwrap_or(Utc::now().timestamp_micros() * 1000)
         );
         let db_path = std::env::temp_dir().join(format!("copybot-alerts-{unique}.db"));
-        let mut store = SqliteStore::open(Path::new(&db_path))?;
-        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
-        store.run_migrations(&migration_dir)?;
+        let store = SqliteStore::open(Path::new(&db_path))?;
+        store.ensure_system_event_tables()?;
         Ok((store, db_path))
     }
 

@@ -1,9 +1,12 @@
 use super::*;
+use copybot_core_types::WalletMetricRow;
 use copybot_storage::{
     DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateRow,
-    DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateUpdate, TrustedSelectionState, TrustedSnapshotSourceKind,
-    WalletMetricRow,
+};
+use copybot_storage_core::{
+    DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor,
+    DiscoveryRuntimeMode,
 };
 use rusqlite::{params, Connection};
 use std::collections::BTreeMap;
@@ -15,7 +18,6 @@ include!("app_tests/02.rs");
 include!("app_tests/03.rs");
 include!("app_tests/04.rs");
 include!("app_tests/05.rs");
-include!("app_tests/06.rs");
 include!("app_tests/07.rs");
 include!("app_tests/08.rs");
 include!("app_tests/09.rs");
@@ -35,3 +37,4 @@ include!("app_tests/22.rs");
 include!("app_tests/23.rs");
 include!("app_tests/24.rs");
 include!("app_tests/25.rs");
+include!("app_tests/26.rs");

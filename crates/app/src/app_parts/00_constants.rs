@@ -32,30 +32,5 @@ const LEGACY_RUST_LOG_ENV: &str = "RUST_LOG";
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 const OBSERVED_SWAP_WRITER_BACKPRESSURE_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const OBSERVED_SWAP_WRITER_BACKPRESSURE_LOG_THROTTLE: StdDuration = StdDuration::from_secs(5);
-const DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD: usize = 128;
-const DISCOVERY_CATCH_UP_RECENT_RAW_JOURNAL_BACKLOG_RETRY_INTERVAL: StdDuration =
-    StdDuration::from_secs(5);
-const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG: &str =
-    "discovery_cycle_deferred_due_to_recent_raw_journal_backlog";
-const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG: &str =
-    "discovery_cycle_deferred_due_to_recent_raw_journal_persisted_lag";
-const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_LAG_UNPROVEN: &str =
-    "discovery_cycle_deferred_due_to_recent_raw_journal_lag_unproven";
-const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RECENT_RAW_JOURNAL_SETTLE_WINDOW: &str =
-    "discovery_cycle_deferred_due_to_recent_raw_journal_settle_window";
-const DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_BACKLOG: &str =
-    "discovery_cycle_aborted_due_to_recent_raw_journal_backlog";
-const DISCOVERY_CYCLE_ABORTED_DUE_TO_RECENT_RAW_JOURNAL_PERSISTED_LAG: &str =
-    "discovery_cycle_aborted_due_to_recent_raw_journal_persisted_lag";
-const DISCOVERY_CYCLE_DEFERRED_DUE_TO_RUNTIME_MEMORY_PRESSURE: &str =
-    "discovery_cycle_deferred_due_to_runtime_memory_pressure";
-const DISCOVERY_CYCLE_ABORTED_DUE_TO_RUNTIME_MEMORY_PRESSURE: &str =
-    "discovery_cycle_aborted_due_to_runtime_memory_pressure";
-const DISCOVERY_RUNTIME_MEMORY_PRESSURE_PROCESS_RSS_THRESHOLD_BYTES: u64 = 6 * 1024 * 1024 * 1024;
-const DISCOVERY_RUNTIME_MEMORY_PRESSURE_SYSTEM_AVAILABLE_THRESHOLD_BYTES: u64 = 768 * 1024 * 1024;
-const DISCOVERY_RUNTIME_MEMORY_PRESSURE_SYSTEM_AVAILABLE_MIN_BPS: u64 = 1_000;
-const DISCOVERY_RECENT_RAW_JOURNAL_SETTLE_WINDOW: StdDuration = StdDuration::from_secs(60);
-const DISCOVERY_RECENT_RAW_JOURNAL_SETTLE_CONSECUTIVE_CHECKS: u32 = 2;
-const DISCOVERY_RECENT_RAW_JOURNAL_RUNNING_WATCH_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(test)]
 static APP_ENV_LOCK: Mutex<()> = Mutex::new(());

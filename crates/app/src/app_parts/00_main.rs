@@ -81,12 +81,17 @@ async fn main() -> Result<()> {
         Some(&startup_reporter),
         move || defer_implicit_startup_sqlite_wal_autocheckpoint(store),
     )?;
+    let startup_heartbeat_sqlite_path = config.sqlite.path.clone();
     let mut store = run_observed_startup_step(
         "startup_sqlite_heartbeat",
         startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
         Some(&startup_reporter),
         move || {
-            store
+            let system_event_store = copybot_storage_core::SqliteStore::open(Path::new(
+                &startup_heartbeat_sqlite_path,
+            ))
+            .context("failed to open startup heartbeat storage core")?;
+            system_event_store
                 .record_heartbeat("copybot-app", "startup")
                 .context("failed to write startup heartbeat")?;
             Ok(store)
@@ -100,12 +105,17 @@ async fn main() -> Result<()> {
     )
     .context("failed to initialize alert delivery")?;
     if let Some(dispatcher) = &alert_dispatcher {
+        let alert_sqlite_path = config.sqlite.path.clone();
         store = run_observed_startup_step(
             "startup_alert_delivery_cursor",
             startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
             Some(&startup_reporter),
             move || {
-                store
+                let alert_store = copybot_storage_core::SqliteStore::open(Path::new(
+                    &alert_sqlite_path,
+                ))
+                .context("failed to open alert delivery storage core")?;
+                alert_store
                     .ensure_alert_delivery_cursor("webhook")
                     .context("failed to initialize alert delivery cursor")?;
                 Ok(store)
@@ -174,18 +184,6 @@ async fn main() -> Result<()> {
             Ok((ingestion, discovery, shadow))
         },
     )?;
-    let discovery_scoring_retention_days = config
-        .discovery
-        .scoring_window_days
-        .max(config.discovery.decay_window_days)
-        .saturating_add(1);
-    let discovery_aggregate_write_config = DiscoveryAggregateWriteConfig {
-        max_tx_per_minute: config.discovery.max_tx_per_minute,
-        rug_lookahead_seconds: config.discovery.rug_lookahead_seconds as u32,
-        helius_http_url: None,
-        min_token_age_hint_seconds: Some(config.shadow.min_token_age_seconds),
-    };
-
     let app_loop_handoff_started = StdInstant::now();
     emit_inline_startup_progress(
         &startup_reporter,
@@ -216,12 +214,8 @@ async fn main() -> Result<()> {
         config.discovery.fetch_refresh_seconds,
         config.discovery.refresh_seconds,
         config.discovery.observed_swaps_retention_days,
-        discovery_scoring_retention_days,
-        config.discovery.scoring_aggregates_write_enabled,
-        discovery_aggregate_write_config,
         config.ingestion.source.clone(),
         config.shadow.refresh_seconds,
-        config.shadow.max_signal_lag_seconds,
         config.shadow.causal_holdback_enabled,
         config.shadow.causal_holdback_ms,
         config.system.pause_new_trades_on_outage,

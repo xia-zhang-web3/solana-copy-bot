@@ -86,14 +86,10 @@
             .enable_all()
             .build()?;
         runtime.block_on(async {
-            let writer = ObservedSwapWriter::start(
-                db_path
+            let writer = ObservedSwapWriter::start(db_path
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
-                    .to_string(),
-                false,
-                DiscoveryAggregateWriteConfig::default(),
-            )?;
+                    .to_string())?;
             let swap = test_swap("sig-relevant-write-failure");
             let mut recent_signatures = HashSet::new();
             let mut recent_signature_order = VecDeque::new();
@@ -162,14 +158,10 @@
             .enable_all()
             .build()?;
         runtime.block_on(async {
-            let writer = ObservedSwapWriter::start(
-                db_path
+            let writer = ObservedSwapWriter::start(db_path
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
-                    .to_string(),
-                false,
-                DiscoveryAggregateWriteConfig::default(),
-            )?;
+                    .to_string())?;
             let swap = test_swap("sig-relevant-duplicate");
             let mut recent_signatures = HashSet::new();
             let mut recent_signature_order = VecDeque::new();

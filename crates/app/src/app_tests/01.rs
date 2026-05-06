@@ -9,7 +9,6 @@
         runtime_wal_bytes_at_pause: u64,
         sqlite_write_retry_delta: u64,
         sqlite_busy_error_delta: u64,
-        aggregate_queue_depth_at_pause: usize,
         journal_queue_depth_at_pause: usize,
         dropped_irrelevant_swaps: usize,
         ingestion_paused_by_pending_irrelevant_queue: bool,
@@ -26,7 +25,6 @@
         runtime_wal_bytes_at_pause: u64,
         sqlite_write_retry_delta: u64,
         sqlite_busy_error_delta: u64,
-        aggregate_queue_depth_at_pause: usize,
         journal_queue_depth_at_pause: usize,
         loaded_target_buy_mints: usize,
         dropped_irrelevant_swaps: usize,
@@ -37,7 +35,6 @@
     struct DiscoveryCriticalPendingBacklogOutputSaturationSummary {
         baseline_rows_persisted: usize,
         writer_pending_requests_at_plateau: usize,
-        aggregate_queue_depth_at_plateau: usize,
         journal_queue_depth_at_plateau: usize,
         upstream_queue_depth_before_loop: usize,
         upstream_queue_depth_after_loop: usize,
@@ -50,7 +47,6 @@
     struct DiscoveryCriticalBackpressureRefreshOutputSaturationSummary {
         baseline_rows_persisted: usize,
         writer_pending_requests_at_plateau: usize,
-        aggregate_queue_depth_at_plateau: usize,
         journal_queue_depth_at_plateau: usize,
         upstream_queue_depth_before_loop: usize,
         upstream_queue_depth_after_loop: usize,
@@ -78,22 +74,10 @@
             .context("sqlite path must be valid utf-8")?
             .to_string();
         let writer = if let Some(limit) = normal_try_enqueue_soft_limit_override {
-            ObservedSwapWriter::start_for_test_with_normal_try_enqueue_soft_limit(
-                sqlite_path,
-                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-                false,
-                DiscoveryAggregateWriteConfig::default(),
-                limit,
+            ObservedSwapWriter::start_for_test_with_normal_try_enqueue_soft_limit(sqlite_path, OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE, limit,
             )?
         } else {
-            ObservedSwapWriter::start_for_test(
-                sqlite_path,
-                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-                false,
-                DiscoveryAggregateWriteConfig::default(),
-            )?
+            ObservedSwapWriter::start_for_test(sqlite_path, OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?
         };
         runtime_store.checkpoint_wal_truncate()?;
 
@@ -298,7 +282,6 @@
             sqlite_busy_error_delta: contention_after
                 .busy_error_total
                 .saturating_sub(contention_before.busy_error_total),
-            aggregate_queue_depth_at_pause: snapshot_at_pause.aggregate_queue_depth_batches,
             journal_queue_depth_at_pause: snapshot_at_pause.journal_queue_depth_batches,
             dropped_noncritical_irrelevant_swaps,
             ingestion_paused_by_pending_irrelevant_queue,
@@ -316,16 +299,10 @@
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let writer = ObservedSwapWriter::start_for_test_with_normal_try_enqueue_soft_limit(
-            db_path
+        let writer = ObservedSwapWriter::start_for_test_with_normal_try_enqueue_soft_limit(db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
-                .to_string(),
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            false,
-            DiscoveryAggregateWriteConfig::default(),
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
+                .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
         )?;
         runtime_store.checkpoint_wal_truncate()?;
 
@@ -408,7 +385,6 @@
         }
         let upstream_queue_depth_before_loop = upstream.len();
         let mut writer_pending_requests_at_wave_peak = 0usize;
-        let mut aggregate_queue_depth_at_wave_peak = 0usize;
         let mut journal_queue_depth_at_wave_peak = 0usize;
         let mut accepted_noncritical_irrelevant_swaps = 0usize;
         let mut dropped_noncritical_irrelevant_swaps = 0usize;
@@ -458,7 +434,6 @@
                     let snapshot = writer.snapshot();
                     if snapshot.pending_requests > writer_pending_requests_at_wave_peak {
                         writer_pending_requests_at_wave_peak = snapshot.pending_requests;
-                        aggregate_queue_depth_at_wave_peak = snapshot.aggregate_queue_depth_batches;
                         journal_queue_depth_at_wave_peak = snapshot.journal_queue_depth_batches;
                     }
                     if snapshot.pending_requests >= TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE {
@@ -498,7 +473,6 @@
         Ok(NoncriticalIrrelevantOutputPressureWaveSummary {
             baseline_rows_persisted,
             writer_pending_requests_at_wave_peak,
-            aggregate_queue_depth_at_wave_peak,
             journal_queue_depth_at_wave_peak,
             upstream_queue_depth_before_loop,
             upstream_queue_depth_after_loop: upstream.len(),

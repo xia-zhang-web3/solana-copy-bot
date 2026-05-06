@@ -113,9 +113,8 @@
         );
         let runtime_db_path = std::env::temp_dir().join(format!("{unique}.db"));
         let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
-        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
-        let mut seed_store = SqliteStore::open(Path::new(&runtime_db_path))?;
-        seed_store.run_migrations(&migration_dir)?;
+        let seed_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        seed_store.ensure_observed_swap_writer_tables()?;
 
         let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
         let journal_now = Utc::now();
@@ -142,12 +141,7 @@
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
                     .to_string(),
-                ObservedSwapWriterConfig::for_test(
-                    16,
-                    8,
-                    false,
-                    aggregate_write_config(),
-                    Some(ObservedSwapRecentRawJournalConfig {
+                ObservedSwapWriterConfig::for_test(16, 8, Some(ObservedSwapRecentRawJournalConfig {
                         sqlite_path: journal_db_path
                             .to_str()
                             .context("journal sqlite path must be valid utf-8")?
@@ -306,11 +300,10 @@
         );
         let runtime_db_path = std::env::temp_dir().join(format!("{unique}.db"));
         let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
-        let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
-        let mut runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
-        runtime_store.run_migrations(&migration_dir)?;
-        let mut journal_seed_store = SqliteStore::open(Path::new(&journal_db_path))?;
-        journal_seed_store.run_migrations(&migration_dir)?;
+        let runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
+        runtime_store.ensure_observed_swap_writer_tables()?;
+        let journal_seed_store = SqliteStore::open(Path::new(&journal_db_path))?;
+        journal_seed_store.ensure_recent_raw_journal_tables()?;
         drop(journal_seed_store);
         let scenario_now = DateTime::parse_from_rfc3339("2026-04-28T20:05:00Z")
             .expect("timestamp")
@@ -321,12 +314,7 @@
                 .to_str()
                 .context("runtime sqlite path must be valid utf-8")?
                 .to_string(),
-            ObservedSwapWriterConfig::for_test(
-                32,
-                1,
-                false,
-                aggregate_write_config(),
-                Some(ObservedSwapRecentRawJournalConfig {
+            ObservedSwapWriterConfig::for_test(32, 1, Some(ObservedSwapRecentRawJournalConfig {
                     sqlite_path: journal_db_path
                         .to_str()
                         .context("journal sqlite path must be valid utf-8")?

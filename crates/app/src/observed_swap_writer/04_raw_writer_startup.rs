@@ -1,13 +1,6 @@
 fn poll_observed_swap_writer_downstream_startups(
-    aggregate_startup_receiver: &mut Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
     journal_startup_receiver: &mut Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
 ) -> Result<()> {
-    poll_observed_swap_writer_startup_receiver(
-        aggregate_startup_receiver,
-        "observed swap writer stopping after aggregate startup replay failure",
-        "discovery aggregate writer startup channel closed",
-        "observed swap writer stopping after aggregate startup replay channel closed",
-    )?;
     poll_observed_swap_writer_startup_receiver(
         journal_startup_receiver,
         "observed swap writer stopping after recent raw journal startup failure",
@@ -40,8 +33,7 @@ fn poll_observed_swap_writer_startup_receiver(
 }
 
 fn observed_swap_writer_downstream_startup_pending(
-    aggregate_startup_receiver: &Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
     journal_startup_receiver: &Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
 ) -> bool {
-    aggregate_startup_receiver.is_some() || journal_startup_receiver.is_some()
+    journal_startup_receiver.is_some()
 }

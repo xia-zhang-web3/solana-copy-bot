@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use copybot_config::HistoryRetentionConfig;
-use copybot_storage::{HistoryRetentionCutoffs, HistoryRetentionSummary, SqliteStore};
+use copybot_storage_core::{HistoryRetentionCutoffs, HistoryRetentionSummary, SqliteStore};
 
 const HISTORY_RETENTION_MAX_RISK_EVENT_BATCHES_PER_RUN: usize = 4;
 const HISTORY_RETENTION_MAX_EXECUTION_ORDER_BATCHES_PER_RUN: usize = 4;

@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 
 use super::{
     ObservedSwapRecentRawJournalConfig, ObservedSwapWriterConfig, ObservedSwapWriterTelemetry,
-    OBSERVED_SWAP_BATCH_MAX_SIZE, OBSERVED_SWAP_DISCOVERY_AGGREGATE_OVERFLOW_CAPACITY_MULTIPLIER,
+    OBSERVED_SWAP_BATCH_MAX_SIZE,
     OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_CAP,
     OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_MULTIPLIER,
     OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_ROWS_CAP,
@@ -23,10 +23,6 @@ pub(super) fn observed_swap_writer_normal_try_enqueue_soft_limit(
         .channel_capacity
         .saturating_sub(discovery_critical_reserve_requests)
         .max(1);
-    if config.aggregate_writes_enabled {
-        return normal_capacity;
-    }
-
     // `try_enqueue()` is only used by non-critical irrelevant swaps. When aggregate writes
     // are disabled, one queued raw batch is enough to preserve best-effort persistence without
     // letting this lowest-priority class consume the entire normal writer budget before
@@ -72,32 +68,6 @@ pub(super) fn recent_raw_journal_adaptive_coalesce_pressure(
             .load(Ordering::Relaxed)
             > 0
         || telemetry.journal_overflow_row_debt.load(Ordering::Relaxed) > 0
-}
-
-pub(super) fn observed_swap_writer_aggregate_queue_capacity(
-    config: &ObservedSwapWriterConfig,
-) -> usize {
-    if !config.aggregate_writes_enabled {
-        return 0;
-    }
-    config
-        .channel_capacity
-        .max(1)
-        .div_ceil(config.batch_max_size.max(1))
-}
-
-pub(super) fn observed_swap_writer_default_aggregate_overflow_capacity_batches(
-    channel_capacity: usize,
-    batch_max_size: usize,
-    aggregate_writes_enabled: bool,
-) -> usize {
-    if !aggregate_writes_enabled {
-        return 0;
-    }
-    channel_capacity
-        .max(1)
-        .div_ceil(batch_max_size.max(1))
-        .saturating_mul(OBSERVED_SWAP_DISCOVERY_AGGREGATE_OVERFLOW_CAPACITY_MULTIPLIER)
 }
 
 pub(super) fn recent_raw_journal_overflow_row_capacity(

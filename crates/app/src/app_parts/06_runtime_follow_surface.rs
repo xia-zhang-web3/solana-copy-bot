@@ -3,6 +3,7 @@ fn sanitize_json_value(value: &str) -> String {
     json_string[1..json_string.len().saturating_sub(1)].to_string()
 }
 
+#[cfg(test)]
 fn follow_event_retention_duration(
     shadow_max_signal_lag_seconds: u64,
     discovery_refresh_seconds: u64,
@@ -46,26 +47,57 @@ fn startup_follow_snapshot_from_publication_truth(
 
 fn startup_runtime_publication_truth(
     discovery: &DiscoveryService,
-    store: &SqliteStore,
+    sqlite_path: &str,
     now: DateTime<Utc>,
+    execution_enabled: bool,
 ) -> Result<Option<RuntimePublicationTruthResolution>> {
-    discovery.runtime_publication_truth_resolution(store, now)
+    let store = copybot_storage_core::SqliteDiscoveryStore::open_read_only(sqlite_path)?;
+    let Some(resolution) = discovery.runtime_publication_truth_resolution(&store, now)? else {
+        return Ok(None);
+    };
+    let Some(publication_state) = store.discovery_publication_state_read_only()? else {
+        return Ok(None);
+    };
+    let Some(current_cursor) = store.load_discovery_runtime_cursor()? else {
+        return Ok(None);
+    };
+    let expected_policy_fingerprint =
+        discovery.discovery_v2_publication_policy_fingerprint(execution_enabled);
+    if runtime_publication_truth_has_current_v2_identity(
+        &resolution,
+        &publication_state,
+        &current_cursor,
+        expected_policy_fingerprint.as_str(),
+    ) {
+        Ok(Some(resolution))
+    } else {
+        Ok(None)
+    }
 }
 
-fn apply_fail_closed_runtime_follow_surface_if_needed(
-    follow_snapshot: &mut Arc<FollowSnapshot>,
-    open_shadow_lots: &mut HashSet<(String, String)>,
-    shadow_strategy_fail_closed: &mut bool,
-    discovery_output: &DiscoveryTaskOutput,
+fn runtime_publication_truth_has_current_v2_identity(
+    resolution: &RuntimePublicationTruthResolution,
+    publication_state: &copybot_storage_core::DiscoveryPublicationStateRow,
+    current_cursor: &copybot_storage_core::DiscoveryRuntimeCursor,
+    expected_policy_fingerprint: &str,
 ) -> bool {
-    if !matches!(
-        discovery_output.runtime_mode,
-        DiscoveryRuntimeMode::FailClosed | DiscoveryRuntimeMode::BootstrapDegraded
-    ) {
+    const V2_SOURCE: &str = "discovery_v2_operational_window";
+    let RuntimePublicationTruthResolution::Recent(truth) = resolution else {
         return false;
-    }
-    *shadow_strategy_fail_closed = true;
-    *follow_snapshot = Arc::new(FollowSnapshot::default());
-    open_shadow_lots.clear();
-    true
+    };
+    truth.runtime_mode == copybot_storage_core::DiscoveryRuntimeMode::Healthy
+        && publication_state.runtime_mode == copybot_storage_core::DiscoveryRuntimeMode::Healthy
+        && truth
+            .published_scoring_source
+            .as_deref()
+            .is_some_and(|source| source == V2_SOURCE)
+        && publication_state
+            .published_scoring_source
+            .as_deref()
+            .is_some_and(|source| source == V2_SOURCE)
+        && publication_state
+            .publication_policy_fingerprint
+            .as_deref()
+            .is_some_and(|fingerprint| fingerprint == expected_policy_fingerprint)
+        && publication_state.publication_runtime_cursor.as_ref() == Some(current_cursor)
 }

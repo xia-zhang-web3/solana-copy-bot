@@ -1,5 +1,5 @@
 pub(super) async fn handle_app_heartbeat_tick(
-    store: &SqliteStore,
+    system_event_store: &copybot_storage_core::SqliteStore,
     alert_dispatcher: Option<&AlertDispatcher>,
     latest_ingestion_runtime_snapshot: &Arc<Mutex<Option<IngestionRuntimeSnapshot>>>,
     ingestion: &IngestionService,
@@ -21,14 +21,14 @@ pub(super) async fn handle_app_heartbeat_tick(
     >,
     app_consumer_loop_telemetry: &mut AppConsumerLoopTelemetry,
 ) -> Result<()> {
-    if let Err(error) = store.record_heartbeat("copybot-app", "alive") {
+    if let Err(error) = system_event_store.record_heartbeat("copybot-app", "alive") {
         if runtime_sqlite_write_error_requires_restart(&error) {
             return Err(error).context("runtime heartbeat write failed with fatal sqlite I/O");
         }
         warn!(error = %error, "heartbeat write failed");
     }
     if let Some(dispatcher) = &alert_dispatcher {
-        match dispatcher.deliver_pending(&store).await {
+        match dispatcher.deliver_pending(system_event_store).await {
             Ok(delivered) if delivered > 0 => {
                 info!(delivered, "delivered pending alert webhooks");
             }
@@ -74,8 +74,6 @@ pub(super) async fn handle_app_heartbeat_tick(
                 maintenance = SqliteMaintenanceTask::HistoryRetention.as_str(),
                 observed_swap_writer_pending_requests =
                     maintenance_gate_writer_snapshot.pending_requests,
-                observed_swap_writer_aggregate_queue_depth_batches =
-                    maintenance_gate_writer_snapshot.aggregate_queue_depth_batches,
                 observed_swap_writer_journal_queue_depth_batches =
                     maintenance_gate_writer_snapshot.journal_queue_depth_batches,
                 yellowstone_output_queue_depth = maintenance_gate_ingestion_snapshot
@@ -93,7 +91,11 @@ pub(super) async fn handle_app_heartbeat_tick(
             );
             let history_now = Utc::now();
             let mut history_completed_full_sweep = true;
-            match history_retention.apply(&store, history_now, alert_dispatcher.is_some()) {
+            match history_retention.apply(
+                system_event_store,
+                history_now,
+                alert_dispatcher.is_some(),
+            ) {
                 Ok(summary) => {
                     history_completed_full_sweep = summary.completed_full_sweep;
                     if !summary.is_empty() {
@@ -162,8 +164,6 @@ pub(super) async fn handle_app_heartbeat_tick(
                 maintenance = SqliteMaintenanceTask::ObservedSwapRetention.as_str(),
                 observed_swap_writer_pending_requests =
                     maintenance_gate_writer_snapshot.pending_requests,
-                observed_swap_writer_aggregate_queue_depth_batches =
-                    maintenance_gate_writer_snapshot.aggregate_queue_depth_batches,
                 observed_swap_writer_journal_queue_depth_batches =
                     maintenance_gate_writer_snapshot.journal_queue_depth_batches,
                 yellowstone_output_queue_depth = maintenance_gate_ingestion_snapshot
@@ -205,21 +205,11 @@ pub(super) async fn handle_app_heartbeat_tick(
             observed_swap_writer_snapshot.observed_swaps_insert_ms_p95,
         observed_swap_writer_wallet_activity_days_ms_p95 =
             observed_swap_writer_snapshot.wallet_activity_days_ms_p95,
-        observed_swap_writer_discovery_scoring_ms_p95 =
-            observed_swap_writer_snapshot.discovery_scoring_ms_p95,
         observed_swap_writer_journal_enqueue_wait_ms_p95 =
             observed_swap_writer_snapshot.journal_enqueue_wait_ms_p95,
         observed_swap_writer_journal_batch_write_ms_p95 =
             observed_swap_writer_snapshot.journal_batch_write_ms_p95,
         observed_swap_writer_worker_busy_ms_p95 = observed_swap_writer_snapshot.worker_busy_ms_p95,
-        observed_swap_writer_aggregate_queue_depth_batches =
-            observed_swap_writer_snapshot.aggregate_queue_depth_batches,
-        observed_swap_writer_aggregate_queue_capacity_batches =
-            observed_swap_writer_snapshot.aggregate_queue_capacity_batches,
-        observed_swap_writer_aggregate_overflow_depth_batches =
-            observed_swap_writer_snapshot.aggregate_overflow_depth_batches,
-        observed_swap_writer_aggregate_overflow_capacity_batches =
-            observed_swap_writer_snapshot.aggregate_overflow_capacity_batches,
         observed_swap_writer_journal_queue_depth_batches =
             observed_swap_writer_snapshot.journal_queue_depth_batches,
         observed_swap_writer_journal_queue_row_debt =

@@ -1,21 +1,21 @@
-fn latch_discovery_scoring_materialization_gap_from_swaps(
-    store: &SqliteStore,
-    inserted_swaps: &[SwapEvent],
-) -> Result<()> {
-    let Some(first_gap_swap) = inserted_swaps.iter().min_by(|a, b| {
-        a.ts_utc
-            .cmp(&b.ts_utc)
-            .then_with(|| a.slot.cmp(&b.slot))
-            .then_with(|| a.signature.cmp(&b.signature))
-    }) else {
-        return Ok(());
-    };
-    store.set_discovery_scoring_materialization_gap_cursor(&DiscoveryRuntimeCursor {
-        ts_utc: first_gap_swap.ts_utc,
-        slot: first_gap_swap.slot,
-        signature: first_gap_swap.signature.clone(),
-    })?;
-    Ok(())
+fn set_terminal_failure_message(
+    terminal_failure_message: &Arc<Mutex<Option<String>>>,
+    message: String,
+) {
+    if let Ok(mut guard) = terminal_failure_message.lock() {
+        if guard.is_none() {
+            *guard = Some(message);
+        }
+    }
+}
+
+fn load_terminal_failure_message(
+    terminal_failure_message: &Arc<Mutex<Option<String>>>,
+) -> Option<String> {
+    terminal_failure_message
+        .lock()
+        .ok()
+        .and_then(|message| message.clone())
 }
 
 fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {

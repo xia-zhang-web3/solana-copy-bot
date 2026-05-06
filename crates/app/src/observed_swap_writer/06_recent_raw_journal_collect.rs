@@ -66,30 +66,3 @@ fn collect_recent_raw_journal_write_batch(
         coalesce_limit_rows: row_limit,
     }
 }
-
-fn collect_discovery_aggregate_write_batch(
-    receiver: &std_mpsc::Receiver<DiscoveryAggregateWriteRequest>,
-    first_request: DiscoveryAggregateWriteRequest,
-    max_batches: usize,
-    telemetry: &ObservedSwapWriterTelemetry,
-) -> DiscoveryAggregateWriteRequest {
-    telemetry.note_aggregate_queue_dequeued();
-    let mut inserted_swaps = first_request.inserted_swaps;
-    let batch_started = first_request.batch_started;
-    let drain_limit = max_batches.max(1);
-    let mut drained_batches = 1usize;
-    while drained_batches < drain_limit {
-        match receiver.try_recv() {
-            Ok(request) => {
-                telemetry.note_aggregate_queue_dequeued();
-                inserted_swaps.extend(request.inserted_swaps);
-                drained_batches = drained_batches.saturating_add(1);
-            }
-            Err(std_mpsc::TryRecvError::Empty | std_mpsc::TryRecvError::Disconnected) => break,
-        }
-    }
-    DiscoveryAggregateWriteRequest {
-        inserted_swaps,
-        batch_started,
-    }
-}

@@ -29,7 +29,6 @@ struct IrrelevantObservedSwapBackpressureDiagnostics {
     discovery_critical_target_buy_mints_count: usize,
     pending_irrelevant_swap_queue_depth: usize,
     writer_pending_requests: usize,
-    writer_aggregate_queue_depth_batches: usize,
     yellowstone_output_queue_depth: u64,
 }
 
@@ -60,8 +59,6 @@ fn snapshot_irrelevant_observed_swap_backpressure_diagnostics(
         discovery_critical_target_buy_mints_count: discovery_critical_target_buy_mints.len(),
         pending_irrelevant_swap_queue_depth: pending_irrelevant_swaps.len(),
         writer_pending_requests: observed_swap_writer_snapshot.pending_requests,
-        writer_aggregate_queue_depth_batches: observed_swap_writer_snapshot
-            .aggregate_queue_depth_batches,
         yellowstone_output_queue_depth: ingestion_snapshot
             .map(|snapshot| snapshot.yellowstone_output_queue_depth)
             .unwrap_or(0),
@@ -105,8 +102,6 @@ fn warn_irrelevant_observed_swap_writer_backpressure(
         pending_irrelevant_swap_queue_depth =
             diagnostics.pending_irrelevant_swap_queue_depth,
         observed_swap_writer_pending_requests = diagnostics.writer_pending_requests,
-        observed_swap_writer_aggregate_queue_depth_batches =
-            diagnostics.writer_aggregate_queue_depth_batches,
         yellowstone_output_queue_depth = diagnostics.yellowstone_output_queue_depth,
         yellowstone_output_queue_capacity = ingestion_snapshot
             .map(|snapshot| snapshot.yellowstone_output_queue_capacity)

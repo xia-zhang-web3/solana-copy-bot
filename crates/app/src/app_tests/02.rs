@@ -13,16 +13,10 @@
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let writer = ObservedSwapWriter::start_for_test(
-            db_path
+        let writer = ObservedSwapWriter::start_for_test(db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
-                .to_string(),
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            false,
-            DiscoveryAggregateWriteConfig::default(),
-        )?;
+                .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
         runtime_store.checkpoint_wal_truncate()?;
 
         let scenario_now = DateTime::parse_from_rfc3339("2026-04-12T17:44:57Z")
@@ -33,7 +27,6 @@
         let mut recent_signatures = HashSet::new();
         let mut recent_signature_order = VecDeque::new();
         let mut writer_pending_requests_peak = 0usize;
-        let mut aggregate_queue_depth_at_peak = 0usize;
         let mut journal_queue_depth_at_peak = 0usize;
         let mut first_backpressure_pending_requests = 0usize;
         let mut dropped_swaps = 0usize;
@@ -106,8 +99,6 @@
             let snapshot = writer.snapshot();
             writer_pending_requests_peak =
                 writer_pending_requests_peak.max(snapshot.pending_requests);
-            aggregate_queue_depth_at_peak =
-                aggregate_queue_depth_at_peak.max(snapshot.aggregate_queue_depth_batches);
             journal_queue_depth_at_peak =
                 journal_queue_depth_at_peak.max(snapshot.journal_queue_depth_batches);
             match outcome {
@@ -149,7 +140,6 @@
         Ok(IrrelevantNotFollowedNoOwnershipSurfaceSummary {
             writer_pending_requests_peak,
             first_backpressure_pending_requests,
-            aggregate_queue_depth_at_peak,
             journal_queue_depth_at_peak,
             dropped_swaps,
             accepted_swaps,
@@ -169,16 +159,10 @@
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let writer = ObservedSwapWriter::start_for_test(
-            db_path
+        let writer = ObservedSwapWriter::start_for_test(db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
-                .to_string(),
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            false,
-            DiscoveryAggregateWriteConfig::default(),
-        )?;
+                .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
         runtime_store.checkpoint_wal_truncate()?;
 
         let scenario_now = DateTime::parse_from_rfc3339("2026-04-09T12:06:48Z")
@@ -255,7 +239,6 @@
             ZeroUniverseEmptyTargetNoncriticalBestEffortState::default();
         let mut first_backpressure_pending_requests = 0usize;
         let mut writer_pending_requests_peak = 0usize;
-        let mut aggregate_queue_depth_at_peak = 0usize;
         let mut journal_queue_depth_at_peak = 0usize;
         let mut accepted_noncritical_irrelevant_swaps = 0usize;
         let mut dropped_noncritical_irrelevant_swaps = 0usize;
@@ -329,8 +312,6 @@
             let snapshot = writer.snapshot();
             writer_pending_requests_peak =
                 writer_pending_requests_peak.max(snapshot.pending_requests);
-            aggregate_queue_depth_at_peak =
-                aggregate_queue_depth_at_peak.max(snapshot.aggregate_queue_depth_batches);
             journal_queue_depth_at_peak =
                 journal_queue_depth_at_peak.max(snapshot.journal_queue_depth_batches);
 
@@ -388,7 +369,6 @@
             baseline_rows_persisted,
             first_backpressure_pending_requests,
             writer_pending_requests_peak,
-            aggregate_queue_depth_at_peak,
             journal_queue_depth_at_peak,
             yellowstone_output_queue_depth: ingestion_snapshot
                 .map(|snapshot| snapshot.yellowstone_output_queue_depth)

@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use copybot_storage::{RiskEventRow, SqliteStore};
+use copybot_storage_core::{RiskEventRow, SqliteStore};
 use reqwest::{Client, Url};
 use serde_json::{json, Value};
 use std::env;

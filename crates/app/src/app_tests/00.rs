@@ -174,14 +174,9 @@
             raw_batch_write_ms_p95: 0,
             observed_swaps_insert_ms_p95: 0,
             wallet_activity_days_ms_p95: 0,
-            discovery_scoring_ms_p95: 0,
             journal_enqueue_wait_ms_p95: 0,
             journal_batch_write_ms_p95: 0,
             worker_busy_ms_p95: 0,
-            aggregate_queue_depth_batches: 0,
-            aggregate_queue_capacity_batches: 32,
-            aggregate_overflow_depth_batches: 0,
-            aggregate_overflow_capacity_batches: 128,
             journal_queue_depth_batches: 0,
             journal_queue_row_debt: 0,
             journal_queue_capacity_batches: 32,
@@ -212,141 +207,6 @@
             yellowstone_output_queue_fill_ratio: fill_ratio,
             yellowstone_output_oldest_age_ms: 500,
         }
-    }
-
-    fn discovery_output_for_catch_up_tests(requested: bool) -> DiscoveryTaskOutput {
-        DiscoveryTaskOutput {
-            active_wallets: std::collections::HashSet::new(),
-            cycle_ts: Utc::now(),
-            eligible_wallets: 0,
-            active_follow_wallets: 0,
-            published: false,
-            runtime_mode: DiscoveryRuntimeMode::FailClosed,
-            scoring_source: "raw_window_persisted_stream",
-            raw_window_cap_truncated: false,
-            cap_truncation_deactivation_guard_active: false,
-            cap_truncation_deactivation_guard_reason: None,
-            cap_truncation_deactivation_guard_started_at: None,
-            cap_truncation_floor_ts_utc: None,
-            cap_truncation_floor_signature: None,
-            persisted_stream_catch_up_requested: requested,
-            persisted_stream_catch_up_pressure_override_requested: false,
-        }
-    }
-
-    fn live_like_published_discovery_output(
-        now: DateTime<Utc>,
-        active_follow_wallets: usize,
-        eligible_wallets: usize,
-        raw_window_cap_truncated: bool,
-    ) -> DiscoveryTaskOutput {
-        let active_wallets = (0..active_follow_wallets)
-            .map(|idx| format!("wallet-{idx}"))
-            .collect();
-        DiscoveryTaskOutput {
-            active_wallets,
-            cycle_ts: now,
-            eligible_wallets,
-            active_follow_wallets,
-            published: true,
-            runtime_mode: DiscoveryRuntimeMode::Degraded,
-            scoring_source: "raw_window_persisted_stream",
-            raw_window_cap_truncated,
-            cap_truncation_deactivation_guard_active: false,
-            cap_truncation_deactivation_guard_reason: None,
-            cap_truncation_deactivation_guard_started_at: None,
-            cap_truncation_floor_ts_utc: None,
-            cap_truncation_floor_signature: None,
-            persisted_stream_catch_up_requested: false,
-            persisted_stream_catch_up_pressure_override_requested: false,
-        }
-    }
-
-    fn live_like_degraded_published_universe_output(
-        now: DateTime<Utc>,
-        active_follow_wallets: usize,
-        eligible_wallets: usize,
-    ) -> DiscoveryTaskOutput {
-        let active_wallets = (0..active_follow_wallets)
-            .map(|idx| format!("wallet-{idx}"))
-            .collect();
-        DiscoveryTaskOutput {
-            active_wallets,
-            cycle_ts: now,
-            eligible_wallets,
-            active_follow_wallets,
-            published: false,
-            runtime_mode: DiscoveryRuntimeMode::Degraded,
-            scoring_source: "published_universe_raw_window_degraded",
-            raw_window_cap_truncated: false,
-            cap_truncation_deactivation_guard_active: false,
-            cap_truncation_deactivation_guard_reason: None,
-            cap_truncation_deactivation_guard_started_at: None,
-            cap_truncation_floor_ts_utc: None,
-            cap_truncation_floor_signature: None,
-            persisted_stream_catch_up_requested: false,
-            persisted_stream_catch_up_pressure_override_requested: false,
-        }
-    }
-
-    fn live_like_fail_closed_no_recent_published_universe_output(
-        now: DateTime<Utc>,
-    ) -> DiscoveryTaskOutput {
-        DiscoveryTaskOutput {
-            active_wallets: HashSet::new(),
-            cycle_ts: now,
-            eligible_wallets: 0,
-            active_follow_wallets: 0,
-            published: false,
-            runtime_mode: DiscoveryRuntimeMode::FailClosed,
-            scoring_source: "raw_window_incomplete_no_recent_published_universe",
-            raw_window_cap_truncated: false,
-            cap_truncation_deactivation_guard_active: false,
-            cap_truncation_deactivation_guard_reason: None,
-            cap_truncation_deactivation_guard_started_at: None,
-            cap_truncation_floor_ts_utc: None,
-            cap_truncation_floor_signature: None,
-            persisted_stream_catch_up_requested: false,
-            persisted_stream_catch_up_pressure_override_requested: false,
-        }
-    }
-
-    fn legacy_discovery_catch_up_block_reason_for_test(
-        discovery_output: &DiscoveryTaskOutput,
-        shadow_queue_full: bool,
-        observed_swap_writer_snapshot: &ObservedSwapWriterSnapshot,
-        ingestion_runtime_snapshot: Option<&IngestionRuntimeSnapshot>,
-    ) -> Option<DiscoveryCatchUpBlockReason> {
-        if !discovery_output.persisted_stream_catch_up_requested {
-            return None;
-        }
-        if shadow_queue_full {
-            return Some(DiscoveryCatchUpBlockReason::ShadowQueueFull);
-        }
-        if observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0 {
-            return Some(DiscoveryCatchUpBlockReason::WriterAggregateQueueDepth);
-        }
-        if observed_swap_writer_snapshot.aggregate_overflow_depth_batches > 0 {
-            return Some(DiscoveryCatchUpBlockReason::WriterAggregateOverflowDepth);
-        }
-        if observed_swap_writer_snapshot.journal_queue_depth_batches > 0 {
-            return Some(DiscoveryCatchUpBlockReason::WriterJournalQueueDepth);
-        }
-        if observed_swap_writer_snapshot.journal_overflow_depth_batches > 0 {
-            return Some(DiscoveryCatchUpBlockReason::WriterJournalOverflowDepth);
-        }
-        if discovery_catch_up_has_ingestion_pressure(ingestion_runtime_snapshot) {
-            return Some(DiscoveryCatchUpBlockReason::YellowstoneOutputQueueFill);
-        }
-        if discovery_output.persisted_stream_catch_up_pressure_override_requested {
-            return None;
-        }
-        if observed_swap_writer_snapshot.pending_requests
-            >= DISCOVERY_CATCH_UP_WRITER_PENDING_REQUESTS_THRESHOLD
-        {
-            return Some(DiscoveryCatchUpBlockReason::WriterPendingRequests);
-        }
-        None
     }
 
     fn test_swap(signature: &str) -> SwapEvent {
@@ -497,7 +357,6 @@
         runtime_wal_bytes_at_pause: u64,
         sqlite_write_retry_delta: u64,
         sqlite_busy_error_delta: u64,
-        aggregate_queue_depth_at_pause: usize,
         journal_queue_depth_at_pause: usize,
         dropped_noncritical_irrelevant_swaps: usize,
         ingestion_paused_by_pending_irrelevant_queue: bool,
@@ -507,7 +366,6 @@
     struct NoncriticalIrrelevantOutputPressureWaveSummary {
         baseline_rows_persisted: usize,
         writer_pending_requests_at_wave_peak: usize,
-        aggregate_queue_depth_at_wave_peak: usize,
         journal_queue_depth_at_wave_peak: usize,
         upstream_queue_depth_before_loop: usize,
         upstream_queue_depth_after_loop: usize,
@@ -520,7 +378,6 @@
     struct IrrelevantNotFollowedNoOwnershipSurfaceSummary {
         writer_pending_requests_peak: usize,
         first_backpressure_pending_requests: usize,
-        aggregate_queue_depth_at_peak: usize,
         journal_queue_depth_at_peak: usize,
         dropped_swaps: usize,
         accepted_swaps: usize,
@@ -538,7 +395,6 @@
         baseline_rows_persisted: usize,
         first_backpressure_pending_requests: usize,
         writer_pending_requests_peak: usize,
-        aggregate_queue_depth_at_peak: usize,
         journal_queue_depth_at_peak: usize,
         yellowstone_output_queue_depth: u64,
         yellowstone_output_queue_fill_ratio: f64,

@@ -123,7 +123,7 @@
             store.insert_shadow_lot("wallet-a", "token-quarantine", 10.0, 0.30, opened_ts)?;
         store.update_shadow_lot_risk_context(
             quarantined_lot_id,
-            copybot_storage::SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY,
+            copybot_storage_core::SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY,
         )?;
 
         assert!((store.shadow_open_notional_sol()? - 0.75).abs() < 1e-12);

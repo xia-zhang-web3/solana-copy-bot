@@ -453,12 +453,12 @@
     fn startup_follow_snapshot_uses_recent_published_universe() {
         let recent_active_wallets = HashSet::from(["wallet-a".to_string(), "wallet-b".to_string()]);
         let recent_truth = RuntimePublicationTruthResolution::Recent(
-            copybot_discovery::RuntimePublishedUniverseTruth {
-                runtime_mode: DiscoveryRuntimeMode::Healthy,
+            crate::discovery_runtime::RuntimePublishedUniverseTruth {
+                runtime_mode: copybot_storage_core::DiscoveryRuntimeMode::Healthy,
                 reason: "recent_publication".to_string(),
                 last_published_at: Utc::now(),
                 last_published_window_start: Utc::now(),
-                published_scoring_source: Some("raw_window".to_string()),
+                published_scoring_source: Some("discovery_v2_operational_window".to_string()),
                 published_wallet_ids: recent_active_wallets.iter().cloned().collect(),
             },
         );
@@ -471,81 +471,4 @@
         assert_eq!(recovered_active_wallets, 0);
         assert!(!shadow_strategy_fail_closed);
         assert_eq!(snapshot.active, recent_active_wallets);
-    }
-
-    #[test]
-    fn nonpublished_fail_closed_discovery_cycle_clears_startup_recent_follow_snapshot() {
-        let recent_active_wallets = HashSet::from([
-            "wallet-a".to_string(),
-            "wallet-b".to_string(),
-            "wallet-c".to_string(),
-        ]);
-        let recent_truth = RuntimePublicationTruthResolution::Recent(
-            copybot_discovery::RuntimePublishedUniverseTruth {
-                runtime_mode: DiscoveryRuntimeMode::Healthy,
-                reason: "recent_publication".to_string(),
-                last_published_at: Utc::now(),
-                last_published_window_start: Utc::now(),
-                published_scoring_source: Some("raw_window".to_string()),
-                published_wallet_ids: recent_active_wallets.iter().cloned().collect(),
-            },
-        );
-        let (initial_snapshot, _recovered_active_wallets, mut shadow_strategy_fail_closed) =
-            startup_follow_snapshot_from_publication_truth(HashSet::new(), Some(&recent_truth));
-        let mut follow_snapshot = Arc::new(initial_snapshot);
-        let mut open_shadow_lots = HashSet::from([("wallet-a".to_string(), "token-a".to_string())]);
-        let discovery_output =
-            live_like_fail_closed_no_recent_published_universe_output(Utc::now());
-
-        assert_eq!(follow_snapshot.active, recent_active_wallets);
-        assert!(!shadow_strategy_fail_closed);
-        assert!(!open_shadow_lots.is_empty());
-        assert!(
-            apply_fail_closed_runtime_follow_surface_if_needed(
-                &mut follow_snapshot,
-                &mut open_shadow_lots,
-                &mut shadow_strategy_fail_closed,
-                &discovery_output,
-            ),
-            "a non-published fail-closed discovery cycle must clear stale startup publication truth out of runtime memory"
-        );
-        assert!(shadow_strategy_fail_closed);
-        assert!(follow_snapshot.active.is_empty());
-        assert!(open_shadow_lots.is_empty());
-    }
-
-    #[test]
-    fn nonpublished_degraded_discovery_cycle_preserves_startup_recent_follow_snapshot() {
-        let recent_active_wallets = HashSet::from(["wallet-a".to_string(), "wallet-b".to_string()]);
-        let recent_truth = RuntimePublicationTruthResolution::Recent(
-            copybot_discovery::RuntimePublishedUniverseTruth {
-                runtime_mode: DiscoveryRuntimeMode::Healthy,
-                reason: "recent_publication".to_string(),
-                last_published_at: Utc::now(),
-                last_published_window_start: Utc::now(),
-                published_scoring_source: Some("raw_window".to_string()),
-                published_wallet_ids: recent_active_wallets.iter().cloned().collect(),
-            },
-        );
-        let (initial_snapshot, _recovered_active_wallets, mut shadow_strategy_fail_closed) =
-            startup_follow_snapshot_from_publication_truth(HashSet::new(), Some(&recent_truth));
-        let mut follow_snapshot = Arc::new(initial_snapshot);
-        let mut open_shadow_lots = HashSet::from([("wallet-a".to_string(), "token-a".to_string())]);
-        let discovery_output = live_like_degraded_published_universe_output(Utc::now(), 2, 2);
-
-        assert!(
-            !apply_fail_closed_runtime_follow_surface_if_needed(
-                &mut follow_snapshot,
-                &mut open_shadow_lots,
-                &mut shadow_strategy_fail_closed,
-                &discovery_output,
-            ),
-            "degraded unpublished runtime should preserve the still-recent published universe in memory"
-        );
-        assert!(!shadow_strategy_fail_closed);
-        assert_eq!(follow_snapshot.active, recent_active_wallets);
-        assert_eq!(
-            open_shadow_lots,
-            HashSet::from([("wallet-a".to_string(), "token-a".to_string())])
-        );
     }

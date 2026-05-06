@@ -10,16 +10,10 @@
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let writer = ObservedSwapWriter::start_for_test(
-            db_path
+        let writer = ObservedSwapWriter::start_for_test(db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
-                .to_string(),
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            false,
-            DiscoveryAggregateWriteConfig::default(),
-        )?;
+                .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
         runtime_store.checkpoint_wal_truncate()?;
 
         let scenario_now = DateTime::parse_from_rfc3339("2026-04-08T11:47:00Z")
@@ -227,7 +221,6 @@
             sqlite_busy_error_delta: contention_after
                 .busy_error_total
                 .saturating_sub(contention_before.busy_error_total),
-            aggregate_queue_depth_at_pause: snapshot_at_pause.aggregate_queue_depth_batches,
             journal_queue_depth_at_pause: snapshot_at_pause.journal_queue_depth_batches,
             dropped_irrelevant_swaps,
             ingestion_paused_by_pending_irrelevant_queue,
@@ -253,16 +246,10 @@
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let writer = ObservedSwapWriter::start_for_test(
-            db_path
+        let writer = ObservedSwapWriter::start_for_test(db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
-                .to_string(),
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            false,
-            DiscoveryAggregateWriteConfig::default(),
-        )?;
+                .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
         runtime_store.checkpoint_wal_truncate()?;
 
         let scenario_now = DateTime::parse_from_rfc3339("2026-04-08T11:47:00Z")
@@ -463,7 +450,6 @@
             sqlite_busy_error_delta: contention_after
                 .busy_error_total
                 .saturating_sub(contention_before.busy_error_total),
-            aggregate_queue_depth_at_pause: snapshot_at_pause.aggregate_queue_depth_batches,
             journal_queue_depth_at_pause: snapshot_at_pause.journal_queue_depth_batches,
             loaded_target_buy_mints: discovery_critical_target_buy_mints.len(),
             dropped_irrelevant_swaps,

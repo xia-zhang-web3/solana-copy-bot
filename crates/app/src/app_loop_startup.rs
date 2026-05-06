@@ -1,10 +1,8 @@
 struct AppLoopStartup {
     interval: time::Interval,
     risk_refresh_interval: time::Interval,
-    discovery_interval: time::Interval,
     shadow_interval: time::Interval,
     follow_snapshot: Arc<FollowSnapshot>,
-    follow_event_retention: Duration,
     open_shadow_lots: HashSet<(String, String)>,
     shadow_strategy_fail_closed: bool,
     stale_lot_max_hold_hours: u32,
@@ -23,14 +21,7 @@ struct AppLoopStartup {
         DiscoveryCriticalTargetBuyMintsBackpressureRefreshState,
     zero_universe_empty_target_noncritical_best_effort:
         ZeroUniverseEmptyTargetNoncriticalBestEffortState,
-    discovery_handle: Option<JoinHandle<Result<DiscoveryTaskOutput>>>,
-    discovery_running_trigger: Option<&'static str>,
-    discovery_recent_raw_journal_abort_reason: Option<&'static str>,
-    discovery_runtime_memory_abort_reason: Option<&'static str>,
-    discovery_catch_up_pending: bool,
     shadow_scheduler: ShadowScheduler,
-    discovery_catch_up_recent_raw_journal_defer_retry_at: Option<StdInstant>,
-    discovery_recent_raw_journal_safety_settle: DiscoveryRecentRawJournalSafetySettleState,
     observed_swap_writer: ObservedSwapWriter,
     latest_ingestion_runtime_snapshot: Arc<Mutex<Option<IngestionRuntimeSnapshot>>>,
     observed_swap_retention_runtime_health: ObservedSwapRetentionRuntimeHealthHandle,
@@ -64,12 +55,8 @@ fn initialize_app_loop_startup(
     discovery_fetch_refresh_seconds: u64,
     discovery_refresh_seconds: u64,
     observed_swaps_retention_days: u32,
-    discovery_scoring_retention_days: u32,
-    discovery_scoring_writes_enabled: bool,
-    discovery_aggregate_write_config: DiscoveryAggregateWriteConfig,
     ingestion_source: String,
     shadow_refresh_seconds: u64,
-    shadow_max_signal_lag_seconds: u64,
     pause_new_trades_on_outage: bool,
 ) -> Result<AppLoopStartup> {
     info!(
@@ -85,12 +72,9 @@ fn initialize_app_loop_startup(
     let mut risk_refresh_interval = time::interval(Duration::from_secs(
         RISK_DB_REFRESH_MIN_SECONDS.max(1) as u64,
     ));
-    let mut discovery_interval =
-        time::interval(Duration::from_secs(discovery_fetch_refresh_seconds.max(1)));
     let mut shadow_interval = time::interval(Duration::from_secs(shadow_refresh_seconds.max(10)));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     risk_refresh_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    discovery_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     shadow_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let initial_active_wallets = store
@@ -98,7 +82,7 @@ fn initialize_app_loop_startup(
         .context("failed to load active follow wallets")?;
     let startup_gate_now = Utc::now();
     let runtime_publication_truth =
-        startup_runtime_publication_truth(discovery, store, startup_gate_now)
+        startup_runtime_publication_truth(discovery, sqlite_path, startup_gate_now, false)
             .context("failed to load startup published follow universe")?;
     let (initial_follow_snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
         startup_follow_snapshot_from_publication_truth(
@@ -106,8 +90,6 @@ fn initialize_app_loop_startup(
             runtime_publication_truth.as_ref(),
         );
     let follow_snapshot = Arc::new(initial_follow_snapshot);
-    let follow_event_retention =
-        follow_event_retention_duration(shadow_max_signal_lag_seconds, discovery_refresh_seconds);
     let open_shadow_lots = if shadow_strategy_fail_closed {
         HashSet::new()
     } else {
@@ -141,15 +123,7 @@ fn initialize_app_loop_startup(
     )?;
     discovery_critical_target_buy_mints_backpressure_refresh_state
         .note_refresh_attempt(StdInstant::now());
-    let discovery_handle = None;
-    let discovery_running_trigger = None;
-    let discovery_recent_raw_journal_abort_reason = None;
-    let discovery_runtime_memory_abort_reason = None;
-    let discovery_catch_up_pending = false;
     let shadow_scheduler = ShadowScheduler::new();
-    let discovery_catch_up_recent_raw_journal_defer_retry_at = None;
-    let discovery_recent_raw_journal_safety_settle =
-        DiscoveryRecentRawJournalSafetySettleState::default();
 
     let recent_raw_journal_writer_config = ObservedSwapRecentRawJournalConfig {
         sqlite_path: recent_raw_journal_config.path.clone(),
@@ -171,8 +145,6 @@ fn initialize_app_loop_startup(
     };
     let observed_swap_writer = ObservedSwapWriter::start_with_recent_raw_journal(
         sqlite_path.to_owned(),
-        discovery_scoring_writes_enabled,
-        discovery_aggregate_write_config,
         Some(recent_raw_journal_writer_config),
     )
     .context("failed to start observed swap writer")?;
@@ -182,11 +154,8 @@ fn initialize_app_loop_startup(
         observed_swap_writer.health_handle(),
         Arc::clone(&latest_ingestion_runtime_snapshot),
     );
-    let observed_swap_retention_config = ObservedSwapRetentionConfig::production(
-        observed_swaps_retention_days,
-        discovery_scoring_retention_days,
-        discovery_scoring_writes_enabled,
-    );
+    let observed_swap_retention_config =
+        ObservedSwapRetentionConfig::production(observed_swaps_retention_days);
     let observed_swap_retention_sweep_interval =
         Duration::from_secs(OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL.as_secs().max(1));
     let app_started_at = StdInstant::now();
@@ -218,10 +187,8 @@ fn initialize_app_loop_startup(
     Ok(AppLoopStartup {
         interval,
         risk_refresh_interval,
-        discovery_interval,
         shadow_interval,
         follow_snapshot,
-        follow_event_retention,
         open_shadow_lots,
         shadow_strategy_fail_closed,
         stale_lot_max_hold_hours,
@@ -239,14 +206,7 @@ fn initialize_app_loop_startup(
         discovery_critical_target_buy_mints_backpressure_refresh_state,
         zero_universe_empty_target_noncritical_best_effort:
             ZeroUniverseEmptyTargetNoncriticalBestEffortState::default(),
-        discovery_handle,
-        discovery_running_trigger,
-        discovery_recent_raw_journal_abort_reason,
-        discovery_runtime_memory_abort_reason,
-        discovery_catch_up_pending,
         shadow_scheduler,
-        discovery_catch_up_recent_raw_journal_defer_retry_at,
-        discovery_recent_raw_journal_safety_settle,
         observed_swap_writer,
         latest_ingestion_runtime_snapshot,
         observed_swap_retention_runtime_health,

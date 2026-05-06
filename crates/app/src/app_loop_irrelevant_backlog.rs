@@ -95,8 +95,6 @@ pub(super) async fn retry_pending_irrelevant_swaps(
                             pending_irrelevant_swaps.len().saturating_add(1),
                         observed_swap_writer_pending_requests =
                             writer_snapshot.pending_requests,
-                        observed_swap_writer_aggregate_queue_depth_batches =
-                            writer_snapshot.aggregate_queue_depth_batches,
                         yellowstone_output_queue_depth = ingestion_snapshot
                             .map(|snapshot| snapshot.yellowstone_output_queue_depth)
                             .unwrap_or(0),

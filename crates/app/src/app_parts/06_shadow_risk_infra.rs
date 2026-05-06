@@ -27,7 +27,7 @@ impl ShadowRiskGuard {
 
         let window_start =
             now - chrono::Duration::minutes(self.config.shadow_infra_window_minutes.max(1) as i64);
-        let has_full_window_coverage = self
+        let has_complete_window_coverage = self
             .infra_samples
             .front()
             .map(|sample| sample.ts_utc <= window_start)
@@ -60,7 +60,7 @@ impl ShadowRiskGuard {
         const INFRA_PARSER_STALL_MIN_TX_UPDATES: u64 = 25;
         const INFRA_PARSER_STALL_ERROR_RATIO_THRESHOLD: f64 = 0.95;
 
-        if has_full_window_coverage
+        if has_complete_window_coverage
             && delta_enqueued == 0
             && delta_replaced == 0
             && delta_grpc_transaction_updates_total == 0
@@ -79,7 +79,7 @@ impl ShadowRiskGuard {
             });
         }
 
-        if has_full_window_coverage
+        if has_complete_window_coverage
             && delta_enqueued == 0
             && delta_grpc_transaction_updates_total >= INFRA_PARSER_STALL_MIN_TX_UPDATES
         {

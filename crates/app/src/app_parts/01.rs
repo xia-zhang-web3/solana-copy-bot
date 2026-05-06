@@ -62,26 +62,6 @@ fn persist_shadow_risk_fail_closed_event_or_warn(
     )
 }
 
-fn discovery_scoring_source_uses_raw_window_cap_truncation_context(scoring_source: &str) -> bool {
-    matches!(
-        scoring_source,
-        "raw_window"
-            | "raw_window_empty"
-            | "raw_window_persisted_stream"
-            | "persisted_wallet_metrics_truncated_warm_restore"
-            | "persisted_wallet_metrics_truncated_warm_restore_empty"
-    )
-}
-
-fn discovery_output_has_raw_window_cap_truncation_context(
-    discovery_output: &DiscoveryTaskOutput,
-) -> bool {
-    discovery_output.raw_window_cap_truncated
-        && discovery_scoring_source_uses_raw_window_cap_truncation_context(
-            discovery_output.scoring_source,
-        )
-}
-
 fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();

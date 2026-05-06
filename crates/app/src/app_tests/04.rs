@@ -10,16 +10,10 @@
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let writer = ObservedSwapWriter::start_for_test(
-            db_path
+        let writer = ObservedSwapWriter::start_for_test(db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
-                .to_string(),
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            false,
-            DiscoveryAggregateWriteConfig::default(),
-        )?;
+                .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
         runtime_store.checkpoint_wal_truncate()?;
 
         let scenario_now = DateTime::parse_from_rfc3339("2026-04-08T18:09:27Z")
@@ -225,7 +219,6 @@
         Ok(DiscoveryCriticalPendingBacklogOutputSaturationSummary {
             baseline_rows_persisted,
             writer_pending_requests_at_plateau,
-            aggregate_queue_depth_at_plateau: snapshot_at_plateau.aggregate_queue_depth_batches,
             journal_queue_depth_at_plateau: snapshot_at_plateau.journal_queue_depth_batches,
             upstream_queue_depth_before_loop,
             upstream_queue_depth_after_loop: upstream.len(),
@@ -252,16 +245,10 @@
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let writer = ObservedSwapWriter::start_for_test(
-            db_path
+        let writer = ObservedSwapWriter::start_for_test(db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
-                .to_string(),
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            false,
-            DiscoveryAggregateWriteConfig::default(),
-        )?;
+                .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
         runtime_store.checkpoint_wal_truncate()?;
 
         let scenario_now = DateTime::parse_from_rfc3339("2026-04-08T18:56:42Z")
@@ -479,7 +466,6 @@
             DiscoveryCriticalBackpressureRefreshOutputSaturationSummary {
                 baseline_rows_persisted,
                 writer_pending_requests_at_plateau,
-                aggregate_queue_depth_at_plateau: snapshot_at_plateau.aggregate_queue_depth_batches,
                 journal_queue_depth_at_plateau: snapshot_at_plateau.journal_queue_depth_batches,
                 upstream_queue_depth_before_loop,
                 upstream_queue_depth_after_loop: upstream.len(),

@@ -358,7 +358,6 @@
             "the exact incident class needs a still-small upstream queue when the local queue first forces ingestion pause, matching the live 49-depth plateau before later upstream saturation: {summary:?}"
         );
         assert_eq!(summary.upstream_queue_depth_after_escalation, 2_048);
-        assert_eq!(summary.aggregate_queue_depth_at_pause, 0);
         assert_eq!(summary.journal_queue_depth_at_pause, 0);
         assert!(summary.runtime_wal_bytes_at_pause < 16 * 1024 * 1024);
         assert_eq!(summary.sqlite_write_retry_delta, 0);
@@ -403,7 +402,6 @@
         assert_eq!(new.pending_irrelevant_queue_depth_at_pause, 0);
         assert!(!new.ingestion_paused_by_pending_irrelevant_queue);
         assert_eq!(new.upstream_queue_depth_after_escalation, 0);
-        assert_eq!(new.aggregate_queue_depth_at_pause, 0);
         assert_eq!(new.journal_queue_depth_at_pause, 0);
         assert_eq!(new.sqlite_write_retry_delta, 0);
         assert_eq!(new.sqlite_busy_error_delta, 0);
@@ -432,13 +430,7 @@
                 .enable_all()
                 .build()?;
             runtime.block_on(async move {
-                let writer = ObservedSwapWriter::start_for_test(
-                    sqlite_path,
-                    2,
-                    1,
-                    false,
-                    DiscoveryAggregateWriteConfig::default(),
-                )?;
+                let writer = ObservedSwapWriter::start_for_test(sqlite_path, 2, 1)?;
                 let filler_swap = test_swap("sig-discovery-critical-filler");
                 let critical_swap = test_swap("sig-discovery-critical-target");
                 let mut recent_signatures = HashSet::new();

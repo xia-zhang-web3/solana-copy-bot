@@ -14,14 +14,6 @@
             "new side must preserve the same 128 raw-writer plateau so only the backpressure refresh cadence changes: new={new:?}"
         );
         assert_eq!(
-            old.aggregate_queue_depth_at_plateau, 0,
-            "aggregate queue must remain zero on the old side: old={old:?}"
-        );
-        assert_eq!(
-            new.aggregate_queue_depth_at_plateau, 0,
-            "aggregate queue must remain zero on the new side: new={new:?}"
-        );
-        assert_eq!(
             old.journal_queue_depth_at_plateau, 0,
             "journal queue must remain zero on the old side: old={old:?}"
         );
@@ -65,10 +57,6 @@
             summary.writer_pending_requests_at_plateau,
             TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
             "the retry-loop repro must start only after the earlier raw-writer fix has already reduced pending requests to 128: {summary:?}"
-        );
-        assert_eq!(
-            summary.aggregate_queue_depth_at_plateau, 0,
-            "aggregate queue must stay zero in this retry-loop repro so aggregate theory is ruled out again: {summary:?}"
         );
         assert_eq!(
             summary.journal_queue_depth_at_plateau, 0,
@@ -124,14 +112,6 @@
             new.writer_pending_requests_at_plateau,
             TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
             "new side must preserve the same 128 raw-writer plateau so only the retry-loop refresh cadence changes: new={new:?}"
-        );
-        assert_eq!(
-            old.aggregate_queue_depth_at_plateau, 0,
-            "aggregate queue must remain zero on the old side: old={old:?}"
-        );
-        assert_eq!(
-            new.aggregate_queue_depth_at_plateau, 0,
-            "aggregate queue must remain zero on the new side: new={new:?}"
         );
         assert_eq!(
             old.journal_queue_depth_at_plateau, 0,
@@ -200,10 +180,6 @@
             "once the app pauses on the full local discovery-critical backlog, the modeled upstream queue should be able to reach its own 2048 capacity just like live: {summary:?}"
         );
         assert_eq!(
-            summary.aggregate_queue_depth_at_pause, 0,
-            "aggregate queue must stay zero in this repro so aggregate theory is ruled out for the exact class under test: {summary:?}"
-        );
-        assert_eq!(
             summary.journal_queue_depth_at_pause, 0,
             "recent_raw journal queue must stay zero in this repro so journal theory is ruled out for the exact class under test: {summary:?}"
         );
@@ -265,10 +241,6 @@
         assert_eq!(
             new.upstream_queue_depth_after_escalation, 0,
             "without the local self-pause, the same workload should not re-escalate into a 2048 upstream queue: old={old:?} new={new:?}"
-        );
-        assert_eq!(
-            new.aggregate_queue_depth_at_pause, 0,
-            "the fix should stay on the raw-writer request-class ownership path and not depend on aggregate queue changes: old={old:?} new={new:?}"
         );
         assert_eq!(
             new.journal_queue_depth_at_pause, 0,
@@ -333,10 +305,6 @@
             "the exact incident class needs a still-small upstream queue when local pending_irrelevant first reaches capacity, matching the clean-start live plateau shape before later full escalation: {summary:?}"
         );
         assert_eq!(
-            summary.aggregate_queue_depth_at_pause, 0,
-            "aggregate queue backlog must stay inactive in this repro so aggregate theory is ruled out for this exact class: {summary:?}"
-        );
-        assert_eq!(
             summary.journal_queue_depth_at_pause, 0,
             "recent_raw journal backlog must stay inactive in this repro so journal theory is ruled out for this exact class: {summary:?}"
         );
@@ -383,7 +351,6 @@
         );
         assert!(!summary.first_backpressure_discovery_critical);
         assert_eq!(summary.upstream_queue_depth_at_first_backpressure, 0);
-        assert_eq!(summary.aggregate_queue_depth_at_pause, 0);
         assert_eq!(summary.journal_queue_depth_at_pause, 0);
         assert_eq!(summary.sqlite_write_retry_delta, 0);
         assert_eq!(summary.sqlite_busy_error_delta, 0);
@@ -435,10 +402,6 @@
         assert_eq!(
             new.upstream_queue_depth_after_escalation, 0,
             "the same reduced workload should no longer re-escalate into a saturated upstream queue once non-critical irrelevant swaps can only consume one raw batch before being dropped: old={old:?} new={new:?}"
-        );
-        assert_eq!(
-            new.aggregate_queue_depth_at_pause, 0,
-            "the fix should stay on the raw-writer request-budget path and not depend on aggregate backlog changes: old={old:?} new={new:?}"
         );
         assert_eq!(
             new.journal_queue_depth_at_pause, 0,

@@ -66,19 +66,6 @@ fn sqlite_maintenance_block_reason(
         ));
     }
 
-    if observed_swap_writer_snapshot.aggregate_queue_depth_batches > 0 {
-        return Some(format!(
-            "aggregate_queue_depth_batches={}",
-            observed_swap_writer_snapshot.aggregate_queue_depth_batches
-        ));
-    }
-    if observed_swap_writer_snapshot.aggregate_overflow_depth_batches > 0 {
-        return Some(format!(
-            "aggregate_overflow_depth_batches={}",
-            observed_swap_writer_snapshot.aggregate_overflow_depth_batches
-        ));
-    }
-
     if observed_swap_writer_snapshot.journal_queue_depth_batches > 0 {
         return Some(format!(
             "journal_queue_depth_batches={}",
@@ -128,10 +115,6 @@ fn sqlite_maintenance_block_reason_key(reason: &str) -> &'static str {
         "startup_grace_remaining_ms"
     } else if reason.starts_with("writer_pending_requests=") {
         "writer_pending_requests"
-    } else if reason.starts_with("aggregate_queue_depth_batches=") {
-        "aggregate_queue_depth_batches"
-    } else if reason.starts_with("aggregate_overflow_depth_batches=") {
-        "aggregate_overflow_depth_batches"
     } else if reason.starts_with("journal_queue_depth_batches=") {
         "journal_queue_depth_batches"
     } else if reason.starts_with("journal_overflow_depth_batches=") {
@@ -153,6 +136,7 @@ fn alert_delivery_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
+#[cfg(test)]
 fn discovery_task_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }

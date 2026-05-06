@@ -37,14 +37,6 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
-    fn note_discovery_scoring_completed(&self, duration_ms: u64) {
-        self.note_phase_sample(
-            &self.discovery_scoring_ms_samples,
-            &self.last_discovery_scoring_ms_p95,
-            duration_ms,
-        );
-    }
-
     fn note_journal_enqueue_wait_completed(&self, duration_ms: u64) {
         self.note_phase_sample(
             &self.journal_enqueue_wait_ms_samples,
@@ -82,32 +74,6 @@ impl ObservedSwapWriterTelemetry {
             &self.worker_busy_ms_samples,
             &self.last_worker_busy_ms_p95,
             duration_ms,
-        );
-    }
-
-    fn note_aggregate_queue_enqueued(&self) {
-        self.aggregate_queue_depth_batches
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn note_aggregate_queue_dequeued(&self) {
-        let _ = self.aggregate_queue_depth_batches.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some(current.saturating_sub(1)),
-        );
-    }
-
-    fn note_aggregate_overflow_enqueued(&self) {
-        self.aggregate_overflow_depth_batches
-            .fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn note_aggregate_overflow_dequeued(&self) {
-        let _ = self.aggregate_overflow_depth_batches.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| Some(current.saturating_sub(1)),
         );
     }
 
@@ -179,19 +145,4 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
-    fn set_aggregate_gap_active(&self, active: bool) {
-        self.aggregate_gap_active.store(active, Ordering::Relaxed);
-    }
-
-    fn aggregate_gap_active(&self) -> bool {
-        self.aggregate_gap_active.load(Ordering::Relaxed)
-    }
-
-    fn set_aggregate_worker_busy(&self, busy: bool) {
-        self.aggregate_worker_busy.store(busy, Ordering::Relaxed);
-    }
-
-    fn aggregate_worker_busy(&self) -> bool {
-        self.aggregate_worker_busy.load(Ordering::Relaxed)
-    }
 }

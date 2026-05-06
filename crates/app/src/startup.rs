@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
-use copybot_storage::{
-    report_startup_step_progress, SqliteStartupPolicy, SqliteStore, StartupStepOutcome,
-    StartupStepProgress, StartupStepProgressReporter, StartupStepRuntimePolicy,
-    StartupStepTimeoutBehavior, SQLITE_DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
-    SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES,
+use copybot_storage::SqliteStore;
+use copybot_storage_core::{
+    report_startup_step_progress, SqliteStartupPolicy, StartupStepOutcome, StartupStepProgress,
+    StartupStepProgressReporter, StartupStepRuntimePolicy, StartupStepTimeoutBehavior,
+    SQLITE_DEFAULT_WAL_AUTOCHECKPOINT_PAGES, SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES,
 };
 use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant as StdInstant};

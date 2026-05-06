@@ -2,7 +2,6 @@ pub(crate) struct ObservedSwapWriter {
     sender: mpsc::Sender<ObservedSwapWriteRequest>,
     normal_try_enqueue_soft_limit: usize,
     raw_worker: Option<thread::JoinHandle<Result<()>>>,
-    aggregate_worker: Option<thread::JoinHandle<Result<()>>>,
     journal_worker: Option<thread::JoinHandle<Result<()>>>,
     telemetry: Arc<ObservedSwapWriterTelemetry>,
     terminal_failure_message: Arc<Mutex<Option<String>>>,
@@ -37,32 +36,17 @@ impl ObservedSwapWriter {
     }
 
     #[cfg(test)]
-    pub(crate) fn start(
-        sqlite_path: String,
-        aggregate_writes_enabled: bool,
-        aggregate_write_config: DiscoveryAggregateWriteConfig,
-    ) -> Result<Self> {
-        Self::start_with_recent_raw_journal(
-            sqlite_path,
-            aggregate_writes_enabled,
-            aggregate_write_config,
-            None,
-        )
+    pub(crate) fn start(sqlite_path: String) -> Result<Self> {
+        Self::start_with_recent_raw_journal(sqlite_path, None)
     }
 
     pub(crate) fn start_with_recent_raw_journal(
         sqlite_path: String,
-        aggregate_writes_enabled: bool,
-        aggregate_write_config: DiscoveryAggregateWriteConfig,
         recent_raw_journal: Option<ObservedSwapRecentRawJournalConfig>,
     ) -> Result<Self> {
         Self::start_with_config(
             sqlite_path,
-            ObservedSwapWriterConfig::production(
-                aggregate_writes_enabled,
-                aggregate_write_config,
-                recent_raw_journal,
-            ),
+            ObservedSwapWriterConfig::production(recent_raw_journal),
         )
     }
 }

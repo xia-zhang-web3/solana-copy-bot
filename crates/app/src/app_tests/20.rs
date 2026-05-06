@@ -71,16 +71,10 @@
                 .enable_all()
                 .build()?;
             runtime.block_on(async move {
-                let writer = ObservedSwapWriter::start_for_test(
-                    db_path_for_runtime
+                let writer = ObservedSwapWriter::start_for_test(db_path_for_runtime
                         .to_str()
                         .context("sqlite path must be valid utf-8")?
-                        .to_string(),
-                    2,
-                    1,
-                    false,
-                    DiscoveryAggregateWriteConfig::default(),
-                )?;
+                        .to_string(), 2, 1)?;
                 let filler_swap = test_swap("sig-discovery-critical-sustained-filler");
                 let critical_swaps = (0..4)
                     .map(|idx| test_swap(&format!("sig-discovery-critical-sustained-{idx}")))
@@ -238,16 +232,10 @@
                 .enable_all()
                 .build()?;
             runtime.block_on(async move {
-                let writer = ObservedSwapWriter::start_for_test(
-                    db_path_for_runtime
+                let writer = ObservedSwapWriter::start_for_test(db_path_for_runtime
                         .to_str()
                         .context("sqlite path must be valid utf-8")?
-                        .to_string(),
-                    1,
-                    1,
-                    false,
-                    DiscoveryAggregateWriteConfig::default(),
-                )?;
+                        .to_string(), 1, 1)?;
                 let first_swap = test_swap("sig-irrelevant-backpressure-a");
                 let second_swap = test_swap("sig-irrelevant-backpressure-b");
                 let third_swap = test_swap("sig-irrelevant-backpressure-c");
@@ -417,10 +405,6 @@
             "the remaining live class starts only after the earlier raw-writer fix has already reduced pending requests to a single non-critical batch plateau of 128: {summary:?}"
         );
         assert_eq!(
-            summary.aggregate_queue_depth_at_plateau, 0,
-            "aggregate queue must stay zero in this repro so aggregate theory is ruled out for the remaining class: {summary:?}"
-        );
-        assert_eq!(
             summary.journal_queue_depth_at_plateau, 0,
             "recent_raw journal queue must stay zero in this repro so journal theory is ruled out for the remaining class: {summary:?}"
         );
@@ -465,14 +449,6 @@
             "the new side of the A/B must preserve the same raw-writer antecedent so the only changed factor is the local pending-backlog ownership rule: new={new:?}"
         );
         assert_eq!(
-            old.aggregate_queue_depth_at_plateau, 0,
-            "aggregate queue must remain zero on the old side as well: old={old:?}"
-        );
-        assert_eq!(
-            new.aggregate_queue_depth_at_plateau, 0,
-            "aggregate queue must remain zero on the new side as well: new={new:?}"
-        );
-        assert_eq!(
             old.journal_queue_depth_at_plateau, 0,
             "journal queue must remain zero on the old side as well: old={old:?}"
         );
@@ -515,10 +491,6 @@
             summary.writer_pending_requests_at_plateau,
             TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
             "the remaining class must start only after the earlier raw-writer fix has already reduced pending requests to 128: {summary:?}"
-        );
-        assert_eq!(
-            summary.aggregate_queue_depth_at_plateau, 0,
-            "aggregate queue must stay zero in this repro so aggregate theory is ruled out again: {summary:?}"
         );
         assert_eq!(
             summary.journal_queue_depth_at_plateau, 0,

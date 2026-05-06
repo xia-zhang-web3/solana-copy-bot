@@ -55,10 +55,6 @@
             "branch diagnostics should classify the same queue state differently without mutating writer state"
         );
         assert_eq!(
-            critical.writer_aggregate_queue_depth_batches,
-            noncritical.writer_aggregate_queue_depth_batches
-        );
-        assert_eq!(
             critical.yellowstone_output_queue_depth,
             noncritical.yellowstone_output_queue_depth
         );
@@ -114,7 +110,6 @@
             zero_universe.writer_pending_requests,
             TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE
         );
-        assert_eq!(zero_universe.writer_aggregate_queue_depth_batches, 0);
         assert_eq!(zero_universe.yellowstone_output_queue_depth, 0);
 
         let mut followed_snapshot = FollowSnapshot::default();
@@ -147,16 +142,10 @@
             .enable_all()
             .build()?;
         runtime.block_on(async {
-            let writer = ObservedSwapWriter::start_for_test(
-                db_path
+            let writer = ObservedSwapWriter::start_for_test(db_path
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
-                    .to_string(),
-                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-                false,
-                DiscoveryAggregateWriteConfig::default(),
-            )?;
+                    .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
             let swap = test_swap("sig-follow-rejected-empty-universe-raw");
             let follow_snapshot = FollowSnapshot::default();
             let open_shadow_lots = HashSet::new();
@@ -252,7 +241,6 @@
             summary.writer_pending_requests_peak > 0,
             "follow-rejected swaps must be observable at the raw writer instead of starving the Stage 3 source frontier"
         );
-        assert_eq!(summary.aggregate_queue_depth_at_peak, 0);
         assert_eq!(summary.journal_queue_depth_at_peak, 0);
         assert!(
             summary.accepted_swaps > 0,
@@ -322,8 +310,6 @@
             new.first_backpressure_pending_requests, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
             "enabling the new drop contract must not intercept the unclassified branch"
         );
-        assert_eq!(old.aggregate_queue_depth_at_peak, 0);
-        assert_eq!(new.aggregate_queue_depth_at_peak, 0);
         assert!(old.completed_waves > 0);
         assert!(new.completed_waves > 0);
         Ok(())
@@ -338,16 +324,10 @@
             .enable_all()
             .build()?;
         runtime.block_on(async {
-            let writer = ObservedSwapWriter::start_for_test(
-                db_path
+            let writer = ObservedSwapWriter::start_for_test(db_path
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
-                    .to_string(),
-                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-                false,
-                DiscoveryAggregateWriteConfig::default(),
-            )?;
+                    .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
             let swap = test_swap("sig-not-followed-target-surface");
             let follow_snapshot = FollowSnapshot::default();
             let open_shadow_lots = HashSet::new();
@@ -405,16 +385,10 @@
             .enable_all()
             .build()?;
         runtime.block_on(async {
-            let writer = ObservedSwapWriter::start_for_test(
-                db_path
+            let writer = ObservedSwapWriter::start_for_test(db_path
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
-                    .to_string(),
-                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-                false,
-                DiscoveryAggregateWriteConfig::default(),
-            )?;
+                    .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
             let swap = test_swap("sig-followed-relevant-write-unchanged");
             let mut follow_snapshot = FollowSnapshot::default();
             follow_snapshot.active.insert(swap.wallet.clone());

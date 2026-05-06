@@ -44,19 +44,10 @@ fn send_observed_swap_write_error_replies(
 }
 
 fn flush_observed_swap_writer_downstream_overflow_on_shutdown(
-    aggregate_sender: Option<&std_mpsc::SyncSender<DiscoveryAggregateWriteRequest>>,
     journal_sender: Option<&std_mpsc::SyncSender<RecentRawJournalWriteRequest>>,
-    aggregate_overflow: &mut VecDeque<DiscoveryAggregateWriteRequest>,
     journal_overflow: &mut VecDeque<RecentRawJournalWriteRequest>,
     telemetry: &ObservedSwapWriterTelemetry,
 ) -> Result<()> {
-    if let Some(aggregate_sender) = aggregate_sender {
-        flush_discovery_aggregate_overflow_blocking(
-            aggregate_sender,
-            aggregate_overflow,
-            telemetry,
-        )?;
-    }
     if let Some(journal_sender) = journal_sender {
         flush_recent_raw_journal_overflow_blocking(journal_sender, journal_overflow, telemetry)?;
     }

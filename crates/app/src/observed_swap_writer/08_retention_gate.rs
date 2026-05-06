@@ -14,12 +14,6 @@ fn observed_swap_retention_should_stop(
     if writer_snapshot.pending_requests > 0 {
         return Some("runtime_pressure");
     }
-    if writer_snapshot.aggregate_queue_depth_batches > 0 {
-        return Some("runtime_pressure");
-    }
-    if writer_snapshot.aggregate_overflow_depth_batches > 0 {
-        return Some("runtime_pressure");
-    }
     if writer_snapshot.journal_queue_depth_batches > 0 {
         return Some("runtime_pressure");
     }
@@ -49,32 +43,4 @@ fn observed_swap_retention_nominal_cutoff(
     config: ObservedSwapRetentionConfig,
 ) -> chrono::DateTime<Utc> {
     now - ChronoDuration::days(config.retention_days.max(1) as i64)
-}
-
-fn resolve_observed_swap_retention_effective_cutoff<F>(
-    config: ObservedSwapRetentionConfig,
-    now: chrono::DateTime<Utc>,
-    load_protected_since: F,
-) -> Result<chrono::DateTime<Utc>>
-where
-    F: FnOnce(chrono::DateTime<Utc>) -> Result<Option<chrono::DateTime<Utc>>>,
-{
-    let nominal_cutoff = observed_swap_retention_nominal_cutoff(now, config);
-    match load_protected_since(now) {
-        Ok(Some(protected_since)) => Ok(nominal_cutoff.min(protected_since)),
-        Ok(None) => Ok(nominal_cutoff),
-        Err(error) => {
-            if observed_swap_retention_protection_load_error_requires_abort(&error) {
-                return Err(error).context(
-                    "observed swap retention source protection lookup failed with fatal sqlite I/O",
-                );
-            }
-            warn!(
-                error = %error,
-                retention_days = config.retention_days,
-                "failed loading discovery scoring backfill source protection; using nominal observed swap retention cutoff"
-            );
-            Ok(nominal_cutoff)
-        }
-    }
 }

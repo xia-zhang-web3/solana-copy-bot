@@ -4,18 +4,10 @@ impl ObservedSwapWriter {
         sqlite_path: String,
         channel_capacity: usize,
         batch_max_size: usize,
-        aggregate_writes_enabled: bool,
-        aggregate_write_config: DiscoveryAggregateWriteConfig,
     ) -> Result<Self> {
         Self::start_with_config(
             sqlite_path,
-            ObservedSwapWriterConfig::for_test(
-                channel_capacity,
-                batch_max_size,
-                aggregate_writes_enabled,
-                aggregate_write_config,
-                None,
-            ),
+            ObservedSwapWriterConfig::for_test(channel_capacity, batch_max_size, None),
         )
     }
 
@@ -24,20 +16,12 @@ impl ObservedSwapWriter {
         sqlite_path: String,
         channel_capacity: usize,
         batch_max_size: usize,
-        aggregate_writes_enabled: bool,
-        aggregate_write_config: DiscoveryAggregateWriteConfig,
         normal_try_enqueue_soft_limit: usize,
     ) -> Result<Self> {
         Self::start_with_config(
             sqlite_path,
-            ObservedSwapWriterConfig::for_test(
-                channel_capacity,
-                batch_max_size,
-                aggregate_writes_enabled,
-                aggregate_write_config,
-                None,
-            )
-            .with_normal_try_enqueue_soft_limit(normal_try_enqueue_soft_limit),
+            ObservedSwapWriterConfig::for_test(channel_capacity, batch_max_size, None)
+                .with_normal_try_enqueue_soft_limit(normal_try_enqueue_soft_limit),
         )
     }
 

@@ -23,7 +23,6 @@ fn run_retention_wal_checkpoint(
     nominal_cutoff: chrono::DateTime<Utc>,
     effective_cutoff: chrono::DateTime<Utc>,
     raw_delete_summary: SqliteBatchedDeleteSummary,
-    scoring_delete_summary: SqliteBatchedDeleteSummary,
 ) -> Result<ObservedSwapRetentionCheckpointSummary> {
     match store.checkpoint_wal_passive() {
         Ok((busy, log_frames, checkpointed_frames)) => {
@@ -33,16 +32,13 @@ fn run_retention_wal_checkpoint(
                 log_frames,
                 checkpointed_frames,
             };
-            if raw_delete_summary.deleted_rows > 0 || scoring_delete_summary.deleted_rows > 0 {
+            if raw_delete_summary.deleted_rows > 0 {
                 info!(
                     retention_days = config.retention_days,
-                    aggregate_retention_days = config.aggregate_retention_days,
                     nominal_observed_swap_cutoff = %nominal_cutoff,
                     effective_observed_swap_cutoff = %effective_cutoff,
                     deleted_observed_swap_rows = raw_delete_summary.deleted_rows,
                     observed_swap_delete_batches = raw_delete_summary.batches,
-                    deleted_scoring_rows = scoring_delete_summary.deleted_rows,
-                    discovery_scoring_delete_batches = scoring_delete_summary.batches,
                     wal_checkpoint_mode = checkpoint_summary.mode,
                     wal_checkpoint_busy = busy,
                     wal_log_frames = log_frames,
@@ -52,11 +48,9 @@ fn run_retention_wal_checkpoint(
             } else {
                 info!(
                     retention_days = config.retention_days,
-                    aggregate_retention_days = config.aggregate_retention_days,
                     nominal_observed_swap_cutoff = %nominal_cutoff,
                     effective_observed_swap_cutoff = %effective_cutoff,
                     deleted_observed_swap_rows = 0,
-                    deleted_scoring_rows = 0,
                     wal_checkpoint_mode = checkpoint_summary.mode,
                     wal_checkpoint_busy = busy,
                     wal_log_frames = log_frames,
@@ -75,13 +69,10 @@ fn run_retention_wal_checkpoint(
             warn!(
                 error = %error,
                 retention_days = config.retention_days,
-                aggregate_retention_days = config.aggregate_retention_days,
                 nominal_observed_swap_cutoff = %nominal_cutoff,
                 effective_observed_swap_cutoff = %effective_cutoff,
                 deleted_observed_swap_rows = raw_delete_summary.deleted_rows,
                 observed_swap_delete_batches = raw_delete_summary.batches,
-                deleted_scoring_rows = scoring_delete_summary.deleted_rows,
-                discovery_scoring_delete_batches = scoring_delete_summary.batches,
                 wal_checkpoint_mode = "passive_runtime_failed",
                 "observed swap retention sweep passive wal checkpoint failed"
             );

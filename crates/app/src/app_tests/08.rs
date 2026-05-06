@@ -57,7 +57,7 @@
     }
 
     #[test]
-    fn risk_guard_infra_blocks_when_no_ingestion_progress_for_full_window() {
+    fn risk_guard_infra_blocks_when_no_ingestion_progress_for_complete_window() {
         let mut cfg = RiskConfig::default();
         cfg.shadow_infra_window_minutes = 20;
         let mut guard = ShadowRiskGuard::new(cfg);

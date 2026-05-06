@@ -123,8 +123,6 @@ fn zero_universe_empty_target_noncritical_writer_pressure_active(
     writer_snapshot: &ObservedSwapWriterSnapshot,
 ) -> bool {
     writer_snapshot.pending_requests > 0
-        || writer_snapshot.aggregate_queue_depth_batches > 0
-        || writer_snapshot.aggregate_overflow_depth_batches > 0
         || writer_snapshot.journal_queue_depth_batches > 0
         || writer_snapshot.journal_overflow_depth_batches > 0
 }

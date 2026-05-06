@@ -1,46 +1,16 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
-use copybot_storage::is_fatal_sqlite_anyhow_error;
+use chrono::Utc;
+use copybot_storage_core::is_fatal_sqlite_anyhow_error;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
 use tokio::task::JoinSet;
-use tokio::time::Duration;
 use tracing::{info, warn};
 
-use super::{FollowSnapshot, ShadowService, SqliteStore};
+use super::{ShadowService, SqliteStore};
 use crate::shadow_scheduler::{ShadowSwapSide, ShadowTaskInput, ShadowTaskOutput};
 use crate::swap_classification::classify_swap_side;
 use crate::telemetry::{reason_to_key, reason_to_stage};
 use copybot_shadow::ShadowProcessOutcome;
-
-pub(crate) fn apply_follow_snapshot_update(
-    follow_snapshot: &mut FollowSnapshot,
-    active_wallets: HashSet<String>,
-    cycle_ts: DateTime<Utc>,
-    retention: Duration,
-) {
-    let promoted_wallets: Vec<String> = active_wallets
-        .difference(&follow_snapshot.active)
-        .cloned()
-        .collect();
-    let demoted_wallets: Vec<String> = follow_snapshot
-        .active
-        .difference(&active_wallets)
-        .cloned()
-        .collect();
-
-    for wallet in promoted_wallets {
-        follow_snapshot.promoted_at.insert(wallet, cycle_ts);
-    }
-    for wallet in demoted_wallets {
-        follow_snapshot.demoted_at.insert(wallet, cycle_ts);
-    }
-    follow_snapshot.active = active_wallets;
-
-    let cutoff = cycle_ts - chrono::Duration::seconds(retention.as_secs() as i64);
-    follow_snapshot.promoted_at.retain(|_, ts| *ts >= cutoff);
-    follow_snapshot.demoted_at.retain(|_, ts| *ts >= cutoff);
-}
 
 pub(crate) fn spawn_shadow_worker_task(
     shadow_workers: &mut JoinSet<ShadowTaskOutput>,

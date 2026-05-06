@@ -223,7 +223,9 @@
         let signal_id = format!("stale-close-{}-{}", lot_id, now.timestamp_millis());
         assert_eq!(
             store.shadow_closed_trade_close_context(&signal_id)?,
-            Some(copybot_storage::SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE.to_string())
+            Some(
+                copybot_storage_core::SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE.to_string()
+            )
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -313,7 +315,7 @@
         let signal_id = format!("stale-close-{}-{}", lot_id, now.timestamp_millis());
         assert_eq!(
             store.shadow_closed_trade_close_context(&signal_id)?,
-            Some(copybot_storage::SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE.to_string())
+            Some(copybot_storage_core::SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE.to_string())
         );
         assert_eq!(
             store.risk_event_count_by_type("shadow_stale_close_recovery_zero_price")?,

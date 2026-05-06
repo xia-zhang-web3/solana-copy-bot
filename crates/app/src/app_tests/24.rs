@@ -9,16 +9,10 @@
             .enable_all()
             .build()?;
         runtime.block_on(async {
-            let writer = ObservedSwapWriter::start_for_test_with_normal_try_enqueue_soft_limit(
-                db_path
+            let writer = ObservedSwapWriter::start_for_test_with_normal_try_enqueue_soft_limit(db_path
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
-                    .to_string(),
-                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-                false,
-                DiscoveryAggregateWriteConfig::default(),
-                1,
+                    .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE, 1,
             )?;
             let follow_snapshot = FollowSnapshot::default();
             let open_shadow_lots = HashSet::new();
@@ -139,16 +133,10 @@
             .enable_all()
             .build()?;
         runtime.block_on(async {
-            let writer = ObservedSwapWriter::start_for_test(
-                db_path
+            let writer = ObservedSwapWriter::start_for_test(db_path
                     .to_str()
                     .context("sqlite path must be valid utf-8")?
-                    .to_string(),
-                OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-                TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-                false,
-                DiscoveryAggregateWriteConfig::default(),
-            )?;
+                    .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
             let swap = test_swap("sig-not-followed-discovery-critical-preserved");
             let mut recent_signatures = HashSet::new();
             let mut recent_signature_order = VecDeque::new();
@@ -234,15 +222,24 @@
             reason: "publication_truth_withheld_missing_exact_published_wallet_ids".to_string(),
             last_published_at: Some(stale_publish_at),
             last_published_window_start: Some(metrics_window_start),
-            published_scoring_source: Some("raw_window_persisted_stream".to_string()),
+            published_scoring_source: Some("legacy_publication_source".to_string()),
             published_wallet_ids: Some(published_wallet_ids.clone()),
         })?;
 
+        let export_gate = DiscoveryPublicationFreshnessGate {
+            scoring_window_days: config.scoring_window_days as i64,
+            metric_snapshot_interval_seconds: config.metric_snapshot_interval_seconds,
+            refresh_seconds: config.refresh_seconds,
+            expected_scoring_source: Some("discovery_v2_operational_window".to_string()),
+            expected_policy_fingerprint: Some(
+                discovery.discovery_v2_publication_policy_fingerprint(false),
+            ),
+        };
         let export_error = store
-            .export_discovery_runtime_artifact(export_now, discovery.publication_freshness_gate())
+            .export_discovery_runtime_artifact(export_now, export_gate)
             .expect_err("stale fail-closed publication truth must still refuse export");
         let export_error_text = format!("{export_error:#}");
-        assert!(export_error_text.contains("requires fresh publication truth under export gate"));
+        assert!(export_error_text.contains("requires healthy publication state"));
         assert!(export_error_text.contains("runtime_mode=fail_closed"));
         assert!(export_error_text.contains("fresh_under_export_gate=false"));
         assert!(export_error_text.contains("published_wallet_count=7"));
@@ -253,16 +250,10 @@
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let writer = ObservedSwapWriter::start_for_test(
-            db_path
+        let writer = ObservedSwapWriter::start_for_test(db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
-                .to_string(),
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            false,
-            DiscoveryAggregateWriteConfig::default(),
-        )?;
+                .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
         let mut recent_signatures = HashSet::new();
         let mut recent_signature_order = VecDeque::new();
         for idx in 0..TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE {
@@ -317,7 +308,6 @@
             plateau_snapshot.pending_requests,
             TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE
         );
-        assert_eq!(plateau_snapshot.aggregate_queue_depth_batches, 0);
 
         let publication_state_after = store
             .discovery_publication_state_read_only()?
@@ -430,10 +420,6 @@
             TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
             "the exact live class must hit the one-batch non-critical irrelevant soft-limit peak of 128 before each wave drains back down: {summary:?}"
         );
-        assert_eq!(
-            summary.aggregate_queue_depth_at_wave_peak, 0,
-            "aggregate queue must stay zero in this reduced live-like repro so aggregate backlog remains ruled out: {summary:?}"
-        );
         assert!(
             summary.journal_queue_depth_at_wave_peak <= 1,
             "journal queue must stay in the low 0..1 class while the output queue remains pinned: {summary:?}"
@@ -468,10 +454,6 @@
             old.writer_pending_requests_at_wave_peak, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
             "old side must reproduce the exact 128 non-critical wave peak first: old={old:?}"
         );
-        assert_eq!(
-            old.aggregate_queue_depth_at_wave_peak, 0,
-            "aggregate queue must remain zero on the old side: old={old:?}"
-        );
         assert!(
             old.journal_queue_depth_at_wave_peak <= 1,
             "journal queue must remain in the same low 0..1 class on the old side: old={old:?}"
@@ -495,10 +477,6 @@
         assert!(
             new.dropped_noncritical_irrelevant_swaps >= old.upstream_queue_depth_before_loop,
             "the fix should make the tradeoff explicit by dropping the non-critical irrelevant class instead of burning repeated raw-writer waves on it: old={old:?} new={new:?}"
-        );
-        assert_eq!(
-            new.aggregate_queue_depth_at_wave_peak, 0,
-            "the fix must stay off the aggregate path: new={new:?}"
         );
         assert_eq!(
             new.journal_queue_depth_at_wave_peak, 0,

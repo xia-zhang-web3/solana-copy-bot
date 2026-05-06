@@ -45,12 +45,6 @@ impl ObservedSwapWriterTelemetry {
                 self.last_wallet_activity_days_ms_p95
                     .load(Ordering::Relaxed)
             });
-        let discovery_scoring_ms_p95 = self
-            .discovery_scoring_ms_samples
-            .lock()
-            .ok()
-            .map(|samples| percentile_from_deque(&samples, 0.95))
-            .unwrap_or_else(|| self.last_discovery_scoring_ms_p95.load(Ordering::Relaxed));
         let journal_enqueue_wait_ms_p95 = self
             .journal_enqueue_wait_ms_samples
             .lock()
@@ -78,22 +72,9 @@ impl ObservedSwapWriterTelemetry {
             raw_batch_write_ms_p95,
             observed_swaps_insert_ms_p95,
             wallet_activity_days_ms_p95,
-            discovery_scoring_ms_p95,
             journal_enqueue_wait_ms_p95,
             journal_batch_write_ms_p95,
             worker_busy_ms_p95,
-            aggregate_queue_depth_batches: self
-                .aggregate_queue_depth_batches
-                .load(Ordering::Relaxed),
-            aggregate_queue_capacity_batches: self
-                .aggregate_queue_capacity_batches
-                .load(Ordering::Relaxed),
-            aggregate_overflow_depth_batches: self
-                .aggregate_overflow_depth_batches
-                .load(Ordering::Relaxed),
-            aggregate_overflow_capacity_batches: self
-                .aggregate_overflow_capacity_batches
-                .load(Ordering::Relaxed),
             journal_queue_depth_batches: self.journal_queue_depth_batches(),
             journal_queue_row_debt: self.journal_queue_row_debt(),
             journal_queue_capacity_batches: self

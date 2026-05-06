@@ -1,8 +1,6 @@
 fn observed_swap_writer_loop(
     sqlite_path: String,
     mut receiver: mpsc::Receiver<ObservedSwapWriteRequest>,
-    aggregate_sender: Option<std_mpsc::SyncSender<DiscoveryAggregateWriteRequest>>,
-    aggregate_startup_receiver: Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
     journal_sender: Option<std_mpsc::SyncSender<RecentRawJournalWriteRequest>>,
     journal_startup_receiver: Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
     config: ObservedSwapWriterConfig,
@@ -12,8 +10,6 @@ fn observed_swap_writer_loop(
     let store = SqliteStore::open(Path::new(&sqlite_path)).with_context(|| {
         format!("failed to open sqlite db for observed swap writer: {sqlite_path}")
     })?;
-    let mut aggregate_overflow =
-        VecDeque::with_capacity(config.aggregate_overflow_capacity_batches);
     let journal_overflow_capacity_batches = config
         .recent_raw_journal
         .as_ref()
@@ -30,28 +26,14 @@ fn observed_swap_writer_loop(
         .map(recent_raw_journal_adaptive_write_coalesce_max_batches)
         .unwrap_or(1);
     let mut journal_overflow = VecDeque::with_capacity(journal_overflow_capacity_batches);
-    let mut aggregate_startup_receiver = aggregate_startup_receiver;
     let mut journal_startup_receiver = journal_startup_receiver;
 
     loop {
-        poll_observed_swap_writer_downstream_startups(
-            &mut aggregate_startup_receiver,
-            &mut journal_startup_receiver,
-        )?;
+        poll_observed_swap_writer_downstream_startups(&mut journal_startup_receiver)?;
 
         let first_request = match receiver.try_recv() {
             Ok(request) => request,
             Err(mpsc::error::TryRecvError::Empty) => {
-                if let Some(aggregate_sender) = aggregate_sender.as_ref() {
-                    if !aggregate_overflow.is_empty() && aggregate_startup_receiver.is_none() {
-                        flush_discovery_aggregate_overflow_blocking(
-                            aggregate_sender,
-                            &mut aggregate_overflow,
-                            &telemetry,
-                        )?;
-                        continue;
-                    }
-                }
                 if let Some(journal_sender) = journal_sender.as_ref() {
                     if !journal_overflow.is_empty() && journal_startup_receiver.is_none() {
                         drain_recent_raw_journal_overflow_nonblocking(
@@ -63,15 +45,12 @@ fn observed_swap_writer_loop(
                         if journal_overflow.is_empty() {
                             continue;
                         }
-                        thread::sleep(OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_POLL_INTERVAL);
+                        thread::sleep(OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_POLL);
                         continue;
                     }
                 }
-                if observed_swap_writer_downstream_startup_pending(
-                    &aggregate_startup_receiver,
-                    &journal_startup_receiver,
-                ) {
-                    thread::sleep(OBSERVED_SWAP_DISCOVERY_AGGREGATE_IDLE_REPLAY_POLL_INTERVAL);
+                if observed_swap_writer_downstream_startup_pending(&journal_startup_receiver) {
+                    thread::sleep(OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_POLL);
                     continue;
                 }
                 match receiver.blocking_recv() {
@@ -92,7 +71,7 @@ fn observed_swap_writer_loop(
             send_observed_swap_write_error_replies(replies, &message);
             telemetry.note_batch_completed(&queued_at);
             return Err(anyhow!(message))
-                .context("observed swap writer stopping after aggregate worker terminal failure");
+                .context("observed swap writer stopping after downstream terminal failure");
         }
 
         let batch_started = Instant::now();
@@ -104,7 +83,7 @@ fn observed_swap_writer_loop(
                 send_observed_swap_write_error_replies(replies, &message);
                 telemetry.note_batch_completed(&queued_at);
                 return Err(anyhow!(message)).context(
-                    "observed swap writer stopping after aggregate worker terminal failure while raw batch was pending",
+                    "observed swap writer stopping after downstream terminal failure while raw batch was pending",
                 );
             }
 
@@ -140,70 +119,6 @@ fn observed_swap_writer_loop(
                         .zip(results.iter())
                         .filter_map(|(swap, inserted)| inserted.then_some(swap.clone()))
                         .collect();
-                    if let Some(aggregate_sender) = aggregate_sender.as_ref() {
-                        if !inserted_swaps.is_empty() {
-                            let aggregate_request = DiscoveryAggregateWriteRequest {
-                                inserted_swaps: inserted_swaps.clone(),
-                                batch_started,
-                            };
-                            let aggregate_outcome = if aggregate_startup_receiver.is_some()
-                                && config.aggregate_gap_fallback_enabled
-                                && store
-                                    .load_discovery_scoring_covered_through_cursor()?
-                                    .is_some()
-                            {
-                                Ok(
-                                    DiscoveryAggregateEnqueueOutcome::DeferredToMaterializationGap(
-                                        aggregate_request,
-                                    ),
-                                )
-                            } else {
-                                enqueue_discovery_aggregate_request(
-                                    aggregate_sender,
-                                    &mut aggregate_overflow,
-                                    config.aggregate_overflow_capacity_batches,
-                                    config.aggregate_gap_fallback_enabled,
-                                    aggregate_request,
-                                    &telemetry,
-                                )
-                            };
-                            match aggregate_outcome {
-                                Ok(DiscoveryAggregateEnqueueOutcome::Enqueued) => {}
-                                Ok(
-                                    DiscoveryAggregateEnqueueOutcome::DeferredToMaterializationGap(
-                                        request,
-                                    ),
-                                ) => {
-                                    if let Err(error) =
-                                        latch_discovery_scoring_materialization_gap_from_swaps(
-                                            &store,
-                                            &request.inserted_swaps,
-                                        )
-                                    {
-                                        telemetry.note_worker_busy_completed(elapsed_ms_ceil(
-                                            batch_started.elapsed(),
-                                        ));
-                                        return Err(error).context(
-                                            "observed swap writer stopping after aggregate backpressure gap latching failed",
-                                        );
-                                    }
-                                    telemetry.set_aggregate_gap_active(true);
-                                }
-                                Err(error) => {
-                                    telemetry.note_worker_busy_completed(elapsed_ms_ceil(
-                                        batch_started.elapsed(),
-                                    ));
-                                    return Err(anyhow!(
-                                        "discovery aggregate writer channel closed: {}",
-                                        error
-                                    ))
-                                    .context(
-                                        "observed swap writer stopping after aggregate writer channel closed",
-                                    );
-                                }
-                            }
-                        }
-                    }
                     if let Some(journal_sender) = journal_sender.as_ref() {
                         if !inserted_swaps.is_empty() {
                             let journal_enqueue_started = Instant::now();
@@ -282,9 +197,7 @@ fn observed_swap_writer_loop(
     }
 
     flush_observed_swap_writer_downstream_overflow_on_shutdown(
-        aggregate_sender.as_ref(),
         journal_sender.as_ref(),
-        &mut aggregate_overflow,
         &mut journal_overflow,
         &telemetry,
     )?;

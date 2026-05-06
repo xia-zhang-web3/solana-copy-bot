@@ -54,16 +54,10 @@
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let writer = ObservedSwapWriter::start_for_test(
-            db_path
+        let writer = ObservedSwapWriter::start_for_test(db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
-                .to_string(),
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            false,
-            DiscoveryAggregateWriteConfig::default(),
-        )?;
+                .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
         let mut recent_signatures = HashSet::new();
         let mut recent_signature_order = VecDeque::new();
         let swap = irrelevant_backpressure_swap("sig-zero-universe-refilled-wave", 0, Utc::now());
@@ -194,10 +188,6 @@
             summary.best_effort_budget_exhausted,
             "the reduced live-like repro must actually hit the post-backpressure refill condition, not only the initial one-batch plateau: {summary:?}"
         );
-        assert_eq!(
-            summary.aggregate_queue_depth_at_peak, 0,
-            "aggregate queue must stay zero in the exact 7093fa4 repro: {summary:?}"
-        );
         assert!(
             summary.journal_queue_depth_at_peak <= 1,
             "journal queue must remain in the same low 0..1 class in the exact 7093fa4 repro: {summary:?}"
@@ -223,10 +213,6 @@
         assert_eq!(
             old.first_backpressure_pending_requests, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
             "old side must reproduce the exact zero-output-pressure 128 plateau first: old={old:?}"
-        );
-        assert_eq!(
-            old.aggregate_queue_depth_at_peak, 0,
-            "old side must keep aggregate queue at zero: old={old:?}"
         );
         assert!(
             old.journal_queue_depth_at_peak <= 1,
@@ -258,10 +244,6 @@
         assert!(
             new.dropped_noncritical_irrelevant_swaps > 0,
             "after the first batch is exhausted, the fix should make the ownership change explicit by dropping only the later refill waves of the same exact non-critical irrelevant class: new={new:?}"
-        );
-        assert_eq!(
-            new.aggregate_queue_depth_at_peak, 0,
-            "the fix must stay off the aggregate path: new={new:?}"
         );
         assert_eq!(
             new.journal_queue_depth_at_peak, 0,
@@ -356,16 +338,10 @@
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let writer = ObservedSwapWriter::start_for_test(
-            db_path
+        let writer = ObservedSwapWriter::start_for_test(db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
-                .to_string(),
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            false,
-            DiscoveryAggregateWriteConfig::default(),
-        )?;
+                .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
         let mut recent_signatures = HashSet::new();
         let mut recent_signature_order = VecDeque::new();
 
@@ -422,7 +398,6 @@
             snapshot.pending_requests, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
             "the exact live 128 plateau is the non-critical irrelevant try_enqueue soft limit"
         );
-        assert_eq!(snapshot.aggregate_queue_depth_batches, 0);
 
         blocker_conn.execute_batch("COMMIT")?;
         let drain_started = StdInstant::now();
@@ -451,16 +426,10 @@
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        let writer = ObservedSwapWriter::start_for_test(
-            db_path
+        let writer = ObservedSwapWriter::start_for_test(db_path
                 .to_str()
                 .context("sqlite path must be valid utf-8")?
-                .to_string(),
-            OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-            TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
-            false,
-            DiscoveryAggregateWriteConfig::default(),
-        )?;
+                .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
         let mut recent_signatures = HashSet::new();
         let mut recent_signature_order = VecDeque::new();
 
@@ -497,7 +466,6 @@
             snapshot.pending_requests > TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
             "the discovery-critical reserved branch cannot be the exact live 128 plateau because it keeps enqueueing past 128"
         );
-        assert_eq!(snapshot.aggregate_queue_depth_batches, 0);
 
         blocker_conn.execute_batch("COMMIT")?;
         let drain_started = StdInstant::now();
