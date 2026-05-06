@@ -4,41 +4,73 @@ on:
   pull_request:
     paths:
       - ".github/workflows/operator-artifacts.yml"
+      - ".github/workflows/architecture-guard.yml"
+      - "AGENTS.md"
+      - "ARCHITECTURE_WAIVERS.md"
+      - "ARTIFACT_DEPLOY.md"
+      - "BUILD_ARCHITECTURE_REDESIGN_NO_HOUR_BUILDS.md"
+      - "BUILD_POLICY.md"
+      - "BUILD_REFACTOR_ROADMAP.md"
       - "Cargo.lock"
       - "Cargo.toml"
+      - ".cargo/**"
+      - "clippy.toml"
+      - "configs/**"
+      - "migrations/**"
+      - "docs/**"
+      - "crates/app/**"
       - "crates/config/**"
       - "crates/core-types/**"
+      - "crates/discovery/**"
       - "crates/discovery-ops/**"
       - "crates/discovery-v2/**"
+      - "crates/ingestion/**"
       - "crates/live-ops/**"
       - "crates/operators/**"
       - "crates/runtime-artifacts/**"
+      - "crates/shadow/**"
+      - "crates/storage/**"
       - "crates/storage-core/**"
       - "crates/storage-ops/**"
-      - "tools/architecture_guard.sh"
-      - "tools/build_manifest.py"
-      - "tools/build_operator_artifacts.sh"
-      - "tools/install_operator_artifacts.sh"
-      - "tools/verify_operator_artifact.py"
+      - "ops/server_templates/**"
+      - "rust-toolchain*"
+      - "rustfmt.toml"
+      - "tools/**"
   push:
     paths:
       - ".github/workflows/operator-artifacts.yml"
+      - ".github/workflows/architecture-guard.yml"
+      - "AGENTS.md"
+      - "ARCHITECTURE_WAIVERS.md"
+      - "ARTIFACT_DEPLOY.md"
+      - "BUILD_ARCHITECTURE_REDESIGN_NO_HOUR_BUILDS.md"
+      - "BUILD_POLICY.md"
+      - "BUILD_REFACTOR_ROADMAP.md"
       - "Cargo.lock"
       - "Cargo.toml"
+      - ".cargo/**"
+      - "clippy.toml"
+      - "configs/**"
+      - "migrations/**"
+      - "docs/**"
+      - "crates/app/**"
       - "crates/config/**"
       - "crates/core-types/**"
+      - "crates/discovery/**"
       - "crates/discovery-ops/**"
       - "crates/discovery-v2/**"
+      - "crates/ingestion/**"
       - "crates/live-ops/**"
       - "crates/operators/**"
       - "crates/runtime-artifacts/**"
+      - "crates/shadow/**"
+      - "crates/storage/**"
       - "crates/storage-core/**"
       - "crates/storage-ops/**"
-      - "tools/architecture_guard.sh"
-      - "tools/build_manifest.py"
-      - "tools/build_operator_artifacts.sh"
-      - "tools/install_operator_artifacts.sh"
-      - "tools/verify_operator_artifact.py"
+      - "ops/server_templates/**"
+      - "rust-toolchain*"
+      - "rustfmt.toml"
+      - "tools/**"
   workflow_dispatch:
 
 permissions:
@@ -52,64 +84,123 @@ jobs:
   operator-artifacts:
     name: ${{ matrix.label }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           - label: Discovery V2 operators
             package: copybot-discovery-v2
+            profile: operator-release
             wanted_bins: discovery_v2_status discovery_v2_publish
             artifact_name: discovery-v2-operators
           - label: Discovery scheduled operators
             package: copybot-discovery-ops
+            profile: operator-release
             wanted_bins: discovery_runtime_export discovery_recent_raw_snapshot
             artifact_name: discovery-scheduled-operators
           - label: Source operators
             package: copybot-operators
+            profile: operator-release
             wanted_bins: copybot_yellowstone_source_probe
             artifact_name: source-operators
           - label: Live operators
             package: copybot-live-ops
+            profile: operator-release
             wanted_bins: copybot_operator_emergency_stop copybot_live_service_control_wrapper
             artifact_name: live-operators
           - label: Storage operators
             package: copybot-storage-ops
+            profile: operator-release
             wanted_bins: copybot_runtime_sqlite_wal_maintenance copybot_runtime_sqlite_wal_pressure_report
             artifact_name: storage-operators
+          - label: Live daemon
+            package: copybot-app
+            profile: release
+            wanted_bins: copybot-app
+            artifact_name: live-daemon
     env:
       ARTIFACT_ARCH: linux-x86_64
       CARGO_TERM_COLOR: always
       FORCE: "1"
       PACKAGE: ${{ matrix.package }}
-      PROFILE: operator-release
+      PROFILE: ${{ matrix.profile }}
       RUN_CHECKS: "1"
       TARGET: x86_64-unknown-linux-gnu
       WANTED_BINS: ${{ matrix.wanted_bins }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Rust versions
         run: |
           rustc --version
           cargo --version
 
+      - name: Resolve architecture guard range
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="${{ github.event.pull_request.base.sha }}..HEAD"
+          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            range="${{ github.event.before }}..HEAD"
+          elif git rev-parse HEAD^ >/dev/null 2>&1; then
+            range="HEAD^..HEAD"
+          else
+            empty_tree="$(git hash-object -t tree /dev/null)"
+            range="$empty_tree..HEAD"
+          fi
+          echo "ARCH_GUARD_DIFF_RANGE=$range" >> "$GITHUB_ENV"
+          echo "architecture_guard_range=$range"
+
+      - name: Architecture guard
+        run: |
+          tools/architecture_guard.sh --changed
+          tools/architecture_guard.sh --all
+
+      - name: Classify artifact scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_selected=1
+          if [ "${{ matrix.package }}" = "copybot-app" ]; then
+            build_selected=0
+            if git diff --name-only "$ARCH_GUARD_DIFF_RANGE" | grep -E '^(\.github/workflows/operator-artifacts\.yml|Cargo\.lock|Cargo\.toml|\.cargo/|rust-toolchain|rust-toolchain\.toml|crates/(app|config|core-types|discovery|discovery-v2|ingestion|runtime-artifacts|shadow|storage|storage-core)/|tools/(build_operator_artifacts|build_manifest|verify_operator_artifact|install_operator_artifacts|package_bins)\.)' >/dev/null; then
+              build_selected=1
+            fi
+          fi
+          echo "BUILD_SELECTED=$build_selected" >> "$GITHUB_ENV"
+          echo "build_selected=$build_selected package=${{ matrix.package }}"
+
       - name: Build, test, and package operators
+        if: env.BUILD_SELECTED == '1'
         run: tools/build_operator_artifacts.sh
 
       - name: Verify packaged artifact
-        run: python3 tools/verify_operator_artifact.py artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }} --expect-package "${{ matrix.package }}"
+        if: env.BUILD_SELECTED == '1'
+        run: |
+          python3 tools/verify_operator_artifact.py \
+            artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }} \
+            --expect-package "${{ matrix.package }}" \
+            --expect-profile "$PROFILE" \
+            --expect-target "$TARGET"
 
       - name: Dry-run operator install
+        if: env.BUILD_SELECTED == '1'
         run: |
           tools/install_operator_artifacts.sh \
             --dry-run \
             --expect-package "${{ matrix.package }}" \
+            --expect-profile "$PROFILE" \
+            --expect-target "$TARGET" \
             --install-dir /tmp/copybot-operator-bin \
             artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}.tar.gz
 
       - name: Upload operator artifacts
+        if: env.BUILD_SELECTED == '1'
         uses: actions/upload-artifact@v4
         with:
           if-no-files-found: error
@@ -117,4 +208,5 @@ jobs:
           path: |
             artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}/
             artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}.tar.gz
+            artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}.tar.gz.sha256
           retention-days: 14

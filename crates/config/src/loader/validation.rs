@@ -26,11 +26,11 @@ fn validate_shadow_universe_config(config: &AppConfig) -> Result<()> {
 }
 
 fn validate_discovery_aggregate_activation_config(config: &AppConfig) -> Result<()> {
-    if config.discovery.scoring_aggregates_enabled
-        && !config.discovery.scoring_aggregates_write_enabled
+    if config.discovery.scoring_aggregates_write_enabled
+        || config.discovery.scoring_aggregates_enabled
     {
         return Err(anyhow!(
-            "discovery.scoring_aggregates_enabled requires discovery.scoring_aggregates_write_enabled = true"
+            "legacy discovery aggregate scoring is not allowed in active runtime config"
         ));
     }
     Ok(())
@@ -47,6 +47,13 @@ fn validate_shadow_quality_thresholds(config: &AppConfig) -> Result<()> {
 }
 
 fn validate_discovery_storage_mitigation_config(config: &AppConfig) -> Result<()> {
+    if config.discovery.min_active_days > config.discovery.scoring_window_days {
+        return Err(anyhow!(
+            "discovery.min_active_days ({}) must be <= discovery.scoring_window_days ({})",
+            config.discovery.min_active_days,
+            config.discovery.scoring_window_days
+        ));
+    }
     if config.discovery.max_fetch_swaps_per_cycle > config.discovery.max_window_swaps_in_memory {
         return Err(anyhow!(
             "discovery.max_fetch_swaps_per_cycle ({}) must be <= discovery.max_window_swaps_in_memory ({})",

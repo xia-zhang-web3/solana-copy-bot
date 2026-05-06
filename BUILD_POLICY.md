@@ -13,8 +13,8 @@ Production servers are not default build machines.
 Rejected normal rollout pattern:
 
 ```bash
-cargo build --release
-cargo build --release -p copybot-app
+cargo build --release # rejected normal rollout pattern
+cargo build --release -p copybot-app # rejected normal rollout pattern
 ```
 
 Accepted normal rollout pattern:
@@ -131,7 +131,7 @@ New production files must be small.
 | runtime module | 400 LOC | 600 LOC |
 | operator bin | 200 LOC | 300 LOC |
 | CLI arg parser | 150 LOC | 250 LOC |
-| test file | 700 LOC | 1000 LOC |
+| test file | 500 LOC | 800 LOC |
 | generated file | waiver required | waiver required |
 
 Definitions:

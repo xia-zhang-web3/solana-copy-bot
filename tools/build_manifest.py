@@ -45,6 +45,7 @@ def main():
     parser.add_argument("--profile", required=True)
     parser.add_argument("--package", required=True)
     parser.add_argument("--binary", action="append", default=[])
+    parser.add_argument("--expected-binary", action="append", default=[])
     parser.add_argument("--check", action="append", default=[])
     args = parser.parse_args()
 
@@ -82,6 +83,7 @@ def main():
         "profile": args.profile,
         "package": args.package,
         "checks": args.check,
+        "expected_binaries": sorted(set(args.expected_binary)),
         "binaries": binaries,
     }
     (artifact_dir / "build-manifest.json").write_text(

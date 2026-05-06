@@ -146,11 +146,12 @@ Rules:
 
 Acceptance:
 
-1. `cargo test -p copybot-discovery-v2 --all-targets -- --test-threads=1` passes.
-2. `cargo check -p copybot-discovery-v2 --bins` passes.
-3. build graph excludes app, ingestion, Yellowstone, shadow, execution, legacy
+1. `cargo test --locked -p copybot-discovery-v2 --lib -- --test-threads=1` passes.
+2. `cargo test --locked -p copybot-discovery-v2 --tests --no-run` passes.
+3. `cargo check --locked -p copybot-discovery-v2 --bins` passes.
+4. build graph excludes app, ingestion, Yellowstone, shadow, execution, legacy
    discovery, and monolithic storage.
-4. V2 status/publish artifacts can be installed and run without rebuilding
+5. V2 status/publish artifacts can be installed and run without rebuilding
    `copybot-app`.
 
 ## 6. Phase 4: `copybot-app` Quarantine

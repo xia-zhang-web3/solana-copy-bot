@@ -149,6 +149,49 @@ source = "laserstream"
 }
 
 #[test]
+fn load_from_path_rejects_unsatisfiable_discovery_active_days() {
+    with_temp_config_file(
+        r#"
+[discovery]
+scoring_window_days = 1
+min_active_days = 3
+"#,
+        |config_path| {
+            with_clean_copybot_env(|| {
+                let err = load_from_path(config_path)
+                    .expect_err("unsatisfiable V2 discovery policy must fail config load")
+                    .to_string();
+                assert!(
+                    err.contains("discovery.min_active_days"),
+                    "unexpected error: {err}"
+                );
+            });
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_legacy_discovery_aggregate_activation() {
+    with_temp_config_file(
+        r#"
+[discovery]
+scoring_aggregates_write_enabled = true
+"#,
+        |config_path| {
+            with_clean_copybot_env(|| {
+                let err = load_from_path(config_path)
+                    .expect_err("legacy aggregate activation must fail config load")
+                    .to_string();
+                assert!(
+                    err.contains("legacy discovery aggregate scoring"),
+                    "unexpected error: {err}"
+                );
+            });
+        },
+    );
+}
+
+#[test]
 fn load_from_env_normalizes_ingestion_source_alias() {
     with_temp_config_file("", |config_path| {
         with_clean_copybot_env(|| {

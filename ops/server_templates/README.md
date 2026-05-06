@@ -37,8 +37,8 @@ exception.
 
 Required invariants:
 
-1. `execution.enabled = false` unless explicitly authorized by the user
-2. `COPYBOT_CONFIG` points at `/etc/solana-copy-bot/live.server.toml`
+1. `execution.enabled = false`; this template never authorizes enabling it
+2. `SOLANA_COPY_BOT_CONFIG` points at `/etc/solana-copy-bot/live.server.toml`
 3. the service runs with a bounded restart policy
 4. runtime DB, recent_raw journal, and artifact paths live under the production
    state directory

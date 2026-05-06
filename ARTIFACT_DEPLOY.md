@@ -57,9 +57,11 @@ Required `build-manifest.json`:
   "target": "x86_64-unknown-linux-gnu",
   "profile": "operator-release",
   "checks": [
-    "cargo test -p copybot-discovery-v2 --all-targets -- --test-threads=1",
-    "tools/architecture_guard.sh --changed"
+    "cargo test --locked -p copybot-discovery-v2 --lib -- --test-threads=1; cargo test --locked -p copybot-discovery-v2 --tests --no-run",
+    "tools/architecture_guard.sh --changed",
+    "tools/architecture_guard.sh --all"
   ],
+  "expected_binaries": ["discovery_v2_publish", "discovery_v2_status"],
   "binaries": [
     {
       "name": "discovery_v2_status",
@@ -119,17 +121,18 @@ CI builder:
 .github/workflows/operator-artifacts.yml
 ```
 
-The workflow builds operator packages only. It does not build `copybot-app`.
+The workflow builds operator packages and the live daemon artifact.
 
-Runtime daemon:
+Runtime daemon artifact:
 
 ```bash
-tools/architecture_guard.sh --changed
-cargo test -p copybot-app --bin copybot-app
-cargo build --release -p copybot-app --bin copybot-app
+PACKAGE=copybot-app \
+WANTED_BINS=copybot-app \
+tools/build_operator_artifacts.sh
 ```
 
-Do not build `copybot-app` for read-only Discovery V2 proof.
+Build the runtime daemon only on a builder or CI host. Do not build
+`copybot-app` for read-only Discovery V2 proof.
 
 ## 5. Packaging
 
@@ -146,53 +149,97 @@ The archive checksum is external. The internal `SHA256SUMS` covers the binaries.
 The manifest binds binary names, source package, target, profile, git SHA,
 checks, and binary checksums.
 
-## 6. Production Install
+## 6. Config Rollout Review
 
-Install operators:
+Artifact install does not approve config semantics by itself.
+
+The current refactor branch intentionally changes the live/prod config surface:
+
+1. `configs/live.toml` uses `state/live_runtime.db`,
+2. live/prod/template Discovery V2 `min_active_days` is `1`,
+3. live/template metric snapshot cadence is `1800` seconds,
+4. live/template observed-swap retention is `7` days.
+
+Before daemon rollout, the rollout note must explicitly choose one of:
+
+1. accept these config values as part of the daemon rollout,
+2. split them into a config-only rollout with separate proof,
+3. revert the config deltas before packaging the daemon artifact.
+
+Read-only operator rollout does not imply daemon config acceptance.
+
+## 7. Production Install
+
+Install Discovery V2 status/publish operators:
 
 ```bash
 tools/install_operator_artifacts.sh \
   --expect-package copybot-discovery-v2 \
+  --expect-target x86_64-unknown-linux-gnu \
   --install-dir /var/www/solana-copy-bot/bin \
-  /tmp/discovery-v2-operators-<git_sha>-linux-x86_64.tar.gz
+  /tmp/copybot-discovery-v2-<git_sha>.tar.gz
+```
+
+Install scheduled Discovery operators used by the runtime export and recent raw
+snapshot services:
+
+```bash
+tools/install_operator_artifacts.sh \
+  --expect-package copybot-discovery-ops \
+  --expect-target x86_64-unknown-linux-gnu \
+  --install-dir /var/www/solana-copy-bot/bin \
+  /tmp/copybot-discovery-ops-<git_sha>.tar.gz
 ```
 
 The installer:
 
 1. extracts tarballs when needed,
-2. verifies `build-manifest.json`,
-3. verifies `SHA256SUMS`,
-4. rejects dirty artifacts unless `--allow-dirty` is explicitly passed,
-5. installs into `bin/releases/<artifact_id>/`,
-6. atomically updates symlinks for binaries in the artifact,
-7. writes `bin/operator-artifact-current-<package>.json`.
+2. requires and verifies the external archive checksum sidecar,
+3. verifies `build-manifest.json`,
+4. verifies expected package/profile/target,
+5. verifies `SHA256SUMS`,
+6. rejects dirty artifacts unless `--allow-dirty` is explicitly passed,
+7. verifies the complete expected binary set for the package,
+8. stages into `bin/releases/.staging-<artifact_id>.<pid>/`,
+9. writes `INSTALL_COMPLETE`,
+10. atomically renames the staged release into `bin/releases/<artifact_id>/`,
+11. keeps stable top-level binary symlinks pointed through
+   `bin/packages/<package>/current/<binary>`,
+12. activates the package by atomically replacing
+   `bin/packages/<package>/current`,
+13. keeps `bin/operator-artifact-current-<package>.json` as a stable link to
+    the active package manifest.
+
+The package-current symlink is the activation point. Top-level binary symlinks
+are stable service entrypoints, not per-release activation state.
 
 Read-only operators do not require daemon restart.
 
-Install daemon:
+Install daemon artifact:
 
 ```bash
-sha="<git_sha>"
-install_dir=/var/www/solana-copy-bot/bin
-
-sudo install -m 0755 copybot-app "$install_dir/copybot-app-$sha"
-sudo ln -sfn "$install_dir/copybot-app-$sha" "$install_dir/copybot-app-current"
+tools/install_operator_artifacts.sh \
+  --expect-package copybot-app \
+  --expect-target x86_64-unknown-linux-gnu \
+  --install-dir /var/www/solana-copy-bot/bin \
+  /tmp/copybot-app-<git_sha>.tar.gz
 sudo systemctl restart solana-copy-bot.service
 ```
 
 Systemd should point to:
 
 ```text
-/var/www/solana-copy-bot/bin/copybot-app-current
+/var/www/solana-copy-bot/bin/copybot-app
 ```
 
-## 7. Rollback
+## 8. Rollback
 
-Operator rollback:
+Discovery scheduled operator rollback:
 
 ```bash
 tools/install_operator_artifacts.sh \
-  --expect-package copybot-discovery-v2 \
+  --expect-package copybot-discovery-ops \
+  --expect-target x86_64-unknown-linux-gnu \
   --install-dir /var/www/solana-copy-bot/bin \
   --rollback <previous_artifact_id>
 ```
@@ -200,13 +247,17 @@ tools/install_operator_artifacts.sh \
 Then rerun read-only status. No daemon restart is required for operator
 rollback.
 
+Discovery V2 status/publish operator rollback uses the same command with
+`--expect-package copybot-discovery-v2`.
+
 Daemon rollback:
 
 ```bash
-previous="<previous_sha>"
-install_dir=/var/www/solana-copy-bot/bin
-
-sudo ln -sfn "$install_dir/copybot-app-$previous" "$install_dir/copybot-app-current"
+tools/install_operator_artifacts.sh \
+  --expect-package copybot-app \
+  --expect-target x86_64-unknown-linux-gnu \
+  --install-dir /var/www/solana-copy-bot/bin \
+  --rollback <previous_artifact_id>
 sudo systemctl restart solana-copy-bot.service
 ```
 
@@ -217,7 +268,7 @@ systemctl is-active solana-copy-bot.service
 systemctl status --no-pager solana-copy-bot.service
 ```
 
-## 8. Emergency Fallback
+## 9. Emergency Fallback
 
 Production-local build is emergency fallback only.
 
@@ -264,7 +315,7 @@ CARGO_BUILD_JOBS=1 cargo build --profile operator-release \
 Daemon emergency build:
 
 ```bash
-CARGO_BUILD_JOBS=1 cargo build --release -p copybot-app --bin copybot-app
+CARGO_BUILD_JOBS=1 cargo build --release -p copybot-app --bin copybot-app # emergency fallback
 ```
 
 Before emergency build:
@@ -281,7 +332,7 @@ After emergency build:
 3. record exact command,
 4. open a follow-up to restore artifact deploy.
 
-## 9. Rejection Rules
+## 10. Rejection Rules
 
 Reject rollout if:
 

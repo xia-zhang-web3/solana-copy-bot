@@ -124,7 +124,7 @@ Normal rollout path:
 
 Forbidden by default:
 
-- `cargo build --release` on production
+- `cargo build --release` on production is forbidden by default
 - rebuilding `copybot-app` for read-only operators
 - rebuilding the workspace during incident response
 - running heavy builds while production runtime is under memory, disk, WAL, or

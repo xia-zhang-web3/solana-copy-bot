@@ -9,13 +9,12 @@ usage() {
 usage: tools/build_operator_artifacts.sh
 
 Environment:
-  PROFILE=operator-release
+  PROFILE=<derived from PACKAGE>
   TARGET=x86_64-unknown-linux-gnu
   ARTIFACT_ARCH=linux-x86_64
   ARTIFACT_ROOT=artifacts
   CARGO_TARGET_DIR=target
   PACKAGE=copybot-discovery-v2
-  BIN_DIR=<derived from PACKAGE>
   WANTED_BINS=<derived from PACKAGE>
   RUN_CHECKS=1
   ALLOW_DIRTY=0
@@ -28,7 +27,6 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   exit 0
 fi
 
-PROFILE="${PROFILE:-operator-release}"
 TARGET="${TARGET:-x86_64-unknown-linux-gnu}"
 ARTIFACT_ARCH="${ARTIFACT_ARCH:-linux-x86_64}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-artifacts}"
@@ -37,34 +35,28 @@ RUN_CHECKS="${RUN_CHECKS:-1}"
 ALLOW_DIRTY="${ALLOW_DIRTY:-0}"
 FORCE="${FORCE:-0}"
 PACKAGE="${PACKAGE:-copybot-discovery-v2}"
+lock_dir=""
 
-default_bin_dir_for_package() {
+cleanup() {
+  if [ -n "$lock_dir" ]; then
+    rmdir "$lock_dir" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+default_profile_for_package() {
   case "$1" in
-    copybot-discovery-v2) printf 'crates/discovery-v2/src/bin' ;;
-    copybot-discovery-ops) printf 'crates/discovery-ops/src/bin' ;;
-    copybot-live-ops) printf 'crates/live-ops/src/bin' ;;
-    copybot-operators) printf 'crates/operators/src/bin' ;;
-    copybot-storage-ops) printf 'crates/storage-ops/src/bin' ;;
-    *)
-      echo "unknown operator package: $1; set BIN_DIR and WANTED_BINS explicitly" >&2
-      return 1
-      ;;
+    copybot-app) printf 'release' ;;
+    *) printf 'operator-release' ;;
   esac
 }
 
-default_bins_for_package() {
-  case "$1" in
-    copybot-discovery-v2) printf 'discovery_v2_status discovery_v2_publish' ;;
-    copybot-discovery-ops) printf 'discovery_runtime_export discovery_recent_raw_snapshot' ;;
-    copybot-live-ops) printf 'copybot_operator_emergency_stop copybot_live_service_control_wrapper' ;;
-    copybot-operators) printf 'copybot_yellowstone_source_probe' ;;
-    copybot-storage-ops) printf 'copybot_runtime_sqlite_wal_maintenance copybot_runtime_sqlite_wal_pressure_report' ;;
-    *)
-      echo "unknown operator package: $1; set WANTED_BINS explicitly" >&2
-      return 1
-      ;;
-  esac
-}
+expected_profile="$(default_profile_for_package "$PACKAGE")"
+PROFILE="${PROFILE:-$expected_profile}"
+if [ "$PROFILE" != "$expected_profile" ]; then
+  echo "$PACKAGE artifacts must use profile $expected_profile, got $PROFILE" >&2
+  exit 1
+fi
 
 cargo_profile_dir() {
   case "$1" in
@@ -74,12 +66,6 @@ cargo_profile_dir() {
   esac
 }
 
-BIN_DIR="${BIN_DIR:-$(default_bin_dir_for_package "$PACKAGE")}"
-if [ ! -d "$BIN_DIR" ]; then
-  echo "missing $BIN_DIR for $PACKAGE; operator artifacts must not fall back to legacy app/discovery bins" >&2
-  exit 1
-fi
-
 if [ "$ALLOW_DIRTY" != "1" ]; then
   if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
     echo "refusing to build production artifact from dirty tree; set ALLOW_DIRTY=1 for local smoke artifacts" >&2
@@ -87,30 +73,66 @@ if [ "$ALLOW_DIRTY" != "1" ]; then
   fi
 fi
 
-WANTED_BINS="${WANTED_BINS:-$(default_bins_for_package "$PACKAGE")}"
-BINS=""
-for bin in $WANTED_BINS; do
-  if [ -f "$BIN_DIR/$bin.rs" ]; then
-    BINS="${BINS:+$BINS }$bin"
-  else
-    echo "requested operator bin not found for $PACKAGE: $BIN_DIR/$bin.rs" >&2
-    exit 1
-  fi
-done
-
-if [ -z "$BINS" ]; then
-  echo "no operator bins found for $PACKAGE in $BIN_DIR" >&2
+expected_bins="$(python3 tools/package_bins.py --package "$PACKAGE" | xargs)"
+WANTED_BINS="${WANTED_BINS:-$expected_bins}"
+canonical_words() {
+  printf '%s\n' "$1" | tr ' ' '\n' | sed '/^$/d' | sort | xargs
+}
+if [ "$(canonical_words "$WANTED_BINS")" != "$(canonical_words "$expected_bins")" ]; then
+  echo "$PACKAGE artifacts must include the complete package binary set: $expected_bins" >&2
   exit 1
 fi
 
+BINS=""
+for bin in $WANTED_BINS; do
+  BINS="${BINS:+$BINS }$bin"
+done
+
+if [ -z "$BINS" ]; then
+  echo "no operator bins found for $PACKAGE" >&2
+  exit 1
+fi
+
+package_has_lib() {
+  python3 - "$1" <<'PY'
+import json
+import subprocess
+import sys
+
+package_name = sys.argv[1]
+raw = subprocess.check_output(
+    ["cargo", "metadata", "--locked", "--format-version=1", "--no-deps"],
+    text=True,
+)
+metadata = json.loads(raw)
+for package in metadata.get("packages", []):
+    if package.get("name") != package_name:
+        continue
+    has_lib = any("lib" in target.get("kind", []) for target in package.get("targets", []))
+    print("1" if has_lib else "0")
+    raise SystemExit(0)
+print(f"unknown package: {package_name}", file=sys.stderr)
+raise SystemExit(1)
+PY
+}
+
+test_check=""
 if [ "$RUN_CHECKS" = "1" ]; then
   if [ -x tools/architecture_guard.sh ]; then
     tools/architecture_guard.sh --changed
+    tools/architecture_guard.sh --all
   fi
-  cargo test -p "$PACKAGE" --all-targets -- --test-threads=1
+  if [ "$(package_has_lib "$PACKAGE")" = "1" ]; then
+    test_check="cargo test --locked -p $PACKAGE --lib -- --test-threads=1; cargo test --locked -p $PACKAGE --tests --no-run"
+    cargo test --locked -p "$PACKAGE" --lib -- --test-threads=1
+    cargo test --locked -p "$PACKAGE" --tests --no-run
+  else
+    test_check="cargo test --locked -p $PACKAGE --bins --no-run"
+    cargo test --locked -p "$PACKAGE" --bins --no-run
+  fi
 fi
 
-build_args=(build --target-dir "$TARGET_ROOT" --profile "$PROFILE" --target "$TARGET" -p "$PACKAGE")
+build_args=(build --locked --target-dir "$TARGET_ROOT" --profile "$PROFILE" --target "$TARGET" -p "$PACKAGE")
 for bin in $BINS; do
   build_args+=(--bin "$bin")
 done
@@ -127,6 +149,12 @@ safe_package="${PACKAGE//[^A-Za-z0-9_.-]/-}"
 artifact_id="$safe_package-$sha$dirty_suffix"
 out="$ARTIFACT_ROOT/$ARTIFACT_ARCH/$artifact_id"
 archive="$out.tar.gz"
+mkdir -p "$ARTIFACT_ROOT/$ARTIFACT_ARCH"
+lock_dir="$ARTIFACT_ROOT/$ARTIFACT_ARCH/.build-$safe_package.lock"
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  echo "another artifact build appears to be active for $PACKAGE: $lock_dir" >&2
+  exit 1
+fi
 if { [ -e "$out" ] || [ -e "$archive" ]; } && [ "$FORCE" != "1" ]; then
   echo "$out already exists; set FORCE=1 to replace it" >&2
   exit 1
@@ -170,10 +198,12 @@ fi
 if [ "$RUN_CHECKS" = "1" ]; then
   if [ -x tools/architecture_guard.sh ]; then
     manifest_args+=(--check "tools/architecture_guard.sh --changed")
+    manifest_args+=(--check "tools/architecture_guard.sh --all")
   fi
-  manifest_args+=(--check "cargo test -p $PACKAGE --all-targets -- --test-threads=1")
+  manifest_args+=(--check "$test_check")
 fi
 for bin in $BINS; do
+  manifest_args+=(--expected-binary "$bin")
   manifest_args+=(--binary "$bin:$PACKAGE")
 done
 python3 tools/build_manifest.py "${manifest_args[@]}"

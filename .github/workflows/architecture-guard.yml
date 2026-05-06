@@ -1,0 +1,82 @@
+name: Architecture Guard
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/architecture-guard.yml"
+      - ".github/workflows/operator-artifacts.yml"
+      - "AGENTS.md"
+      - "ARCHITECTURE_WAIVERS.md"
+      - "ARTIFACT_DEPLOY.md"
+      - "BUILD_ARCHITECTURE_REDESIGN_NO_HOUR_BUILDS.md"
+      - "BUILD_POLICY.md"
+      - "BUILD_REFACTOR_ROADMAP.md"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - ".cargo/**"
+      - "clippy.toml"
+      - "configs/**"
+      - "crates/**"
+      - "docs/**"
+      - "migrations/**"
+      - "ops/**"
+      - "rust-toolchain*"
+      - "rustfmt.toml"
+      - "tools/**"
+  push:
+    paths:
+      - ".github/workflows/architecture-guard.yml"
+      - ".github/workflows/operator-artifacts.yml"
+      - "AGENTS.md"
+      - "ARCHITECTURE_WAIVERS.md"
+      - "ARTIFACT_DEPLOY.md"
+      - "BUILD_ARCHITECTURE_REDESIGN_NO_HOUR_BUILDS.md"
+      - "BUILD_POLICY.md"
+      - "BUILD_REFACTOR_ROADMAP.md"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - ".cargo/**"
+      - "clippy.toml"
+      - "configs/**"
+      - "crates/**"
+      - "docs/**"
+      - "migrations/**"
+      - "ops/**"
+      - "rust-toolchain*"
+      - "rustfmt.toml"
+      - "tools/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  architecture-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve changed range
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="${{ github.event.pull_request.base.sha }}..HEAD"
+          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            range="${{ github.event.before }}..HEAD"
+          elif git rev-parse HEAD^ >/dev/null 2>&1; then
+            range="HEAD^..HEAD"
+          else
+            empty_tree="$(git hash-object -t tree /dev/null)"
+            range="$empty_tree..HEAD"
+          fi
+          echo "ARCH_GUARD_DIFF_RANGE=$range" >> "$GITHUB_ENV"
+          echo "architecture_guard_range=$range"
+
+      - name: Architecture guard
+        run: |
+          tools/architecture_guard.sh --changed
+          tools/architecture_guard.sh --all
