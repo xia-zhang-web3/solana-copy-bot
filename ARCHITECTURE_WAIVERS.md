@@ -39,6 +39,15 @@ Removal path:
 2. leave only `#[cfg(test)] mod tests;` declarations in production files,
 3. reduce production file line count in the same batch when feasible.
 
+## Guard Bootstrap Baseline
+
+The initial architecture-guard rollout may compare a pre-policy tree to the
+current refactor branch. In that specific range only, the guard records current
+include-shard debt as the baseline instead of rejecting the whole migration.
+
+After this baseline is on `main`, any increase in include-shard count is a
+normal guard failure.
+
 ## Emergency Production Build Waiver
 
 No active waiver.

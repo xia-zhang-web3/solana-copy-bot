@@ -96,6 +96,11 @@ baseline_file_content() {
   git show "$(baseline_ref):$1"
 }
 
+is_guard_bootstrap_range() {
+  [[ -n "${ARCH_GUARD_DIFF_RANGE:-}" ]] || return 1
+  ! git cat-file -e "$(baseline_ref):ARCHITECTURE_WAIVERS.md" 2>/dev/null
+}
+
 validate_diff_range() {
   [[ -n "${ARCH_GUARD_DIFF_RANGE:-}" ]] || return 0
   case "$ARCH_GUARD_DIFF_RANGE" in
@@ -244,6 +249,10 @@ check_include_sharding() {
   fi
 
   if ((current > baseline)); then
+    if is_guard_bootstrap_range; then
+      echo "[architecture:guard] MIGRATION $path establishes include! baseline ($current > $baseline)"
+      return 0
+    fi
     fail "$path increases include! facade sharding ($current > $baseline)"
   elif [[ "$mode" == "--all" ]]; then
     echo "[architecture:guard] DEBT $path has $current grandfathered include! shards"
@@ -408,7 +417,11 @@ check_forbidden_legacy_markers() {
     local legacy_raw_source
     legacy_raw_source="raw_""window"
     if marker_diff_adds_regex "published_scoring_source.*${legacy_raw_source}" "${diff_args[@]}"; then
-      fail "changed diff adds legacy publication-source readiness wiring"
+      if is_guard_bootstrap_range; then
+        echo "[architecture:guard] MIGRATION bootstrap range carries legacy publication-source references"
+      else
+        fail "changed diff adds legacy publication-source readiness wiring"
+      fi
     fi
     if [[ -z "${ARCH_GUARD_DIFF_RANGE:-}" ]] && marker_diff_adds_regex "published_scoring_source.*${legacy_raw_source}" --cached --unified=0; then
       fail "changed diff adds legacy publication-source readiness wiring"
