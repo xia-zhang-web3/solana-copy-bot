@@ -1,3 +1,6 @@
-include!("service_methods_09_replacement_promotion.rs");
-include!("service_methods_09_replacement_progress.rs");
-include!("service_methods_09_replacement_artifacts.rs");
+#[path = "service_methods_09_replacement_promotion.rs"]
+mod service_methods_09_replacement_promotion;
+#[path = "service_methods_09_replacement_progress.rs"]
+mod service_methods_09_replacement_progress;
+#[path = "service_methods_09_replacement_artifacts.rs"]
+mod service_methods_09_replacement_artifacts;

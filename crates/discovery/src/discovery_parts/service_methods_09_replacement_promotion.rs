@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn classify_recent_raw_replacement_promotion_contract(
+    pub(super) fn classify_recent_raw_replacement_promotion_contract(
         promoted_manifest_error: Option<&str>,
         staged_manifest_error: Option<&str>,
         promoted_exists: bool,
