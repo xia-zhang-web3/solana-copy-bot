@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn persisted_stream_progress_telemetry_from_state(
+    pub(crate) fn persisted_stream_progress_telemetry_from_state(
         &self,
         state: &PersistedStreamRebuildState,
         now: DateTime<Utc>,

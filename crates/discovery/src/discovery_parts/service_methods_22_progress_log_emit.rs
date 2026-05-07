@@ -1,7 +1,7 @@
 use super::*;
 
 impl DiscoveryService {
-    pub(super) fn log_persisted_stream_progress(
+    pub(crate) fn log_persisted_stream_progress(
         &self,
         telemetry: &PersistedStreamProgressTelemetry,
         message: &'static str,
