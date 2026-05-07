@@ -1,4 +1,6 @@
-fn append_render_overview(lines: &mut Vec<String>, output: &SnapshotOutput) {
+use super::*;
+
+pub(super) fn append_render_overview(lines: &mut Vec<String>, output: &SnapshotOutput) {
     lines.extend([
         format!("event={}", output.event),
         format!("state={}", output.state),

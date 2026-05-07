@@ -1,4 +1,6 @@
-fn render_human(output: &SnapshotOutput) -> String {
+use super::*;
+
+pub(super) fn render_human(output: &SnapshotOutput) -> String {
     let mut lines = Vec::new();
     append_render_overview(&mut lines, output);
     append_render_staged_progress(&mut lines, output);

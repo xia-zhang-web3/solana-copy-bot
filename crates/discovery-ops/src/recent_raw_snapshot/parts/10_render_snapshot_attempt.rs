@@ -1,4 +1,6 @@
-fn append_render_snapshot_attempt(lines: &mut Vec<String>, output: &SnapshotOutput) {
+use super::*;
+
+pub(super) fn append_render_snapshot_attempt(lines: &mut Vec<String>, output: &SnapshotOutput) {
     lines.extend([
         format!("source_db_bytes={}", output.source_db_bytes),
         format!("source_wal_bytes={}", output.source_wal_bytes),

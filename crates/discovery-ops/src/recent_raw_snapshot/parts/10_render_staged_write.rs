@@ -1,4 +1,6 @@
-fn append_render_staged_write(lines: &mut Vec<String>, output: &SnapshotOutput) {
+use super::*;
+
+pub(super) fn append_render_staged_write(lines: &mut Vec<String>, output: &SnapshotOutput) {
     lines.extend([
         format!(
             "staged_write_batch_count={}",

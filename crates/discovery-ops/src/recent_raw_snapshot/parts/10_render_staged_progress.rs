@@ -1,4 +1,6 @@
-fn append_render_staged_progress(lines: &mut Vec<String>, output: &SnapshotOutput) {
+use super::*;
+
+pub(super) fn append_render_staged_progress(lines: &mut Vec<String>, output: &SnapshotOutput) {
     lines.extend([
         format!("staged_progress_resumed={}", output.staged_progress_resumed),
         format!(
