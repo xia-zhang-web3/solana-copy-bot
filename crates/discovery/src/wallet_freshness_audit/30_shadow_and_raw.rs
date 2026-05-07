@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn build_shadow_signal_evidence(
+    pub(super) fn build_shadow_signal_evidence(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,
@@ -114,7 +116,7 @@ impl DiscoveryService {
         })
     }
 
-    fn classify_raw_truth_status(
+    pub(super) fn classify_raw_truth_status(
         &self,
         raw_coverage: ObservedSwapsCoverageSnapshot,
         window_start: DateTime<Utc>,

@@ -1,3 +1,5 @@
+use super::*;
+
 impl DiscoveryService {
     pub fn wallet_freshness_audit(
         &self,

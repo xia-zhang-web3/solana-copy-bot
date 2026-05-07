@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn build_rotation_signal_from_cycle_points(
+    pub(super) fn build_rotation_signal_from_cycle_points(
         &self,
         raw_truth_cycle_points: &[RawTruthCyclePoint],
         recent_cycles: usize,

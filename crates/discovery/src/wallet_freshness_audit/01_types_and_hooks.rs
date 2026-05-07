@@ -1,9 +1,11 @@
+use super::*;
+
 pub const DEFAULT_RECENT_CYCLES: usize = 3;
 pub const DEFAULT_HISTORY_CAPTURE_LIMIT: usize = 5;
 pub const DEFAULT_HISTORY_RECENT_HORIZON_MULTIPLIER: u64 = 2;
 
 #[cfg(test)]
-static CURRENT_RAW_TRUTH_SAMPLE_CALLS: AtomicUsize = AtomicUsize::new(0);
+pub(super) static CURRENT_RAW_TRUTH_SAMPLE_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(test)]
 pub(crate) fn reset_current_raw_truth_sample_call_count_for_tests() {
@@ -238,15 +240,15 @@ pub struct WalletFreshnessHistoryReport {
 }
 
 #[derive(Debug, Clone)]
-struct RawTruthSample {
-    window_start: DateTime<Utc>,
-    observed_swaps_loaded: usize,
-    eligible_wallet_count: usize,
-    top_wallet_ids: Vec<String>,
+pub(super) struct RawTruthSample {
+    pub(super) window_start: DateTime<Utc>,
+    pub(super) observed_swaps_loaded: usize,
+    pub(super) eligible_wallet_count: usize,
+    pub(super) top_wallet_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
-struct RawTruthCyclePoint {
-    sample_now: DateTime<Utc>,
-    sample: RawTruthSample,
+pub(super) struct RawTruthCyclePoint {
+    pub(super) sample_now: DateTime<Utc>,
+    pub(super) sample: RawTruthSample,
 }

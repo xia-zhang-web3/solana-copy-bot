@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn wallet_freshness_audit_with_cycle_points(
+    pub(super) fn wallet_freshness_audit_with_cycle_points(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,

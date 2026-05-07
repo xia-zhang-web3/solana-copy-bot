@@ -1,11 +1,13 @@
-fn publication_truth_for_audit(
+use super::*;
+
+pub(super) fn publication_truth_for_audit(
     publication_state: Option<&DiscoveryPublicationStateRow>,
 ) -> Option<RuntimePublishedUniverseTruth> {
     let publication_state = publication_state?;
     DiscoveryService::runtime_publication_truth_from_state(publication_state.clone())
 }
 
-fn compare_wallet_universes(left: &[String], right: &[String]) -> WalletUniverseComparison {
+pub(super) fn compare_wallet_universes(left: &[String], right: &[String]) -> WalletUniverseComparison {
     let left_set: BTreeSet<_> = left.iter().cloned().collect();
     let right_set: BTreeSet<_> = right.iter().cloned().collect();
     WalletUniverseComparison {
@@ -18,7 +20,7 @@ fn compare_wallet_universes(left: &[String], right: &[String]) -> WalletUniverse
     }
 }
 
-fn sorted_wallets_from_iter<I>(wallets: I) -> Vec<String>
+pub(super) fn sorted_wallets_from_iter<I>(wallets: I) -> Vec<String>
 where
     I: IntoIterator<Item = String>,
 {
@@ -28,7 +30,7 @@ where
     wallets
 }
 
-fn stable_wallets(samples: &[WalletFreshnessRawCycleSample]) -> Vec<String> {
+pub(super) fn stable_wallets(samples: &[WalletFreshnessRawCycleSample]) -> Vec<String> {
     let mut intersection = samples
         .first()
         .map(|sample| {
@@ -49,7 +51,7 @@ fn stable_wallets(samples: &[WalletFreshnessRawCycleSample]) -> Vec<String> {
     intersection.into_iter().collect()
 }
 
-fn compare_wallet_recent_activity_rows(
+pub(super) fn compare_wallet_recent_activity_rows(
     left: &WalletRecentActivityCountRow,
     right: &WalletRecentActivityCountRow,
 ) -> std::cmp::Ordering {
@@ -60,7 +62,7 @@ fn compare_wallet_recent_activity_rows(
         .then_with(|| left.wallet_id.cmp(&right.wallet_id))
 }
 
-fn dominant_wallet_share(
+pub(super) fn dominant_wallet_share(
     counts: &[WalletRecentActivityCountRow],
     total_count: usize,
 ) -> Option<f64> {
@@ -71,7 +73,7 @@ fn dominant_wallet_share(
     Some(dominant as f64 / total_count as f64)
 }
 
-fn activity_broadly_distributed(
+pub(super) fn activity_broadly_distributed(
     selected_wallet_count: usize,
     active_wallet_count: usize,
     dominant_share: Option<f64>,

@@ -1,3 +1,5 @@
+use super::*;
+
 impl WalletFreshnessCaptureSnapshot {
     pub fn to_storage_write(&self) -> Result<DiscoveryWalletFreshnessCaptureWrite> {
         Ok(DiscoveryWalletFreshnessCaptureWrite {
@@ -60,7 +62,7 @@ fn shadow_signal_present(capture: &WalletFreshnessCaptureSnapshot) -> bool {
     )
 }
 
-fn summarize_wallet_freshness_history(
+pub(super) fn summarize_wallet_freshness_history(
     generated_at: DateTime<Utc>,
     captures_requested: usize,
     recent_horizon_seconds: u64,
