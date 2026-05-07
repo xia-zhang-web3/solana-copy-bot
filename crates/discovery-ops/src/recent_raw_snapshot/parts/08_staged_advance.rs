@@ -1,4 +1,6 @@
-fn advance_staged_snapshot(
+use super::*;
+
+pub(super) fn advance_staged_snapshot(
     source_db_path: &Path,
     source_store: &SqliteStore,
     staged_store: &SqliteStore,

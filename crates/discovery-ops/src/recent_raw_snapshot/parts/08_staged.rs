@@ -1,4 +1,7 @@
-include!("08_staged_advance.rs");
+#[path = "08_staged_advance.rs"]
+mod advance;
+
+use self::advance::advance_staged_snapshot;
 
 fn resume_staged_snapshot_with_policy(
     source_db_path: &Path,
