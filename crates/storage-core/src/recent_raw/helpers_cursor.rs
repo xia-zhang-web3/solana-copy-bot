@@ -1,4 +1,11 @@
-fn row_to_swap_event(row: &Row<'_>) -> Result<SwapEvent> {
+use crate::DiscoveryRuntimeCursor;
+use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Utc};
+use copybot_core_types::{ExactSwapAmounts, SwapEvent};
+use rusqlite::Row;
+use std::{cmp::Ordering, time::Instant};
+
+pub(super) fn row_to_swap_event(row: &Row<'_>) -> Result<SwapEvent> {
     let ts_raw: String = row.get(8)?;
     let slot_raw: i64 = row.get(7)?;
     Ok(SwapEvent {
@@ -15,7 +22,7 @@ fn row_to_swap_event(row: &Row<'_>) -> Result<SwapEvent> {
     })
 }
 
-fn read_exact_swap_amounts(row: &Row<'_>) -> Result<Option<ExactSwapAmounts>> {
+pub(super) fn read_exact_swap_amounts(row: &Row<'_>) -> Result<Option<ExactSwapAmounts>> {
     let amount_in_raw: Option<String> = row.get(9)?;
     let amount_in_decimals_raw: Option<i64> = row.get(10)?;
     let amount_out_raw: Option<String> = row.get(11)?;
@@ -41,7 +48,7 @@ fn read_exact_swap_amounts(row: &Row<'_>) -> Result<Option<ExactSwapAmounts>> {
     }
 }
 
-fn parse_cursor(
+pub(super) fn parse_cursor(
     ts_raw: Option<String>,
     slot_raw: Option<i64>,
     signature: Option<String>,
@@ -56,7 +63,7 @@ fn parse_cursor(
     }
 }
 
-fn parse_optional_rfc3339_utc(
+pub(super) fn parse_optional_rfc3339_utc(
     raw: Option<String>,
     field_name: &str,
 ) -> Result<Option<DateTime<Utc>>> {
@@ -64,23 +71,26 @@ fn parse_optional_rfc3339_utc(
         .transpose()
 }
 
-fn parse_rfc3339_utc(raw: &str, field_name: &str) -> Result<DateTime<Utc>> {
+pub(super) fn parse_rfc3339_utc(raw: &str, field_name: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .map(|dt| dt.with_timezone(&Utc))
         .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))
 }
 
-fn cursor_cmp(left: &DiscoveryRuntimeCursor, right: &DiscoveryRuntimeCursor) -> Ordering {
+pub(super) fn cursor_cmp(
+    left: &DiscoveryRuntimeCursor,
+    right: &DiscoveryRuntimeCursor,
+) -> Ordering {
     left.ts_utc
         .cmp(&right.ts_utc)
         .then_with(|| left.slot.cmp(&right.slot))
         .then_with(|| left.signature.cmp(&right.signature))
 }
 
-fn elapsed_ms(started: Instant) -> u64 {
+pub(super) fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
 
-fn far_deadline() -> Instant {
+pub(super) fn far_deadline() -> Instant {
     Instant::now() + std::time::Duration::from_secs(24 * 60 * 60)
 }

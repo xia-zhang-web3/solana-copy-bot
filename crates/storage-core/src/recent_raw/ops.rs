@@ -1,18 +1,23 @@
+use super::{
+    helpers::{
+        advance_recent_raw_journal_state_for_batch, bulk_insert_sql,
+        effective_bulk_insert_chunk_rows, push_bulk_insert_values,
+        recent_raw_journal_state_cached_query, recent_raw_journal_state_query,
+        recent_raw_journal_state_row_exists, recent_raw_journal_write_summary,
+        sqlite_variable_limit, upsert_recent_raw_journal_state_on_conn,
+    },
+    helpers_cursor::{elapsed_ms, far_deadline, row_to_swap_event},
+    BULK_INSERT_HARD_CAP_ROWS, BULK_INSERT_PARAMS_PER_ROW,
+};
 use crate::{
-    DiscoveryRuntimeCursor, ObservedSwapCursorPage, RecentRawJournalStateRow,
-    RecentRawJournalWriteSummary, SqliteDiscoveryStore,
+    ObservedSwapCursorPage, RecentRawJournalStateRow, RecentRawJournalWriteSummary,
+    SqliteDiscoveryStore,
 };
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_core_types::{ExactSwapAmounts, SwapEvent};
-use rusqlite::{
-    params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension, Row,
-};
-use std::cmp::Ordering;
+use copybot_core_types::SwapEvent;
+use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
 use std::time::Instant;
-
-const BULK_INSERT_PARAMS_PER_ROW: usize = 13;
-const BULK_INSERT_HARD_CAP_ROWS: usize = 512;
 
 impl SqliteDiscoveryStore {
     pub fn ensure_recent_raw_journal_tables(&self) -> Result<()> {

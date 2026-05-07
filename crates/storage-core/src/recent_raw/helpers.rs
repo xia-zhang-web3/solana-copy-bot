@@ -1,4 +1,14 @@
-fn bulk_insert_sql(row_count: usize) -> String {
+use super::{
+    helpers_cursor::{cursor_cmp, parse_cursor, parse_optional_rfc3339_utc, parse_rfc3339_utc},
+    BULK_INSERT_HARD_CAP_ROWS, BULK_INSERT_PARAMS_PER_ROW,
+};
+use crate::{DiscoveryRuntimeCursor, RecentRawJournalStateRow, RecentRawJournalWriteSummary};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use copybot_core_types::SwapEvent;
+use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
+
+pub(super) fn bulk_insert_sql(row_count: usize) -> String {
     let placeholders = std::iter::repeat_n("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row_count)
         .collect::<Vec<_>>()
         .join(", ");
@@ -10,12 +20,12 @@ fn bulk_insert_sql(row_count: usize) -> String {
     )
 }
 
-fn effective_bulk_insert_chunk_rows(sqlite_variable_limit: usize) -> usize {
+pub(super) fn effective_bulk_insert_chunk_rows(sqlite_variable_limit: usize) -> usize {
     let sqlite_limit_rows = sqlite_variable_limit / BULK_INSERT_PARAMS_PER_ROW;
     BULK_INSERT_HARD_CAP_ROWS.min(sqlite_limit_rows).max(1)
 }
 
-fn sqlite_variable_limit(conn: &Connection) -> usize {
+pub(super) fn sqlite_variable_limit(conn: &Connection) -> usize {
     unsafe {
         rusqlite::ffi::sqlite3_limit(
             conn.handle(),
@@ -26,7 +36,7 @@ fn sqlite_variable_limit(conn: &Connection) -> usize {
     .max(0) as usize
 }
 
-fn push_bulk_insert_values(values: &mut Vec<SqlValue>, swap: &SwapEvent) {
+pub(super) fn push_bulk_insert_values(values: &mut Vec<SqlValue>, swap: &SwapEvent) {
     values.push(SqlValue::Text(swap.signature.clone()));
     values.push(SqlValue::Text(swap.wallet.clone()));
     values.push(SqlValue::Text(swap.dex.clone()));
@@ -62,7 +72,9 @@ fn push_bulk_insert_values(values: &mut Vec<SqlValue>, swap: &SwapEvent) {
     values.push(SqlValue::Text(swap.ts_utc.to_rfc3339()));
 }
 
-fn recent_raw_journal_state_query(conn: &Connection) -> Result<RecentRawJournalStateRow> {
+pub(super) fn recent_raw_journal_state_query(
+    conn: &Connection,
+) -> Result<RecentRawJournalStateRow> {
     let (row_count, covered_since, covered_through_cursor) = coverage_snapshot_on_conn(conn)?;
     let cached = recent_raw_journal_state_cached_query(conn)?;
     Ok(RecentRawJournalStateRow {
@@ -73,7 +85,9 @@ fn recent_raw_journal_state_query(conn: &Connection) -> Result<RecentRawJournalS
     })
 }
 
-fn recent_raw_journal_state_cached_query(conn: &Connection) -> Result<RecentRawJournalStateRow> {
+pub(super) fn recent_raw_journal_state_cached_query(
+    conn: &Connection,
+) -> Result<RecentRawJournalStateRow> {
     let row = conn
         .query_row(
             "SELECT covered_since_ts, covered_through_cursor_ts, covered_through_cursor_slot,
@@ -135,7 +149,7 @@ fn recent_raw_journal_state_cached_query(conn: &Connection) -> Result<RecentRawJ
     })
 }
 
-fn coverage_snapshot_on_conn(
+pub(super) fn coverage_snapshot_on_conn(
     conn: &Connection,
 ) -> Result<(usize, Option<DateTime<Utc>>, Option<DiscoveryRuntimeCursor>)> {
     let row_count: i64 = conn
@@ -176,7 +190,7 @@ fn coverage_snapshot_on_conn(
     ))
 }
 
-fn recent_raw_journal_state_row_exists(conn: &Connection) -> Result<bool> {
+pub(super) fn recent_raw_journal_state_row_exists(conn: &Connection) -> Result<bool> {
     Ok(conn
         .query_row(
             "SELECT 1 FROM recent_raw_journal_state WHERE id = 1",
@@ -188,7 +202,7 @@ fn recent_raw_journal_state_row_exists(conn: &Connection) -> Result<bool> {
         .is_some())
 }
 
-fn upsert_recent_raw_journal_state_on_conn(
+pub(super) fn upsert_recent_raw_journal_state_on_conn(
     conn: &Connection,
     state: &RecentRawJournalStateRow,
 ) -> Result<()> {
@@ -235,7 +249,7 @@ fn upsert_recent_raw_journal_state_on_conn(
     Ok(())
 }
 
-fn recent_raw_journal_write_summary(
+pub(super) fn recent_raw_journal_write_summary(
     state: &RecentRawJournalStateRow,
     batch_rows: usize,
     inserted_rows: usize,
@@ -251,7 +265,7 @@ fn recent_raw_journal_write_summary(
     }
 }
 
-fn advance_recent_raw_journal_state_for_batch(
+pub(super) fn advance_recent_raw_journal_state_for_batch(
     state: &mut RecentRawJournalStateRow,
     processed_swaps: &[SwapEvent],
     inserted_rows: usize,
@@ -288,5 +302,3 @@ fn advance_recent_raw_journal_state_for_batch(
     state.last_batch_completed_at = Some(completed_at);
     state.updated_at = Some(completed_at);
 }
-
-include!("helpers_cursor.rs");
