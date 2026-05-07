@@ -1,3 +1,5 @@
+use crate::*;
+
 #[path = "prelude_03_recent_raw_contracts.rs"]
 mod prelude_03_recent_raw_contracts;
 #[path = "prelude_03_recent_raw_state.rs"]

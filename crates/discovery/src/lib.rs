@@ -44,10 +44,19 @@ use self::windows::{
 };
 use quality_cache::BuyTradability;
 
-include!("discovery_parts/prelude_00.rs");
-include!("discovery_parts/prelude_01.rs");
-include!("discovery_parts/prelude_02.rs");
-include!("discovery_parts/prelude_03.rs");
+#[path = "discovery_parts/prelude_00.rs"]
+mod discovery_prelude_00;
+#[path = "discovery_parts/prelude_01.rs"]
+mod discovery_prelude_01;
+#[path = "discovery_parts/prelude_02.rs"]
+mod discovery_prelude_02;
+#[path = "discovery_parts/prelude_03.rs"]
+mod discovery_prelude_03;
+
+pub use discovery_prelude_00::*;
+pub(crate) use discovery_prelude_01::*;
+pub use discovery_prelude_02::*;
+pub use discovery_prelude_03::*;
 
 include!("discovery_parts/service_methods_00.rs");
 
