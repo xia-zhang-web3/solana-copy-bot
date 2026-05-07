@@ -12,7 +12,6 @@ copybot-discovery-v2 = { path = "../discovery-v2" }
 copybot-ingestion = { path = "../ingestion" }
 copybot-shadow = { path = "../shadow" }
 copybot-storage-core = { path = "../storage-core" }
-copybot-storage = { path = "../storage" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

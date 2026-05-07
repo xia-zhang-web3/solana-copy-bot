@@ -6,10 +6,11 @@ use super::types::{
 use crate::{log_gate_drop, to_shadow_candidate};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use copybot_core_types::CopySignalRow;
 use copybot_core_types::{
     SwapEvent, COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
 };
-use copybot_storage::{CopySignalRow, SqliteStore};
+use copybot_storage_core::{ShadowCloseOutcome, SqliteStore};
 use tracing::info;
 
 impl ShadowService {
@@ -249,7 +250,7 @@ impl ShadowService {
                         swap.ts_utc,
                     )?;
                 }
-                (copybot_storage::ShadowCloseOutcome::default(), Some(true))
+                (ShadowCloseOutcome::default(), Some(true))
             }
             "sell" => {
                 let qty = copy_notional_sol / candidate.price_sol_per_token;

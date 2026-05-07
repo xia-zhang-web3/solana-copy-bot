@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_storage::SqliteStore;
 use copybot_storage_core::{
-    is_fatal_sqlite_anyhow_error, SHADOW_CLOSE_CONTEXT_MARKET,
+    is_fatal_sqlite_anyhow_error, SqliteStore, SHADOW_CLOSE_CONTEXT_MARKET,
     SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
     SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE, STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES,
     STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES, STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,

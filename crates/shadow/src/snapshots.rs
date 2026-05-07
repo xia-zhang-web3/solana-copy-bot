@@ -1,7 +1,7 @@
 use super::types::{ShadowService, ShadowSnapshot};
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
-use copybot_storage::SqliteStore;
+use copybot_storage_core::SqliteStore;
 
 impl ShadowService {
     pub fn snapshot_24h(&self, store: &SqliteStore, now: DateTime<Utc>) -> Result<ShadowSnapshot> {

@@ -8,13 +8,9 @@ use copybot_core_types::TokenQuantity;
 use copybot_core_types::{Lamports, SignedLamports, SwapEvent};
 use copybot_ingestion::{IngestionRuntimeSnapshot, IngestionService};
 use copybot_shadow::{FollowSnapshot, ShadowService};
-use copybot_storage::{
-    sqlite_contention_snapshot as legacy_sqlite_contention_snapshot, SqliteStore,
-};
 use copybot_storage_core::{
-    is_fatal_sqlite_anyhow_error, run_observed_startup_step,
-    sqlite_contention_snapshot as core_sqlite_contention_snapshot, SqliteContentionSnapshot,
-    StartupStepOutcome,
+    is_fatal_sqlite_anyhow_error, run_observed_startup_step, sqlite_contention_snapshot,
+    SqliteContentionSnapshot, SqliteStore, StartupStepOutcome,
 };
 #[cfg(test)]
 use copybot_storage_core::{
@@ -34,19 +30,6 @@ use std::time::Instant as StdInstant;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, info, warn};
-
-fn sqlite_contention_snapshot() -> SqliteContentionSnapshot {
-    let core = core_sqlite_contention_snapshot();
-    let legacy = legacy_sqlite_contention_snapshot();
-    SqliteContentionSnapshot {
-        write_retry_total: core
-            .write_retry_total
-            .saturating_add(legacy.write_retry_total),
-        busy_error_total: core
-            .busy_error_total
-            .saturating_add(legacy.busy_error_total),
-    }
-}
 
 mod alerts;
 mod app_loop_ingestion;

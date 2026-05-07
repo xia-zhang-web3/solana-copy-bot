@@ -6,30 +6,91 @@ pub fn ensure_discovery_v2_schema(store: &SqliteDiscoveryStore) -> Result<()> {
         .conn
         .execute_batch(SCHEMA)
         .context("failed ensuring discovery v2 storage-core schema")?;
-    ensure_column(
-        store,
-        "discovery_strategy_state",
-        "publication_policy_fingerprint",
-        "TEXT",
-    )?;
-    ensure_column(
-        store,
-        "discovery_strategy_state",
-        "publication_runtime_cursor_ts",
-        "TEXT",
-    )?;
-    ensure_column(
-        store,
-        "discovery_strategy_state",
-        "publication_runtime_cursor_slot",
-        "INTEGER",
-    )?;
-    ensure_column(
-        store,
-        "discovery_strategy_state",
-        "publication_runtime_cursor_signature",
-        "TEXT",
-    )?;
+    ensure_discovery_strategy_state_table(store)?;
+    ensure_discovery_runtime_state_table(store)?;
+    Ok(())
+}
+
+pub(crate) fn ensure_discovery_strategy_state_table(store: &SqliteDiscoveryStore) -> Result<()> {
+    store
+        .conn
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS discovery_strategy_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                trusted_selection_bootstrap_required INTEGER NOT NULL DEFAULT 0,
+                trusted_selection_reason TEXT NOT NULL DEFAULT '',
+                trusted_selection_state TEXT NOT NULL DEFAULT 'invalid',
+                active_trusted_snapshot_id TEXT,
+                active_trusted_snapshot_window_start TEXT,
+                last_trusted_bootstrap_source_kind TEXT,
+                last_trusted_bootstrap_at TEXT,
+                bootstrap_degraded_active INTEGER NOT NULL DEFAULT 0,
+                bootstrap_degraded_reason TEXT,
+                bootstrap_degraded_armed_at TEXT,
+                publication_runtime_mode TEXT NOT NULL DEFAULT 'fail_closed',
+                publication_reason TEXT NOT NULL DEFAULT '',
+                publication_last_published_at TEXT,
+                publication_last_published_window_start TEXT,
+                publication_scoring_source TEXT,
+                publication_wallet_ids_json TEXT,
+                publication_policy_fingerprint TEXT,
+                publication_runtime_cursor_ts TEXT,
+                publication_runtime_cursor_slot INTEGER,
+                publication_runtime_cursor_signature TEXT,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .context("failed ensuring discovery_strategy_state table")?;
+    for (column, definition) in [
+        (
+            "trusted_selection_bootstrap_required",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("trusted_selection_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("trusted_selection_state", "TEXT NOT NULL DEFAULT 'invalid'"),
+        ("active_trusted_snapshot_id", "TEXT"),
+        ("active_trusted_snapshot_window_start", "TEXT"),
+        ("last_trusted_bootstrap_source_kind", "TEXT"),
+        ("last_trusted_bootstrap_at", "TEXT"),
+        ("bootstrap_degraded_active", "INTEGER NOT NULL DEFAULT 0"),
+        ("bootstrap_degraded_reason", "TEXT"),
+        ("bootstrap_degraded_armed_at", "TEXT"),
+        (
+            "publication_runtime_mode",
+            "TEXT NOT NULL DEFAULT 'fail_closed'",
+        ),
+        ("publication_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("publication_last_published_at", "TEXT"),
+        ("publication_last_published_window_start", "TEXT"),
+        ("publication_scoring_source", "TEXT"),
+        ("publication_wallet_ids_json", "TEXT"),
+        ("publication_policy_fingerprint", "TEXT"),
+        ("publication_runtime_cursor_ts", "TEXT"),
+        ("publication_runtime_cursor_slot", "INTEGER"),
+        ("publication_runtime_cursor_signature", "TEXT"),
+        (
+            "updated_at",
+            "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'",
+        ),
+    ] {
+        ensure_column(store, "discovery_strategy_state", column, definition)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_discovery_runtime_state_table(store: &SqliteDiscoveryStore) -> Result<()> {
+    store
+        .conn
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS discovery_runtime_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                cursor_ts TEXT NOT NULL,
+                cursor_slot INTEGER NOT NULL,
+                cursor_signature TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .context("failed ensuring discovery_runtime_state table")?;
     Ok(())
 }
 
@@ -131,7 +192,7 @@ fn ensure_column(
     store: &SqliteDiscoveryStore,
     table: &str,
     column: &str,
-    column_type: &str,
+    column_definition: &str,
 ) -> Result<()> {
     let pragma = format!("PRAGMA table_info({table})");
     let mut stmt = store.conn.prepare(&pragma)?;
@@ -142,7 +203,7 @@ fn ensure_column(
             return Ok(());
         }
     }
-    let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {column_type}");
+    let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {column_definition}");
     store
         .conn
         .execute(&alter, [])
@@ -293,6 +354,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_followlist_one_active_wallet
 
 CREATE TABLE IF NOT EXISTS discovery_strategy_state (
     id INTEGER PRIMARY KEY CHECK(id = 1),
+    trusted_selection_bootstrap_required INTEGER NOT NULL DEFAULT 0,
+    trusted_selection_reason TEXT NOT NULL DEFAULT '',
+    trusted_selection_state TEXT NOT NULL DEFAULT 'invalid',
+    active_trusted_snapshot_id TEXT,
+    active_trusted_snapshot_window_start TEXT,
+    last_trusted_bootstrap_source_kind TEXT,
+    last_trusted_bootstrap_at TEXT,
+    bootstrap_degraded_active INTEGER NOT NULL DEFAULT 0,
+    bootstrap_degraded_reason TEXT,
+    bootstrap_degraded_armed_at TEXT,
     publication_runtime_mode TEXT NOT NULL DEFAULT 'fail_closed',
     publication_reason TEXT NOT NULL DEFAULT '',
     publication_last_published_at TEXT,

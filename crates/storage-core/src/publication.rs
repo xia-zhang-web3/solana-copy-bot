@@ -109,6 +109,7 @@ impl SqliteDiscoveryStore {
         now: DateTime<Utc>,
         reason: &str,
     ) -> Result<FollowlistUpdateResult> {
+        crate::schema::ensure_discovery_v2_schema(self)?;
         let tx = self.conn.unchecked_transaction()?;
         upsert_wallets(&tx, wallets)?;
         insert_metrics(&tx, metrics)?;
@@ -131,12 +132,30 @@ impl SqliteDiscoveryStore {
         clear_published_truth: bool,
         policy_fingerprint: Option<&str>,
     ) -> Result<()> {
+        crate::schema::ensure_discovery_strategy_state_table(self)?;
         write_publication_state_on_conn(
             &self.conn,
             update,
             clear_published_truth,
             policy_fingerprint,
             None,
+        )
+    }
+
+    pub fn set_discovery_publication_state_with_identity(
+        &self,
+        update: &DiscoveryPublicationStateUpdate,
+        clear_published_truth: bool,
+        policy_fingerprint: Option<&str>,
+        publication_runtime_cursor: Option<&DiscoveryRuntimeCursor>,
+    ) -> Result<()> {
+        crate::schema::ensure_discovery_strategy_state_table(self)?;
+        write_publication_state_on_conn(
+            &self.conn,
+            update,
+            clear_published_truth,
+            policy_fingerprint,
+            publication_runtime_cursor,
         )
     }
 
@@ -151,6 +170,7 @@ impl SqliteDiscoveryStore {
         policy_fingerprint: &str,
         runtime_cursor: &DiscoveryRuntimeCursor,
     ) -> Result<FollowlistUpdateResult> {
+        crate::schema::ensure_discovery_v2_schema(self)?;
         let tx = self.conn.unchecked_transaction()?;
         upsert_wallets(&tx, wallets)?;
         insert_metrics(&tx, metrics)?;
@@ -275,6 +295,7 @@ impl SqliteDiscoveryStore {
     }
 
     pub fn set_discovery_runtime_cursor(&self, cursor: &DiscoveryRuntimeCursor) -> Result<()> {
+        crate::schema::ensure_discovery_runtime_state_table(self)?;
         write_discovery_runtime_cursor_on_conn(&self.conn, cursor)
     }
 

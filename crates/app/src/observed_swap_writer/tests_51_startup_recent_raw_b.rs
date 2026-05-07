@@ -167,9 +167,7 @@ fn recent_raw_journal_writer_phase_telemetry_orders_write_and_prune_stage1() -> 
         .context("recent_raw journal writer did not signal startup")?
         .map_err(|error| anyhow!(error))?;
 
-    let scenario_now = DateTime::parse_from_rfc3339("2026-04-29T18:50:00Z")
-        .expect("timestamp")
-        .with_timezone(&Utc);
+    let scenario_now = Utc::now();
     journal_sender.send(recent_raw_journal_write_request_for_test(
         0,
         3,

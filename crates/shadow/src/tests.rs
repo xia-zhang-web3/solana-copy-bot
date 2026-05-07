@@ -5,7 +5,7 @@ use copybot_config::ShadowConfig;
 use copybot_core_types::{
     ExactSwapAmounts, Lamports, SwapEvent, TokenQuantity, COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE,
 };
-use copybot_storage::SqliteStore;
+use copybot_storage_core::SqliteStore;
 use std::path::Path;
 use tempfile::tempdir;
 

@@ -10,3 +10,41 @@ pub const SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY: &str = "quarantined_legacy";
 
 pub const SHADOW_RISK_CONTEXT_MARKET: &str = "market";
 pub const SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY: &str = "quarantined_legacy";
+
+use chrono::{DateTime, Utc};
+use copybot_core_types::{Lamports, TokenQuantity};
+
+pub const SHADOW_LOT_OPEN_EPS: f64 = 1e-12;
+
+pub const POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER: &str = "legacy_pre_cutover";
+pub const POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER: &str = "exact_post_cutover";
+
+#[derive(Debug, Clone)]
+pub struct ShadowLotRow {
+    pub id: i64,
+    pub wallet_id: String,
+    pub token: String,
+    pub accounting_bucket: String,
+    pub risk_context: String,
+    pub qty: f64,
+    pub qty_exact: Option<TokenQuantity>,
+    pub cost_sol: f64,
+    pub cost_lamports: Option<Lamports>,
+    pub opened_ts: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ShadowCloseOutcome {
+    pub closed_qty: f64,
+    pub realized_pnl_sol: f64,
+    pub has_open_lots_after: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TokenMarketStats {
+    pub first_seen: Option<DateTime<Utc>>,
+    pub holders_proxy: u64,
+    pub liquidity_sol_proxy: f64,
+    pub volume_5m_sol: f64,
+    pub unique_traders_5m: u64,
+}

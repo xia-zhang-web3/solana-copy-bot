@@ -1,12 +1,10 @@
 use super::*;
 use copybot_core_types::WalletMetricRow;
-use copybot_storage::{
-    DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateRow,
-    DiscoveryTrustedSelectionStateUpdate, TrustedSelectionState, TrustedSnapshotSourceKind,
-};
 use copybot_storage_core::{
+    DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateRow,
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor,
-    DiscoveryRuntimeMode,
+    DiscoveryRuntimeMode, DiscoveryTrustedSelectionStateUpdate, TrustedSelectionState,
+    TrustedSnapshotSourceKind,
 };
 use rusqlite::{params, Connection};
 use std::collections::BTreeMap;
