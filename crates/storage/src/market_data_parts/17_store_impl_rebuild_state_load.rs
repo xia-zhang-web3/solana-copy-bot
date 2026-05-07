@@ -1,7 +1,7 @@
 use super::*;
 
 impl SqliteStore {
-    pub(super) fn load_discovery_persisted_rebuild_state_query(
+    pub(crate) fn load_discovery_persisted_rebuild_state_query(
         &self,
     ) -> Result<Option<DiscoveryPersistedRebuildStateRow>> {
         let raw = self

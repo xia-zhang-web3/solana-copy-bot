@@ -1,5 +1,7 @@
+use super::*;
+
 impl SqliteStore {
-    fn observed_wallet_activity_page_for_wallet_ids_in_window_with_budget(
+    pub(crate) fn observed_wallet_activity_page_for_wallet_ids_in_window_with_budget(
         &self,
         wallet_ids: &[String],
         since: DateTime<Utc>,
@@ -244,5 +246,4 @@ impl SqliteStore {
             ..ObservedWalletActivityPage::default()
         })
     }
-
 }

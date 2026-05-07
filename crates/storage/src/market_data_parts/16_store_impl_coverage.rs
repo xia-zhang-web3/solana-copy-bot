@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn observed_swaps_coverage_snapshot(&self) -> Result<ObservedSwapsCoverageSnapshot> {
         let row_count: i64 = self

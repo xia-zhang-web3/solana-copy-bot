@@ -1,5 +1,9 @@
+use super::*;
+
 impl SqliteStore {
-    fn observed_sol_leg_cursor_access_path(&self) -> Result<ObservedSolLegCursorAccessPath> {
+    pub(crate) fn observed_sol_leg_cursor_access_path(
+        &self,
+    ) -> Result<ObservedSolLegCursorAccessPath> {
         Ok(
             if self.sqlite_index_exists("idx_observed_swaps_sol_leg_ts_slot_signature")? {
                 ObservedSolLegCursorAccessPath::SolLegPartialIndex
@@ -9,7 +13,7 @@ impl SqliteStore {
         )
     }
 
-    fn ensure_observed_sol_leg_target_buy_mint_filter_table(&self) -> Result<()> {
+    pub(crate) fn ensure_observed_sol_leg_target_buy_mint_filter_table(&self) -> Result<()> {
         self.conn
             .execute_batch(&format!(
                 "CREATE TEMP TABLE IF NOT EXISTS {OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_TABLE} (
@@ -19,7 +23,7 @@ impl SqliteStore {
             .context("failed ensuring temporary observed SOL-leg target-mint filter table exists")
     }
 
-    fn ensure_observed_sol_leg_target_buy_mint_filter_meta_table(&self) -> Result<()> {
+    pub(crate) fn ensure_observed_sol_leg_target_buy_mint_filter_meta_table(&self) -> Result<()> {
         self.conn
             .execute_batch(&format!(
                 "CREATE TEMP TABLE IF NOT EXISTS {OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_META_TABLE} (
@@ -33,7 +37,9 @@ impl SqliteStore {
             )
     }
 
-    fn observed_sol_leg_target_buy_mint_filter_fingerprint(target_buy_mints: &[String]) -> String {
+    pub(crate) fn observed_sol_leg_target_buy_mint_filter_fingerprint(
+        target_buy_mints: &[String],
+    ) -> String {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         target_buy_mints.len().hash(&mut hasher);
         for mint in target_buy_mints {
@@ -42,7 +48,7 @@ impl SqliteStore {
         format!("{:016x}", hasher.finish())
     }
 
-    fn ensure_loaded_observed_sol_leg_target_buy_mint_filter(
+    pub(crate) fn ensure_loaded_observed_sol_leg_target_buy_mint_filter(
         &self,
         target_buy_mints: &[String],
     ) -> Result<()> {
@@ -105,7 +111,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn replace_observed_sol_leg_target_buy_mint_filter(
+    pub(crate) fn replace_observed_sol_leg_target_buy_mint_filter(
         &self,
         target_buy_mints: &[String],
     ) -> Result<()> {
@@ -131,7 +137,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn ensure_observed_wallet_activity_target_wallet_filter_table(&self) -> Result<()> {
+    pub(crate) fn ensure_observed_wallet_activity_target_wallet_filter_table(&self) -> Result<()> {
         self.conn
             .execute_batch(&format!(
                 "CREATE TEMP TABLE IF NOT EXISTS {OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_TABLE} (
@@ -143,7 +149,9 @@ impl SqliteStore {
             )
     }
 
-    fn ensure_observed_wallet_activity_target_wallet_filter_meta_table(&self) -> Result<()> {
+    pub(crate) fn ensure_observed_wallet_activity_target_wallet_filter_meta_table(
+        &self,
+    ) -> Result<()> {
         self.conn
             .execute_batch(&format!(
                 "CREATE TEMP TABLE IF NOT EXISTS {OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_META_TABLE} (
@@ -157,14 +165,18 @@ impl SqliteStore {
             )
     }
 
-    fn canonical_observed_wallet_activity_target_wallet_ids(wallet_ids: &[String]) -> Vec<String> {
+    pub(crate) fn canonical_observed_wallet_activity_target_wallet_ids(
+        wallet_ids: &[String],
+    ) -> Vec<String> {
         let mut canonical = wallet_ids.to_vec();
         canonical.sort();
         canonical.dedup();
         canonical
     }
 
-    fn observed_wallet_activity_target_wallet_filter_fingerprint(wallet_ids: &[String]) -> String {
+    pub(crate) fn observed_wallet_activity_target_wallet_filter_fingerprint(
+        wallet_ids: &[String],
+    ) -> String {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         wallet_ids.len().hash(&mut hasher);
         for wallet_id in wallet_ids {
@@ -173,7 +185,7 @@ impl SqliteStore {
         format!("{:016x}", hasher.finish())
     }
 
-    fn ensure_loaded_observed_wallet_activity_target_wallet_filter(
+    pub(crate) fn ensure_loaded_observed_wallet_activity_target_wallet_filter(
         &self,
         wallet_ids: &[String],
     ) -> Result<()> {
@@ -242,7 +254,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn replace_observed_wallet_activity_target_wallet_filter(
+    pub(crate) fn replace_observed_wallet_activity_target_wallet_filter(
         &self,
         wallet_ids: &[String],
     ) -> Result<()> {

@@ -20,7 +20,7 @@ impl SqliteStore {
         self.insert_recent_raw_journal_batch_internal(swaps, completed_at, Some(deadline))
     }
 
-    fn insert_recent_raw_journal_batch_internal(
+    pub(crate) fn insert_recent_raw_journal_batch_internal(
         &self,
         swaps: &[SwapEvent],
         completed_at: DateTime<Utc>,

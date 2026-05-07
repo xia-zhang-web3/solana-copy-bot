@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn for_each_observed_swap_since<F>(
         &self,
@@ -197,7 +199,7 @@ impl SqliteStore {
         })
     }
 
-    fn for_each_observed_swap_in_window_after_cursor_single_statement_with_budget<F>(
+    pub(crate) fn for_each_observed_swap_in_window_after_cursor_single_statement_with_budget<F>(
         &self,
         since: DateTime<Utc>,
         until: DateTime<Utc>,

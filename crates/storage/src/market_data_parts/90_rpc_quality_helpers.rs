@@ -1,4 +1,6 @@
-fn recent_raw_journal_write_summary(
+use super::*;
+
+pub(super) fn recent_raw_journal_write_summary(
     state: &RecentRawJournalStateRow,
     batch_rows: usize,
     inserted_rows: usize,
@@ -14,7 +16,7 @@ fn recent_raw_journal_write_summary(
     }
 }
 
-fn advance_recent_raw_journal_state_for_batch(
+pub(super) fn advance_recent_raw_journal_state_for_batch(
     state: &mut RecentRawJournalStateRow,
     processed_swaps: &[SwapEvent],
     inserted_rows: usize,
@@ -52,7 +54,7 @@ fn advance_recent_raw_journal_state_for_batch(
     state.updated_at = Some(completed_at);
 }
 
-fn duration_ms_ceil(duration: StdDuration) -> u64 {
+pub(super) fn duration_ms_ceil(duration: StdDuration) -> u64 {
     let micros = duration.as_micros();
     if micros == 0 {
         0
@@ -61,11 +63,15 @@ fn duration_ms_ceil(duration: StdDuration) -> u64 {
     }
 }
 
-fn rpc_result(payload: &Value) -> &Value {
+pub(super) fn rpc_result(payload: &Value) -> &Value {
     payload.get("result").unwrap_or(payload)
 }
 
-fn post_helius_json(client: &Client, helius_http_url: &str, payload: &Value) -> Result<Value> {
+pub(super) fn post_helius_json(
+    client: &Client,
+    helius_http_url: &str,
+    payload: &Value,
+) -> Result<Value> {
     let response = client
         .post(helius_http_url)
         .json(payload)
@@ -81,7 +87,11 @@ fn post_helius_json(client: &Client, helius_http_url: &str, payload: &Value) -> 
     Ok(body)
 }
 
-fn fetch_token_holders(client: &Client, helius_http_url: &str, mint: &str) -> Result<u64> {
+pub(super) fn fetch_token_holders(
+    client: &Client,
+    helius_http_url: &str,
+    mint: &str,
+) -> Result<u64> {
     let payload = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -102,7 +112,7 @@ fn fetch_token_holders(client: &Client, helius_http_url: &str, mint: &str) -> Re
     parse_token_holders_from_program_accounts_response(&response)
 }
 
-fn parse_token_holders_from_program_accounts_response(response: &Value) -> Result<u64> {
+pub(super) fn parse_token_holders_from_program_accounts_response(response: &Value) -> Result<u64> {
     let rpc_result = rpc_result(response);
     let accounts = rpc_result
         .as_array()
@@ -135,7 +145,7 @@ fn parse_token_holders_from_program_accounts_response(response: &Value) -> Resul
     Ok(unique_owners.len() as u64)
 }
 
-fn fetch_token_age_seconds(
+pub(super) fn fetch_token_age_seconds(
     client: &Client,
     helius_http_url: &str,
     mint: &str,

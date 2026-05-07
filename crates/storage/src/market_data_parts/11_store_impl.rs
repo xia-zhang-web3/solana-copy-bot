@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn insert_observed_swaps_batch_with_activity_days(
         &self,

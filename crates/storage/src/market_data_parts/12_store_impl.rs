@@ -1,3 +1,5 @@
+use super::*;
+
 #[path = "12_store_impl_exact_wallet_activity.rs"]
 mod store_impl_exact_wallet_activity;
 #[path = "12_store_impl_staged_wallet_activity.rs"]

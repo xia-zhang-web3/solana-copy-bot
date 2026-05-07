@@ -1,4 +1,6 @@
-fn recent_raw_journal_coverage_snapshot_on_conn(
+use super::*;
+
+pub(super) fn recent_raw_journal_coverage_snapshot_on_conn(
     conn: &Connection,
 ) -> Result<(usize, Option<DateTime<Utc>>, Option<DiscoveryRuntimeCursor>)> {
     let row_count: i64 = conn
@@ -42,7 +44,9 @@ fn recent_raw_journal_coverage_snapshot_on_conn(
     ))
 }
 
-fn recent_raw_journal_state_query(conn: &Connection) -> Result<RecentRawJournalStateRow> {
+pub(super) fn recent_raw_journal_state_query(
+    conn: &Connection,
+) -> Result<RecentRawJournalStateRow> {
     let (row_count, covered_since, covered_through_cursor) =
         recent_raw_journal_coverage_snapshot_on_conn(conn)?;
     let row = conn
@@ -104,7 +108,9 @@ fn recent_raw_journal_state_query(conn: &Connection) -> Result<RecentRawJournalS
     })
 }
 
-fn recent_raw_journal_state_cached_query(conn: &Connection) -> Result<RecentRawJournalStateRow> {
+pub(super) fn recent_raw_journal_state_cached_query(
+    conn: &Connection,
+) -> Result<RecentRawJournalStateRow> {
     let row = conn
         .query_row(
             "SELECT
@@ -192,7 +198,7 @@ fn recent_raw_journal_state_cached_query(conn: &Connection) -> Result<RecentRawJ
     })
 }
 
-fn recent_raw_journal_state_row_exists(conn: &Connection) -> Result<bool> {
+pub(super) fn recent_raw_journal_state_row_exists(conn: &Connection) -> Result<bool> {
     let row = conn
         .query_row(
             "SELECT 1
@@ -206,7 +212,7 @@ fn recent_raw_journal_state_row_exists(conn: &Connection) -> Result<bool> {
     Ok(row.is_some())
 }
 
-fn upsert_recent_raw_journal_state_on_conn(
+pub(super) fn upsert_recent_raw_journal_state_on_conn(
     conn: &Connection,
     state: &RecentRawJournalStateRow,
 ) -> Result<()> {

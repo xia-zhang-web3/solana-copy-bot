@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn insert_recent_raw_journal_batch_bulk_with_deadline(
         &self,
@@ -13,7 +15,7 @@ impl SqliteStore {
         )
     }
 
-    fn insert_recent_raw_journal_batch_bulk_with_deadline_internal(
+    pub(crate) fn insert_recent_raw_journal_batch_bulk_with_deadline_internal(
         &self,
         swaps: &[SwapEvent],
         completed_at: DateTime<Utc>,

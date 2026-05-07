@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn load_discovery_runtime_cursor(&self) -> Result<Option<DiscoveryRuntimeCursor>> {
         self.ensure_discovery_runtime_state_table()?;
@@ -13,7 +15,9 @@ impl SqliteStore {
         self.load_discovery_runtime_cursor_query()
     }
 
-    fn load_discovery_runtime_cursor_query(&self) -> Result<Option<DiscoveryRuntimeCursor>> {
+    pub(crate) fn load_discovery_runtime_cursor_query(
+        &self,
+    ) -> Result<Option<DiscoveryRuntimeCursor>> {
         let row: Option<(String, i64, String)> = self
             .conn
             .query_row(

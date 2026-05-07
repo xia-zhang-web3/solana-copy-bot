@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn token_market_stats(
         &self,

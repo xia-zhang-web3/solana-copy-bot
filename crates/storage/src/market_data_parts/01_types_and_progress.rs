@@ -1,16 +1,19 @@
-const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
-const OBSERVED_SWAP_CURSOR_PROGRESS_OPS: i32 = 2_000;
-const OBSERVED_SWAP_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
-const OBSERVED_SOL_LEG_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
-const OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_TABLE: &str = "temp_discovery_replay_target_buy_mints";
-const OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_META_TABLE: &str =
+use super::*;
+
+pub(super) const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+pub(super) const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+pub(super) const OBSERVED_SWAP_CURSOR_PROGRESS_OPS: i32 = 2_000;
+pub(super) const OBSERVED_SWAP_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
+pub(super) const OBSERVED_SOL_LEG_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
+pub(super) const OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_TABLE: &str =
+    "temp_discovery_replay_target_buy_mints";
+pub(super) const OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_META_TABLE: &str =
     "temp_discovery_replay_target_buy_mints_meta";
-const OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_TABLE: &str =
+pub(super) const OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_TABLE: &str =
     "temp_discovery_replay_candidate_wallets";
-const OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_META_TABLE: &str =
+pub(super) const OBSERVED_WALLET_ACTIVITY_TARGET_WALLET_TEMP_META_TABLE: &str =
     "temp_discovery_replay_candidate_wallets_meta";
-const OBSERVED_SWAPS_TAIL_CURSOR_QUERY: &str = "SELECT ts, slot, signature
+pub(super) const OBSERVED_SWAPS_TAIL_CURSOR_QUERY: &str = "SELECT ts, slot, signature
              FROM observed_swaps INDEXED BY idx_observed_swaps_ts_slot_signature
              ORDER BY ts DESC, slot DESC, signature DESC
              LIMIT 1";
@@ -21,8 +24,8 @@ pub(crate) const OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY: &str =
                  WHERE (ts, slot, signature) > (?1, ?2, ?3)
                  ORDER BY ts ASC, slot ASC, signature ASC
                  LIMIT ?4";
-const RECENT_RAW_JOURNAL_BULK_INSERT_PARAMS_PER_ROW: usize = 13;
-const RECENT_RAW_JOURNAL_BULK_INSERT_HARD_CAP_ROWS: usize = 512;
+pub(super) const RECENT_RAW_JOURNAL_BULK_INSERT_PARAMS_PER_ROW: usize = 13;
+pub(super) const RECENT_RAW_JOURNAL_BULK_INSERT_HARD_CAP_ROWS: usize = 512;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ObservedSwapCursorPage {
@@ -96,28 +99,28 @@ pub struct ObservedWalletActivityPage {
 }
 
 #[derive(Debug, Clone, Default)]
-struct ObservedWalletActivityWalletIdPage {
-    wallet_ids: Vec<String>,
-    time_budget_exhausted: bool,
+pub(super) struct ObservedWalletActivityWalletIdPage {
+    pub(super) wallet_ids: Vec<String>,
+    pub(super) time_budget_exhausted: bool,
 }
 
 #[derive(Debug, Clone, Default)]
-struct ObservedWalletActiveDayCountPage {
-    counts: HashMap<String, u32>,
-    time_budget_exhausted: bool,
+pub(super) struct ObservedWalletActiveDayCountPage {
+    pub(super) counts: HashMap<String, u32>,
+    pub(super) time_budget_exhausted: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct ObservedWalletActivityDaySummaryRow {
-    inclusive_day_count: u32,
-    has_start_day: bool,
-    has_end_day: bool,
+pub(super) struct ObservedWalletActivityDaySummaryRow {
+    pub(super) inclusive_day_count: u32,
+    pub(super) has_start_day: bool,
+    pub(super) has_end_day: bool,
 }
 
 #[derive(Debug, Clone, Default)]
-struct ObservedWalletActivityDaySummaryPage {
-    rows: HashMap<String, ObservedWalletActivityDaySummaryRow>,
-    time_budget_exhausted: bool,
+pub(super) struct ObservedWalletActivityDaySummaryPage {
+    pub(super) rows: HashMap<String, ObservedWalletActivityDaySummaryRow>,
+    pub(super) time_budget_exhausted: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -144,12 +147,12 @@ pub struct ObservedBuyMintOccurrenceCount {
     pub time_budget_exhausted: bool,
 }
 
-struct ProgressHandlerGuard<'a> {
-    conn: &'a Connection,
+pub(super) struct ProgressHandlerGuard<'a> {
+    pub(super) conn: &'a Connection,
 }
 
 impl<'a> ProgressHandlerGuard<'a> {
-    fn install(conn: &'a Connection, deadline: Instant) -> Self {
+    pub(super) fn install(conn: &'a Connection, deadline: Instant) -> Self {
         conn.progress_handler(
             OBSERVED_SWAP_CURSOR_PROGRESS_OPS,
             Some(move || Instant::now() >= deadline),

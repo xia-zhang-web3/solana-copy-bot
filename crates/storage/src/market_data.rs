@@ -22,27 +22,60 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::time::{Duration as StdDuration, Instant};
 
-include!("market_data_parts/01_types_and_progress.rs");
-include!("market_data_parts/02_recent_raw_helpers.rs");
-include!("market_data_parts/02_recent_raw_state_helpers.rs");
-include!("market_data_parts/10_store_impl.rs");
-include!("market_data_parts/10_store_impl_bulk_recent_raw.rs");
-include!("market_data_parts/11_store_impl.rs");
-include!("market_data_parts/11_store_impl_streaming.rs");
-include!("market_data_parts/12_store_impl.rs");
-include!("market_data_parts/13_store_impl.rs");
-include!("market_data_parts/13_store_impl_activity_helpers.rs");
-include!("market_data_parts/14_store_impl_filters.rs");
-include!("market_data_parts/14_store_impl.rs");
-include!("market_data_parts/15_store_impl.rs");
-include!("market_data_parts/15_store_impl_buy_mint_counts.rs");
-include!("market_data_parts/16_store_impl.rs");
-include!("market_data_parts/16_store_impl_coverage.rs");
-include!("market_data_parts/16_store_impl_discovery_cursor.rs");
-include!("market_data_parts/17_store_impl_rebuild_state.rs");
-include!("market_data_parts/17_store_impl.rs");
-include!("market_data_parts/18_store_impl.rs");
-include!("market_data_parts/90_rpc_quality_helpers.rs");
+#[path = "market_data_parts/02_recent_raw_helpers.rs"]
+mod recent_raw_helpers;
+#[path = "market_data_parts/02_recent_raw_state_helpers.rs"]
+mod recent_raw_state_helpers;
+#[path = "market_data_parts/90_rpc_quality_helpers.rs"]
+mod rpc_quality_helpers;
+#[path = "market_data_parts/13_store_impl_activity_helpers.rs"]
+mod store_impl_activity_helpers;
+#[path = "market_data_parts/10_store_impl_bulk_recent_raw.rs"]
+mod store_impl_bulk_recent_raw;
+#[path = "market_data_parts/15_store_impl_buy_mint_counts.rs"]
+mod store_impl_buy_mint_counts;
+#[path = "market_data_parts/15_store_impl.rs"]
+mod store_impl_buy_mints;
+#[path = "market_data_parts/16_store_impl_coverage.rs"]
+mod store_impl_coverage;
+#[path = "market_data_parts/16_store_impl_discovery_cursor.rs"]
+mod store_impl_discovery_cursor;
+#[path = "market_data_parts/14_store_impl_filters.rs"]
+mod store_impl_filters;
+#[path = "market_data_parts/11_store_impl.rs"]
+mod store_impl_observed_swaps;
+#[path = "market_data_parts/11_store_impl_streaming.rs"]
+mod store_impl_observed_swaps_streaming;
+#[path = "market_data_parts/18_store_impl.rs"]
+mod store_impl_quality_cache;
+#[path = "market_data_parts/17_store_impl.rs"]
+mod store_impl_rebuild;
+#[path = "market_data_parts/17_store_impl_rebuild_state.rs"]
+mod store_impl_rebuild_state;
+#[path = "market_data_parts/10_store_impl.rs"]
+mod store_impl_recent_raw;
+#[path = "market_data_parts/16_store_impl.rs"]
+mod store_impl_runtime_cursor;
+#[path = "market_data_parts/14_store_impl.rs"]
+mod store_impl_sol_leg;
+#[path = "market_data_parts/13_store_impl.rs"]
+mod store_impl_wallet_activity;
+#[path = "market_data_parts/12_store_impl.rs"]
+mod store_impl_wallet_activity_exact;
+#[path = "market_data_parts/01_types_and_progress.rs"]
+mod types_and_progress;
+
+use self::recent_raw_helpers::*;
+use self::recent_raw_state_helpers::*;
+use self::rpc_quality_helpers::*;
+pub(crate) use self::types_and_progress::OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY;
+use self::types_and_progress::*;
+pub use self::types_and_progress::{
+    ObservedBuyMintCount, ObservedBuyMintCountPage, ObservedBuyMintCountRow,
+    ObservedBuyMintOccurrenceCount, ObservedBuyMintPage, ObservedSolLegCursorAccessPath,
+    ObservedSolLegCursorPage, ObservedSwapCursorPage, ObservedWalletActivityDayCountSource,
+    ObservedWalletActivityPage, ObservedWalletActivityRow,
+};
 
 #[cfg(test)]
 #[path = "market_data/tests.rs"]

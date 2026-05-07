@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn list_unique_sol_buy_mints_since(&self, since: DateTime<Utc>) -> Result<HashSet<String>> {
         const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -28,7 +30,7 @@ impl SqliteStore {
         Ok(out)
     }
 
-    fn ensure_discovery_runtime_state_table(&self) -> Result<()> {
+    pub(crate) fn ensure_discovery_runtime_state_table(&self) -> Result<()> {
         self.conn
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS discovery_runtime_state (
@@ -43,7 +45,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn ensure_discovery_persisted_rebuild_state_table(&self) -> Result<()> {
+    pub(crate) fn ensure_discovery_persisted_rebuild_state_table(&self) -> Result<()> {
         self.conn
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS discovery_persisted_rebuild_state (
@@ -102,7 +104,9 @@ impl SqliteStore {
         })
     }
 
-    fn read_exact_swap_amounts(row: &rusqlite::Row<'_>) -> Result<Option<ExactSwapAmounts>> {
+    pub(crate) fn read_exact_swap_amounts(
+        row: &rusqlite::Row<'_>,
+    ) -> Result<Option<ExactSwapAmounts>> {
         let amount_in_raw: Option<String> = row
             .get(9)
             .context("failed reading observed_swaps.qty_in_raw")?;
@@ -153,5 +157,4 @@ impl SqliteStore {
             )),
         }
     }
-
 }

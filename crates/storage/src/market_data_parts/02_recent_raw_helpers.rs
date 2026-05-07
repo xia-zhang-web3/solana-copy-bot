@@ -1,17 +1,19 @@
+use super::*;
+
 #[cfg(test)]
 thread_local! {
-    static RECENT_RAW_BULK_WRITE_BUDGET_HOOK: RefCell<Option<Box<dyn FnMut(usize, usize) -> bool>>> =
+    pub(super) static RECENT_RAW_BULK_WRITE_BUDGET_HOOK: RefCell<Option<Box<dyn FnMut(usize, usize) -> bool>>> =
         RefCell::new(None);
 }
 
 #[cfg(test)]
 thread_local! {
-    static EXACT_WALLET_ACTIVITY_PRE_ROW_BUDGET_EXHAUSTION_HOOK: RefCell<bool> =
+    pub(super) static EXACT_WALLET_ACTIVITY_PRE_ROW_BUDGET_EXHAUSTION_HOOK: RefCell<bool> =
         RefCell::new(false);
 }
 
 #[cfg(test)]
-struct RecentRawBulkWriteBudgetHookGuard;
+pub(super) struct RecentRawBulkWriteBudgetHookGuard;
 
 #[cfg(test)]
 impl Drop for RecentRawBulkWriteBudgetHookGuard {
@@ -23,7 +25,9 @@ impl Drop for RecentRawBulkWriteBudgetHookGuard {
 }
 
 #[cfg(test)]
-fn install_recent_raw_bulk_write_budget_hook<F>(hook: F) -> RecentRawBulkWriteBudgetHookGuard
+pub(super) fn install_recent_raw_bulk_write_budget_hook<F>(
+    hook: F,
+) -> RecentRawBulkWriteBudgetHookGuard
 where
     F: FnMut(usize, usize) -> bool + 'static,
 {
@@ -39,7 +43,7 @@ where
 }
 
 #[cfg(test)]
-struct ExactWalletActivityPreRowBudgetExhaustionGuard;
+pub(super) struct ExactWalletActivityPreRowBudgetExhaustionGuard;
 
 #[cfg(test)]
 impl Drop for ExactWalletActivityPreRowBudgetExhaustionGuard {
@@ -51,7 +55,7 @@ impl Drop for ExactWalletActivityPreRowBudgetExhaustionGuard {
 }
 
 #[cfg(test)]
-fn force_exact_wallet_activity_pre_row_budget_exhaustion_for_test(
+pub(super) fn force_exact_wallet_activity_pre_row_budget_exhaustion_for_test(
 ) -> ExactWalletActivityPreRowBudgetExhaustionGuard {
     EXACT_WALLET_ACTIVITY_PRE_ROW_BUDGET_EXHAUSTION_HOOK.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -65,7 +69,7 @@ fn force_exact_wallet_activity_pre_row_budget_exhaustion_for_test(
 }
 
 #[cfg(test)]
-fn recent_raw_bulk_write_test_hook_requests_budget_exhaustion(
+pub(super) fn recent_raw_bulk_write_test_hook_requests_budget_exhaustion(
     processed_rows: usize,
     inserted_rows: usize,
 ) -> bool {
@@ -77,20 +81,20 @@ fn recent_raw_bulk_write_test_hook_requests_budget_exhaustion(
 }
 
 #[cfg(not(test))]
-fn recent_raw_bulk_write_test_hook_requests_budget_exhaustion(
+pub(super) fn recent_raw_bulk_write_test_hook_requests_budget_exhaustion(
     _processed_rows: usize,
     _inserted_rows: usize,
 ) -> bool {
     false
 }
 
-fn parse_rfc3339_utc(raw: &str, field_name: &str) -> Result<DateTime<Utc>> {
+pub(super) fn parse_rfc3339_utc(raw: &str, field_name: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .map(|dt| dt.with_timezone(&Utc))
         .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))
 }
 
-fn parse_optional_rfc3339_utc(
+pub(super) fn parse_optional_rfc3339_utc(
     raw: Option<String>,
     field_name: &str,
 ) -> Result<Option<DateTime<Utc>>> {
@@ -98,7 +102,7 @@ fn parse_optional_rfc3339_utc(
         .transpose()
 }
 
-fn parse_optional_day_start_utc(
+pub(super) fn parse_optional_day_start_utc(
     raw: Option<String>,
     field_name: &str,
 ) -> Result<Option<DateTime<Utc>>> {
@@ -113,7 +117,7 @@ fn parse_optional_day_start_utc(
     .transpose()
 }
 
-fn discovery_runtime_cursor_cmp(
+pub(super) fn discovery_runtime_cursor_cmp(
     left: &DiscoveryRuntimeCursor,
     right: &DiscoveryRuntimeCursor,
 ) -> Ordering {
@@ -123,7 +127,7 @@ fn discovery_runtime_cursor_cmp(
         .then_with(|| left.signature.cmp(&right.signature))
 }
 
-fn ensure_recent_raw_journal_tables_on_conn(conn: &Connection) -> Result<()> {
+pub(super) fn ensure_recent_raw_journal_tables_on_conn(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS observed_swaps (
             signature TEXT PRIMARY KEY,
@@ -159,7 +163,7 @@ fn ensure_recent_raw_journal_tables_on_conn(conn: &Connection) -> Result<()> {
     .context("failed ensuring recent raw journal tables exist")
 }
 
-fn recent_raw_journal_bulk_insert_sql(row_count: usize) -> String {
+pub(super) fn recent_raw_journal_bulk_insert_sql(row_count: usize) -> String {
     let row_placeholders = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     let placeholders = std::iter::repeat_n(row_placeholders, row_count)
         .collect::<Vec<_>>()
@@ -183,7 +187,7 @@ fn recent_raw_journal_bulk_insert_sql(row_count: usize) -> String {
     )
 }
 
-fn recent_raw_journal_effective_bulk_insert_chunk_rows(
+pub(super) fn recent_raw_journal_effective_bulk_insert_chunk_rows(
     requested_chunk_rows: Option<usize>,
     sqlite_variable_limit: usize,
 ) -> usize {
@@ -196,7 +200,7 @@ fn recent_raw_journal_effective_bulk_insert_chunk_rows(
         .max(1)
 }
 
-fn recent_raw_journal_sqlite_variable_limit(conn: &Connection) -> usize {
+pub(super) fn recent_raw_journal_sqlite_variable_limit(conn: &Connection) -> usize {
     unsafe {
         rusqlite::ffi::sqlite3_limit(
             conn.handle(),
@@ -207,11 +211,14 @@ fn recent_raw_journal_sqlite_variable_limit(conn: &Connection) -> usize {
     .max(0) as usize
 }
 
-fn recent_raw_elapsed_ms(started: Instant) -> u64 {
+pub(super) fn recent_raw_elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
 
-fn push_recent_raw_journal_bulk_insert_values(values: &mut Vec<SqlValue>, swap: &SwapEvent) {
+pub(super) fn push_recent_raw_journal_bulk_insert_values(
+    values: &mut Vec<SqlValue>,
+    swap: &SwapEvent,
+) {
     values.push(SqlValue::Text(swap.signature.clone()));
     values.push(SqlValue::Text(swap.wallet.clone()));
     values.push(SqlValue::Text(swap.dex.clone()));
@@ -247,11 +254,15 @@ fn push_recent_raw_journal_bulk_insert_values(values: &mut Vec<SqlValue>, swap: 
     values.push(SqlValue::Text(swap.ts_utc.to_rfc3339()));
 }
 
-fn recent_raw_journal_sqlite_error_is_operation_interrupted(error: &rusqlite::Error) -> bool {
+pub(super) fn recent_raw_journal_sqlite_error_is_operation_interrupted(
+    error: &rusqlite::Error,
+) -> bool {
     error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted)
 }
 
-fn recent_raw_journal_anyhow_error_is_operation_interrupted(error: &anyhow::Error) -> bool {
+pub(super) fn recent_raw_journal_anyhow_error_is_operation_interrupted(
+    error: &anyhow::Error,
+) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<rusqlite::Error>()

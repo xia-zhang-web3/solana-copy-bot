@@ -1,5 +1,7 @@
+use super::*;
+
 impl SqliteStore {
-    fn for_each_observed_sol_leg_swap_in_window_after_cursor_single_statement_for_loaded_target_buy_mint_filter_with_budget<
+    pub(crate) fn for_each_observed_sol_leg_swap_in_window_after_cursor_single_statement_for_loaded_target_buy_mint_filter_with_budget<
         F,
     >(
         &self,

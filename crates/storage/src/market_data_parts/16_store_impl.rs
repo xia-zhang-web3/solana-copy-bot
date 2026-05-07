@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn for_each_observed_swap_after_cursor<F>(
         &self,
@@ -115,7 +117,7 @@ impl SqliteStore {
         })
     }
 
-    fn for_each_observed_swap_after_cursor_single_statement_with_budget<F>(
+    pub(crate) fn for_each_observed_swap_after_cursor_single_statement_with_budget<F>(
         &self,
         cursor_ts: DateTime<Utc>,
         cursor_slot: u64,

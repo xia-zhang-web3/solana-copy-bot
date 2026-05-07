@@ -1,5 +1,7 @@
+use super::*;
+
 impl SqliteStore {
-    fn observed_wallet_activity_day_summaries_in_window_with_budget(
+    pub(super) fn observed_wallet_activity_day_summaries_in_window_with_budget(
         &self,
         wallet_ids: &[String],
         since: DateTime<Utc>,
@@ -90,7 +92,7 @@ impl SqliteStore {
         })
     }
 
-    fn observed_wallet_active_day_counts_from_swaps_in_window_with_budget(
+    pub(super) fn observed_wallet_active_day_counts_from_swaps_in_window_with_budget(
         &self,
         wallet_ids: &[String],
         since: DateTime<Utc>,
@@ -164,7 +166,7 @@ impl SqliteStore {
         })
     }
 
-    fn sqlite_index_exists(&self, index_name: &str) -> Result<bool> {
+    pub(crate) fn sqlite_index_exists(&self, index_name: &str) -> Result<bool> {
         Ok(self
             .conn
             .query_row(
@@ -256,5 +258,4 @@ impl SqliteStore {
             access_path,
         })
     }
-
 }
