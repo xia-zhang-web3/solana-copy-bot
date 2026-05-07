@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn discovery_scoring_ready_for_window(
         &self,

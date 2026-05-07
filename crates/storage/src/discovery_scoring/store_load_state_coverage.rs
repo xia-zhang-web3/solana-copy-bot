@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn load_discovery_scoring_covered_through(&self) -> Result<Option<DateTime<Utc>>> {
         self.load_discovery_scoring_state_ts("covered_through_ts")

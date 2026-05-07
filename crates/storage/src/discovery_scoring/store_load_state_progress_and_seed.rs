@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn clear_discovery_scoring_backfill_progress(&self) -> Result<()> {
         self.with_immediate_transaction_retry(
