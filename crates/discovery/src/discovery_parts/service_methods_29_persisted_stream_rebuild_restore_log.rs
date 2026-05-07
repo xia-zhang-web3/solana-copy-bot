@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn log_persisted_stream_rebuild_restore_outcome(
+    pub(super) fn log_persisted_stream_rebuild_restore_outcome(
         restore_outcome: PersistedStreamRebuildRestoreOutcome,
         state: &PersistedStreamRebuildState,
     ) {
