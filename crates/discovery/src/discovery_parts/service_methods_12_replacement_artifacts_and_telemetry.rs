@@ -1,3 +1,5 @@
+use super::*;
+
 impl DiscoveryService {
     pub fn explain_recent_raw_replacement_artifact_history_contract_read_only(
         state_root: &Path,
