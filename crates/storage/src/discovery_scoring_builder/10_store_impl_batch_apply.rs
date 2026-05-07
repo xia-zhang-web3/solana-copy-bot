@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn advance_discovery_scoring_builder_batch_in_memory_with_timings(
         &self,
@@ -108,13 +110,13 @@ impl SqliteStore {
                 let apply_ms = apply_started_at.elapsed().as_millis() as u64;
                 stage_end("aggregate_batch_apply", swaps.len(), apply_ms, "completed");
 
-                super::discovery_scoring::maybe_fail_after_materialization_before_checkpoint()?;
+                crate::discovery_scoring::maybe_fail_after_materialization_before_checkpoint()?;
 
                 stage_start("progress_checkpoint");
                 let progress_started_at = Instant::now();
                 let updated_at = Utc::now().to_rfc3339();
                 if let Err(error) =
-                    super::discovery_scoring::upsert_discovery_scoring_backfill_progress_on_conn(
+                    crate::discovery_scoring::upsert_discovery_scoring_backfill_progress_on_conn(
                         conn,
                         progress_start_ts,
                         progress_cursor,

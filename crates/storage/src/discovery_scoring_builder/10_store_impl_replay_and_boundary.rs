@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn begin_discovery_scoring_replay_builder(
         &self,
@@ -183,11 +185,11 @@ impl SqliteStore {
         let progress_update_ms = self.with_immediate_transaction_retry(
             "discovery scoring boundary lot batch with checkpoint",
             |conn| {
-                super::discovery_scoring::maybe_fail_after_materialization_before_checkpoint()?;
+                crate::discovery_scoring::maybe_fail_after_materialization_before_checkpoint()?;
 
                 let progress_started_at = Instant::now();
                 let updated_at = Utc::now().to_rfc3339();
-                super::discovery_scoring::upsert_discovery_scoring_backfill_progress_on_conn(
+                crate::discovery_scoring::upsert_discovery_scoring_backfill_progress_on_conn(
                     conn,
                     progress_start_ts,
                     progress_cursor,
