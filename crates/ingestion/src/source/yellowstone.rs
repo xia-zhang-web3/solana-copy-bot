@@ -133,9 +133,5 @@ fn parse_yellowstone_transaction_update(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::parse_proto_ui_amount;
-    use yellowstone_grpc_proto::prelude::UiTokenAmount;
-
-    include!("yellowstone_tests.rs");
-}
+#[path = "yellowstone_tests.rs"]
+mod tests;
