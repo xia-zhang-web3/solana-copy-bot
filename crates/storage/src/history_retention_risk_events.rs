@@ -1,5 +1,7 @@
+use super::*;
+
 impl SqliteStore {
-    fn delete_risk_events_before_batched(
+    pub(crate) fn delete_risk_events_before_batched(
         &self,
         cutoff: DateTime<Utc>,
         protect_undelivered_alerts: bool,

@@ -1,9 +1,8 @@
-use super::SqliteStore;
-use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
-use rusqlite::params;
+pub(crate) use anyhow::{Context, Result};
+pub(crate) use chrono::{DateTime, Utc};
+pub(crate) use rusqlite::params;
 
-const TERMINAL_EXECUTION_STATUSES: [&str; 3] = [
+pub(crate) const TERMINAL_EXECUTION_STATUSES: [&str; 3] = [
     "execution_confirmed",
     "execution_failed",
     "execution_dropped",
@@ -46,12 +45,12 @@ impl HistoryRetentionSummary {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ExecutionHistoryRetentionSummary {
-    fills_deleted: u64,
-    orders_deleted: u64,
-    copy_signals_deleted: u64,
-    order_batches: usize,
-    copy_signal_batches: usize,
-    orders_completed_full_sweep: bool,
-    copy_signals_completed_full_sweep: bool,
+pub(crate) struct ExecutionHistoryRetentionSummary {
+    pub(crate) fills_deleted: u64,
+    pub(crate) orders_deleted: u64,
+    pub(crate) copy_signals_deleted: u64,
+    pub(crate) order_batches: usize,
+    pub(crate) copy_signal_batches: usize,
+    pub(crate) orders_completed_full_sweep: bool,
+    pub(crate) copy_signals_completed_full_sweep: bool,
 }

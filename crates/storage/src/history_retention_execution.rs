@@ -1,5 +1,7 @@
+use super::*;
+
 impl SqliteStore {
-    fn delete_execution_history_before_batched(
+    pub(crate) fn delete_execution_history_before_batched(
         &self,
         orders_cutoff: DateTime<Utc>,
         copy_signals_cutoff: DateTime<Utc>,

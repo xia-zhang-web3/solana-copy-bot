@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn apply_history_retention(
         &self,

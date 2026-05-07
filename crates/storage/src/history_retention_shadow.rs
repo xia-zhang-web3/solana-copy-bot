@@ -1,5 +1,7 @@
+use super::*;
+
 impl SqliteStore {
-    fn delete_shadow_closed_trades_before_batched(
+    pub(crate) fn delete_shadow_closed_trades_before_batched(
         &self,
         cutoff: DateTime<Utc>,
         batch_size: usize,
