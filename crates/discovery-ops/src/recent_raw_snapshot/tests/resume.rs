@@ -1,3 +1,6 @@
+use super::helpers::*;
+use super::prelude::*;
+
 #[test]
 fn scheduled_run_reseeds_from_latest_surface_when_latest_outruns_staged_progress() -> Result<()> {
     let fixture = make_fixture("recent-raw-snapshot-outrun-stage")?;

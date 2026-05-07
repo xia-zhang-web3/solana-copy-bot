@@ -1,11 +1,13 @@
-struct Fixture {
-    journal_store: SqliteStore,
-    journal_db_path: PathBuf,
-    config_path: PathBuf,
-    _temp: tempfile::TempDir,
+use super::prelude::*;
+
+pub(super) struct Fixture {
+    pub(super) journal_store: SqliteStore,
+    pub(super) journal_db_path: PathBuf,
+    pub(super) config_path: PathBuf,
+    pub(super) _temp: tempfile::TempDir,
 }
 
-fn make_fixture(name: &str) -> Result<Fixture> {
+pub(super) fn make_fixture(name: &str) -> Result<Fixture> {
     let temp = tempdir().context("failed to create tempdir")?;
     let journal_db_path = temp.path().join(format!("{name}.db"));
     let config_path = temp.path().join(format!("{name}.toml"));
@@ -27,7 +29,7 @@ fn make_fixture(name: &str) -> Result<Fixture> {
 }
 
 impl Fixture {
-    fn snapshot_dir(&self) -> PathBuf {
+    pub(super) fn snapshot_dir(&self) -> PathBuf {
         self.config_path
             .parent()
             .expect("config parent")
@@ -35,7 +37,7 @@ impl Fixture {
     }
 }
 
-fn seed_recent_raw_journal(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+pub(super) fn seed_recent_raw_journal(store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
     store.insert_recent_raw_journal_batch(
         &[
             make_swap("sig-a", now - Duration::minutes(2), 10),
@@ -46,7 +48,7 @@ fn seed_recent_raw_journal(store: &SqliteStore, now: DateTime<Utc>) -> Result<()
     Ok(())
 }
 
-fn seed_recent_raw_journal_many(
+pub(super) fn seed_recent_raw_journal_many(
     store: &SqliteStore,
     now: DateTime<Utc>,
     count: usize,
@@ -64,7 +66,7 @@ fn seed_recent_raw_journal_many(
     Ok(())
 }
 
-fn seed_recent_raw_journal_range(
+pub(super) fn seed_recent_raw_journal_range(
     store: &SqliteStore,
     start: DateTime<Utc>,
     slot_start: u64,
@@ -84,12 +86,14 @@ fn seed_recent_raw_journal_range(
     Ok(())
 }
 
-fn load_snapshot_state(snapshot_path: &std::path::Path) -> Result<RecentRawJournalStateRow> {
+pub(super) fn load_snapshot_state(
+    snapshot_path: &std::path::Path,
+) -> Result<RecentRawJournalStateRow> {
     let snapshot_store = SqliteStore::open_read_only(snapshot_path)?;
     snapshot_store.recent_raw_journal_state_read_only()
 }
 
-fn assert_snapshot_manifest_matches_state(
+pub(super) fn assert_snapshot_manifest_matches_state(
     manifest: &RecentRawJournalSnapshotManifest,
     state: &RecentRawJournalStateRow,
     snapshot_path: &std::path::Path,
@@ -112,7 +116,7 @@ fn assert_snapshot_manifest_matches_state(
     Ok(())
 }
 
-fn make_swap(signature: &str, ts_utc: DateTime<Utc>, slot: u64) -> SwapEvent {
+pub(super) fn make_swap(signature: &str, ts_utc: DateTime<Utc>, slot: u64) -> SwapEvent {
     SwapEvent {
         wallet: "wallet-restore".to_string(),
         dex: "raydium".to_string(),
@@ -127,11 +131,11 @@ fn make_swap(signature: &str, ts_utc: DateTime<Utc>, slot: u64) -> SwapEvent {
     }
 }
 
-fn parse_ts(raw: &str) -> Result<DateTime<Utc>> {
+pub(super) fn parse_ts(raw: &str) -> Result<DateTime<Utc>> {
     Ok(DateTime::parse_from_rfc3339(raw)?.with_timezone(&Utc))
 }
 
-fn archive_count(snapshot_dir: &PathBuf) -> Result<usize> {
+pub(super) fn archive_count(snapshot_dir: &PathBuf) -> Result<usize> {
     Ok(std::fs::read_dir(snapshot_dir)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
@@ -145,7 +149,7 @@ fn archive_count(snapshot_dir: &PathBuf) -> Result<usize> {
         .count())
 }
 
-fn staged_artifact_count(snapshot_dir: &Path) -> Result<usize> {
+pub(super) fn staged_artifact_count(snapshot_dir: &Path) -> Result<usize> {
     Ok(std::fs::read_dir(snapshot_dir)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
@@ -161,7 +165,7 @@ fn staged_artifact_count(snapshot_dir: &Path) -> Result<usize> {
         .count())
 }
 
-fn seed_fake_archive_set(snapshot_dir: &Path, slug: &str) -> Result<()> {
+pub(super) fn seed_fake_archive_set(snapshot_dir: &Path, slug: &str) -> Result<()> {
     std::fs::create_dir_all(snapshot_dir)?;
     let sqlite_path = snapshot_dir.join(format!("discovery_recent_raw_{slug}.sqlite"));
     std::fs::write(&sqlite_path, format!("archive-{slug}"))?;
@@ -180,7 +184,7 @@ fn seed_fake_archive_set(snapshot_dir: &Path, slug: &str) -> Result<()> {
     Ok(())
 }
 
-fn assert_fake_archive_set_absent(snapshot_dir: &Path, slug: &str) {
+pub(super) fn assert_fake_archive_set_absent(snapshot_dir: &Path, slug: &str) {
     let sqlite_path = snapshot_dir.join(format!("discovery_recent_raw_{slug}.sqlite"));
     assert!(!sqlite_path.exists());
     assert!(!sqlite_path.with_extension("json").exists());
@@ -188,7 +192,7 @@ fn assert_fake_archive_set_absent(snapshot_dir: &Path, slug: &str) {
     assert!(!super::sqlite_snapshot_shm_path(&sqlite_path).exists());
 }
 
-fn assert_fake_archive_set_present(snapshot_dir: &Path, slug: &str) {
+pub(super) fn assert_fake_archive_set_present(snapshot_dir: &Path, slug: &str) {
     let sqlite_path = snapshot_dir.join(format!("discovery_recent_raw_{slug}.sqlite"));
     assert!(sqlite_path.exists());
     assert!(sqlite_path.with_extension("json").exists());
