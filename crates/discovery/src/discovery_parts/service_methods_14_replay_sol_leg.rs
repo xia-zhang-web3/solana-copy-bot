@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn state_needs_deep_replay_sol_leg_priority_recovery_contract(
+    pub(super) fn state_needs_deep_replay_sol_leg_priority_recovery_contract(
         state: &PersistedStreamRebuildState,
     ) -> bool {
         state.phase == DiscoveryPersistedRebuildPhase::Replay
@@ -9,7 +11,7 @@ impl DiscoveryService {
             && state.replay_rows_processed > 0
     }
 
-    fn state_needs_deep_replay_candidate_activity_backfill_priority_recovery_contract(
+    pub(super) fn state_needs_deep_replay_candidate_activity_backfill_priority_recovery_contract(
         state: &PersistedStreamRebuildState,
     ) -> bool {
         state.phase == DiscoveryPersistedRebuildPhase::Replay
@@ -17,7 +19,7 @@ impl DiscoveryService {
             && (!state.payload.by_wallet.is_empty() || state.phase_cursor.is_some())
     }
 
-    fn replay_sol_leg_processed_floor_pages(
+    pub(super) fn replay_sol_leg_processed_floor_pages(
         fetch_limit: usize,
         state: &PersistedStreamRebuildState,
     ) -> usize {
@@ -28,7 +30,7 @@ impl DiscoveryService {
         state.replay_pages_processed.max(rows_floor_pages)
     }
 
-    fn replay_sol_leg_budget_floor_pages(
+    pub(super) fn replay_sol_leg_budget_floor_pages(
         fetch_limit: usize,
         state: &PersistedStreamRebuildState,
     ) -> usize {
@@ -36,7 +38,7 @@ impl DiscoveryService {
             .max(state.payload.replay_sol_leg_budget_floor_pages)
     }
 
-    fn replay_sol_leg_last_partial_cycle_frontier_saturated(
+    pub(super) fn replay_sol_leg_last_partial_cycle_frontier_saturated(
         fetch_limit: usize,
         state: &PersistedStreamRebuildState,
     ) -> bool {
@@ -62,7 +64,7 @@ impl DiscoveryService {
             )
     }
 
-    fn replay_sol_leg_open_frontier_floor_pages(
+    pub(super) fn replay_sol_leg_open_frontier_floor_pages(
         fetch_limit: usize,
         state: &PersistedStreamRebuildState,
     ) -> usize {
@@ -75,7 +77,7 @@ impl DiscoveryService {
         }
     }
 
-    fn replay_sol_leg_remaining_publishable_horizon_ms(
+    pub(super) fn replay_sol_leg_remaining_publishable_horizon_ms(
         &self,
         state: &PersistedStreamRebuildState,
         now: DateTime<Utc>,
@@ -106,7 +108,7 @@ impl DiscoveryService {
         (remaining_ms > 0).then_some(remaining_ms)
     }
 
-    fn replay_sol_leg_target_ms_per_page_from_observed_cycle(
+    pub(super) fn replay_sol_leg_target_ms_per_page_from_observed_cycle(
         fetch_time_budget_ms: u64,
         fetch_page_limit: usize,
         last_partial_cycle_pages_processed: usize,
@@ -129,7 +131,7 @@ impl DiscoveryService {
         )
     }
 
-    fn replay_sol_leg_target_ms_per_page(
+    pub(super) fn replay_sol_leg_target_ms_per_page(
         &self,
         fetch_page_limit: usize,
         state: &PersistedStreamRebuildState,
@@ -144,7 +146,7 @@ impl DiscoveryService {
         )
     }
 
-    fn deep_replay_sol_leg_target_time_budget_uncapped(
+    pub(super) fn deep_replay_sol_leg_target_time_budget_uncapped(
         baseline_time_budget: StdDuration,
         target_floor_pages: usize,
         target_ms_per_page: u64,
@@ -162,7 +164,7 @@ impl DiscoveryService {
         StdDuration::from_millis(target_budget_ms.min(u64::MAX as u128) as u64)
     }
 
-    fn deep_replay_sol_leg_target_time_budget(
+    pub(super) fn deep_replay_sol_leg_target_time_budget(
         baseline_time_budget: StdDuration,
         target_floor_pages: usize,
         target_ms_per_page: u64,
@@ -178,7 +180,7 @@ impl DiscoveryService {
         StdDuration::from_millis(target_budget_ms.min(u64::MAX as u128) as u64)
     }
 
-    fn replay_sol_leg_repair_phase_page_limit(
+    pub(super) fn replay_sol_leg_repair_phase_page_limit(
         &self,
         fetch_page_limit: usize,
         repair_time_budget: StdDuration,
@@ -191,7 +193,7 @@ impl DiscoveryService {
             .saturating_mul(budget_multiplier.min(usize::MAX as u128).max(1) as usize)
     }
 
-    fn replay_sol_leg_time_budget_for_phase_page_limit_floor(
+    pub(super) fn replay_sol_leg_time_budget_for_phase_page_limit_floor(
         &self,
         fetch_page_limit: usize,
         phase_page_limit_floor: usize,
@@ -208,7 +210,7 @@ impl DiscoveryService {
     }
 
     #[cfg(test)]
-    fn deepen_persisted_stream_priority_recovery_contract_for_state(
+    pub(super) fn deepen_persisted_stream_priority_recovery_contract_for_state(
         &self,
         state: &PersistedStreamRebuildState,
         fetch_limit: usize,
