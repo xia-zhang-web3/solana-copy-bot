@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn log_persisted_stream_progress(
+    pub(super) fn log_persisted_stream_progress(
         &self,
         telemetry: &PersistedStreamProgressTelemetry,
         message: &'static str,

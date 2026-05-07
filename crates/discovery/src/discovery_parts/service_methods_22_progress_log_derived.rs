@@ -1,22 +1,24 @@
-struct PersistedStreamProgressLogDerived {
-    replay_wallet_stats_current_observed_wallet_floor: usize,
-    replay_wallet_stats_progress_floor_pages: usize,
-    replay_wallet_stats_wallet_batch_size: usize,
-    replay_wallet_stats_target_ms_per_page: u64,
-    replay_wallet_stats_last_partial_cycle_frontier_saturated: bool,
-    replay_wallet_stats_open_frontier_floor_pages: usize,
-    replay_wallet_stats_persistently_open_frontier: bool,
-    replay_wallet_stats_remaining_frontier_min_pages: usize,
-    replay_wallet_stats_remaining_frontier_min_wallets: usize,
-    replay_sol_leg_last_partial_cycle_frontier_saturated: bool,
-    replay_sol_leg_open_frontier_floor_pages: usize,
-    replay_sol_leg_remaining_frontier_min_pages: usize,
-    replay_sol_leg_remaining_frontier_min_rows: usize,
-    replay_sol_leg_target_ms_per_page: u64,
+use super::*;
+
+pub(super) struct PersistedStreamProgressLogDerived {
+    pub(super) replay_wallet_stats_current_observed_wallet_floor: usize,
+    pub(super) replay_wallet_stats_progress_floor_pages: usize,
+    pub(super) replay_wallet_stats_wallet_batch_size: usize,
+    pub(super) replay_wallet_stats_target_ms_per_page: u64,
+    pub(super) replay_wallet_stats_last_partial_cycle_frontier_saturated: bool,
+    pub(super) replay_wallet_stats_open_frontier_floor_pages: usize,
+    pub(super) replay_wallet_stats_persistently_open_frontier: bool,
+    pub(super) replay_wallet_stats_remaining_frontier_min_pages: usize,
+    pub(super) replay_wallet_stats_remaining_frontier_min_wallets: usize,
+    pub(super) replay_sol_leg_last_partial_cycle_frontier_saturated: bool,
+    pub(super) replay_sol_leg_open_frontier_floor_pages: usize,
+    pub(super) replay_sol_leg_remaining_frontier_min_pages: usize,
+    pub(super) replay_sol_leg_remaining_frontier_min_rows: usize,
+    pub(super) replay_sol_leg_target_ms_per_page: u64,
 }
 
 impl DiscoveryService {
-    fn persisted_stream_progress_log_derived(
+    pub(super) fn persisted_stream_progress_log_derived(
         &self,
         telemetry: &PersistedStreamProgressTelemetry,
     ) -> PersistedStreamProgressLogDerived {
