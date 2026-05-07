@@ -52,4 +52,6 @@ pub struct DiscoveryRecentRawRestoreStateUpdate {
     pub replay_completed_at: Option<DateTime<Utc>>,
 }
 
-pub use copybot_storage_core::{DiscoveryRuntimeArtifact, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION};
+pub use copybot_storage_core::{
+    DiscoveryRuntimeArtifact, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
+};

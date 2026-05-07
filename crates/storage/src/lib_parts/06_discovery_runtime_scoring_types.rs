@@ -1,3 +1,5 @@
+use super::*;
+
 #[path = "06_discovery_runtime_rebuild_types.rs"]
 mod discovery_runtime_rebuild_types;
 #[path = "06_discovery_runtime_restore_types.rs"]

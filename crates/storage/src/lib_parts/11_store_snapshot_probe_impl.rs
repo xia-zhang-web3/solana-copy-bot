@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn snapshot_source_metrics(&self) -> Result<SqliteSnapshotSourceMetrics> {
         let page_size: i64 = self

@@ -1,3 +1,5 @@
+use super::*;
+
 #[path = "05_discovery_publication_runtime_types.rs"]
 mod discovery_publication_runtime_types;
 #[path = "05_discovery_publication_snapshot_types.rs"]

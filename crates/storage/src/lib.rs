@@ -68,19 +68,40 @@ pub struct SqliteStore {
     conn: Connection,
 }
 
-include!("lib_parts/01_snapshot_types.rs");
-include!("lib_parts/02_snapshot_helpers.rs");
-include!("lib_parts/03_startup_types.rs");
-include!("lib_parts/04_startup_runtime.rs");
-include!("lib_parts/05_discovery_publication_types.rs");
-include!("lib_parts/06_discovery_runtime_scoring_types.rs");
-include!("lib_parts/10_store_connection_snapshot_impl.rs");
-include!("lib_parts/11_store_snapshot_probe_impl.rs");
+#[path = "lib_parts/05_discovery_publication_types.rs"]
+mod discovery_publication_types;
+#[path = "lib_parts/06_discovery_runtime_scoring_types.rs"]
+mod discovery_runtime_scoring_types;
+#[path = "lib_parts/90_money_helpers.rs"]
+mod money_helpers;
+#[path = "lib_parts/02_snapshot_helpers.rs"]
+mod snapshot_helpers;
+#[path = "lib_parts/01_snapshot_types.rs"]
+mod snapshot_types;
+#[path = "lib_parts/04_startup_runtime.rs"]
+mod startup_runtime;
+#[path = "lib_parts/03_startup_types.rs"]
+mod startup_types;
+#[path = "lib_parts/10_store_connection_snapshot_impl.rs"]
+mod store_connection_snapshot_impl;
+#[path = "lib_parts/11_store_snapshot_probe_impl.rs"]
+mod store_snapshot_probe_impl;
+
+pub use self::discovery_publication_types::*;
+pub use self::discovery_runtime_scoring_types::*;
+pub(crate) use self::money_helpers::*;
+pub use self::snapshot_helpers::SqliteSnapshotSourceMetrics;
+use self::snapshot_helpers::*;
+pub use self::snapshot_types::*;
+use self::startup_runtime::checkpoint_large_startup_wal_if_needed;
+pub use self::startup_runtime::*;
+pub use self::startup_types::*;
+use self::startup_types::{
+    sqlite_startup_large_wal_checkpoint_detail, sqlite_startup_large_wal_checkpoint_skip_detail,
+};
 
 #[cfg(test)]
 mod tests;
-
-include!("lib_parts/90_money_helpers.rs");
 
 #[cfg(test)]
 #[path = "lib_tests/90_runtime_artifact_tests.rs"]

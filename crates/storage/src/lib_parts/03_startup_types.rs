@@ -1,3 +1,5 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SqliteStartupLargeWalCheckpointSummary {
     pub threshold_bytes: u64,
@@ -8,7 +10,7 @@ pub struct SqliteStartupLargeWalCheckpointSummary {
     pub checkpointed_frames: i64,
 }
 
-fn sqlite_startup_large_wal_checkpoint_detail(
+pub(super) fn sqlite_startup_large_wal_checkpoint_detail(
     summary: SqliteStartupLargeWalCheckpointSummary,
 ) -> String {
     format!(
@@ -22,7 +24,7 @@ fn sqlite_startup_large_wal_checkpoint_detail(
     )
 }
 
-fn sqlite_startup_large_wal_checkpoint_skip_detail(
+pub(super) fn sqlite_startup_large_wal_checkpoint_skip_detail(
     reason: &str,
     threshold_bytes: u64,
     before_wal_bytes: Option<u64>,

@@ -1,4 +1,6 @@
-fn u64_to_sql_i64(field: &str, value: u64) -> Result<i64> {
+use super::*;
+
+pub(crate) fn u64_to_sql_i64(field: &str, value: u64) -> Result<i64> {
     i64::try_from(value)
         .with_context(|| format!("{}={} exceeds sqlite INTEGER max (i64::MAX)", field, value))
 }
@@ -101,7 +103,7 @@ pub(crate) fn token_quantity_from_sql(
     }
 }
 
-fn split_token_quantity_pro_rata(
+pub(crate) fn split_token_quantity_pro_rata(
     total: TokenQuantity,
     consumed_qty: f64,
     remaining_qty: f64,
@@ -221,7 +223,11 @@ pub(crate) fn shadow_closed_trade_pnl_lamports(
         .with_context(|| format!("failed deriving shadow closed trade pnl_lamports in {context}"))
 }
 
-fn parse_non_negative_i64(field: &str, order_id: &str, value: Option<i64>) -> Result<Option<u64>> {
+pub(crate) fn parse_non_negative_i64(
+    field: &str,
+    order_id: &str,
+    value: Option<i64>,
+) -> Result<Option<u64>> {
     match value {
         Some(value) if value < 0 => Err(anyhow!(
             "invalid {}={} for order_id={} (must be >= 0)",
@@ -234,7 +240,7 @@ fn parse_non_negative_i64(field: &str, order_id: &str, value: Option<i64>) -> Re
     }
 }
 
-fn signed_lamports_to_sql_i64(field: &str, value: SignedLamports) -> Result<i64> {
+pub(crate) fn signed_lamports_to_sql_i64(field: &str, value: SignedLamports) -> Result<i64> {
     i64::try_from(value.as_i128()).with_context(|| {
         format!(
             "{}={} exceeds sqlite INTEGER range (i64)",

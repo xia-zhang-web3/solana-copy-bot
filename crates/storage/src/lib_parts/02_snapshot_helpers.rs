@@ -1,10 +1,14 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SqliteSnapshotSourceMetrics {
     pub page_size_bytes: usize,
     pub page_count: usize,
 }
 
-fn retry_reason_from_summary(summary: &SqliteSnapshotSummary) -> SqliteSnapshotRetryReason {
+pub(super) fn retry_reason_from_summary(
+    summary: &SqliteSnapshotSummary,
+) -> SqliteSnapshotRetryReason {
     match (summary.busy_retry_count > 0, summary.locked_retry_count > 0) {
         (true, true) => SqliteSnapshotRetryReason::BusyAndLocked,
         (true, false) => SqliteSnapshotRetryReason::Busy,
@@ -13,7 +17,9 @@ fn retry_reason_from_summary(summary: &SqliteSnapshotSummary) -> SqliteSnapshotR
     }
 }
 
-fn retry_reason_from_sqlite_error(error: &anyhow::Error) -> Option<SqliteSnapshotRetryReason> {
+pub(super) fn retry_reason_from_sqlite_error(
+    error: &anyhow::Error,
+) -> Option<SqliteSnapshotRetryReason> {
     let mut saw_busy = false;
     let mut saw_locked = false;
     for cause in error.chain() {
@@ -33,7 +39,10 @@ fn retry_reason_from_sqlite_error(error: &anyhow::Error) -> Option<SqliteSnapsho
     }
 }
 
-fn record_snapshot_retry(summary: &mut SqliteSnapshotSummary, reason: SqliteSnapshotRetryReason) {
+pub(super) fn record_snapshot_retry(
+    summary: &mut SqliteSnapshotSummary,
+    reason: SqliteSnapshotRetryReason,
+) {
     match reason {
         SqliteSnapshotRetryReason::Busy => {
             summary.busy_retry_count = summary.busy_retry_count.saturating_add(1);
@@ -48,7 +57,7 @@ fn record_snapshot_retry(summary: &mut SqliteSnapshotSummary, reason: SqliteSnap
     }
 }
 
-fn set_snapshot_progress(
+pub(super) fn set_snapshot_progress(
     summary: &mut SqliteSnapshotSummary,
     progress: rusqlite::backup::Progress,
 ) {
@@ -59,13 +68,13 @@ fn set_snapshot_progress(
     summary.copied_page_count = total_page_count.saturating_sub(summary.remaining_page_count);
 }
 
-struct SqliteSnapshotReadTransactionGuard<'a> {
+pub(super) struct SqliteSnapshotReadTransactionGuard<'a> {
     conn: &'a Connection,
     active: bool,
 }
 
 impl<'a> SqliteSnapshotReadTransactionGuard<'a> {
-    fn begin(conn: &'a Connection) -> Result<Self> {
+    pub(super) fn begin(conn: &'a Connection) -> Result<Self> {
         conn.execute_batch("BEGIN DEFERRED TRANSACTION")
             .context("failed to begin sqlite snapshot read transaction")?;
         conn.query_row("SELECT COUNT(*) FROM sqlite_schema", [], |_row| Ok(()))
@@ -82,7 +91,7 @@ impl Drop for SqliteSnapshotReadTransactionGuard<'_> {
     }
 }
 
-fn prepare_snapshot_destination(destination: &Connection) -> Result<()> {
+pub(super) fn prepare_snapshot_destination(destination: &Connection) -> Result<()> {
     destination
         .pragma_update(None, "journal_mode", "OFF")
         .context("failed to set sqlite snapshot destination journal_mode=OFF")?;
@@ -95,7 +104,7 @@ fn prepare_snapshot_destination(destination: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn build_sqlite_immutable_read_only_uri(path: &Path) -> String {
+pub(super) fn build_sqlite_immutable_read_only_uri(path: &Path) -> String {
     let path = path.to_string_lossy();
     if path.starts_with('/') {
         format!("file://{path}?mode=ro&immutable=1")
@@ -110,7 +119,7 @@ fn sqlite_wal_path(path: &Path) -> PathBuf {
     PathBuf::from(wal_path)
 }
 
-fn sqlite_wal_size_bytes(path: &Path) -> Result<Option<u64>> {
+pub(super) fn sqlite_wal_size_bytes(path: &Path) -> Result<Option<u64>> {
     let wal_path = sqlite_wal_path(path);
     match fs::metadata(&wal_path) {
         Ok(metadata) => Ok(Some(metadata.len())),
