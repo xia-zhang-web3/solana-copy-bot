@@ -26,11 +26,5 @@ include!("discovery/50_publication_followlist_freshness.rs");
 include!("discovery/60_schema.rs");
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use anyhow::Context;
-    use std::path::Path;
-    use tempfile::tempdir;
-
-    include!("discovery/tests.rs");
-}
+#[path = "discovery/tests.rs"]
+mod tests;
