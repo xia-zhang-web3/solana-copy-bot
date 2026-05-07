@@ -1,12 +1,17 @@
-fn lamports_to_sol(lamports: Lamports) -> f64 {
+use anyhow::{anyhow, Result};
+use copybot_core_types::{Lamports, SignedLamports};
+
+use crate::constants::LAMPORTS_PER_SOL;
+
+pub(crate) fn lamports_to_sol(lamports: Lamports) -> f64 {
     lamports.as_u64() as f64 / LAMPORTS_PER_SOL
 }
 
-fn signed_lamports_to_sol(lamports: SignedLamports) -> f64 {
+pub(crate) fn signed_lamports_to_sol(lamports: SignedLamports) -> f64 {
     lamports.as_i128() as f64 / LAMPORTS_PER_SOL
 }
 
-fn sol_to_lamports_floor(sol: f64, label: &str) -> Result<Lamports> {
+pub(crate) fn sol_to_lamports_floor(sol: f64, label: &str) -> Result<Lamports> {
     if !sol.is_finite() || sol < 0.0 {
         return Err(anyhow!(
             "invalid {}={} (must be finite and >= 0)",
@@ -25,7 +30,7 @@ fn sol_to_lamports_floor(sol: f64, label: &str) -> Result<Lamports> {
     Ok(Lamports::new(scaled.floor() as u64))
 }
 
-fn sol_to_signed_lamports_conservative(sol: f64, label: &str) -> Result<SignedLamports> {
+pub(crate) fn sol_to_signed_lamports_conservative(sol: f64, label: &str) -> Result<SignedLamports> {
     if !sol.is_finite() {
         return Err(anyhow!("invalid {}={} (must be finite)", label, sol));
     }

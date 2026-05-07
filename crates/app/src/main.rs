@@ -1,8 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_config::{
-    load_from_env_or_default, normalize_ingestion_source, ExecutionConfig, RiskConfig, ShadowConfig,
-};
+use copybot_config::{load_from_env_or_default, ExecutionConfig, RiskConfig, ShadowConfig};
 #[cfg(test)]
 use copybot_core_types::TokenQuantity;
 use copybot_core_types::{Lamports, SignedLamports, SwapEvent};
@@ -28,7 +26,9 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration as StdDuration, Instant as StdInstant};
+#[cfg(test)]
+use std::time::Duration as StdDuration;
+use std::time::Instant as StdInstant;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, info, warn};
@@ -81,6 +81,8 @@ use crate::app_loop_shutdown::shutdown_app_loop_tasks;
 use crate::config_contract::{contains_placeholder_value, validate_execution_runtime_contract};
 use crate::discovery_runtime::{DiscoveryService, RuntimePublicationTruthResolution};
 use crate::history_retention::HistoryRetentionRunner;
+#[cfg(test)]
+use crate::observed_swap_writer::OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY;
 use crate::observed_swap_writer::{
     run_observed_swap_retention_maintenance_once, ObservedSwapRecentRawJournalConfig,
     ObservedSwapRetentionConfig, ObservedSwapRetentionMaintenanceSummary,
@@ -88,9 +90,8 @@ use crate::observed_swap_writer::{
     OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_CAPACITY_MULTIPLIER,
     OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_COALESCE_MAX_BATCHES,
     OBSERVED_SWAP_RETENTION_PARTIAL_RETRY_INTERVAL, OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL,
-    OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL, OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
-    OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT, OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT,
-    OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT,
+    OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL, OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT,
+    OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT, OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT,
 };
 use crate::shadow_runtime_helpers::{handle_shadow_task_output, spawn_shadow_worker_task};
 use crate::shadow_scheduler::{ShadowScheduler, ShadowSwapSide, ShadowTaskInput, ShadowTaskKey};
@@ -109,7 +110,6 @@ use crate::swap_classification::{classify_swap_side, shadow_task_key_for_swap};
 use crate::task_spawns::spawn_shadow_snapshot_task;
 use crate::telemetry::format_error_chain;
 
-include!("app_parts/00.rs");
 include!("app_parts/00_sqlite_maintenance.rs");
 include!("app_parts/01.rs");
 include!("app_parts/01_irrelevant_backpressure.rs");
@@ -122,14 +122,33 @@ include!("app_parts/06_shadow_risk_infra.rs");
 
 mod app_consumer_telemetry;
 mod app_loop;
+mod app_main;
+mod cli_and_ingestion_override;
+mod constants;
+mod lamports;
 mod operator_emergency;
 use crate::app_consumer_telemetry::AppConsumerLoopTelemetry;
 #[cfg(test)]
 use crate::app_consumer_telemetry::AppConsumerLoopTelemetrySnapshot;
 use crate::app_loop::run_app_loop;
 #[cfg(test)]
+use crate::cli_and_ingestion_override::parse_ingestion_source_override;
+use crate::cli_and_ingestion_override::{
+    apply_ingestion_source_override, load_ingestion_source_override, parse_config_arg,
+};
+use crate::constants::*;
+use crate::lamports::{
+    lamports_to_sol, signed_lamports_to_sol, sol_to_lamports_floor,
+    sol_to_signed_lamports_conservative,
+};
+#[cfg(test)]
 use crate::operator_emergency::parse_operator_emergency_stop_reason;
 use crate::operator_emergency::OperatorEmergencyStop;
 
 #[cfg(test)]
 mod app_tests;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    app_main::run().await
+}

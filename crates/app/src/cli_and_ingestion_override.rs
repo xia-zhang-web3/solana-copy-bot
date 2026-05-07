@@ -1,4 +1,12 @@
-fn parse_config_arg() -> Option<PathBuf> {
+use anyhow::{Context, Result};
+use copybot_config::normalize_ingestion_source;
+use std::env;
+use std::fs;
+use std::path::PathBuf;
+
+use crate::constants::DEFAULT_INGESTION_OVERRIDE_PATH;
+
+pub(crate) fn parse_config_arg() -> Option<PathBuf> {
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--config" {
@@ -11,7 +19,7 @@ fn parse_config_arg() -> Option<PathBuf> {
     None
 }
 
-fn load_ingestion_source_override() -> Result<Option<String>> {
+pub(crate) fn load_ingestion_source_override() -> Result<Option<String>> {
     let override_path = env::var("SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE")
         .unwrap_or_else(|_| DEFAULT_INGESTION_OVERRIDE_PATH.to_string());
     let content = match fs::read_to_string(&override_path) {
@@ -22,7 +30,7 @@ fn load_ingestion_source_override() -> Result<Option<String>> {
         .with_context(|| format!("invalid ingestion source override in {override_path}"))
 }
 
-fn apply_ingestion_source_override(
+pub(crate) fn apply_ingestion_source_override(
     ingestion_source: &mut String,
     source_override: Option<String>,
 ) -> Option<String> {
@@ -33,7 +41,7 @@ fn apply_ingestion_source_override(
     None
 }
 
-fn parse_ingestion_source_override(content: &str) -> Result<Option<String>> {
+pub(crate) fn parse_ingestion_source_override(content: &str) -> Result<Option<String>> {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {

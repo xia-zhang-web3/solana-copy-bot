@@ -1,5 +1,6 @@
-#[tokio::main]
-async fn main() -> Result<()> {
+use super::*;
+
+pub(crate) async fn run() -> Result<()> {
     let cli_config = parse_config_arg();
     let default_path = cli_config.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
     let (mut config, loaded_config_path) = load_from_env_or_default(&default_path)?;
@@ -87,10 +88,9 @@ async fn main() -> Result<()> {
         startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
         Some(&startup_reporter),
         move || {
-            let system_event_store = copybot_storage_core::SqliteStore::open(Path::new(
-                &startup_heartbeat_sqlite_path,
-            ))
-            .context("failed to open startup heartbeat storage core")?;
+            let system_event_store =
+                copybot_storage_core::SqliteStore::open(Path::new(&startup_heartbeat_sqlite_path))
+                    .context("failed to open startup heartbeat storage core")?;
             system_event_store
                 .record_heartbeat("copybot-app", "startup")
                 .context("failed to write startup heartbeat")?;
@@ -111,10 +111,9 @@ async fn main() -> Result<()> {
             startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
             Some(&startup_reporter),
             move || {
-                let alert_store = copybot_storage_core::SqliteStore::open(Path::new(
-                    &alert_sqlite_path,
-                ))
-                .context("failed to open alert delivery storage core")?;
+                let alert_store =
+                    copybot_storage_core::SqliteStore::open(Path::new(&alert_sqlite_path))
+                        .context("failed to open alert delivery storage core")?;
                 alert_store
                     .ensure_alert_delivery_cursor("webhook")
                     .context("failed to initialize alert delivery cursor")?;
