@@ -1,5 +1,7 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LatestSurfaceStatus {
+pub(super) enum LatestSurfaceStatus {
     NotApplicable,
     Healthy,
     MissingLatestSnapshot,
@@ -9,7 +11,7 @@ enum LatestSurfaceStatus {
 }
 
 impl LatestSurfaceStatus {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::NotApplicable => "not_applicable",
             Self::Healthy => "healthy",
@@ -22,7 +24,7 @@ impl LatestSurfaceStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LatestSurfaceAction {
+pub(super) enum LatestSurfaceAction {
     ExplicitOutput,
     ExplicitOutputDeferred,
     HealthySkip,
@@ -38,7 +40,7 @@ enum LatestSurfaceAction {
 }
 
 impl LatestSurfaceAction {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::ExplicitOutput => "explicit_output",
             Self::ExplicitOutputDeferred => "explicit_output_deferred",
@@ -59,7 +61,7 @@ impl LatestSurfaceAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SnapshotState {
+pub(super) enum SnapshotState {
     Written,
     SkippedNotDue,
     SelfHealedLatestSurface,
@@ -69,7 +71,7 @@ enum SnapshotState {
 }
 
 impl SnapshotState {
-    fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Written => "written",
             Self::SkippedNotDue => "skipped_not_due",
@@ -80,7 +82,7 @@ impl SnapshotState {
         }
     }
 
-    fn exit_code(self) -> i32 {
+    pub(super) fn exit_code(self) -> i32 {
         match self {
             Self::Written | Self::SkippedNotDue | Self::SelfHealedLatestSurface => 0,
             Self::RetryableBusy | Self::Deferred => 75,
@@ -90,33 +92,33 @@ impl SnapshotState {
 }
 
 #[derive(Debug, Clone)]
-struct LatestSurfaceAssessment {
-    status: LatestSurfaceStatus,
-    manifest: Option<RecentRawJournalSnapshotManifest>,
+pub(super) struct LatestSurfaceAssessment {
+    pub(super) status: LatestSurfaceStatus,
+    pub(super) manifest: Option<RecentRawJournalSnapshotManifest>,
 }
 
 #[derive(Debug, Clone)]
-struct SnapshotSourceStats {
-    source_db_bytes: u64,
-    source_wal_bytes: u64,
-    source_page_size_bytes: usize,
-    source_page_count: usize,
+pub(super) struct SnapshotSourceStats {
+    pub(super) source_db_bytes: u64,
+    pub(super) source_wal_bytes: u64,
+    pub(super) source_page_size_bytes: usize,
+    pub(super) source_page_count: usize,
 }
 
 impl SnapshotSourceStats {
-    fn source_total_bytes(&self) -> u64 {
+    pub(super) fn source_total_bytes(&self) -> u64 {
         self.source_db_bytes.saturating_add(self.source_wal_bytes)
     }
 }
 
 #[derive(Debug, Clone)]
-struct SnapshotContext {
-    source_stats: SnapshotSourceStats,
-    policy: SqliteSnapshotPolicy,
+pub(super) struct SnapshotContext {
+    pub(super) source_stats: SnapshotSourceStats,
+    pub(super) policy: SqliteSnapshotPolicy,
 }
 
 #[derive(Debug, Clone)]
-struct SnapshotExecution {
-    rendered_output: String,
-    exit_code: i32,
+pub(super) struct SnapshotExecution {
+    pub(super) rendered_output: String,
+    pub(super) exit_code: i32,
 }
