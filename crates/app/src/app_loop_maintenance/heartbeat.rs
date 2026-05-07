@@ -1,4 +1,6 @@
-pub(super) async fn handle_app_heartbeat_tick(
+use super::*;
+
+pub(crate) async fn handle_app_heartbeat_tick(
     system_event_store: &copybot_storage_core::SqliteStore,
     alert_dispatcher: Option<&AlertDispatcher>,
     latest_ingestion_runtime_snapshot: &Arc<Mutex<Option<IngestionRuntimeSnapshot>>>,

@@ -1,4 +1,6 @@
-pub(super) fn handle_risk_refresh_tick(
+use super::*;
+
+pub(crate) fn handle_risk_refresh_tick(
     store: &SqliteStore,
     ingestion: &IngestionService,
     shadow_risk_guard: &mut ShadowRiskGuard,
@@ -22,7 +24,7 @@ pub(super) fn handle_risk_refresh_tick(
     Ok(())
 }
 
-pub(super) fn handle_observed_swap_retention_join(
+pub(crate) fn handle_observed_swap_retention_join(
     observed_swap_retention_join: Option<
         std::result::Result<
             Result<ObservedSwapRetentionMaintenanceSummary>,

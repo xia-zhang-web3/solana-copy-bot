@@ -182,6 +182,4 @@ fn endpoint_host_is_local(url: &Url) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    include!("alerts_tests.rs");
-}
+mod tests;
