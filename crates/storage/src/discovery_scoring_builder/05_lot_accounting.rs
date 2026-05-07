@@ -1,4 +1,6 @@
-fn apply_swap_lot_accounting(
+use super::*;
+
+pub(super) fn apply_swap_lot_accounting(
     open_lots: &mut HashMap<WalletTokenKey, VecDeque<BuilderLot>>,
     swap: &SwapEvent,
 ) -> LotAccountingStep {
@@ -87,7 +89,7 @@ fn apply_swap_lot_accounting(
     step
 }
 
-fn ensure_builder_open_lots_loaded(
+pub(super) fn ensure_builder_open_lots_loaded(
     store: &SqliteStore,
     builder: &mut DiscoveryScoringReplayBuilder,
     wallet_id: &str,

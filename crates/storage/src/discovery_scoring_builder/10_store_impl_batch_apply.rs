@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 
 impl SqliteStore {
     pub fn advance_discovery_scoring_builder_batch_in_memory_with_timings(

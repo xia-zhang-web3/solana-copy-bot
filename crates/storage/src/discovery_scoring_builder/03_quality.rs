@@ -1,4 +1,6 @@
-fn seed_market_windows_from_lookback(
+use super::*;
+
+pub(super) fn seed_market_windows_from_lookback(
     store: &SqliteStore,
     starting_cursor: CursorRef<'_>,
 ) -> Result<HashMap<String, RollingTokenMarketState>> {
@@ -33,7 +35,7 @@ fn load_quality_cache_state(
         }))
 }
 
-fn resolve_quality_snapshot(
+pub(super) fn resolve_quality_snapshot(
     store: &SqliteStore,
     cache: &mut HashMap<String, Option<BuilderQualityCacheState>>,
     signal_ts: DateTime<Utc>,

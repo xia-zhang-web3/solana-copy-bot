@@ -1,4 +1,6 @@
-fn prepare_discovery_scoring_builder_batch(
+use super::*;
+
+pub(super) fn prepare_discovery_scoring_builder_batch(
     store: &SqliteStore,
     builder: &mut DiscoveryScoringReplayBuilder,
     swaps: &[SwapEvent],
@@ -147,7 +149,7 @@ fn prepare_discovery_scoring_builder_batch(
     Ok((prepared, prepare_started_at.elapsed().as_millis() as u64))
 }
 
-fn prepare_discovery_scoring_boundary_lot_batch(
+pub(super) fn prepare_discovery_scoring_boundary_lot_batch(
     builder: &mut DiscoveryScoringBoundaryLotBuilder,
     swaps: &[SwapEvent],
 ) -> Result<u64> {

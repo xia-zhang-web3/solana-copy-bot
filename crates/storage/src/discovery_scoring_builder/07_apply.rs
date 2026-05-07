@@ -1,4 +1,6 @@
-fn flush_prepared_discovery_scoring_builder_batch_on_conn(
+use super::*;
+
+pub(super) fn flush_prepared_discovery_scoring_builder_batch_on_conn(
     conn: &Connection,
     prepared: &PreparedDiscoveryScoringBuilderBatch,
 ) -> Result<()> {

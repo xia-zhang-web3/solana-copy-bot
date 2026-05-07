@@ -1,4 +1,6 @@
-fn upsert_wallet_scoring_day_delta_on_conn(
+use super::*;
+
+pub(super) fn upsert_wallet_scoring_day_delta_on_conn(
     conn: &Connection,
     wallet_id: &str,
     activity_day: NaiveDate,
@@ -48,7 +50,7 @@ fn upsert_wallet_scoring_day_delta_on_conn(
     Ok(())
 }
 
-fn upsert_wallet_scoring_tx_minute_delta_on_conn(
+pub(super) fn upsert_wallet_scoring_tx_minute_delta_on_conn(
     conn: &Connection,
     wallet_id: &str,
     minute_bucket: i64,
@@ -68,7 +70,10 @@ fn upsert_wallet_scoring_tx_minute_delta_on_conn(
     Ok(())
 }
 
-fn upsert_token_quality_cache_on_conn(conn: &Connection, row: &QualityCacheUpsert) -> Result<()> {
+pub(super) fn upsert_token_quality_cache_on_conn(
+    conn: &Connection,
+    row: &QualityCacheUpsert,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO token_quality_cache(
             mint,
@@ -94,7 +99,7 @@ fn upsert_token_quality_cache_on_conn(conn: &Connection, row: &QualityCacheUpser
     Ok(())
 }
 
-fn export_boundary_seed_lots_from_open_lots(
+pub(super) fn export_boundary_seed_lots_from_open_lots(
     open_lots: &HashMap<WalletTokenKey, VecDeque<BuilderLot>>,
 ) -> Vec<DiscoveryScoringBoundarySeedLot> {
     let mut lots = open_lots

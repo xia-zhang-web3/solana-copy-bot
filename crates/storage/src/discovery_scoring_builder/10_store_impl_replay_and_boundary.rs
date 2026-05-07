@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 
 impl SqliteStore {
     pub fn begin_discovery_scoring_replay_builder(

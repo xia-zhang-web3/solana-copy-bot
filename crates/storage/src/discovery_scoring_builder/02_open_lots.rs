@@ -1,4 +1,8 @@
-fn load_all_open_lots(conn: &Connection) -> Result<HashMap<WalletTokenKey, VecDeque<BuilderLot>>> {
+use super::*;
+
+pub(super) fn load_all_open_lots(
+    conn: &Connection,
+) -> Result<HashMap<WalletTokenKey, VecDeque<BuilderLot>>> {
     let mut stmt = conn
         .prepare(
             "SELECT buy_signature, wallet_id, token, qty, cost_sol, opened_ts
@@ -39,7 +43,7 @@ fn load_all_open_lots(conn: &Connection) -> Result<HashMap<WalletTokenKey, VecDe
     Ok(out)
 }
 
-fn load_open_lots_for_wallet_token(
+pub(super) fn load_open_lots_for_wallet_token(
     conn: &Connection,
     wallet_id: &str,
     token: &str,
@@ -81,7 +85,7 @@ fn load_open_lots_for_wallet_token(
     Ok(out)
 }
 
-fn load_boundary_seed_lots_into_open_lots(
+pub(super) fn load_boundary_seed_lots_into_open_lots(
     seed_lots: &[DiscoveryScoringBoundarySeedLot],
 ) -> HashMap<WalletTokenKey, VecDeque<BuilderLot>> {
     let mut ordered = seed_lots.to_vec();
@@ -112,7 +116,7 @@ fn load_boundary_seed_lots_into_open_lots(
     out
 }
 
-fn load_persisted_boundary_lot_builder_state_on_conn(
+pub(super) fn load_persisted_boundary_lot_builder_state_on_conn(
     conn: &Connection,
 ) -> Result<Option<PersistedBoundaryLotBuilderState>> {
     let raw: Option<String> = conn
@@ -132,7 +136,7 @@ fn load_persisted_boundary_lot_builder_state_on_conn(
     .transpose()
 }
 
-fn upsert_persisted_boundary_lot_builder_state_on_conn(
+pub(super) fn upsert_persisted_boundary_lot_builder_state_on_conn(
     conn: &Connection,
     progress_start_ts: DateTime<Utc>,
     progress_cursor: &DiscoveryRuntimeCursor,
