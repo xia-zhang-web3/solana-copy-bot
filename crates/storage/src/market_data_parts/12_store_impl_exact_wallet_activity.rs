@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn observed_wallet_activity_page_for_exact_wallets_in_window_with_budget(
         &self,

@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn observed_wallet_activity_page_for_staged_wallet_ids_in_window_with_budget(
         &self,
@@ -22,7 +24,7 @@ impl SqliteStore {
         Ok(page)
     }
 
-    fn load_observed_wallet_activity_wallet_id_page_from_rows(
+    pub(super) fn load_observed_wallet_activity_wallet_id_page_from_rows(
         &self,
         mut wallet_ids_rows: rusqlite::Rows<'_>,
     ) -> Result<ObservedWalletActivityWalletIdPage> {
@@ -50,7 +52,8 @@ impl SqliteStore {
         Ok(wallet_id_page)
     }
 
-    fn observed_wallet_activity_wallet_id_query_exhausted_page() -> ObservedWalletActivityPage {
+    pub(super) fn observed_wallet_activity_wallet_id_query_exhausted_page(
+    ) -> ObservedWalletActivityPage {
         ObservedWalletActivityPage {
             rows: Vec::new(),
             rows_seen: 0,

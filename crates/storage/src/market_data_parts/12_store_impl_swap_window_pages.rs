@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn for_each_observed_swap_in_window_paged<F>(
         &self,
