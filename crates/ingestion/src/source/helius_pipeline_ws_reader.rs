@@ -1,4 +1,7 @@
-pub(super) async fn ws_reader_loop(
+use super::fetch_worker::connect_ws_stream;
+use super::*;
+
+pub(in crate::source) async fn ws_reader_loop(
     runtime_config: Arc<HeliusRuntimeConfig>,
     notification_queue: Arc<NotificationQueue>,
     ws_to_fetch_depth: Arc<AtomicUsize>,

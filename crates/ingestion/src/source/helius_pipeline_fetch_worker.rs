@@ -1,4 +1,6 @@
-pub(super) async fn fetch_worker_loop(
+use super::*;
+
+pub(in crate::source) async fn fetch_worker_loop(
     worker_id: usize,
     runtime_config: Arc<HeliusRuntimeConfig>,
     notification_queue: Arc<NotificationQueue>,
@@ -62,7 +64,7 @@ pub(super) async fn fetch_worker_loop(
     }
 }
 
-async fn connect_ws_stream(
+pub(in crate::source::helius_pipeline) async fn connect_ws_stream(
     runtime_config: &HeliusRuntimeConfig,
     request_id: &mut u64,
 ) -> Result<HeliusWsStream> {

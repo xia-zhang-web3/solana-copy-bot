@@ -1,5 +1,7 @@
+use super::*;
+
 impl IngestionTelemetry {
-    pub(super) fn snapshot(&self) -> IngestionRuntimeSnapshot {
+    pub(in crate::source) fn snapshot(&self) -> IngestionRuntimeSnapshot {
         let ingestion_lag_ms_p95 = match self.ingestion_lag_ms_samples.lock() {
             Ok(values) => percentile(&values.iter().copied().collect::<Vec<_>>(), 0.95),
             Err(_) => self.last_ingestion_lag_p95.load(Ordering::Relaxed),

@@ -9,8 +9,16 @@ use tracing::info;
 use super::core::{percentile, push_sample};
 use super::{IngestionRuntimeSnapshot, TELEMETRY_SAMPLE_CAPACITY};
 
-include!("telemetry_state.rs");
-include!("telemetry_samples.rs");
-include!("telemetry_report.rs");
-include!("telemetry_snapshot.rs");
-include!("telemetry_parse_reject.rs");
+#[path = "telemetry_parse_reject.rs"]
+mod parse_reject;
+#[path = "telemetry_report.rs"]
+mod report;
+#[path = "telemetry_samples.rs"]
+mod samples;
+#[path = "telemetry_snapshot.rs"]
+mod snapshot;
+#[path = "telemetry_state.rs"]
+mod state;
+
+pub(super) use self::parse_reject::classify_parse_reject_reason;
+pub(super) use self::state::IngestionTelemetry;

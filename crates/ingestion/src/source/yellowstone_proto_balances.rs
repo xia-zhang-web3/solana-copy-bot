@@ -1,4 +1,10 @@
-pub(super) fn infer_swap_from_proto_balances(
+use copybot_core_types::ExactSwapAmounts;
+use std::collections::HashMap;
+use yellowstone_grpc_proto::prelude::{TransactionStatusMeta, UiTokenAmount};
+
+use super::{MintDelta, ParsedUiAmount, SOL_MINT};
+
+pub(in crate::source) fn infer_swap_from_proto_balances(
     meta: &TransactionStatusMeta,
     signer_index: usize,
     signer: &str,
@@ -128,7 +134,9 @@ pub(super) fn infer_swap_from_proto_balances(
     None
 }
 
-pub(super) fn parse_proto_ui_amount(ui_amount: Option<&UiTokenAmount>) -> Option<ParsedUiAmount> {
+pub(in crate::source) fn parse_proto_ui_amount(
+    ui_amount: Option<&UiTokenAmount>,
+) -> Option<ParsedUiAmount> {
     let ui_amount = ui_amount?;
     let decimals = u8::try_from(ui_amount.decimals).ok()?;
     if !ui_amount.ui_amount_string.is_empty() {
@@ -172,7 +180,7 @@ fn signer_sol_delta_from_proto(
     })
 }
 
-pub(super) fn build_exact_swap_amounts(
+pub(in crate::source) fn build_exact_swap_amounts(
     amount_in: &ParsedUiAmount,
     amount_out: &ParsedUiAmount,
 ) -> Option<ExactSwapAmounts> {

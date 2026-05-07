@@ -43,7 +43,10 @@ use self::reorder::{ReorderBuffer, ReorderRelease};
 use self::telemetry::IngestionTelemetry;
 
 include!("source_parts/01_types_mock.rs");
-include!("source_parts/02_helius.rs");
+#[path = "source_parts/02_helius_new.rs"]
+mod helius_new;
+#[path = "source_parts/02_helius_runtime.rs"]
+mod helius_runtime;
 include!("source_parts/03_yellowstone_shell.rs");
 
 #[cfg(test)]

@@ -19,4 +19,7 @@ use super::{
     SeenSignatureEntry, YellowstoneParsedUpdate, YellowstoneRuntimeConfig, WS_IDLE_TIMEOUT_SECS,
 };
 
-include!("yellowstone_pipeline_loop.rs");
+#[path = "yellowstone_pipeline_loop.rs"]
+mod stream_loop;
+
+pub(super) use self::stream_loop::yellowstone_stream_loop;

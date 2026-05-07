@@ -23,5 +23,10 @@ use super::{
     WS_IDLE_TIMEOUT_SECS,
 };
 
-include!("helius_pipeline_ws_reader.rs");
-include!("helius_pipeline_fetch_worker.rs");
+#[path = "helius_pipeline_fetch_worker.rs"]
+mod fetch_worker;
+#[path = "helius_pipeline_ws_reader.rs"]
+mod ws_reader;
+
+pub(super) use self::fetch_worker::fetch_worker_loop;
+pub(super) use self::ws_reader::ws_reader_loop;

@@ -1,3 +1,5 @@
+use super::*;
+
 #[allow(dead_code)]
 impl HeliusWsSource {
     pub fn new(config: &IngestionConfig) -> Result<Self> {

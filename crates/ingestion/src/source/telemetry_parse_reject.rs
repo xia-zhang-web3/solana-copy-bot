@@ -1,4 +1,4 @@
-pub(super) fn classify_parse_reject_reason(error: &anyhow::Error) -> &'static str {
+pub(in crate::source) fn classify_parse_reject_reason(error: &anyhow::Error) -> &'static str {
     let lowered = error.to_string().to_ascii_lowercase();
     if lowered.contains("missing slot") {
         return "missing_slot";

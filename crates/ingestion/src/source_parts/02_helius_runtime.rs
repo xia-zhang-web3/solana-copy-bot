@@ -1,3 +1,5 @@
+use super::*;
+
 #[allow(dead_code)]
 impl HeliusWsSource {
     async fn next_observation(&mut self) -> Result<Option<RawSwapObservation>> {
@@ -141,7 +143,7 @@ impl HeliusWsSource {
         }
     }
 
-    fn push_reorder_entry(&mut self, fetched: FetchedObservation) {
+    pub(super) fn push_reorder_entry(&mut self, fetched: FetchedObservation) {
         self.runtime_config
             .telemetry
             .push_fetch_latency(fetched.fetch_latency_ms);
@@ -151,7 +153,7 @@ impl HeliusWsSource {
             .note_reorder_buffer_size(self.reorder.len());
     }
 
-    fn pop_ready_observation(&mut self) -> Option<RawSwapObservation> {
+    pub(super) fn pop_ready_observation(&mut self) -> Option<RawSwapObservation> {
         self.reorder
             .pop_ready()
             .map(|release| self.apply_reorder_release(release))

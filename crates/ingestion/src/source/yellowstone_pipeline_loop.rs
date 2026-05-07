@@ -1,4 +1,6 @@
-pub(super) async fn yellowstone_stream_loop(
+use super::*;
+
+pub(in crate::source) async fn yellowstone_stream_loop(
     runtime_config: Arc<YellowstoneRuntimeConfig>,
     output_queue: Arc<RawObservationQueue>,
     output_queue_depth: Arc<AtomicUsize>,

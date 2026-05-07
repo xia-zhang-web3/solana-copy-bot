@@ -1,5 +1,7 @@
+use super::*;
+
 impl IngestionTelemetry {
-    pub(super) fn maybe_report(
+    pub(in crate::source) fn maybe_report(
         &self,
         report_seconds: u64,
         ws_to_fetch_queue_depth: usize,

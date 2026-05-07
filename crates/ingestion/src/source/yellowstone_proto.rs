@@ -1,8 +1,7 @@
-use copybot_core_types::ExactSwapAmounts;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use yellowstone_grpc_proto::prelude::{
     CompiledInstruction, InnerInstruction, Message as SolMessage, SubscribeUpdateTransactionInfo,
-    TransactionStatusMeta, UiTokenAmount,
+    TransactionStatusMeta,
 };
 
 use super::{HeliusWsSource, SOL_MINT};
@@ -177,4 +176,9 @@ fn decode_program_id_from_inner_instruction(
         .cloned()
 }
 
-include!("yellowstone_proto_balances.rs");
+#[path = "yellowstone_proto_balances.rs"]
+mod balances;
+
+#[cfg(test)]
+pub(super) use self::balances::parse_proto_ui_amount;
+pub(super) use self::balances::{build_exact_swap_amounts, infer_swap_from_proto_balances};

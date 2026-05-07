@@ -1,29 +1,31 @@
+use super::*;
+
 impl IngestionTelemetry {
-    pub(super) fn push_fetch_latency(&self, value: u64) {
+    pub(in crate::source) fn push_fetch_latency(&self, value: u64) {
         if let Ok(mut guard) = self.fetch_latency_ms_samples.lock() {
             push_sample(&mut guard, value, TELEMETRY_SAMPLE_CAPACITY);
         }
     }
 
-    pub(super) fn push_ingestion_lag(&self, value: u64) {
+    pub(in crate::source) fn push_ingestion_lag(&self, value: u64) {
         if let Ok(mut guard) = self.ingestion_lag_ms_samples.lock() {
             push_sample(&mut guard, value, TELEMETRY_SAMPLE_CAPACITY);
         }
     }
 
-    pub(super) fn push_reorder_hold(&self, value: u64) {
+    pub(in crate::source) fn push_reorder_hold(&self, value: u64) {
         if let Ok(mut guard) = self.reorder_hold_ms_samples.lock() {
             push_sample(&mut guard, value, TELEMETRY_SAMPLE_CAPACITY);
         }
     }
 
-    pub(super) fn note_reorder_buffer_size(&self, size: usize) {
+    pub(in crate::source) fn note_reorder_buffer_size(&self, size: usize) {
         let _ = self
             .max_reorder_buffer_size
             .fetch_max(size, Ordering::Relaxed);
     }
 
-    pub(super) fn note_yellowstone_output_queue_metrics(
+    pub(in crate::source) fn note_yellowstone_output_queue_metrics(
         &self,
         depth: usize,
         capacity: usize,
@@ -37,7 +39,7 @@ impl IngestionTelemetry {
             .store(oldest_age_ms, Ordering::Relaxed);
     }
 
-    pub(super) fn note_parse_rejected(&self, error: &anyhow::Error) {
+    pub(in crate::source) fn note_parse_rejected(&self, error: &anyhow::Error) {
         self.parse_rejected_total.fetch_add(1, Ordering::Relaxed);
         let reason = classify_parse_reject_reason(error);
         if let Ok(mut guard) = self.parse_rejected_by_reason.lock() {
@@ -46,7 +48,7 @@ impl IngestionTelemetry {
         }
     }
 
-    pub(super) fn note_parse_fallback(&self, reason: &'static str) {
+    pub(in crate::source) fn note_parse_fallback(&self, reason: &'static str) {
         if let Ok(mut guard) = self.parse_fallback_by_reason.lock() {
             let entry = guard.entry(reason).or_insert(0);
             *entry = entry.saturating_add(1);
