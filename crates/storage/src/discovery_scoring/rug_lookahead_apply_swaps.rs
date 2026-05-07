@@ -1,4 +1,6 @@
-fn apply_discovery_scoring_swaps_on_conn(
+use super::*;
+
+pub(super) fn apply_discovery_scoring_swaps_on_conn(
     conn: &Connection,
     prepared_swaps: &[PreparedScoringSwap],
 ) -> Result<()> {
@@ -43,7 +45,7 @@ fn apply_discovery_scoring_boundary_lot_swaps_on_conn(
     Ok(())
 }
 
-fn apply_discovery_scoring_swaps_and_checkpoint_on_conn(
+pub(super) fn apply_discovery_scoring_swaps_and_checkpoint_on_conn(
     conn: &Connection,
     prepared_swaps: &[PreparedScoringSwap],
     progress_start_ts: DateTime<Utc>,
@@ -100,7 +102,7 @@ fn apply_discovery_scoring_swaps_and_checkpoint_on_conn(
     Ok((apply_ms, progress_update_ms))
 }
 
-fn apply_discovery_scoring_boundary_lot_swaps_and_checkpoint_on_conn(
+pub(super) fn apply_discovery_scoring_boundary_lot_swaps_and_checkpoint_on_conn(
     conn: &Connection,
     swaps: &[SwapEvent],
     progress_start_ts: DateTime<Utc>,
