@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn persisted_stream_priority_recovery_contract(
+    pub(super) fn persisted_stream_priority_recovery_contract(
         &self,
         runtime_store: &SqliteStore,
         now: DateTime<Utc>,
@@ -41,7 +43,7 @@ impl DiscoveryService {
         })
     }
 
-    fn state_needs_deep_replay_wallet_stats_priority_recovery_contract(
+    pub(super) fn state_needs_deep_replay_wallet_stats_priority_recovery_contract(
         state: &PersistedStreamRebuildState,
     ) -> bool {
         state.phase == DiscoveryPersistedRebuildPhase::Replay
@@ -51,7 +53,7 @@ impl DiscoveryService {
             && Self::replay_wallet_stats_buffered_wallet_backlog_floor_wallets(state) > 0
     }
 
-    fn replay_wallet_stats_current_observed_wallet_floor_wallets(
+    pub(super) fn replay_wallet_stats_current_observed_wallet_floor_wallets(
         state: &PersistedStreamRebuildState,
     ) -> usize {
         state.payload.by_wallet.len().max(
@@ -68,21 +70,21 @@ impl DiscoveryService {
         )
     }
 
-    fn replay_wallet_stats_buffered_wallet_backlog_floor_wallets(
+    pub(super) fn replay_wallet_stats_buffered_wallet_backlog_floor_wallets(
         state: &PersistedStreamRebuildState,
     ) -> usize {
         Self::replay_wallet_stats_current_observed_wallet_floor_wallets(state)
             .max(state.payload.replay_wallet_stats_budget_floor_wallets)
     }
 
-    fn replay_wallet_stats_total_wallets_processed(state: &PersistedStreamRebuildState) -> usize {
+    pub(super) fn replay_wallet_stats_total_wallets_processed(state: &PersistedStreamRebuildState) -> usize {
         state
             .payload
             .replay_wallet_stats_day_count_source_progress
             .total_wallets_processed()
     }
 
-    fn replay_wallet_stats_buffered_wallet_floor_pages(
+    pub(super) fn replay_wallet_stats_buffered_wallet_floor_pages(
         fetch_limit: usize,
         buffered_wallets: usize,
     ) -> usize {
@@ -90,7 +92,7 @@ impl DiscoveryService {
         buffered_wallets.max(1).div_ceil(wallet_batch_size)
     }
 
-    fn replay_wallet_stats_progress_floor_pages(
+    pub(super) fn replay_wallet_stats_progress_floor_pages(
         fetch_limit: usize,
         state: &PersistedStreamRebuildState,
     ) -> usize {
@@ -105,7 +107,7 @@ impl DiscoveryService {
             .max(1)
     }
 
-    fn replay_wallet_stats_last_partial_cycle_frontier_saturated(
+    pub(super) fn replay_wallet_stats_last_partial_cycle_frontier_saturated(
         fetch_limit: usize,
         state: &PersistedStreamRebuildState,
     ) -> bool {
@@ -140,7 +142,7 @@ impl DiscoveryService {
             )
     }
 
-    fn replay_wallet_stats_open_frontier_floor_pages(
+    pub(super) fn replay_wallet_stats_open_frontier_floor_pages(
         fetch_limit: usize,
         state: &PersistedStreamRebuildState,
     ) -> usize {
@@ -153,7 +155,7 @@ impl DiscoveryService {
         }
     }
 
-    fn replay_wallet_stats_target_ms_per_page(state: &PersistedStreamRebuildState) -> u64 {
+    pub(super) fn replay_wallet_stats_target_ms_per_page(state: &PersistedStreamRebuildState) -> u64 {
         let observed_ms_per_page = if state
             .payload
             .replay_wallet_stats_last_partial_cycle_pages_processed
@@ -181,7 +183,7 @@ impl DiscoveryService {
         )
     }
 
-    fn deep_replay_wallet_stats_target_time_budget(
+    pub(super) fn deep_replay_wallet_stats_target_time_budget(
         baseline_time_budget: StdDuration,
         target_floor_pages: usize,
         target_ms_per_page: u64,
@@ -206,7 +208,7 @@ impl DiscoveryService {
         StdDuration::from_millis(target_budget_ms.min(u64::MAX as u128) as u64)
     }
 
-    fn replay_wallet_stats_remaining_publishable_horizon_ms(
+    pub(super) fn replay_wallet_stats_remaining_publishable_horizon_ms(
         &self,
         state: &PersistedStreamRebuildState,
         now: DateTime<Utc>,

@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn recent_raw_snapshot_dir_for_state_root(state_root: &Path) -> PathBuf {
+    pub(super) fn recent_raw_snapshot_dir_for_state_root(state_root: &Path) -> PathBuf {
         let direct_candidate = state_root.to_path_buf();
         let nested_candidate = state_root.join("discovery_restore/recent_raw");
         let direct_has_recent_raw_artifacts = [
@@ -17,15 +19,15 @@ impl DiscoveryService {
         }
     }
 
-    fn recent_raw_staged_snapshot_path(snapshot_dir: &Path) -> PathBuf {
+    pub(super) fn recent_raw_staged_snapshot_path(snapshot_dir: &Path) -> PathBuf {
         snapshot_dir.join(RECENT_RAW_STAGED_SNAPSHOT_FILE_NAME)
     }
 
-    fn recent_raw_staged_metadata_path(snapshot_dir: &Path) -> PathBuf {
+    pub(super) fn recent_raw_staged_metadata_path(snapshot_dir: &Path) -> PathBuf {
         snapshot_dir.join(RECENT_RAW_STAGED_METADATA_FILE_NAME)
     }
 
-    fn recent_raw_staged_candidate_reads_result(
+    pub(super) fn recent_raw_staged_candidate_reads_result(
         snapshot_dir: &Path,
     ) -> Result<Vec<RecentRawStagedCandidateRead>> {
         let mut candidates: BTreeMap<String, (Option<PathBuf>, Option<PathBuf>)> = BTreeMap::new();
@@ -80,11 +82,11 @@ impl DiscoveryService {
             .collect())
     }
 
-    fn recent_raw_staged_candidate_reads(snapshot_dir: &Path) -> Vec<RecentRawStagedCandidateRead> {
+    pub(super) fn recent_raw_staged_candidate_reads(snapshot_dir: &Path) -> Vec<RecentRawStagedCandidateRead> {
         Self::recent_raw_staged_candidate_reads_result(snapshot_dir).unwrap_or_default()
     }
 
-    fn recent_raw_replacement_attempt_telemetry_candidate_dirs(
+    pub(super) fn recent_raw_replacement_attempt_telemetry_candidate_dirs(
         state_root: &Path,
         snapshot_dir: &Path,
     ) -> Vec<PathBuf> {
@@ -100,7 +102,7 @@ impl DiscoveryService {
             .collect()
     }
 
-    fn recent_raw_replacement_attempt_telemetry_explicit_paths(
+    pub(super) fn recent_raw_replacement_attempt_telemetry_explicit_paths(
         state_root: &Path,
         snapshot_dir: &Path,
     ) -> Vec<PathBuf> {
@@ -120,24 +122,24 @@ impl DiscoveryService {
             .collect()
     }
 
-    fn recent_raw_replacement_attempt_telemetry_latest_path(snapshot_dir: &Path) -> PathBuf {
+    pub(super) fn recent_raw_replacement_attempt_telemetry_latest_path(snapshot_dir: &Path) -> PathBuf {
         snapshot_dir.join(RECENT_RAW_ATTEMPT_TELEMETRY_LATEST_FILE_NAME)
     }
 
-    fn recent_raw_replacement_attempt_telemetry_filename_candidate(name: &str) -> bool {
+    pub(super) fn recent_raw_replacement_attempt_telemetry_filename_candidate(name: &str) -> bool {
         name.contains("discovery_recent_raw_snapshot")
             || name.contains("recent_raw_snapshot")
             || name.contains("snapshot_attempt")
     }
 
-    fn recent_raw_replacement_attempt_telemetry_modified_at(path: &Path) -> Option<DateTime<Utc>> {
+    pub(super) fn recent_raw_replacement_attempt_telemetry_modified_at(path: &Path) -> Option<DateTime<Utc>> {
         fs::metadata(path)
             .ok()
             .and_then(|metadata| metadata.modified().ok())
             .map(DateTime::<Utc>::from)
     }
 
-    fn recent_raw_replacement_attempt_telemetry_timestamp(
+    pub(super) fn recent_raw_replacement_attempt_telemetry_timestamp(
         read: &RecentRawSnapshotAttemptTelemetryRead,
     ) -> Option<DateTime<Utc>> {
         read.telemetry
@@ -151,7 +153,7 @@ impl DiscoveryService {
             .or(read.modified_at)
     }
 
-    fn recent_raw_replacement_attempt_telemetry_read_path(
+    pub(super) fn recent_raw_replacement_attempt_telemetry_read_path(
         path: &Path,
     ) -> Option<RecentRawSnapshotAttemptTelemetryRead> {
         let name = path
@@ -207,7 +209,7 @@ impl DiscoveryService {
         })
     }
 
-    fn recent_raw_replacement_attempt_telemetry_explicit_reads(
+    pub(super) fn recent_raw_replacement_attempt_telemetry_explicit_reads(
         state_root: &Path,
         snapshot_dir: &Path,
     ) -> (Vec<String>, Vec<RecentRawSnapshotAttemptTelemetryRead>) {
@@ -226,7 +228,7 @@ impl DiscoveryService {
         )
     }
 
-    fn recent_raw_replacement_attempt_telemetry_deep_scan_reads(
+    pub(super) fn recent_raw_replacement_attempt_telemetry_deep_scan_reads(
         state_root: &Path,
         snapshot_dir: &Path,
     ) -> (
