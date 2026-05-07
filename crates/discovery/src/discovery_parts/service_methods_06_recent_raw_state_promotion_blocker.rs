@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn classify_recent_raw_promotion_blocker(
+    pub(super) fn classify_recent_raw_promotion_blocker(
         promoted: &RecentRawSurfaceRead,
         staged: &RecentRawSurfaceRead,
         promoted_exists: bool,

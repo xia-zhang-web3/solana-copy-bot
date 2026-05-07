@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn load_recent_raw_diagnostic_state_read_only(state_root: &Path) -> RecentRawDiagnosticState {
+    pub(super) fn load_recent_raw_diagnostic_state_read_only(state_root: &Path) -> RecentRawDiagnosticState {
         let snapshot_dir = Self::recent_raw_snapshot_dir_for_state_root(state_root);
         let promoted_snapshot_path = runtime_artifacts::journal_snapshot_latest_path(&snapshot_dir);
         let promoted_metadata_path =

@@ -1,12 +1,14 @@
+use super::*;
+
 impl DiscoveryService {
-    fn recent_raw_nonnegative_row_lag(
+    pub(super) fn recent_raw_nonnegative_row_lag(
         source_row_count: Option<usize>,
         reference_row_count: Option<usize>,
     ) -> Option<u64> {
         Some(source_row_count?.saturating_sub(reference_row_count?) as u64)
     }
 
-    fn recent_raw_nonnegative_cursor_time_lag_seconds(
+    pub(super) fn recent_raw_nonnegative_cursor_time_lag_seconds(
         source_cursor: Option<&DiscoveryRuntimeCursor>,
         reference_cursor: Option<&DiscoveryRuntimeCursor>,
     ) -> Option<u64> {
@@ -17,7 +19,7 @@ impl DiscoveryService {
         Some(seconds.max(0) as u64)
     }
 
-    fn recent_raw_signed_row_delta(
+    pub(super) fn recent_raw_signed_row_delta(
         candidate_row_count: Option<usize>,
         reference_row_count: Option<usize>,
     ) -> Option<i64> {
@@ -27,7 +29,7 @@ impl DiscoveryService {
         Some(delta.clamp(i64::MIN as i128, i64::MAX as i128) as i64)
     }
 
-    fn recent_raw_signed_cursor_time_delta_seconds(
+    pub(super) fn recent_raw_signed_cursor_time_delta_seconds(
         candidate_cursor: Option<&DiscoveryRuntimeCursor>,
         reference_cursor: Option<&DiscoveryRuntimeCursor>,
     ) -> Option<i64> {
@@ -39,14 +41,14 @@ impl DiscoveryService {
         )
     }
 
-    fn recent_raw_optional_ts_newer_than(
+    pub(super) fn recent_raw_optional_ts_newer_than(
         candidate: Option<&DateTime<Utc>>,
         reference: Option<&DateTime<Utc>>,
     ) -> Option<bool> {
         Some(candidate? > reference?)
     }
 
-    fn recent_raw_lineage_relation_from_covered_since(
+    pub(super) fn recent_raw_lineage_relation_from_covered_since(
         candidate: Option<&DateTime<Utc>>,
         reference: Option<&DateTime<Utc>>,
         same_source: Option<bool>,
@@ -65,7 +67,7 @@ impl DiscoveryService {
         }
     }
 
-    fn recent_raw_lineage_relation_from_ord<T: Ord>(
+    pub(super) fn recent_raw_lineage_relation_from_ord<T: Ord>(
         candidate: Option<T>,
         reference: Option<T>,
         same_source: Option<bool>,
@@ -84,7 +86,7 @@ impl DiscoveryService {
         }
     }
 
-    fn recent_raw_lineage_relation_from_cursor(
+    pub(super) fn recent_raw_lineage_relation_from_cursor(
         candidate: Option<&DiscoveryRuntimeCursor>,
         reference: Option<&DiscoveryRuntimeCursor>,
         same_source: Option<bool>,
@@ -105,7 +107,7 @@ impl DiscoveryService {
         }
     }
 
-    fn recent_raw_cursor_relation_explanation(
+    pub(super) fn recent_raw_cursor_relation_explanation(
         same_source: Option<bool>,
         cursor_relation: RecentRawLineageRelation,
         ts_relation: RecentRawLineageRelation,
@@ -133,7 +135,7 @@ impl DiscoveryService {
         }
     }
 
-    fn recent_raw_lineage_relation_from_optional_row_count(
+    pub(super) fn recent_raw_lineage_relation_from_optional_row_count(
         candidate: Option<usize>,
         reference: Option<usize>,
         same_source: Option<bool>,
@@ -152,7 +154,7 @@ impl DiscoveryService {
         }
     }
 
-    fn recent_raw_candidate_closer_to_source_than_reference(
+    pub(super) fn recent_raw_candidate_closer_to_source_than_reference(
         relation: Option<RecentRawManifestProgressRelation>,
         source_outruns_candidate: Option<bool>,
         source_outruns_reference: Option<bool>,
