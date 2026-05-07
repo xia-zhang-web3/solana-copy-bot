@@ -1,65 +1,73 @@
-const USAGE: &str = "usage: copybot_runtime_sqlite_wal_maintenance --config <path> [--db-path <path>] [--service-name <name>] --json [--min-wal-bytes <n>] [--critical-wal-bytes <n>] [--timeout-seconds <n>] [--dry-run] [--allow-service-active]";
+use crate::runtime_sqlite_wal::common::resolve_db_path;
+use anyhow::{anyhow, bail, Context, Result};
+use copybot_config::load_from_path;
+use serde::Serialize;
+use std::path::PathBuf;
+
+pub(super) const USAGE: &str = "usage: copybot_runtime_sqlite_wal_maintenance --config <path> [--db-path <path>] [--service-name <name>] --json [--min-wal-bytes <n>] [--critical-wal-bytes <n>] [--timeout-seconds <n>] [--dry-run] [--allow-service-active]";
 
 const DEFAULT_SERVICE_NAME: &str = "solana-copy-bot.service";
 const DEFAULT_MIN_WAL_BYTES: u64 = 1_073_741_824;
 const DEFAULT_CRITICAL_WAL_BYTES: u64 = 8_589_934_592;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 900;
 
-const OUTCOME_SKIPPED_NOT_NEEDED: &str = "skipped_not_needed";
-const OUTCOME_SKIPPED_DRY_RUN: &str = "skipped_dry_run";
-const OUTCOME_FAILED_SERVICE_ACTIVE: &str = "failed_service_active";
-const OUTCOME_FAILED_CHECKPOINT_BUSY: &str = "failed_checkpoint_busy";
-const OUTCOME_FAILED_TIMEOUT: &str = "failed_timeout";
-const OUTCOME_FAILED_UNPROVEN: &str = "failed_unproven";
-const OUTCOME_COMPLETED: &str = "completed";
+pub(super) const OUTCOME_SKIPPED_NOT_NEEDED: &str = "skipped_not_needed";
+pub(super) const OUTCOME_SKIPPED_DRY_RUN: &str = "skipped_dry_run";
+pub(super) const OUTCOME_FAILED_SERVICE_ACTIVE: &str = "failed_service_active";
+pub(super) const OUTCOME_FAILED_CHECKPOINT_BUSY: &str = "failed_checkpoint_busy";
+pub(super) const OUTCOME_FAILED_TIMEOUT: &str = "failed_timeout";
+pub(super) const OUTCOME_FAILED_UNPROVEN: &str = "failed_unproven";
+pub(super) const OUTCOME_COMPLETED: &str = "completed";
 
-const REASON_SERVICE_ACTIVE: &str = "runtime_sqlite_wal_maintenance_service_active";
-const REASON_SERVICE_NOT_INACTIVE: &str = "runtime_sqlite_wal_maintenance_service_not_inactive";
-const REASON_NOT_NEEDED: &str = "runtime_sqlite_wal_maintenance_not_needed";
-const REASON_DRY_RUN: &str = "runtime_sqlite_wal_maintenance_dry_run";
-const REASON_COMPLETED: &str = "runtime_sqlite_wal_maintenance_completed";
-const REASON_CHECKPOINT_BUSY: &str = "runtime_sqlite_wal_maintenance_checkpoint_busy";
-const REASON_TIMEOUT: &str = "runtime_sqlite_wal_maintenance_checkpoint_timeout";
-const REASON_UNPROVEN: &str = "runtime_sqlite_wal_maintenance_unproven";
+pub(super) const REASON_SERVICE_ACTIVE: &str = "runtime_sqlite_wal_maintenance_service_active";
+pub(super) const REASON_SERVICE_NOT_INACTIVE: &str =
+    "runtime_sqlite_wal_maintenance_service_not_inactive";
+pub(super) const REASON_NOT_NEEDED: &str = "runtime_sqlite_wal_maintenance_not_needed";
+pub(super) const REASON_DRY_RUN: &str = "runtime_sqlite_wal_maintenance_dry_run";
+pub(super) const REASON_COMPLETED: &str = "runtime_sqlite_wal_maintenance_completed";
+pub(super) const REASON_CHECKPOINT_BUSY: &str = "runtime_sqlite_wal_maintenance_checkpoint_busy";
+pub(super) const REASON_TIMEOUT: &str = "runtime_sqlite_wal_maintenance_checkpoint_timeout";
+pub(super) const REASON_UNPROVEN: &str = "runtime_sqlite_wal_maintenance_unproven";
 
-const ACTION_SERVICE_ACTIVE: &str =
+pub(super) const ACTION_SERVICE_ACTIVE: &str =
     "stop service before runtime SQLite WAL maintenance, then rerun this operator";
-const ACTION_NOT_NEEDED: &str = "no WAL maintenance action";
-const ACTION_DRY_RUN: &str =
+pub(super) const ACTION_NOT_NEEDED: &str = "no WAL maintenance action";
+pub(super) const ACTION_DRY_RUN: &str =
     "manual_operator_action_required: stop service and rerun without --dry-run to execute SQLite-managed checkpoint/truncate";
-const ACTION_COMPLETED: &str = "restart service and verify runtime/recent_raw tails";
-const ACTION_BUSY: &str =
+pub(super) const ACTION_COMPLETED: &str = "restart service and verify runtime/recent_raw tails";
+pub(super) const ACTION_BUSY: &str =
     "confirm service and other SQLite users are stopped, then retry WAL maintenance";
-const ACTION_TIMEOUT: &str =
+pub(super) const ACTION_TIMEOUT: &str =
     "retry during lower I/O pressure window or increase the explicit maintenance timeout";
-const ACTION_UNPROVEN: &str = "prove service state and runtime SQLite metadata before maintenance";
+pub(super) const ACTION_UNPROVEN: &str =
+    "prove service state and runtime SQLite metadata before maintenance";
 
 #[derive(Debug, Clone)]
-struct Cli {
-    config_path: PathBuf,
-    db_path_override: Option<PathBuf>,
-    service_name: String,
-    json: bool,
-    min_wal_bytes: u64,
-    critical_wal_bytes: u64,
-    timeout_seconds: u64,
-    dry_run: bool,
-    allow_service_active: bool,
+pub(super) struct Cli {
+    pub(super) config_path: PathBuf,
+    pub(super) db_path_override: Option<PathBuf>,
+    pub(super) service_name: String,
+    pub(super) json: bool,
+    pub(super) min_wal_bytes: u64,
+    pub(super) critical_wal_bytes: u64,
+    pub(super) timeout_seconds: u64,
+    pub(super) dry_run: bool,
+    pub(super) allow_service_active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ServiceState {
-    active_state: String,
-    active: bool,
-    substate: Option<String>,
+pub(super) struct ServiceState {
+    pub(super) active_state: String,
+    pub(super) active: bool,
+    pub(super) substate: Option<String>,
 }
 
 impl ServiceState {
-    fn service_inactive_for_maintenance(&self) -> bool {
+    pub(super) fn service_inactive_for_maintenance(&self) -> bool {
         self.active_state == "inactive"
     }
 
-    fn maintenance_block_reason(&self) -> &'static str {
+    pub(super) fn maintenance_block_reason(&self) -> &'static str {
         if self.active_state == "active" {
             REASON_SERVICE_ACTIVE
         } else {
@@ -69,35 +77,35 @@ impl ServiceState {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct RuntimeSqliteWalMaintenanceReport {
-    production_green: bool,
-    dry_run: bool,
-    service_name: String,
-    service_active_state: Option<String>,
-    service_active: Option<bool>,
-    service_substate: Option<String>,
-    runtime_db_path: Option<String>,
-    before_db_bytes: Option<u64>,
-    before_wal_bytes: Option<u64>,
-    before_shm_bytes: Option<u64>,
-    after_db_bytes: Option<u64>,
-    after_wal_bytes: Option<u64>,
-    after_shm_bytes: Option<u64>,
-    min_wal_bytes: u64,
-    critical_wal_bytes: u64,
-    checkpoint_attempted: bool,
-    checkpoint_busy: Option<i64>,
-    checkpoint_log_frames: Option<i64>,
-    checkpoint_checkpointed_frames: Option<i64>,
-    maintenance_outcome: String,
-    reason: String,
-    final_wal_pressure_level: String,
-    service_safe_next_action: String,
-    error: Option<String>,
+pub(super) struct RuntimeSqliteWalMaintenanceReport {
+    pub(super) production_green: bool,
+    pub(super) dry_run: bool,
+    pub(super) service_name: String,
+    pub(super) service_active_state: Option<String>,
+    pub(super) service_active: Option<bool>,
+    pub(super) service_substate: Option<String>,
+    pub(super) runtime_db_path: Option<String>,
+    pub(super) before_db_bytes: Option<u64>,
+    pub(super) before_wal_bytes: Option<u64>,
+    pub(super) before_shm_bytes: Option<u64>,
+    pub(super) after_db_bytes: Option<u64>,
+    pub(super) after_wal_bytes: Option<u64>,
+    pub(super) after_shm_bytes: Option<u64>,
+    pub(super) min_wal_bytes: u64,
+    pub(super) critical_wal_bytes: u64,
+    pub(super) checkpoint_attempted: bool,
+    pub(super) checkpoint_busy: Option<i64>,
+    pub(super) checkpoint_log_frames: Option<i64>,
+    pub(super) checkpoint_checkpointed_frames: Option<i64>,
+    pub(super) maintenance_outcome: String,
+    pub(super) reason: String,
+    pub(super) final_wal_pressure_level: String,
+    pub(super) service_safe_next_action: String,
+    pub(super) error: Option<String>,
 }
 
 impl RuntimeSqliteWalMaintenanceReport {
-    fn exit_code(&self) -> i32 {
+    pub(super) fn exit_code(&self) -> i32 {
         match self.maintenance_outcome.as_str() {
             OUTCOME_COMPLETED | OUTCOME_SKIPPED_NOT_NEEDED | OUTCOME_SKIPPED_DRY_RUN => 0,
             _ => 1,
@@ -106,7 +114,7 @@ impl RuntimeSqliteWalMaintenanceReport {
 }
 
 impl Cli {
-    fn default_for_error() -> Self {
+    pub(super) fn default_for_error() -> Self {
         Self {
             config_path: PathBuf::new(),
             db_path_override: None,
@@ -121,7 +129,7 @@ impl Cli {
     }
 }
 
-fn parse_args_from<I>(args: I) -> Result<Option<Cli>>
+pub(super) fn parse_args_from<I>(args: I) -> Result<Option<Cli>>
 where
     I: IntoIterator<Item = String>,
 {
@@ -192,7 +200,7 @@ fn parse_u64_arg(flag: &str, value: Option<String>) -> Result<u64> {
         .with_context(|| format!("{flag} must be an unsigned integer; got {raw}"))
 }
 
-fn validate_cli(cli: &Cli) -> Result<()> {
+pub(super) fn validate_cli(cli: &Cli) -> Result<()> {
     if cli.min_wal_bytes == 0 {
         bail!("--min-wal-bytes must be greater than zero");
     }
@@ -205,7 +213,7 @@ fn validate_cli(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn resolve_runtime_db_path(cli: &Cli) -> Result<PathBuf> {
+pub(super) fn resolve_runtime_db_path(cli: &Cli) -> Result<PathBuf> {
     if let Some(path) = &cli.db_path_override {
         return Ok(path.to_path_buf());
     }

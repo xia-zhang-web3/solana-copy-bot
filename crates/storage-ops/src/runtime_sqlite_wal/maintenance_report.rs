@@ -1,8 +1,18 @@
-fn report_is_json_requested(report: &RuntimeSqliteWalMaintenanceReport) -> bool {
+use super::cli::{
+    Cli, RuntimeSqliteWalMaintenanceReport, ServiceState, ACTION_UNPROVEN, OUTCOME_FAILED_UNPROVEN,
+    REASON_UNPROVEN,
+};
+use crate::runtime_sqlite_wal::{
+    checkpoint::CheckpointResult,
+    common::{FileMetadataSnapshot, RuntimeSqliteFilesSnapshot},
+};
+use std::path::PathBuf;
+
+pub(super) fn report_is_json_requested(report: &RuntimeSqliteWalMaintenanceReport) -> bool {
     report.error.as_deref() != Some("runtime_sqlite_wal_maintenance_json_required")
 }
 
-fn build_report(
+pub(super) fn build_report(
     cli: &Cli,
     before: Option<&RuntimeSqliteFilesSnapshot>,
     after: Option<&RuntimeSqliteFilesSnapshot>,
@@ -50,7 +60,7 @@ fn build_report(
     }
 }
 
-fn failed_unproven_report(
+pub(super) fn failed_unproven_report(
     cli: &Cli,
     db_path: Option<PathBuf>,
     before: Option<&RuntimeSqliteFilesSnapshot>,
@@ -89,7 +99,7 @@ fn failed_unproven_report(
     )
 }
 
-fn classify_wal_pressure(
+pub(super) fn classify_wal_pressure(
     wal_bytes: u64,
     min_wal_bytes: u64,
     critical_wal_bytes: u64,

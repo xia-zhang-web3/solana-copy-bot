@@ -1,21 +1,38 @@
-use anyhow::{anyhow, bail, Context, Result};
-use copybot_config::load_from_path;
-use serde::Serialize;
+use anyhow::Result;
 use std::env;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 use super::checkpoint::{run_sqlite_wal_checkpoint_truncate, CheckpointFailure, CheckpointResult};
 #[cfg(test)]
 use super::common::sqlite_sidecar_path;
-use super::common::{
-    compact_error, inspect_runtime_sqlite_files, resolve_db_path, FileMetadataSnapshot,
-    RuntimeSqliteFilesSnapshot,
+use super::common::{compact_error, inspect_runtime_sqlite_files};
+
+#[path = "maintenance_cli.rs"]
+mod cli;
+#[path = "maintenance_report.rs"]
+mod report;
+#[path = "maintenance_systemctl.rs"]
+mod systemctl;
+
+use self::{
+    cli::{
+        parse_args_from, resolve_runtime_db_path, validate_cli, Cli,
+        RuntimeSqliteWalMaintenanceReport, ServiceState, ACTION_BUSY, ACTION_COMPLETED,
+        ACTION_DRY_RUN, ACTION_NOT_NEEDED, ACTION_SERVICE_ACTIVE, ACTION_TIMEOUT,
+        OUTCOME_COMPLETED, OUTCOME_FAILED_CHECKPOINT_BUSY, OUTCOME_FAILED_SERVICE_ACTIVE,
+        OUTCOME_FAILED_TIMEOUT, OUTCOME_SKIPPED_DRY_RUN, OUTCOME_SKIPPED_NOT_NEEDED,
+        REASON_CHECKPOINT_BUSY, REASON_COMPLETED, REASON_DRY_RUN, REASON_NOT_NEEDED,
+        REASON_TIMEOUT, USAGE,
+    },
+    report::{build_report, failed_unproven_report, report_is_json_requested},
+    systemctl::load_service_state_from_systemctl,
 };
 
-include!("maintenance_cli.rs");
-include!("maintenance_report.rs");
-include!("maintenance_systemctl.rs");
+#[cfg(test)]
+use self::{
+    cli::{OUTCOME_FAILED_UNPROVEN, REASON_SERVICE_ACTIVE, REASON_SERVICE_NOT_INACTIVE},
+    systemctl::parse_systemctl_show_output,
+};
 
 pub fn main_entry() {
     let report = match parse_args_from(env::args().skip(1)) {

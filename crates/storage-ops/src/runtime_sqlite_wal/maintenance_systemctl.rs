@@ -1,4 +1,8 @@
-fn load_service_state_from_systemctl(service_name: &str) -> Result<ServiceState> {
+use super::cli::ServiceState;
+use anyhow::{anyhow, bail, Context, Result};
+use std::process::Command;
+
+pub(super) fn load_service_state_from_systemctl(service_name: &str) -> Result<ServiceState> {
     let output = Command::new("systemctl")
         .args([
             "show",
@@ -19,7 +23,7 @@ fn load_service_state_from_systemctl(service_name: &str) -> Result<ServiceState>
     parse_systemctl_show_output(&String::from_utf8_lossy(&output.stdout))
 }
 
-fn parse_systemctl_show_output(output: &str) -> Result<ServiceState> {
+pub(super) fn parse_systemctl_show_output(output: &str) -> Result<ServiceState> {
     let mut active_state: Option<String> = None;
     let mut substate: Option<String> = None;
     for line in output.lines() {
