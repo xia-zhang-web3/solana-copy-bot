@@ -1,4 +1,6 @@
-fn parse_operator_emergency_stop_reason(content: &str) -> Option<String> {
+use super::*;
+
+pub(crate) fn parse_operator_emergency_stop_reason(content: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -10,16 +12,16 @@ fn parse_operator_emergency_stop_reason(content: &str) -> Option<String> {
 }
 
 #[derive(Debug)]
-struct OperatorEmergencyStop {
-    path: PathBuf,
-    poll_interval: Duration,
-    next_refresh_at: StdInstant,
-    active: bool,
-    detail: String,
+pub(crate) struct OperatorEmergencyStop {
+    pub(crate) path: PathBuf,
+    pub(crate) poll_interval: Duration,
+    pub(crate) next_refresh_at: StdInstant,
+    pub(crate) active: bool,
+    pub(crate) detail: String,
 }
 
 impl OperatorEmergencyStop {
-    fn from_env() -> Self {
+    pub(crate) fn from_env() -> Self {
         let path = env::var("SOLANA_COPY_BOT_EMERGENCY_STOP_FILE")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_OPERATOR_EMERGENCY_STOP_PATH));
@@ -37,15 +39,15 @@ impl OperatorEmergencyStop {
         }
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 
-    fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.active
     }
 
-    fn detail(&self) -> &str {
+    pub(crate) fn detail(&self) -> &str {
         if self.detail.is_empty() {
             "operator emergency stop file is present"
         } else {
@@ -53,7 +55,7 @@ impl OperatorEmergencyStop {
         }
     }
 
-    fn refresh(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+    pub(crate) fn refresh(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
         let instant_now = StdInstant::now();
         if instant_now < self.next_refresh_at {
             return Ok(());

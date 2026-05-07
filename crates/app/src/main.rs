@@ -114,16 +114,22 @@ include!("app_parts/00_sqlite_maintenance.rs");
 include!("app_parts/01.rs");
 include!("app_parts/01_irrelevant_backpressure.rs");
 include!("app_parts/02.rs");
-include!("app_parts/02_app_consumer_telemetry.rs");
-include!("app_parts/02_operator_emergency.rs");
 include!("app_parts/03.rs");
 include!("app_parts/04.rs");
 include!("app_parts/05.rs");
 include!("app_parts/06.rs");
 include!("app_parts/06_shadow_risk_infra.rs");
 
+mod app_consumer_telemetry;
 mod app_loop;
+mod operator_emergency;
+use crate::app_consumer_telemetry::AppConsumerLoopTelemetry;
+#[cfg(test)]
+use crate::app_consumer_telemetry::AppConsumerLoopTelemetrySnapshot;
 use crate::app_loop::run_app_loop;
+#[cfg(test)]
+use crate::operator_emergency::parse_operator_emergency_stop_reason;
+use crate::operator_emergency::OperatorEmergencyStop;
 
 #[cfg(test)]
 mod app_tests;

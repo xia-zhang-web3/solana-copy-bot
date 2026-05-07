@@ -1,6 +1,8 @@
 use super::*;
 
-include!("app_loop_startup.rs");
+mod startup;
+
+use startup::{initialize_app_loop_startup, AppLoopStartup};
 
 pub(super) async fn run_app_loop(
     store: SqliteStore,
