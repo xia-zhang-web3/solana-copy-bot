@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn classify_recent_raw_replacement_convergence(
+    pub(super) fn classify_recent_raw_replacement_convergence(
         replacement_candidate_exists: bool,
         source_state_available: bool,
         candidate_complete_against_current_source: Option<bool>,
