@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn load_discovery_persisted_rebuild_state_meta_lite_raw_after_table_exists_read_only(
         &self,

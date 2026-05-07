@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn upsert_discovery_persisted_rebuild_state(
         &self,
