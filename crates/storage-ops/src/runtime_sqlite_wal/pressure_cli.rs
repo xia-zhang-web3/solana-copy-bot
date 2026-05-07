@@ -1,3 +1,11 @@
+use super::{
+    report::{report_should_render_json, run, unproven_report},
+    types::{Cli, DEFAULT_CRITICAL_WAL_THRESHOLD_BYTES, DEFAULT_LARGE_WAL_THRESHOLD_BYTES, USAGE},
+};
+use crate::runtime_sqlite_wal::common::compact_error;
+use anyhow::{anyhow, bail, Context, Result};
+use std::{env, path::PathBuf};
+
 pub fn main_entry() {
     let report = match parse_args_from(env::args().skip(1)) {
         Ok(Some(cli)) => match run(&cli) {
@@ -36,11 +44,7 @@ pub fn main_entry() {
     std::process::exit(report.exit_code());
 }
 
-fn report_should_render_json(report: &RuntimeSqliteWalPressureReport) -> bool {
-    report.metadata_error.as_deref() != Some("runtime_sqlite_wal_pressure_json_required")
-}
-
-fn parse_args_from<I>(args: I) -> Result<Option<Cli>>
+pub(super) fn parse_args_from<I>(args: I) -> Result<Option<Cli>>
 where
     I: IntoIterator<Item = String>,
 {
@@ -95,14 +99,4 @@ fn parse_u64_arg(flag: &str, value: Option<String>) -> Result<u64> {
     let raw = parse_string_arg(flag, value)?;
     raw.parse::<u64>()
         .with_context(|| format!("{flag} must be an unsigned integer; got {raw}"))
-}
-
-fn validate_thresholds(large: u64, critical: u64) -> Result<()> {
-    if large == 0 {
-        bail!("--large-wal-threshold-bytes must be greater than zero");
-    }
-    if critical < large {
-        bail!("--critical-wal-threshold-bytes must be greater than or equal to --large-wal-threshold-bytes");
-    }
-    Ok(())
 }

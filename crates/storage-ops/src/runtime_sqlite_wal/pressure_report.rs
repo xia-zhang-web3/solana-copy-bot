@@ -1,4 +1,16 @@
-fn run(cli: &Cli) -> Result<RuntimeSqliteWalPressureReport> {
+use super::types::{
+    Cli, RuntimeSqliteWalPressureReport, WalPressureLevel, ACTION_CRITICAL, ACTION_LARGE,
+    ACTION_NONE, ACTION_UNPROVEN, REASON_CRITICAL, REASON_LARGE, REASON_NONE,
+    REASON_UNPROVEN_METADATA,
+};
+use crate::runtime_sqlite_wal::common::{
+    inspect_runtime_sqlite_files, resolve_db_path, RuntimeSqliteFilesSnapshot,
+};
+use anyhow::{bail, Context, Result};
+use copybot_config::load_from_path;
+use std::path::PathBuf;
+
+pub(super) fn run(cli: &Cli) -> Result<RuntimeSqliteWalPressureReport> {
     if !cli.json {
         return Ok(unproven_report(
             None,
@@ -25,7 +37,7 @@ fn run(cli: &Cli) -> Result<RuntimeSqliteWalPressureReport> {
     Ok(build_report_from_snapshot(&snapshot, cli))
 }
 
-fn build_report_from_snapshot(
+pub(super) fn build_report_from_snapshot(
     snapshot: &RuntimeSqliteFilesSnapshot,
     cli: &Cli,
 ) -> RuntimeSqliteWalPressureReport {
@@ -55,7 +67,7 @@ fn build_report_from_snapshot(
     }
 }
 
-fn classify_wal_pressure(
+pub(super) fn classify_wal_pressure(
     wal_bytes: u64,
     large_threshold: u64,
     critical_threshold: u64,
@@ -74,7 +86,7 @@ fn classify_wal_pressure(
     }
 }
 
-fn unproven_report(
+pub(super) fn unproven_report(
     runtime_db_path: Option<PathBuf>,
     cli: &Cli,
     metadata_error: Option<String>,
@@ -98,4 +110,18 @@ fn unproven_report(
         manual_operator_action_required: false,
         metadata_error,
     }
+}
+
+pub(super) fn report_should_render_json(report: &RuntimeSqliteWalPressureReport) -> bool {
+    report.metadata_error.as_deref() != Some("runtime_sqlite_wal_pressure_json_required")
+}
+
+fn validate_thresholds(large: u64, critical: u64) -> Result<()> {
+    if large == 0 {
+        bail!("--large-wal-threshold-bytes must be greater than zero");
+    }
+    if critical < large {
+        bail!("--critical-wal-threshold-bytes must be greater than or equal to --large-wal-threshold-bytes");
+    }
+    Ok(())
 }
