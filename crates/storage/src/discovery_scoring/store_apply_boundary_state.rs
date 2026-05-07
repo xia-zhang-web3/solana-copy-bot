@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn set_discovery_scoring_covered_since(&self, covered_since: DateTime<Utc>) -> Result<()> {
         self.upsert_discovery_scoring_state_ts("covered_since_ts", covered_since)

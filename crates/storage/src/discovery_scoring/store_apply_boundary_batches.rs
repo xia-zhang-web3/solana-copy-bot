@@ -1,3 +1,6 @@
+use super::*;
+use crate::DiscoveryScoringCheckpointedBatchTimings;
+
 impl SqliteStore {
     pub fn apply_discovery_scoring_batch_with_timings(
         &self,
@@ -27,7 +30,7 @@ impl SqliteStore {
         config: &DiscoveryAggregateWriteConfig,
         progress_start_ts: DateTime<Utc>,
         progress_cursor: &DiscoveryRuntimeCursor,
-    ) -> Result<super::DiscoveryScoringCheckpointedBatchTimings> {
+    ) -> Result<DiscoveryScoringCheckpointedBatchTimings> {
         self.apply_discovery_scoring_batch_and_checkpoint_with_timings_and_diagnostics(
             swaps,
             config,
@@ -50,7 +53,7 @@ impl SqliteStore {
         mut stage_end: impl FnMut(&str, usize, u64, &str),
         mut prepare_event: impl FnMut(String),
         prepare_deadline: Option<Instant>,
-    ) -> Result<super::DiscoveryScoringCheckpointedBatchTimings> {
+    ) -> Result<DiscoveryScoringCheckpointedBatchTimings> {
         stage_start("prepare_discovery_scoring_swaps");
         let prepare_started_at = Instant::now();
         let prepared = match prepare_discovery_scoring_swaps_with_diagnostics(
@@ -100,7 +103,7 @@ impl SqliteStore {
             },
         )?;
 
-        Ok(super::DiscoveryScoringCheckpointedBatchTimings {
+        Ok(DiscoveryScoringCheckpointedBatchTimings {
             prepare_ms,
             apply_ms,
             progress_update_ms,
@@ -112,7 +115,7 @@ impl SqliteStore {
         swaps: &[SwapEvent],
         progress_start_ts: DateTime<Utc>,
         progress_cursor: &DiscoveryRuntimeCursor,
-    ) -> Result<super::DiscoveryScoringCheckpointedBatchTimings> {
+    ) -> Result<DiscoveryScoringCheckpointedBatchTimings> {
         self.apply_discovery_scoring_boundary_lot_batch_and_checkpoint_with_timings_and_diagnostics(
             swaps,
             progress_start_ts,
@@ -129,7 +132,7 @@ impl SqliteStore {
         progress_cursor: &DiscoveryRuntimeCursor,
         mut stage_start: impl FnMut(&str),
         mut stage_end: impl FnMut(&str, usize, u64, &str),
-    ) -> Result<super::DiscoveryScoringCheckpointedBatchTimings> {
+    ) -> Result<DiscoveryScoringCheckpointedBatchTimings> {
         let (apply_ms, progress_update_ms) = self.with_immediate_transaction_retry(
             "discovery scoring boundary lot sql batch with checkpoint",
             |conn| {
@@ -144,7 +147,7 @@ impl SqliteStore {
             },
         )?;
 
-        Ok(super::DiscoveryScoringCheckpointedBatchTimings {
+        Ok(DiscoveryScoringCheckpointedBatchTimings {
             prepare_ms: 0,
             apply_ms,
             progress_update_ms,
