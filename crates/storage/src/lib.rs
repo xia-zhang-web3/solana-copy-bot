@@ -78,32 +78,10 @@ include!("lib_parts/10_store_connection_snapshot_impl.rs");
 include!("lib_parts/11_store_snapshot_probe_impl.rs");
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::Duration;
-    use copybot_core_types::SwapEvent;
-    use std::sync::atomic::AtomicBool;
-    use tempfile::tempdir;
-
-    include!("lib_tests/00_storage_tests.rs");
-    include!("lib_tests/01_storage_tests.rs");
-    include!("lib_tests/02_storage_tests.rs");
-    include!("lib_tests/03_storage_tests.rs");
-    include!("lib_tests/04_storage_tests.rs");
-    include!("lib_tests/05_storage_tests.rs");
-    include!("lib_tests/06_storage_tests.rs");
-    include!("lib_tests/07_storage_tests.rs");
-    include!("lib_tests/08_storage_tests.rs");
-    include!("lib_tests/09_storage_tests.rs");
-    include!("lib_tests/10_storage_tests.rs");
-    include!("lib_tests/11_storage_tests.rs");
-    include!("lib_tests/12_storage_tests.rs");
-    include!("lib_tests/13_storage_tests.rs");
-}
+mod tests;
 
 include!("lib_parts/90_money_helpers.rs");
 
 #[cfg(test)]
-mod runtime_artifact_tests {
-    include!("lib_tests/90_runtime_artifact_tests.rs");
-}
+#[path = "lib_tests/90_runtime_artifact_tests.rs"]
+mod runtime_artifact_tests;
