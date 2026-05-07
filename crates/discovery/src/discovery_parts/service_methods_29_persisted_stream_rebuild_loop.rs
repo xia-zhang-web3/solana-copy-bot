@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn advance_persisted_stream_rebuild_cycle_loop(
+    pub(super) fn advance_persisted_stream_rebuild_cycle_loop(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
@@ -63,7 +65,7 @@ impl DiscoveryService {
         })
     }
 
-    fn prepare_persisted_stream_rebuild_cycle_metrics_window_rollover(
+    pub(super) fn prepare_persisted_stream_rebuild_cycle_metrics_window_rollover(
         &self,
         state: &mut PersistedStreamRebuildState,
         window_start: DateTime<Utc>,

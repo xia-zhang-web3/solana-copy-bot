@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn complete_or_reenter_persisted_stream_publish_pending_checkpoint(
+    pub(super) fn complete_or_reenter_persisted_stream_publish_pending_checkpoint(
         &self,
         state: &mut PersistedStreamRebuildState,
         now: DateTime<Utc>,
@@ -45,7 +47,7 @@ impl DiscoveryService {
         })
     }
 
-    fn complete_persisted_stream_rebuild_from_replay(
+    pub(super) fn complete_persisted_stream_rebuild_from_replay(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
@@ -117,7 +119,7 @@ impl DiscoveryService {
         })
     }
 
-    fn yield_persisted_stream_rebuild_cycle(
+    pub(super) fn yield_persisted_stream_rebuild_cycle(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,

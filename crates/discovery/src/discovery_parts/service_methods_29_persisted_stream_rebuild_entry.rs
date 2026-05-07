@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn advance_persisted_stream_rebuild_with_phase_page_limits(
+    pub(super) fn advance_persisted_stream_rebuild_with_phase_page_limits(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,

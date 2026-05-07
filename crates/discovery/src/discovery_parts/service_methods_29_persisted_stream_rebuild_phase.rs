@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn advance_persisted_stream_active_phase(
+    pub(super) fn advance_persisted_stream_active_phase(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
@@ -44,7 +46,7 @@ impl DiscoveryService {
         }
     }
 
-    fn apply_persisted_stream_phase_advance_to_state(
+    pub(super) fn apply_persisted_stream_phase_advance_to_state(
         state: &mut PersistedStreamRebuildState,
         phase_advance: &PersistedStreamPhaseAdvance,
     ) {
@@ -87,7 +89,7 @@ impl DiscoveryService {
         }
     }
 
-    fn handle_persisted_stream_rebuild_source_exhausted(
+    pub(super) fn handle_persisted_stream_rebuild_source_exhausted(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
@@ -112,7 +114,7 @@ impl DiscoveryService {
             .map(Some)
     }
 
-    fn transition_persisted_stream_rebuild_collect_buy_mints_exhausted(
+    pub(super) fn transition_persisted_stream_rebuild_collect_buy_mints_exhausted(
         state: &mut PersistedStreamRebuildState,
         now: DateTime<Utc>,
         cycle: &PersistedStreamAdvanceCycleState,
@@ -142,7 +144,7 @@ impl DiscoveryService {
         );
     }
 
-    fn transition_persisted_stream_rebuild_token_quality_exhausted(
+    pub(super) fn transition_persisted_stream_rebuild_token_quality_exhausted(
         state: &mut PersistedStreamRebuildState,
         min_buy_count_enabled: bool,
     ) {
