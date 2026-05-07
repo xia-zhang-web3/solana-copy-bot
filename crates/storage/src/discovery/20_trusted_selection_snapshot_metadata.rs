@@ -1,3 +1,12 @@
+use super::{canonical_wallet_metrics_window_start, parse_optional_rfc3339_utc, parse_rfc3339_utc};
+use crate::{
+    SqliteStore, TrustedSelectionState, TrustedSnapshotSourceKind,
+    TrustedWalletMetricsSnapshotRow,
+};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::{params, OptionalExtension};
+
 impl SqliteStore {
     pub fn latest_trusted_wallet_metrics_snapshot_metadata(
         &self,

@@ -3,10 +3,9 @@ use super::{
     DiscoveryPublicationStateRow, DiscoveryPublicationStateUpdate,
     DiscoveryRecentRawRestoreStateRow, DiscoveryRecentRawRestoreStateUpdate,
     DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
-    DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
     DiscoveryWalletFreshnessCaptureRow, DiscoveryWalletFreshnessCaptureWrite, SqliteStore,
     StartupTrustedSelectionGateStatus, TrustedSelectionState, TrustedSnapshotSourceKind,
-    TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite, WalletActivityDayRow,
+    TrustedWalletMetricsSnapshotWrite, WalletActivityDayRow,
     DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
 };
 use anyhow::{Context, Result};

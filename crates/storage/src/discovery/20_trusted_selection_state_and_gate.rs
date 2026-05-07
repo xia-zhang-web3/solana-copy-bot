@@ -1,3 +1,11 @@
+use super::{parse_optional_rfc3339_utc, parse_rfc3339_utc};
+use crate::{
+    DiscoveryTrustedSelectionStateRow, SqliteStore, StartupTrustedSelectionGateStatus,
+    TrustedSelectionState, TrustedSnapshotSourceKind,
+};
+use anyhow::{Context, Result};
+use rusqlite::OptionalExtension;
+
 impl SqliteStore {
     pub fn discovery_trusted_selection_state(
         &self,

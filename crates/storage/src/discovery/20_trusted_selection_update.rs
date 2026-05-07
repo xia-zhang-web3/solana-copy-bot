@@ -1,3 +1,9 @@
+use super::canonical_wallet_metrics_window_start;
+use crate::{DiscoveryTrustedSelectionStateUpdate, SqliteStore, TrustedSnapshotSourceKind};
+use anyhow::{Context, Result};
+use chrono::Utc;
+use rusqlite::params;
+
 impl SqliteStore {
     pub fn set_discovery_trusted_selection_state(
         &self,
