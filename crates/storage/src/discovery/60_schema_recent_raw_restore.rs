@@ -1,5 +1,9 @@
+use crate::SqliteStore;
+use anyhow::{Context, Result};
+use std::collections::HashSet;
+
 impl SqliteStore {
-    fn ensure_discovery_recent_raw_restore_state_table(&self) -> Result<()> {
+    pub(crate) fn ensure_discovery_recent_raw_restore_state_table(&self) -> Result<()> {
         self.conn
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS discovery_recent_raw_restore_state (

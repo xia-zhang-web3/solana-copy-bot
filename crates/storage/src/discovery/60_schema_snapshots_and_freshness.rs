@@ -1,5 +1,8 @@
+use crate::SqliteStore;
+use anyhow::{Context, Result};
+
 impl SqliteStore {
-    fn ensure_trusted_wallet_metrics_snapshots_table(&self) -> Result<()> {
+    pub(crate) fn ensure_trusted_wallet_metrics_snapshots_table(&self) -> Result<()> {
         self.conn
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS trusted_wallet_metrics_snapshots (
@@ -26,7 +29,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn ensure_discovery_wallet_freshness_history_table(&self) -> Result<()> {
+    pub(crate) fn ensure_discovery_wallet_freshness_history_table(&self) -> Result<()> {
         self.conn
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS discovery_wallet_freshness_history (
