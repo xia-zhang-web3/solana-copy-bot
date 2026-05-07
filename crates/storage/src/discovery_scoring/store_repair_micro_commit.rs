@@ -1,4 +1,4 @@
-pub(crate) use super::*;
+use super::*;
 
 #[path = "store_repair_micro_commit_impl.rs"]
 mod store_repair_micro_commit_impl;

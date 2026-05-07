@@ -1,7 +1,7 @@
 use super::*;
 
 impl SqliteStore {
-    pub(super) fn upsert_discovery_scoring_state_ts(
+    pub(crate) fn upsert_discovery_scoring_state_ts(
         &self,
         state_key: &str,
         value: DateTime<Utc>,
@@ -21,7 +21,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub(super) fn load_discovery_scoring_state_ts(
+    pub(crate) fn load_discovery_scoring_state_ts(
         &self,
         state_key: &str,
     ) -> Result<Option<DateTime<Utc>>> {
@@ -40,7 +40,7 @@ impl SqliteStore {
             .transpose()
     }
 
-    pub(super) fn load_discovery_scoring_state_value(
+    pub(crate) fn load_discovery_scoring_state_value(
         &self,
         state_key: &str,
     ) -> Result<Option<String>> {
@@ -56,7 +56,7 @@ impl SqliteStore {
             .with_context(|| format!("failed querying discovery_scoring_state.{state_key}"))
     }
 
-    pub(super) fn load_discovery_scoring_cursor_state_exact(
+    pub(crate) fn load_discovery_scoring_cursor_state_exact(
         &self,
         ts_key: &str,
         slot_key: &str,

@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn export_discovery_scoring_boundary_seed_snapshot(
         &self,

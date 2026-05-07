@@ -1,4 +1,6 @@
-fn load_wallet_scoring_carryover_lot_on_conn(
+use super::*;
+
+pub(super) fn load_wallet_scoring_carryover_lot_on_conn(
     conn: &Connection,
     wallet_id: &str,
     token: &str,
@@ -27,7 +29,7 @@ fn load_wallet_scoring_carryover_lot_on_conn(
     .transpose()
 }
 
-fn apply_wallet_scoring_carryover_sell_on_conn(
+pub(super) fn apply_wallet_scoring_carryover_sell_on_conn(
     conn: &Connection,
     swap: &SwapEvent,
     segment_index: i64,
@@ -101,7 +103,7 @@ fn apply_wallet_scoring_carryover_sell_on_conn(
     Ok(1)
 }
 
-fn apply_wallet_scoring_carryover_sell_lot_only_on_conn(
+pub(super) fn apply_wallet_scoring_carryover_sell_lot_only_on_conn(
     conn: &Connection,
     swap: &SwapEvent,
 ) -> Result<()> {

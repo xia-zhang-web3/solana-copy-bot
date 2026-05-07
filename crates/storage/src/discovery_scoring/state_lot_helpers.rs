@@ -1,4 +1,6 @@
-fn wallet_scoring_carryover_lot_count_on_conn(conn: &Connection) -> Result<usize> {
+use super::*;
+
+pub(super) fn wallet_scoring_carryover_lot_count_on_conn(conn: &Connection) -> Result<usize> {
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM wallet_scoring_carryover_lots",
@@ -9,7 +11,7 @@ fn wallet_scoring_carryover_lot_count_on_conn(conn: &Connection) -> Result<usize
     Ok(count.max(0) as usize)
 }
 
-fn wallet_scoring_open_lot_count_on_conn(conn: &Connection) -> Result<usize> {
+pub(super) fn wallet_scoring_open_lot_count_on_conn(conn: &Connection) -> Result<usize> {
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM wallet_scoring_open_lots", [], |row| {
             row.get(0)
@@ -18,7 +20,7 @@ fn wallet_scoring_open_lot_count_on_conn(conn: &Connection) -> Result<usize> {
     Ok(count.max(0) as usize)
 }
 
-fn load_wallet_scoring_boundary_seed_lots_on_conn(
+pub(super) fn load_wallet_scoring_boundary_seed_lots_on_conn(
     conn: &Connection,
 ) -> Result<Vec<DiscoveryScoringBoundarySeedLot>> {
     let mut stmt = conn
@@ -61,7 +63,7 @@ fn load_wallet_scoring_boundary_seed_lots_on_conn(
     Ok(out)
 }
 
-fn parse_day(raw: &str, field: &str) -> Result<NaiveDate> {
+pub(super) fn parse_day(raw: &str, field: &str) -> Result<NaiveDate> {
     NaiveDate::parse_from_str(raw, "%Y-%m-%d")
         .with_context(|| format!("invalid {field} date value: {raw}"))
 }

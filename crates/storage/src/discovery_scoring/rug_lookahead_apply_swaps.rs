@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn apply_discovery_scoring_swaps_on_conn(
+pub(crate) fn apply_discovery_scoring_swaps_on_conn(
     conn: &Connection,
     prepared_swaps: &[PreparedScoringSwap],
 ) -> Result<()> {
@@ -45,7 +45,7 @@ fn apply_discovery_scoring_boundary_lot_swaps_on_conn(
     Ok(())
 }
 
-pub(super) fn apply_discovery_scoring_swaps_and_checkpoint_on_conn(
+pub(crate) fn apply_discovery_scoring_swaps_and_checkpoint_on_conn(
     conn: &Connection,
     prepared_swaps: &[PreparedScoringSwap],
     progress_start_ts: DateTime<Utc>,
@@ -102,7 +102,7 @@ pub(super) fn apply_discovery_scoring_swaps_and_checkpoint_on_conn(
     Ok((apply_ms, progress_update_ms))
 }
 
-pub(super) fn apply_discovery_scoring_boundary_lot_swaps_and_checkpoint_on_conn(
+pub(crate) fn apply_discovery_scoring_boundary_lot_swaps_and_checkpoint_on_conn(
     conn: &Connection,
     swaps: &[SwapEvent],
     progress_start_ts: DateTime<Utc>,

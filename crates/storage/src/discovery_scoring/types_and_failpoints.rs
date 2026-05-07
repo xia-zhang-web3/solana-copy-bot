@@ -1,16 +1,18 @@
-const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
-const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
-const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
-const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
-const QUALITY_MAX_FETCH_PER_BATCH: usize = 20;
-const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
-const DISCOVERY_SCORING_PREPARE_PROGRESS_OPS: i32 = 10_000;
-const DISCOVERY_SCORING_PREPARE_RUNTIME_BUDGET_EXHAUSTED_REASON: &str =
+use super::*;
+
+pub(super) const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+pub(super) const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
+pub(super) const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
+pub(super) const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
+pub(super) const QUALITY_MAX_FETCH_PER_BATCH: usize = 20;
+pub(super) const QUALITY_RPC_BUDGET_MS: u64 = 1_500;
+pub(super) const DISCOVERY_SCORING_PREPARE_PROGRESS_OPS: i32 = 10_000;
+pub(super) const DISCOVERY_SCORING_PREPARE_RUNTIME_BUDGET_EXHAUSTED_REASON: &str =
     "discovery_scoring_prepare_runtime_budget_exhausted";
-const DISCOVERY_AGGREGATE_REPAIR_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS: &str =
+pub(super) const DISCOVERY_AGGREGATE_REPAIR_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS: &str =
     "discovery_aggregate_repair_lock_first_budget_exhausted_without_progress";
-const DISCOVERY_SCORING_LOCK_FIRST_REPAIR_QUERY_PAGE_ROWS: usize = 512;
-const RUG_LOOKAHEAD_STATS_QUERY: &str = "SELECT
+pub(super) const DISCOVERY_SCORING_LOCK_FIRST_REPAIR_QUERY_PAGE_ROWS: usize = 512;
+pub(super) const RUG_LOOKAHEAD_STATS_QUERY: &str = "SELECT
                 COALESCE(SUM(sol_notional), 0.0) AS volume_sol,
                 COUNT(DISTINCT wallet_id) AS unique_traders
              FROM (
@@ -30,110 +32,110 @@ const RUG_LOOKAHEAD_STATS_QUERY: &str = "SELECT
              )";
 
 #[derive(Debug, Clone)]
-struct OpenLotRow {
-    buy_signature: String,
-    qty: f64,
-    cost_sol: f64,
-    opened_ts: DateTime<Utc>,
+pub(super) struct OpenLotRow {
+    pub(super) buy_signature: String,
+    pub(super) qty: f64,
+    pub(super) cost_sol: f64,
+    pub(super) opened_ts: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
-struct QualitySnapshot {
-    source: WalletScoringQualitySource,
-    token_age_seconds: Option<u64>,
-    holders: Option<u64>,
-    liquidity_sol: Option<f64>,
+pub(super) struct QualitySnapshot {
+    pub(super) source: WalletScoringQualitySource,
+    pub(super) token_age_seconds: Option<u64>,
+    pub(super) holders: Option<u64>,
+    pub(super) liquidity_sol: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
-struct QualityCacheRowLocal {
-    holders: Option<u64>,
-    liquidity_sol: Option<f64>,
-    token_age_seconds: Option<u64>,
-    fetched_at: DateTime<Utc>,
+pub(super) struct QualityCacheRowLocal {
+    pub(super) holders: Option<u64>,
+    pub(super) liquidity_sol: Option<f64>,
+    pub(super) token_age_seconds: Option<u64>,
+    pub(super) fetched_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Default)]
-struct QualityFetchBudget {
-    rpc_attempted: usize,
-    started_at: Option<Instant>,
+pub(super) struct QualityFetchBudget {
+    pub(super) rpc_attempted: usize,
+    pub(super) started_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone)]
-struct QualityCacheUpsert {
-    mint: String,
-    holders: Option<u64>,
-    liquidity_sol: Option<f64>,
-    token_age_seconds: Option<u64>,
-    fetched_at: DateTime<Utc>,
+pub(super) struct QualityCacheUpsert {
+    pub(super) mint: String,
+    pub(super) holders: Option<u64>,
+    pub(super) liquidity_sol: Option<f64>,
+    pub(super) token_age_seconds: Option<u64>,
+    pub(super) fetched_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
-struct PreparedBuyFact {
-    market_stats: TokenMarketStats,
-    quality: QualitySnapshot,
-    quality_cache_upsert: Option<QualityCacheUpsert>,
-    rug_check_after_ts: DateTime<Utc>,
+pub(super) struct PreparedBuyFact {
+    pub(super) market_stats: TokenMarketStats,
+    pub(super) quality: QualitySnapshot,
+    pub(super) quality_cache_upsert: Option<QualityCacheUpsert>,
+    pub(super) rug_check_after_ts: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
-struct PreparedScoringSwap {
-    swap: SwapEvent,
-    buy_fact: Option<PreparedBuyFact>,
+pub(super) struct PreparedScoringSwap {
+    pub(super) swap: SwapEvent,
+    pub(super) buy_fact: Option<PreparedBuyFact>,
 }
 
 #[derive(Debug, Clone)]
-struct CarryoverLotRow {
-    qty: f64,
-    cost_sol: f64,
-    oldest_opened_ts: DateTime<Utc>,
+pub(super) struct CarryoverLotRow {
+    pub(super) qty: f64,
+    pub(super) cost_sol: f64,
+    pub(super) oldest_opened_ts: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct RugLookaheadFinalizeOutcome {
-    deferred_due_to_budget_hotspot: bool,
-    batch_prefetch_used: bool,
-    exact_count: usize,
-    deferred_count: usize,
+pub(super) struct RugLookaheadFinalizeOutcome {
+    pub(super) deferred_due_to_budget_hotspot: bool,
+    pub(super) batch_prefetch_used: bool,
+    pub(super) exact_count: usize,
+    pub(super) deferred_count: usize,
 }
 
 #[derive(Debug, Clone)]
-struct RepairRugFact {
-    buy_signature: String,
-    token: String,
-    buy_ts: DateTime<Utc>,
-    check_after_ts: DateTime<Utc>,
+pub(super) struct RepairRugFact {
+    pub(super) buy_signature: String,
+    pub(super) token: String,
+    pub(super) buy_ts: DateTime<Utc>,
+    pub(super) check_after_ts: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
-struct RepairRugLookaheadEvent {
-    wallet_id: String,
-    ts: DateTime<Utc>,
-    sol_notional: f64,
+pub(super) struct RepairRugLookaheadEvent {
+    pub(super) wallet_id: String,
+    pub(super) ts: DateTime<Utc>,
+    pub(super) sol_notional: f64,
 }
 
 #[cfg(debug_assertions)]
 thread_local! {
-    static DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT: Cell<bool> =
+    pub(super) static DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT: Cell<bool> =
         const { Cell::new(false) };
-    static DISCOVERY_SCORING_FORCE_PREPARE_RUNTIME_BUDGET_EXHAUSTED: Cell<bool> =
+    pub(super) static DISCOVERY_SCORING_FORCE_PREPARE_RUNTIME_BUDGET_EXHAUSTED: Cell<bool> =
         const { Cell::new(false) };
-    static DISCOVERY_SCORING_LOCK_FIRST_REPAIR_BUDGET_AFTER_ROWS: Cell<Option<usize>> =
+    pub(super) static DISCOVERY_SCORING_LOCK_FIRST_REPAIR_BUDGET_AFTER_ROWS: Cell<Option<usize>> =
         const { Cell::new(None) };
-    static DISCOVERY_SCORING_RUG_LOOKAHEAD_BUDGET_FAIL_ABOVE_ROWS: Cell<Option<usize>> =
+    pub(super) static DISCOVERY_SCORING_RUG_LOOKAHEAD_BUDGET_FAIL_ABOVE_ROWS: Cell<Option<usize>> =
         const { Cell::new(None) };
-    static DISCOVERY_SCORING_RUG_LOOKAHEAD_BATCH_BUDGET_FAIL_ABOVE_ROWS: Cell<Option<usize>> =
+    pub(super) static DISCOVERY_SCORING_RUG_LOOKAHEAD_BATCH_BUDGET_FAIL_ABOVE_ROWS: Cell<Option<usize>> =
         const { Cell::new(None) };
-    static DISCOVERY_SCORING_RUG_LOOKAHEAD_UNKNOWN_FAILPOINT: Cell<bool> =
+    pub(super) static DISCOVERY_SCORING_RUG_LOOKAHEAD_UNKNOWN_FAILPOINT: Cell<bool> =
         const { Cell::new(false) };
-    static DISCOVERY_SCORING_LOCK_FIRST_REPAIR_CURRENT_ROWS: Cell<usize> =
+    pub(super) static DISCOVERY_SCORING_LOCK_FIRST_REPAIR_CURRENT_ROWS: Cell<usize> =
         const { Cell::new(0) };
-    static DISCOVERY_SCORING_RUG_LOOKAHEAD_STATS_CALL_COUNT: Cell<usize> =
+    pub(super) static DISCOVERY_SCORING_RUG_LOOKAHEAD_STATS_CALL_COUNT: Cell<usize> =
         const { Cell::new(0) };
 }
 
 #[cfg(debug_assertions)]
-fn set_discovery_scoring_atomic_checkpoint_failpoint(enabled: bool) {
+pub(super) fn set_discovery_scoring_atomic_checkpoint_failpoint(enabled: bool) {
     DISCOVERY_SCORING_FAIL_AFTER_MATERIALIZATION_BEFORE_CHECKPOINT
         .with(|failpoint| failpoint.set(enabled));
 }
@@ -209,12 +211,12 @@ impl SqliteStore {
     }
 }
 
-struct DiscoveryScoringPrepareProgressGuard<'a> {
-    conn: &'a Connection,
+pub(super) struct DiscoveryScoringPrepareProgressGuard<'a> {
+    pub(super) conn: &'a Connection,
 }
 
 impl<'a> DiscoveryScoringPrepareProgressGuard<'a> {
-    fn install(conn: &'a Connection, deadline: Instant) -> Self {
+    pub(super) fn install(conn: &'a Connection, deadline: Instant) -> Self {
         conn.progress_handler(
             DISCOVERY_SCORING_PREPARE_PROGRESS_OPS,
             Some(move || Instant::now() >= deadline),

@@ -1,7 +1,7 @@
 use super::scoring_lots_sell_close::load_wallet_scoring_open_lots_on_conn;
 use super::*;
 
-pub(super) fn apply_wallet_scoring_sell_lot_only_on_conn(
+pub(crate) fn apply_wallet_scoring_sell_lot_only_on_conn(
     conn: &Connection,
     swap: &SwapEvent,
 ) -> Result<()> {

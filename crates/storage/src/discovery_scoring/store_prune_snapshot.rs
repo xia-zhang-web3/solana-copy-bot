@@ -1,3 +1,5 @@
+use super::*;
+
 #[path = "store_prune_snapshot_buy_facts.rs"]
 mod store_prune_snapshot_buy_facts;
 #[path = "store_prune_snapshot_close_and_tx.rs"]

@@ -1,4 +1,6 @@
-fn prepare_discovery_scoring_swaps(
+use super::*;
+
+pub(super) fn prepare_discovery_scoring_swaps(
     conn: &Connection,
     swaps: &[SwapEvent],
     config: &DiscoveryAggregateWriteConfig,
@@ -6,7 +8,7 @@ fn prepare_discovery_scoring_swaps(
     prepare_discovery_scoring_swaps_with_diagnostics(conn, swaps, config, &mut |_| {}, None)
 }
 
-fn prepare_discovery_scoring_swaps_with_diagnostics(
+pub(super) fn prepare_discovery_scoring_swaps_with_diagnostics(
     conn: &Connection,
     swaps: &[SwapEvent],
     config: &DiscoveryAggregateWriteConfig,

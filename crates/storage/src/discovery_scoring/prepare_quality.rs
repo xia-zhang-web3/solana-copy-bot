@@ -1,4 +1,6 @@
-fn resolve_quality_snapshot_on_conn_with_diagnostics(
+use super::*;
+
+pub(super) fn resolve_quality_snapshot_on_conn_with_diagnostics(
     conn: &Connection,
     mint: &str,
     signal_ts: DateTime<Utc>,

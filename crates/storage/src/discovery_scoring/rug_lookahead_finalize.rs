@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn rug_lookahead_stats_on_conn(
+pub(crate) fn rug_lookahead_stats_on_conn(
     conn: &Connection,
     token: &str,
     buy_ts: DateTime<Utc>,
@@ -34,7 +34,7 @@ pub(super) fn rug_lookahead_stats_on_conn(
     Ok((volume_sol.max(0.0), unique_traders_raw.max(0) as u32))
 }
 
-pub(super) fn finalize_mature_rug_facts_on_conn(
+pub(crate) fn finalize_mature_rug_facts_on_conn(
     conn: &Connection,
     watermark_ts: DateTime<Utc>,
 ) -> Result<()> {
@@ -86,7 +86,7 @@ pub(super) fn finalize_mature_rug_facts_on_conn(
     Ok(())
 }
 
-pub(super) fn finalize_repair_prefix_rug_facts_defer_budget_hotspot_on_conn(
+pub(crate) fn finalize_repair_prefix_rug_facts_defer_budget_hotspot_on_conn(
     conn: &Connection,
     swaps: &[SwapEvent],
 ) -> Result<RugLookaheadFinalizeOutcome> {

@@ -1,26 +1,28 @@
-fn is_sol_buy(swap: &SwapEvent) -> bool {
+use super::*;
+
+pub(super) fn is_sol_buy(swap: &SwapEvent) -> bool {
     swap.token_in == SOL_MINT && swap.token_out != SOL_MINT
 }
 
-fn is_sol_sell(swap: &SwapEvent) -> bool {
+pub(super) fn is_sol_sell(swap: &SwapEvent) -> bool {
     swap.token_out == SOL_MINT && swap.token_in != SOL_MINT
 }
 
-fn cmp_swap_order(a: &SwapEvent, b: &SwapEvent) -> Ordering {
+pub(super) fn cmp_swap_order(a: &SwapEvent, b: &SwapEvent) -> Ordering {
     a.ts_utc
         .cmp(&b.ts_utc)
         .then_with(|| a.slot.cmp(&b.slot))
         .then_with(|| a.signature.cmp(&b.signature))
 }
 
-fn cmp_cursor_order(a: &DiscoveryRuntimeCursor, b: &DiscoveryRuntimeCursor) -> Ordering {
+pub(super) fn cmp_cursor_order(a: &DiscoveryRuntimeCursor, b: &DiscoveryRuntimeCursor) -> Ordering {
     a.ts_utc
         .cmp(&b.ts_utc)
         .then_with(|| a.slot.cmp(&b.slot))
         .then_with(|| a.signature.cmp(&b.signature))
 }
 
-fn upsert_discovery_scoring_state_value_on_conn(
+pub(super) fn upsert_discovery_scoring_state_value_on_conn(
     conn: &Connection,
     state_key: &str,
     state_value: &str,
@@ -38,7 +40,7 @@ fn upsert_discovery_scoring_state_value_on_conn(
     Ok(())
 }
 
-fn upsert_discovery_scoring_cursor_state_on_conn(
+pub(super) fn upsert_discovery_scoring_cursor_state_on_conn(
     conn: &Connection,
     ts_key: &str,
     slot_key: &str,
@@ -90,7 +92,7 @@ pub(crate) fn upsert_discovery_scoring_backfill_progress_on_conn(
     Ok(())
 }
 
-fn upsert_discovery_scoring_seed_boundary_install_marker_on_conn(
+pub(super) fn upsert_discovery_scoring_seed_boundary_install_marker_on_conn(
     conn: &Connection,
     start_ts: DateTime<Utc>,
     cursor: &DiscoveryRuntimeCursor,
@@ -113,7 +115,9 @@ fn upsert_discovery_scoring_seed_boundary_install_marker_on_conn(
     Ok(())
 }
 
-fn clear_discovery_scoring_seed_boundary_install_marker_on_conn(conn: &Connection) -> Result<()> {
+pub(super) fn clear_discovery_scoring_seed_boundary_install_marker_on_conn(
+    conn: &Connection,
+) -> Result<()> {
     conn.execute(
         "DELETE FROM discovery_scoring_state
          WHERE state_key IN (
@@ -128,7 +132,7 @@ fn clear_discovery_scoring_seed_boundary_install_marker_on_conn(conn: &Connectio
     Ok(())
 }
 
-fn upsert_discovery_scoring_materialization_gap_cursor_on_conn(
+pub(super) fn upsert_discovery_scoring_materialization_gap_cursor_on_conn(
     conn: &Connection,
     cursor: &DiscoveryRuntimeCursor,
     updated_at: &str,
@@ -144,7 +148,7 @@ fn upsert_discovery_scoring_materialization_gap_cursor_on_conn(
     Ok(())
 }
 
-fn clear_discovery_scoring_materialization_gap_repair_target_on_conn(
+pub(super) fn clear_discovery_scoring_materialization_gap_repair_target_on_conn(
     conn: &Connection,
 ) -> Result<()> {
     conn.execute(
@@ -163,7 +167,7 @@ fn clear_discovery_scoring_materialization_gap_repair_target_on_conn(
     Ok(())
 }
 
-fn load_discovery_scoring_state_value_on_conn(
+pub(super) fn load_discovery_scoring_state_value_on_conn(
     conn: &Connection,
     state_key: &str,
 ) -> Result<Option<String>> {
@@ -178,7 +182,7 @@ fn load_discovery_scoring_state_value_on_conn(
     .with_context(|| format!("failed querying discovery_scoring_state.{state_key}"))
 }
 
-fn load_discovery_scoring_cursor_state_exact_on_conn(
+pub(super) fn load_discovery_scoring_cursor_state_exact_on_conn(
     conn: &Connection,
     ts_key: &str,
     slot_key: &str,
@@ -207,7 +211,7 @@ fn load_discovery_scoring_cursor_state_exact_on_conn(
     }
 }
 
-fn load_discovery_scoring_materialization_gap_cursor_on_conn(
+pub(super) fn load_discovery_scoring_materialization_gap_cursor_on_conn(
     conn: &Connection,
 ) -> Result<Option<DiscoveryRuntimeCursor>> {
     load_discovery_scoring_cursor_state_exact_on_conn(
@@ -219,7 +223,7 @@ fn load_discovery_scoring_materialization_gap_cursor_on_conn(
     )
 }
 
-fn load_discovery_scoring_materialization_gap_repair_target_on_conn(
+pub(super) fn load_discovery_scoring_materialization_gap_repair_target_on_conn(
     conn: &Connection,
 ) -> Result<Option<(DiscoveryRuntimeCursor, DiscoveryRuntimeCursor)>> {
     let gap_cursor = load_discovery_scoring_cursor_state_exact_on_conn(

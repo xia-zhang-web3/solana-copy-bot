@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn upsert_wallet_scoring_day_on_conn(conn: &Connection, swap: &SwapEvent) -> Result<()> {
+pub(crate) fn upsert_wallet_scoring_day_on_conn(conn: &Connection, swap: &SwapEvent) -> Result<()> {
     let buy_notional = if is_sol_buy(swap) {
         swap.amount_in.max(0.0)
     } else {
@@ -46,7 +46,7 @@ pub(super) fn upsert_wallet_scoring_day_on_conn(conn: &Connection, swap: &SwapEv
     Ok(())
 }
 
-pub(super) fn upsert_wallet_scoring_tx_minute_on_conn(
+pub(crate) fn upsert_wallet_scoring_tx_minute_on_conn(
     conn: &Connection,
     wallet_id: &str,
     minute_bucket: i64,
@@ -62,7 +62,7 @@ pub(super) fn upsert_wallet_scoring_tx_minute_on_conn(
     Ok(())
 }
 
-pub(super) fn insert_wallet_scoring_buy_fact_on_conn(
+pub(crate) fn insert_wallet_scoring_buy_fact_on_conn(
     conn: &Connection,
     swap: &SwapEvent,
     prepared: &PreparedBuyFact,
@@ -116,7 +116,7 @@ pub(super) fn insert_wallet_scoring_buy_fact_on_conn(
     Ok(())
 }
 
-pub(super) fn insert_wallet_scoring_open_lot_on_conn(
+pub(crate) fn insert_wallet_scoring_open_lot_on_conn(
     conn: &Connection,
     swap: &SwapEvent,
 ) -> Result<()> {

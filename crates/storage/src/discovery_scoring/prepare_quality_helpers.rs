@@ -1,10 +1,12 @@
-fn parse_ts(raw: &str, field: &str) -> Result<DateTime<Utc>> {
+use super::*;
+
+pub(super) fn parse_ts(raw: &str, field: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .map(|dt| dt.with_timezone(&Utc))
         .with_context(|| format!("invalid {field} rfc3339 value: {raw}"))
 }
 
-fn sanitize_prepare_log_value(raw: &str) -> String {
+pub(super) fn sanitize_prepare_log_value(raw: &str) -> String {
     raw.chars()
         .map(|ch| {
             if ch.is_ascii_whitespace() || ch.is_control() {
@@ -16,7 +18,7 @@ fn sanitize_prepare_log_value(raw: &str) -> String {
         .collect()
 }
 
-fn emit_prepare_stage_start(
+pub(super) fn emit_prepare_stage_start(
     emit: &mut impl FnMut(String),
     stage: &str,
     token: Option<&str>,
@@ -33,7 +35,7 @@ fn emit_prepare_stage_start(
     ));
 }
 
-fn emit_prepare_stage_end(
+pub(super) fn emit_prepare_stage_end(
     emit: &mut impl FnMut(String),
     stage: &str,
     token: Option<&str>,
@@ -54,7 +56,7 @@ fn emit_prepare_stage_end(
     ));
 }
 
-fn emit_prepare_stage_skipped(
+pub(super) fn emit_prepare_stage_skipped(
     emit: &mut impl FnMut(String),
     stage: &str,
     token: Option<&str>,
@@ -73,7 +75,7 @@ fn emit_prepare_stage_skipped(
     ));
 }
 
-fn emit_prepare_batch_counts(emit: &mut impl FnMut(String), swaps: &[SwapEvent]) {
+pub(super) fn emit_prepare_batch_counts(emit: &mut impl FnMut(String), swaps: &[SwapEvent]) {
     let buy_count = swaps.iter().filter(|swap| is_sol_buy(swap)).count();
     let sell_count = swaps.iter().filter(|swap| is_sol_sell(swap)).count();
     let other_count = swaps
@@ -89,7 +91,7 @@ fn emit_prepare_batch_counts(emit: &mut impl FnMut(String), swaps: &[SwapEvent])
 }
 
 #[cfg(debug_assertions)]
-fn forced_prepare_runtime_budget_exhausted() -> bool {
+pub(super) fn forced_prepare_runtime_budget_exhausted() -> bool {
     DISCOVERY_SCORING_FORCE_PREPARE_RUNTIME_BUDGET_EXHAUSTED.with(|failpoint| {
         let fired = failpoint.get();
         failpoint.set(false);
@@ -98,16 +100,16 @@ fn forced_prepare_runtime_budget_exhausted() -> bool {
 }
 
 #[cfg(not(debug_assertions))]
-fn forced_prepare_runtime_budget_exhausted() -> bool {
+pub(super) fn forced_prepare_runtime_budget_exhausted() -> bool {
     false
 }
 
-fn prepare_runtime_budget_exhausted(deadline: Option<Instant>) -> bool {
+pub(super) fn prepare_runtime_budget_exhausted(deadline: Option<Instant>) -> bool {
     forced_prepare_runtime_budget_exhausted()
         || deadline.is_some_and(|deadline| Instant::now() >= deadline)
 }
 
-fn prepare_runtime_budget_error(
+pub(super) fn prepare_runtime_budget_error(
     stage: &str,
     token: Option<&str>,
     swap_signature: Option<&str>,
@@ -125,7 +127,7 @@ fn prepare_runtime_budget_error(
     )
 }
 
-fn check_prepare_runtime_budget(
+pub(super) fn check_prepare_runtime_budget(
     deadline: Option<Instant>,
     emit: &mut impl FnMut(String),
     stage: &str,
@@ -146,11 +148,11 @@ fn check_prepare_runtime_budget(
     Ok(())
 }
 
-fn prepare_error_is_runtime_budget(error: &anyhow::Error) -> bool {
+pub(super) fn prepare_error_is_runtime_budget(error: &anyhow::Error) -> bool {
     format!("{error:#}").contains(DISCOVERY_SCORING_PREPARE_RUNTIME_BUDGET_EXHAUSTED_REASON)
 }
 
-fn prepare_stage_error(
+pub(super) fn prepare_stage_error(
     error: anyhow::Error,
     deadline: Option<Instant>,
     stage: &str,
@@ -164,7 +166,7 @@ fn prepare_stage_error(
     }
 }
 
-fn token_market_stats_on_conn(
+pub(super) fn token_market_stats_on_conn(
     conn: &Connection,
     token: &str,
     as_of: DateTime<Utc>,
@@ -206,7 +208,7 @@ fn token_market_stats_on_conn(
     })
 }
 
-fn load_token_quality_cache_on_conn(
+pub(super) fn load_token_quality_cache_on_conn(
     conn: &Connection,
     mint: &str,
 ) -> Result<Option<QualityCacheRowLocal>> {
@@ -234,7 +236,7 @@ fn load_token_quality_cache_on_conn(
     .transpose()
 }
 
-fn upsert_token_quality_cache_on_conn(
+pub(super) fn upsert_token_quality_cache_on_conn(
     conn: &Connection,
     mint: &str,
     holders: Option<u64>,
@@ -267,7 +269,7 @@ fn upsert_token_quality_cache_on_conn(
     Ok(())
 }
 
-fn cached_quality_snapshot(
+pub(super) fn cached_quality_snapshot(
     cached: Option<QualityCacheRowLocal>,
     signal_ts: DateTime<Utc>,
     missing_source: WalletScoringQualitySource,

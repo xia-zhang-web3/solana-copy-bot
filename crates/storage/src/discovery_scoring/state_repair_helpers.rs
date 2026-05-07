@@ -1,4 +1,6 @@
-fn observed_swap_exact_cursor_exists_on_conn(
+use super::*;
+
+pub(super) fn observed_swap_exact_cursor_exists_on_conn(
     conn: &Connection,
     cursor: &DiscoveryRuntimeCursor,
 ) -> Result<bool> {
@@ -23,7 +25,7 @@ fn observed_swap_exact_cursor_exists_on_conn(
     Ok(found)
 }
 
-fn load_observed_swaps_after_cursor_for_repair_on_conn(
+pub(super) fn load_observed_swaps_after_cursor_for_repair_on_conn(
     conn: &Connection,
     cursor: &DiscoveryRuntimeCursor,
     repair_target: &DiscoveryRuntimeCursor,
@@ -70,25 +72,25 @@ fn load_observed_swaps_after_cursor_for_repair_on_conn(
 }
 
 #[cfg(debug_assertions)]
-fn lock_first_repair_budget_after_rows_for_tests() -> Option<usize> {
+pub(super) fn lock_first_repair_budget_after_rows_for_tests() -> Option<usize> {
     DISCOVERY_SCORING_LOCK_FIRST_REPAIR_BUDGET_AFTER_ROWS.with(|failpoint| failpoint.get())
 }
 
 #[cfg(not(debug_assertions))]
-fn lock_first_repair_budget_after_rows_for_tests() -> Option<usize> {
+pub(super) fn lock_first_repair_budget_after_rows_for_tests() -> Option<usize> {
     None
 }
 
-fn lock_first_repair_budget_reached(collected_rows: usize) -> bool {
+pub(super) fn lock_first_repair_budget_reached(collected_rows: usize) -> bool {
     lock_first_repair_budget_after_rows_for_tests().is_some_and(|limit| collected_rows >= limit)
 }
 
 #[cfg(debug_assertions)]
-struct LockFirstRepairCurrentRowsGuard;
+pub(super) struct LockFirstRepairCurrentRowsGuard;
 
 #[cfg(debug_assertions)]
 impl LockFirstRepairCurrentRowsGuard {
-    fn install(rows: usize) -> Self {
+    pub(super) fn install(rows: usize) -> Self {
         DISCOVERY_SCORING_LOCK_FIRST_REPAIR_CURRENT_ROWS.with(|current| current.set(rows));
         Self
     }
@@ -102,17 +104,17 @@ impl Drop for LockFirstRepairCurrentRowsGuard {
 }
 
 #[cfg(not(debug_assertions))]
-struct LockFirstRepairCurrentRowsGuard;
+pub(super) struct LockFirstRepairCurrentRowsGuard;
 
 #[cfg(not(debug_assertions))]
 impl LockFirstRepairCurrentRowsGuard {
-    fn install(_rows: usize) -> Self {
+    pub(super) fn install(_rows: usize) -> Self {
         Self
     }
 }
 
 #[cfg(debug_assertions)]
-fn rug_lookahead_budget_failpoint_triggered() -> bool {
+pub(super) fn rug_lookahead_budget_failpoint_triggered() -> bool {
     let current_rows =
         DISCOVERY_SCORING_LOCK_FIRST_REPAIR_CURRENT_ROWS.with(|current| current.get());
     DISCOVERY_SCORING_RUG_LOOKAHEAD_BUDGET_FAIL_ABOVE_ROWS
@@ -121,12 +123,12 @@ fn rug_lookahead_budget_failpoint_triggered() -> bool {
 }
 
 #[cfg(not(debug_assertions))]
-fn rug_lookahead_budget_failpoint_triggered() -> bool {
+pub(super) fn rug_lookahead_budget_failpoint_triggered() -> bool {
     false
 }
 
 #[cfg(debug_assertions)]
-fn rug_lookahead_batch_budget_failpoint_triggered() -> bool {
+pub(super) fn rug_lookahead_batch_budget_failpoint_triggered() -> bool {
     let current_rows =
         DISCOVERY_SCORING_LOCK_FIRST_REPAIR_CURRENT_ROWS.with(|current| current.get());
     DISCOVERY_SCORING_RUG_LOOKAHEAD_BATCH_BUDGET_FAIL_ABOVE_ROWS
@@ -135,37 +137,37 @@ fn rug_lookahead_batch_budget_failpoint_triggered() -> bool {
 }
 
 #[cfg(not(debug_assertions))]
-fn rug_lookahead_batch_budget_failpoint_triggered() -> bool {
+pub(super) fn rug_lookahead_batch_budget_failpoint_triggered() -> bool {
     false
 }
 
 #[cfg(debug_assertions)]
-fn rug_lookahead_unknown_failpoint_triggered() -> bool {
+pub(super) fn rug_lookahead_unknown_failpoint_triggered() -> bool {
     DISCOVERY_SCORING_RUG_LOOKAHEAD_UNKNOWN_FAILPOINT.with(|failpoint| failpoint.get())
 }
 
 #[cfg(not(debug_assertions))]
-fn rug_lookahead_unknown_failpoint_triggered() -> bool {
+pub(super) fn rug_lookahead_unknown_failpoint_triggered() -> bool {
     false
 }
 
 #[cfg(debug_assertions)]
-fn note_rug_lookahead_stats_call_for_tests() {
+pub(super) fn note_rug_lookahead_stats_call_for_tests() {
     DISCOVERY_SCORING_RUG_LOOKAHEAD_STATS_CALL_COUNT
         .with(|counter| counter.set(counter.get().saturating_add(1)));
 }
 
 #[cfg(not(debug_assertions))]
-fn note_rug_lookahead_stats_call_for_tests() {}
+pub(super) fn note_rug_lookahead_stats_call_for_tests() {}
 
-fn check_lock_first_repair_deadline(deadline: Instant) -> Result<()> {
+pub(super) fn check_lock_first_repair_deadline(deadline: Instant) -> Result<()> {
     if Instant::now() >= deadline {
         anyhow::bail!(DISCOVERY_AGGREGATE_REPAIR_LOCK_FIRST_BUDGET_EXHAUSTED_WITHOUT_PROGRESS);
     }
     Ok(())
 }
 
-fn upsert_discovery_scoring_materialization_gap_repair_target_on_conn(
+pub(super) fn upsert_discovery_scoring_materialization_gap_repair_target_on_conn(
     conn: &Connection,
     gap_cursor: &DiscoveryRuntimeCursor,
     target_cursor: &DiscoveryRuntimeCursor,
