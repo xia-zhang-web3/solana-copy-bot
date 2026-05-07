@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn insert_shadow_lot(
         &self,
@@ -278,5 +280,4 @@ impl SqliteStore {
         }
         Ok(pairs)
     }
-
 }

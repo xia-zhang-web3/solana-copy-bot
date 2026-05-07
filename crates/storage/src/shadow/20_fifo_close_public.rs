@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn close_shadow_lots_fifo_atomic(
         &self,

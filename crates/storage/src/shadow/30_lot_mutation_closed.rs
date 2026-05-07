@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn update_shadow_lot(&self, id: i64, qty: f64, cost_sol: f64) -> Result<()> {
         self.update_shadow_lot_exact(id, qty, None, cost_sol)

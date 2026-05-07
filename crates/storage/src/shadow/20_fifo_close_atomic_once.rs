@@ -1,5 +1,7 @@
+use super::*;
+
 impl SqliteStore {
-    fn close_shadow_lots_fifo_atomic_once(
+    pub(crate) fn close_shadow_lots_fifo_atomic_once(
         &self,
         signal_id: &str,
         wallet_id: &str,
