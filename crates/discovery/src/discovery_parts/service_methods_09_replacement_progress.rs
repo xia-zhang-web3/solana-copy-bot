@@ -1,7 +1,7 @@
 use super::*;
 
 impl DiscoveryService {
-    pub(super) fn classify_recent_raw_replacement_progress_contract(
+    pub(crate) fn classify_recent_raw_replacement_progress_contract(
         staged_manifest_error: Option<&str>,
         replacement_candidate_exists: bool,
         replacement_candidate_complete_against_current_source: Option<bool>,

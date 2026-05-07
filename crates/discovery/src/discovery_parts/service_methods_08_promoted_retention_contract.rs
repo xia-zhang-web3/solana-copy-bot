@@ -1,7 +1,7 @@
 use super::*;
 
 impl DiscoveryService {
-    pub(super) fn recent_raw_promoted_retained_as_truth_under_current_contract(
+    pub(crate) fn recent_raw_promoted_retained_as_truth_under_current_contract(
         promoted_exists: bool,
         reason_class: RecentRawPromotionBlockerReasonClass,
     ) -> Option<bool> {
@@ -21,7 +21,7 @@ impl DiscoveryService {
         }
     }
 
-    pub(super) fn classify_recent_raw_promoted_retention_contract(
+    pub(crate) fn classify_recent_raw_promoted_retention_contract(
         promoted_manifest_error: Option<&str>,
         source_window_contract_observed: bool,
         source_window_reason_class: RecentRawSourceWindowContractReasonClass,

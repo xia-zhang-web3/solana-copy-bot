@@ -1,3 +1,5 @@
+use crate::*;
+
 #[path = "service_methods_15_contract.rs"]
 mod service_methods_15_contract;
 #[path = "service_methods_15_rebuild_state.rs"]

@@ -1,3 +1,5 @@
+use crate::*;
+
 #[path = "service_methods_30_run_cycle_prepare_fetch.rs"]
 mod service_methods_30_run_cycle_prepare_fetch;
 #[path = "service_methods_30_run_cycle_prepare_decide.rs"]
@@ -5,18 +7,18 @@ mod service_methods_30_run_cycle_prepare_decide;
 
 use self::service_methods_30_run_cycle_prepare_fetch::RunCycleWindowFetchPreparation;
 
-struct RunCycleWindowPreparation {
-    swaps_window: usize,
-    fetch_progress: FetchProgress,
-    cap_truncation_telemetry: CapTruncationTelemetrySnapshot,
-    delta_fetched: usize,
-    swaps_evicted_due_cap: usize,
-    swaps_warm_loaded: usize,
-    prepared_cycle: PreparedCycleState,
+pub(crate) struct RunCycleWindowPreparation {
+    pub(crate) swaps_window: usize,
+    pub(crate) fetch_progress: FetchProgress,
+    pub(crate) cap_truncation_telemetry: CapTruncationTelemetrySnapshot,
+    pub(crate) delta_fetched: usize,
+    pub(crate) swaps_evicted_due_cap: usize,
+    pub(crate) swaps_warm_loaded: usize,
+    pub(crate) prepared_cycle: PreparedCycleState,
 }
 
 impl DiscoveryService {
-    fn prepare_run_cycle_window(
+    pub(crate) fn prepare_run_cycle_window(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,

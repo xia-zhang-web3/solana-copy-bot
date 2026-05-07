@@ -3,7 +3,7 @@ use crate::*;
 use super::PersistedStreamReplayOptimizedProgress;
 
 impl DiscoveryService {
-    pub(super) fn observe_persisted_stream_replay_optimized_sol_leg_swap(
+    pub(crate) fn observe_persisted_stream_replay_optimized_sol_leg_swap(
         &self,
         state: &mut PersistedStreamRebuildState,
         swap: SwapEvent,

@@ -1,23 +1,23 @@
 use super::*;
 
-pub(super) struct PersistedStreamAdvanceCycleState {
-    pub(super) started: Instant,
-    pub(super) deadline: Instant,
-    pub(super) rows_processed: usize,
-    pub(super) pages_processed: usize,
-    pub(super) replay_sol_leg_rows_processed: usize,
-    pub(super) replay_sol_leg_pages_processed: usize,
-    pub(super) replay_sol_leg_elapsed_ms: u64,
-    pub(super) replay_wallet_stats_day_count_source_progress:
+pub(crate) struct PersistedStreamAdvanceCycleState {
+    pub(crate) started: Instant,
+    pub(crate) deadline: Instant,
+    pub(crate) rows_processed: usize,
+    pub(crate) pages_processed: usize,
+    pub(crate) replay_sol_leg_rows_processed: usize,
+    pub(crate) replay_sol_leg_pages_processed: usize,
+    pub(crate) replay_sol_leg_elapsed_ms: u64,
+    pub(crate) replay_wallet_stats_day_count_source_progress:
         ReplayWalletStatsDayCountSourceProgress,
-    pub(super) replay_wallet_stats_wallet_cursor_before: Option<String>,
-    pub(super) unique_buy_mints_discovered: usize,
-    pub(super) replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
-    pub(super) started_in_replay_sol_leg: bool,
-    pub(super) replay_sol_leg_phase_page_limit: Option<usize>,
+    pub(crate) replay_wallet_stats_wallet_cursor_before: Option<String>,
+    pub(crate) unique_buy_mints_discovered: usize,
+    pub(crate) replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
+    pub(crate) started_in_replay_sol_leg: bool,
+    pub(crate) replay_sol_leg_phase_page_limit: Option<usize>,
 }
 
-pub(super) enum PersistedStreamRebuildCycleLoopOutcome {
+pub(crate) enum PersistedStreamRebuildCycleLoopOutcome {
     Completed {
         outcome: PersistedStreamRebuildAdvanceOutcome,
     },
@@ -27,7 +27,7 @@ pub(super) enum PersistedStreamRebuildCycleLoopOutcome {
 }
 
 impl PersistedStreamAdvanceCycleState {
-    pub(super) fn new(
+    pub(crate) fn new(
         state: &PersistedStreamRebuildState,
         rebuild_time_budget: StdDuration,
         fetch_page_limit: usize,
@@ -60,11 +60,11 @@ impl PersistedStreamAdvanceCycleState {
         }
     }
 
-    pub(super) fn elapsed_ms(&self) -> u64 {
+    pub(crate) fn elapsed_ms(&self) -> u64 {
         self.started.elapsed().as_millis() as u64
     }
 
-    pub(super) fn absorb_phase_advance(&mut self, phase_advance: &PersistedStreamPhaseAdvance) {
+    pub(crate) fn absorb_phase_advance(&mut self, phase_advance: &PersistedStreamPhaseAdvance) {
         self.rows_processed = self
             .rows_processed
             .saturating_add(phase_advance.rows_processed)
@@ -92,7 +92,7 @@ impl PersistedStreamAdvanceCycleState {
         }
     }
 
-    pub(super) fn telemetry_input(
+    pub(crate) fn telemetry_input(
         &self,
         now: DateTime<Utc>,
         partial: bool,

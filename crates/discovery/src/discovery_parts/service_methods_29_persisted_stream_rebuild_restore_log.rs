@@ -1,7 +1,7 @@
 use super::*;
 
 impl DiscoveryService {
-    pub(super) fn log_persisted_stream_rebuild_restore_outcome(
+    pub(crate) fn log_persisted_stream_rebuild_restore_outcome(
         restore_outcome: PersistedStreamRebuildRestoreOutcome,
         state: &PersistedStreamRebuildState,
     ) {

@@ -1,3 +1,5 @@
+use crate::*;
+
 #[path = "service_methods_01_publication.rs"]
 mod service_methods_01_publication;
 #[path = "service_methods_01_freshness_capture.rs"]

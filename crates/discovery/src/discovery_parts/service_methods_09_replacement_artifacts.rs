@@ -1,7 +1,7 @@
 use super::*;
 
 impl DiscoveryService {
-    pub(super) fn classify_recent_raw_replacement_artifact_history_contract(
+    pub(crate) fn classify_recent_raw_replacement_artifact_history_contract(
         staged_candidate_scan_error: Option<&str>,
         current_fixed_candidate_exists: bool,
         current_fixed_candidate_manifest_parseable: bool,
@@ -70,7 +70,7 @@ impl DiscoveryService {
         )
     }
 
-    pub(super) fn classify_recent_raw_replacement_attempt_telemetry(
+    pub(crate) fn classify_recent_raw_replacement_attempt_telemetry(
         artifact_count: usize,
         parseable_count: usize,
         probe_mode: &str,

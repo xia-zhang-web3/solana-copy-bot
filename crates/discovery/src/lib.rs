@@ -58,75 +58,87 @@ pub(crate) use discovery_prelude_01::*;
 pub use discovery_prelude_02::*;
 pub use discovery_prelude_03::*;
 
-include!("discovery_parts/service_methods_00.rs");
+#[path = "discovery_parts/service_methods_00.rs"]
+mod discovery_service_methods_00;
+#[path = "discovery_parts/service_methods_01.rs"]
+mod discovery_service_methods_01;
+#[path = "discovery_parts/service_methods_02.rs"]
+mod discovery_service_methods_02;
+#[path = "discovery_parts/service_methods_03.rs"]
+mod discovery_service_methods_03;
+#[path = "discovery_parts/service_methods_04.rs"]
+mod discovery_service_methods_04;
+#[path = "discovery_parts/service_methods_05.rs"]
+mod discovery_service_methods_05;
+#[path = "discovery_parts/service_methods_06.rs"]
+mod discovery_service_methods_06;
+#[path = "discovery_parts/service_methods_07.rs"]
+mod discovery_service_methods_07;
+#[path = "discovery_parts/service_methods_08.rs"]
+mod discovery_service_methods_08;
+#[path = "discovery_parts/service_methods_09.rs"]
+mod discovery_service_methods_09;
+#[path = "discovery_parts/service_methods_10.rs"]
+mod discovery_service_methods_10;
+#[path = "discovery_parts/service_methods_11.rs"]
+mod discovery_service_methods_11;
+#[path = "discovery_parts/service_methods_12.rs"]
+mod discovery_service_methods_12;
+#[path = "discovery_parts/service_methods_13.rs"]
+mod discovery_service_methods_13;
+#[path = "discovery_parts/service_methods_14.rs"]
+mod discovery_service_methods_14;
+#[path = "discovery_parts/service_methods_15.rs"]
+mod discovery_service_methods_15;
+#[path = "discovery_parts/service_methods_16.rs"]
+mod discovery_service_methods_16;
+#[path = "discovery_parts/service_methods_17.rs"]
+mod discovery_service_methods_17;
+#[path = "discovery_parts/service_methods_18.rs"]
+mod discovery_service_methods_18;
+#[path = "discovery_parts/service_methods_19.rs"]
+mod discovery_service_methods_19;
+#[path = "discovery_parts/service_methods_20.rs"]
+mod discovery_service_methods_20;
+#[path = "discovery_parts/service_methods_21.rs"]
+mod discovery_service_methods_21;
+#[path = "discovery_parts/service_methods_22.rs"]
+mod discovery_service_methods_22;
+#[path = "discovery_parts/service_methods_28_collect_buy_mints_prepass_exact_batches.rs"]
+mod discovery_service_methods_28_exact_batches;
+#[path = "discovery_parts/service_methods_28_collect_buy_mints_prepass.rs"]
+mod discovery_service_methods_28_prepass;
+#[path = "discovery_parts/service_methods_23.rs"]
+mod discovery_service_methods_23;
+#[path = "discovery_parts/service_methods_24.rs"]
+mod discovery_service_methods_24;
+#[path = "discovery_parts/service_methods_25.rs"]
+mod discovery_service_methods_25;
+#[path = "discovery_parts/service_methods_29_persisted_stream_rebuild_logging.rs"]
+mod discovery_service_methods_29_logging;
+#[path = "discovery_parts/service_methods_29_persisted_stream_rebuild_telemetry.rs"]
+mod discovery_service_methods_29_telemetry;
+#[path = "discovery_parts/service_methods_29_persisted_stream_rebuild.rs"]
+mod discovery_service_methods_29_rebuild;
+#[path = "discovery_parts/service_methods_30_run_cycle_prepare.rs"]
+mod discovery_service_methods_30_prepare;
+#[path = "discovery_parts/service_methods_30_run_cycle_persisted.rs"]
+mod discovery_service_methods_30_persisted;
+#[path = "discovery_parts/service_methods_30_run_cycle_resolve.rs"]
+mod discovery_service_methods_30_resolve;
+#[path = "discovery_parts/service_methods_30_run_cycle.rs"]
+mod discovery_service_methods_30_run_cycle;
+#[path = "discovery_parts/service_methods_26.rs"]
+mod discovery_service_methods_26;
+#[path = "discovery_parts/service_methods_27.rs"]
+mod discovery_service_methods_27;
+#[path = "discovery_parts/tail_00.rs"]
+mod discovery_tail_00;
 
-include!("discovery_parts/service_methods_01.rs");
-
-include!("discovery_parts/service_methods_02.rs");
-
-include!("discovery_parts/service_methods_03.rs");
-
-include!("discovery_parts/service_methods_04.rs");
-
-include!("discovery_parts/service_methods_05.rs");
-
-include!("discovery_parts/service_methods_06.rs");
-
-include!("discovery_parts/service_methods_07.rs");
-
-include!("discovery_parts/service_methods_08.rs");
-
-include!("discovery_parts/service_methods_09.rs");
-
-include!("discovery_parts/service_methods_10.rs");
-
-include!("discovery_parts/service_methods_11.rs");
-
-include!("discovery_parts/service_methods_12.rs");
-
-include!("discovery_parts/service_methods_13.rs");
-
-include!("discovery_parts/service_methods_14.rs");
-
-include!("discovery_parts/service_methods_15.rs");
-
-include!("discovery_parts/service_methods_16.rs");
-
-include!("discovery_parts/service_methods_17.rs");
-
-include!("discovery_parts/service_methods_18.rs");
-
-include!("discovery_parts/service_methods_19.rs");
-
-include!("discovery_parts/service_methods_20.rs");
-
-include!("discovery_parts/service_methods_21.rs");
-
-include!("discovery_parts/service_methods_22.rs");
-
-include!("discovery_parts/service_methods_28_collect_buy_mints_prepass_exact_batches.rs");
-include!("discovery_parts/service_methods_28_collect_buy_mints_prepass.rs");
-
-include!("discovery_parts/service_methods_23.rs");
-
-include!("discovery_parts/service_methods_24.rs");
-
-include!("discovery_parts/service_methods_25.rs");
-
-include!("discovery_parts/service_methods_29_persisted_stream_rebuild_logging.rs");
-include!("discovery_parts/service_methods_29_persisted_stream_rebuild_telemetry.rs");
-include!("discovery_parts/service_methods_29_persisted_stream_rebuild.rs");
-
-include!("discovery_parts/service_methods_30_run_cycle_prepare.rs");
-include!("discovery_parts/service_methods_30_run_cycle_persisted.rs");
-include!("discovery_parts/service_methods_30_run_cycle_resolve.rs");
-include!("discovery_parts/service_methods_30_run_cycle.rs");
-
-include!("discovery_parts/service_methods_26.rs");
-
-include!("discovery_parts/service_methods_27.rs");
-
-include!("discovery_parts/tail_00.rs");
+pub(crate) use discovery_service_methods_29_telemetry::*;
+pub(crate) use discovery_service_methods_30_prepare::*;
+pub(crate) use discovery_service_methods_30_resolve::*;
+pub(crate) use discovery_tail_00::{is_sol_buy, is_sol_sell, sol_leg_token};
 
 #[cfg(test)]
 mod tests;

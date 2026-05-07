@@ -2,14 +2,14 @@ use super::*;
 
 impl WalletAccumulator {
     #[cfg(test)]
-    pub(super) fn has_open_positions(&self) -> bool {
+    pub(crate) fn has_open_positions(&self) -> bool {
         self.positions
             .values()
             .flatten()
             .any(|lot| lot.qty > 1e-12 && lot.cost_sol > 1e-12)
     }
 
-    pub(super) fn actionable_open_position_max_age_seconds(
+    pub(crate) fn actionable_open_position_max_age_seconds(
         &self,
         metric_snapshot_interval_seconds: u64,
     ) -> Option<i64> {
@@ -28,7 +28,7 @@ impl WalletAccumulator {
         Some(cadence_floor_seconds.max(historical_hold_allowance_seconds))
     }
 
-    pub(super) fn has_actionable_open_positions(
+    pub(crate) fn has_actionable_open_positions(
         &self,
         now: DateTime<Utc>,
         metric_snapshot_interval_seconds: u64,
@@ -43,7 +43,7 @@ impl WalletAccumulator {
         })
     }
 
-    pub(super) fn observe_position_only(&mut self, swap: &SwapEvent) {
+    pub(crate) fn observe_position_only(&mut self, swap: &SwapEvent) {
         if is_sol_buy(swap) {
             self.observe_position_only_buy(
                 swap.token_out.as_str(),
@@ -58,7 +58,7 @@ impl WalletAccumulator {
         }
     }
 
-    pub(super) fn observe_position_only_buy(
+    pub(crate) fn observe_position_only_buy(
         &mut self,
         token: &str,
         qty: f64,
@@ -78,7 +78,7 @@ impl WalletAccumulator {
             });
     }
 
-    pub(super) fn observe_position_only_sell(&mut self, token: &str, qty: f64) {
+    pub(crate) fn observe_position_only_sell(&mut self, token: &str, qty: f64) {
         if qty <= 0.0 {
             return;
         }

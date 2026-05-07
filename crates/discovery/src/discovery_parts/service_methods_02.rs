@@ -1,5 +1,7 @@
+use crate::*;
+
 impl DiscoveryService {
-    fn published_universe_telemetry(
+    pub(crate) fn published_universe_telemetry(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,
@@ -22,7 +24,7 @@ impl DiscoveryService {
         Ok((snapshots.len(), eligible_wallets))
     }
 
-    fn fail_close_without_recent_universe(
+    pub(crate) fn fail_close_without_recent_universe(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,
@@ -84,7 +86,7 @@ impl DiscoveryService {
         .with_cap_truncation_telemetry(cap_truncation_telemetry))
     }
 
-    fn runtime_cursor_from_swap(swap: &SwapEvent) -> DiscoveryRuntimeCursor {
+    pub(crate) fn runtime_cursor_from_swap(swap: &SwapEvent) -> DiscoveryRuntimeCursor {
         DiscoveryRuntimeCursor {
             ts_utc: swap.ts_utc,
             slot: swap.slot,
@@ -92,7 +94,7 @@ impl DiscoveryService {
         }
     }
 
-    fn runtime_cursor_cmp(
+    pub(crate) fn runtime_cursor_cmp(
         left: &DiscoveryRuntimeCursor,
         right: &DiscoveryRuntimeCursor,
     ) -> Ordering {
@@ -102,7 +104,7 @@ impl DiscoveryService {
             .then_with(|| left.signature.cmp(&right.signature))
     }
 
-    fn first_observed_swap_cursor_in_window(
+    pub(crate) fn first_observed_swap_cursor_in_window(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,

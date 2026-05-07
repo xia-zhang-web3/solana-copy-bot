@@ -1,5 +1,7 @@
+use crate::*;
+
 impl DiscoveryService {
-    fn advance_persisted_stream_prepass(
+    pub(crate) fn advance_persisted_stream_prepass(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,

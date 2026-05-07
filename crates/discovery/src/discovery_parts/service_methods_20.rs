@@ -1,3 +1,5 @@
+use crate::*;
+
 #[path = "service_methods_20_resume_entry_and_load.rs"]
 mod service_methods_20_resume_entry_and_load;
 #[path = "service_methods_20_resume_collect_quality.rs"]

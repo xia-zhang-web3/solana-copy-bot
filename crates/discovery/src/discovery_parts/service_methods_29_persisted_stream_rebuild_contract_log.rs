@@ -1,7 +1,7 @@
 use super::*;
 
 impl DiscoveryService {
-    pub(super) fn log_adjusted_persisted_stream_rebuild_contract(
+    pub(crate) fn log_adjusted_persisted_stream_rebuild_contract(
         &self,
         state: &PersistedStreamRebuildState,
         now: DateTime<Utc>,

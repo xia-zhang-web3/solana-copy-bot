@@ -1,7 +1,7 @@
 use super::*;
 
 impl DiscoveryService {
-    pub(super) fn recent_raw_source_contract_no_longer_matches_manifest(
+    pub(crate) fn recent_raw_source_contract_no_longer_matches_manifest(
         source_state: &RecentRawJournalStateRow,
         manifest: &RecentRawPromotionSnapshotManifest,
     ) -> bool {
@@ -24,7 +24,7 @@ impl DiscoveryService {
         false
     }
 
-    pub(super) fn recent_raw_published_latest_supersedes_staged_progress(
+    pub(crate) fn recent_raw_published_latest_supersedes_staged_progress(
         latest_manifest: &RecentRawPromotionSnapshotManifest,
         staged_manifest: &RecentRawPromotionSnapshotManifest,
     ) -> bool {
@@ -32,7 +32,7 @@ impl DiscoveryService {
             && Self::recent_raw_manifest_outruns_reference(latest_manifest, staged_manifest)
     }
 
-    pub(super) fn recent_raw_latest_surface_can_seed_staged_progress(
+    pub(crate) fn recent_raw_latest_surface_can_seed_staged_progress(
         source_db_path: &Path,
         source_state: &RecentRawJournalStateRow,
         latest_manifest: &RecentRawPromotionSnapshotManifest,

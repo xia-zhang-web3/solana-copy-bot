@@ -1,3 +1,5 @@
+use crate::*;
+
 #[path = "service_methods_16_replay_candidate_activity.rs"]
 mod service_methods_16_replay_candidate_activity;
 #[path = "service_methods_16_buy_mint_counts_and_replay_reset.rs"]

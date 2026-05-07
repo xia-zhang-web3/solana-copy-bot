@@ -1,12 +1,14 @@
-struct CollectBuyMintsExactBatchAdvance {
-    rows_processed: usize,
-    pages_processed: usize,
-    unique_buy_mints_discovered: usize,
-    time_budget_exhausted: bool,
+use crate::*;
+
+pub(crate) struct CollectBuyMintsExactBatchAdvance {
+    pub(crate) rows_processed: usize,
+    pub(crate) pages_processed: usize,
+    pub(crate) unique_buy_mints_discovered: usize,
+    pub(crate) time_budget_exhausted: bool,
 }
 
 impl DiscoveryService {
-    fn advance_reconcile_expired_head_exact_batch(
+    pub(crate) fn advance_reconcile_expired_head_exact_batch(
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
         source_window_start: DateTime<Utc>,
@@ -109,7 +111,7 @@ impl DiscoveryService {
         })
     }
 
-    fn advance_reconcile_new_tail_exact_batch(
+    pub(crate) fn advance_reconcile_new_tail_exact_batch(
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
         source_horizon_end: DateTime<Utc>,

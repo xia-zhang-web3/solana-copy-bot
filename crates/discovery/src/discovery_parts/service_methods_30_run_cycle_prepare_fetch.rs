@@ -1,15 +1,15 @@
 use super::*;
 
-pub(super) struct RunCycleWindowFetchPreparation {
-    pub(super) publish_due: bool,
-    pub(super) fetch_progress: FetchProgress,
-    pub(super) delta_fetched: usize,
-    pub(super) swaps_evicted_due_cap: usize,
-    pub(super) swaps_warm_loaded: usize,
+pub(crate) struct RunCycleWindowFetchPreparation {
+    pub(crate) publish_due: bool,
+    pub(crate) fetch_progress: FetchProgress,
+    pub(crate) delta_fetched: usize,
+    pub(crate) swaps_evicted_due_cap: usize,
+    pub(crate) swaps_warm_loaded: usize,
 }
 
 impl DiscoveryService {
-    pub(super) fn prepare_run_cycle_window_fetch(
+    pub(crate) fn prepare_run_cycle_window_fetch(
         &self,
         store: &SqliteStore,
         state: &mut DiscoveryWindowState,

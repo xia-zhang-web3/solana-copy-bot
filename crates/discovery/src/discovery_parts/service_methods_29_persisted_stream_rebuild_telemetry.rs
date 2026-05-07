@@ -1,20 +1,22 @@
-struct PersistedStreamCycleTelemetryInput {
-    now: DateTime<Utc>,
-    cycle_rows_processed: usize,
-    cycle_pages_processed: usize,
-    cycle_replay_wallet_stats_day_count_source_progress:
+use crate::*;
+
+pub(crate) struct PersistedStreamCycleTelemetryInput {
+    pub(crate) now: DateTime<Utc>,
+    pub(crate) cycle_rows_processed: usize,
+    pub(crate) cycle_pages_processed: usize,
+    pub(crate) cycle_replay_wallet_stats_day_count_source_progress:
         ReplayWalletStatsDayCountSourceProgress,
-    cycle_replay_wallet_stats_wallet_cursor_before: Option<String>,
-    cycle_unique_buy_mints_discovered: usize,
-    cycle_replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
-    cycle_elapsed_ms: u64,
-    partial: bool,
-    completed: bool,
-    budget_exhausted_reason: Option<PersistedStreamBudgetExhaustedReason>,
+    pub(crate) cycle_replay_wallet_stats_wallet_cursor_before: Option<String>,
+    pub(crate) cycle_unique_buy_mints_discovered: usize,
+    pub(crate) cycle_replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
+    pub(crate) cycle_elapsed_ms: u64,
+    pub(crate) partial: bool,
+    pub(crate) completed: bool,
+    pub(crate) budget_exhausted_reason: Option<PersistedStreamBudgetExhaustedReason>,
 }
 
 impl DiscoveryService {
-    fn persisted_stream_cycle_telemetry(
+    pub(crate) fn persisted_stream_cycle_telemetry(
         &self,
         state: &PersistedStreamRebuildState,
         input: PersistedStreamCycleTelemetryInput,

@@ -1,7 +1,7 @@
 use super::*;
 
 impl DiscoveryService {
-    pub(super) fn load_recent_raw_source_state_read_only(
+    pub(crate) fn load_recent_raw_source_state_read_only(
         runtime_db_path: &Path,
     ) -> Result<RecentRawJournalStateRow> {
         let conn = Connection::open_with_flags(runtime_db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)

@@ -1,21 +1,21 @@
 use crate::*;
 
 #[derive(Default)]
-pub(super) struct PersistedStreamReplayOptimizedProgress {
-    pub(super) replay_rows_processed: usize,
-    pub(super) replay_pages_processed: usize,
-    pub(super) replay_wallet_stats_rows_processed: usize,
-    pub(super) replay_wallet_stats_pages_processed: usize,
-    pub(super) replay_sol_leg_rows_processed: usize,
-    pub(super) replay_sol_leg_pages_processed: usize,
-    pub(super) replay_sol_leg_elapsed_ms: u64,
-    pub(super) replay_wallet_stats_day_count_source_progress:
+pub(crate) struct PersistedStreamReplayOptimizedProgress {
+    pub(crate) replay_rows_processed: usize,
+    pub(crate) replay_pages_processed: usize,
+    pub(crate) replay_wallet_stats_rows_processed: usize,
+    pub(crate) replay_wallet_stats_pages_processed: usize,
+    pub(crate) replay_sol_leg_rows_processed: usize,
+    pub(crate) replay_sol_leg_pages_processed: usize,
+    pub(crate) replay_sol_leg_elapsed_ms: u64,
+    pub(crate) replay_wallet_stats_day_count_source_progress:
         ReplayWalletStatsDayCountSourceProgress,
-    pub(super) replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
+    pub(crate) replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
 }
 
 impl PersistedStreamReplayOptimizedProgress {
-    pub(super) fn phase_advance(
+    pub(crate) fn phase_advance(
         &self,
         source_exhausted: bool,
         phase_cursor: Option<DiscoveryRuntimeCursor>,

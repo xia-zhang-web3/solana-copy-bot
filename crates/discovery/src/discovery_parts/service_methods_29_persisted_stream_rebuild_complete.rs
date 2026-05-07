@@ -1,7 +1,7 @@
 use super::*;
 
 impl DiscoveryService {
-    pub(super) fn complete_or_reenter_persisted_stream_publish_pending_checkpoint(
+    pub(crate) fn complete_or_reenter_persisted_stream_publish_pending_checkpoint(
         &self,
         state: &mut PersistedStreamRebuildState,
         now: DateTime<Utc>,
@@ -47,7 +47,7 @@ impl DiscoveryService {
         })
     }
 
-    pub(super) fn complete_persisted_stream_rebuild_from_replay(
+    pub(crate) fn complete_persisted_stream_rebuild_from_replay(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
@@ -119,7 +119,7 @@ impl DiscoveryService {
         })
     }
 
-    pub(super) fn yield_persisted_stream_rebuild_cycle(
+    pub(crate) fn yield_persisted_stream_rebuild_cycle(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,

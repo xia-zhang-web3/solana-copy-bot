@@ -1,5 +1,7 @@
+use crate::*;
+
 impl DiscoveryService {
-    fn resolve_run_cycle_persisted_recompute(
+    pub(crate) fn resolve_run_cycle_persisted_recompute(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,

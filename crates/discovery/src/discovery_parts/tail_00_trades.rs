@@ -1,7 +1,7 @@
 use super::*;
 
 impl WalletAccumulator {
-    pub(super) fn observe_buy(
+    pub(crate) fn observe_buy(
         &mut self,
         token: &str,
         qty: f64,
@@ -51,7 +51,7 @@ impl WalletAccumulator {
             });
     }
 
-    pub(super) fn observe_buy_streaming(
+    pub(crate) fn observe_buy_streaming(
         &mut self,
         token: &str,
         qty: f64,
@@ -95,7 +95,7 @@ impl WalletAccumulator {
             });
     }
 
-    pub(super) fn note_streaming_buy_rug_status(&mut self, rug_status: BuyFactRugStatus) {
+    pub(crate) fn note_streaming_buy_rug_status(&mut self, rug_status: BuyFactRugStatus) {
         match rug_status {
             BuyFactRugStatus::Healthy => {
                 self.rug_metrics.evaluated = self.rug_metrics.evaluated.saturating_add(1);
@@ -110,7 +110,7 @@ impl WalletAccumulator {
         }
     }
 
-    pub(super) fn observe_sell(
+    pub(crate) fn observe_sell(
         &mut self,
         token: &str,
         qty: f64,
@@ -178,7 +178,7 @@ impl WalletAccumulator {
             .or_insert(0.0) += sell_pnl;
     }
 
-    pub(super) fn mark_tx_minute(&mut self, minute_bucket: i64, max_tx_per_minute: u32) {
+    pub(crate) fn mark_tx_minute(&mut self, minute_bucket: i64, max_tx_per_minute: u32) {
         let next = self
             .tx_per_minute
             .entry(minute_bucket)

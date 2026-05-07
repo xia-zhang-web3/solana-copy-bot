@@ -1,7 +1,7 @@
 use super::*;
 
 impl DiscoveryService {
-    pub(super) fn prepare_run_cycle_window_decide(
+    pub(crate) fn prepare_run_cycle_window_decide(
         &self,
         store: &SqliteStore,
         state: &mut DiscoveryWindowState,

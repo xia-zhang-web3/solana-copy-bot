@@ -1,22 +1,24 @@
-struct RunCycleHealthyInputs {
-    publish_due: bool,
-    followlist_activations_suppressed: bool,
-    followlist_deactivations_suppressed: bool,
-    metrics_persistence_suppressed: bool,
-    snapshots: Vec<WalletSnapshot>,
-    observed_swaps_loaded_for_capture: usize,
-    scoring_source: &'static str,
-    effective_window_start: DateTime<Utc>,
-    effective_metrics_window_start: DateTime<Utc>,
+use crate::*;
+
+pub(crate) struct RunCycleHealthyInputs {
+    pub(crate) publish_due: bool,
+    pub(crate) followlist_activations_suppressed: bool,
+    pub(crate) followlist_deactivations_suppressed: bool,
+    pub(crate) metrics_persistence_suppressed: bool,
+    pub(crate) snapshots: Vec<WalletSnapshot>,
+    pub(crate) observed_swaps_loaded_for_capture: usize,
+    pub(crate) scoring_source: &'static str,
+    pub(crate) effective_window_start: DateTime<Utc>,
+    pub(crate) effective_metrics_window_start: DateTime<Utc>,
 }
 
-enum RunCyclePreparedResolution {
+pub(crate) enum RunCyclePreparedResolution {
     Returned(DiscoverySummary),
     Continue(RunCycleHealthyInputs),
 }
 
 impl DiscoveryService {
-    fn resolve_run_cycle_prepared_cycle(
+    pub(crate) fn resolve_run_cycle_prepared_cycle(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,

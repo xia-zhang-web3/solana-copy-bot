@@ -1,3 +1,5 @@
+use crate::*;
+
 #[path = "service_methods_07_diagnostics.rs"]
 mod service_methods_07_diagnostics;
 #[path = "service_methods_07_staged_lineage.rs"]

@@ -1,7 +1,7 @@
 use super::*;
 
 impl DiscoveryService {
-    pub(super) fn load_recent_raw_source_observed_swaps_bounded_probe_read_only(
+    pub(crate) fn load_recent_raw_source_observed_swaps_bounded_probe_read_only(
         runtime_db_path: &Path,
     ) -> RecentRawObservedSwapsBoundedProbeRead {
         let conn =
@@ -130,7 +130,7 @@ impl DiscoveryService {
         }
     }
 
-    pub(super) fn recent_raw_source_state_matches_observed_swaps_bounded_probe(
+    pub(crate) fn recent_raw_source_state_matches_observed_swaps_bounded_probe(
         source_state: &RecentRawJournalStateRow,
         source_bounded_probe: &RecentRawObservedSwapsBoundedProbeRead,
     ) -> bool {

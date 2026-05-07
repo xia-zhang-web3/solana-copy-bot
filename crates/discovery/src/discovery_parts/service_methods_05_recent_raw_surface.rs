@@ -1,7 +1,7 @@
 use super::*;
 
 impl DiscoveryService {
-    pub(super) fn read_recent_raw_surface_manifest(
+    pub(crate) fn read_recent_raw_surface_manifest(
         snapshot_path: &Path,
         metadata_path: &Path,
     ) -> RecentRawSurfaceRead {
@@ -40,7 +40,7 @@ impl DiscoveryService {
         }
     }
 
-    pub(super) fn read_recent_raw_snapshot_sqlite_content_read_only(
+    pub(crate) fn read_recent_raw_snapshot_sqlite_content_read_only(
         snapshot_path: &Path,
     ) -> RecentRawSnapshotSqliteContentRead {
         if !snapshot_path.exists() {
@@ -63,7 +63,7 @@ impl DiscoveryService {
         }
     }
 
-    pub(super) fn recent_raw_source_outruns_manifest(
+    pub(crate) fn recent_raw_source_outruns_manifest(
         source_state: &RecentRawJournalStateRow,
         manifest: &RecentRawPromotionSnapshotManifest,
     ) -> bool {
@@ -86,7 +86,7 @@ impl DiscoveryService {
         false
     }
 
-    pub(super) fn recent_raw_manifest_outruns_reference(
+    pub(crate) fn recent_raw_manifest_outruns_reference(
         candidate: &RecentRawPromotionSnapshotManifest,
         reference: &RecentRawPromotionSnapshotManifest,
     ) -> bool {
@@ -113,7 +113,7 @@ impl DiscoveryService {
         false
     }
 
-    pub(super) fn recent_raw_manifest_progress_relation(
+    pub(crate) fn recent_raw_manifest_progress_relation(
         candidate: &RecentRawPromotionSnapshotManifest,
         reference: &RecentRawPromotionSnapshotManifest,
     ) -> Option<RecentRawManifestProgressRelation> {
@@ -135,7 +135,7 @@ impl DiscoveryService {
         )
     }
 
-    pub(super) fn recent_raw_optional_cursor_equal(
+    pub(crate) fn recent_raw_optional_cursor_equal(
         left: Option<&DiscoveryRuntimeCursor>,
         right: Option<&DiscoveryRuntimeCursor>,
     ) -> bool {
@@ -146,7 +146,7 @@ impl DiscoveryService {
         }
     }
 
-    pub(super) fn recent_raw_staged_selection_reason(
+    pub(crate) fn recent_raw_staged_selection_reason(
         staged_snapshot_path: &Path,
         staged_metadata_path: &Path,
         candidate_count: usize,
@@ -181,7 +181,7 @@ impl DiscoveryService {
         }
     }
 
-    pub(super) fn recent_raw_runtime_db_file_metadata(
+    pub(crate) fn recent_raw_runtime_db_file_metadata(
         runtime_db_path: &Path,
     ) -> (Option<u64>, Option<String>, bool, Option<u64>) {
         let runtime_db_metadata = fs::metadata(runtime_db_path).ok();
@@ -202,7 +202,7 @@ impl DiscoveryService {
         )
     }
 
-    pub(super) fn parse_recent_raw_optional_rfc3339_utc(
+    pub(crate) fn parse_recent_raw_optional_rfc3339_utc(
         raw: Option<String>,
         field_name: &str,
     ) -> Result<Option<DateTime<Utc>>> {

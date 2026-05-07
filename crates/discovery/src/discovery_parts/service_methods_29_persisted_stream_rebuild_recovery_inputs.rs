@@ -1,28 +1,28 @@
 use super::*;
 
-pub(super) struct PersistedStreamRebuildRecoveryInputs {
-    pub(super) requested_contract: PersistedStreamPriorityRecoveryContract,
-    pub(super) buffered_wallet_backlog_floor: usize,
-    pub(super) buffered_wallet_floor_pages: usize,
-    pub(super) replay_wallet_stats_progress_floor_pages: usize,
-    pub(super) replay_wallet_stats_open_frontier_floor_pages: usize,
-    pub(super) replay_wallet_stats_persistently_open_frontier: bool,
-    pub(super) replay_wallet_stats_remaining_frontier_min_pages: usize,
-    pub(super) replay_wallet_stats_remaining_frontier_min_wallets: usize,
-    pub(super) replay_wallet_stats_frontier_saturated: bool,
-    pub(super) replay_sol_leg_processed_floor_pages: usize,
-    pub(super) replay_sol_leg_open_frontier_floor_pages: usize,
-    pub(super) replay_sol_leg_remaining_frontier_min_pages: usize,
-    pub(super) replay_sol_leg_remaining_frontier_min_rows: usize,
-    pub(super) replay_sol_leg_frontier_saturated: bool,
-    pub(super) replay_sol_leg_target_ms_per_page: u64,
-    pub(super) replay_sol_leg_target_time_budget_before_retained_contract_floor: StdDuration,
-    pub(super) replay_sol_leg_phase_page_limit_before_retained_contract_floor: usize,
-    pub(super) replay_wallet_stats_target_time_budget_before_publishable_horizon_cap: StdDuration,
+pub(crate) struct PersistedStreamRebuildRecoveryInputs {
+    pub(crate) requested_contract: PersistedStreamPriorityRecoveryContract,
+    pub(crate) buffered_wallet_backlog_floor: usize,
+    pub(crate) buffered_wallet_floor_pages: usize,
+    pub(crate) replay_wallet_stats_progress_floor_pages: usize,
+    pub(crate) replay_wallet_stats_open_frontier_floor_pages: usize,
+    pub(crate) replay_wallet_stats_persistently_open_frontier: bool,
+    pub(crate) replay_wallet_stats_remaining_frontier_min_pages: usize,
+    pub(crate) replay_wallet_stats_remaining_frontier_min_wallets: usize,
+    pub(crate) replay_wallet_stats_frontier_saturated: bool,
+    pub(crate) replay_sol_leg_processed_floor_pages: usize,
+    pub(crate) replay_sol_leg_open_frontier_floor_pages: usize,
+    pub(crate) replay_sol_leg_remaining_frontier_min_pages: usize,
+    pub(crate) replay_sol_leg_remaining_frontier_min_rows: usize,
+    pub(crate) replay_sol_leg_frontier_saturated: bool,
+    pub(crate) replay_sol_leg_target_ms_per_page: u64,
+    pub(crate) replay_sol_leg_target_time_budget_before_retained_contract_floor: StdDuration,
+    pub(crate) replay_sol_leg_phase_page_limit_before_retained_contract_floor: usize,
+    pub(crate) replay_wallet_stats_target_time_budget_before_publishable_horizon_cap: StdDuration,
 }
 
 impl DiscoveryService {
-    pub(super) fn persisted_stream_rebuild_recovery_inputs(
+    pub(crate) fn persisted_stream_rebuild_recovery_inputs(
         &self,
         state: &PersistedStreamRebuildState,
         fetch_limit: usize,

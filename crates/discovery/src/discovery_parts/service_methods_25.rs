@@ -1,6 +1,8 @@
+use crate::*;
+
 impl DiscoveryService {
     #[cfg(test)]
-    fn advance_persisted_stream_rebuild(
+    pub(crate) fn advance_persisted_stream_rebuild(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,
