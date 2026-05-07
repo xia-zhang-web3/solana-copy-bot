@@ -5,11 +5,10 @@ use super::{
     DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
     DiscoveryWalletFreshnessCaptureRow, DiscoveryWalletFreshnessCaptureWrite,
-    FollowlistUpdateResult, PersistedWalletMetricSnapshotRow, SqliteStore,
-    StartupTrustedSelectionGateStatus, TrustedSelectionState, TrustedSnapshotSourceKind,
-    TrustedWalletMetricsSnapshotRow, TrustedWalletMetricsSnapshotWrite, WalletActivityDayRow,
-    WalletMetricRow, WalletRecentActivityCountRow, WalletUpsertRow,
-    DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION, DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS,
+    PersistedWalletMetricSnapshotRow, SqliteStore, StartupTrustedSelectionGateStatus,
+    TrustedSelectionState, TrustedSnapshotSourceKind, TrustedWalletMetricsSnapshotRow,
+    TrustedWalletMetricsSnapshotWrite, WalletActivityDayRow,
+    DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
 };
 use anyhow::{Context, Result};
 

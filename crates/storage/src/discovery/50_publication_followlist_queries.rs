@@ -1,3 +1,10 @@
+use super::parse_rfc3339_utc;
+use crate::{SqliteStore, WalletRecentActivityCountRow};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::{params, OptionalExtension};
+use std::collections::HashSet;
+
 impl SqliteStore {
     pub fn list_active_follow_wallets(&self) -> Result<HashSet<String>> {
         let mut stmt = self

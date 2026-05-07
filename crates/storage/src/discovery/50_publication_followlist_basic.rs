@@ -1,3 +1,9 @@
+use super::canonical_wallet_metrics_window_start;
+use crate::{FollowlistUpdateResult, SqliteStore, WalletMetricRow, WalletUpsertRow};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::params;
+
 impl SqliteStore {
     pub fn upsert_wallet(
         &self,

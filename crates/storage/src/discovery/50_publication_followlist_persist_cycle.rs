@@ -1,3 +1,13 @@
+use super::{canonical_wallet_metrics_window_start, insert_trusted_wallet_metrics_snapshot_on_conn};
+use crate::{
+    FollowlistUpdateResult, SqliteStore, TrustedWalletMetricsSnapshotWrite, WalletMetricRow,
+    WalletUpsertRow, DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS,
+};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::params;
+use std::collections::HashSet;
+
 impl SqliteStore {
     pub fn persist_discovery_cycle_with_snapshot_metadata(
         &self,
