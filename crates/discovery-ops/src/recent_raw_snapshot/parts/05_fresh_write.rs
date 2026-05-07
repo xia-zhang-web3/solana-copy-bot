@@ -1,12 +1,14 @@
-#[path = "05_fresh_write_publish_latest.rs"]
-mod publish_latest;
+pub(crate) use super::*;
+
 #[path = "05_fresh_write_promote_archive.rs"]
 mod promote_archive;
+#[path = "05_fresh_write_publish_latest.rs"]
+mod publish_latest;
 
-use self::promote_archive::promote_staged_snapshot_to_archive;
-use self::publish_latest::publish_latest_snapshot_from_staged;
+pub(crate) use self::promote_archive::promote_staged_snapshot_to_archive;
+pub(crate) use self::publish_latest::publish_latest_snapshot_from_staged;
 
-fn write_fresh_scheduled_snapshot(
+pub(crate) fn write_fresh_scheduled_snapshot(
     config_path: &Path,
     source_db_path: &Path,
     source_store: &SqliteStore,

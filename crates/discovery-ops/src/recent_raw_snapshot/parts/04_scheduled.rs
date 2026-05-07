@@ -1,4 +1,6 @@
-fn run_scheduled(
+use super::*;
+
+pub(crate) fn run_scheduled(
     config: &Config,
     source_db_path: &Path,
     source_store: &SqliteStore,
@@ -130,11 +132,14 @@ fn run_scheduled(
     Ok(output)
 }
 
-fn latest_attempt_telemetry_path(snapshot_dir: &Path) -> PathBuf {
+pub(crate) fn latest_attempt_telemetry_path(snapshot_dir: &Path) -> PathBuf {
     snapshot_dir.join(LATEST_ATTEMPT_TELEMETRY_FILE_NAME)
 }
 
-fn persist_latest_attempt_telemetry_best_effort(snapshot_dir: &Path, output: &SnapshotOutput) {
+pub(crate) fn persist_latest_attempt_telemetry_best_effort(
+    snapshot_dir: &Path,
+    output: &SnapshotOutput,
+) {
     let telemetry_path = latest_attempt_telemetry_path(snapshot_dir);
     if let Err(error) = write_json_atomic(&telemetry_path, output)
         .with_context(|| format!("failed writing {}", telemetry_path.display()))
@@ -147,7 +152,7 @@ fn persist_latest_attempt_telemetry_best_effort(snapshot_dir: &Path, output: &Sn
     }
 }
 
-fn assess_latest_surface(
+pub(crate) fn assess_latest_surface(
     latest_snapshot_path: &Path,
     latest_metadata_path: &Path,
 ) -> Result<LatestSurfaceAssessment> {
@@ -187,7 +192,7 @@ fn assess_latest_surface(
     }
 }
 
-fn try_self_heal_latest_surface(
+pub(crate) fn try_self_heal_latest_surface(
     source_db_path: &Path,
     snapshot_dir: &Path,
     latest_snapshot_path: &Path,
@@ -246,7 +251,7 @@ fn try_self_heal_latest_surface(
     }
 }
 
-fn reference_manifest_for_cadence(
+pub(crate) fn reference_manifest_for_cadence(
     source_db_path: &Path,
     snapshot_dir: &Path,
     latest_snapshot_path: &Path,

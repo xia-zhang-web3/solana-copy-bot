@@ -1,18 +1,20 @@
-fn summary_reason(summary: &SqliteSnapshotSummary) -> String {
+use super::*;
+
+pub(crate) fn summary_reason(summary: &SqliteSnapshotSummary) -> String {
     summary
         .retry_exhausted_reason
         .map(|reason| reason.as_str().to_string())
         .unwrap_or_else(|| "busy".to_string())
 }
 
-fn deferred_summary_reason(summary: &SqliteSnapshotSummary) -> String {
+pub(crate) fn deferred_summary_reason(summary: &SqliteSnapshotSummary) -> String {
     summary
         .deferred_reason
         .map(|reason| reason.as_str().to_string())
         .unwrap_or_else(|| "deferred".to_string())
 }
 
-fn staged_attempt_budget_reason(progress: &StagedSnapshotProgress) -> String {
+pub(crate) fn staged_attempt_budget_reason(progress: &StagedSnapshotProgress) -> String {
     progress
         .terminal_phase
         .map(StagedSnapshotTerminalPhase::budget_reason)
@@ -20,7 +22,7 @@ fn staged_attempt_budget_reason(progress: &StagedSnapshotProgress) -> String {
         .to_string()
 }
 
-fn snapshot_terminal_reason(
+pub(crate) fn snapshot_terminal_reason(
     state: SnapshotState,
     summary: Option<&SqliteSnapshotSummary>,
 ) -> Option<String> {
@@ -41,13 +43,15 @@ fn snapshot_terminal_reason(
     }
 }
 
-fn snapshot_policy_max_attempt_duration_ms(policy: &SqliteSnapshotPolicy) -> Option<u64> {
+pub(crate) fn snapshot_policy_max_attempt_duration_ms(
+    policy: &SqliteSnapshotPolicy,
+) -> Option<u64> {
     policy
         .max_attempt_duration
         .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
 }
 
-fn state_exit_code(output: &SnapshotOutput) -> i32 {
+pub(crate) fn state_exit_code(output: &SnapshotOutput) -> i32 {
     match output.state.as_str() {
         "written" => SnapshotState::Written.exit_code(),
         "skipped_not_due" => SnapshotState::SkippedNotDue.exit_code(),
@@ -59,7 +63,7 @@ fn state_exit_code(output: &SnapshotOutput) -> i32 {
     }
 }
 
-fn scheduled_duration_budget_contract(
+pub(crate) fn scheduled_duration_budget_contract(
     latest_surface_status: LatestSurfaceStatus,
     reason: &str,
 ) -> (LatestSurfaceAction, Option<String>) {
@@ -76,13 +80,13 @@ fn scheduled_duration_budget_contract(
     }
 }
 
-fn snapshot_source_wal_path(source_db_path: &Path) -> PathBuf {
+pub(crate) fn snapshot_source_wal_path(source_db_path: &Path) -> PathBuf {
     let mut wal_path = source_db_path.as_os_str().to_os_string();
     wal_path.push("-wal");
     PathBuf::from(wal_path)
 }
 
-fn snapshot_source_stats(
+pub(crate) fn snapshot_source_stats(
     source_db_path: &Path,
     source_store: &SqliteStore,
 ) -> Result<SnapshotSourceStats> {
@@ -106,7 +110,7 @@ fn snapshot_source_stats(
     })
 }
 
-fn adaptive_snapshot_policy(source_stats: &SnapshotSourceStats) -> SqliteSnapshotPolicy {
+pub(crate) fn adaptive_snapshot_policy(source_stats: &SnapshotSourceStats) -> SqliteSnapshotPolicy {
     let mut policy = SqliteSnapshotPolicy::default();
     let total_bytes = source_stats.source_total_bytes().max(
         (source_stats.source_page_size_bytes as u64)
@@ -149,7 +153,10 @@ fn adaptive_snapshot_policy(source_stats: &SnapshotSourceStats) -> SqliteSnapsho
     policy
 }
 
-fn snapshot_context(source_db_path: &Path, source_store: &SqliteStore) -> Result<SnapshotContext> {
+pub(crate) fn snapshot_context(
+    source_db_path: &Path,
+    source_store: &SqliteStore,
+) -> Result<SnapshotContext> {
     let source_stats = snapshot_source_stats(source_db_path, source_store)?;
     Ok(SnapshotContext {
         policy: adaptive_snapshot_policy(&source_stats),
@@ -157,7 +164,7 @@ fn snapshot_context(source_db_path: &Path, source_store: &SqliteStore) -> Result
     })
 }
 
-fn discovery_runtime_cursor_cmp(
+pub(crate) fn discovery_runtime_cursor_cmp(
     left: &DiscoveryRuntimeCursor,
     right: &DiscoveryRuntimeCursor,
 ) -> std::cmp::Ordering {
@@ -167,14 +174,14 @@ fn discovery_runtime_cursor_cmp(
         .then_with(|| left.signature.cmp(&right.signature))
 }
 
-fn snapshot_resume_batch_size(policy: &SqliteSnapshotPolicy) -> usize {
+pub(crate) fn snapshot_resume_batch_size(policy: &SqliteSnapshotPolicy) -> usize {
     (policy.pages_per_step.max(1) as usize)
         .saturating_mul(SNAPSHOT_RESUME_ROW_BATCH_MULTIPLIER)
         .min(SNAPSHOT_RESUME_ROW_BATCH_MAX_ROWS)
         .max(1)
 }
 
-fn staged_write_rows_per_second(progress: &StagedSnapshotProgress) -> Option<f64> {
+pub(crate) fn staged_write_rows_per_second(progress: &StagedSnapshotProgress) -> Option<f64> {
     if progress.rows_inserted_during_attempt == 0 {
         return None;
     }
@@ -182,7 +189,7 @@ fn staged_write_rows_per_second(progress: &StagedSnapshotProgress) -> Option<f64
     Some(progress.rows_inserted_during_attempt as f64 * 1_000.0 / duration_ms as f64)
 }
 
-fn record_staged_write_summary(
+pub(crate) fn record_staged_write_summary(
     progress: &mut StagedSnapshotProgress,
     summary: &RecentRawJournalWriteSummary,
 ) {

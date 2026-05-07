@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn manifest_for_existing_snapshot(
+pub(crate) fn manifest_for_existing_snapshot(
     source_db_path: &Path,
     snapshot_path: &Path,
 ) -> Result<RecentRawJournalSnapshotManifest> {
@@ -8,7 +8,7 @@ pub(super) fn manifest_for_existing_snapshot(
     manifest_for_snapshot(source_db_path, snapshot_path, created_at)
 }
 
-pub(super) fn infer_created_at(path: &Path) -> Result<DateTime<Utc>> {
+pub(crate) fn infer_created_at(path: &Path) -> Result<DateTime<Utc>> {
     let modified = fs::metadata(path)
         .with_context(|| format!("failed stat {}", path.display()))?
         .modified()
@@ -16,7 +16,7 @@ pub(super) fn infer_created_at(path: &Path) -> Result<DateTime<Utc>> {
     Ok(DateTime::<Utc>::from(modified))
 }
 
-pub(super) fn manifest_for_snapshot(
+pub(crate) fn manifest_for_snapshot(
     source_db_path: &Path,
     snapshot_path: &Path,
     created_at: DateTime<Utc>,
@@ -40,7 +40,7 @@ pub(super) fn manifest_for_snapshot(
     ))
 }
 
-pub(super) fn load_required_cached_recent_raw_state(
+pub(crate) fn load_required_cached_recent_raw_state(
     store: &SqliteStore,
     db_path: &Path,
     context_label: &str,
@@ -57,7 +57,7 @@ pub(super) fn load_required_cached_recent_raw_state(
     Ok(state)
 }
 
-pub(super) fn validate_cached_recent_raw_state_for_resume(
+pub(crate) fn validate_cached_recent_raw_state_for_resume(
     state: &RecentRawJournalStateRow,
     db_path: &Path,
     context_label: &str,

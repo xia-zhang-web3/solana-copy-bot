@@ -1,8 +1,10 @@
-fn parse_args() -> Result<Option<Config>> {
+use super::*;
+
+pub(crate) fn parse_args() -> Result<Option<Config>> {
     parse_args_from(env::args().skip(1))
 }
 
-fn parse_args_from<I>(args: I) -> Result<Option<Config>>
+pub(crate) fn parse_args_from<I>(args: I) -> Result<Option<Config>>
 where
     I: IntoIterator<Item = String>,
 {
@@ -53,14 +55,14 @@ where
     }))
 }
 
-fn parse_ts_arg(flag: &str, value: Option<String>) -> Result<DateTime<Utc>> {
+pub(crate) fn parse_ts_arg(flag: &str, value: Option<String>) -> Result<DateTime<Utc>> {
     let raw = parse_string_arg(flag, value)?;
     DateTime::parse_from_rfc3339(&raw)
         .map(|ts| ts.with_timezone(&Utc))
         .with_context(|| format!("invalid {flag} rfc3339 timestamp: {raw}"))
 }
 
-fn parse_string_arg(flag: &str, value: Option<String>) -> Result<String> {
+pub(crate) fn parse_string_arg(flag: &str, value: Option<String>) -> Result<String> {
     let raw = value.ok_or_else(|| anyhow!("missing value for {flag}"))?;
     let trimmed = raw.trim().to_string();
     if trimmed.is_empty() {
@@ -69,11 +71,11 @@ fn parse_string_arg(flag: &str, value: Option<String>) -> Result<String> {
     Ok(trimmed)
 }
 
-fn run(config: Config) -> Result<SnapshotExecution> {
+pub(crate) fn run(config: Config) -> Result<SnapshotExecution> {
     run_with_snapshot_policy_override(config, None)
 }
 
-fn run_with_snapshot_policy_override(
+pub(crate) fn run_with_snapshot_policy_override(
     config: Config,
     snapshot_policy_override: Option<SqliteSnapshotPolicy>,
 ) -> Result<SnapshotExecution> {

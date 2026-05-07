@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn render_output(
+pub(crate) fn render_output(
     state: SnapshotState,
     latest_surface_status: LatestSurfaceStatus,
     latest_surface_action: LatestSurfaceAction,

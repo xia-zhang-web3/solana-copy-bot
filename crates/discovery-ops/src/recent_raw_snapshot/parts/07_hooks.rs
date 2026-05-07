@@ -1,3 +1,5 @@
+use super::*;
+
 #[cfg(test)]
 thread_local! {
     static POST_SNAPSHOT_PUBLISH_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&Path) -> Result<()>>>> =
@@ -10,13 +12,13 @@ thread_local! {
         std::cell::RefCell::new(None);
 }
 
-struct StagedWriteHookFailure {
-    error: anyhow::Error,
-    force_budget_context: bool,
+pub(crate) struct StagedWriteHookFailure {
+    pub(crate) error: anyhow::Error,
+    pub(crate) force_budget_context: bool,
 }
 
 #[cfg(test)]
-struct SnapshotPublishHookGuard;
+pub(crate) struct SnapshotPublishHookGuard;
 
 #[cfg(test)]
 impl Drop for SnapshotPublishHookGuard {
@@ -37,7 +39,7 @@ impl Drop for SnapshotPublishHookGuard {
 }
 
 #[cfg(test)]
-fn install_post_snapshot_publish_hook<F>(hook: F) -> SnapshotPublishHookGuard
+pub(crate) fn install_post_snapshot_publish_hook<F>(hook: F) -> SnapshotPublishHookGuard
 where
     F: FnMut(&Path) -> Result<()> + 'static,
 {
@@ -50,7 +52,7 @@ where
 }
 
 #[cfg(test)]
-fn install_pre_archive_promotion_hook<F>(hook: F) -> SnapshotPublishHookGuard
+pub(crate) fn install_pre_archive_promotion_hook<F>(hook: F) -> SnapshotPublishHookGuard
 where
     F: FnMut(&Path) -> Result<()> + 'static,
 {
@@ -66,7 +68,7 @@ where
 }
 
 #[cfg(test)]
-fn install_resumable_snapshot_progress_hook<F>(hook: F) -> SnapshotPublishHookGuard
+pub(crate) fn install_resumable_snapshot_progress_hook<F>(hook: F) -> SnapshotPublishHookGuard
 where
     F: FnMut(usize, usize) -> bool + 'static,
 {
@@ -82,7 +84,7 @@ where
 }
 
 #[cfg(test)]
-fn install_staged_write_failure_hook<F>(hook: F) -> SnapshotPublishHookGuard
+pub(crate) fn install_staged_write_failure_hook<F>(hook: F) -> SnapshotPublishHookGuard
 where
     F: FnMut(usize) -> Option<StagedWriteHookFailure> + 'static,
 {
@@ -98,7 +100,7 @@ where
 }
 
 #[cfg(test)]
-fn invoke_post_snapshot_publish_hook(snapshot_path: &Path) -> Result<()> {
+pub(crate) fn invoke_post_snapshot_publish_hook(snapshot_path: &Path) -> Result<()> {
     let hook = POST_SNAPSHOT_PUBLISH_HOOK.with(|slot| slot.borrow_mut().take());
     if let Some(mut hook) = hook {
         hook(snapshot_path)?;
@@ -107,12 +109,12 @@ fn invoke_post_snapshot_publish_hook(snapshot_path: &Path) -> Result<()> {
 }
 
 #[cfg(not(test))]
-fn invoke_post_snapshot_publish_hook(_snapshot_path: &Path) -> Result<()> {
+pub(crate) fn invoke_post_snapshot_publish_hook(_snapshot_path: &Path) -> Result<()> {
     Ok(())
 }
 
 #[cfg(test)]
-fn invoke_pre_archive_promotion_hook(snapshot_path: &Path) -> Result<()> {
+pub(crate) fn invoke_pre_archive_promotion_hook(snapshot_path: &Path) -> Result<()> {
     let hook = PRE_ARCHIVE_PROMOTION_HOOK.with(|slot| slot.borrow_mut().take());
     if let Some(mut hook) = hook {
         hook(snapshot_path)?;
@@ -121,12 +123,12 @@ fn invoke_pre_archive_promotion_hook(snapshot_path: &Path) -> Result<()> {
 }
 
 #[cfg(not(test))]
-fn invoke_pre_archive_promotion_hook(_snapshot_path: &Path) -> Result<()> {
+pub(crate) fn invoke_pre_archive_promotion_hook(_snapshot_path: &Path) -> Result<()> {
     Ok(())
 }
 
 #[cfg(test)]
-fn resumable_snapshot_progress_hook_requests_budget_exhaustion(
+pub(crate) fn resumable_snapshot_progress_hook_requests_budget_exhaustion(
     completed_batches: usize,
     staged_row_count: usize,
 ) -> bool {
@@ -138,7 +140,7 @@ fn resumable_snapshot_progress_hook_requests_budget_exhaustion(
 }
 
 #[cfg(not(test))]
-fn resumable_snapshot_progress_hook_requests_budget_exhaustion(
+pub(crate) fn resumable_snapshot_progress_hook_requests_budget_exhaustion(
     _completed_batches: usize,
     _staged_row_count: usize,
 ) -> bool {
@@ -146,7 +148,9 @@ fn resumable_snapshot_progress_hook_requests_budget_exhaustion(
 }
 
 #[cfg(test)]
-fn invoke_staged_write_failure_hook(completed_batches: usize) -> Option<StagedWriteHookFailure> {
+pub(crate) fn invoke_staged_write_failure_hook(
+    completed_batches: usize,
+) -> Option<StagedWriteHookFailure> {
     STAGED_WRITE_FAILURE_HOOK.with(|slot| {
         slot.borrow_mut()
             .as_mut()
@@ -155,15 +159,19 @@ fn invoke_staged_write_failure_hook(completed_batches: usize) -> Option<StagedWr
 }
 
 #[cfg(not(test))]
-fn invoke_staged_write_failure_hook(_completed_batches: usize) -> Option<StagedWriteHookFailure> {
+pub(crate) fn invoke_staged_write_failure_hook(
+    _completed_batches: usize,
+) -> Option<StagedWriteHookFailure> {
     None
 }
 
-fn snapshot_attempt_deadline(max_attempt_duration: Option<StdDuration>) -> Option<Instant> {
+pub(crate) fn snapshot_attempt_deadline(
+    max_attempt_duration: Option<StdDuration>,
+) -> Option<Instant> {
     max_attempt_duration.map(|budget| Instant::now() + budget)
 }
 
-fn recent_raw_staged_write_error_is_interruption(error: &anyhow::Error) -> bool {
+pub(crate) fn recent_raw_staged_write_error_is_interruption(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<rusqlite::Error>()
@@ -177,7 +185,7 @@ fn recent_raw_staged_write_error_is_interruption(error: &anyhow::Error) -> bool 
     })
 }
 
-fn recent_raw_staged_write_error_is_generic_bulk_wrapper(error: &anyhow::Error) -> bool {
+pub(crate) fn recent_raw_staged_write_error_is_generic_bulk_wrapper(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .to_string()
@@ -186,7 +194,7 @@ fn recent_raw_staged_write_error_is_generic_bulk_wrapper(error: &anyhow::Error) 
     })
 }
 
-fn recent_raw_staged_write_error_is_fatal_storage(error: &anyhow::Error) -> bool {
+pub(crate) fn recent_raw_staged_write_error_is_fatal_storage(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
         || error.chain().any(|cause| {
             let lowered = cause.to_string().to_ascii_lowercase();
@@ -203,7 +211,7 @@ fn recent_raw_staged_write_error_is_fatal_storage(error: &anyhow::Error) -> bool
         })
 }
 
-fn recent_raw_staged_write_error_is_budget_exhaustion(
+pub(crate) fn recent_raw_staged_write_error_is_budget_exhaustion(
     error: &anyhow::Error,
     deadline_exhausted: bool,
 ) -> bool {

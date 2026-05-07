@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn advance_staged_snapshot(
+pub(crate) fn advance_staged_snapshot(
     source_db_path: &Path,
     source_store: &SqliteStore,
     staged_store: &SqliteStore,
@@ -13,8 +13,7 @@ pub(super) fn advance_staged_snapshot(
     started: Instant,
     deadline: Option<Instant>,
     batch_limit: usize,
-) -> Result<(RecentRawJournalStateRow, StagedSnapshotProgress, bool), StagedSnapshotAttemptResult>
-{
+) -> Result<(RecentRawJournalStateRow, StagedSnapshotProgress, bool), StagedSnapshotAttemptResult> {
     let mut completed_batches = 0usize;
     let mut current_state = before_state.clone();
     let mut budget_exhausted = false;

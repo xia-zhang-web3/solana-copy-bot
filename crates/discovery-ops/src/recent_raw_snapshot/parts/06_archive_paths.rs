@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn archive_candidate(
+pub(crate) fn archive_candidate(
     snapshot_dir: &Path,
     manifest: Option<&RecentRawJournalSnapshotManifest>,
 ) -> Option<PathBuf> {
@@ -13,7 +13,7 @@ pub(super) fn archive_candidate(
     newest_snapshot_archive(snapshot_dir)
 }
 
-pub(super) fn newest_snapshot_archive(snapshot_dir: &Path) -> Option<PathBuf> {
+pub(crate) fn newest_snapshot_archive(snapshot_dir: &Path) -> Option<PathBuf> {
     let mut archives = fs::read_dir(snapshot_dir)
         .ok()?
         .filter_map(|entry| entry.ok())
@@ -33,31 +33,31 @@ pub(super) fn newest_snapshot_archive(snapshot_dir: &Path) -> Option<PathBuf> {
     archives.into_iter().next()
 }
 
-pub(super) fn staged_snapshot_archive_path(snapshot_dir: &Path) -> PathBuf {
+pub(crate) fn staged_snapshot_archive_path(snapshot_dir: &Path) -> PathBuf {
     snapshot_dir.join(format!(
         ".{JOURNAL_SNAPSHOT_ARCHIVE_PREFIX}staged{JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX}{STAGED_ARCHIVE_SNAPSHOT_SUFFIX}"
     ))
 }
 
-pub(super) fn staged_snapshot_metadata_path(snapshot_dir: &Path) -> PathBuf {
+pub(crate) fn staged_snapshot_metadata_path(snapshot_dir: &Path) -> PathBuf {
     snapshot_dir.join(format!(
         ".{JOURNAL_SNAPSHOT_ARCHIVE_PREFIX}staged{JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX}{STAGED_ARCHIVE_METADATA_SUFFIX}"
     ))
 }
 
-pub(super) fn sqlite_snapshot_wal_path(snapshot_path: &Path) -> PathBuf {
+pub(crate) fn sqlite_snapshot_wal_path(snapshot_path: &Path) -> PathBuf {
     let mut wal_path = snapshot_path.as_os_str().to_os_string();
     wal_path.push("-wal");
     PathBuf::from(wal_path)
 }
 
-pub(super) fn sqlite_snapshot_shm_path(snapshot_path: &Path) -> PathBuf {
+pub(crate) fn sqlite_snapshot_shm_path(snapshot_path: &Path) -> PathBuf {
     let mut shm_path = snapshot_path.as_os_str().to_os_string();
     shm_path.push("-shm");
     PathBuf::from(shm_path)
 }
 
-pub(super) fn remove_file_if_exists(path: &Path) -> Result<bool> {
+pub(crate) fn remove_file_if_exists(path: &Path) -> Result<bool> {
     match fs::remove_file(path) {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -65,7 +65,7 @@ pub(super) fn remove_file_if_exists(path: &Path) -> Result<bool> {
     }
 }
 
-pub(super) fn remove_snapshot_set(snapshot_path: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn remove_snapshot_set(snapshot_path: &Path) -> Result<Vec<PathBuf>> {
     let mut removed_paths = Vec::new();
     for path in [
         snapshot_path.to_path_buf(),
@@ -80,7 +80,7 @@ pub(super) fn remove_snapshot_set(snapshot_path: &Path) -> Result<Vec<PathBuf>> 
     Ok(removed_paths)
 }
 
-pub(super) fn remove_staged_snapshot_artifacts(
+pub(crate) fn remove_staged_snapshot_artifacts(
     staged_snapshot_path: &Path,
     staged_metadata_path: &Path,
 ) -> Result<Vec<PathBuf>> {
@@ -98,7 +98,7 @@ pub(super) fn remove_staged_snapshot_artifacts(
     Ok(removed_paths)
 }
 
-pub(super) fn load_existing_staged_manifest(
+pub(crate) fn load_existing_staged_manifest(
     source_db_path: &Path,
     staged_snapshot_path: &Path,
     staged_metadata_path: &Path,

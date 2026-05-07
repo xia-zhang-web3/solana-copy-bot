@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn write_snapshot_with_policy(
+pub(crate) fn write_snapshot_with_policy(
     source_db_path: &Path,
     source_store: &SqliteStore,
     snapshot_path: &Path,
@@ -89,7 +89,7 @@ fn cleanup_snapshot_temp(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
-pub(super) fn link_or_copy_atomic(source_path: &Path, destination_path: &Path) -> Result<()> {
+pub(crate) fn link_or_copy_atomic(source_path: &Path, destination_path: &Path) -> Result<()> {
     if let Some(parent) = destination_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed creating {}", parent.display()))?;
@@ -108,7 +108,7 @@ pub(super) fn link_or_copy_atomic(source_path: &Path, destination_path: &Path) -
     }
 }
 
-pub(super) fn snapshot_manifest(
+pub(crate) fn snapshot_manifest(
     created_at: DateTime<Utc>,
     source_db_path: &Path,
     snapshot_path: &Path,

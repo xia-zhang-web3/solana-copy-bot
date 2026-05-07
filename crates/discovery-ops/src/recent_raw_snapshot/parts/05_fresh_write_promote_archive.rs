@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn promote_staged_snapshot_to_archive(
+pub(crate) fn promote_staged_snapshot_to_archive(
     config_path: &Path,
     source_db_path: &Path,
     latest_snapshot_path: &Path,
@@ -78,8 +78,8 @@ pub(super) fn promote_staged_snapshot_to_archive(
         ));
     }
 
-    let archive_manifest = manifest_for_snapshot(source_db_path, archive_path, now).map_err(
-        |error| {
+    let archive_manifest =
+        manifest_for_snapshot(source_db_path, archive_path, now).map_err(|error| {
             render_output(
                 SnapshotState::HardFailure,
                 latest_surface_status,
@@ -108,8 +108,7 @@ pub(super) fn promote_staged_snapshot_to_archive(
                     terminal_reason_override: None,
                 },
             )
-        },
-    )?;
+        })?;
     if let Err(error) = write_json_atomic(archive_metadata_path, &archive_manifest)
         .with_context(|| format!("failed writing {}", archive_metadata_path.display()))
     {

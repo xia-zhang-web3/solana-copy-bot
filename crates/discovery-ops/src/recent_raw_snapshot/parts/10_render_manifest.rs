@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn append_render_manifest(lines: &mut Vec<String>, output: &SnapshotOutput) {
+pub(crate) fn append_render_manifest(lines: &mut Vec<String>, output: &SnapshotOutput) {
     lines.extend([
         format!(
             "created_at={}",

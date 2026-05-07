@@ -1,9 +1,11 @@
+pub(crate) use super::*;
+
 #[path = "08_staged_advance.rs"]
 mod advance;
 
-use self::advance::advance_staged_snapshot;
+pub(crate) use self::advance::advance_staged_snapshot;
 
-fn resume_staged_snapshot_with_policy(
+pub(crate) fn resume_staged_snapshot_with_policy(
     source_db_path: &Path,
     source_store: &SqliteStore,
     snapshot_dir: &Path,

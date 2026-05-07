@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(test)]
-pub(super) fn source_window_outran_staged_progress(
+pub(crate) fn source_window_outran_staged_progress(
     source_state: &RecentRawJournalStateRow,
     staged_manifest: &RecentRawJournalSnapshotManifest,
 ) -> bool {
@@ -25,7 +25,7 @@ pub(super) fn source_window_outran_staged_progress(
     false
 }
 
-pub(super) fn reference_surface_outran_staged_progress(
+pub(crate) fn reference_surface_outran_staged_progress(
     reference_manifest: &RecentRawJournalSnapshotManifest,
     staged_manifest: &RecentRawJournalSnapshotManifest,
 ) -> bool {
@@ -53,7 +53,7 @@ pub(super) fn reference_surface_outran_staged_progress(
     false
 }
 
-pub(super) fn source_contract_no_longer_matches_staged_progress(
+pub(crate) fn source_contract_no_longer_matches_staged_progress(
     source_state: &RecentRawJournalStateRow,
     staged_manifest: &RecentRawJournalSnapshotManifest,
 ) -> bool {
@@ -77,7 +77,7 @@ pub(super) fn source_contract_no_longer_matches_staged_progress(
     false
 }
 
-pub(super) fn published_latest_supersedes_staged_progress(
+pub(crate) fn published_latest_supersedes_staged_progress(
     latest_manifest: &RecentRawJournalSnapshotManifest,
     staged_manifest: &RecentRawJournalSnapshotManifest,
 ) -> bool {
@@ -85,7 +85,7 @@ pub(super) fn published_latest_supersedes_staged_progress(
         && reference_surface_outran_staged_progress(latest_manifest, staged_manifest)
 }
 
-pub(super) fn latest_surface_can_seed_staged_progress(
+pub(crate) fn latest_surface_can_seed_staged_progress(
     source_db_path: &Path,
     source_state: &RecentRawJournalStateRow,
     latest_manifest: &RecentRawJournalSnapshotManifest,
@@ -99,7 +99,7 @@ pub(super) fn latest_surface_can_seed_staged_progress(
         })
 }
 
-pub(super) fn seed_staged_snapshot_from_latest_surface(
+pub(crate) fn seed_staged_snapshot_from_latest_surface(
     source_db_path: &Path,
     latest_snapshot_path: &Path,
     latest_manifest: &RecentRawJournalSnapshotManifest,
@@ -125,7 +125,7 @@ pub(super) fn seed_staged_snapshot_from_latest_surface(
     Ok(staged_manifest)
 }
 
-pub(super) fn staged_manifest_for_state(
+pub(crate) fn staged_manifest_for_state(
     source_db_path: &Path,
     staged_snapshot_path: &Path,
     created_at: DateTime<Utc>,
