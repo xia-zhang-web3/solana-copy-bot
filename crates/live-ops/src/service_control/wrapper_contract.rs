@@ -1,7 +1,17 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+
+#[path = "wrapper_contract_helpers.rs"]
+mod helpers;
+#[path = "wrapper_contract_render.rs"]
+mod render;
+#[path = "wrapper_contract_verify.rs"]
+mod verify;
+
+pub use self::verify::{extract_wrapper_metadata, verify_wrapper};
+use self::{helpers::set_executable, render::render_wrapper_script_contents};
 
 pub const WRAPPER_VERSION: &str = "1";
 pub const STATUS_SCHEMA_VERSION: &str = "1";
@@ -66,7 +76,3 @@ pub fn render_wrapper_script(
     set_executable(output_path)?;
     Ok(())
 }
-
-include!("wrapper_contract_render.rs");
-include!("wrapper_contract_verify.rs");
-include!("wrapper_contract_helpers.rs");

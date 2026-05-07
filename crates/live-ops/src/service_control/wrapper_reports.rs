@@ -1,4 +1,11 @@
-fn run(config: Config) -> Result<String> {
+use super::{
+    live_service_control_wrapper_contract, render::mode_name, render::render_human_report, Config,
+    Mode, WrapperReport, WrapperVerdict,
+};
+use anyhow::Result;
+use chrono::Utc;
+
+pub(super) fn run(config: Config) -> Result<String> {
     let report = match config.mode {
         Mode::RenderWrapper | Mode::InstallWrapper => render_report(&config),
         Mode::VerifyWrapper => verify_report(&config),

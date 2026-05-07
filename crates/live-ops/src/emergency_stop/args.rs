@@ -1,8 +1,12 @@
-fn parse_args() -> Result<Config> {
+use super::{Config, Mode, DEFAULT_OPERATOR_EMERGENCY_STOP_PATH, EMERGENCY_STOP_FILE_ENV, USAGE};
+use anyhow::{anyhow, bail, Result};
+use std::{env, path::PathBuf};
+
+pub(super) fn parse_args() -> Result<Config> {
     parse_args_from(env::args().skip(1))
 }
 
-fn parse_args_from<I>(args: I) -> Result<Config>
+pub(super) fn parse_args_from<I>(args: I) -> Result<Config>
 where
     I: IntoIterator<Item = String>,
 {

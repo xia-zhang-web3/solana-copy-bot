@@ -1,8 +1,12 @@
-fn parse_args() -> Result<Option<Config>> {
+use super::{live_service_control_wrapper_contract, Config, Mode};
+use anyhow::{anyhow, bail, Result};
+use std::{env, path::PathBuf};
+
+pub(super) fn parse_args() -> Result<Option<Config>> {
     parse_args_from(env::args().skip(1))
 }
 
-fn parse_args_from<I>(args: I) -> Result<Option<Config>>
+pub(super) fn parse_args_from<I>(args: I) -> Result<Option<Config>>
 where
     I: IntoIterator<Item = String>,
 {

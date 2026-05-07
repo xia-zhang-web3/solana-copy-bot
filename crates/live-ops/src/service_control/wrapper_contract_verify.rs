@@ -1,3 +1,11 @@
+use super::{
+    helpers::executable_flag, render_wrapper_script_contents, WrapperMetadata,
+    WrapperVerificationSummary, METADATA_PREFIX, STATUS_SCHEMA_VERSION, SUPPORTED_ACTIONS,
+    WRAPPER_VERSION,
+};
+use anyhow::{anyhow, Context, Result};
+use std::{fs, path::Path};
+
 pub fn verify_wrapper(path: &Path) -> Result<WrapperVerificationSummary> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed reading wrapper {}", path.display()))?;

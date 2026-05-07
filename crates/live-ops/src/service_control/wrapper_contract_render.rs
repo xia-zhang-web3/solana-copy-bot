@@ -1,3 +1,9 @@
+use super::{
+    helpers::{shell_single_quote, validate_backend_command},
+    WrapperMetadata, METADATA_PREFIX, STATUS_SCHEMA_VERSION, SUPPORTED_ACTIONS, WRAPPER_VERSION,
+};
+use anyhow::{bail, Context, Result};
+
 pub fn render_wrapper_script_contents(backend_command: &str, timeout_ms: u64) -> Result<String> {
     validate_backend_command(backend_command)?;
     if timeout_ms == 0 {

@@ -1,4 +1,11 @@
-fn run(config: Config) -> Result<RunReport> {
+use super::{
+    io::write_flag_atomic, Config, FlagStatus, Mode, OperatorEmergencyStopOutput, RunReport,
+    CLEAR_CONFIRMATION,
+};
+use anyhow::{bail, Context, Result};
+use std::{fs, path::Path};
+
+pub(super) fn run(config: Config) -> Result<RunReport> {
     let output = match config.mode {
         Mode::Status => status_output(&config.path),
         Mode::Activate => activate_output(
@@ -149,7 +156,7 @@ fn read_flag_status(path: &Path) -> FlagStatus {
     }
 }
 
-fn parse_operator_emergency_stop_reason(content: &str) -> Option<String> {
+pub(super) fn parse_operator_emergency_stop_reason(content: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {

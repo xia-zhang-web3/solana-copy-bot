@@ -1,4 +1,7 @@
-fn validate_backend_command(backend_command: &str) -> Result<()> {
+use anyhow::{bail, Context, Result};
+use std::{fs, path::Path};
+
+pub(super) fn validate_backend_command(backend_command: &str) -> Result<()> {
     if backend_command.trim().is_empty() {
         bail!("backend command must not be empty");
     }
@@ -11,7 +14,7 @@ fn validate_backend_command(backend_command: &str) -> Result<()> {
     Ok(())
 }
 
-fn shell_single_quote(value: &str) -> String {
+pub(super) fn shell_single_quote(value: &str) -> String {
     let mut quoted = String::from("'");
     for ch in value.chars() {
         if ch == '\'' {
@@ -24,7 +27,7 @@ fn shell_single_quote(value: &str) -> String {
     quoted
 }
 
-fn executable_flag(path: &Path) -> Option<bool> {
+pub(super) fn executable_flag(path: &Path) -> Option<bool> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -39,7 +42,7 @@ fn executable_flag(path: &Path) -> Option<bool> {
     }
 }
 
-fn set_executable(path: &Path) -> Result<()> {
+pub(super) fn set_executable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

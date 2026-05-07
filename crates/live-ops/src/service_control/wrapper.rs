@@ -1,12 +1,22 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::path::PathBuf;
 
 use super::wrapper_contract as live_service_control_wrapper_contract;
 
 const USAGE: &str = "usage: copybot_live_service_control_wrapper [--json] [--backend-command <path-or-name>] [--timeout-ms <ms>] (--render-wrapper --output <path> | --install-wrapper --output <path> | --verify-wrapper --path <path>)";
+
+#[path = "wrapper_args.rs"]
+mod args;
+#[path = "wrapper_render.rs"]
+mod render;
+#[path = "wrapper_reports.rs"]
+mod reports;
+
+#[cfg(test)]
+use self::args::parse_args_from;
+use self::{args::parse_args, reports::run};
 
 pub fn main_entry() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -19,17 +29,17 @@ pub fn main_entry() -> Result<()> {
 }
 
 #[derive(Debug, Clone)]
-struct Config {
-    mode: Mode,
-    output_path: Option<PathBuf>,
-    wrapper_path: Option<PathBuf>,
-    backend_command: String,
-    timeout_ms: u64,
-    json: bool,
+pub(super) struct Config {
+    pub(super) mode: Mode,
+    pub(super) output_path: Option<PathBuf>,
+    pub(super) wrapper_path: Option<PathBuf>,
+    pub(super) backend_command: String,
+    pub(super) timeout_ms: u64,
+    pub(super) json: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
+pub(super) enum Mode {
     RenderWrapper,
     InstallWrapper,
     VerifyWrapper,
@@ -37,7 +47,7 @@ enum Mode {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum WrapperVerdict {
+pub(super) enum WrapperVerdict {
     TinyLiveServiceControlWrapperRendered,
     TinyLiveServiceControlWrapperVerifyOk,
     TinyLiveServiceControlWrapperVerifyInvalid,
@@ -45,27 +55,23 @@ enum WrapperVerdict {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct WrapperReport {
-    generated_at: DateTime<Utc>,
-    mode: String,
-    verdict: WrapperVerdict,
-    reason: String,
-    output_path: Option<String>,
-    wrapper_path: Option<String>,
-    wrapper_version: String,
-    backend_command: Option<String>,
-    timeout_ms: Option<u64>,
-    supported_actions: Vec<String>,
-    status_schema_version: String,
-    executable: Option<bool>,
-    exact_content_matches_expected: Option<bool>,
-    mismatches: Vec<String>,
-    explicit_statement: String,
+pub(super) struct WrapperReport {
+    pub(super) generated_at: DateTime<Utc>,
+    pub(super) mode: String,
+    pub(super) verdict: WrapperVerdict,
+    pub(super) reason: String,
+    pub(super) output_path: Option<String>,
+    pub(super) wrapper_path: Option<String>,
+    pub(super) wrapper_version: String,
+    pub(super) backend_command: Option<String>,
+    pub(super) timeout_ms: Option<u64>,
+    pub(super) supported_actions: Vec<String>,
+    pub(super) status_schema_version: String,
+    pub(super) executable: Option<bool>,
+    pub(super) exact_content_matches_expected: Option<bool>,
+    pub(super) mismatches: Vec<String>,
+    pub(super) explicit_statement: String,
 }
-
-include!("wrapper_args.rs");
-include!("wrapper_reports.rs");
-include!("wrapper_render.rs");
 
 #[cfg(test)]
 #[path = "wrapper_tests.rs"]

@@ -1,4 +1,13 @@
-fn write_flag_atomic(path: &Path, reason: &str) -> Result<()> {
+use super::OperatorEmergencyStopOutput;
+use anyhow::{Context, Result};
+use chrono::{SecondsFormat, Utc};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+};
+
+pub(super) fn write_flag_atomic(path: &Path, reason: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)
@@ -50,7 +59,7 @@ fn temp_flag_path(path: &Path) -> PathBuf {
     path.with_file_name(tmp_name)
 }
 
-fn render_human(output: &OperatorEmergencyStopOutput) -> String {
+pub(super) fn render_human(output: &OperatorEmergencyStopOutput) -> String {
     [
         format!("event={}", output.event),
         format!("path={}", output.path),

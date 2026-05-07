@@ -1,10 +1,5 @@
-use anyhow::{anyhow, bail, Context, Result};
-use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
-use std::env;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const DEFAULT_OPERATOR_EMERGENCY_STOP_PATH: &str = "state/operator_emergency_stop.flag";
 const EMERGENCY_STOP_FILE_ENV: &str = "SOLANA_COPY_BOT_EMERGENCY_STOP_FILE";
@@ -13,6 +8,15 @@ const USAGE: &str = "usage:
   copybot_operator_emergency_stop --status [--path <path>] [--json]
   copybot_operator_emergency_stop --activate --reason <text> [--force] [--path <path>] [--json]
   copybot_operator_emergency_stop --clear --confirm-clear CLEAR_OPERATOR_EMERGENCY_STOP [--path <path>] [--json]";
+
+#[path = "actions.rs"]
+mod actions;
+#[path = "args.rs"]
+mod args;
+#[path = "io.rs"]
+mod io;
+
+use self::{actions::run, args::parse_args, io::render_human};
 
 pub fn main_entry() {
     match parse_args().and_then(run) {
@@ -39,50 +43,55 @@ pub fn main_entry() {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
+pub(super) enum Mode {
     Status,
     Activate,
     Clear,
 }
 
 #[derive(Debug, Clone)]
-struct Config {
-    mode: Mode,
-    path: PathBuf,
-    reason: Option<String>,
-    force: bool,
-    confirm_clear: Option<String>,
-    json: bool,
+pub(super) struct Config {
+    pub(super) mode: Mode,
+    pub(super) path: PathBuf,
+    pub(super) reason: Option<String>,
+    pub(super) force: bool,
+    pub(super) confirm_clear: Option<String>,
+    pub(super) json: bool,
 }
 
 #[derive(Debug, Clone)]
-struct RunReport {
-    output: OperatorEmergencyStopOutput,
-    json: bool,
-    success: bool,
+pub(super) struct RunReport {
+    pub(super) output: OperatorEmergencyStopOutput,
+    pub(super) json: bool,
+    pub(super) success: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct OperatorEmergencyStopOutput {
-    event: &'static str,
-    path: String,
-    active: bool,
-    changed: bool,
-    reason: Option<String>,
-    verdict: String,
+pub(super) struct OperatorEmergencyStopOutput {
+    pub(super) event: &'static str,
+    pub(super) path: String,
+    pub(super) active: bool,
+    pub(super) changed: bool,
+    pub(super) reason: Option<String>,
+    pub(super) verdict: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct FlagStatus {
-    active: bool,
-    reason: Option<String>,
-    verdict: String,
-    readable: bool,
+pub(super) struct FlagStatus {
+    pub(super) active: bool,
+    pub(super) reason: Option<String>,
+    pub(super) verdict: String,
+    pub(super) readable: bool,
 }
 
-include!("args.rs");
-include!("actions.rs");
-include!("io.rs");
+#[cfg(test)]
+use self::actions::parse_operator_emergency_stop_reason;
+#[cfg(test)]
+use anyhow::Result;
+#[cfg(test)]
+use chrono::Utc;
+#[cfg(test)]
+use std::{env, fs};
 
 #[cfg(test)]
 #[path = "tests.rs"]

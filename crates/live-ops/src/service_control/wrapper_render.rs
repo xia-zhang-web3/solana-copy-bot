@@ -1,4 +1,6 @@
-fn render_human_report(report: &WrapperReport) -> String {
+use super::{Mode, WrapperReport};
+
+pub(super) fn render_human_report(report: &WrapperReport) -> String {
     let mut lines = vec![
         format!("mode={}", report.mode),
         format!(
@@ -43,7 +45,7 @@ fn render_human_report(report: &WrapperReport) -> String {
     lines.join("\n")
 }
 
-fn mode_name(mode: Mode) -> &'static str {
+pub(super) fn mode_name(mode: Mode) -> &'static str {
     match mode {
         Mode::RenderWrapper => "render_wrapper",
         Mode::InstallWrapper => "install_wrapper",
