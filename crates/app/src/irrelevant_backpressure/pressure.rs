@@ -1,4 +1,6 @@
-fn should_buffer_backpressured_irrelevant_observed_swap(
+use super::*;
+
+pub(crate) fn should_buffer_backpressured_irrelevant_observed_swap(
     discovery_critical: bool,
     _follow_snapshot: &FollowSnapshot,
     _open_shadow_lots: &HashSet<(String, String)>,
@@ -7,7 +9,7 @@ fn should_buffer_backpressured_irrelevant_observed_swap(
     discovery_critical
 }
 
-fn should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
+pub(crate) fn should_preemptively_drop_noncritical_irrelevant_observed_swap_under_output_pressure(
     discovery_critical: bool,
     follow_snapshot: &FollowSnapshot,
     open_shadow_lots: &HashSet<(String, String)>,

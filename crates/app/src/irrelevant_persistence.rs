@@ -1,4 +1,6 @@
-fn prune_noncritical_zero_universe_pending_irrelevant_swaps(
+use crate::*;
+
+pub(crate) fn prune_noncritical_zero_universe_pending_irrelevant_swaps(
     pending_irrelevant_swaps: &mut VecDeque<PendingIrrelevantObservedSwap>,
     recent_signatures: &mut HashSet<String>,
     recent_signature_order: &mut VecDeque<String>,
@@ -45,7 +47,7 @@ fn prune_noncritical_zero_universe_pending_irrelevant_swaps(
     dropped
 }
 
-fn enqueue_irrelevant_observed_swap_immediately(
+pub(crate) fn enqueue_irrelevant_observed_swap_immediately(
     observed_swap_writer: &ObservedSwapWriter,
     recent_signatures: &mut HashSet<String>,
     recent_signature_order: &mut VecDeque<String>,
@@ -71,7 +73,7 @@ fn enqueue_irrelevant_observed_swap_immediately(
     }
 }
 
-async fn persist_relevant_observed_swap(
+pub(crate) async fn persist_relevant_observed_swap(
     observed_swap_writer: &ObservedSwapWriter,
     recent_signatures: &mut HashSet<String>,
     recent_signature_order: &mut VecDeque<String>,
@@ -90,7 +92,7 @@ async fn persist_relevant_observed_swap(
     }
 }
 
-async fn persist_irrelevant_observed_swap(
+pub(crate) async fn persist_irrelevant_observed_swap(
     observed_swap_writer: &ObservedSwapWriter,
     recent_signatures: &mut HashSet<String>,
     recent_signature_order: &mut VecDeque<String>,
@@ -108,12 +110,14 @@ async fn persist_irrelevant_observed_swap(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RelevantObservedSwapPersistence {
+pub(crate) enum RelevantObservedSwapPersistence {
     Inserted,
     Duplicate,
 }
 
-fn relevant_observed_swap_persistence(inserted: bool) -> RelevantObservedSwapPersistence {
+pub(crate) fn relevant_observed_swap_persistence(
+    inserted: bool,
+) -> RelevantObservedSwapPersistence {
     if inserted {
         RelevantObservedSwapPersistence::Inserted
     } else {

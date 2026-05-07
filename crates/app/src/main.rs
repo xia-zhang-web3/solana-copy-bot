@@ -59,17 +59,21 @@ mod app_loop_shutdown;
 mod config_contract;
 mod discovery_runtime;
 mod history_retention;
+mod irrelevant_backpressure;
+mod irrelevant_persistence;
 mod json_sanitize;
 mod observed_swap_writer;
 mod runtime_follow_surface;
 mod shadow_risk;
 mod shadow_runtime_helpers;
 mod shadow_scheduler;
+mod shadow_state_events;
 mod stale_close;
 mod startup;
 mod swap_classification;
 mod task_spawns;
 mod telemetry;
+mod zero_universe;
 
 use crate::alerts::AlertDispatcher;
 use crate::app_loop_ingestion::handle_ingestion_swap_poll;
@@ -85,6 +89,8 @@ use crate::app_loop_shutdown::shutdown_app_loop_tasks;
 use crate::config_contract::validate_execution_runtime_contract;
 use crate::discovery_runtime::{DiscoveryService, RuntimePublicationTruthResolution};
 use crate::history_retention::HistoryRetentionRunner;
+use crate::irrelevant_backpressure::*;
+use crate::irrelevant_persistence::*;
 use crate::json_sanitize::sanitize_json_value;
 #[cfg(test)]
 use crate::observed_swap_writer::OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY;
@@ -100,6 +106,7 @@ use crate::observed_swap_writer::{
 };
 use crate::shadow_runtime_helpers::{handle_shadow_task_output, spawn_shadow_worker_task};
 use crate::shadow_scheduler::{ShadowScheduler, ShadowSwapSide, ShadowTaskInput, ShadowTaskKey};
+use crate::shadow_state_events::*;
 use crate::stale_close::close_stale_shadow_lots;
 #[cfg(test)]
 use crate::startup::STARTUP_LARGE_WAL_CHECKPOINT_TIMEOUT;
@@ -114,11 +121,10 @@ use crate::startup::{
 use crate::swap_classification::{classify_swap_side, shadow_task_key_for_swap};
 use crate::task_spawns::spawn_shadow_snapshot_task;
 use crate::telemetry::format_error_chain;
+use crate::zero_universe::*;
 
 include!("app_parts/00_sqlite_maintenance.rs");
 include!("app_parts/01.rs");
-include!("app_parts/01_irrelevant_backpressure.rs");
-include!("app_parts/02.rs");
 
 mod app_consumer_telemetry;
 mod app_loop;

@@ -1,13 +1,15 @@
+use super::*;
+
 #[derive(Debug, Deserialize)]
-struct DiscoveryCriticalPersistedRebuildPayloadTargetMints {
+pub(crate) struct DiscoveryCriticalPersistedRebuildPayloadTargetMints {
     #[serde(default)]
-    discovery_critical_target_buy_mints: Vec<String>,
+    pub(crate) discovery_critical_target_buy_mints: Vec<String>,
     #[allow(dead_code)]
     #[serde(default)]
-    unique_buy_mints: Vec<String>,
+    pub(crate) unique_buy_mints: Vec<String>,
 }
 
-fn zero_universe_fail_closed_discovery_market_context_mode(
+pub(crate) fn zero_universe_fail_closed_discovery_market_context_mode(
     follow_snapshot: &FollowSnapshot,
     open_shadow_lots: &HashSet<(String, String)>,
     shadow_strategy_fail_closed: bool,
@@ -15,7 +17,9 @@ fn zero_universe_fail_closed_discovery_market_context_mode(
     shadow_strategy_fail_closed && follow_snapshot.active.is_empty() && open_shadow_lots.is_empty()
 }
 
-fn load_discovery_critical_target_buy_mints(store: &SqliteStore) -> Result<HashSet<String>> {
+pub(crate) fn load_discovery_critical_target_buy_mints(
+    store: &SqliteStore,
+) -> Result<HashSet<String>> {
     let Some(state_row) = store.load_discovery_persisted_rebuild_state_read_only()? else {
         return Ok(HashSet::new());
     };
@@ -29,7 +33,7 @@ fn load_discovery_critical_target_buy_mints(store: &SqliteStore) -> Result<HashS
         .collect())
 }
 
-fn refresh_discovery_critical_target_buy_mints_or_warn(
+pub(crate) fn refresh_discovery_critical_target_buy_mints_or_warn(
     store: &SqliteStore,
     target_buy_mints: &mut HashSet<String>,
 ) -> Result<()> {
@@ -53,7 +57,7 @@ fn refresh_discovery_critical_target_buy_mints_or_warn(
     }
 }
 
-fn refresh_discovery_critical_target_buy_mints_for_backpressure_if_due(
+pub(crate) fn refresh_discovery_critical_target_buy_mints_for_backpressure_if_due(
     store: &SqliteStore,
     follow_snapshot: &FollowSnapshot,
     open_shadow_lots: &HashSet<(String, String)>,
@@ -79,7 +83,7 @@ fn refresh_discovery_critical_target_buy_mints_for_backpressure_if_due(
     Ok(true)
 }
 
-fn should_refresh_discovery_critical_target_buy_mints_for_backpressure(
+pub(crate) fn should_refresh_discovery_critical_target_buy_mints_for_backpressure(
     follow_snapshot: &FollowSnapshot,
     open_shadow_lots: &HashSet<(String, String)>,
     shadow_strategy_fail_closed: bool,
@@ -110,7 +114,7 @@ fn should_refresh_discovery_critical_target_buy_mints_for_backpressure(
     true
 }
 
-fn refresh_discovery_critical_irrelevant_persistence_for_backpressure(
+pub(crate) fn refresh_discovery_critical_irrelevant_persistence_for_backpressure(
     store: &SqliteStore,
     swap: &SwapEvent,
     follow_snapshot: &FollowSnapshot,

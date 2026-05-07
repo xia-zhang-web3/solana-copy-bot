@@ -1,4 +1,6 @@
-fn zero_universe_empty_target_noncritical_irrelevant_context(
+use crate::*;
+
+pub(crate) fn zero_universe_empty_target_noncritical_irrelevant_context(
     discovery_critical: bool,
     follow_snapshot: &FollowSnapshot,
     open_shadow_lots: &HashSet<(String, String)>,
@@ -14,7 +16,7 @@ fn zero_universe_empty_target_noncritical_irrelevant_context(
         )
 }
 
-fn should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+pub(crate) fn should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
     discovery_critical: bool,
     follow_snapshot: &FollowSnapshot,
     open_shadow_lots: &HashSet<(String, String)>,
@@ -33,7 +35,7 @@ fn should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effo
 }
 
 #[derive(Debug, Clone)]
-struct ZeroUniverseEmptyTargetNoncriticalBestEffortState {
+pub(crate) struct ZeroUniverseEmptyTargetNoncriticalBestEffortState {
     exhausted: bool,
     exhausted_at: Option<StdInstant>,
     refill_allowed_at: Option<StdInstant>,
@@ -50,11 +52,11 @@ impl Default for ZeroUniverseEmptyTargetNoncriticalBestEffortState {
 }
 
 impl ZeroUniverseEmptyTargetNoncriticalBestEffortState {
-    fn exhausted(&self) -> bool {
+    pub(crate) fn exhausted(&self) -> bool {
         self.exhausted
     }
 
-    fn mark_exhausted(&mut self, now: StdInstant) {
+    pub(crate) fn mark_exhausted(&mut self, now: StdInstant) {
         if !self.exhausted {
             self.exhausted_at = Some(now);
             self.refill_allowed_at =
@@ -66,13 +68,13 @@ impl ZeroUniverseEmptyTargetNoncriticalBestEffortState {
         self.exhausted = true;
     }
 
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.exhausted = false;
         self.exhausted_at = None;
         self.refill_allowed_at = None;
     }
 
-    fn clear_if_context_changed(
+    pub(crate) fn clear_if_context_changed(
         &mut self,
         follow_snapshot: &FollowSnapshot,
         open_shadow_lots: &HashSet<(String, String)>,
@@ -90,7 +92,7 @@ impl ZeroUniverseEmptyTargetNoncriticalBestEffortState {
         }
     }
 
-    fn refresh_after_writer_pressure_clears(
+    pub(crate) fn refresh_after_writer_pressure_clears(
         &mut self,
         follow_snapshot: &FollowSnapshot,
         open_shadow_lots: &HashSet<(String, String)>,
@@ -119,7 +121,7 @@ impl ZeroUniverseEmptyTargetNoncriticalBestEffortState {
     }
 }
 
-fn zero_universe_empty_target_noncritical_writer_pressure_active(
+pub(crate) fn zero_universe_empty_target_noncritical_writer_pressure_active(
     writer_snapshot: &ObservedSwapWriterSnapshot,
 ) -> bool {
     writer_snapshot.pending_requests > 0
@@ -127,7 +129,7 @@ fn zero_universe_empty_target_noncritical_writer_pressure_active(
         || writer_snapshot.journal_overflow_depth_batches > 0
 }
 
-fn reset_zero_universe_empty_target_noncritical_best_effort_exhaustion_if_context_changed(
+pub(crate) fn reset_zero_universe_empty_target_noncritical_best_effort_exhaustion_if_context_changed(
     best_effort_state: &mut ZeroUniverseEmptyTargetNoncriticalBestEffortState,
     follow_snapshot: &FollowSnapshot,
     open_shadow_lots: &HashSet<(String, String)>,
@@ -142,20 +144,20 @@ fn reset_zero_universe_empty_target_noncritical_best_effort_exhaustion_if_contex
     );
 }
 
-fn pending_irrelevant_swap_queue_is_full(
+pub(crate) fn pending_irrelevant_swap_queue_is_full(
     pending_irrelevant_swaps: &VecDeque<PendingIrrelevantObservedSwap>,
 ) -> bool {
     pending_irrelevant_swaps.len() >= DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY
 }
 
-fn should_drop_backpressured_discovery_critical_irrelevant_observed_swap(
+pub(crate) fn should_drop_backpressured_discovery_critical_irrelevant_observed_swap(
     pending_irrelevant_swaps: &VecDeque<PendingIrrelevantObservedSwap>,
 ) -> bool {
     pending_irrelevant_swap_queue_is_full(pending_irrelevant_swaps)
 }
 
 #[cfg(test)]
-fn pending_irrelevant_swap_backpressure_blocks_ingestion(
+pub(crate) fn pending_irrelevant_swap_backpressure_blocks_ingestion(
     pending_irrelevant_swaps: &VecDeque<PendingIrrelevantObservedSwap>,
 ) -> bool {
     pending_irrelevant_swap_queue_is_full(pending_irrelevant_swaps)

@@ -1,17 +1,19 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IrrelevantObservedSwapEnqueueOutcome {
+pub(crate) enum IrrelevantObservedSwapEnqueueOutcome {
     Enqueued,
     PendingWriterBackpressure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IrrelevantObservedSwapBackpressureSourceBranch {
+pub(crate) enum IrrelevantObservedSwapBackpressureSourceBranch {
     Unclassified,
     NotFollowed,
 }
 
 impl IrrelevantObservedSwapBackpressureSourceBranch {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Unclassified => "irrelevant_unclassified",
             Self::NotFollowed => "irrelevant_not_followed",
@@ -20,19 +22,19 @@ impl IrrelevantObservedSwapBackpressureSourceBranch {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct IrrelevantObservedSwapBackpressureDiagnostics {
-    irrelevant_branch: &'static str,
-    discovery_critical_irrelevant_persistence: bool,
-    zero_universe_empty_target_noncritical_context: bool,
-    followed_wallet_count: usize,
-    open_shadow_lot_count: usize,
-    discovery_critical_target_buy_mints_count: usize,
-    pending_irrelevant_swap_queue_depth: usize,
-    writer_pending_requests: usize,
-    yellowstone_output_queue_depth: u64,
+pub(crate) struct IrrelevantObservedSwapBackpressureDiagnostics {
+    pub(crate) irrelevant_branch: &'static str,
+    pub(crate) discovery_critical_irrelevant_persistence: bool,
+    pub(crate) zero_universe_empty_target_noncritical_context: bool,
+    pub(crate) followed_wallet_count: usize,
+    pub(crate) open_shadow_lot_count: usize,
+    pub(crate) discovery_critical_target_buy_mints_count: usize,
+    pub(crate) pending_irrelevant_swap_queue_depth: usize,
+    pub(crate) writer_pending_requests: usize,
+    pub(crate) yellowstone_output_queue_depth: u64,
 }
 
-fn snapshot_irrelevant_observed_swap_backpressure_diagnostics(
+pub(crate) fn snapshot_irrelevant_observed_swap_backpressure_diagnostics(
     branch: IrrelevantObservedSwapBackpressureSourceBranch,
     discovery_critical_irrelevant_persistence: bool,
     follow_snapshot: &FollowSnapshot,
@@ -65,7 +67,7 @@ fn snapshot_irrelevant_observed_swap_backpressure_diagnostics(
     }
 }
 
-fn warn_irrelevant_observed_swap_writer_backpressure(
+pub(crate) fn warn_irrelevant_observed_swap_writer_backpressure(
     swap: &SwapEvent,
     branch: IrrelevantObservedSwapBackpressureSourceBranch,
     discovery_critical_irrelevant_persistence: bool,
@@ -114,21 +116,21 @@ fn warn_irrelevant_observed_swap_writer_backpressure(
 }
 
 #[derive(Debug, Clone)]
-struct PendingIrrelevantObservedSwap {
-    swap: SwapEvent,
-    discovery_critical: bool,
-    processing_started_at: StdInstant,
-    backpressure_started_at: StdInstant,
-    last_backpressure_log_at: Option<StdInstant>,
+pub(crate) struct PendingIrrelevantObservedSwap {
+    pub(crate) swap: SwapEvent,
+    pub(crate) discovery_critical: bool,
+    pub(crate) processing_started_at: StdInstant,
+    pub(crate) backpressure_started_at: StdInstant,
+    pub(crate) last_backpressure_log_at: Option<StdInstant>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-struct DiscoveryCriticalTargetBuyMintsBackpressureRefreshState {
+pub(crate) struct DiscoveryCriticalTargetBuyMintsBackpressureRefreshState {
     last_refresh_attempt_at: Option<StdInstant>,
 }
 
 impl DiscoveryCriticalTargetBuyMintsBackpressureRefreshState {
-    fn should_refresh(self, now: StdInstant) -> bool {
+    pub(crate) fn should_refresh(self, now: StdInstant) -> bool {
         self.last_refresh_attempt_at
             .map(|last| {
                 now.duration_since(last)
@@ -137,7 +139,7 @@ impl DiscoveryCriticalTargetBuyMintsBackpressureRefreshState {
             .unwrap_or(true)
     }
 
-    fn note_refresh_attempt(&mut self, now: StdInstant) {
+    pub(crate) fn note_refresh_attempt(&mut self, now: StdInstant) {
         self.last_refresh_attempt_at = Some(now);
     }
 }

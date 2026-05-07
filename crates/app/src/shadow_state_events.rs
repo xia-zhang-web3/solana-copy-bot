@@ -1,4 +1,6 @@
-fn record_shadow_queue_backpressure_risk_event(
+use crate::*;
+
+pub(crate) fn record_shadow_queue_backpressure_risk_event(
     store: &SqliteStore,
     pending_shadow_task_count: usize,
     held_shadow_task_count: usize,
@@ -24,7 +26,7 @@ fn record_shadow_queue_backpressure_risk_event(
     )
 }
 
-fn refresh_shadow_open_lot_index_or_warn(
+pub(crate) fn refresh_shadow_open_lot_index_or_warn(
     store: &SqliteStore,
     open_shadow_lots: &mut HashSet<(String, String)>,
 ) -> Result<()> {
@@ -44,7 +46,7 @@ fn refresh_shadow_open_lot_index_or_warn(
     }
 }
 
-fn record_shadow_risk_state_event_or_warn(
+pub(crate) fn record_shadow_risk_state_event_or_warn(
     store: &SqliteStore,
     event_type: &str,
     severity: &str,
