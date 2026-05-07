@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn classify_recent_raw_staged_lineage(
+    pub(super) fn classify_recent_raw_staged_lineage(
         state: &RecentRawDiagnosticState,
         same_source_db_as_promoted: Option<bool>,
         cursor_relation_to_promoted: RecentRawLineageRelation,
@@ -72,7 +74,7 @@ impl DiscoveryService {
         )
     }
 
-    fn classify_recent_raw_staged_regression(
+    pub(super) fn classify_recent_raw_staged_regression(
         state: &RecentRawDiagnosticState,
         same_source_db_as_promoted: Option<bool>,
         selected_staged_frontier_behind_promoted_before_comparison: Option<bool>,
@@ -157,7 +159,7 @@ impl DiscoveryService {
         )
     }
 
-    fn classify_recent_raw_staged_birth(
+    pub(super) fn classify_recent_raw_staged_birth(
         state: &RecentRawDiagnosticState,
         same_source_db_as_promoted: Option<bool>,
         created_after_promoted: Option<bool>,
