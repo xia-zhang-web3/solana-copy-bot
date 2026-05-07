@@ -1,5 +1,7 @@
+use super::*;
+
 impl WalletAccumulator {
-    fn reset_activity_summary_for_exact_backfill(&mut self) {
+    pub(super) fn reset_activity_summary_for_exact_backfill(&mut self) {
         self.first_seen = None;
         self.last_seen = None;
         self.trades = 0;
@@ -9,7 +11,7 @@ impl WalletAccumulator {
         self.suspicious = false;
     }
 
-    fn observe_activity_only(&mut self, swap: &SwapEvent, max_tx_per_minute: u32) {
+    pub(super) fn observe_activity_only(&mut self, swap: &SwapEvent, max_tx_per_minute: u32) {
         self.trades = self.trades.saturating_add(1);
         self.first_seen = Some(
             self.first_seen
@@ -26,7 +28,7 @@ impl WalletAccumulator {
         self.mark_tx_minute(swap.ts_utc.timestamp() / 60, max_tx_per_minute);
     }
 
-    fn observe_swap(
+    pub(super) fn observe_swap(
         &mut self,
         swap: &SwapEvent,
         max_tx_per_minute: u32,
@@ -56,7 +58,7 @@ impl WalletAccumulator {
         }
     }
 
-    fn observe_swap_streaming(
+    pub(super) fn observe_swap_streaming(
         &mut self,
         swap: &SwapEvent,
         max_tx_per_minute: u32,

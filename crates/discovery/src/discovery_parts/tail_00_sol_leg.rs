@@ -1,12 +1,14 @@
-fn is_sol_buy(swap: &SwapEvent) -> bool {
+use super::*;
+
+pub(super) fn is_sol_buy(swap: &SwapEvent) -> bool {
     swap.token_in == SOL_MINT && swap.token_out != SOL_MINT
 }
 
-fn is_sol_sell(swap: &SwapEvent) -> bool {
+pub(super) fn is_sol_sell(swap: &SwapEvent) -> bool {
     swap.token_out == SOL_MINT && swap.token_in != SOL_MINT
 }
 
-fn sol_leg_token(swap: &SwapEvent) -> Option<&str> {
+pub(super) fn sol_leg_token(swap: &SwapEvent) -> Option<&str> {
     if is_sol_buy(swap) {
         Some(swap.token_out.as_str())
     } else if is_sol_sell(swap) {
