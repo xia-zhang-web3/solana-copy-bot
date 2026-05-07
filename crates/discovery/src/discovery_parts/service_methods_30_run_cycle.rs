@@ -1,4 +1,5 @@
-include!("service_methods_30_run_cycle_complete.rs");
+#[path = "service_methods_30_run_cycle_complete.rs"]
+mod service_methods_30_run_cycle_complete;
 
 impl DiscoveryService {
     pub fn run_cycle(&self, store: &SqliteStore, now: DateTime<Utc>) -> Result<DiscoverySummary> {

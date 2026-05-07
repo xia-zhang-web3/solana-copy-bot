@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn complete_healthy_run_cycle(
+    pub(super) fn complete_healthy_run_cycle(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,
