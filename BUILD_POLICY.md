@@ -115,8 +115,10 @@ Legacy discovery/storage operator deletion rule:
 4. restoring them into `copybot-discovery/src/bin` or `copybot-storage/src/bin`
    is rejected by default,
 5. active scheduled discovery binaries live in `copybot-discovery-ops`, not
-   `copybot-discovery/src/bin`.
-6. `discovery_runtime_export` must stay focused on scheduled/manual runtime
+   `copybot-discovery/src/bin`,
+6. legacy `copybot-discovery` is excluded from the default workspace and may be
+   compiled only through its explicit manifest for compatibility checks,
+7. `discovery_runtime_export` must stay focused on scheduled/manual runtime
    artifact export; recent_raw explain helpers, checkpoint-row-fetch probes,
    publication-truth blocker explainers, and replay-sol-leg traces are rejected
    in that binary.

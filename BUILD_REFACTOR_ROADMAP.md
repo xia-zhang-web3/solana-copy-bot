@@ -421,6 +421,12 @@ Batch 6 start:
 - legacy `crates/discovery/src/bin/discovery_v2_publish.rs` removed,
 - architecture guard now rejects all duplicate workspace bin names without a
   V2 waiver.
+- legacy `copybot-discovery` is no longer a default workspace member; it remains
+  source-quarantined for explicit compatibility work via
+  `cargo test --locked --manifest-path crates/discovery/Cargo.toml --lib --no-run`.
+- operator artifact CI no longer rebuilds app/operators for edits under
+  `crates/discovery/**`; architecture guard still runs for all `crates/**`
+  changes.
 
 ## 10. Phase 8: Storage Monolith Split
 

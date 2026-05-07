@@ -7,13 +7,15 @@ members = [
   "crates/storage-ops",
   "crates/storage",
   "crates/ingestion",
-  "crates/discovery",
   "crates/discovery-ops",
   "crates/discovery-v2",
   "crates/live-ops",
   "crates/operators",
   "crates/shadow",
   "crates/app",
+]
+exclude = [
+  "crates/discovery",
 ]
 resolver = "2"
 
