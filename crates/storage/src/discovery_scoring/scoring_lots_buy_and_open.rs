@@ -1,4 +1,6 @@
-fn upsert_wallet_scoring_day_on_conn(conn: &Connection, swap: &SwapEvent) -> Result<()> {
+use super::*;
+
+pub(super) fn upsert_wallet_scoring_day_on_conn(conn: &Connection, swap: &SwapEvent) -> Result<()> {
     let buy_notional = if is_sol_buy(swap) {
         swap.amount_in.max(0.0)
     } else {
@@ -44,7 +46,7 @@ fn upsert_wallet_scoring_day_on_conn(conn: &Connection, swap: &SwapEvent) -> Res
     Ok(())
 }
 
-fn upsert_wallet_scoring_tx_minute_on_conn(
+pub(super) fn upsert_wallet_scoring_tx_minute_on_conn(
     conn: &Connection,
     wallet_id: &str,
     minute_bucket: i64,
@@ -60,7 +62,7 @@ fn upsert_wallet_scoring_tx_minute_on_conn(
     Ok(())
 }
 
-fn insert_wallet_scoring_buy_fact_on_conn(
+pub(super) fn insert_wallet_scoring_buy_fact_on_conn(
     conn: &Connection,
     swap: &SwapEvent,
     prepared: &PreparedBuyFact,
@@ -114,7 +116,10 @@ fn insert_wallet_scoring_buy_fact_on_conn(
     Ok(())
 }
 
-fn insert_wallet_scoring_open_lot_on_conn(conn: &Connection, swap: &SwapEvent) -> Result<()> {
+pub(super) fn insert_wallet_scoring_open_lot_on_conn(
+    conn: &Connection,
+    swap: &SwapEvent,
+) -> Result<()> {
     let token = swap.token_out.as_str();
     conn.execute(
         "INSERT OR IGNORE INTO wallet_scoring_open_lots(

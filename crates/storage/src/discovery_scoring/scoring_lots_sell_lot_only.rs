@@ -1,4 +1,10 @@
-fn apply_wallet_scoring_sell_lot_only_on_conn(conn: &Connection, swap: &SwapEvent) -> Result<()> {
+use super::scoring_lots_sell_close::load_wallet_scoring_open_lots_on_conn;
+use super::*;
+
+pub(super) fn apply_wallet_scoring_sell_lot_only_on_conn(
+    conn: &Connection,
+    swap: &SwapEvent,
+) -> Result<()> {
     let token = swap.token_in.as_str();
     let lots = load_wallet_scoring_open_lots_on_conn(conn, &swap.wallet, token)?;
     if lots.is_empty() {
