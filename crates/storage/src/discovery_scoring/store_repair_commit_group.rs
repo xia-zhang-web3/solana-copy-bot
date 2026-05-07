@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn apply_discovery_scoring_repair_commit_group(
         &self,

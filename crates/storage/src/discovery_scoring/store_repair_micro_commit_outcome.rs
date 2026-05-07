@@ -1,4 +1,6 @@
-type DiscoveryScoringRepairMicroCommitOutcome = (
+use super::*;
+
+pub(super) type DiscoveryScoringRepairMicroCommitOutcome = (
     &'static str,
     Option<DiscoveryRuntimeCursor>,
     Option<DiscoveryRuntimeCursor>,
@@ -11,7 +13,7 @@ type DiscoveryScoringRepairMicroCommitOutcome = (
     usize,
 );
 
-fn repair_micro_commit_outcome(
+pub(super) fn repair_micro_commit_outcome(
     reason: &'static str,
     current: Option<DiscoveryRuntimeCursor>,
     next: Option<DiscoveryRuntimeCursor>,
@@ -37,13 +39,13 @@ fn repair_micro_commit_outcome(
     )
 }
 
-fn repair_micro_commit_missing_current_outcome(
+pub(super) fn repair_micro_commit_missing_current_outcome(
     reason: &'static str,
 ) -> DiscoveryScoringRepairMicroCommitOutcome {
     repair_micro_commit_outcome(reason, None, None, 0, false, false, false, false, 0, 0)
 }
 
-fn repair_micro_commit_current_zero_outcome(
+pub(super) fn repair_micro_commit_current_zero_outcome(
     reason: &'static str,
     current: DiscoveryRuntimeCursor,
     reached_target: bool,

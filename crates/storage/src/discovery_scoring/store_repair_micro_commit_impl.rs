@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn apply_discovery_scoring_repair_micro_commit_lock_first(
         &self,

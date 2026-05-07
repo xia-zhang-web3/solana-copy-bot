@@ -1,5 +1,7 @@
+use super::*;
+
 impl SqliteStore {
-    fn upsert_discovery_scoring_state_ts(
+    pub(super) fn upsert_discovery_scoring_state_ts(
         &self,
         state_key: &str,
         value: DateTime<Utc>,
@@ -19,7 +21,10 @@ impl SqliteStore {
         Ok(())
     }
 
-    fn load_discovery_scoring_state_ts(&self, state_key: &str) -> Result<Option<DateTime<Utc>>> {
+    pub(super) fn load_discovery_scoring_state_ts(
+        &self,
+        state_key: &str,
+    ) -> Result<Option<DateTime<Utc>>> {
         let raw: Option<String> = self
             .conn
             .query_row(
@@ -35,7 +40,10 @@ impl SqliteStore {
             .transpose()
     }
 
-    fn load_discovery_scoring_state_value(&self, state_key: &str) -> Result<Option<String>> {
+    pub(super) fn load_discovery_scoring_state_value(
+        &self,
+        state_key: &str,
+    ) -> Result<Option<String>> {
         self.conn
             .query_row(
                 "SELECT state_value
@@ -48,7 +56,7 @@ impl SqliteStore {
             .with_context(|| format!("failed querying discovery_scoring_state.{state_key}"))
     }
 
-    fn load_discovery_scoring_cursor_state_exact(
+    pub(super) fn load_discovery_scoring_cursor_state_exact(
         &self,
         ts_key: &str,
         slot_key: &str,
