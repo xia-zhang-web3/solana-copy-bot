@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn classify_recent_raw_source_window_contract(
+    pub(super) fn classify_recent_raw_source_window_contract(
         promoted_exists: bool,
         promoted_manifest_error: Option<&str>,
         current_source_state_available: bool,

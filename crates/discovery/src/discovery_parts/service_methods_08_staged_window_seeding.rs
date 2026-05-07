@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn classify_recent_raw_staged_window_seeding(
+    pub(super) fn classify_recent_raw_staged_window_seeding(
         state: &RecentRawDiagnosticState,
         same_source_db_as_promoted: Option<bool>,
         staged_start_matches_promoted_start: Option<bool>,
