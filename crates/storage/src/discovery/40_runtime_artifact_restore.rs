@@ -1,3 +1,5 @@
+pub(crate) use super::*;
+
 #[path = "40_runtime_artifact_restore_impl.rs"]
 mod restore_impl;
 #[path = "40_runtime_artifact_restore_rows.rs"]

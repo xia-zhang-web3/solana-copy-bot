@@ -1,7 +1,5 @@
 use super::canonicalize_wallet_ids;
-use crate::{
-    DiscoveryPublicationStateRow, DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode,
-};
+use crate::{DiscoveryPublicationStateRow, DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode};
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

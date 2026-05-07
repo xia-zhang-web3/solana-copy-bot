@@ -1,3 +1,5 @@
+pub(crate) use super::*;
+
 #[path = "02_runtime_restore_dirty_tables.rs"]
 mod dirty_tables;
 #[path = "02_recent_raw_restore_state_query.rs"]

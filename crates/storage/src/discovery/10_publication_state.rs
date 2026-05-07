@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn discovery_publication_state(&self) -> Result<Option<DiscoveryPublicationStateRow>> {
         self.ensure_discovery_strategy_state_table()?;
@@ -317,7 +319,9 @@ impl SqliteStore {
         let mut stmt = self
             .conn
             .prepare("PRAGMA table_info(discovery_strategy_state)")
-            .context("failed to prepare discovery_strategy_state publication column introspection")?;
+            .context(
+                "failed to prepare discovery_strategy_state publication column introspection",
+            )?;
         let columns = stmt
             .query_map([], |row| row.get::<_, String>(1))
             .context("failed querying discovery_strategy_state publication columns")?

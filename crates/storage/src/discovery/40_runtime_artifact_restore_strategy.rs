@@ -1,4 +1,6 @@
-use super::{canonical_wallet_metrics_window_start, insert_trusted_wallet_metrics_snapshot_on_conn};
+use super::{
+    canonical_wallet_metrics_window_start, insert_trusted_wallet_metrics_snapshot_on_conn,
+};
 use crate::{
     DiscoveryRuntimeArtifact, TrustedSelectionState, TrustedSnapshotSourceKind,
     TrustedWalletMetricsSnapshotWrite,
@@ -108,7 +110,10 @@ fn restore_runtime_artifact_publication_state_on_conn(
                 .publication_state
                 .last_published_window_start
                 .map(canonical_wallet_metrics_window_start),
-            artifact.publication_state.published_scoring_source.as_deref(),
+            artifact
+                .publication_state
+                .published_scoring_source
+                .as_deref(),
             published_wallet_ids_json.as_str(),
             artifact
                 .publication_state

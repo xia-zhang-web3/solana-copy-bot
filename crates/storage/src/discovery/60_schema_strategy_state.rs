@@ -201,7 +201,9 @@ impl SqliteStore {
                      ADD COLUMN publication_runtime_cursor_slot INTEGER",
                     [],
                 )
-                .context("failed adding discovery_strategy_state.publication_runtime_cursor_slot")?;
+                .context(
+                    "failed adding discovery_strategy_state.publication_runtime_cursor_slot",
+                )?;
         }
         if !columns.contains("publication_runtime_cursor_signature") {
             self.conn

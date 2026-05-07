@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn append_discovery_wallet_freshness_capture(
         &self,

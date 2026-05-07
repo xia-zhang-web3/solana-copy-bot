@@ -24,7 +24,10 @@ pub(crate) fn validate_runtime_artifact_snapshot_shape(
             "discovery runtime artifact restore requires healthy publication state"
         ));
     }
-    if artifact.publication_state.published_scoring_source.is_none()
+    if artifact
+        .publication_state
+        .published_scoring_source
+        .is_none()
         || artifact
             .publication_state
             .publication_policy_fingerprint
@@ -58,8 +61,7 @@ pub(crate) fn validate_runtime_artifact_snapshot_shape(
         .iter()
         .map(|row| row.wallet_id.clone())
         .collect();
-    let snapshot_unique_wallet_ids: HashSet<String> =
-        snapshot_wallet_ids.iter().cloned().collect();
+    let snapshot_unique_wallet_ids: HashSet<String> = snapshot_wallet_ids.iter().cloned().collect();
     if snapshot_unique_wallet_ids.len() != snapshot_wallet_ids.len() {
         return Err(anyhow::anyhow!(
             "discovery runtime artifact wallet_metrics snapshot contains duplicate wallet rows"

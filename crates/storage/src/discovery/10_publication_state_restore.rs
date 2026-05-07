@@ -1,5 +1,7 @@
+use super::*;
+
 impl SqliteStore {
-    fn startup_trusted_selection_gate_status_from_metadata(
+    pub(crate) fn startup_trusted_selection_gate_status_from_metadata(
         &self,
         bootstrap_required: bool,
         reason: Option<String>,

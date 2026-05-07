@@ -1,4 +1,6 @@
-use super::{canonical_wallet_metrics_window_start, insert_trusted_wallet_metrics_snapshot_on_conn};
+use super::{
+    canonical_wallet_metrics_window_start, insert_trusted_wallet_metrics_snapshot_on_conn,
+};
 use crate::{
     FollowlistUpdateResult, SqliteStore, TrustedWalletMetricsSnapshotWrite, WalletMetricRow,
     WalletUpsertRow, DISCOVERY_WALLET_METRICS_RETENTION_WINDOWS,
