@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn repair_restored_replay_or_publish_state_for_resume(
+    pub(crate) fn repair_restored_replay_or_publish_state_for_resume(
         &self,
         state: &mut PersistedStreamRebuildState,
         now: DateTime<Utc>,

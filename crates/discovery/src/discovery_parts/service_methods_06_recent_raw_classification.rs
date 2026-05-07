@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn classify_recent_raw_catch_up_status(
+    pub(crate) fn classify_recent_raw_catch_up_status(
         state: &RecentRawDiagnosticState,
     ) -> (RecentRawCatchUpReasonClass, bool, bool, bool, bool, String) {
         if state.promoted.manifest_error.is_some() || state.staged.manifest_error.is_some() {

@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn repair_collect_buy_mints_quality_progress_for_resume(
+    pub(crate) fn repair_collect_buy_mints_quality_progress_for_resume(
         &self,
         state: &mut PersistedStreamRebuildState,
         now: DateTime<Utc>,
@@ -83,7 +85,7 @@ impl DiscoveryService {
         cache_changed || next_index_changed
     }
 
-    fn repair_token_quality_progress_for_resume(
+    pub(crate) fn repair_token_quality_progress_for_resume(
         &self,
         state: &mut PersistedStreamRebuildState,
         now: DateTime<Utc>,

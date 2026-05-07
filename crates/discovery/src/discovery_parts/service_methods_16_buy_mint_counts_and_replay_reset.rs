@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn add_buy_mint_occurrences(
+    pub(crate) fn add_buy_mint_occurrences(
         payload: &mut PersistedStreamRebuildPayload,
         mint: &str,
         count: usize,
@@ -16,7 +18,7 @@ impl DiscoveryService {
         was_zero
     }
 
-    fn insert_unique_buy_mint(payload: &mut PersistedStreamRebuildPayload, mint: &str) {
+    pub(crate) fn insert_unique_buy_mint(payload: &mut PersistedStreamRebuildPayload, mint: &str) {
         match payload
             .unique_buy_mints
             .binary_search_by(|existing| existing.as_str().cmp(mint))
@@ -26,7 +28,7 @@ impl DiscoveryService {
         }
     }
 
-    fn remove_unique_buy_mint(payload: &mut PersistedStreamRebuildPayload, mint: &str) {
+    pub(crate) fn remove_unique_buy_mint(payload: &mut PersistedStreamRebuildPayload, mint: &str) {
         if let Ok(index) = payload
             .unique_buy_mints
             .binary_search_by(|existing| existing.as_str().cmp(mint))
@@ -35,7 +37,7 @@ impl DiscoveryService {
         }
     }
 
-    fn set_buy_mint_occurrences(
+    pub(crate) fn set_buy_mint_occurrences(
         payload: &mut PersistedStreamRebuildPayload,
         mint: &str,
         count: usize,
@@ -57,7 +59,7 @@ impl DiscoveryService {
         was_missing
     }
 
-    fn subtract_buy_mint_occurrences(
+    pub(crate) fn subtract_buy_mint_occurrences(
         payload: &mut PersistedStreamRebuildPayload,
         mint: &str,
         count: usize,
@@ -83,7 +85,7 @@ impl DiscoveryService {
         }
     }
 
-    fn reset_replay_wallet_stats_progress(payload: &mut PersistedStreamRebuildPayload) {
+    pub(crate) fn reset_replay_wallet_stats_progress(payload: &mut PersistedStreamRebuildPayload) {
         payload.replay_wallet_stats_complete = false;
         payload.replay_wallet_stats_rows_processed = 0;
         payload.replay_wallet_stats_pages_processed = 0;
@@ -107,7 +109,7 @@ impl DiscoveryService {
         Self::clear_replay_exact_target_surface_resume_state(payload);
     }
 
-    fn clear_replay_exact_target_surface_resume_state(payload: &mut PersistedStreamRebuildPayload) {
+    pub(crate) fn clear_replay_exact_target_surface_resume_state(payload: &mut PersistedStreamRebuildPayload) {
         payload.replay_exact_target_surface_wallet_cursor = None;
         payload.replay_exact_target_surface_pre_row_blocked = false;
         payload
@@ -116,7 +118,7 @@ impl DiscoveryService {
         payload.replay_exact_target_surface_staged_wallet_cursor_after = None;
     }
 
-    fn prepare_publish_pending_exact_quality_retry(
+    pub(crate) fn prepare_publish_pending_exact_quality_retry(
         state: &mut PersistedStreamRebuildState,
         quality_retry_mints: Vec<String>,
     ) {
@@ -145,7 +147,7 @@ impl DiscoveryService {
         state.payload.token_pending_buy_starts.clear();
     }
 
-    fn reset_replay_wallet_stats_progress_preserving_budget_hints(
+    pub(crate) fn reset_replay_wallet_stats_progress_preserving_budget_hints(
         payload: &mut PersistedStreamRebuildPayload,
     ) {
         let replay_wallet_stats_budget_floor_wallets =

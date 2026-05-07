@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn reset_replay_progress_for_optimized_resume(state: &mut PersistedStreamRebuildState) {
+    pub(crate) fn reset_replay_progress_for_optimized_resume(state: &mut PersistedStreamRebuildState) {
         state.phase = DiscoveryPersistedRebuildPhase::Replay;
         state.phase_cursor = None;
         state.replay_rows_processed = 0;
@@ -17,7 +19,7 @@ impl DiscoveryService {
         state.payload.publish_pending_quality_retry_mints = None;
     }
 
-    fn replay_checkpoint_has_local_progress(state: &PersistedStreamRebuildState) -> bool {
+    pub(crate) fn replay_checkpoint_has_local_progress(state: &PersistedStreamRebuildState) -> bool {
         state.replay_rows_processed > 0
             || state.replay_pages_processed > 0
             || state.phase_cursor.is_some()
@@ -28,7 +30,7 @@ impl DiscoveryService {
             || !state.payload.token_pending_buy_starts.is_empty()
     }
 
-    fn prepare_persisted_stream_rebuild_for_metrics_window_rollover(
+    pub(crate) fn prepare_persisted_stream_rebuild_for_metrics_window_rollover(
         &self,
         state: &mut PersistedStreamRebuildState,
         window_start: DateTime<Utc>,
@@ -227,7 +229,7 @@ impl DiscoveryService {
         Ok(true)
     }
 
-    fn persisted_stream_rebuild_restart_reason(
+    pub(crate) fn persisted_stream_rebuild_restart_reason(
         &self,
         state: &PersistedStreamRebuildState,
         window_start: DateTime<Utc>,

@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn persisted_stream_observed_swaps_loaded(state: &PersistedStreamRebuildState) -> usize {
+    pub(crate) fn persisted_stream_observed_swaps_loaded(state: &PersistedStreamRebuildState) -> usize {
         match state.payload.replay_mode {
             ReplayMode::LegacyCompleteReplay => state.replay_rows_processed,
             ReplayMode::WalletStatsThenSolLeg => state
@@ -9,14 +11,14 @@ impl DiscoveryService {
         }
     }
 
-    fn canonicalize_unique_buy_mints(mints: &mut Vec<String>) -> bool {
+    pub(crate) fn canonicalize_unique_buy_mints(mints: &mut Vec<String>) -> bool {
         let original = mints.clone();
         mints.sort();
         mints.dedup();
         *mints != original
     }
 
-    fn repair_collect_buy_mints_payload_for_cursor(
+    pub(crate) fn repair_collect_buy_mints_payload_for_cursor(
         &self,
         state: &mut PersistedStreamRebuildState,
     ) -> bool {

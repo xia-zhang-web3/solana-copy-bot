@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn load_or_start_persisted_stream_rebuild_state_with_options(
+    pub(crate) fn load_or_start_persisted_stream_rebuild_state_with_options(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,
@@ -87,7 +89,7 @@ impl DiscoveryService {
         }
     }
 
-    fn started_fresh_persisted_stream_rebuild_restore(
+    pub(crate) fn started_fresh_persisted_stream_rebuild_restore(
         &self,
         window_start: DateTime<Utc>,
         metrics_window_start: DateTime<Utc>,

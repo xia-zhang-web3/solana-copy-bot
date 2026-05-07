@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn repair_replay_exact_target_buy_mint_surface_for_resume(
+    pub(crate) fn repair_replay_exact_target_buy_mint_surface_for_resume(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,

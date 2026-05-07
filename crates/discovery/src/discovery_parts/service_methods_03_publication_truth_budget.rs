@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn persisted_observed_swaps_cover_window(
+    pub(crate) fn persisted_observed_swaps_cover_window(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,

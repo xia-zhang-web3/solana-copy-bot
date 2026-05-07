@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn repair_loaded_persisted_stream_rebuild_state_for_resume_with_options(
+    pub(crate) fn repair_loaded_persisted_stream_rebuild_state_for_resume_with_options(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,

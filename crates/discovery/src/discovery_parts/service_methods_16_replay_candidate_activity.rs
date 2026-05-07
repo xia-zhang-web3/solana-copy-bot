@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn can_handoff_replay_wallet_stats_to_sol_leg_with_candidate_activity_backfill(
+    pub(crate) fn can_handoff_replay_wallet_stats_to_sol_leg_with_candidate_activity_backfill(
         &self,
         state: &PersistedStreamRebuildState,
         advance: &PersistedStreamPhaseAdvance,
@@ -28,7 +30,7 @@ impl DiscoveryService {
                 .saturating_mul(wallet_batch_size)
     }
 
-    fn observe_replay_wallet_activity_summary(
+    pub(crate) fn observe_replay_wallet_activity_summary(
         payload: &mut PersistedStreamRebuildPayload,
         row: ObservedWalletActivityRow,
     ) {
@@ -57,7 +59,7 @@ impl DiscoveryService {
         entry.suspicious |= row.suspicious;
     }
 
-    fn advance_persisted_stream_replay_candidate_wallet_activity_backfill(
+    pub(crate) fn advance_persisted_stream_replay_candidate_wallet_activity_backfill(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,

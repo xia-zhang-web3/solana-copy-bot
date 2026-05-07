@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn snapshot_run_cycle_publication_boundary_diagnostics(
+    pub(crate) fn snapshot_run_cycle_publication_boundary_diagnostics(
         &self,
         store: &SqliteStore,
         prepared_cycle_state: &'static str,
@@ -31,7 +33,7 @@ impl DiscoveryService {
         })
     }
 
-    fn log_run_cycle_publication_boundary(diagnostics: &RunCyclePublicationBoundaryDiagnostics) {
+    pub(crate) fn log_run_cycle_publication_boundary(diagnostics: &RunCyclePublicationBoundaryDiagnostics) {
         info!(
             run_cycle_publication_boundary_reached = true,
             run_cycle_publication_prepared_cycle_state = diagnostics.prepared_cycle_state,
@@ -48,7 +50,7 @@ impl DiscoveryService {
         );
     }
 
-    fn refresh_fail_closed_publication_runtime_surface_for_deferred_runtime_cycle(
+    pub(crate) fn refresh_fail_closed_publication_runtime_surface_for_deferred_runtime_cycle(
         &self,
         store: &SqliteStore,
         publication_state: Option<&DiscoveryPublicationStateRow>,

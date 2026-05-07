@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn wallet_snapshots_from_accumulators(
+    pub(crate) fn wallet_snapshots_from_accumulators(
         &self,
         store: &SqliteStore,
         by_wallet: HashMap<String, WalletAccumulator>,
@@ -13,7 +15,7 @@ impl DiscoveryService {
             .collect())
     }
 
-    fn wallet_snapshot_outcomes_from_accumulators(
+    pub(crate) fn wallet_snapshot_outcomes_from_accumulators(
         &self,
         store: &SqliteStore,
         by_wallet: HashMap<String, WalletAccumulator>,
@@ -91,7 +93,7 @@ impl DiscoveryService {
         Ok(outcomes)
     }
 
-    fn load_persisted_active_day_counts_for_wallet_ids(
+    pub(crate) fn load_persisted_active_day_counts_for_wallet_ids(
         &self,
         store: &SqliteStore,
         wallet_ids: &[String],
@@ -104,7 +106,7 @@ impl DiscoveryService {
         )
     }
 
-    fn load_persisted_active_day_counts_for_wallet_ids_since(
+    pub(crate) fn load_persisted_active_day_counts_for_wallet_ids_since(
         &self,
         store: &SqliteStore,
         wallet_ids: &[String],

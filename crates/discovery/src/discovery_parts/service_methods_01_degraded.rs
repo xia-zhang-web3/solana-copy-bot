@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn degraded_summary_from_published_universe(
+    pub(crate) fn degraded_summary_from_published_universe(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,
@@ -51,7 +53,7 @@ impl DiscoveryService {
         Ok(summary)
     }
 
-    fn bootstrap_degraded_summary_from_published_universe(
+    pub(crate) fn bootstrap_degraded_summary_from_published_universe(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,

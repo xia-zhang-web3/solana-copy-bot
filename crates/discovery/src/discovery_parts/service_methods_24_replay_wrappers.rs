@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn advance_persisted_stream_replay_with_phase_page_limits(
+    pub(crate) fn advance_persisted_stream_replay_with_phase_page_limits(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
@@ -32,7 +34,7 @@ impl DiscoveryService {
         }
     }
 
-    fn persist_partial_replay_frontier_hints_after_cycle(
+    pub(crate) fn persist_partial_replay_frontier_hints_after_cycle(
         state: &mut PersistedStreamRebuildState,
         fetch_limit: usize,
         cycle_started_in_replay_sol_leg: bool,

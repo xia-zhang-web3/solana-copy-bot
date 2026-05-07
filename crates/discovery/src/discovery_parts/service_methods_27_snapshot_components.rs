@@ -1,6 +1,8 @@
+use super::*;
+
 impl DiscoveryService {
     #[cfg(test)]
-    fn snapshot_from_components(
+    pub(crate) fn snapshot_from_components(
         &self,
         wallet_id: String,
         first_seen: DateTime<Utc>,
@@ -44,7 +46,7 @@ impl DiscoveryService {
         .snapshot
     }
 
-    fn snapshot_outcome_from_components(
+    pub(crate) fn snapshot_outcome_from_components(
         &self,
         wallet_id: String,
         first_seen: DateTime<Utc>,

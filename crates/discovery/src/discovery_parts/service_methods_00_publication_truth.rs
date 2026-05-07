@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn invalidate_incompatible_recent_publication_truth_if_needed(
+    pub(crate) fn invalidate_incompatible_recent_publication_truth_if_needed(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,
@@ -58,7 +60,7 @@ impl DiscoveryService {
         Ok(true)
     }
 
-    fn runtime_publication_truth_from_state(
+    pub(crate) fn runtime_publication_truth_from_state(
         publication_state: DiscoveryPublicationStateRow,
     ) -> Option<RuntimePublishedUniverseTruth> {
         Some(RuntimePublishedUniverseTruth {
@@ -143,7 +145,7 @@ impl DiscoveryService {
             .map(|truth| truth.active_wallets()))
     }
 
-    fn log_publication_truth_repair_helper_return(
+    pub(crate) fn log_publication_truth_repair_helper_return(
         telemetry: &DiscoveryPublicationTruthRepairTelemetry,
         trace_context: Option<&DiscoveryPublicationTruthRepairTraceContext>,
     ) {

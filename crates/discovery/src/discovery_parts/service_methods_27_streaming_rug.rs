@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn finalize_streaming_rug_metrics_up_to(
+    pub(crate) fn finalize_streaming_rug_metrics_up_to(
         &self,
         by_wallet: &mut HashMap<String, WalletAccumulator>,
         _token: &str,
@@ -48,7 +50,7 @@ impl DiscoveryService {
         }
     }
 
-    fn finalize_all_streaming_rug_metrics(
+    pub(crate) fn finalize_all_streaming_rug_metrics(
         &self,
         by_wallet: &mut HashMap<String, WalletAccumulator>,
         token_recent_sol_trades: &mut HashMap<String, VecDeque<SolLegTrade>>,
@@ -75,7 +77,7 @@ impl DiscoveryService {
         token_pending_buy_starts.clear();
     }
 
-    fn evict_streaming_rug_trade_history(
+    pub(crate) fn evict_streaming_rug_trade_history(
         &self,
         token_recent_sol_trades: &mut HashMap<String, VecDeque<SolLegTrade>>,
         token: &str,
@@ -96,7 +98,7 @@ impl DiscoveryService {
         }
     }
 
-    fn evict_idle_streaming_rug_trade_history(
+    pub(crate) fn evict_idle_streaming_rug_trade_history(
         &self,
         token_recent_sol_trades: &mut HashMap<String, VecDeque<SolLegTrade>>,
         token_pending_buy_starts: &HashMap<String, VecDeque<DateTime<Utc>>>,
@@ -111,7 +113,7 @@ impl DiscoveryService {
         }
     }
 
-    fn compute_streaming_buy_rug_status(
+    pub(crate) fn compute_streaming_buy_rug_status(
         &self,
         recent_trades: &VecDeque<SolLegTrade>,
         buy_ts: DateTime<Utc>,

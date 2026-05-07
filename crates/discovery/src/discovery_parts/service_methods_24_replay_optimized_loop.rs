@@ -1,5 +1,10 @@
+use crate::*;
+use tracing::info;
+
+use super::PersistedStreamReplayOptimizedProgress;
+
 impl DiscoveryService {
-    fn advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
+    pub(crate) fn advance_persisted_stream_replay_optimized_with_wallet_stats_phase_page_limit(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,

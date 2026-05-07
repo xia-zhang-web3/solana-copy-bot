@@ -1,9 +1,11 @@
+use super::*;
+
 impl DiscoveryService {
-    fn publish_pending_snapshots(state: &PersistedStreamRebuildState) -> Vec<WalletSnapshot> {
+    pub(crate) fn publish_pending_snapshots(state: &PersistedStreamRebuildState) -> Vec<WalletSnapshot> {
         state.payload.completed_snapshots.clone()
     }
 
-    fn publish_pending_requested_wallet_ids_from_snapshots(
+    pub(crate) fn publish_pending_requested_wallet_ids_from_snapshots(
         &self,
         snapshots: &[WalletSnapshot],
     ) -> Vec<String> {
@@ -11,7 +13,7 @@ impl DiscoveryService {
         desired_wallets(&ranked, self.config.follow_top_n)
     }
 
-    fn publish_pending_requested_wallet_ids_from_state(
+    pub(crate) fn publish_pending_requested_wallet_ids_from_state(
         &self,
         state: &PersistedStreamRebuildState,
     ) -> Vec<String> {
@@ -26,7 +28,7 @@ impl DiscoveryService {
             })
     }
 
-    fn publish_pending_quality_retry_mints_from_state(
+    pub(crate) fn publish_pending_quality_retry_mints_from_state(
         state: &PersistedStreamRebuildState,
     ) -> Vec<String> {
         state
@@ -36,7 +38,7 @@ impl DiscoveryService {
             .unwrap_or_default()
     }
 
-    fn unresolved_publish_quality_mints(
+    pub(crate) fn unresolved_publish_quality_mints(
         payload: &PersistedStreamRebuildPayload,
         now: DateTime<Utc>,
     ) -> Vec<String> {
@@ -55,7 +57,7 @@ impl DiscoveryService {
             .collect()
     }
 
-    fn token_quality_resolution_requires_publish_pending_retry(
+    pub(crate) fn token_quality_resolution_requires_publish_pending_retry(
         resolution: Option<&quality_cache::TokenQualityResolution>,
     ) -> bool {
         !matches!(
@@ -64,7 +66,7 @@ impl DiscoveryService {
         )
     }
 
-    fn quality_resolution_can_change_publish_set(&self) -> bool {
+    pub(crate) fn quality_resolution_can_change_publish_set(&self) -> bool {
         let quality_sensitive_tradability = self.shadow_quality.quality_gates_enabled
             && (self.shadow_quality.min_token_age_seconds > 0
                 || self.shadow_quality.min_holders > 0
@@ -73,7 +75,7 @@ impl DiscoveryService {
             && (self.config.min_tradable_ratio > 0.0 || self.config.min_score > 0.0)
     }
 
-    fn zero_publish_set_is_likely_quality_blocked(&self, snapshots: &[WalletSnapshot]) -> bool {
+    pub(crate) fn zero_publish_set_is_likely_quality_blocked(&self, snapshots: &[WalletSnapshot]) -> bool {
         snapshots.iter().any(|snapshot| {
             snapshot.buy_total > 0
                 && snapshot.score == 0.0
@@ -83,7 +85,7 @@ impl DiscoveryService {
         })
     }
 
-    fn legacy_publish_pending_quality_retry_backfill_mints(
+    pub(crate) fn legacy_publish_pending_quality_retry_backfill_mints(
         &self,
         state: &PersistedStreamRebuildState,
     ) -> Vec<String> {
@@ -96,7 +98,7 @@ impl DiscoveryService {
         }
     }
 
-    fn replay_completion_publish_quality_retry_mints(
+    pub(crate) fn replay_completion_publish_quality_retry_mints(
         &self,
         store: &SqliteStore,
         by_wallet: &HashMap<String, WalletAccumulator>,

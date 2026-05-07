@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
+    pub(crate) fn compact_wallet_activity_summary_for_frozen_exact_target_checkpoint(
         payload: &mut PersistedStreamRebuildPayload,
     ) {
         for acc in payload.by_wallet.values_mut() {
@@ -7,7 +9,7 @@ impl DiscoveryService {
         }
     }
 
-    fn compact_streaming_token_state_for_frozen_exact_target_checkpoint(
+    pub(crate) fn compact_streaming_token_state_for_frozen_exact_target_checkpoint(
         payload: &mut PersistedStreamRebuildPayload,
     ) {
         for state in payload.token_states.values_mut() {
@@ -21,7 +23,7 @@ impl DiscoveryService {
         });
     }
 
-    fn compact_token_quality_cache_for_frozen_exact_target_checkpoint(
+    pub(crate) fn compact_token_quality_cache_for_frozen_exact_target_checkpoint(
         payload: &mut PersistedStreamRebuildPayload,
         now: DateTime<Utc>,
     ) {
@@ -33,7 +35,7 @@ impl DiscoveryService {
         Self::trim_token_quality_cache_to_reusable_mints(payload, &exact_target_mints, now);
     }
 
-    fn reset_bucket_sensitive_rebuild_state_for_rollover(state: &mut PersistedStreamRebuildState) {
+    pub(crate) fn reset_bucket_sensitive_rebuild_state_for_rollover(state: &mut PersistedStreamRebuildState) {
         state.phase = DiscoveryPersistedRebuildPhase::CollectBuyMints;
         state.phase_cursor = None;
         state.replay_rows_processed = 0;

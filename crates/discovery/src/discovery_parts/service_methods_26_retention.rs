@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn discovery_critical_target_buy_mints_from_accumulators(
+    pub(crate) fn discovery_critical_target_buy_mints_from_accumulators(
         &self,
         store: &SqliteStore,
         by_wallet: &HashMap<String, WalletAccumulator>,
@@ -78,7 +80,7 @@ impl DiscoveryService {
         Ok(target_buy_mints.into_iter().collect())
     }
 
-    fn reconstruct_retention_window_positions_for_wallets(
+    pub(crate) fn reconstruct_retention_window_positions_for_wallets(
         &self,
         store: &SqliteStore,
         wallet_ids: &[String],

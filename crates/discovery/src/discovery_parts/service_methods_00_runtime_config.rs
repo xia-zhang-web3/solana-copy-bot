@@ -1,3 +1,5 @@
+use super::*;
+
 impl DiscoveryService {
     pub fn new(config: DiscoveryConfig, shadow_quality: ShadowConfig) -> Self {
         Self::new_with_helius(config, shadow_quality, None)
@@ -46,7 +48,7 @@ impl DiscoveryService {
         self.config.metric_snapshot_interval_seconds
     }
 
-    fn publication_selection_policy_fingerprint(&self) -> String {
+    pub(crate) fn publication_selection_policy_fingerprint(&self) -> String {
         format!(
             concat!(
                 "follow_top_n={};",

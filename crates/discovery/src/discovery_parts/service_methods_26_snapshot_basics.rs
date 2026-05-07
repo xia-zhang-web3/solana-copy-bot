@@ -1,12 +1,14 @@
+use super::*;
+
 impl DiscoveryService {
-    fn metrics_window_start(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+    pub(crate) fn metrics_window_start(&self, now: DateTime<Utc>) -> DateTime<Utc> {
         let interval_seconds = self.config.metric_snapshot_interval_seconds.max(1) as i64;
         let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
         let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
         bucketed_now - Duration::days(self.config.scoring_window_days.max(1) as i64)
     }
 
-    fn record_live_publish(&self, now: DateTime<Utc>) {
+    pub(crate) fn record_live_publish(&self, now: DateTime<Utc>) {
         let mut state = match self.window_state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -43,7 +45,7 @@ impl DiscoveryService {
         )
     }
 
-    fn wallet_snapshots_from_persisted_metric_rows(
+    pub(crate) fn wallet_snapshots_from_persisted_metric_rows(
         &self,
         now: DateTime<Utc>,
         rows: Vec<PersistedWalletMetricSnapshotRow>,
@@ -54,7 +56,7 @@ impl DiscoveryService {
             .collect()
     }
 
-    fn persist_trusted_selection_state(
+    pub(crate) fn persist_trusted_selection_state(
         &self,
         store: &SqliteStore,
         selection_state: TrustedSelectionState,
@@ -76,7 +78,7 @@ impl DiscoveryService {
         })
     }
 
-    fn persist_trusted_selection_state_from_snapshot(
+    pub(crate) fn persist_trusted_selection_state_from_snapshot(
         &self,
         store: &SqliteStore,
         snapshot_write: &TrustedWalletMetricsSnapshotWrite,
@@ -96,7 +98,7 @@ impl DiscoveryService {
         )
     }
 
-    fn build_wallet_snapshots_from_cached(
+    pub(crate) fn build_wallet_snapshots_from_cached(
         &self,
         store: &SqliteStore,
         swaps: &VecDeque<SwapEvent>,

@@ -1,6 +1,8 @@
+use super::*;
+
 impl DiscoveryService {
     #[cfg(test)]
-    fn snapshot_from_accumulator(
+    pub(crate) fn snapshot_from_accumulator(
         &self,
         wallet_id: String,
         acc: WalletAccumulator,
@@ -16,7 +18,7 @@ impl DiscoveryService {
         )
     }
 
-    fn snapshot_from_accumulator_with_persisted_active_days(
+    pub(crate) fn snapshot_from_accumulator_with_persisted_active_days(
         &self,
         wallet_id: String,
         acc: WalletAccumulator,
@@ -36,7 +38,7 @@ impl DiscoveryService {
         .snapshot
     }
 
-    fn snapshot_outcome_from_accumulator_with_persisted_active_days_internal(
+    pub(crate) fn snapshot_outcome_from_accumulator_with_persisted_active_days_internal(
         &self,
         wallet_id: String,
         acc: WalletAccumulator,
@@ -113,7 +115,7 @@ impl DiscoveryService {
         outcome
     }
 
-    fn snapshot_from_persisted_metrics(
+    pub(crate) fn snapshot_from_persisted_metrics(
         &self,
         row: PersistedWalletMetricSnapshotRow,
         decay_cutoff: DateTime<Utc>,
@@ -136,7 +138,7 @@ impl DiscoveryService {
         }
     }
 
-    fn compute_rug_metrics(
+    pub(crate) fn compute_rug_metrics(
         &self,
         buys: &[BuyObservation],
         token_sol_history: &HashMap<String, Vec<SolLegTrade>>,

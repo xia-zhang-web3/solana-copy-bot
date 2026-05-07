@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn deepen_persisted_stream_priority_recovery_contract_for_state_at(
+    pub(crate) fn deepen_persisted_stream_priority_recovery_contract_for_state_at(
         &self,
         state: &PersistedStreamRebuildState,
         fetch_limit: usize,

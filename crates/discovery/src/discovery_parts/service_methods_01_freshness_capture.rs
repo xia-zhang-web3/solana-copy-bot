@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn maybe_persist_in_band_wallet_freshness_capture(
+    pub(crate) fn maybe_persist_in_band_wallet_freshness_capture(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,
@@ -91,7 +93,7 @@ impl DiscoveryService {
         }
     }
 
-    fn persist_cached_zero_universe_wallet_freshness_capture(
+    pub(crate) fn persist_cached_zero_universe_wallet_freshness_capture(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,
@@ -140,7 +142,7 @@ impl DiscoveryService {
         }
     }
 
-    fn cached_zero_universe_wallet_freshness_capture_write(
+    pub(crate) fn cached_zero_universe_wallet_freshness_capture_write(
         &self,
         now: DateTime<Utc>,
         summary: &DiscoverySummary,

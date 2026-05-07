@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn repair_restored_replay_publish_frozen_target_state_for_resume(
+    pub(crate) fn repair_restored_replay_publish_frozen_target_state_for_resume(
         &self,
         state: &mut PersistedStreamRebuildState,
         now: DateTime<Utc>,
@@ -78,7 +80,7 @@ impl DiscoveryService {
         changed
     }
 
-    fn repair_restored_replay_publish_checkpoint_state_for_resume(
+    pub(crate) fn repair_restored_replay_publish_checkpoint_state_for_resume(
         &self,
         state: &mut PersistedStreamRebuildState,
     ) -> bool {

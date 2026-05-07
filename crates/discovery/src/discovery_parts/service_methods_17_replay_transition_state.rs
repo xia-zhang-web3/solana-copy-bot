@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn transition_persisted_stream_from_wallet_stats_to_sol_leg_with_candidate_activity_backfill(
+    pub(crate) fn transition_persisted_stream_from_wallet_stats_to_sol_leg_with_candidate_activity_backfill(
         state: &mut PersistedStreamRebuildState,
     ) {
         let buffered_wallets = state.payload.by_wallet.len();
@@ -39,7 +41,7 @@ impl DiscoveryService {
         );
     }
 
-    fn prepare_persisted_stream_replay_candidate_activity_backfill(
+    pub(crate) fn prepare_persisted_stream_replay_candidate_activity_backfill(
         state: &mut PersistedStreamRebuildState,
     ) {
         state.phase_cursor = None;
@@ -62,7 +64,7 @@ impl DiscoveryService {
         }
     }
 
-    fn state_can_freeze_exact_target_buy_mint_surface_for_partial_sol_leg_checkpoint(
+    pub(crate) fn state_can_freeze_exact_target_buy_mint_surface_for_partial_sol_leg_checkpoint(
         state: &PersistedStreamRebuildState,
     ) -> bool {
         matches!(state.phase, DiscoveryPersistedRebuildPhase::Replay)
@@ -72,7 +74,7 @@ impl DiscoveryService {
             && !state.payload.discovery_critical_target_buy_mints.is_empty()
     }
 
-    fn state_owns_exact_target_buy_mint_surface_backfill_seam(
+    pub(crate) fn state_owns_exact_target_buy_mint_surface_backfill_seam(
         state: &PersistedStreamRebuildState,
     ) -> bool {
         matches!(state.phase, DiscoveryPersistedRebuildPhase::Replay)
@@ -94,7 +96,7 @@ impl DiscoveryService {
             })
     }
 
-    fn state_can_backfill_exact_target_buy_mint_surface_for_resume(
+    pub(crate) fn state_can_backfill_exact_target_buy_mint_surface_for_resume(
         state: &PersistedStreamRebuildState,
     ) -> bool {
         Self::state_owns_exact_target_buy_mint_surface_backfill_seam(state)
@@ -105,7 +107,7 @@ impl DiscoveryService {
                     .is_empty())
     }
 
-    fn persist_replay_exact_target_buy_mint_surface_budget_exhaustion_state(
+    pub(crate) fn persist_replay_exact_target_buy_mint_surface_budget_exhaustion_state(
         state: &mut PersistedStreamRebuildState,
         diagnostics: &mut ResumeExactTargetBuyMintSurfaceRepairDiagnostics,
         page: &copybot_storage::ObservedWalletActivityPage,

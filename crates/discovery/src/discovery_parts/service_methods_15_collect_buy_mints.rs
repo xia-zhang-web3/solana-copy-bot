@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn maybe_warm_collect_buy_mints_token_quality_prefix(
+    pub(crate) fn maybe_warm_collect_buy_mints_token_quality_prefix(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
@@ -43,7 +45,7 @@ impl DiscoveryService {
         Ok(outcome.processed_mints)
     }
 
-    fn replay_wallet_stats_catch_up_page_limit(
+    pub(crate) fn replay_wallet_stats_catch_up_page_limit(
         fetch_limit: usize,
         fetch_page_limit: usize,
     ) -> usize {
@@ -58,7 +60,7 @@ impl DiscoveryService {
         baseline_page_limit.max(pages_for_fetch_width.max(1))
     }
 
-    fn replay_wallet_stats_repair_phase_page_limit(
+    pub(crate) fn replay_wallet_stats_repair_phase_page_limit(
         &self,
         fetch_limit: usize,
         fetch_page_limit: usize,
@@ -73,7 +75,7 @@ impl DiscoveryService {
             .saturating_mul(budget_multiplier.min(usize::MAX as u128).max(1) as usize)
     }
 
-    fn replay_wallet_stats_wallet_batch_size(fetch_limit: usize) -> usize {
+    pub(crate) fn replay_wallet_stats_wallet_batch_size(fetch_limit: usize) -> usize {
         fetch_limit.max(1).min(REPLAY_WALLET_STATS_WALLET_BATCH_CAP)
     }
 }

@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn repair_replay_sol_leg_budget_hints_for_resume(
+    pub(crate) fn repair_replay_sol_leg_budget_hints_for_resume(
         &self,
         state: &mut PersistedStreamRebuildState,
     ) -> bool {

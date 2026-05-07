@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn advance_persisted_stream_replay_legacy(
+    pub(crate) fn advance_persisted_stream_replay_legacy(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
@@ -147,7 +149,7 @@ impl DiscoveryService {
     }
 
     #[cfg(test)]
-    fn advance_persisted_stream_replay_optimized(
+    pub(crate) fn advance_persisted_stream_replay_optimized(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,

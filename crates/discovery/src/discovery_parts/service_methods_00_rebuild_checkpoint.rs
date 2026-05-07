@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn persisted_stream_publishable_checkpoint_blocker_for_phase(
+    pub(crate) fn persisted_stream_publishable_checkpoint_blocker_for_phase(
         phase: DiscoveryPersistedRebuildPhase,
         collect_buy_mints_mode: CollectBuyMintsMode,
         quality_next_mint_index: usize,
@@ -40,7 +42,7 @@ impl DiscoveryService {
         }
     }
 
-    fn persisted_stream_publishable_checkpoint_blocker_from_state(
+    pub(crate) fn persisted_stream_publishable_checkpoint_blocker_from_state(
         state: &PersistedStreamRebuildState,
     ) -> &'static str {
         if state.phase == DiscoveryPersistedRebuildPhase::PublishPending
@@ -75,7 +77,7 @@ impl DiscoveryService {
         )
     }
 
-    fn persisted_stream_publishable_checkpoint_blocker(
+    pub(crate) fn persisted_stream_publishable_checkpoint_blocker(
         telemetry: &PersistedStreamProgressTelemetry,
     ) -> &'static str {
         Self::persisted_stream_publishable_checkpoint_blocker_for_phase(
@@ -88,7 +90,7 @@ impl DiscoveryService {
         )
     }
 
-    fn replay_subphase(
+    pub(crate) fn replay_subphase(
         phase: DiscoveryPersistedRebuildPhase,
         replay_wallet_stats_complete: bool,
         replay_candidate_activity_backfill_pending: bool,
@@ -105,7 +107,7 @@ impl DiscoveryService {
         })
     }
 
-    fn state_can_carry_forward_replay_sol_leg_reentry(
+    pub(crate) fn state_can_carry_forward_replay_sol_leg_reentry(
         &self,
         state: &PersistedStreamRebuildState,
     ) -> bool {
@@ -115,7 +117,7 @@ impl DiscoveryService {
         Self::state_has_replay_wallet_stats_milestone(state)
     }
 
-    fn state_has_replay_wallet_stats_milestone(state: &PersistedStreamRebuildState) -> bool {
+    pub(crate) fn state_has_replay_wallet_stats_milestone(state: &PersistedStreamRebuildState) -> bool {
         state.payload.replay_wallet_stats_milestone_reached
             || match state.phase {
                 DiscoveryPersistedRebuildPhase::Replay => {

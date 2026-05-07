@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn repair_restored_persisted_stream_state_for_resume(
+    pub(crate) fn repair_restored_persisted_stream_state_for_resume(
         &self,
         state: &mut PersistedStreamRebuildState,
         now: DateTime<Utc>,
@@ -38,7 +40,7 @@ impl DiscoveryService {
         changed
     }
 
-    fn derive_legacy_collect_buy_mints_safe_prefix_len(
+    pub(crate) fn derive_legacy_collect_buy_mints_safe_prefix_len(
         &self,
         store: &SqliteStore,
         state: &PersistedStreamRebuildState,
@@ -77,7 +79,7 @@ impl DiscoveryService {
         Ok((safe_prefix_len, false))
     }
 
-    fn load_or_start_persisted_stream_rebuild_state(
+    pub(crate) fn load_or_start_persisted_stream_rebuild_state(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,

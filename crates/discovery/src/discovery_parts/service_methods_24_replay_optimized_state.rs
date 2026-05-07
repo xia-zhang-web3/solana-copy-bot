@@ -1,18 +1,21 @@
+use crate::*;
+
 #[derive(Default)]
-struct PersistedStreamReplayOptimizedProgress {
-    replay_rows_processed: usize,
-    replay_pages_processed: usize,
-    replay_wallet_stats_rows_processed: usize,
-    replay_wallet_stats_pages_processed: usize,
-    replay_sol_leg_rows_processed: usize,
-    replay_sol_leg_pages_processed: usize,
-    replay_sol_leg_elapsed_ms: u64,
-    replay_wallet_stats_day_count_source_progress: ReplayWalletStatsDayCountSourceProgress,
-    replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
+pub(super) struct PersistedStreamReplayOptimizedProgress {
+    pub(super) replay_rows_processed: usize,
+    pub(super) replay_pages_processed: usize,
+    pub(super) replay_wallet_stats_rows_processed: usize,
+    pub(super) replay_wallet_stats_pages_processed: usize,
+    pub(super) replay_sol_leg_rows_processed: usize,
+    pub(super) replay_sol_leg_pages_processed: usize,
+    pub(super) replay_sol_leg_elapsed_ms: u64,
+    pub(super) replay_wallet_stats_day_count_source_progress:
+        ReplayWalletStatsDayCountSourceProgress,
+    pub(super) replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
 }
 
 impl PersistedStreamReplayOptimizedProgress {
-    fn phase_advance(
+    pub(super) fn phase_advance(
         &self,
         source_exhausted: bool,
         phase_cursor: Option<DiscoveryRuntimeCursor>,

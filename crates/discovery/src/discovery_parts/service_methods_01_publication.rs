@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn persist_publication_state(
+    pub(crate) fn persist_publication_state(
         &self,
         store: &SqliteStore,
         runtime_mode: DiscoveryRuntimeMode,
@@ -162,11 +164,11 @@ impl DiscoveryService {
         Ok(outcome)
     }
 
-    fn in_band_wallet_freshness_shadow_evidence_lookback_seconds(&self) -> u64 {
+    pub(crate) fn in_band_wallet_freshness_shadow_evidence_lookback_seconds(&self) -> u64 {
         self.config.refresh_seconds.max(1).saturating_mul(2)
     }
 
-    fn cached_cycle_exact_published_wallet_ids<'a>(
+    pub(crate) fn cached_cycle_exact_published_wallet_ids<'a>(
         runtime_mode: DiscoveryRuntimeMode,
         current_raw: Option<&'a CachedCurrentRawTruthSample>,
     ) -> Option<&'a [String]> {

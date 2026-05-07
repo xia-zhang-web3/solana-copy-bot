@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options(
+    pub(crate) fn repair_runtime_store_publication_truth_from_recent_raw_journal_if_needed_with_options(
         &self,
         runtime_store: &SqliteStore,
         journal_store: Option<&SqliteStore>,

@@ -1,2 +1,4 @@
-include!("service_methods_03_publication_truth_repair.rs");
-include!("service_methods_03_publication_truth_budget.rs");
+#[path = "service_methods_03_publication_truth_repair.rs"]
+mod service_methods_03_publication_truth_repair;
+#[path = "service_methods_03_publication_truth_budget.rs"]
+mod service_methods_03_publication_truth_budget;

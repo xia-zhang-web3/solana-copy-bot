@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn advance_persisted_stream_token_quality(
+    pub(crate) fn advance_persisted_stream_token_quality(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,
@@ -97,7 +99,7 @@ impl DiscoveryService {
         })
     }
 
-    fn advance_persisted_stream_replay_wallet_stats(
+    pub(crate) fn advance_persisted_stream_replay_wallet_stats(
         &self,
         store: &SqliteStore,
         state: &mut PersistedStreamRebuildState,

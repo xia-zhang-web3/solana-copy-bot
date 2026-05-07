@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn build_wallet_snapshots_from_persisted_stream_one_shot(
+    pub(crate) fn build_wallet_snapshots_from_persisted_stream_one_shot(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,
@@ -13,7 +15,7 @@ impl DiscoveryService {
         Ok((state.snapshots, state.observed_swaps_loaded))
     }
 
-    fn build_wallet_snapshots_from_persisted_stream_one_shot_state(
+    pub(crate) fn build_wallet_snapshots_from_persisted_stream_one_shot_state(
         &self,
         store: &SqliteStore,
         window_start: DateTime<Utc>,
