@@ -1,4 +1,6 @@
-fn list_archive_snapshot_paths(snapshot_dir: &Path) -> Result<Vec<PathBuf>> {
+use super::*;
+
+pub(super) fn list_archive_snapshot_paths(snapshot_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut archives = Vec::new();
     if !snapshot_dir.exists() {
         return Ok(archives);
@@ -24,7 +26,7 @@ fn list_archive_snapshot_paths(snapshot_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(archives)
 }
 
-fn remove_orphan_archive_sidecars(snapshot_dir: &Path) -> Result<Vec<PathBuf>> {
+pub(super) fn remove_orphan_archive_sidecars(snapshot_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut removed_paths = Vec::new();
     if !snapshot_dir.exists() {
         return Ok(removed_paths);
@@ -65,7 +67,7 @@ fn remove_orphan_archive_sidecars(snapshot_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(removed_paths)
 }
 
-fn cleanup_stale_staged_snapshot_artifacts(
+pub(super) fn cleanup_stale_staged_snapshot_artifacts(
     snapshot_dir: &Path,
     preserve_paths: &[PathBuf],
 ) -> Result<Vec<PathBuf>> {
@@ -102,7 +104,7 @@ fn cleanup_stale_staged_snapshot_artifacts(
     Ok(removed_paths)
 }
 
-fn enforce_snapshot_archive_retention(
+pub(super) fn enforce_snapshot_archive_retention(
     snapshot_dir: &Path,
     keep: usize,
     preserve_paths: &[PathBuf],
