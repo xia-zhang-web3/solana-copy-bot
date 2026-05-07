@@ -1,3 +1,9 @@
+use super::canonicalize_wallet_ids;
+use crate::{
+    DiscoveryPublicationStateRow, DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode,
+};
+use chrono::{DateTime, Utc};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DiscoveryPublicationStateWriteDiagnostics {
     pub write_kind: &'static str,
@@ -14,7 +20,7 @@ pub(crate) struct DiscoveryPublicationStateWriteDiagnostics {
     pub updated_at: DateTime<Utc>,
 }
 
-fn snapshot_discovery_publication_state_write_diagnostics(
+pub(crate) fn snapshot_discovery_publication_state_write_diagnostics(
     previous: Option<&DiscoveryPublicationStateRow>,
     new_state: &DiscoveryPublicationStateRow,
     update: &DiscoveryPublicationStateUpdate,

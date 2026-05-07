@@ -1,13 +1,14 @@
 use super::{
-    DiscoveryBootstrapDegradedStateRow, DiscoveryPublicationFreshnessGate,
-    DiscoveryPublicationStateRow, DiscoveryPublicationStateUpdate,
-    DiscoveryRecentRawRestoreStateRow, DiscoveryRecentRawRestoreStateUpdate,
-    DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
+    DiscoveryBootstrapDegradedStateRow, DiscoveryPublicationStateRow,
+    DiscoveryPublicationStateUpdate, DiscoveryRecentRawRestoreStateRow,
+    DiscoveryRecentRawRestoreStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryWalletFreshnessCaptureRow, DiscoveryWalletFreshnessCaptureWrite, SqliteStore,
     StartupTrustedSelectionGateStatus, TrustedSelectionState,
-    DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
 };
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::{params, OptionalExtension};
+use tracing::info;
 
 include!("discovery/01_helpers.rs");
 include!("discovery/02_runtime_restore_helpers.rs");

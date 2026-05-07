@@ -1,4 +1,8 @@
-fn read_discovery_wallet_freshness_capture_row(
+use super::{parse_rfc3339_utc, parse_wallet_ids_json};
+use crate::DiscoveryWalletFreshnessCaptureRow;
+use std::io::{Error as IoError, ErrorKind as IoErrorKind};
+
+pub(crate) fn read_discovery_wallet_freshness_capture_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<DiscoveryWalletFreshnessCaptureRow> {
     let capture_id: i64 = row.get(0)?;

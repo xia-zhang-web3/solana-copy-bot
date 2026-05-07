@@ -1,3 +1,6 @@
+use crate::{DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow};
+use chrono::{DateTime, Utc};
+
 fn format_optional_export_ts(value: Option<DateTime<Utc>>) -> String {
     value
         .map(|ts| ts.to_rfc3339())
@@ -24,7 +27,7 @@ fn incomplete_publication_truth_fields(
     missing_fields
 }
 
-fn runtime_artifact_export_truth_detail(
+pub(crate) fn runtime_artifact_export_truth_detail(
     publication_state: &DiscoveryPublicationStateRow,
     gate: &DiscoveryPublicationFreshnessGate,
     now: DateTime<Utc>,

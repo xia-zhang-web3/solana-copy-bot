@@ -1,4 +1,12 @@
-fn validate_runtime_artifact_snapshot_shape(artifact: &DiscoveryRuntimeArtifact) -> Result<()> {
+use crate::{
+    DiscoveryRuntimeArtifact, DiscoveryRuntimeMode, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
+};
+use anyhow::Result;
+use std::collections::HashSet;
+
+pub(crate) fn validate_runtime_artifact_snapshot_shape(
+    artifact: &DiscoveryRuntimeArtifact,
+) -> Result<()> {
     if artifact.format_version != DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION {
         return Err(anyhow::anyhow!(
             "unsupported discovery runtime artifact format_version={} expected={}",
