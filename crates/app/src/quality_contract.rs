@@ -1,4 +1,9 @@
-fn select_role_helius_http_url(role_specific: &str, fallback: &str) -> Option<String> {
+use anyhow::{anyhow, Result};
+use copybot_config::ShadowConfig;
+
+use crate::config_contract::contains_placeholder_value;
+
+pub(crate) fn select_role_helius_http_url(role_specific: &str, fallback: &str) -> Option<String> {
     let role_specific = role_specific.trim();
     if !role_specific.is_empty() && !contains_placeholder_value(role_specific) {
         return Some(role_specific.to_string());
@@ -12,7 +17,7 @@ fn select_role_helius_http_url(role_specific: &str, fallback: &str) -> Option<St
     None
 }
 
-fn enforce_quality_gate_http_url(
+pub(crate) fn enforce_quality_gate_http_url(
     role: &str,
     env: &str,
     quality_gates_enabled: bool,
@@ -31,7 +36,10 @@ fn enforce_quality_gate_http_url(
     Ok(endpoint)
 }
 
-fn validate_shadow_quality_gate_contract(config: &ShadowConfig, env: &str) -> Result<()> {
+pub(crate) fn validate_shadow_quality_gate_contract(
+    config: &ShadowConfig,
+    env: &str,
+) -> Result<()> {
     if !config.quality_gates_enabled {
         return Ok(());
     }

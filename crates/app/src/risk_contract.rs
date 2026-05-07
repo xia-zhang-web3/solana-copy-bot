@@ -1,4 +1,7 @@
-fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
+use anyhow::{anyhow, Result};
+use copybot_config::RiskConfig;
+
+pub(crate) fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()> {
     if !config.max_position_sol.is_finite() || config.max_position_sol <= 0.0 {
         return Err(anyhow!(
             "risk.max_position_sol must be finite and > 0, got {}",

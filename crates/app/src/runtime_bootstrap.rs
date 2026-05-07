@@ -1,4 +1,12 @@
-fn validate_live_execution_policy_contract(
+use anyhow::{anyhow, Result};
+use copybot_config::{ExecutionConfig, RiskConfig};
+use std::env;
+use std::path::{Path, PathBuf};
+use tracing_subscriber::EnvFilter;
+
+use crate::constants::{APP_LOG_FILTER_ENV, LEGACY_RUST_LOG_ENV};
+
+pub(crate) fn validate_live_execution_policy_contract(
     execution: &ExecutionConfig,
     risk: &RiskConfig,
     env: &str,
@@ -13,7 +21,10 @@ fn validate_live_execution_policy_contract(
     ))
 }
 
-fn resolve_migrations_dir(config_path: &Path, configured_migrations_dir: &str) -> PathBuf {
+pub(crate) fn resolve_migrations_dir(
+    config_path: &Path,
+    configured_migrations_dir: &str,
+) -> PathBuf {
     let configured = PathBuf::from(configured_migrations_dir);
     if configured.is_absolute() || configured.exists() {
         return configured;
@@ -36,7 +47,7 @@ fn resolve_migrations_dir(config_path: &Path, configured_migrations_dir: &str) -
     configured
 }
 
-fn init_tracing(log_level: &str, json: bool) -> Result<()> {
+pub(crate) fn init_tracing(log_level: &str, json: bool) -> Result<()> {
     if env::var_os(LEGACY_RUST_LOG_ENV).is_some() && env::var_os(APP_LOG_FILTER_ENV).is_none() {
         eprintln!(
             "ignoring RUST_LOG for copybot-app; use {APP_LOG_FILTER_ENV} or system.log_level instead"
@@ -60,7 +71,7 @@ fn init_tracing(log_level: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn parse_app_log_env_filter(default_log_level: &str) -> Result<EnvFilter> {
+pub(crate) fn parse_app_log_env_filter(default_log_level: &str) -> Result<EnvFilter> {
     let raw = match env::var(APP_LOG_FILTER_ENV) {
         Ok(value) => value,
         Err(env::VarError::NotPresent) => return Ok(EnvFilter::new(default_log_level)),

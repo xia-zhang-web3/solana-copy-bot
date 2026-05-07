@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_config::{load_from_env_or_default, ExecutionConfig, RiskConfig, ShadowConfig};
+use copybot_config::{load_from_env_or_default, RiskConfig};
+#[cfg(test)]
+use copybot_config::{ExecutionConfig, ShadowConfig};
 #[cfg(test)]
 use copybot_core_types::TokenQuantity;
 use copybot_core_types::{Lamports, SignedLamports, SwapEvent};
@@ -32,7 +34,6 @@ use std::time::Instant as StdInstant;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::{debug, info, warn};
-use tracing_subscriber::EnvFilter;
 
 fn sqlite_contention_snapshot() -> SqliteContentionSnapshot {
     let core = core_sqlite_contention_snapshot();
@@ -78,7 +79,7 @@ use crate::app_loop_shadow::{
     prepare_shadow_scheduler_before_select,
 };
 use crate::app_loop_shutdown::shutdown_app_loop_tasks;
-use crate::config_contract::{contains_placeholder_value, validate_execution_runtime_contract};
+use crate::config_contract::validate_execution_runtime_contract;
 use crate::discovery_runtime::{DiscoveryService, RuntimePublicationTruthResolution};
 use crate::history_retention::HistoryRetentionRunner;
 #[cfg(test)]
@@ -114,7 +115,6 @@ include!("app_parts/00_sqlite_maintenance.rs");
 include!("app_parts/01.rs");
 include!("app_parts/01_irrelevant_backpressure.rs");
 include!("app_parts/02.rs");
-include!("app_parts/03.rs");
 include!("app_parts/04.rs");
 include!("app_parts/05.rs");
 include!("app_parts/06.rs");
@@ -127,6 +127,10 @@ mod cli_and_ingestion_override;
 mod constants;
 mod lamports;
 mod operator_emergency;
+mod quality_contract;
+mod risk_contract;
+mod risk_types;
+mod runtime_bootstrap;
 use crate::app_consumer_telemetry::AppConsumerLoopTelemetry;
 #[cfg(test)]
 use crate::app_consumer_telemetry::AppConsumerLoopTelemetrySnapshot;
@@ -144,6 +148,19 @@ use crate::lamports::{
 #[cfg(test)]
 use crate::operator_emergency::parse_operator_emergency_stop_reason;
 use crate::operator_emergency::OperatorEmergencyStop;
+use crate::quality_contract::{
+    enforce_quality_gate_http_url, select_role_helius_http_url,
+    validate_shadow_quality_gate_contract,
+};
+use crate::risk_contract::validate_execution_risk_contract;
+use crate::risk_types::{
+    BuyRiskBlockReason, BuyRiskDecision, InfraBlockKey, InfraBlockSignal, ShadowRiskGuard,
+};
+#[cfg(test)]
+use crate::runtime_bootstrap::parse_app_log_env_filter;
+use crate::runtime_bootstrap::{
+    init_tracing, resolve_migrations_dir, validate_live_execution_policy_contract,
+};
 
 #[cfg(test)]
 mod app_tests;
