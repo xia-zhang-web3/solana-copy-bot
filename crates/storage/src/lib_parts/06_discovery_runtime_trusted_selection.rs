@@ -1,3 +1,5 @@
+use super::*;
+
 #[derive(Debug, Clone)]
 pub struct StartupTrustedSelectionGateStatus {
     pub bootstrap_required: bool,

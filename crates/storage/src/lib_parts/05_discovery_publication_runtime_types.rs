@@ -1,3 +1,5 @@
+use super::*;
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FollowlistUpdateResult {
     pub activated: usize,

@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn wal_autocheckpoint_pages(&self) -> Result<i64> {
         self.conn

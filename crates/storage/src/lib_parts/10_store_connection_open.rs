@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {

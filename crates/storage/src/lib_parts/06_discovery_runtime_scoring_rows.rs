@@ -1,3 +1,5 @@
+use super::*;
+
 #[derive(Debug, Clone, Default)]
 pub struct DiscoveryAggregateWriteConfig {
     pub max_tx_per_minute: u32,

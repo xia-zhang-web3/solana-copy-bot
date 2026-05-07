@@ -1,3 +1,5 @@
+use super::*;
+
 pub use copybot_storage_core::{
     DiscoveryPublicationFreshnessGate, PersistedWalletMetricSnapshotRow,
 };

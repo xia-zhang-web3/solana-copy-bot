@@ -1,3 +1,5 @@
+use super::*;
+
 pub fn sqlite_contention_snapshot() -> SqliteContentionSnapshot {
     SqliteContentionSnapshot {
         write_retry_total: SQLITE_WRITE_RETRY_TOTAL.load(Ordering::Relaxed),
@@ -5,7 +7,7 @@ pub fn sqlite_contention_snapshot() -> SqliteContentionSnapshot {
     }
 }
 
-fn startup_step_elapsed_ms(elapsed: StdDuration) -> u64 {
+pub(super) fn startup_step_elapsed_ms(elapsed: StdDuration) -> u64 {
     elapsed.as_millis().min(u64::MAX as u128) as u64
 }
 

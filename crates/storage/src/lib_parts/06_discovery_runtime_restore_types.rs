@@ -1,3 +1,5 @@
+use super::*;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiscoveryBootstrapDegradedStateRow {
     pub active: bool,

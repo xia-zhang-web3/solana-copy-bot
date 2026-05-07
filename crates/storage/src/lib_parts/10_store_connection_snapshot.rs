@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn snapshot_into_path(&self, destination_path: &Path) -> Result<()> {
         match self

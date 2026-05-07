@@ -1,3 +1,5 @@
+use super::*;
+
 #[derive(Debug, Clone)]
 pub struct TrustedWalletMetricsSnapshotWrite {
     pub snapshot_id: String,

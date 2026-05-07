@@ -1,4 +1,6 @@
-fn checkpoint_large_startup_wal_if_needed(
+use super::*;
+
+pub(super) fn checkpoint_large_startup_wal_if_needed(
     path: &Path,
     conn: Connection,
     policy: StartupStepRuntimePolicy,
