@@ -59,7 +59,10 @@ mod app_loop_shutdown;
 mod config_contract;
 mod discovery_runtime;
 mod history_retention;
+mod json_sanitize;
 mod observed_swap_writer;
+mod runtime_follow_surface;
+mod shadow_risk;
 mod shadow_runtime_helpers;
 mod shadow_scheduler;
 mod stale_close;
@@ -82,6 +85,7 @@ use crate::app_loop_shutdown::shutdown_app_loop_tasks;
 use crate::config_contract::validate_execution_runtime_contract;
 use crate::discovery_runtime::{DiscoveryService, RuntimePublicationTruthResolution};
 use crate::history_retention::HistoryRetentionRunner;
+use crate::json_sanitize::sanitize_json_value;
 #[cfg(test)]
 use crate::observed_swap_writer::OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY;
 use crate::observed_swap_writer::{
@@ -115,10 +119,6 @@ include!("app_parts/00_sqlite_maintenance.rs");
 include!("app_parts/01.rs");
 include!("app_parts/01_irrelevant_backpressure.rs");
 include!("app_parts/02.rs");
-include!("app_parts/04.rs");
-include!("app_parts/05.rs");
-include!("app_parts/06.rs");
-include!("app_parts/06_shadow_risk_infra.rs");
 
 mod app_consumer_telemetry;
 mod app_loop;
@@ -160,6 +160,11 @@ use crate::risk_types::{
 use crate::runtime_bootstrap::parse_app_log_env_filter;
 use crate::runtime_bootstrap::{
     init_tracing, resolve_migrations_dir, validate_live_execution_policy_contract,
+};
+#[cfg(test)]
+use crate::runtime_follow_surface::follow_event_retention_duration;
+use crate::runtime_follow_surface::{
+    startup_follow_snapshot_from_publication_truth, startup_runtime_publication_truth,
 };
 
 #[cfg(test)]

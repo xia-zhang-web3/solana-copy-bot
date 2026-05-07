@@ -1,11 +1,13 @@
+use super::*;
+
 impl ShadowRiskGuard {
     #[cfg(test)]
-    fn compute_infra_block_reason(&self, now: DateTime<Utc>) -> Option<String> {
+    pub(crate) fn compute_infra_block_reason(&self, now: DateTime<Utc>) -> Option<String> {
         self.compute_infra_block_signal(now)
             .map(|signal| signal.reason)
     }
 
-    fn yellowstone_output_queue_reason_context(
+    pub(crate) fn yellowstone_output_queue_reason_context(
         &self,
         snapshot: &IngestionRuntimeSnapshot,
     ) -> Option<String> {
@@ -21,7 +23,7 @@ impl ShadowRiskGuard {
         ))
     }
 
-    fn enrich_infra_reason_with_yellowstone_queue_context(
+    pub(crate) fn enrich_infra_reason_with_yellowstone_queue_context(
         &self,
         snapshot: &IngestionRuntimeSnapshot,
         reason: String,
@@ -32,7 +34,7 @@ impl ShadowRiskGuard {
         }
     }
 
-    fn build_infra_stop_details_json(&self, reason: &str) -> String {
+    pub(crate) fn build_infra_stop_details_json(&self, reason: &str) -> String {
         let mut details = serde_json::Map::new();
         details.insert(
             "reason".to_string(),

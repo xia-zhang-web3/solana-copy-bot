@@ -1,5 +1,7 @@
+use super::*;
+
 impl ShadowRiskGuard {
-    fn can_open_buy(
+    pub(crate) fn can_open_buy(
         &mut self,
         store: &SqliteStore,
         now: DateTime<Utc>,
@@ -127,7 +129,7 @@ impl ShadowRiskGuard {
         BuyRiskDecision::Allow
     }
 
-    fn on_risk_refresh_error(&mut self, now: DateTime<Utc>) -> bool {
+    pub(crate) fn on_risk_refresh_error(&mut self, now: DateTime<Utc>) -> bool {
         self.hard_stop_clear_healthy_streak = 0;
         let should_log = self
             .last_fail_closed_log_at

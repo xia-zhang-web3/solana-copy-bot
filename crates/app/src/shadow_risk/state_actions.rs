@@ -1,5 +1,7 @@
+use super::*;
+
 impl ShadowRiskGuard {
-    fn activate_hard_stop(
+    pub(crate) fn activate_hard_stop(
         &mut self,
         store: &SqliteStore,
         now: DateTime<Utc>,
@@ -28,7 +30,11 @@ impl ShadowRiskGuard {
         )
     }
 
-    fn clear_hard_stop(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+    pub(crate) fn clear_hard_stop(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
         let Some(previous_reason) = self.hard_stop_reason.clone() else {
             return Ok(());
         };
@@ -53,7 +59,7 @@ impl ShadowRiskGuard {
         Ok(())
     }
 
-    fn activate_pause(
+    pub(crate) fn activate_pause(
         &mut self,
         store: &SqliteStore,
         now: DateTime<Utc>,
@@ -91,7 +97,7 @@ impl ShadowRiskGuard {
         )
     }
 
-    fn activate_soft_exposure_pause(
+    pub(crate) fn activate_soft_exposure_pause(
         &mut self,
         store: &SqliteStore,
         now: DateTime<Utc>,
@@ -133,7 +139,7 @@ impl ShadowRiskGuard {
         )
     }
 
-    fn clear_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+    pub(crate) fn clear_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
         let Some(previous_until) = self.pause_until else {
             self.pause_reason = None;
             return Ok(());
@@ -171,7 +177,11 @@ impl ShadowRiskGuard {
         Ok(())
     }
 
-    fn clear_soft_exposure_pause(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+    pub(crate) fn clear_soft_exposure_pause(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
         let Some(previous_until) = self.soft_exposure_pause_until else {
             self.soft_exposure_pause_latched = false;
             self.soft_exposure_pause_reason = None;
@@ -207,7 +217,7 @@ impl ShadowRiskGuard {
         Ok(())
     }
 
-    fn should_emit_infra_event(&mut self, now: DateTime<Utc>) -> bool {
+    pub(crate) fn should_emit_infra_event(&mut self, now: DateTime<Utc>) -> bool {
         let allow = self
             .infra_last_event_at
             .map(|last| {

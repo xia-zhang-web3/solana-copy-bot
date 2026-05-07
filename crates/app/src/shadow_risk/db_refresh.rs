@@ -1,5 +1,11 @@
+use super::*;
+
 impl ShadowRiskGuard {
-    fn maybe_refresh_db_state(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+    pub(crate) fn maybe_refresh_db_state(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
         if !self.config.shadow_killswitch_enabled {
             self.last_db_refresh_error = None;
             return Ok(());

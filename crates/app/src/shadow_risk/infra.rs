@@ -1,5 +1,10 @@
+use super::*;
+
 impl ShadowRiskGuard {
-    fn compute_infra_block_signal(&self, now: DateTime<Utc>) -> Option<InfraBlockSignal> {
+    pub(crate) fn compute_infra_block_signal(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Option<InfraBlockSignal> {
         if self.infra_samples.is_empty() {
             return None;
         }
@@ -150,7 +155,7 @@ impl ShadowRiskGuard {
         None
     }
 
-    fn uses_yellowstone_ingestion(&self) -> bool {
+    pub(crate) fn uses_yellowstone_ingestion(&self) -> bool {
         self.ingestion_source == "yellowstone_grpc"
     }
 }

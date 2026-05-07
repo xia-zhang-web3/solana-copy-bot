@@ -1,5 +1,7 @@
+use super::*;
+
 impl ShadowRiskGuard {
-    fn observe_ingestion_snapshot(
+    pub(crate) fn observe_ingestion_snapshot(
         &mut self,
         store: &SqliteStore,
         now: DateTime<Utc>,
@@ -118,5 +120,4 @@ impl ShadowRiskGuard {
         }
         Ok(())
     }
-
 }

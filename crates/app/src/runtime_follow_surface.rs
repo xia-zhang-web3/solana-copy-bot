@@ -1,10 +1,7 @@
-fn sanitize_json_value(value: &str) -> String {
-    let json_string = serde_json::Value::String(value.to_string()).to_string();
-    json_string[1..json_string.len().saturating_sub(1)].to_string()
-}
+use crate::*;
 
 #[cfg(test)]
-fn follow_event_retention_duration(
+pub(crate) fn follow_event_retention_duration(
     shadow_max_signal_lag_seconds: u64,
     discovery_refresh_seconds: u64,
 ) -> Duration {
@@ -15,7 +12,7 @@ fn follow_event_retention_duration(
     )
 }
 
-fn startup_follow_snapshot_from_publication_truth(
+pub(crate) fn startup_follow_snapshot_from_publication_truth(
     initial_active_wallets: HashSet<String>,
     runtime_publication_truth: Option<&RuntimePublicationTruthResolution>,
 ) -> (FollowSnapshot, usize, bool) {
@@ -45,7 +42,7 @@ fn startup_follow_snapshot_from_publication_truth(
     }
 }
 
-fn startup_runtime_publication_truth(
+pub(crate) fn startup_runtime_publication_truth(
     discovery: &DiscoveryService,
     sqlite_path: &str,
     now: DateTime<Utc>,

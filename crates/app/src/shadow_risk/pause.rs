@@ -1,10 +1,15 @@
+use super::*;
+
 impl ShadowRiskGuard {
     #[cfg(test)]
-    fn new(config: RiskConfig) -> Self {
+    pub(crate) fn new(config: RiskConfig) -> Self {
         Self::new_with_ingestion_source(config, "mock")
     }
 
-    fn new_with_ingestion_source(config: RiskConfig, ingestion_source: impl Into<String>) -> Self {
+    pub(crate) fn new_with_ingestion_source(
+        config: RiskConfig,
+        ingestion_source: impl Into<String>,
+    ) -> Self {
         Self {
             config,
             ingestion_source: ingestion_source.into(),
@@ -12,7 +17,11 @@ impl ShadowRiskGuard {
         }
     }
 
-    fn restore_pause_from_store(&mut self, store: &SqliteStore, now: DateTime<Utc>) -> Result<()> {
+    pub(crate) fn restore_pause_from_store(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
         if !self.config.shadow_killswitch_enabled {
             return Ok(());
         }
@@ -133,29 +142,32 @@ impl ShadowRiskGuard {
         Ok(())
     }
 
-    fn shadow_soft_exposure_cap_lamports(&self) -> Result<Lamports> {
+    pub(crate) fn shadow_soft_exposure_cap_lamports(&self) -> Result<Lamports> {
         sol_to_lamports_floor(
             self.config.shadow_soft_exposure_cap_sol,
             "risk.shadow_soft_exposure_cap_sol",
         )
     }
 
-    fn shadow_soft_exposure_resume_below_lamports(&self) -> Result<Lamports> {
+    pub(crate) fn shadow_soft_exposure_resume_below_lamports(&self) -> Result<Lamports> {
         sol_to_lamports_floor(
             self.config.shadow_soft_exposure_resume_below_sol,
             "risk.shadow_soft_exposure_resume_below_sol",
         )
     }
 
-    fn shadow_hard_exposure_cap_lamports(&self) -> Result<Lamports> {
+    pub(crate) fn shadow_hard_exposure_cap_lamports(&self) -> Result<Lamports> {
         sol_to_lamports_floor(
             self.config.shadow_hard_exposure_cap_sol,
             "risk.shadow_hard_exposure_cap_sol",
         )
     }
 
-    fn shadow_drawdown_stop_lamports(&self, stop_sol: f64, label: &str) -> Result<SignedLamports> {
+    pub(crate) fn shadow_drawdown_stop_lamports(
+        &self,
+        stop_sol: f64,
+        label: &str,
+    ) -> Result<SignedLamports> {
         sol_to_signed_lamports_conservative(stop_sol, label)
     }
-
 }
