@@ -20,17 +20,4 @@ include!("lib_parts/01_types.rs");
 include!("lib_parts/02_service.rs");
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use anyhow::Context;
-    use chrono::Duration;
-    use copybot_core_types::SwapEvent;
-    use copybot_core_types::{ExactSwapAmounts, TokenQuantity};
-    use copybot_storage::SqliteStore;
-    use std::path::Path;
-    use tempfile::tempdir;
-
-    include!("tests_parts/01_process.rs");
-    include!("tests_parts/02_exact_and_gates.rs");
-    include!("tests_parts/03_outcome_ext.rs");
-}
+mod tests;
