@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn load_recent_raw_source_observed_swaps_bounded_probe_read_only(
+    pub(super) fn load_recent_raw_source_observed_swaps_bounded_probe_read_only(
         runtime_db_path: &Path,
     ) -> RecentRawObservedSwapsBoundedProbeRead {
         let conn =
@@ -128,7 +130,7 @@ impl DiscoveryService {
         }
     }
 
-    fn recent_raw_source_state_matches_observed_swaps_bounded_probe(
+    pub(super) fn recent_raw_source_state_matches_observed_swaps_bounded_probe(
         source_state: &RecentRawJournalStateRow,
         source_bounded_probe: &RecentRawObservedSwapsBoundedProbeRead,
     ) -> bool {
