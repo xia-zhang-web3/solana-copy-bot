@@ -1,3 +1,16 @@
+use super::{
+    parse_rfc3339_utc, runtime_artifact_export_truth_detail,
+    validate_runtime_artifact_snapshot_shape,
+};
+use crate::{
+    DiscoveryPublicationFreshnessGate, DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor,
+    DiscoveryRuntimeMode, SqliteStore, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
+};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::OptionalExtension;
+use std::collections::HashSet;
+
 impl SqliteStore {
     pub fn export_discovery_runtime_artifact(
         &self,
@@ -67,7 +80,7 @@ impl SqliteStore {
                     "invalid negative discovery_runtime_state.cursor_slot: {cursor_slot_raw}"
                 ));
             }
-            let runtime_cursor = super::DiscoveryRuntimeCursor {
+            let runtime_cursor = DiscoveryRuntimeCursor {
                 ts_utc: parse_rfc3339_utc(
                     &cursor_ts_raw,
                     "discovery_runtime_state.cursor_ts",

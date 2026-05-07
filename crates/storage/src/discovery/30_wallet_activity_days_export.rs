@@ -1,3 +1,10 @@
+use super::{upsert_wallet_activity_days_on_conn, wallet_metrics_window_start_query_variants};
+use crate::{SqliteStore, WalletActivityDayRow};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::{params, OptionalExtension};
+use std::collections::HashMap;
+
 impl SqliteStore {
     pub fn upsert_wallet_activity_days(&self, rows: &[WalletActivityDayRow]) -> Result<()> {
         if rows.is_empty() {

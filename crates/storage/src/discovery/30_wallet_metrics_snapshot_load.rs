@@ -1,3 +1,9 @@
+use super::wallet_metrics_window_start_query_variants;
+use crate::{PersistedWalletMetricSnapshotRow, SqliteStore};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::params;
+
 impl SqliteStore {
     pub fn load_latest_wallet_metric_snapshots(
         &self,
