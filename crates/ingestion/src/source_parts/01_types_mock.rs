@@ -1,3 +1,5 @@
+use super::*;
+
 #[derive(Debug, Clone)]
 pub struct RawSwapObservation {
     pub signature: String,
@@ -72,7 +74,7 @@ impl IngestionSource {
     }
 }
 
-pub(super) fn redacted_url_for_log(value: &str) -> String {
+pub(in crate::source) fn redacted_url_for_log(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         String::new()
@@ -154,48 +156,48 @@ impl MockSource {
 }
 
 #[derive(Debug, Clone)]
-struct LogsNotification {
-    signature: String,
-    slot: u64,
-    arrival_seq: u64,
-    logs: Vec<String>,
-    is_failed: bool,
-    enqueued_at: Instant,
+pub(in crate::source) struct LogsNotification {
+    pub(in crate::source) signature: String,
+    pub(in crate::source) slot: u64,
+    pub(in crate::source) arrival_seq: u64,
+    pub(in crate::source) logs: Vec<String>,
+    pub(in crate::source) is_failed: bool,
+    pub(in crate::source) enqueued_at: Instant,
 }
 
 #[derive(Debug, Clone)]
 #[cfg_attr(not(test), allow(dead_code))]
-struct FetchedObservation {
-    raw: RawSwapObservation,
-    arrival_seq: u64,
-    fetch_latency_ms: u64,
-    enqueued_at: Instant,
+pub(in crate::source) struct FetchedObservation {
+    pub(in crate::source) raw: RawSwapObservation,
+    pub(in crate::source) arrival_seq: u64,
+    pub(in crate::source) fetch_latency_ms: u64,
+    pub(in crate::source) enqueued_at: Instant,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-type HeliusWsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+pub(in crate::source) type HeliusWsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
-const WS_IDLE_TIMEOUT_SECS: u64 = 45;
-const TELEMETRY_SAMPLE_CAPACITY: usize = 4096;
+pub(in crate::source) const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+pub(in crate::source) const WS_IDLE_TIMEOUT_SECS: u64 = 45;
+pub(in crate::source) const TELEMETRY_SAMPLE_CAPACITY: usize = 4096;
 
 #[cfg_attr(not(test), allow(dead_code))]
-type NotificationQueue = OverflowQueue<LogsNotification>;
-type RawObservationQueue = OverflowQueue<FetchedObservation>;
+pub(in crate::source) type NotificationQueue = OverflowQueue<LogsNotification>;
+pub(in crate::source) type RawObservationQueue = OverflowQueue<FetchedObservation>;
 
 #[derive(Debug, Clone)]
-struct SeenSignatureEntry {
-    signature: String,
-    seen_at: Instant,
+pub(in crate::source) struct SeenSignatureEntry {
+    pub(in crate::source) signature: String,
+    pub(in crate::source) seen_at: Instant,
 }
 
 #[allow(dead_code)]
-struct HeliusPipeline {
-    output_rx: mpsc::Receiver<FetchedObservation>,
-    ws_to_fetch_depth: Arc<AtomicUsize>,
-    fetch_to_output_depth: Arc<AtomicUsize>,
-    ws_reader_task: JoinHandle<()>,
-    fetcher_tasks: Vec<JoinHandle<()>>,
+pub(in crate::source) struct HeliusPipeline {
+    pub(in crate::source) output_rx: mpsc::Receiver<FetchedObservation>,
+    pub(in crate::source) ws_to_fetch_depth: Arc<AtomicUsize>,
+    pub(in crate::source) fetch_to_output_depth: Arc<AtomicUsize>,
+    pub(in crate::source) ws_reader_task: JoinHandle<()>,
+    pub(in crate::source) fetcher_tasks: Vec<JoinHandle<()>>,
 }
 
 impl Drop for HeliusPipeline {
@@ -208,30 +210,30 @@ impl Drop for HeliusPipeline {
 }
 
 #[allow(dead_code)]
-struct HeliusRuntimeConfig {
-    ws_url: String,
-    http_endpoints: Vec<Arc<HeliusEndpoint>>,
-    http_endpoint_rr: AtomicUsize,
-    global_http_limiter: Option<Arc<TokenBucketLimiter>>,
-    reconnect_initial_ms: u64,
-    reconnect_max_ms: u64,
-    tx_fetch_retries: u32,
-    tx_fetch_retry_base_ms: u64,
-    tx_fetch_retry_max_ms: u64,
-    tx_fetch_retry_jitter_ms: u64,
-    seen_signatures_limit: usize,
-    seen_signatures_ttl: Duration,
-    prefetch_stale_drop: Option<Duration>,
-    interested_program_ids: HashSet<String>,
-    raydium_program_ids: HashSet<String>,
-    pumpswap_program_ids: HashSet<String>,
-    http_client: Client,
-    telemetry: Arc<IngestionTelemetry>,
+pub(in crate::source) struct HeliusRuntimeConfig {
+    pub(in crate::source) ws_url: String,
+    pub(in crate::source) http_endpoints: Vec<Arc<HeliusEndpoint>>,
+    pub(in crate::source) http_endpoint_rr: AtomicUsize,
+    pub(in crate::source) global_http_limiter: Option<Arc<TokenBucketLimiter>>,
+    pub(in crate::source) reconnect_initial_ms: u64,
+    pub(in crate::source) reconnect_max_ms: u64,
+    pub(in crate::source) tx_fetch_retries: u32,
+    pub(in crate::source) tx_fetch_retry_base_ms: u64,
+    pub(in crate::source) tx_fetch_retry_max_ms: u64,
+    pub(in crate::source) tx_fetch_retry_jitter_ms: u64,
+    pub(in crate::source) seen_signatures_limit: usize,
+    pub(in crate::source) seen_signatures_ttl: Duration,
+    pub(in crate::source) prefetch_stale_drop: Option<Duration>,
+    pub(in crate::source) interested_program_ids: HashSet<String>,
+    pub(in crate::source) raydium_program_ids: HashSet<String>,
+    pub(in crate::source) pumpswap_program_ids: HashSet<String>,
+    pub(in crate::source) http_client: Client,
+    pub(in crate::source) telemetry: Arc<IngestionTelemetry>,
 }
 
 #[allow(dead_code)]
 impl HeliusRuntimeConfig {
-    fn next_http_endpoint(&self) -> Arc<HeliusEndpoint> {
+    pub(in crate::source) fn next_http_endpoint(&self) -> Arc<HeliusEndpoint> {
         let len = self.http_endpoints.len();
         let index = self.http_endpoint_rr.fetch_add(1, Ordering::Relaxed) % len;
         Arc::clone(&self.http_endpoints[index])
@@ -240,18 +242,18 @@ impl HeliusRuntimeConfig {
 
 #[allow(dead_code)]
 pub struct HeliusWsSource {
-    runtime_config: Arc<HeliusRuntimeConfig>,
-    fetch_concurrency: usize,
-    ws_queue_capacity: usize,
-    queue_overflow_policy: QueueOverflowPolicy,
-    output_queue_capacity: usize,
-    reorder: ReorderBuffer,
-    telemetry_report_seconds: u64,
-    pipeline: Option<HeliusPipeline>,
+    pub(in crate::source) runtime_config: Arc<HeliusRuntimeConfig>,
+    pub(in crate::source) fetch_concurrency: usize,
+    pub(in crate::source) ws_queue_capacity: usize,
+    pub(in crate::source) queue_overflow_policy: QueueOverflowPolicy,
+    pub(in crate::source) output_queue_capacity: usize,
+    pub(in crate::source) reorder: ReorderBuffer,
+    pub(in crate::source) telemetry_report_seconds: u64,
+    pub(in crate::source) pipeline: Option<HeliusPipeline>,
 }
 
 #[allow(dead_code)]
-enum OutputRecvOutcome {
+pub(in crate::source) enum OutputRecvOutcome {
     Item(FetchedObservation),
     ChannelClosed,
     TimedOut,

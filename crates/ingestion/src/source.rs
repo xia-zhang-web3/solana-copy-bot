@@ -42,12 +42,25 @@ use self::rate_limit::{HeliusEndpoint, TokenBucketLimiter};
 use self::reorder::{ReorderBuffer, ReorderRelease};
 use self::telemetry::IngestionTelemetry;
 
-include!("source_parts/01_types_mock.rs");
 #[path = "source_parts/02_helius_new.rs"]
 mod helius_new;
 #[path = "source_parts/02_helius_runtime.rs"]
 mod helius_runtime;
-include!("source_parts/03_yellowstone_shell.rs");
+#[path = "source_parts/01_types_mock.rs"]
+mod types_mock;
+#[path = "source_parts/03_yellowstone_shell.rs"]
+mod yellowstone_shell;
+
+use self::types_mock::{
+    redacted_url_for_log, FetchedObservation, HeliusPipeline, HeliusRuntimeConfig, HeliusWsSource,
+    HeliusWsStream, LogsNotification, NotificationQueue, OutputRecvOutcome, RawObservationQueue,
+    SeenSignatureEntry, SOL_MINT, TELEMETRY_SAMPLE_CAPACITY, WS_IDLE_TIMEOUT_SECS,
+};
+pub use self::types_mock::{IngestionRuntimeSnapshot, IngestionSource, RawSwapObservation};
+use self::yellowstone_shell::{
+    YellowstoneGrpcSource, YellowstoneParsedUpdate, YellowstonePipeline, YellowstoneRecvOutcome,
+    YellowstoneRuntimeConfig,
+};
 
 #[cfg(test)]
 #[path = "source/tests.rs"]
