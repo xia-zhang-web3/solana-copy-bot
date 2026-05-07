@@ -1,4 +1,6 @@
-fn publish_latest_snapshot_from_staged(
+use super::*;
+
+pub(super) fn publish_latest_snapshot_from_staged(
     config_path: &Path,
     source_db_path: &Path,
     latest_snapshot_path: &Path,

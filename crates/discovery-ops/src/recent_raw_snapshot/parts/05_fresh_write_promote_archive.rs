@@ -1,4 +1,6 @@
-fn promote_staged_snapshot_to_archive(
+use super::*;
+
+pub(super) fn promote_staged_snapshot_to_archive(
     config_path: &Path,
     source_db_path: &Path,
     latest_snapshot_path: &Path,

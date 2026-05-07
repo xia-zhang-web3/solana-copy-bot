@@ -1,5 +1,10 @@
-include!("05_fresh_write_publish_latest.rs");
-include!("05_fresh_write_promote_archive.rs");
+#[path = "05_fresh_write_publish_latest.rs"]
+mod publish_latest;
+#[path = "05_fresh_write_promote_archive.rs"]
+mod promote_archive;
+
+use self::promote_archive::promote_staged_snapshot_to_archive;
+use self::publish_latest::publish_latest_snapshot_from_staged;
 
 fn write_fresh_scheduled_snapshot(
     config_path: &Path,
