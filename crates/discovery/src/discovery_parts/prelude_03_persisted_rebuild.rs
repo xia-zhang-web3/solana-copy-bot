@@ -1,4 +1,6 @@
-fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressTelemetry) -> bool {
+use super::*;
+
+pub(crate) fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressTelemetry) -> bool {
     if telemetry.phase == DiscoveryPersistedRebuildPhase::Replay {
         return telemetry.budget_exhausted_reason.is_some();
     }
@@ -18,7 +20,7 @@ fn should_request_persisted_stream_catch_up(telemetry: &PersistedStreamProgressT
     )
 }
 
-fn should_request_persisted_stream_catch_up_pressure_override(
+pub(crate) fn should_request_persisted_stream_catch_up_pressure_override(
     telemetry: &PersistedStreamProgressTelemetry,
 ) -> bool {
     (telemetry.phase == DiscoveryPersistedRebuildPhase::Replay
@@ -49,7 +51,7 @@ fn should_request_persisted_stream_catch_up_pressure_override(
 }
 
 #[derive(Debug)]
-enum PersistedStreamRebuildAdvanceOutcome {
+pub(crate) enum PersistedStreamRebuildAdvanceOutcome {
     Completed {
         snapshots: Vec<WalletSnapshot>,
         telemetry: PersistedStreamProgressTelemetry,
@@ -60,7 +62,7 @@ enum PersistedStreamRebuildAdvanceOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PersistedStreamRebuildRestoreOutcome {
+pub(crate) enum PersistedStreamRebuildRestoreOutcome {
     StartedFresh,
     ResumedExisting,
     CarriedForwardMetricsWindow,
@@ -68,7 +70,7 @@ enum PersistedStreamRebuildRestoreOutcome {
 }
 
 impl PersistedStreamRebuildRestoreOutcome {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::StartedFresh => "started_fresh",
             Self::ResumedExisting => "resumed_existing",
@@ -79,19 +81,19 @@ impl PersistedStreamRebuildRestoreOutcome {
 }
 
 #[derive(Debug, Clone)]
-struct PersistedStreamPhaseAdvance {
-    rows_processed: usize,
-    pages_processed: usize,
-    replay_wallet_stats_rows_processed: usize,
-    replay_wallet_stats_pages_processed: usize,
-    replay_sol_leg_rows_processed: usize,
-    replay_sol_leg_pages_processed: usize,
-    replay_sol_leg_elapsed_ms: u64,
-    replay_wallet_stats_day_count_source_progress: ReplayWalletStatsDayCountSourceProgress,
-    replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
-    source_exhausted: bool,
-    phase_cursor: Option<DiscoveryRuntimeCursor>,
-    collect_buy_mints_cursor_token: Option<String>,
-    unique_buy_mints_discovered: usize,
-    budget_exhausted_reason: Option<PersistedStreamBudgetExhaustedReason>,
+pub(crate) struct PersistedStreamPhaseAdvance {
+    pub(crate) rows_processed: usize,
+    pub(crate) pages_processed: usize,
+    pub(crate) replay_wallet_stats_rows_processed: usize,
+    pub(crate) replay_wallet_stats_pages_processed: usize,
+    pub(crate) replay_sol_leg_rows_processed: usize,
+    pub(crate) replay_sol_leg_pages_processed: usize,
+    pub(crate) replay_sol_leg_elapsed_ms: u64,
+    pub(crate) replay_wallet_stats_day_count_source_progress: ReplayWalletStatsDayCountSourceProgress,
+    pub(crate) replay_sol_leg_access_path: Option<ObservedSolLegCursorAccessPath>,
+    pub(crate) source_exhausted: bool,
+    pub(crate) phase_cursor: Option<DiscoveryRuntimeCursor>,
+    pub(crate) collect_buy_mints_cursor_token: Option<String>,
+    pub(crate) unique_buy_mints_discovered: usize,
+    pub(crate) budget_exhausted_reason: Option<PersistedStreamBudgetExhaustedReason>,
 }

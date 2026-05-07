@@ -1,5 +1,7 @@
+use super::*;
+
 impl<'a> DiscoveryPublicationTruthRepairRegionScope<'a> {
-    fn new(
+    pub(crate) fn new(
         context: Option<&'a DiscoveryPublicationTruthRepairTraceContext>,
         region: &'static str,
         parent_region: Option<&'static str>,
@@ -15,11 +17,13 @@ impl<'a> DiscoveryPublicationTruthRepairRegionScope<'a> {
         scope
     }
 
-    fn progress_mut(&mut self) -> &mut DiscoveryPublicationTruthRepairRegionTraceProgress {
+    pub(crate) fn progress_mut(
+        &mut self,
+    ) -> &mut DiscoveryPublicationTruthRepairRegionTraceProgress {
         &mut self.progress
     }
 
-    fn emit(&self, state: &'static str, elapsed_ms: u64) {
+    pub(crate) fn emit(&self, state: &'static str, elapsed_ms: u64) {
         let Some(context) = self.context else {
             return;
         };
@@ -94,7 +98,7 @@ impl Drop for DiscoveryPublicationTruthRepairRegionScope<'_> {
 }
 
 impl DiscoveryPublicationTruthRepairTelemetry {
-    fn skipped(
+    pub(crate) fn skipped(
         state: &'static str,
         reason: impl Into<String>,
         required_window_start: DateTime<Utc>,
@@ -158,7 +162,7 @@ impl DiscoveryPublicationTruthRepairTelemetry {
         }
     }
 
-    fn deferred_to_runtime_cycle(
+    pub(crate) fn deferred_to_runtime_cycle(
         required_window_start: DateTime<Utc>,
         publication_truth_complete_before: bool,
         publication_truth_fresh_before: bool,
@@ -236,7 +240,7 @@ impl DiscoveryPublicationTruthRepairTelemetry {
         }
     }
 
-    fn with_entry_context(
+    pub(crate) fn with_entry_context(
         mut self,
         publication_state_exists_before: bool,
         runtime_cursor_exists_before: bool,
@@ -248,7 +252,7 @@ impl DiscoveryPublicationTruthRepairTelemetry {
         self
     }
 
-    fn with_helper_write_result(
+    pub(crate) fn with_helper_write_result(
         mut self,
         attempted: bool,
         succeeded: bool,
@@ -262,7 +266,7 @@ impl DiscoveryPublicationTruthRepairTelemetry {
         self
     }
 
-    fn with_replay_window_context(
+    pub(crate) fn with_replay_window_context(
         mut self,
         runtime_window_first_cursor: Option<DiscoveryRuntimeCursor>,
         replay_until_cursor: Option<DiscoveryRuntimeCursor>,
@@ -272,7 +276,7 @@ impl DiscoveryPublicationTruthRepairTelemetry {
         self
     }
 
-    fn with_resume_exact_target_surface_repair(
+    pub(crate) fn with_resume_exact_target_surface_repair(
         mut self,
         diagnostics: &ResumeExactTargetBuyMintSurfaceRepairDiagnostics,
     ) -> Self {

@@ -1,4 +1,6 @@
-fn maybe_arm_cap_truncation_deactivation_guard(
+use super::*;
+
+pub(crate) fn maybe_arm_cap_truncation_deactivation_guard(
     state: &mut DiscoveryWindowState,
     now: DateTime<Utc>,
     reason: CapTruncationDeactivationGuardReason,
@@ -24,7 +26,7 @@ fn maybe_arm_cap_truncation_deactivation_guard(
     );
 }
 
-fn maybe_warn_on_cap_truncation_deactivation_guard_expiry(
+pub(crate) fn maybe_warn_on_cap_truncation_deactivation_guard_expiry(
     state: &DiscoveryWindowState,
     followlist_deactivations_suppressed: bool,
 ) {
@@ -48,16 +50,16 @@ fn maybe_warn_on_cap_truncation_deactivation_guard_expiry(
 }
 
 #[derive(Debug, Clone, Default)]
-struct CapTruncationTelemetrySnapshot {
-    raw_window_cap_truncated: bool,
-    cap_truncation_deactivation_guard_active: bool,
-    cap_truncation_deactivation_guard_reason: Option<&'static str>,
-    cap_truncation_deactivation_guard_started_at: Option<DateTime<Utc>>,
-    cap_truncation_floor_ts_utc: Option<DateTime<Utc>>,
-    cap_truncation_floor_signature: Option<String>,
+pub(crate) struct CapTruncationTelemetrySnapshot {
+    pub(crate) raw_window_cap_truncated: bool,
+    pub(crate) cap_truncation_deactivation_guard_active: bool,
+    pub(crate) cap_truncation_deactivation_guard_reason: Option<&'static str>,
+    pub(crate) cap_truncation_deactivation_guard_started_at: Option<DateTime<Utc>>,
+    pub(crate) cap_truncation_floor_ts_utc: Option<DateTime<Utc>>,
+    pub(crate) cap_truncation_floor_signature: Option<String>,
 }
 
-fn snapshot_cap_truncation_telemetry(
+pub(crate) fn snapshot_cap_truncation_telemetry(
     state: &DiscoveryWindowState,
     followlist_deactivations_suppressed: bool,
 ) -> CapTruncationTelemetrySnapshot {
@@ -80,6 +82,8 @@ fn snapshot_cap_truncation_telemetry(
     }
 }
 
-fn raw_window_history_incomplete_for_followlist_or_metrics(state: &DiscoveryWindowState) -> bool {
+pub(crate) fn raw_window_history_incomplete_for_followlist_or_metrics(
+    state: &DiscoveryWindowState,
+) -> bool {
     state.cap_truncation_floor.is_some()
 }

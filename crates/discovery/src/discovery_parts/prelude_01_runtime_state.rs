@@ -1,69 +1,71 @@
+use super::*;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct WalletSnapshot {
-    wallet_id: String,
-    first_seen: DateTime<Utc>,
-    last_seen: DateTime<Utc>,
-    pnl_sol: f64,
-    win_rate: f64,
-    trades: u32,
-    closed_trades: u32,
-    hold_median_seconds: i64,
-    score: f64,
-    buy_total: u32,
-    tradable_ratio: f64,
-    rug_ratio: f64,
-    eligible: bool,
+pub(crate) struct WalletSnapshot {
+    pub(crate) wallet_id: String,
+    pub(crate) first_seen: DateTime<Utc>,
+    pub(crate) last_seen: DateTime<Utc>,
+    pub(crate) pnl_sol: f64,
+    pub(crate) win_rate: f64,
+    pub(crate) trades: u32,
+    pub(crate) closed_trades: u32,
+    pub(crate) hold_median_seconds: i64,
+    pub(crate) score: f64,
+    pub(crate) buy_total: u32,
+    pub(crate) tradable_ratio: f64,
+    pub(crate) rug_ratio: f64,
+    pub(crate) eligible: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
-struct RugMetrics {
-    evaluated: u32,
-    rugged: u32,
-    unevaluated: u32,
+pub(crate) struct RugMetrics {
+    pub(crate) evaluated: u32,
+    pub(crate) rugged: u32,
+    pub(crate) unevaluated: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BuyFactRugStatus {
+pub(crate) enum BuyFactRugStatus {
     Healthy,
     Rugged,
     Unevaluated,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Lot {
-    qty: f64,
-    cost_sol: f64,
-    opened_at: DateTime<Utc>,
+pub(crate) struct Lot {
+    pub(crate) qty: f64,
+    pub(crate) cost_sol: f64,
+    pub(crate) opened_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(dead_code)]
-struct BuyObservation {
-    token: String,
-    ts: DateTime<Utc>,
-    tradable: bool,
-    quality_resolved: bool,
+pub(crate) struct BuyObservation {
+    pub(crate) token: String,
+    pub(crate) ts: DateTime<Utc>,
+    pub(crate) tradable: bool,
+    pub(crate) quality_resolved: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PendingBuyRugCheck {
-    token: String,
-    wallet_id: String,
-    buy_ts: DateTime<Utc>,
+pub(crate) struct PendingBuyRugCheck {
+    pub(crate) token: String,
+    pub(crate) wallet_id: String,
+    pub(crate) buy_ts: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct FetchProgress {
-    query_rows: usize,
-    query_rows_last_page: usize,
-    pages: usize,
-    saturated: bool,
-    page_budget_exhausted: bool,
-    time_budget_exhausted: bool,
+pub(crate) struct FetchProgress {
+    pub(crate) query_rows: usize,
+    pub(crate) query_rows_last_page: usize,
+    pub(crate) pages: usize,
+    pub(crate) saturated: bool,
+    pub(crate) page_budget_exhausted: bool,
+    pub(crate) time_budget_exhausted: bool,
 }
 
 #[derive(Debug, Clone)]
-enum PreparedCycleState {
+pub(crate) enum PreparedCycleState {
     Cached {
         publish_due: bool,
         followlist_activations_suppressed: bool,
@@ -101,62 +103,62 @@ enum PreparedCycleState {
 }
 
 #[derive(Debug, Clone, Default)]
-struct InBandWalletFreshnessCaptureTelemetry {
-    state: &'static str,
-    reason: Option<String>,
-    capture_id: Option<i64>,
-    captured_at: Option<DateTime<Utc>>,
+pub(crate) struct InBandWalletFreshnessCaptureTelemetry {
+    pub(crate) state: &'static str,
+    pub(crate) reason: Option<String>,
+    pub(crate) capture_id: Option<i64>,
+    pub(crate) captured_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SolLegTrade {
-    ts: DateTime<Utc>,
-    wallet_id: String,
-    sol_notional: f64,
+pub(crate) struct SolLegTrade {
+    pub(crate) ts: DateTime<Utc>,
+    pub(crate) wallet_id: String,
+    pub(crate) sol_notional: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct TokenRollingState {
+pub(crate) struct TokenRollingState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    first_seen: Option<DateTime<Utc>>,
+    pub(crate) first_seen: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
-    wallets_seen: HashSet<String>,
-    sol_trades_5m: VecDeque<SolLegTrade>,
-    sol_volume_5m: f64,
-    sol_traders_5m: HashMap<String, u32>,
+    pub(crate) wallets_seen: HashSet<String>,
+    pub(crate) sol_trades_5m: VecDeque<SolLegTrade>,
+    pub(crate) sol_volume_5m: f64,
+    pub(crate) sol_traders_5m: HashMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct WalletAccumulator {
-    first_seen: Option<DateTime<Utc>>,
-    last_seen: Option<DateTime<Utc>>,
-    trades: u32,
+pub(crate) struct WalletAccumulator {
+    pub(crate) first_seen: Option<DateTime<Utc>>,
+    pub(crate) last_seen: Option<DateTime<Utc>>,
+    pub(crate) trades: u32,
     #[serde(default)]
-    exact_active_day_count: Option<u32>,
-    spent_sol: f64,
-    realized_pnl_sol: f64,
-    max_buy_notional_sol: f64,
-    wins: u32,
-    closed_trades: u32,
-    hold_samples_sec: Vec<i64>,
-    active_days: HashSet<NaiveDate>,
-    realized_pnl_by_day: HashMap<NaiveDate, f64>,
-    tx_per_minute: HashMap<i64, u32>,
-    suspicious: bool,
-    positions: HashMap<String, VecDeque<Lot>>,
+    pub(crate) exact_active_day_count: Option<u32>,
+    pub(crate) spent_sol: f64,
+    pub(crate) realized_pnl_sol: f64,
+    pub(crate) max_buy_notional_sol: f64,
+    pub(crate) wins: u32,
+    pub(crate) closed_trades: u32,
+    pub(crate) hold_samples_sec: Vec<i64>,
+    pub(crate) active_days: HashSet<NaiveDate>,
+    pub(crate) realized_pnl_by_day: HashMap<NaiveDate, f64>,
+    pub(crate) tx_per_minute: HashMap<i64, u32>,
+    pub(crate) suspicious: bool,
+    pub(crate) positions: HashMap<String, VecDeque<Lot>>,
     #[serde(default)]
-    buy_mints: BTreeSet<String>,
-    buy_total: u32,
-    quality_resolved_buys: u32,
-    tradable_buys: u32,
+    pub(crate) buy_mints: BTreeSet<String>,
+    pub(crate) buy_total: u32,
+    pub(crate) quality_resolved_buys: u32,
+    pub(crate) tradable_buys: u32,
     #[serde(default)]
-    publish_pending_quality_retry_buy_count: u32,
-    rug_metrics: RugMetrics,
-    buy_observations: Vec<BuyObservation>,
+    pub(crate) publish_pending_quality_retry_buy_count: u32,
+    pub(crate) rug_metrics: RugMetrics,
+    pub(crate) buy_observations: Vec<BuyObservation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-enum CollectBuyMintsMode {
+pub(crate) enum CollectBuyMintsMode {
     #[default]
     FreshScan,
     ReconcileExpiredHead,
@@ -164,7 +166,7 @@ enum CollectBuyMintsMode {
 }
 
 impl CollectBuyMintsMode {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::FreshScan => "fresh_scan",
             Self::ReconcileExpiredHead => "reconcile_expired_head",
@@ -174,7 +176,7 @@ impl CollectBuyMintsMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
-enum ReplayMode {
+pub(crate) enum ReplayMode {
     #[default]
     LegacyCompleteReplay,
     WalletStatsThenSolLeg,
@@ -201,7 +203,7 @@ impl<'de> Deserialize<'de> for ReplayMode {
 }
 
 impl ReplayMode {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::LegacyCompleteReplay => "legacy_complete_replay",
             Self::WalletStatsThenSolLeg => "wallet_stats_then_sol_leg",
@@ -210,9 +212,9 @@ impl ReplayMode {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-struct ReplayWalletStatsDayCountSourceProgress {
-    fast_path_pages_processed: usize,
-    fallback_pages_processed: usize,
-    fast_path_wallets_processed: usize,
-    fallback_wallets_processed: usize,
+pub(crate) struct ReplayWalletStatsDayCountSourceProgress {
+    pub(crate) fast_path_pages_processed: usize,
+    pub(crate) fallback_pages_processed: usize,
+    pub(crate) fast_path_wallets_processed: usize,
+    pub(crate) fallback_wallets_processed: usize,
 }

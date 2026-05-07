@@ -1,9 +1,11 @@
+use super::*;
+
 #[derive(Debug, Clone)]
 pub struct DiscoveryService {
-    config: DiscoveryConfig,
-    shadow_quality: ShadowConfig,
-    helius_http_url: Option<String>,
-    window_state: Arc<Mutex<DiscoveryWindowState>>,
+    pub(crate) config: DiscoveryConfig,
+    pub(crate) shadow_quality: ShadowConfig,
+    pub(crate) helius_http_url: Option<String>,
+    pub(crate) window_state: Arc<Mutex<DiscoveryWindowState>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -35,17 +37,17 @@ pub struct DiscoverySummary {
 }
 
 #[derive(Debug, Clone, Default)]
-struct PersistedStreamSnapshotState {
-    snapshots: Vec<WalletSnapshot>,
-    observed_swaps_loaded: usize,
+pub(crate) struct PersistedStreamSnapshotState {
+    pub(crate) snapshots: Vec<WalletSnapshot>,
+    pub(crate) observed_swaps_loaded: usize,
 }
 
 #[derive(Debug, Clone)]
-struct WalletSnapshotOutcome {
-    snapshot: WalletSnapshot,
+pub(crate) struct WalletSnapshotOutcome {
+    pub(crate) snapshot: WalletSnapshot,
 }
 
-fn trusted_snapshot_id(
+pub(crate) fn trusted_snapshot_id(
     source_kind: TrustedSnapshotSourceKind,
     effective_window_start: DateTime<Utc>,
 ) -> String {
@@ -56,7 +58,7 @@ fn trusted_snapshot_id(
     )
 }
 
-fn trusted_snapshot_write(
+pub(crate) fn trusted_snapshot_write(
     source_kind: TrustedSnapshotSourceKind,
     trust_state: TrustedSelectionState,
     effective_window_start: DateTime<Utc>,
@@ -78,7 +80,7 @@ fn trusted_snapshot_write(
 }
 
 impl DiscoverySummary {
-    fn with_runtime_mode(mut self, runtime_mode: DiscoveryRuntimeMode) -> Self {
+    pub(crate) fn with_runtime_mode(mut self, runtime_mode: DiscoveryRuntimeMode) -> Self {
         self.runtime_mode = runtime_mode;
         self.trusted_selection_fail_closed = matches!(
             runtime_mode,
@@ -87,12 +89,15 @@ impl DiscoverySummary {
         self
     }
 
-    fn with_scoring_source(mut self, scoring_source: &'static str) -> Self {
+    pub(crate) fn with_scoring_source(mut self, scoring_source: &'static str) -> Self {
         self.scoring_source = scoring_source;
         self
     }
 
-    fn with_cap_truncation_telemetry(mut self, telemetry: &CapTruncationTelemetrySnapshot) -> Self {
+    pub(crate) fn with_cap_truncation_telemetry(
+        mut self,
+        telemetry: &CapTruncationTelemetrySnapshot,
+    ) -> Self {
         self.raw_window_cap_truncated = telemetry.raw_window_cap_truncated;
         self.cap_truncation_deactivation_guard_active =
             telemetry.cap_truncation_deactivation_guard_active;
@@ -105,12 +110,12 @@ impl DiscoverySummary {
         self
     }
 
-    fn with_persisted_stream_catch_up_requested(mut self, requested: bool) -> Self {
+    pub(crate) fn with_persisted_stream_catch_up_requested(mut self, requested: bool) -> Self {
         self.persisted_stream_catch_up_requested = requested;
         self
     }
 
-    fn with_persisted_stream_catch_up_pressure_override_requested(
+    pub(crate) fn with_persisted_stream_catch_up_pressure_override_requested(
         mut self,
         requested: bool,
     ) -> Self {
@@ -118,7 +123,7 @@ impl DiscoverySummary {
         self
     }
 
-    fn with_wallet_freshness_capture(
+    pub(crate) fn with_wallet_freshness_capture(
         mut self,
         telemetry: &InBandWalletFreshnessCaptureTelemetry,
     ) -> Self {
