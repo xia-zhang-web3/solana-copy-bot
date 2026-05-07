@@ -45,19 +45,5 @@ include!("market_data_parts/18_store_impl.rs");
 include!("market_data_parts/90_rpc_quality_helpers.rs");
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use copybot_core_types::SwapEvent;
-    use std::path::Path;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::{Duration as StdDuration, Instant};
-    use tempfile::tempdir;
-
-    include!("market_data_tests/00_market_data_tests.rs");
-    include!("market_data_tests/01_market_data_tests.rs");
-    include!("market_data_tests/02_market_data_tests.rs");
-    include!("market_data_tests/03_market_data_tests.rs");
-    include!("market_data_tests/04_market_data_tests.rs");
-}
+#[path = "market_data/tests.rs"]
+mod tests;
