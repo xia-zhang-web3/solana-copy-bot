@@ -1,5 +1,5 @@
 use chrono::{DateTime, NaiveDateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 use tracing::info;

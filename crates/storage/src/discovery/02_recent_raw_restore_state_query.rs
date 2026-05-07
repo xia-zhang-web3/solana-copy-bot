@@ -1,4 +1,9 @@
-fn discovery_recent_raw_restore_state_query(
+use super::{parse_optional_rfc3339_utc, parse_optional_runtime_cursor};
+use crate::DiscoveryRecentRawRestoreStateRow;
+use anyhow::{Context, Result};
+use rusqlite::{Connection, OptionalExtension};
+
+pub(crate) fn discovery_recent_raw_restore_state_query(
     conn: &Connection,
 ) -> Result<DiscoveryRecentRawRestoreStateRow> {
     let row = conn

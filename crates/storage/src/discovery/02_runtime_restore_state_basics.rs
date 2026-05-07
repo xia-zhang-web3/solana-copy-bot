@@ -1,4 +1,9 @@
-fn discovery_bootstrap_degraded_state_query(
+use super::{parse_optional_rfc3339_utc, parse_rfc3339_utc};
+use crate::{DiscoveryBootstrapDegradedStateRow, DiscoveryRuntimeCursor};
+use anyhow::{Context, Result};
+use rusqlite::{Connection, OptionalExtension};
+
+pub(crate) fn discovery_bootstrap_degraded_state_query(
     conn: &Connection,
 ) -> Result<DiscoveryBootstrapDegradedStateRow> {
     let row = conn
@@ -33,7 +38,7 @@ fn discovery_bootstrap_degraded_state_query(
     })
 }
 
-fn parse_optional_runtime_cursor(
+pub(crate) fn parse_optional_runtime_cursor(
     ts_raw: Option<String>,
     slot_raw: Option<i64>,
     signature: Option<String>,

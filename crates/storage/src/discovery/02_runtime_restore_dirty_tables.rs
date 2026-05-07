@@ -1,3 +1,7 @@
+use super::RuntimeArtifactRestoreDirtyTable;
+use anyhow::{Context, Result};
+use rusqlite::Connection;
+
 fn runtime_artifact_restore_table_category(table: &str) -> &'static str {
     match table {
         "risk_events" => "risk gating",
@@ -22,7 +26,7 @@ fn quote_sql_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
-fn runtime_artifact_restore_dirty_tables_on_conn(
+pub(crate) fn runtime_artifact_restore_dirty_tables_on_conn(
     conn: &Connection,
 ) -> Result<Vec<RuntimeArtifactRestoreDirtyTable>> {
     let mut stmt = conn
@@ -68,7 +72,7 @@ fn runtime_artifact_restore_dirty_tables_on_conn(
     Ok(dirty_tables)
 }
 
-fn format_runtime_artifact_restore_dirty_tables(
+pub(crate) fn format_runtime_artifact_restore_dirty_tables(
     dirty_tables: &[RuntimeArtifactRestoreDirtyTable],
 ) -> String {
     dirty_tables

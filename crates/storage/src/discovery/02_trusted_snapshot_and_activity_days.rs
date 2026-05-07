@@ -1,4 +1,9 @@
-fn insert_trusted_wallet_metrics_snapshot_on_conn(
+use super::canonical_wallet_metrics_window_start;
+use crate::{TrustedWalletMetricsSnapshotWrite, WalletActivityDayRow};
+use anyhow::{Context, Result};
+use rusqlite::{params, Connection};
+
+pub(crate) fn insert_trusted_wallet_metrics_snapshot_on_conn(
     conn: &Connection,
     snapshot_write: &TrustedWalletMetricsSnapshotWrite,
 ) -> Result<()> {
