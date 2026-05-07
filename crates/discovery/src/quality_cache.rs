@@ -42,9 +42,12 @@ pub(super) struct TokenQualityResolutionChunkOutcome {
     pub source_exhausted: bool,
 }
 
-include!("quality_cache/10_resolve.rs");
-include!("quality_cache/20_state.rs");
-include!("quality_cache/30_evaluate.rs");
+#[path = "quality_cache/10_resolve.rs"]
+mod resolve;
+#[path = "quality_cache/20_state.rs"]
+mod state;
+#[path = "quality_cache/30_evaluate.rs"]
+mod evaluate;
 
 fn discovery_quality_cache_error_requires_abort(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)

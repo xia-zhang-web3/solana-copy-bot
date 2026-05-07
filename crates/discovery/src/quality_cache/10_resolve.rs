@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    pub(super) fn resolve_token_quality_for_mints(
+    pub(crate) fn resolve_token_quality_for_mints(
         &self,
         store: &SqliteStore,
         mints: &[String],
@@ -48,7 +50,7 @@ impl DiscoveryService {
         Ok(out)
     }
 
-    pub(super) fn resolve_token_quality_for_mints_chunk(
+    pub(crate) fn resolve_token_quality_for_mints_chunk(
         &self,
         store: &SqliteStore,
         mints: &[String],

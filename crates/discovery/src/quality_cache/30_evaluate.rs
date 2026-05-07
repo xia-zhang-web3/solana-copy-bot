@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn evaluate_buy_tradability(
+    pub(crate) fn evaluate_buy_tradability(
         &self,
         state: &TokenRollingState,
         quality: Option<&TokenQualityResolution>,

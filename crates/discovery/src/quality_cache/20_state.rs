@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    pub(super) fn update_token_quality_state(
+    pub(crate) fn update_token_quality_state(
         &self,
         token_states: &mut HashMap<String, TokenRollingState>,
         token_sol_history: &mut HashMap<String, Vec<SolLegTrade>>,
@@ -37,7 +39,7 @@ impl DiscoveryService {
         Some(self.evaluate_buy_tradability(state, token_quality_cache.get(token), swap.ts_utc))
     }
 
-    pub(super) fn update_token_quality_state_streaming(
+    pub(crate) fn update_token_quality_state_streaming(
         &self,
         token_states: &mut HashMap<String, TokenRollingState>,
         token_recent_sol_trades: &mut HashMap<String, VecDeque<SolLegTrade>>,
