@@ -1,4 +1,6 @@
-fn collect_observed_swap_write_batch(
+use super::*;
+
+pub(in crate::observed_swap_writer) fn collect_observed_swap_write_batch(
     first_request: ObservedSwapWriteRequest,
     receiver: &mut mpsc::Receiver<ObservedSwapWriteRequest>,
     batch_max_size: usize,
@@ -14,7 +16,7 @@ fn collect_observed_swap_write_batch(
     batch
 }
 
-fn unpack_observed_swap_write_batch(
+pub(in crate::observed_swap_writer) fn unpack_observed_swap_write_batch(
     batch: Vec<ObservedSwapWriteRequest>,
 ) -> (
     Vec<SwapEvent>,
@@ -32,7 +34,7 @@ fn unpack_observed_swap_write_batch(
     (swaps, replies, queued_at)
 }
 
-fn send_observed_swap_write_error_replies(
+pub(in crate::observed_swap_writer) fn send_observed_swap_write_error_replies(
     replies: Vec<Option<oneshot::Sender<Result<bool>>>>,
     message: &str,
 ) {
@@ -43,7 +45,7 @@ fn send_observed_swap_write_error_replies(
     }
 }
 
-fn flush_observed_swap_writer_downstream_overflow_on_shutdown(
+pub(in crate::observed_swap_writer) fn flush_observed_swap_writer_downstream_overflow_on_shutdown(
     journal_sender: Option<&std_mpsc::SyncSender<RecentRawJournalWriteRequest>>,
     journal_overflow: &mut VecDeque<RecentRawJournalWriteRequest>,
     telemetry: &ObservedSwapWriterTelemetry,

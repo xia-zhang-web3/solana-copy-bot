@@ -1,9 +1,12 @@
+use super::*;
+
 #[derive(Clone)]
-struct ObservedSwapWriterConfig {
-    channel_capacity: usize,
-    batch_max_size: usize,
-    normal_try_enqueue_soft_limit_override: Option<usize>,
-    recent_raw_journal: Option<ObservedSwapRecentRawJournalConfig>,
+pub(in crate::observed_swap_writer) struct ObservedSwapWriterConfig {
+    pub(in crate::observed_swap_writer) channel_capacity: usize,
+    pub(in crate::observed_swap_writer) batch_max_size: usize,
+    pub(in crate::observed_swap_writer) normal_try_enqueue_soft_limit_override: Option<usize>,
+    pub(in crate::observed_swap_writer) recent_raw_journal:
+        Option<ObservedSwapRecentRawJournalConfig>,
 }
 
 #[derive(Clone, Debug)]
@@ -18,7 +21,9 @@ pub(crate) struct ObservedSwapRecentRawJournalConfig {
 }
 
 impl ObservedSwapWriterConfig {
-    fn production(recent_raw_journal: Option<ObservedSwapRecentRawJournalConfig>) -> Self {
+    pub(in crate::observed_swap_writer) fn production(
+        recent_raw_journal: Option<ObservedSwapRecentRawJournalConfig>,
+    ) -> Self {
         Self {
             channel_capacity: OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY,
             batch_max_size: OBSERVED_SWAP_BATCH_MAX_SIZE,
@@ -28,7 +33,7 @@ impl ObservedSwapWriterConfig {
     }
 
     #[cfg(test)]
-    fn for_test(
+    pub(in crate::observed_swap_writer) fn for_test(
         channel_capacity: usize,
         batch_max_size: usize,
         recent_raw_journal: Option<ObservedSwapRecentRawJournalConfig>,
@@ -42,7 +47,10 @@ impl ObservedSwapWriterConfig {
     }
 
     #[cfg(test)]
-    fn with_normal_try_enqueue_soft_limit(mut self, limit: usize) -> Self {
+    pub(in crate::observed_swap_writer) fn with_normal_try_enqueue_soft_limit(
+        mut self,
+        limit: usize,
+    ) -> Self {
         self.normal_try_enqueue_soft_limit_override = Some(limit.max(1));
         self
     }
@@ -81,7 +89,7 @@ pub(crate) struct ObservedSwapRetentionMaintenanceSummary {
 
 #[derive(Clone)]
 pub(crate) struct ObservedSwapWriterHealthHandle {
-    telemetry: Arc<ObservedSwapWriterTelemetry>,
+    pub(in crate::observed_swap_writer) telemetry: Arc<ObservedSwapWriterTelemetry>,
 }
 
 impl ObservedSwapWriterHealthHandle {
@@ -107,11 +115,13 @@ impl ObservedSwapRetentionRuntimeHealthHandle {
         }
     }
 
-    fn writer_snapshot(&self) -> ObservedSwapWriterSnapshot {
+    pub(in crate::observed_swap_writer) fn writer_snapshot(&self) -> ObservedSwapWriterSnapshot {
         self.writer.snapshot()
     }
 
-    fn ingestion_snapshot(&self) -> Option<IngestionRuntimeSnapshot> {
+    pub(in crate::observed_swap_writer) fn ingestion_snapshot(
+        &self,
+    ) -> Option<IngestionRuntimeSnapshot> {
         self.ingestion_runtime_snapshot
             .lock()
             .ok()
@@ -119,18 +129,18 @@ impl ObservedSwapRetentionRuntimeHealthHandle {
     }
 }
 
-struct ObservedSwapWriteRequest {
-    swap: SwapEvent,
-    reply_tx: Option<oneshot::Sender<Result<bool>>>,
-    enqueued_at: Instant,
+pub(in crate::observed_swap_writer) struct ObservedSwapWriteRequest {
+    pub(in crate::observed_swap_writer) swap: SwapEvent,
+    pub(in crate::observed_swap_writer) reply_tx: Option<oneshot::Sender<Result<bool>>>,
+    pub(in crate::observed_swap_writer) enqueued_at: Instant,
 }
 
-struct RecentRawJournalWriteRequest {
-    inserted_swaps: Vec<SwapEvent>,
+pub(in crate::observed_swap_writer) struct RecentRawJournalWriteRequest {
+    pub(in crate::observed_swap_writer) inserted_swaps: Vec<SwapEvent>,
 }
 
 impl RecentRawJournalWriteRequest {
-    fn row_count(&self) -> usize {
+    pub(in crate::observed_swap_writer) fn row_count(&self) -> usize {
         self.inserted_swaps.len()
     }
 }

@@ -1,6 +1,6 @@
 use copybot_storage_core::is_fatal_sqlite_anyhow_error;
 
-pub(super) fn observed_swap_retention_checkpoint_error_requires_abort(
+pub(in crate::observed_swap_writer) fn observed_swap_retention_checkpoint_error_requires_abort(
     primary_error: Option<&anyhow::Error>,
     fallback_error: Option<&anyhow::Error>,
 ) -> bool {

@@ -16,7 +16,16 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 mod capacity;
+mod misc;
+mod raw_writer_loop;
+mod recent_raw_journal;
+mod recent_raw_journal_drain;
+mod recent_raw_journal_enqueue;
+mod retention;
 mod sqlite_retry;
+mod telemetry;
+mod types_config;
+mod writer_api;
 
 use capacity::{
     observed_swap_writer_normal_try_enqueue_soft_limit,
@@ -24,7 +33,22 @@ use capacity::{
     recent_raw_journal_adaptive_write_coalesce_max_batches,
     recent_raw_journal_adaptive_write_coalesce_max_rows, recent_raw_journal_overflow_row_capacity,
 };
+use misc::*;
+use raw_writer_loop::*;
+use recent_raw_journal::*;
+use recent_raw_journal_drain::*;
+use recent_raw_journal_enqueue::*;
+pub(crate) use retention::run_observed_swap_retention_maintenance_once;
+use retention::*;
 use sqlite_retry::observed_swap_retention_checkpoint_error_requires_abort;
+use telemetry::*;
+use types_config::*;
+pub(crate) use types_config::{
+    ObservedSwapRecentRawJournalConfig, ObservedSwapRetentionConfig,
+    ObservedSwapRetentionMaintenanceSummary, ObservedSwapRetentionRuntimeHealthHandle,
+    ObservedSwapWriterSnapshot,
+};
+pub(crate) use writer_api::ObservedSwapWriter;
 
 pub(crate) const OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY: usize = 4096;
 const OBSERVED_SWAP_BATCH_MAX_SIZE: usize = 128;
@@ -82,16 +106,6 @@ pub(crate) const OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT: &str =
     "observed swap writer reply channel closed";
 pub(crate) const OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT: &str =
     "observed swap writer terminal failure";
-
-include!("observed_swap_writer/01_types_config.rs");
-include!("observed_swap_writer/02_telemetry.rs");
-include!("observed_swap_writer/03_writer_api.rs");
-include!("observed_swap_writer/04_raw_writer_loop.rs");
-include!("observed_swap_writer/05_recent_raw_journal_drain.rs");
-include!("observed_swap_writer/05_recent_raw_journal_enqueue.rs");
-include!("observed_swap_writer/06_recent_raw_journal.rs");
-include!("observed_swap_writer/08_retention.rs");
-include!("observed_swap_writer/12_misc.rs");
 
 #[cfg(test)]
 mod tests;

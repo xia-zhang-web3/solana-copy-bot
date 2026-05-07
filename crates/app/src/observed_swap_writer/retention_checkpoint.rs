@@ -1,4 +1,9 @@
-fn percentile_from_deque(values: &VecDeque<u64>, q: f64) -> u64 {
+use super::*;
+
+pub(in crate::observed_swap_writer) fn percentile_from_deque(
+    values: &VecDeque<u64>,
+    q: f64,
+) -> u64 {
     if values.is_empty() {
         return 0;
     }
@@ -8,7 +13,7 @@ fn percentile_from_deque(values: &VecDeque<u64>, q: f64) -> u64 {
     sorted[idx]
 }
 
-fn elapsed_ms_ceil(duration: StdDuration) -> u64 {
+pub(in crate::observed_swap_writer) fn elapsed_ms_ceil(duration: StdDuration) -> u64 {
     let micros = duration.as_micros();
     if micros == 0 {
         0
@@ -17,7 +22,7 @@ fn elapsed_ms_ceil(duration: StdDuration) -> u64 {
     }
 }
 
-fn run_retention_wal_checkpoint(
+pub(in crate::observed_swap_writer) fn run_retention_wal_checkpoint(
     store: &SqliteStore,
     config: ObservedSwapRetentionConfig,
     nominal_cutoff: chrono::DateTime<Utc>,

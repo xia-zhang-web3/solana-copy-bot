@@ -1,3 +1,5 @@
+use super::*;
+
 impl ObservedSwapWriter {
     pub(crate) fn shutdown(mut self) -> Result<()> {
         drop(self.sender);

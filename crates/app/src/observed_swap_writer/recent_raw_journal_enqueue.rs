@@ -1,4 +1,6 @@
-fn enqueue_recent_raw_journal_request(
+use super::*;
+
+pub(in crate::observed_swap_writer) fn enqueue_recent_raw_journal_request(
     journal_sender: &std_mpsc::SyncSender<RecentRawJournalWriteRequest>,
     journal_overflow: &mut VecDeque<RecentRawJournalWriteRequest>,
     journal_overflow_capacity_batches: usize,
@@ -63,7 +65,7 @@ fn enqueue_recent_raw_journal_request(
     Ok(())
 }
 
-fn coalesce_recent_raw_journal_overflow_tail(
+pub(in crate::observed_swap_writer) fn coalesce_recent_raw_journal_overflow_tail(
     journal_overflow: &mut VecDeque<RecentRawJournalWriteRequest>,
     request: RecentRawJournalWriteRequest,
     journal_overflow_row_capacity: usize,
@@ -93,7 +95,7 @@ fn coalesce_recent_raw_journal_overflow_tail(
     Ok(())
 }
 
-fn ensure_recent_raw_journal_overflow_row_capacity(
+pub(in crate::observed_swap_writer) fn ensure_recent_raw_journal_overflow_row_capacity(
     journal_overflow: &VecDeque<RecentRawJournalWriteRequest>,
     request_rows: usize,
     journal_overflow_row_capacity: usize,
@@ -111,7 +113,7 @@ fn ensure_recent_raw_journal_overflow_row_capacity(
     Ok(())
 }
 
-fn recent_raw_journal_overflow_row_debt(
+pub(in crate::observed_swap_writer) fn recent_raw_journal_overflow_row_debt(
     journal_overflow: &VecDeque<RecentRawJournalWriteRequest>,
 ) -> usize {
     journal_overflow

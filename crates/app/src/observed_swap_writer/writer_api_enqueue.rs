@@ -1,3 +1,5 @@
+use super::*;
+
 impl ObservedSwapWriter {
     #[cfg(test)]
     pub(crate) fn start_for_test(

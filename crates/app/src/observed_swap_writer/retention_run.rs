@@ -1,3 +1,5 @@
+use super::*;
+
 pub(crate) fn run_observed_swap_retention_maintenance_once(
     sqlite_path: &str,
     config: ObservedSwapRetentionConfig,
@@ -9,7 +11,7 @@ pub(crate) fn run_observed_swap_retention_maintenance_once(
     run_observed_swap_retention_maintenance(&store, config, runtime_health.as_ref())
 }
 
-fn run_observed_swap_retention_maintenance(
+pub(in crate::observed_swap_writer) fn run_observed_swap_retention_maintenance(
     store: &SqliteStore,
     config: ObservedSwapRetentionConfig,
     runtime_health: Option<&ObservedSwapRetentionRuntimeHealthHandle>,

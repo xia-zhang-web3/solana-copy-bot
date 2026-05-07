@@ -1,4 +1,6 @@
-fn observed_swap_retention_should_stop(
+use super::*;
+
+pub(in crate::observed_swap_writer) fn observed_swap_retention_should_stop(
     runtime_health: Option<&ObservedSwapRetentionRuntimeHealthHandle>,
     last_sqlite_contention: &mut SqliteContentionSnapshot,
     maintenance_started: Instant,
@@ -38,7 +40,7 @@ fn observed_swap_retention_should_stop(
     None
 }
 
-fn observed_swap_retention_nominal_cutoff(
+pub(in crate::observed_swap_writer) fn observed_swap_retention_nominal_cutoff(
     now: chrono::DateTime<Utc>,
     config: ObservedSwapRetentionConfig,
 ) -> chrono::DateTime<Utc> {

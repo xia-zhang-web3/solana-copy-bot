@@ -1,14 +1,16 @@
+use super::*;
+
 pub(crate) struct ObservedSwapWriter {
-    sender: mpsc::Sender<ObservedSwapWriteRequest>,
-    normal_try_enqueue_soft_limit: usize,
-    raw_worker: Option<thread::JoinHandle<Result<()>>>,
-    journal_worker: Option<thread::JoinHandle<Result<()>>>,
-    telemetry: Arc<ObservedSwapWriterTelemetry>,
-    terminal_failure_message: Arc<Mutex<Option<String>>>,
+    pub(in crate::observed_swap_writer) sender: mpsc::Sender<ObservedSwapWriteRequest>,
+    pub(in crate::observed_swap_writer) normal_try_enqueue_soft_limit: usize,
+    pub(in crate::observed_swap_writer) raw_worker: Option<thread::JoinHandle<Result<()>>>,
+    pub(in crate::observed_swap_writer) journal_worker: Option<thread::JoinHandle<Result<()>>>,
+    pub(in crate::observed_swap_writer) telemetry: Arc<ObservedSwapWriterTelemetry>,
+    pub(in crate::observed_swap_writer) terminal_failure_message: Arc<Mutex<Option<String>>>,
 }
 
 impl ObservedSwapWriter {
-    fn terminal_failure_error(&self) -> Option<anyhow::Error> {
+    pub(in crate::observed_swap_writer) fn terminal_failure_error(&self) -> Option<anyhow::Error> {
         self.terminal_failure_message
             .lock()
             .ok()
@@ -23,7 +25,10 @@ impl ObservedSwapWriter {
         Ok(())
     }
 
-    async fn send_request(&self, request: ObservedSwapWriteRequest) -> Result<()> {
+    pub(in crate::observed_swap_writer) async fn send_request(
+        &self,
+        request: ObservedSwapWriteRequest,
+    ) -> Result<()> {
         self.ensure_running()?;
         let permit = self
             .sender

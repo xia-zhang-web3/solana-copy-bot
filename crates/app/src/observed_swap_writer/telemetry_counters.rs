@@ -1,9 +1,11 @@
+use super::*;
+
 impl ObservedSwapWriterTelemetry {
-    fn note_enqueued(&self) {
+    pub(in crate::observed_swap_writer) fn note_enqueued(&self) {
         self.pending_requests.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn note_batch_completed(&self, queued_at: &[Instant]) {
+    pub(in crate::observed_swap_writer) fn note_batch_completed(&self, queued_at: &[Instant]) {
         if queued_at.is_empty() {
             return;
         }
@@ -29,7 +31,7 @@ impl ObservedSwapWriterTelemetry {
                 });
     }
 
-    fn note_raw_batch_completed(&self, duration_ms: u64) {
+    pub(in crate::observed_swap_writer) fn note_raw_batch_completed(&self, duration_ms: u64) {
         self.note_phase_sample(
             &self.raw_batch_write_ms_samples,
             &self.last_raw_batch_write_ms_p95,
@@ -37,7 +39,10 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
-    fn note_journal_enqueue_wait_completed(&self, duration_ms: u64) {
+    pub(in crate::observed_swap_writer) fn note_journal_enqueue_wait_completed(
+        &self,
+        duration_ms: u64,
+    ) {
         self.note_phase_sample(
             &self.journal_enqueue_wait_ms_samples,
             &self.last_journal_enqueue_wait_ms_p95,
@@ -45,7 +50,10 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
-    fn note_journal_batch_write_completed(&self, duration_ms: u64) {
+    pub(in crate::observed_swap_writer) fn note_journal_batch_write_completed(
+        &self,
+        duration_ms: u64,
+    ) {
         self.note_phase_sample(
             &self.journal_batch_write_ms_samples,
             &self.last_journal_batch_write_ms_p95,
@@ -53,7 +61,10 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
-    fn note_observed_swaps_insert_completed(&self, duration_ms: u64) {
+    pub(in crate::observed_swap_writer) fn note_observed_swaps_insert_completed(
+        &self,
+        duration_ms: u64,
+    ) {
         self.note_phase_sample(
             &self.observed_swaps_insert_ms_samples,
             &self.last_observed_swaps_insert_ms_p95,
@@ -61,7 +72,10 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
-    fn note_wallet_activity_days_completed(&self, duration_ms: u64) {
+    pub(in crate::observed_swap_writer) fn note_wallet_activity_days_completed(
+        &self,
+        duration_ms: u64,
+    ) {
         self.note_phase_sample(
             &self.wallet_activity_days_ms_samples,
             &self.last_wallet_activity_days_ms_p95,
@@ -69,7 +83,7 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
-    fn note_worker_busy_completed(&self, duration_ms: u64) {
+    pub(in crate::observed_swap_writer) fn note_worker_busy_completed(&self, duration_ms: u64) {
         self.note_phase_sample(
             &self.worker_busy_ms_samples,
             &self.last_worker_busy_ms_p95,
@@ -77,28 +91,28 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
-    fn note_journal_queue_enqueued(&self, rows: usize) {
+    pub(in crate::observed_swap_writer) fn note_journal_queue_enqueued(&self, rows: usize) {
         self.journal_queue_enqueued_batches
             .fetch_add(1, Ordering::Relaxed);
         self.journal_queue_enqueued_rows
             .fetch_add(rows, Ordering::Relaxed);
     }
 
-    fn note_journal_queue_dequeued(&self, rows: usize) {
+    pub(in crate::observed_swap_writer) fn note_journal_queue_dequeued(&self, rows: usize) {
         self.journal_queue_dequeued_batches
             .fetch_add(1, Ordering::Relaxed);
         self.journal_queue_dequeued_rows
             .fetch_add(rows, Ordering::Relaxed);
     }
 
-    fn note_journal_overflow_enqueued(&self, rows: usize) {
+    pub(in crate::observed_swap_writer) fn note_journal_overflow_enqueued(&self, rows: usize) {
         self.journal_overflow_depth_batches
             .fetch_add(1, Ordering::Relaxed);
         self.journal_overflow_row_debt
             .fetch_add(rows, Ordering::Relaxed);
     }
 
-    fn note_journal_overflow_dequeued(&self, rows: usize) {
+    pub(in crate::observed_swap_writer) fn note_journal_overflow_dequeued(&self, rows: usize) {
         let _ = self.journal_overflow_depth_batches.fetch_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
@@ -111,22 +125,28 @@ impl ObservedSwapWriterTelemetry {
         );
     }
 
-    fn note_journal_overflow_rows_coalesced(&self, rows: usize) {
+    pub(in crate::observed_swap_writer) fn note_journal_overflow_rows_coalesced(
+        &self,
+        rows: usize,
+    ) {
         self.journal_overflow_row_debt
             .fetch_add(rows, Ordering::Relaxed);
     }
 
-    fn note_journal_writer_inflight_started(&self, rows: usize) {
+    pub(in crate::observed_swap_writer) fn note_journal_writer_inflight_started(
+        &self,
+        rows: usize,
+    ) {
         self.journal_writer_inflight_rows
             .store(rows, Ordering::Relaxed);
     }
 
-    fn note_journal_writer_inflight_finished(&self) {
+    pub(in crate::observed_swap_writer) fn note_journal_writer_inflight_finished(&self) {
         self.journal_writer_inflight_rows
             .store(0, Ordering::Relaxed);
     }
 
-    fn note_journal_sqlite_contention_delta(
+    pub(in crate::observed_swap_writer) fn note_journal_sqlite_contention_delta(
         &self,
         before: SqliteContentionSnapshot,
         after: SqliteContentionSnapshot,
@@ -144,5 +164,4 @@ impl ObservedSwapWriterTelemetry {
             Ordering::Relaxed,
         );
     }
-
 }

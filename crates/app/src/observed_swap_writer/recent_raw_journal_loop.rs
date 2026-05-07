@@ -1,19 +1,22 @@
 #[cfg(test)]
-fn clear_recent_raw_journal_phase_events_for_test() {
+pub(in crate::observed_swap_writer) fn clear_recent_raw_journal_phase_events_for_test() {
     if let Ok(mut events) = RECENT_RAW_JOURNAL_PHASE_EVENTS_FOR_TEST.lock() {
         events.clear();
     }
 }
 
 #[cfg(test)]
-fn recent_raw_journal_phase_events_for_test() -> Vec<&'static str> {
+pub(in crate::observed_swap_writer) fn recent_raw_journal_phase_events_for_test(
+) -> Vec<&'static str> {
     RECENT_RAW_JOURNAL_PHASE_EVENTS_FOR_TEST
         .lock()
         .map(|events| events.clone())
         .unwrap_or_default()
 }
 
-fn recent_raw_journal_writer_loop(
+use super::*;
+
+pub(in crate::observed_swap_writer) fn recent_raw_journal_writer_loop(
     receiver: std_mpsc::Receiver<RecentRawJournalWriteRequest>,
     startup_sender: std_mpsc::Sender<std::result::Result<(), String>>,
     config: ObservedSwapRecentRawJournalConfig,

@@ -1,4 +1,6 @@
-fn write_recent_raw_journal_batch_with_deadline(
+use super::*;
+
+pub(in crate::observed_swap_writer) fn write_recent_raw_journal_batch_with_deadline(
     store: &SqliteStore,
     config: &ObservedSwapRecentRawJournalConfig,
     telemetry: &ObservedSwapWriterTelemetry,
@@ -121,7 +123,10 @@ fn write_recent_raw_journal_batch_with_deadline(
     Ok(())
 }
 
-fn write_recent_raw_journal_batch_with_deadline_attempts<DeadlineFn, WriteFn>(
+pub(in crate::observed_swap_writer) fn write_recent_raw_journal_batch_with_deadline_attempts<
+    DeadlineFn,
+    WriteFn,
+>(
     telemetry: &ObservedSwapWriterTelemetry,
     inserted_swaps: &[SwapEvent],
     mut deadline_for_attempt: DeadlineFn,
@@ -212,7 +217,9 @@ where
     Ok(())
 }
 
-fn recent_raw_journal_summary_processed_rows(summary: &RecentRawJournalWriteSummary) -> usize {
+pub(in crate::observed_swap_writer) fn recent_raw_journal_summary_processed_rows(
+    summary: &RecentRawJournalWriteSummary,
+) -> usize {
     summary
         .recent_raw_bulk_rows_processed
         .max(summary.batch_rows)

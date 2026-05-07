@@ -1,0 +1,32 @@
+use super::*;
+
+#[derive(Debug, Default)]
+pub(in crate::observed_swap_writer) struct ObservedSwapWriterTelemetry {
+    pub(in crate::observed_swap_writer) pending_requests: AtomicUsize,
+    pub(in crate::observed_swap_writer) last_write_latency_ms_p95: AtomicU64,
+    pub(in crate::observed_swap_writer) last_raw_batch_write_ms_p95: AtomicU64,
+    pub(in crate::observed_swap_writer) last_observed_swaps_insert_ms_p95: AtomicU64,
+    pub(in crate::observed_swap_writer) last_wallet_activity_days_ms_p95: AtomicU64,
+    pub(in crate::observed_swap_writer) last_journal_enqueue_wait_ms_p95: AtomicU64,
+    pub(in crate::observed_swap_writer) last_journal_batch_write_ms_p95: AtomicU64,
+    pub(in crate::observed_swap_writer) last_worker_busy_ms_p95: AtomicU64,
+    pub(in crate::observed_swap_writer) journal_queue_enqueued_batches: AtomicUsize,
+    pub(in crate::observed_swap_writer) journal_queue_dequeued_batches: AtomicUsize,
+    pub(in crate::observed_swap_writer) journal_queue_enqueued_rows: AtomicUsize,
+    pub(in crate::observed_swap_writer) journal_queue_dequeued_rows: AtomicUsize,
+    pub(in crate::observed_swap_writer) journal_queue_capacity_batches: AtomicUsize,
+    pub(in crate::observed_swap_writer) journal_overflow_depth_batches: AtomicUsize,
+    pub(in crate::observed_swap_writer) journal_overflow_capacity_batches: AtomicUsize,
+    pub(in crate::observed_swap_writer) journal_overflow_row_debt: AtomicUsize,
+    pub(in crate::observed_swap_writer) journal_overflow_row_debt_capacity: AtomicUsize,
+    pub(in crate::observed_swap_writer) journal_writer_inflight_rows: AtomicUsize,
+    pub(in crate::observed_swap_writer) journal_sqlite_write_retry_total: AtomicU64,
+    pub(in crate::observed_swap_writer) journal_sqlite_busy_error_total: AtomicU64,
+    pub(in crate::observed_swap_writer) write_latency_ms_samples: Mutex<VecDeque<u64>>,
+    pub(in crate::observed_swap_writer) raw_batch_write_ms_samples: Mutex<VecDeque<u64>>,
+    pub(in crate::observed_swap_writer) observed_swaps_insert_ms_samples: Mutex<VecDeque<u64>>,
+    pub(in crate::observed_swap_writer) wallet_activity_days_ms_samples: Mutex<VecDeque<u64>>,
+    pub(in crate::observed_swap_writer) journal_enqueue_wait_ms_samples: Mutex<VecDeque<u64>>,
+    pub(in crate::observed_swap_writer) journal_batch_write_ms_samples: Mutex<VecDeque<u64>>,
+    pub(in crate::observed_swap_writer) worker_busy_ms_samples: Mutex<VecDeque<u64>>,
+}

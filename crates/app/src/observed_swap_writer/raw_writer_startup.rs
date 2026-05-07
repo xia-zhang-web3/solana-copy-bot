@@ -1,4 +1,6 @@
-fn poll_observed_swap_writer_downstream_startups(
+use super::*;
+
+pub(in crate::observed_swap_writer) fn poll_observed_swap_writer_downstream_startups(
     journal_startup_receiver: &mut Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
 ) -> Result<()> {
     poll_observed_swap_writer_startup_receiver(
@@ -9,7 +11,7 @@ fn poll_observed_swap_writer_downstream_startups(
     )
 }
 
-fn poll_observed_swap_writer_startup_receiver(
+pub(in crate::observed_swap_writer) fn poll_observed_swap_writer_startup_receiver(
     startup_receiver: &mut Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
     failure_context: &'static str,
     closed_message: &'static str,
@@ -32,7 +34,7 @@ fn poll_observed_swap_writer_startup_receiver(
     }
 }
 
-fn observed_swap_writer_downstream_startup_pending(
+pub(in crate::observed_swap_writer) fn observed_swap_writer_downstream_startup_pending(
     journal_startup_receiver: &Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
 ) -> bool {
     journal_startup_receiver.is_some()

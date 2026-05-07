@@ -1,4 +1,6 @@
-fn observed_swap_writer_loop(
+use super::*;
+
+pub(in crate::observed_swap_writer) fn observed_swap_writer_loop(
     sqlite_path: String,
     mut receiver: mpsc::Receiver<ObservedSwapWriteRequest>,
     journal_sender: Option<std_mpsc::SyncSender<RecentRawJournalWriteRequest>>,
@@ -60,11 +62,8 @@ fn observed_swap_writer_loop(
             }
             Err(mpsc::error::TryRecvError::Disconnected) => break,
         };
-        let batch = collect_observed_swap_write_batch(
-            first_request,
-            &mut receiver,
-            config.batch_max_size,
-        );
+        let batch =
+            collect_observed_swap_write_batch(first_request, &mut receiver, config.batch_max_size);
         let (swaps, replies, queued_at) = unpack_observed_swap_write_batch(batch);
 
         if let Some(message) = load_terminal_failure_message(&terminal_failure_message) {

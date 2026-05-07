@@ -1,12 +1,14 @@
+use super::*;
+
 #[derive(Debug)]
-struct RecentRawJournalCollectedWriteBatch {
-    inserted_swaps: Vec<SwapEvent>,
-    request_batches: usize,
-    coalesce_elapsed_ms: u64,
-    coalesce_limit_rows: usize,
+pub(in crate::observed_swap_writer) struct RecentRawJournalCollectedWriteBatch {
+    pub(in crate::observed_swap_writer) inserted_swaps: Vec<SwapEvent>,
+    pub(in crate::observed_swap_writer) request_batches: usize,
+    pub(in crate::observed_swap_writer) coalesce_elapsed_ms: u64,
+    pub(in crate::observed_swap_writer) coalesce_limit_rows: usize,
 }
 
-fn collect_recent_raw_journal_write_batch(
+pub(in crate::observed_swap_writer) fn collect_recent_raw_journal_write_batch(
     receiver: &std_mpsc::Receiver<RecentRawJournalWriteRequest>,
     first_request: RecentRawJournalWriteRequest,
     max_batches: usize,

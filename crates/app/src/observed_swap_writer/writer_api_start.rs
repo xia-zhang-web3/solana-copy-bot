@@ -1,5 +1,10 @@
+use super::*;
+
 impl ObservedSwapWriter {
-    fn start_with_config(sqlite_path: String, config: ObservedSwapWriterConfig) -> Result<Self> {
+    pub(in crate::observed_swap_writer) fn start_with_config(
+        sqlite_path: String,
+        config: ObservedSwapWriterConfig,
+    ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(config.channel_capacity);
         let telemetry = Arc::new(ObservedSwapWriterTelemetry::default());
         let terminal_failure_message = Arc::new(Mutex::new(None));

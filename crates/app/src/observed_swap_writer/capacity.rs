@@ -10,7 +10,7 @@ use super::{
     OBSERVED_SWAP_WRITER_NONCRITICAL_IRRELEVANT_MAX_QUEUED_BATCHES,
 };
 
-pub(super) fn observed_swap_writer_normal_try_enqueue_soft_limit(
+pub(in crate::observed_swap_writer) fn observed_swap_writer_normal_try_enqueue_soft_limit(
     config: &ObservedSwapWriterConfig,
 ) -> usize {
     if let Some(limit) = config.normal_try_enqueue_soft_limit_override {
@@ -35,7 +35,7 @@ pub(super) fn observed_swap_writer_normal_try_enqueue_soft_limit(
     noncritical_irrelevant_budget.min(normal_capacity)
 }
 
-pub(super) fn recent_raw_journal_adaptive_write_coalesce_max_batches(
+pub(in crate::observed_swap_writer) fn recent_raw_journal_adaptive_write_coalesce_max_batches(
     config: &ObservedSwapRecentRawJournalConfig,
 ) -> usize {
     config
@@ -46,7 +46,7 @@ pub(super) fn recent_raw_journal_adaptive_write_coalesce_max_batches(
         .max(config.write_coalesce_max_batches.max(1))
 }
 
-pub(super) fn recent_raw_journal_adaptive_write_coalesce_max_rows(
+pub(in crate::observed_swap_writer) fn recent_raw_journal_adaptive_write_coalesce_max_rows(
     config: &ObservedSwapRecentRawJournalConfig,
 ) -> usize {
     OBSERVED_SWAP_BATCH_MAX_SIZE
@@ -58,7 +58,7 @@ pub(super) fn recent_raw_journal_adaptive_write_coalesce_max_rows(
         .max(OBSERVED_SWAP_BATCH_MAX_SIZE.max(1))
 }
 
-pub(super) fn recent_raw_journal_adaptive_coalesce_pressure(
+pub(in crate::observed_swap_writer) fn recent_raw_journal_adaptive_coalesce_pressure(
     telemetry: &ObservedSwapWriterTelemetry,
 ) -> bool {
     telemetry.journal_queue_depth_batches() > 0
@@ -70,7 +70,7 @@ pub(super) fn recent_raw_journal_adaptive_coalesce_pressure(
         || telemetry.journal_overflow_row_debt.load(Ordering::Relaxed) > 0
 }
 
-pub(super) fn recent_raw_journal_overflow_row_capacity(
+pub(in crate::observed_swap_writer) fn recent_raw_journal_overflow_row_capacity(
     batch_max_size: usize,
     journal_config: &ObservedSwapRecentRawJournalConfig,
 ) -> usize {
@@ -81,7 +81,7 @@ pub(super) fn recent_raw_journal_overflow_row_capacity(
         .saturating_mul(journal_config.write_coalesce_max_batches.max(1))
 }
 
-pub(super) fn observed_swap_writer_discovery_critical_reserve_requests(
+pub(in crate::observed_swap_writer) fn observed_swap_writer_discovery_critical_reserve_requests(
     config: &ObservedSwapWriterConfig,
 ) -> usize {
     let reserved_requests = OBSERVED_SWAP_WRITER_DISCOVERY_CRITICAL_RESERVED_BATCHES

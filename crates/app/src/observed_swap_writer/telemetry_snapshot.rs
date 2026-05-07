@@ -1,5 +1,7 @@
+use super::*;
+
 impl ObservedSwapWriterTelemetry {
-    fn note_phase_sample(
+    pub(in crate::observed_swap_writer) fn note_phase_sample(
         &self,
         samples_lock: &Mutex<VecDeque<u64>>,
         last_p95: &AtomicU64,
@@ -14,7 +16,7 @@ impl ObservedSwapWriterTelemetry {
         }
     }
 
-    fn snapshot(&self) -> ObservedSwapWriterSnapshot {
+    pub(in crate::observed_swap_writer) fn snapshot(&self) -> ObservedSwapWriterSnapshot {
         let write_latency_ms_p95 = self
             .write_latency_ms_samples
             .lock()
@@ -100,7 +102,7 @@ impl ObservedSwapWriterTelemetry {
         }
     }
 
-    fn journal_queue_depth_batches(&self) -> usize {
+    pub(in crate::observed_swap_writer) fn journal_queue_depth_batches(&self) -> usize {
         let enqueued = self.journal_queue_enqueued_batches.load(Ordering::Relaxed);
         let dequeued = self.journal_queue_dequeued_batches.load(Ordering::Relaxed);
         let depth = enqueued.saturating_sub(dequeued);
@@ -112,7 +114,7 @@ impl ObservedSwapWriterTelemetry {
         }
     }
 
-    fn journal_queue_row_debt(&self) -> usize {
+    pub(in crate::observed_swap_writer) fn journal_queue_row_debt(&self) -> usize {
         self.journal_queue_enqueued_rows
             .load(Ordering::Relaxed)
             .saturating_sub(self.journal_queue_dequeued_rows.load(Ordering::Relaxed))

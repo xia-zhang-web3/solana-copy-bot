@@ -1,4 +1,6 @@
-fn drain_recent_raw_journal_overflow_nonblocking(
+use super::*;
+
+pub(in crate::observed_swap_writer) fn drain_recent_raw_journal_overflow_nonblocking(
     journal_sender: &std_mpsc::SyncSender<RecentRawJournalWriteRequest>,
     journal_overflow: &mut VecDeque<RecentRawJournalWriteRequest>,
     max_coalesced_batches: usize,
@@ -35,12 +37,12 @@ fn drain_recent_raw_journal_overflow_nonblocking(
     Ok(())
 }
 
-struct RecentRawJournalOverflowDrainBatch {
-    request: RecentRawJournalWriteRequest,
-    request_batches: usize,
+pub(in crate::observed_swap_writer) struct RecentRawJournalOverflowDrainBatch {
+    pub(in crate::observed_swap_writer) request: RecentRawJournalWriteRequest,
+    pub(in crate::observed_swap_writer) request_batches: usize,
 }
 
-fn collect_recent_raw_journal_overflow_drain_batch(
+pub(in crate::observed_swap_writer) fn collect_recent_raw_journal_overflow_drain_batch(
     journal_overflow: &mut VecDeque<RecentRawJournalWriteRequest>,
     max_coalesced_batches: usize,
     telemetry: &ObservedSwapWriterTelemetry,
@@ -65,7 +67,7 @@ fn collect_recent_raw_journal_overflow_drain_batch(
     })
 }
 
-fn flush_recent_raw_journal_overflow_blocking(
+pub(in crate::observed_swap_writer) fn flush_recent_raw_journal_overflow_blocking(
     journal_sender: &std_mpsc::SyncSender<RecentRawJournalWriteRequest>,
     journal_overflow: &mut VecDeque<RecentRawJournalWriteRequest>,
     telemetry: &ObservedSwapWriterTelemetry,
@@ -81,7 +83,7 @@ fn flush_recent_raw_journal_overflow_blocking(
     Ok(())
 }
 
-fn log_recent_raw_journal_phase(
+pub(in crate::observed_swap_writer) fn log_recent_raw_journal_phase(
     current_phase: &'static str,
     reason: Option<&'static str>,
     batch_rows: usize,

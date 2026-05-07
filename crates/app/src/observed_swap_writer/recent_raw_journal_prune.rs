@@ -1,4 +1,6 @@
-fn prune_recent_raw_journal_with_budget(
+use super::*;
+
+pub(in crate::observed_swap_writer) fn prune_recent_raw_journal_with_budget(
     store: &SqliteStore,
     retention_days: u32,
     now: DateTime<Utc>,
@@ -23,7 +25,7 @@ fn prune_recent_raw_journal_with_budget(
     Ok(summary)
 }
 
-fn recent_raw_journal_prune_backlog_skip_reason(
+pub(in crate::observed_swap_writer) fn recent_raw_journal_prune_backlog_skip_reason(
     config: &ObservedSwapRecentRawJournalConfig,
     telemetry: &ObservedSwapWriterTelemetry,
 ) -> Option<&'static str> {
@@ -66,7 +68,7 @@ fn recent_raw_journal_prune_backlog_skip_reason(
     None
 }
 
-fn recent_raw_journal_prune_due(
+pub(in crate::observed_swap_writer) fn recent_raw_journal_prune_due(
     store: &SqliteStore,
     config: &ObservedSwapRecentRawJournalConfig,
     telemetry: &ObservedSwapWriterTelemetry,
