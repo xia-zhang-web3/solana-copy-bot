@@ -1,3 +1,8 @@
+use super::validate_runtime_artifact_snapshot_shape;
+use crate::{DiscoveryRuntimeArtifact, SqliteStore};
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+
 impl SqliteStore {
     pub fn restore_discovery_runtime_artifact(
         &self,

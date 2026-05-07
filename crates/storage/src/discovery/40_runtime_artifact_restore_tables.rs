@@ -1,3 +1,9 @@
+use super::{
+    format_runtime_artifact_restore_dirty_tables, runtime_artifact_restore_dirty_tables_on_conn,
+};
+use anyhow::{Context, Result};
+use rusqlite::Connection;
+
 #[allow(dead_code)]
 fn ensure_discovery_runtime_restore_tables_on_conn(conn: &Connection) -> Result<()> {
     conn.execute_batch(

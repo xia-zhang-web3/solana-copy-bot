@@ -1,3 +1,12 @@
+use super::{canonical_wallet_metrics_window_start, insert_trusted_wallet_metrics_snapshot_on_conn};
+use crate::{
+    DiscoveryRuntimeArtifact, TrustedSelectionState, TrustedSnapshotSourceKind,
+    TrustedWalletMetricsSnapshotWrite,
+};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection};
+
 #[allow(dead_code)]
 fn restore_runtime_artifact_publication_state_on_conn(
     conn: &Connection,
