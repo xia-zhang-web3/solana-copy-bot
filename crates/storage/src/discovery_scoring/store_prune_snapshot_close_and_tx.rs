@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn load_wallet_scoring_close_facts_since(
         &self,

@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn prune_discovery_scoring_before_batch(
         &self,

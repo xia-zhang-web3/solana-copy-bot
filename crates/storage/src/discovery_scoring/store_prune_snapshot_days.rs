@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn has_wallet_scoring_data_since(&self, window_start: DateTime<Utc>) -> Result<bool> {
         let exists = self
