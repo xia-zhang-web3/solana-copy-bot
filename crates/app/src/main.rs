@@ -123,9 +123,6 @@ use crate::task_spawns::spawn_shadow_snapshot_task;
 use crate::telemetry::format_error_chain;
 use crate::zero_universe::*;
 
-include!("app_parts/00_sqlite_maintenance.rs");
-include!("app_parts/01.rs");
-
 mod app_consumer_telemetry;
 mod app_loop;
 mod app_main;
@@ -137,6 +134,8 @@ mod quality_contract;
 mod risk_contract;
 mod risk_types;
 mod runtime_bootstrap;
+mod runtime_helpers;
+mod sqlite_maintenance;
 use crate::app_consumer_telemetry::AppConsumerLoopTelemetry;
 #[cfg(test)]
 use crate::app_consumer_telemetry::AppConsumerLoopTelemetrySnapshot;
@@ -172,6 +171,8 @@ use crate::runtime_follow_surface::follow_event_retention_duration;
 use crate::runtime_follow_surface::{
     startup_follow_snapshot_from_publication_truth, startup_runtime_publication_truth,
 };
+use crate::runtime_helpers::*;
+use crate::sqlite_maintenance::*;
 
 #[cfg(test)]
 mod app_tests;

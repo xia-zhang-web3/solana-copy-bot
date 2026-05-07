@@ -1,28 +1,30 @@
-fn risk_event_write_error_requires_restart(error: &anyhow::Error) -> bool {
+use crate::*;
+
+pub(crate) fn risk_event_write_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
-fn shadow_risk_pause_restore_error_requires_restart(error: &anyhow::Error) -> bool {
+pub(crate) fn shadow_risk_pause_restore_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
-fn shadow_risk_background_refresh_error_requires_restart(error: &anyhow::Error) -> bool {
+pub(crate) fn shadow_risk_background_refresh_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
-fn shadow_open_lot_refresh_error_requires_restart(error: &anyhow::Error) -> bool {
+pub(crate) fn shadow_open_lot_refresh_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
-fn shadow_snapshot_error_requires_restart(error: &anyhow::Error) -> bool {
+pub(crate) fn shadow_snapshot_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
-fn shadow_risk_state_event_error_requires_abort(error: &anyhow::Error) -> bool {
+pub(crate) fn shadow_risk_state_event_error_requires_abort(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
-fn persist_runtime_risk_event_or_warn(
+pub(crate) fn persist_runtime_risk_event_or_warn(
     store: &SqliteStore,
     event_type: &str,
     severity: &str,
@@ -46,7 +48,7 @@ fn persist_runtime_risk_event_or_warn(
     Ok(())
 }
 
-fn persist_shadow_risk_fail_closed_event_or_warn(
+pub(crate) fn persist_shadow_risk_fail_closed_event_or_warn(
     store: &SqliteStore,
     ts: DateTime<Utc>,
     details_json: &str,
@@ -62,7 +64,7 @@ fn persist_shadow_risk_fail_closed_event_or_warn(
     )
 }
 
-fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
+pub(crate) fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
         message == OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT
@@ -71,13 +73,13 @@ fn observed_swap_writer_error_requires_restart(error: &anyhow::Error) -> bool {
     })
 }
 
-fn ingestion_error_backoff_ms(consecutive_errors: u32) -> u64 {
+pub(crate) fn ingestion_error_backoff_ms(consecutive_errors: u32) -> u64 {
     let index =
         (consecutive_errors.saturating_sub(1) as usize).min(INGESTION_ERROR_BACKOFF_MS.len() - 1);
     INGESTION_ERROR_BACKOFF_MS[index]
 }
 
-fn note_recent_swap_signature(
+pub(crate) fn note_recent_swap_signature(
     recent_signatures: &mut HashSet<String>,
     recent_signature_order: &mut VecDeque<String>,
     signature: &str,
@@ -94,7 +96,7 @@ fn note_recent_swap_signature(
     true
 }
 
-fn forget_recent_swap_signature(
+pub(crate) fn forget_recent_swap_signature(
     recent_signatures: &mut HashSet<String>,
     recent_signature_order: &mut VecDeque<String>,
     signature: &str,
@@ -118,13 +120,13 @@ fn forget_recent_swap_signature(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ObservedSwapShadowRelevance {
+pub(crate) enum ObservedSwapShadowRelevance {
     Relevant(ShadowSwapSide),
     IrrelevantUnclassified,
     IrrelevantNotFollowed(ShadowSwapSide),
 }
 
-fn classify_observed_swap_shadow_relevance(
+pub(crate) fn classify_observed_swap_shadow_relevance(
     swap: &SwapEvent,
     follow_snapshot: &FollowSnapshot,
     shadow_scheduler: &ShadowScheduler,
@@ -159,7 +161,7 @@ fn classify_observed_swap_shadow_relevance(
 
     ObservedSwapShadowRelevance::Relevant(side)
 }
-async fn enqueue_irrelevant_observed_swap(
+pub(crate) async fn enqueue_irrelevant_observed_swap(
     observed_swap_writer: &ObservedSwapWriter,
     recent_signatures: &mut HashSet<String>,
     recent_signature_order: &mut VecDeque<String>,
@@ -175,7 +177,7 @@ async fn enqueue_irrelevant_observed_swap(
     )
 }
 
-fn irrelevant_observed_swap_requires_discovery_critical_persistence(
+pub(crate) fn irrelevant_observed_swap_requires_discovery_critical_persistence(
     swap: &SwapEvent,
     follow_snapshot: &FollowSnapshot,
     open_shadow_lots: &HashSet<(String, String)>,

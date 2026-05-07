@@ -1,5 +1,7 @@
+use crate::*;
+
 #[cfg(test)]
-fn startup_sqlite_wal_checkpoint_error_requires_abort(
+pub(crate) fn startup_sqlite_wal_checkpoint_error_requires_abort(
     primary_error: Option<&anyhow::Error>,
     fallback_error: Option<&anyhow::Error>,
 ) -> bool {
@@ -7,26 +9,26 @@ fn startup_sqlite_wal_checkpoint_error_requires_abort(
         || fallback_error.is_some_and(is_fatal_sqlite_anyhow_error)
 }
 
-fn runtime_sqlite_write_error_requires_restart(error: &anyhow::Error) -> bool {
+pub(crate) fn runtime_sqlite_write_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
-fn history_retention_error_requires_restart(error: &anyhow::Error) -> bool {
+pub(crate) fn history_retention_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
-fn observed_swap_retention_error_requires_restart(error: &anyhow::Error) -> bool {
+pub(crate) fn observed_swap_retention_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SqliteMaintenanceTask {
+pub(crate) enum SqliteMaintenanceTask {
     HistoryRetention,
     ObservedSwapRetention,
 }
 
 impl SqliteMaintenanceTask {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::HistoryRetention => "history_retention",
             Self::ObservedSwapRetention => "observed_swap_retention",
@@ -34,7 +36,7 @@ impl SqliteMaintenanceTask {
     }
 }
 
-fn sqlite_maintenance_block_reason(
+pub(crate) fn sqlite_maintenance_block_reason(
     _task: SqliteMaintenanceTask,
     app_started_at: StdInstant,
     now: StdInstant,
@@ -110,7 +112,7 @@ fn sqlite_maintenance_block_reason(
     None
 }
 
-fn sqlite_maintenance_block_reason_key(reason: &str) -> &'static str {
+pub(crate) fn sqlite_maintenance_block_reason_key(reason: &str) -> &'static str {
     if reason.starts_with("startup_grace_remaining_ms=") {
         "startup_grace_remaining_ms"
     } else if reason.starts_with("writer_pending_requests=") {
@@ -128,15 +130,15 @@ fn sqlite_maintenance_block_reason_key(reason: &str) -> &'static str {
     }
 }
 
-fn stale_lot_cleanup_error_requires_restart(error: &anyhow::Error) -> bool {
+pub(crate) fn stale_lot_cleanup_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
-fn alert_delivery_error_requires_restart(error: &anyhow::Error) -> bool {
+pub(crate) fn alert_delivery_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
 
 #[cfg(test)]
-fn discovery_task_error_requires_restart(error: &anyhow::Error) -> bool {
+pub(crate) fn discovery_task_error_requires_restart(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
 }
