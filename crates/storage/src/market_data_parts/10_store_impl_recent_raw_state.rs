@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn ensure_recent_raw_journal_tables(&self) -> Result<()> {
         ensure_recent_raw_journal_tables_on_conn(&self.conn)

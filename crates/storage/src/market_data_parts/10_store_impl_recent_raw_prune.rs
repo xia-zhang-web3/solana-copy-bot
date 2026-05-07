@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn prune_recent_raw_journal_before_batch(
         &self,

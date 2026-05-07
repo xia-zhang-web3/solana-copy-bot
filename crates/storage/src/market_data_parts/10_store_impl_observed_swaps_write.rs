@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn insert_observed_swap(&self, swap: &SwapEvent) -> Result<bool> {
         let written = self

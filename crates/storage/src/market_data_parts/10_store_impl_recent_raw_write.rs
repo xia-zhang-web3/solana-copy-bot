@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn insert_recent_raw_journal_batch(
         &self,

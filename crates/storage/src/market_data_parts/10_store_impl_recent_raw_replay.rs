@@ -1,3 +1,5 @@
+use super::*;
+
 impl SqliteStore {
     pub fn replay_recent_raw_journal_into_runtime_store(
         &self,
