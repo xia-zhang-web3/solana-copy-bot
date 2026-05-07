@@ -1,10 +1,15 @@
-const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
-const EPS: f64 = 1e-12;
-const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
-const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
-const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
+use chrono::{DateTime, Utc};
+use copybot_config::ShadowConfig;
+use copybot_core_types::{Lamports, TokenQuantity};
+use std::collections::{HashMap, HashSet};
 
-fn sol_to_lamports_floor(sol: f64) -> Option<Lamports> {
+pub(crate) const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+pub(crate) const EPS: f64 = 1e-12;
+pub(crate) const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
+pub(crate) const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
+pub(crate) const QUALITY_MAX_SIGNATURE_PAGES: u32 = 1;
+
+pub(crate) fn sol_to_lamports_floor(sol: f64) -> Option<Lamports> {
     if !sol.is_finite() || sol < 0.0 {
         return None;
     }
@@ -15,7 +20,7 @@ fn sol_to_lamports_floor(sol: f64) -> Option<Lamports> {
     Some(Lamports::new(scaled.floor() as u64))
 }
 
-fn sol_to_lamports_ceil(sol: f64) -> Option<Lamports> {
+pub(crate) fn sol_to_lamports_ceil(sol: f64) -> Option<Lamports> {
     if !sol.is_finite() || sol < 0.0 {
         return None;
     }
@@ -26,18 +31,18 @@ fn sol_to_lamports_ceil(sol: f64) -> Option<Lamports> {
     Some(Lamports::new(scaled.ceil() as u64))
 }
 
-fn lamports_to_sol(lamports: Lamports) -> f64 {
+pub(crate) fn lamports_to_sol(lamports: Lamports) -> f64 {
     lamports.as_u64() as f64 / 1_000_000_000.0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScaledExactShadowQty {
+pub(crate) enum ScaledExactShadowQty {
     Exact(TokenQuantity),
     Approximate,
     InvalidZeroRaw,
 }
 
-fn scaled_exact_shadow_qty(
+pub(crate) fn scaled_exact_shadow_qty(
     exact_token_qty: Option<TokenQuantity>,
     exact_leader_notional_lamports: Option<Lamports>,
     copy_notional_lamports: Option<Lamports>,
@@ -75,10 +80,10 @@ fn scaled_exact_shadow_qty(
 
 #[derive(Debug, Clone)]
 pub struct ShadowService {
-    config: ShadowConfig,
-    copy_notional_lamports: Option<Lamports>,
-    min_leader_notional_lamports: Option<Lamports>,
-    helius_http_url: Option<String>,
+    pub(crate) config: ShadowConfig,
+    pub(crate) copy_notional_lamports: Option<Lamports>,
+    pub(crate) min_leader_notional_lamports: Option<Lamports>,
+    pub(crate) helius_http_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]

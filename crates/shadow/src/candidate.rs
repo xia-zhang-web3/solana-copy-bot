@@ -1,4 +1,4 @@
-use super::{EPS, SOL_MINT};
+use super::types::{EPS, SOL_MINT};
 use copybot_core_types::{Lamports, SwapEvent, TokenQuantity};
 
 #[derive(Debug, Clone)]

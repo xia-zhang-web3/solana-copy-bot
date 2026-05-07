@@ -1,3 +1,6 @@
+use super::types::{sol_to_lamports_ceil, sol_to_lamports_floor, ShadowService};
+use copybot_config::ShadowConfig;
+
 impl ShadowService {
     pub fn new(config: ShadowConfig) -> Self {
         Self {

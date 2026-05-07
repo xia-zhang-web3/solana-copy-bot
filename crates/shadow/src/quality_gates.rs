@@ -1,4 +1,4 @@
-use super::{
+use super::types::{
     ShadowDropReason, ShadowService, EPS, QUALITY_CACHE_TTL_SECONDS, QUALITY_MAX_SIGNATURE_PAGES,
     QUALITY_RPC_TIMEOUT_MS,
 };

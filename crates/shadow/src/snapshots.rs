@@ -1,4 +1,4 @@
-use super::{ShadowService, ShadowSnapshot};
+use super::types::{ShadowService, ShadowSnapshot};
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_storage::SqliteStore;
