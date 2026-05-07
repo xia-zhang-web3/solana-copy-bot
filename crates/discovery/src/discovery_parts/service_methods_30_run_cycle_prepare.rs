@@ -1,5 +1,9 @@
-include!("service_methods_30_run_cycle_prepare_fetch.rs");
-include!("service_methods_30_run_cycle_prepare_decide.rs");
+#[path = "service_methods_30_run_cycle_prepare_fetch.rs"]
+mod service_methods_30_run_cycle_prepare_fetch;
+#[path = "service_methods_30_run_cycle_prepare_decide.rs"]
+mod service_methods_30_run_cycle_prepare_decide;
+
+use self::service_methods_30_run_cycle_prepare_fetch::RunCycleWindowFetchPreparation;
 
 struct RunCycleWindowPreparation {
     swaps_window: usize,

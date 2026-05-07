@@ -1,5 +1,7 @@
+use super::*;
+
 impl DiscoveryService {
-    fn prepare_run_cycle_window_decide(
+    pub(super) fn prepare_run_cycle_window_decide(
         &self,
         store: &SqliteStore,
         state: &mut DiscoveryWindowState,

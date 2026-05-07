@@ -1,13 +1,15 @@
-struct RunCycleWindowFetchPreparation {
-    publish_due: bool,
-    fetch_progress: FetchProgress,
-    delta_fetched: usize,
-    swaps_evicted_due_cap: usize,
-    swaps_warm_loaded: usize,
+use super::*;
+
+pub(super) struct RunCycleWindowFetchPreparation {
+    pub(super) publish_due: bool,
+    pub(super) fetch_progress: FetchProgress,
+    pub(super) delta_fetched: usize,
+    pub(super) swaps_evicted_due_cap: usize,
+    pub(super) swaps_warm_loaded: usize,
 }
 
 impl DiscoveryService {
-    fn prepare_run_cycle_window_fetch(
+    pub(super) fn prepare_run_cycle_window_fetch(
         &self,
         store: &SqliteStore,
         state: &mut DiscoveryWindowState,
