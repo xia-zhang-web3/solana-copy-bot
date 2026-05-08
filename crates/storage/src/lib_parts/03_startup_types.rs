@@ -37,17 +37,7 @@ pub(super) fn sqlite_startup_large_wal_checkpoint_skip_detail(
     )
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SqliteContentionSnapshot {
-    pub write_retry_total: u64,
-    pub busy_error_total: u64,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SqliteBatchedDeleteSummary {
-    pub deleted_rows: usize,
-    pub batches: usize,
-}
+pub use copybot_storage_core::{SqliteBatchedDeleteSummary, SqliteContentionSnapshot};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SqliteBatchedDeleteSummaryWithCompletion {
