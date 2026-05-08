@@ -22,6 +22,8 @@ mod retention_and_heartbeat;
 mod shadow_exact;
 #[path = "lib_tests/02_storage_tests.rs"]
 mod shadow_risk;
+#[path = "lib_tests/14_storage_tests.rs"]
+mod snapshot_policy;
 #[path = "lib_tests/10_storage_tests.rs"]
 mod snapshots_and_observed;
 #[path = "lib_tests/13_storage_tests.rs"]
