@@ -55,7 +55,7 @@ pub use types::{
     SqliteSnapshotSummary, SqliteStartupLargeWalCheckpointSummary, SqliteStartupPolicy,
     StartupStepOutcome, StartupStepProgress, StartupStepProgressReporter, StartupStepRuntimePolicy,
     StartupStepTimeout, StartupStepTimeoutBehavior, StartupTrustedSelectionGateStatus,
-    TokenMarketStats, TrustedSelectionState, TrustedSnapshotSourceKind,
+    TokenMarketStats, TrustedSelectionState, TrustedSnapshotSourceKind, WalletActivityDayRow,
     DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION, POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER,
     POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER, SHADOW_CLOSE_CONTEXT_MARKET,
     SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY, SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,

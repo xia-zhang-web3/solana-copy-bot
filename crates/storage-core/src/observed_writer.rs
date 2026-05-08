@@ -1,16 +1,13 @@
-use crate::{ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary, SqliteDiscoveryStore};
+use crate::{
+    ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary, SqliteDiscoveryStore,
+    WalletActivityDayRow,
+};
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use copybot_core_types::SwapEvent;
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::time::Instant;
-
-struct WalletActivityDayRow {
-    wallet_id: String,
-    activity_day: NaiveDate,
-    last_seen: DateTime<Utc>,
-}
 
 impl SqliteDiscoveryStore {
     pub fn ensure_observed_swap_writer_tables(&self) -> Result<()> {

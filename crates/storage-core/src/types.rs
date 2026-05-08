@@ -4,7 +4,7 @@ pub use types_discovery_rebuild::{
 pub use types_history_retention::{HistoryRetentionCutoffs, HistoryRetentionSummary};
 pub use types_observed::{
     ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary,
-    SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
+    SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot, WalletActivityDayRow,
 };
 pub use types_publication::{
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow, DiscoveryRuntimeArtifact,

@@ -2,15 +2,8 @@ use super::*;
 
 pub use copybot_storage_core::{
     DiscoveryRuntimeMode, FollowlistUpdateResult, ObservedSwapBatchWriteMetrics,
-    RecentRawJournalStateRow, RecentRawJournalWriteSummary,
+    RecentRawJournalStateRow, RecentRawJournalWriteSummary, WalletActivityDayRow,
 };
-
-#[derive(Debug, Clone)]
-pub struct WalletActivityDayRow {
-    pub wallet_id: String,
-    pub activity_day: NaiveDate,
-    pub last_seen: DateTime<Utc>,
-}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WalletActivityDayCoverageSummary {

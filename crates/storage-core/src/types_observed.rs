@@ -1,8 +1,17 @@
+use chrono::{DateTime, NaiveDate, Utc};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedSwapBatchWriteMetrics {
     pub inserted: Vec<bool>,
     pub observed_swaps_insert_ms: u64,
     pub wallet_activity_days_upsert_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletActivityDayRow {
+    pub wallet_id: String,
+    pub activity_day: NaiveDate,
+    pub last_seen: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
