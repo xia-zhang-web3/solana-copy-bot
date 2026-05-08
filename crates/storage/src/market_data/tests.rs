@@ -7,6 +7,10 @@ use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 use tempfile::tempdir;
 
+#[path = "../market_data_tests/helpers.rs"]
+mod helpers;
+use helpers::*;
+
 #[path = "../market_data_tests/00_market_data_tests.rs"]
 mod base;
 #[path = "../market_data_tests/01_market_data_tests.rs"]
@@ -18,4 +22,7 @@ mod target_filters;
 #[path = "../market_data_tests/03_market_data_tests.rs"]
 mod wallet_activity;
 
-use base::*;
+#[path = "../market_data_tests/05_market_data_tests.rs"]
+mod recent_raw_bulk;
+#[path = "../market_data_tests/06_market_data_tests.rs"]
+mod wallet_activity_tail;

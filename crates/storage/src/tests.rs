@@ -35,4 +35,23 @@ mod trusted_selection_a;
 #[path = "lib_tests/04_storage_tests.rs"]
 mod trusted_selection_b;
 
+#[path = "lib_tests/18_storage_tests.rs"]
+mod base_shadow_notional;
+#[path = "lib_tests/23_storage_tests.rs"]
+mod discovery_scoring_tail;
+#[path = "lib_tests/20_storage_tests.rs"]
+mod history_retention_events;
+#[path = "lib_tests/17_storage_tests.rs"]
+mod observed_buy_mints_tail;
+#[path = "lib_tests/19_storage_tests.rs"]
+mod observed_cursor_pages;
+#[path = "lib_tests/15_storage_tests.rs"]
+mod retention_heartbeat_tail;
+#[path = "lib_tests/22_storage_tests.rs"]
+mod shadow_risk_metrics_tail;
+#[path = "lib_tests/16_storage_tests.rs"]
+mod trusted_selection_activity;
+#[path = "lib_tests/21_storage_tests.rs"]
+mod trusted_selection_tail;
+
 use base::*;
