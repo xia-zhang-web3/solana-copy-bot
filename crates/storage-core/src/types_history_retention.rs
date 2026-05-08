@@ -22,6 +22,17 @@ pub struct HistoryRetentionSummary {
     pub completed_full_sweep: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExecutionHistoryRetentionSummary {
+    pub fills_deleted: u64,
+    pub orders_deleted: u64,
+    pub copy_signals_deleted: u64,
+    pub order_batches: usize,
+    pub copy_signal_batches: usize,
+    pub orders_completed_full_sweep: bool,
+    pub copy_signals_completed_full_sweep: bool,
+}
+
 impl HistoryRetentionSummary {
     pub fn is_empty(&self) -> bool {
         self.risk_events_deleted == 0

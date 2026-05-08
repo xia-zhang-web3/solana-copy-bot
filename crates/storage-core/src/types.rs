@@ -1,7 +1,9 @@
 pub use types_discovery_rebuild::{
     DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateRow,
 };
-pub use types_history_retention::{HistoryRetentionCutoffs, HistoryRetentionSummary};
+pub use types_history_retention::{
+    ExecutionHistoryRetentionSummary, HistoryRetentionCutoffs, HistoryRetentionSummary,
+};
 pub use types_observed::{
     ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary,
     SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot, WalletActivityDayRow,

@@ -1,4 +1,7 @@
-use crate::{HistoryRetentionCutoffs, HistoryRetentionSummary, SqliteDiscoveryStore};
+use crate::{
+    ExecutionHistoryRetentionSummary, HistoryRetentionCutoffs, HistoryRetentionSummary,
+    SqliteDiscoveryStore,
+};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::params;
@@ -18,17 +21,6 @@ struct DeleteSummary {
     deleted_rows: usize,
     batches: usize,
     completed_full_sweep: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ExecutionHistoryRetentionSummary {
-    fills_deleted: u64,
-    orders_deleted: u64,
-    copy_signals_deleted: u64,
-    order_batches: usize,
-    copy_signal_batches: usize,
-    orders_completed_full_sweep: bool,
-    copy_signals_completed_full_sweep: bool,
 }
 
 impl SqliteDiscoveryStore {
