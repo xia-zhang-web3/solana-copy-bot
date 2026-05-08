@@ -106,8 +106,14 @@ mod discovery_service_methods_21;
 mod discovery_service_methods_22;
 #[path = "discovery_parts/service_methods_28_collect_buy_mints_prepass_exact_batches.rs"]
 mod discovery_service_methods_28_exact_batches;
+#[path = "discovery_parts/service_methods_28_collect_buy_mints_prepass_expired_head.rs"]
+mod discovery_service_methods_28_expired_head;
 #[path = "discovery_parts/service_methods_28_collect_buy_mints_prepass.rs"]
 mod discovery_service_methods_28_prepass;
+#[path = "discovery_parts/service_methods_28_collect_buy_mints_prepass_new_tail.rs"]
+mod discovery_service_methods_28_new_tail;
+#[path = "discovery_parts/service_methods_28_collect_buy_mints_prepass_steps.rs"]
+mod discovery_service_methods_28_steps;
 #[path = "discovery_parts/service_methods_23.rs"]
 mod discovery_service_methods_23;
 #[path = "discovery_parts/service_methods_24.rs"]
