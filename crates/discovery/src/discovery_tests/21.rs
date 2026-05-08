@@ -267,8 +267,7 @@
         assert_eq!(after.updated_at, before.updated_at);
         Ok(())
     }
-
-    fn seed_stage1_recent_raw_journal_required_window_ahead_minimal_pre_predicate_fixture(
+fn seed_stage1_recent_raw_journal_required_window_ahead_minimal_pre_predicate_fixture(
     ) -> Result<(
         tempfile::TempDir,
         SqliteStore,

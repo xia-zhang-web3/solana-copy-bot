@@ -248,8 +248,7 @@
         );
         Ok(())
     }
-
-    #[test]
+#[test]
     fn persist_publication_state_refuses_healthy_write_while_incomplete_replay_checkpoint_exists_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;

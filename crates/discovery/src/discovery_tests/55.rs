@@ -1,20 +1,20 @@
-    #[test]
-    fn persisted_stream_reconcile_expired_head_pending_exact_batch_survives_rollover_and_finishes_batch_stage1(
+#[test]
+    fn persisted_stream_reconcile_expired_head_noisy_bucket_roll_does_not_restart_fresh_scan_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp
             .path()
-            .join("stage1-reconcile-expired-head-pending-batch.db");
+            .join("stage1-reconcile-expired-head-noisy-bucket-roll.db");
         let mut store = SqliteStore::open(Path::new(&db_path))?;
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         store.run_migrations(&migration_dir)?;
 
         let mut config = bounded_stage1_runtime_config();
         config.metric_snapshot_interval_seconds = 60;
-        config.max_fetch_swaps_per_cycle = 20_000;
+        config.max_fetch_swaps_per_cycle = 32;
         config.max_fetch_pages_per_cycle = 1;
         let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
-        let source_now = DateTime::parse_from_rfc3339("2026-03-19T12:00:50Z")
+        let source_now = DateTime::parse_from_rfc3339("2026-03-18T18:20:50Z")
             .expect("valid timestamp")
             .with_timezone(&Utc);
         let target_one_now = source_now + Duration::seconds(60);
@@ -31,27 +31,24 @@
         let target_two_metrics_window_start =
             metrics_window_start_for_test(&config, target_two_now);
 
-        let expired_token_count = STALE_RECONCILE_TOKEN_BATCH_CAP.saturating_add(17);
         let mut exact_counts = BTreeMap::new();
-        let mut expired_tokens = Vec::new();
-        for idx in 0..expired_token_count {
-            let token = format!("TokenStage1ExpiredHeadPending{idx:05}111111111");
+        for idx in 0..256usize {
+            let token = format!("TokenStage1NoisyExpiredHead{idx:04}111111111111");
             store.insert_observed_swap(&swap(
-                "wallet_stage1_expired_head_pending",
-                &format!("stage1-expired-head-pending-buy-{idx}"),
-                source_window_start + Duration::seconds((idx % 20) as i64 + 1),
+                "wallet_stage1_noisy_expired",
+                &format!("stage1-noisy-expired-buy-{idx}"),
+                source_window_start + Duration::seconds((idx % 30) as i64),
                 SOL_MINT,
                 &token,
                 1.0,
                 10.0,
             ))?;
-            exact_counts.insert(token.clone(), 1u32);
-            expired_tokens.push(token);
+            exact_counts.insert(token, 1u32);
         }
-        let survivor = "TokenStage1ExpiredHeadPendingSurvivor111".to_string();
+        let survivor = "TokenStage1NoisyExpiredHeadSurvivor111111".to_string();
         store.insert_observed_swap(&swap(
-            "wallet_stage1_expired_head_pending",
-            "stage1-expired-head-pending-survivor",
+            "wallet_stage1_noisy_expired",
+            "stage1-noisy-expired-survivor",
             target_one_window_start + Duration::seconds(5),
             SOL_MINT,
             &survivor,
@@ -67,12 +64,8 @@
         );
         state.phase = DiscoveryPersistedRebuildPhase::CollectBuyMints;
         state.payload.collect_buy_mints_prepass_complete = true;
-        state.payload.buy_mint_counts = exact_counts;
-        state.payload.unique_buy_mints = expired_tokens
-            .iter()
-            .cloned()
-            .chain(std::iter::once(survivor))
-            .collect();
+        state.payload.buy_mint_counts = exact_counts.clone();
+        state.payload.unique_buy_mints = exact_counts.keys().cloned().collect();
         assert!(
             discovery.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
                 &mut state,
@@ -82,107 +75,66 @@
             )?
         );
 
-        let first_phase_advance = discovery.advance_persisted_stream_prepass(
+        let phase_advance = discovery.advance_persisted_stream_prepass(
             &store,
             &mut state,
-            config.max_fetch_swaps_per_cycle,
-            config.max_fetch_pages_per_cycle,
+            32,
+            1,
             None,
-            Instant::now() + StdDuration::from_secs(5),
+            Instant::now() + StdDuration::from_secs(1),
         )?;
-        state.prepass_rows_processed = state
-            .prepass_rows_processed
-            .saturating_add(first_phase_advance.rows_processed);
+        state.prepass_rows_processed = 2_154_114usize;
         state.prepass_pages_processed = state
             .prepass_pages_processed
-            .saturating_add(first_phase_advance.pages_processed);
+            .saturating_add(phase_advance.pages_processed)
+            .saturating_add(208);
+        state.payload.collect_buy_mints_cursor_token =
+            phase_advance.collect_buy_mints_cursor_token.clone();
         assert_eq!(
-            first_phase_advance.rows_processed,
-            STALE_RECONCILE_EXACT_COUNT_BATCH_CAP
+            state.payload.collect_buy_mints_mode,
+            CollectBuyMintsMode::ReconcileExpiredHead
         );
-        assert_eq!(first_phase_advance.pages_processed, 1);
-        assert_eq!(
-            state.payload.collect_buy_mints_reconcile_expired_head_pending_mints.len(),
-            STALE_RECONCILE_TOKEN_BATCH_CAP
-                .saturating_sub(STALE_RECONCILE_EXACT_COUNT_BATCH_CAP),
-            "first bounded cycle should persist the remainder of the stale expired-head exact candidate batch instead of rediscovering it after rollover"
-        );
-
+        assert!(state
+            .payload
+            .collect_buy_mints_reconcile_expired_head_cursor_token
+            .is_some());
         store.upsert_discovery_persisted_rebuild_state(
             &DiscoveryService::persisted_stream_rebuild_row(&state, target_one_now)?,
         )?;
-        let (mut resumed, restore_outcome) = discovery
-            .load_or_start_persisted_stream_rebuild_state(
-                &store,
-                target_two_window_start,
-                target_two_metrics_window_start,
-                target_two_now,
-            )?;
 
+        let (resumed, restore_outcome) = discovery.load_or_start_persisted_stream_rebuild_state(
+            &store,
+            target_two_window_start,
+            target_two_metrics_window_start,
+            target_two_now,
+        )?;
         assert_eq!(
             restore_outcome,
             PersistedStreamRebuildRestoreOutcome::ResumedStaleMetricsWindow
         );
-        assert_eq!(
-            resumed.payload.collect_buy_mints_mode,
-            CollectBuyMintsMode::ReconcileExpiredHead
+        assert!(
+            resumed.prepass_rows_processed >= state.prepass_rows_processed,
+            "bucket rollover during noisy in-progress reconcile must preserve accumulated prepass progress instead of resetting to a fresh scan baseline"
         );
-        assert_eq!(
-            resumed
-                .payload
-                .collect_buy_mints_reconcile_expired_head_pending_mints
-                .len(),
-            STALE_RECONCILE_TOKEN_BATCH_CAP
-                .saturating_sub(STALE_RECONCILE_EXACT_COUNT_BATCH_CAP),
-            "stale-resume across bucket rollover must preserve the remaining expired-head exact candidate batch"
+        assert!(
+            resumed.metrics_window_start == target_one_metrics_window_start,
+            "large noisy stale-bucket reconcile must stay on the frozen target until an exact carry-forward checkpoint becomes available instead of restarting fresh on the new bucket"
         );
-
-        let resumed_phase_advance = discovery.advance_persisted_stream_prepass(
-            &store,
-            &mut resumed,
-            config.max_fetch_swaps_per_cycle,
-            config.max_fetch_pages_per_cycle,
-            None,
-            Instant::now() + StdDuration::from_secs(5),
-        )?;
-        assert_eq!(
-            resumed_phase_advance.rows_processed,
-            STALE_RECONCILE_EXACT_COUNT_BATCH_CAP,
-            "once stale expired-head exact batch progress is resumed, the next bounded cycle should drain the next exact sub-batch directly"
-        );
-        assert_eq!(resumed_phase_advance.pages_processed, 1);
-        assert_eq!(
-            resumed
-                .payload
-                .collect_buy_mints_reconcile_expired_head_pending_mints
-                .len(),
-            STALE_RECONCILE_TOKEN_BATCH_CAP
-                .saturating_sub(STALE_RECONCILE_EXACT_COUNT_BATCH_CAP * 2),
-            "resumed expired-head reconcile should keep draining the persisted pending batch prefix without rediscovering the same canonical candidates"
-        );
-        assert_eq!(
-            resumed
-                .payload
-                .collect_buy_mints_reconcile_expired_head_cursor_token
-                .as_deref(),
-            expired_tokens
-                .get(
-                    STALE_RECONCILE_EXACT_COUNT_BATCH_CAP
-                        .saturating_mul(2)
-                        .saturating_sub(1)
-                )
-                .map(|token| token.as_str())
+        assert!(
+            resumed.phase != DiscoveryPersistedRebuildPhase::CollectBuyMints
+                || resumed.payload.collect_buy_mints_mode != CollectBuyMintsMode::FreshScan,
+            "the noisy stale-bucket path must not operationally restart collect_buy_mints from a fresh-scan baseline"
         );
         Ok(())
     }
 
     #[test]
-    fn persisted_stream_reconcile_expired_head_exact_subbatches_reduce_live_like_timeout_pressure_stage1(
+    fn persisted_stream_reconcile_expired_head_live_like_cycle_advances_exact_token_batches_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp
             .path()
-            .join("stage1-reconcile-expired-head-exact-subbatches.db");
+            .join("stage1-reconcile-expired-head-live-like-batch-advance.db");
         let mut store = SqliteStore::open(Path::new(&db_path))?;
         let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
         store.run_migrations(&migration_dir)?;
@@ -192,7 +144,7 @@
         config.max_fetch_swaps_per_cycle = 20_000;
         config.max_fetch_pages_per_cycle = 5;
         let discovery = DiscoveryService::new(config.clone(), permissive_shadow_quality());
-        let source_now = DateTime::parse_from_rfc3339("2026-03-19T12:10:50Z")
+        let source_now = DateTime::parse_from_rfc3339("2026-03-18T23:00:50Z")
             .expect("valid timestamp")
             .with_timezone(&Utc);
         let target_now = source_now + Duration::seconds(60);
@@ -203,17 +155,17 @@
             target_now - Duration::days(config.scoring_window_days.max(1) as i64);
         let target_metrics_window_start = metrics_window_start_for_test(&config, target_now);
 
-        let expired_token_count = STALE_RECONCILE_EXACT_COUNT_BATCH_CAP
+        let expired_token_count = STALE_RECONCILE_TOKEN_BATCH_CAP
             .saturating_mul(config.max_fetch_pages_per_cycle.max(1))
-            .saturating_add(9);
+            .saturating_add(37);
         let mut exact_counts = BTreeMap::new();
         let mut expired_tokens = Vec::new();
         for idx in 0..expired_token_count {
-            let token = format!("TokenStage1ExpiredHeadSubbatch{idx:05}111111111");
+            let token = format!("TokenStage1LiveLikeExpiredHead{idx:05}111111111");
             store.insert_observed_swap(&swap(
-                "wallet_stage1_expired_head_subbatch",
-                &format!("stage1-expired-head-subbatch-buy-{idx}"),
-                source_window_start + Duration::seconds((idx % 20) as i64 + 1),
+                "wallet_stage1_live_like_expired",
+                &format!("stage1-live-like-expired-buy-{idx}"),
+                source_window_start + Duration::seconds((idx % 30) as i64),
                 SOL_MINT,
                 &token,
                 1.0,
@@ -222,10 +174,10 @@
             exact_counts.insert(token.clone(), 1u32);
             expired_tokens.push(token);
         }
-        let survivor = "TokenStage1ExpiredHeadSubbatchSurvivor111".to_string();
+        let survivor = "TokenStage1LiveLikeExpiredHeadSurvivor111".to_string();
         store.insert_observed_swap(&swap(
-            "wallet_stage1_expired_head_subbatch",
-            "stage1-expired-head-subbatch-survivor",
+            "wallet_stage1_live_like_expired",
+            "stage1-live-like-expired-survivor",
             target_window_start + Duration::seconds(5),
             SOL_MINT,
             &survivor,
@@ -245,8 +197,9 @@
         state.payload.unique_buy_mints = expired_tokens
             .iter()
             .cloned()
-            .chain(std::iter::once(survivor))
+            .chain(std::iter::once(survivor.clone()))
             .collect();
+        assert_sorted_strings(&state.payload.unique_buy_mints);
         assert!(
             discovery.prepare_persisted_stream_rebuild_for_metrics_window_rollover(
                 &mut state,
@@ -256,9 +209,6 @@
             )?
         );
 
-        arm_test_force_reconcile_expired_head_exact_batch_row_limit(
-            STALE_RECONCILE_EXACT_COUNT_BATCH_CAP,
-        );
         let phase_advance = discovery.advance_persisted_stream_prepass(
             &store,
             &mut state,
@@ -273,24 +223,16 @@
         assert_eq!(
             phase_advance.rows_processed,
             expected_rows,
-            "stale expired-head should process multiple exact sub-batches per bounded cycle instead of letting one oversized exact candidate batch dominate the return-to-Replay path"
+            "live-like stale expired-head reconcile should advance by capped exact count sub-batches instead of repeatedly recounting one large expired-head candidate range per bounded page"
         );
         assert_eq!(
             phase_advance.pages_processed,
             config.max_fetch_pages_per_cycle
         );
+        assert!(!phase_advance.source_exhausted);
         assert_eq!(
-            state.payload.unique_buy_mints.len(),
-            expired_token_count.saturating_sub(expected_rows).saturating_add(1),
-            "processing expired-head exact sub-batches should subtract the processed prefix while preserving the surviving overlap mint"
-        );
-        assert_eq!(
-            state
-                .payload
-                .collect_buy_mints_reconcile_expired_head_pending_mints
-                .len(),
-            expired_token_count.saturating_sub(expected_rows),
-            "expired-head exact sub-batches should keep only the still-unprocessed suffix pending after all bounded pages are used"
+            state.payload.collect_buy_mints_mode,
+            CollectBuyMintsMode::ReconcileExpiredHead
         );
         assert_eq!(
             state
@@ -300,6 +242,26 @@
             expired_tokens
                 .get(expected_rows.saturating_sub(1))
                 .map(|token| token.as_str())
+        );
+        assert_eq!(
+            state
+                .payload
+                .collect_buy_mints_reconcile_expired_head_pending_mints
+                .len(),
+            expired_token_count
+                .saturating_add(1)
+                .min(STALE_RECONCILE_TOKEN_BATCH_CAP)
+                .saturating_sub(expected_rows),
+            "live-like stale expired-head reconcile should persist the unprocessed suffix of the current exact candidate batch instead of rediscovering it next cycle"
+        );
+        assert_eq!(
+            state.payload.unique_buy_mints.len(),
+            expired_token_count.saturating_sub(expected_rows).saturating_add(1),
+            "expired-head reconcile should subtract the bounded candidate token batches while keeping the surviving overlap mint"
+        );
+        assert!(
+            DiscoveryService::state_can_resume_stale_metrics_window_until_exact_checkpoint(&state),
+            "batched live-like stale reconcile must stay exact and resumable after the first bounded cycle"
         );
         Ok(())
     }

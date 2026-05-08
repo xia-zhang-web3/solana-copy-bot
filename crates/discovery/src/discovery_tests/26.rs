@@ -332,8 +332,7 @@
         assert!(!acc.suspicious);
         Ok(())
     }
-
-    #[test]
+#[test]
     fn replay_candidate_activity_backfill_preserves_pending_on_wallet_id_page_interrupt_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;

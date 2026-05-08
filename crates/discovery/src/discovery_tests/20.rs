@@ -266,8 +266,7 @@
         );
         Ok(())
     }
-
-    #[test]
+#[test]
     fn recent_runtime_publication_truth_rejects_stale_exact_published_universe() -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
         let db_path = temp.path().join("runtime-publication-truth-stale.db");

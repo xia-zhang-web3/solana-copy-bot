@@ -274,8 +274,7 @@
         );
         Ok(())
     }
-
-    #[test]
+#[test]
     fn repair_runtime_window_complete_deferred_refresh_with_missing_exact_wallet_ids_does_not_fake_complete_publication_truth_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;

@@ -300,8 +300,7 @@
         );
         Ok(())
     }
-
-    #[test]
+#[test]
     fn recommended_publication_truth_repair_time_budget_extends_runtime_window_complete_stale_truth_stage1(
     ) -> Result<()> {
         let temp = tempdir().context("failed to create tempdir")?;
