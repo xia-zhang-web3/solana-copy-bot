@@ -128,8 +128,12 @@ mod discovery_service_methods_29_telemetry;
 mod discovery_service_methods_29_rebuild;
 #[path = "discovery_parts/service_methods_30_run_cycle_prepare.rs"]
 mod discovery_service_methods_30_prepare;
+#[path = "discovery_parts/service_methods_30_run_cycle_persisted_in_progress.rs"]
+mod discovery_service_methods_30_persisted_in_progress;
 #[path = "discovery_parts/service_methods_30_run_cycle_persisted.rs"]
 mod discovery_service_methods_30_persisted;
+#[path = "discovery_parts/service_methods_30_run_cycle_resolve_cached.rs"]
+mod discovery_service_methods_30_resolve_cached;
 #[path = "discovery_parts/service_methods_30_run_cycle_resolve.rs"]
 mod discovery_service_methods_30_resolve;
 #[path = "discovery_parts/service_methods_30_run_cycle.rs"]
