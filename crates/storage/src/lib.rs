@@ -38,6 +38,7 @@ static SQLITE_WRITE_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 mod discovery;
+mod discovery_quality_types;
 mod discovery_scoring;
 mod discovery_scoring_builder;
 mod execution_orders;

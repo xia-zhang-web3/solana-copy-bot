@@ -16,6 +16,7 @@ mod store_impl;
 mod types_market;
 
 use crate::{
+    discovery_quality_types::{QualityCacheUpsert, QualityFetchBudget},
     DiscoveryAggregateWriteConfig, DiscoveryRuntimeCursor, DiscoveryScoringBatchStageTimings,
     DiscoveryScoringBoundarySeedLot, DiscoveryScoringBoundarySeedSnapshot,
     DiscoveryScoringCheckpointedBatchTimings, SqliteStore, TokenQualityCacheRow,

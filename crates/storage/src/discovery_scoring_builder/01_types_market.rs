@@ -1,10 +1,10 @@
+use crate::discovery_quality_types::QualityCacheUpsert;
 use crate::{DiscoveryRuntimeCursor, DiscoveryScoringBoundarySeedLot, WalletScoringQualitySource};
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use copybot_core_types::SwapEvent;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::Instant;
 
 pub(super) const QUALITY_CACHE_TTL_SECONDS: i64 = 10 * 60;
 pub(super) const QUALITY_RPC_TIMEOUT_MS: u64 = 700;
@@ -49,21 +49,6 @@ pub(super) struct BuilderQualitySnapshot {
 
 #[derive(Debug, Clone)]
 pub(super) struct BuilderQualityCacheState {
-    pub(super) holders: Option<u64>,
-    pub(super) liquidity_sol: Option<f64>,
-    pub(super) token_age_seconds: Option<u64>,
-    pub(super) fetched_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Default)]
-pub(super) struct QualityFetchBudget {
-    pub(super) rpc_attempted: usize,
-    pub(super) started_at: Option<Instant>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct QualityCacheUpsert {
-    pub(super) mint: String,
     pub(super) holders: Option<u64>,
     pub(super) liquidity_sol: Option<f64>,
     pub(super) token_age_seconds: Option<u64>,

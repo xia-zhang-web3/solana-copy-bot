@@ -55,21 +55,6 @@ pub(super) struct QualityCacheRowLocal {
     pub(super) fetched_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Default)]
-pub(super) struct QualityFetchBudget {
-    pub(super) rpc_attempted: usize,
-    pub(super) started_at: Option<Instant>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct QualityCacheUpsert {
-    pub(super) mint: String,
-    pub(super) holders: Option<u64>,
-    pub(super) liquidity_sol: Option<f64>,
-    pub(super) token_age_seconds: Option<u64>,
-    pub(super) fetched_at: DateTime<Utc>,
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct PreparedBuyFact {
     pub(super) market_stats: TokenMarketStats,

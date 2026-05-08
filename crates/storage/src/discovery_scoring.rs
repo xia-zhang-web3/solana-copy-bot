@@ -5,6 +5,7 @@ use super::{
     TokenMarketStats, WalletScoringBuyFactRow, WalletScoringCloseFactRow, WalletScoringDayRow,
     WalletScoringQualitySource, WalletScoringSnapshot,
 };
+use crate::discovery_quality_types::{QualityCacheUpsert, QualityFetchBudget};
 use crate::market_data::OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY;
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
