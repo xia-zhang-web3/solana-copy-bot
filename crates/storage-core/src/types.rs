@@ -3,13 +3,17 @@ pub use types_discovery_rebuild::{
 };
 pub use types_history_retention::{HistoryRetentionCutoffs, HistoryRetentionSummary};
 pub use types_observed::{
-    ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary, SqliteContentionSnapshot,
+    ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary,
+    SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
 };
 pub use types_publication::{
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow, DiscoveryRuntimeArtifact,
     PersistedWalletMetricSnapshotRow, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
 };
-pub use types_recent_raw::{RecentRawJournalStateRow, RecentRawJournalWriteSummary};
+pub use types_recent_raw::{
+    DiscoveryBootstrapDegradedStateRow, DiscoveryRecentRawRestoreStateRow,
+    DiscoveryRecentRawRestoreStateUpdate, RecentRawJournalStateRow, RecentRawJournalWriteSummary,
+};
 pub use types_runtime::{
     DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
 };
@@ -29,9 +33,10 @@ pub use types_snapshot::{
     SqliteSnapshotSourceMetrics, SqliteSnapshotSummary,
 };
 pub use types_startup::{
-    SqliteStartupPolicy, StartupStepOutcome, StartupStepProgress, StartupStepProgressReporter,
-    StartupStepRuntimePolicy, StartupStepTimeout, StartupStepTimeoutBehavior,
-    SQLITE_DEFAULT_WAL_AUTOCHECKPOINT_PAGES, SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES,
+    SqliteStartupLargeWalCheckpointSummary, SqliteStartupPolicy, StartupStepOutcome,
+    StartupStepProgress, StartupStepProgressReporter, StartupStepRuntimePolicy, StartupStepTimeout,
+    StartupStepTimeoutBehavior, SQLITE_DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
+    SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES,
     SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE,
 };
 pub use types_system::RiskEventRow;

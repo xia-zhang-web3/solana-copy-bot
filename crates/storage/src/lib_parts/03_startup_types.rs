@@ -1,14 +1,9 @@
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SqliteStartupLargeWalCheckpointSummary {
-    pub threshold_bytes: u64,
-    pub before_wal_bytes: u64,
-    pub after_wal_bytes: u64,
-    pub busy: i64,
-    pub log_frames: i64,
-    pub checkpointed_frames: i64,
-}
+pub use copybot_storage_core::{
+    SqliteBatchedDeleteSummary, SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
+    SqliteStartupLargeWalCheckpointSummary,
+};
 
 pub(super) fn sqlite_startup_large_wal_checkpoint_detail(
     summary: SqliteStartupLargeWalCheckpointSummary,
@@ -35,15 +30,6 @@ pub(super) fn sqlite_startup_large_wal_checkpoint_skip_detail(
         threshold_bytes,
         before_wal_bytes.unwrap_or(0)
     )
-}
-
-pub use copybot_storage_core::{SqliteBatchedDeleteSummary, SqliteContentionSnapshot};
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SqliteBatchedDeleteSummaryWithCompletion {
-    pub deleted_rows: usize,
-    pub batches: usize,
-    pub completed_full_sweep: bool,
 }
 
 pub struct SqliteStartupBootstrapResult {

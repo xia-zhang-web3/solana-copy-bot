@@ -12,6 +12,13 @@ pub struct SqliteBatchedDeleteSummary {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SqliteBatchedDeleteSummaryWithCompletion {
+    pub deleted_rows: usize,
+    pub batches: usize,
+    pub completed_full_sweep: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SqliteContentionSnapshot {
     pub write_retry_total: u64,
     pub busy_error_total: u64,

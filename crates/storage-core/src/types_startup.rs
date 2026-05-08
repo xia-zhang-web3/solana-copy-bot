@@ -7,6 +7,16 @@ pub const SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE: &str =
     "sqlite_startup_large_wal_checkpoint_truncate";
 pub const SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES: u64 = 1024 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SqliteStartupLargeWalCheckpointSummary {
+    pub threshold_bytes: u64,
+    pub before_wal_bytes: u64,
+    pub after_wal_bytes: u64,
+    pub busy: i64,
+    pub log_frames: i64,
+    pub checkpointed_frames: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartupStepOutcome {
     Started,
