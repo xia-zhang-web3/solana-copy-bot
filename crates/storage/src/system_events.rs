@@ -1,17 +1,8 @@
 use super::SqliteStore;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use copybot_storage_core::RiskEventRow;
 use rusqlite::{params, OptionalExtension};
-
-#[derive(Debug, Clone)]
-pub struct RiskEventRow {
-    pub rowid: i64,
-    pub event_id: String,
-    pub event_type: String,
-    pub severity: String,
-    pub ts: String,
-    pub details_json: Option<String>,
-}
 
 impl SqliteStore {
     pub fn record_heartbeat(&self, component: &str, status: &str) -> Result<()> {

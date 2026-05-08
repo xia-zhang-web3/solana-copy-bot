@@ -1,10 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SqliteSnapshotSourceMetrics {
-    pub page_size_bytes: usize,
-    pub page_count: usize,
-}
+pub use copybot_storage_core::SqliteSnapshotSourceMetrics;
 
 pub(super) fn retry_reason_from_summary(
     summary: &SqliteSnapshotSummary,

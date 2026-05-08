@@ -27,11 +27,7 @@ pub(crate) const OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY: &str =
 pub(super) const RECENT_RAW_JOURNAL_BULK_INSERT_PARAMS_PER_ROW: usize = 13;
 pub(super) const RECENT_RAW_JOURNAL_BULK_INSERT_HARD_CAP_ROWS: usize = 512;
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ObservedSwapCursorPage {
-    pub rows_seen: usize,
-    pub time_budget_exhausted: bool,
-}
+pub use copybot_storage_core::ObservedSwapCursorPage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObservedSolLegCursorAccessPath {

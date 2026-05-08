@@ -59,7 +59,6 @@ pub use market_data::{
     ObservedWalletActivityPage, ObservedWalletActivityRow,
 };
 pub use sqlite_retry::{is_fatal_sqlite_anyhow_error, is_retryable_sqlite_anyhow_error};
-pub use system_events::RiskEventRow;
 
 pub struct SqliteStore {
     conn: Connection,
