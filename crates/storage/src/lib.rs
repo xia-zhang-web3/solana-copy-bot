@@ -17,9 +17,9 @@ pub use copybot_core_types::{
 };
 pub use copybot_storage_core::{
     report_startup_step_progress, run_observed_startup_step,
-    run_observed_startup_step_with_completion_detail, SqliteStartupPolicy, StartupStepOutcome,
-    StartupStepProgress, StartupStepProgressReporter, StartupStepRuntimePolicy, StartupStepTimeout,
-    StartupStepTimeoutBehavior, SHADOW_CLOSE_CONTEXT_MARKET,
+    run_observed_startup_step_with_completion_detail, RiskEventRow, SqliteStartupPolicy,
+    StartupStepOutcome, StartupStepProgress, StartupStepProgressReporter, StartupStepRuntimePolicy,
+    StartupStepTimeout, StartupStepTimeoutBehavior, SHADOW_CLOSE_CONTEXT_MARKET,
     SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY, SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
     SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE, SHADOW_RISK_CONTEXT_MARKET,
     SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY, STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES,
