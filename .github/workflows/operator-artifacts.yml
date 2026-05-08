@@ -166,7 +166,9 @@ jobs:
           build_selected=1
           if [ "${{ matrix.package }}" = "copybot-app" ]; then
             build_selected=0
-            if git diff --name-only "$ARCH_GUARD_DIFF_RANGE" | grep -E '^(\.github/workflows/operator-artifacts\.yml|Cargo\.lock|Cargo\.toml|\.cargo/|rust-toolchain|rust-toolchain\.toml|crates/(app|config|core-types|discovery-v2|ingestion|runtime-artifacts|shadow|storage|storage-core)/|tools/(build_operator_artifacts|build_manifest|verify_operator_artifact|install_operator_artifacts|package_bins)\.)' >/dev/null; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              build_selected=1
+            elif git diff --name-only "$ARCH_GUARD_DIFF_RANGE" | grep -E '^(\.github/workflows/operator-artifacts\.yml|Cargo\.lock|Cargo\.toml|\.cargo/|rust-toolchain|rust-toolchain\.toml|crates/(app|config|core-types|discovery-v2|ingestion|runtime-artifacts|shadow|storage|storage-core)/|tools/(build_operator_artifacts|build_manifest|verify_operator_artifact|install_operator_artifacts|package_bins)\.)' >/dev/null; then
               build_selected=1
             fi
           fi

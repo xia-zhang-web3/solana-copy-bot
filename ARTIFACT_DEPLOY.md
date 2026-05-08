@@ -122,6 +122,9 @@ CI builder:
 ```
 
 The workflow builds operator packages and the live daemon artifact.
+Manual `workflow_dispatch` is the full artifact proof path and must build every
+matrix package, including `copybot-app`. Push and pull-request runs may skip the
+daemon artifact when the changed paths cannot affect the daemon runtime graph.
 
 Runtime daemon artifact:
 
