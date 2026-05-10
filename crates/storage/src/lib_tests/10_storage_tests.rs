@@ -182,6 +182,97 @@ fn observed_swap_roundtrip_preserves_exact_amounts() -> Result<()> {
 }
 
 #[test]
+fn observed_swap_reads_reject_noncanonical_timestamp_and_negative_slot() -> Result<()> {
+    let temp = tempdir().context("failed to create tempdir")?;
+    let db_path = temp.path().join("observed-swap-read-fail-closed.db");
+    let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    let mut store = SqliteStore::open(Path::new(&db_path))?;
+    store.run_migrations(&migration_dir)?;
+
+    store.conn.execute(
+        "INSERT INTO observed_swaps(signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts)
+         VALUES ('sig-bad-ts', 'wallet-bad-ts', 'raydium', 'SOL', 'TOKEN', 1.0, 2.0, 1, '2026-03-06T12:00:00Z')",
+        [],
+    )?;
+    let bad_ts = store
+        .load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-06T11:00:00+00:00")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )
+        .expect_err("legacy observed reads must reject noncanonical timestamps");
+    assert!(format!("{bad_ts:#}").contains("observed_swaps.ts is not canonical UTC"));
+
+    store.conn.execute("DELETE FROM observed_swaps", [])?;
+    store.conn.execute(
+        "INSERT INTO observed_swaps(signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts)
+         VALUES ('sig-negative-slot', 'wallet-negative-slot', 'raydium', 'SOL', 'TOKEN', 1.0, 2.0, -1, '2026-03-06T12:00:00+00:00')",
+        [],
+    )?;
+    let bad_slot = store
+        .load_observed_swaps_since(
+            DateTime::parse_from_rfc3339("2026-03-06T11:00:00+00:00")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        )
+        .expect_err("legacy observed reads must reject negative slots");
+    assert!(format!("{bad_slot:#}").contains("observed_swaps.slot is negative"));
+    Ok(())
+}
+
+#[test]
+fn legacy_observed_swaps_aggregate_reads_reject_hidden_noncanonical_timestamp() -> Result<()> {
+    let temp = tempdir().context("failed to create tempdir")?;
+    let db_path = temp
+        .path()
+        .join("legacy-observed-aggregate-hidden-bad-ts.db");
+    let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    let mut store = SqliteStore::open(Path::new(&db_path))?;
+    store.run_migrations(&migration_dir)?;
+    store.conn.execute(
+        "INSERT INTO observed_swaps(signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts)
+         VALUES ('sig-good', 'wallet-good', 'raydium', 'SOL', 'TOKEN_A', 1.0, 2.0, 10, '2026-03-06T12:00:00+00:00')",
+        [],
+    )?;
+    store.conn.execute(
+        "INSERT INTO observed_swaps(signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts)
+         VALUES ('sig-hidden-bad-ts', 'wallet-hidden', 'raydium', 'SOL', 'TOKEN_B', 1.0, 2.0, 11, '2026-03-06T12:30:00Z')",
+        [],
+    )?;
+
+    let since = DateTime::parse_from_rfc3339("2026-03-06T11:00:00+00:00")
+        .expect("timestamp")
+        .with_timezone(&Utc);
+    let until = DateTime::parse_from_rfc3339("2026-03-06T13:00:00+00:00")
+        .expect("timestamp")
+        .with_timezone(&Utc);
+    let deadline = Instant::now() + StdDuration::from_secs(5);
+
+    for error in [
+        store
+            .observed_wallet_activity_page_in_window_with_budget(
+                since, until, None, 10, 50, deadline,
+            )
+            .expect_err("wallet activity page must fail closed before LIMIT can hide a bad ts"),
+        store
+            .observed_swaps_row_count_since(since)
+            .expect_err("coverage count must fail closed before aggregate can hide a bad ts"),
+        store
+            .recent_observed_swap_counts_for_wallets(since, &[String::from("wallet-good")])
+            .expect_err("recent wallet counts must fail closed before aggregate can hide a bad ts"),
+        store
+            .token_market_stats("TOKEN_A", until)
+            .expect_err("token market stats must fail closed before aggregate can hide a bad ts"),
+    ] {
+        assert!(
+            format!("{error:#}").contains("observed_swaps.ts is not canonical UTC"),
+            "unexpected error: {error:#}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn insert_observed_swaps_batch_retries_after_write_lock() -> Result<()> {
     let temp = tempdir().context("failed to create tempdir")?;
     let db_path = temp.path().join("observed-swap-batch-retry.db");
@@ -304,6 +395,34 @@ fn delete_observed_swaps_before_applies_time_retention_cutoff() -> Result<()> {
     let swaps = store.load_observed_swaps_since(stale_ts - Duration::seconds(1))?;
     assert_eq!(swaps.len(), 1);
     assert_eq!(swaps[0].signature, "sig-observed-swap-recent");
+    Ok(())
+}
+
+#[test]
+fn delete_observed_swaps_before_rejects_hidden_noncanonical_timestamp() -> Result<()> {
+    let temp = tempdir().context("failed to create tempdir")?;
+    let db_path = temp.path().join("observed-swap-retention-bad-ts.db");
+    let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    let mut store = SqliteStore::open(Path::new(&db_path))?;
+    store.run_migrations(&migration_dir)?;
+    let cutoff = DateTime::parse_from_rfc3339("2026-03-06T12:00:00+00:00")
+        .expect("timestamp")
+        .with_timezone(&Utc);
+
+    store.conn.execute(
+        "INSERT INTO observed_swaps(signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts)
+         VALUES ('sig-hidden-bad-ts', 'wallet-bad-ts', 'raydium', 'SOL', 'TOKEN', 1.0, 2.0, 1, '2026-03-01T12:00:00Z')",
+        [],
+    )?;
+    let error = store
+        .delete_observed_swaps_before(cutoff)
+        .expect_err("retention must fail closed before deleting hidden bad observed evidence");
+    assert!(format!("{error:#}").contains("observed_swaps.ts is not canonical UTC"));
+    let remaining: i64 =
+        store
+            .conn
+            .query_row("SELECT COUNT(*) FROM observed_swaps", [], |row| row.get(0))?;
+    assert_eq!(remaining, 1);
     Ok(())
 }
 

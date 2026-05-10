@@ -27,6 +27,7 @@ pub(super) fn run_recent_raw_journal_backpressure_scenario(
     write_coalesce_max_batches: usize,
     overflow_capacity_batches: usize,
 ) -> Result<RecentRawJournalBackpressureSummary> {
+    let _contention_guard = sqlite_contention_delta_test_guard();
     let unique = format!(
         "copybot-app-recent-raw-journal-backpressure-{}-{}",
         std::process::id(),
@@ -36,9 +37,8 @@ pub(super) fn run_recent_raw_journal_backpressure_scenario(
     );
     let runtime_db_path = std::env::temp_dir().join(format!("{unique}.db"));
     let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
-    let runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
-    runtime_store.ensure_observed_swap_writer_tables()?;
-    let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+    let runtime_store = prepare_observed_writer_store_for_test(Path::new(&runtime_db_path))?;
+    let journal_store = prepare_recent_raw_journal_store_for_test(Path::new(&journal_db_path))?;
     let scenario_now = DateTime::parse_from_rfc3339("2026-04-08T09:30:00Z")
         .expect("timestamp")
         .with_timezone(&Utc);

@@ -39,7 +39,8 @@ Required invariants:
 
 1. `execution.enabled = false`; this template never authorizes enabling it
 2. `SOLANA_COPY_BOT_CONFIG` points at `/etc/solana-copy-bot/live.server.toml`
-3. the service runs with a bounded restart policy
+3. the service has an explicit restart policy (`Restart=always`,
+   `RestartSec=2`) and restart counters must be checked after rollout
 4. runtime DB, recent_raw journal, and artifact paths live under the production
    state directory
 
@@ -68,9 +69,14 @@ Removed config sections must stay removed:
 
 Before restart:
 
-1. confirm the artifact version to install
-2. confirm `execution.enabled = false`
-3. confirm only affected services/timers are changed
+1. record current server commit and target artifact `git_sha`
+2. verify service/timer state for every unit in scope
+3. verify disk and memory headroom
+4. verify no `cargo` or `rustc` build is running on production
+5. state the exact artifact, package, binary, service, and timer touch list
+6. confirm `execution.enabled = false`
+7. confirm config deltas were accepted, split, or reverted
+8. confirm only affected services/timers are changed
 
 After restart:
 

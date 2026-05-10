@@ -61,6 +61,7 @@
         buffer_noncritical_on_backpressure: bool,
         normal_try_enqueue_soft_limit_override: Option<usize>,
     ) -> Result<NoncriticalIrrelevantBackpressureSummary> {
+        let _contention_guard = sqlite_contention_delta_test_guard();
         let (_store, db_path) = make_test_store("noncritical-irrelevant-backpressure-plateau")?;
         seed_runtime_raw_insert_backpressure(&db_path)?;
         let runtime_store = SqliteStore::open(Path::new(&db_path))?;

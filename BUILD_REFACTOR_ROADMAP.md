@@ -39,9 +39,10 @@ Guard checks:
 Acceptance:
 
 1. `tools/architecture_guard.sh --changed` runs.
-2. known oversized files are listed as baseline debt.
+2. no active oversized-file waiver is required.
 3. new violations fail.
-4. current repository can pass via explicit baseline/waivers only.
+4. current repository can pass with only explicit grandfathered inline/include
+   debt reports.
 
 ## 3. Phase 1: Artifact Deploy First
 
@@ -147,7 +148,7 @@ Rules:
 Acceptance:
 
 1. `cargo test --locked -p copybot-discovery-v2 --lib -- --test-threads=1` passes.
-2. `cargo test --locked -p copybot-discovery-v2 --tests --no-run` passes.
+2. `cargo test --locked -p copybot-discovery-v2 --tests -- --test-threads=1` passes.
 3. `cargo check --locked -p copybot-discovery-v2 --bins` passes.
 4. build graph excludes app, ingestion, Yellowstone, shadow, execution, legacy
    discovery, and monolithic storage.
@@ -181,126 +182,26 @@ Acceptance:
    duplicate workspace bin targets,
 6. artifact packaging supports each operator package explicitly.
 
-Batch 4 start:
-
-- `copybot_yellowstone_source_probe` moves to `copybot-operators`.
-- `copybot-app` no longer owns that binary name after the move.
-- Discovery V2 duplicate legacy names were removed from legacy
-  `copybot-discovery`; `discovery_v2_status` and `discovery_v2_publish` now
-  belong only to `copybot-discovery-v2`.
-
-Batch 7 start:
-
-- `copybot_runtime_sqlite_wal_maintenance` moves from `copybot-app` to
-  `copybot-storage-ops`.
-- `copybot_runtime_sqlite_wal_pressure_report` moves from `copybot-app` to
-  `copybot-storage-ops`.
-- shared WAL file metadata/path helpers live in
-  `crates/storage-ops/src/runtime_sqlite_wal/common.rs`.
-- SQLite checkpoint execution lives in
-  `crates/storage-ops/src/runtime_sqlite_wal/checkpoint.rs`.
-- moved tests live outside production files in
-  `maintenance_tests.rs` and `pressure_tests.rs`.
-- artifact packaging now supports `copybot-storage-ops` and package-prefixed
-  artifact IDs to avoid same-SHA package collisions.
-
-Batch 8 start:
-
-- `copybot_operator_emergency_stop` moves from `copybot-app` to
-  `copybot-live-ops`.
-- `copybot_live_service_control_wrapper` moves from `copybot-app` to
-  `copybot-live-ops`.
-- service-control wrapper tests no longer import the large execution
-  app bin just to deserialize status JSON; they use a local minimal schema.
-- live-ops artifact packaging is first-class and does not build `copybot-app`.
-
 Completed cuts:
 
-- Yellowstone source probe moved to `copybot-operators`.
-- WAL maintenance and WAL pressure operators moved to `copybot-storage-ops`.
-- emergency stop and service-control wrapper moved to `copybot-live-ops`.
-- obsolete activation, devnet rehearsal, execution-readiness, guardrail audit,
-  raw-history, restore, backfill, aggregate repair, and one-off proof/probe
-  lanes were deleted instead of moved.
-- `crates/app/src/bin` was emptied; future diagnostics must be built in
-  dedicated operator crates or deleted.
-- deleted activation/devnet/restore/backfill lanes are not compatibility
-  surfaces. Reintroducing one requires a new explicit operator-crate design,
-  fail-closed tests, artifact packaging, and a current production reason.
-
-Legacy discovery scheduled exports retained for now:
-
-- `discovery_runtime_export`
-- `discovery_recent_raw_snapshot`
-
-These now live in `copybot-discovery-ops`. `discovery_recent_raw_snapshot` and
-runtime artifact export use `storage-core`, and this crate has no direct
-dependency on `copybot-discovery` or `copybot-storage`. They must not become a
-place to restore old probe or repair modes.
-
-Batch 12 cut:
-
-- all remaining `crates/app/src/bin` operator/diagnostic targets were removed.
-- removed app-owned runtime/Stage 3 diagnostic bins:
-  - `copybot_discovery_aggregate_repair`
-  - `copybot_discovery_scoring_fact_writer_blocker_report`
-  - `copybot_recent_raw_journal_catch_up`
-  - `copybot_runtime_writer_commit_path_audit`
-  - `copybot_observed_swap_extraction_handoff_audit`
-  - `copybot_observed_swap_ingress_enqueue_audit`
-- app-bin source is now zero; `copybot-app` owns only the daemon target.
-- aggregate repair is no longer an app-owned escape hatch.
+- app-owned operator bins were moved to `copybot-operators`,
+  `copybot-storage-ops`, or `copybot-live-ops`, or deleted when obsolete.
+- `crates/app/src/bin` is empty; `copybot-app` owns only the daemon target.
+- legacy discovery V2 bins and one-off proof/probe/audit lanes were deleted.
+- only server-managed scheduled discovery binaries remain, now in
+  `copybot-discovery-ops`: `discovery_runtime_export` and
+  `discovery_recent_raw_snapshot`.
+- runtime artifact and recent_raw helpers moved to `storage-core`/
+  `copybot-runtime-artifacts`; scheduled discovery operators no longer depend on
+  `copybot-app`, legacy `copybot-discovery`, or monolithic `copybot-storage`.
 - future diagnostics must live in dedicated operator crates or be deleted.
-
-Batch 13 cut:
-
-- removed the old aggregate backfill binary and shell wrapper
-- removed the historical Stage 1 aggregate recovery program document that
-  pointed operators back to the deleted backfill lane.
-- removed the remaining one-off legacy discovery proof/probe/audit bin zoo
-  from `copybot-discovery/src/bin`.
-- kept only the currently server-managed scheduled discovery binaries:
-  - `discovery_runtime_export`
-  - `discovery_recent_raw_snapshot`
-- legacy discovery/storage operator/docs source removed in this cut: 61,746 LOC.
-- old publication/scoring/replay/freshness probes are not the Discovery V2
-  contract; future proof work must live in Discovery V2 or a dedicated operator
-  crate.
-
-Batch 14 cut:
-
-- rewrote `discovery_runtime_export` from a 176,364 LOC probe dump into a 596
-  LOC scheduled/manual runtime artifact export binary.
-- kept:
-  - `--config ... --scheduled --json`
-  - `--config ... --output <path>`
-- removed from this binary:
-  - retained recent_raw explain helper modes,
-  - checkpoint-row-fetch probe modes,
-  - publication-truth export blocker explain mode,
-  - replay-sol-leg blocker/deep/source-compare trace modes,
-  - SQLite FFI/VFS/xRead instrumentation and probe-only inline tests.
-- this cut removed 176,288 lines from the live scheduled export target.
-- future probes must be dedicated operator crates or V2 commands; they must not
-  be restored into `discovery_runtime_export`.
-
-Batch 15 cut:
-
-- moved `discovery_runtime_export` and `discovery_recent_raw_snapshot` from
-  `copybot-discovery/src/bin` into `copybot-discovery-ops`.
-- extracted runtime artifact/journal helpers from legacy discovery into
-  `copybot-runtime-artifacts`.
-- artifact packaging and CI now include `copybot-discovery-ops`, so scheduled
-  discovery operators can be shipped without rebuilding `copybot-app` or the
-  legacy discovery crate bins.
-- binary names stayed unchanged for existing systemd timer templates.
 
 ## 7. Phase 5: `app/main.rs` Split
 
 Current problem:
 
 ```text
-crates/app/src/main.rs: about 21.0k LOC
+crates/app/src/main.rs: under 200 LOC after split
 ```
 
 Target modules:
@@ -336,15 +237,16 @@ Acceptance:
 Batch 5 start:
 
 - startup progress/WAL helpers moved to `crates/app/src/startup.rs`.
-- `main.rs` dropped from about `21.0k` LOC to about `20.8k` LOC.
-- Startup behavior is unchanged; startup tests and `copybot-app` check pass.
+- `main.rs` is now under 200 LOC.
+- Startup behavior is now explicitly V2-publication-gated; startup tests and
+  `copybot-app` check pass.
 
 ## 8. Phase 6: `observed_swap_writer.rs` Split
 
 Current problem:
 
 ```text
-crates/app/src/observed_swap_writer.rs: about 11.0k LOC
+crates/app/src/observed_swap_writer.rs: about 111 LOC after split
 ```
 
 Target modules:
@@ -381,8 +283,7 @@ Batch 5 start:
 - capacity/backpressure math moved to `observed_swap_writer/capacity.rs`.
 - SQLite fatal/retryable lock classification and bounded retry helper moved to
   `observed_swap_writer/sqlite_retry.rs`.
-- `observed_swap_writer.rs` dropped from about `11.0k` LOC to about `10.8k`
-  LOC.
+- `observed_swap_writer.rs` is now a small facade around extracted modules.
 - Observed-writer tests and `copybot-app` check pass.
 
 ## 9. Phase 7: Legacy Discovery Quarantine
@@ -390,7 +291,7 @@ Batch 5 start:
 Current problem:
 
 ```text
-crates/discovery/src/lib.rs: about 57.5k LOC
+crates/discovery/src/lib.rs: about 154 LOC after quarantine split
 ```
 
 Rules:
@@ -423,7 +324,9 @@ Batch 6 start:
   V2 waiver.
 - legacy `copybot-discovery` is no longer a default workspace member; it remains
   source-quarantined for explicit compatibility work via
-  `cargo test --locked --manifest-path crates/discovery/Cargo.toml --lib --no-run`.
+  `cargo test --locked --manifest-path crates/discovery/Cargo.toml --lib --no-run`
+  and targeted compatibility integration tests such as
+  `cargo test --locked --manifest-path crates/discovery/Cargo.toml --test restore_verdict`.
 - operator artifact CI no longer rebuilds app/operators for edits under
   `crates/discovery/**`; architecture guard still runs for all `crates/**`
   changes.
@@ -433,9 +336,9 @@ Batch 6 start:
 Current problem:
 
 ```text
-crates/storage/src/lib.rs: about 14.4k LOC
-crates/storage/src/market_data.rs: about 9.5k LOC
-crates/storage/src/discovery_scoring.rs: about 4.1k LOC
+crates/storage/src/lib.rs: about 105 LOC after split
+crates/storage/src/market_data.rs: about 82 LOC after split
+crates/storage/src/discovery_scoring.rs: about 65 LOC after split
 ```
 
 Target split:

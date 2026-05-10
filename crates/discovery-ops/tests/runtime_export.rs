@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{load_from_path, AppConfig};
 use copybot_core_types::{WalletMetricRow, WalletUpsertRow};
@@ -7,17 +7,21 @@ use copybot_discovery_v2::{
 };
 use copybot_runtime_artifacts::{artifact_latest_path, write_json_atomic};
 use copybot_storage_core::{
-    ensure_discovery_v2_schema, DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateUpdate,
-    DiscoveryRuntimeCursor, DiscoveryRuntimeMode, SqliteStore,
+    ensure_discovery_v2_schema, validate_discovery_v2_schema_read_only,
+    DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor,
+    DiscoveryRuntimeMode, SqliteStore,
 };
 use serde_json::Value;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration as StdDuration, Instant as StdInstant};
 use tempfile::tempdir;
 
-fn ts(raw: &str) -> Result<DateTime<Utc>> {
-    Ok(DateTime::parse_from_rfc3339(raw)?.with_timezone(&Utc))
+fn test_now() -> DateTime<Utc> {
+    Utc::now() - Duration::seconds(1)
 }
 
 fn write_config(dir: &Path) -> Result<PathBuf> {
@@ -47,6 +51,37 @@ drill_workspace_dir = "{}"
         ),
     )?;
     Ok(config_path)
+}
+
+fn command_output_with_timeout(command: &mut Command) -> Result<Output> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().context("failed spawning CLI under test")?;
+    let deadline = StdInstant::now() + StdDuration::from_secs(20);
+    loop {
+        if let Some(status) = child.try_wait().context("failed polling CLI under test")? {
+            let mut stdout = Vec::new();
+            if let Some(mut pipe) = child.stdout.take() {
+                pipe.read_to_end(&mut stdout)
+                    .context("failed reading CLI stdout")?;
+            }
+            let mut stderr = Vec::new();
+            if let Some(mut pipe) = child.stderr.take() {
+                pipe.read_to_end(&mut stderr)
+                    .context("failed reading CLI stderr")?;
+            }
+            return Ok(Output {
+                status,
+                stdout,
+                stderr,
+            });
+        }
+        if StdInstant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("CLI under test exceeded 20s timeout");
+        }
+        thread::sleep(StdDuration::from_millis(10));
+    }
 }
 
 fn wallet_row(now: DateTime<Utc>) -> WalletUpsertRow {
@@ -149,22 +184,35 @@ fn persist_publication_with_mode(
     Ok(cursor)
 }
 
-fn run_scheduled_export_output(config_path: &Path, now: &str) -> Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_discovery_runtime_export"))
-        .args([
+fn run_scheduled_export_output(config_path: &Path) -> Result<Output> {
+    checkpoint_test_runtime_db(config_path)?;
+    command_output_with_timeout(
+        Command::new(env!("CARGO_BIN_EXE_discovery_runtime_export")).args([
             "--config",
             config_path.to_str().context("non-utf8 config path")?,
             "--scheduled",
             "--json",
-            "--now",
-            now,
-        ])
-        .output()
-        .context("failed running discovery runtime export binary")
+        ]),
+    )
+    .context("failed running discovery runtime export binary")
 }
 
-fn run_scheduled_export(config_path: &Path, now: &str) -> Result<Value> {
-    let output = run_scheduled_export_output(config_path, now)?;
+fn checkpoint_test_runtime_db(config_path: &Path) -> Result<()> {
+    let config = load_from_path(config_path)?;
+    let db_path = PathBuf::from(&config.sqlite.path);
+    if !db_path.exists() {
+        return Ok(());
+    }
+    let store = SqliteStore::open(&db_path)?;
+    let _ = store.checkpoint_wal_passive()?;
+    drop(store);
+    let read_store = SqliteStore::open_read_only(&db_path)?;
+    validate_discovery_v2_schema_read_only(&read_store)?;
+    Ok(())
+}
+
+fn run_scheduled_export(config_path: &Path) -> Result<Value> {
+    let output = run_scheduled_export_output(config_path)?;
 
     assert!(
         output.status.success(),
@@ -176,6 +224,38 @@ fn run_scheduled_export(config_path: &Path, now: &str) -> Result<Value> {
 }
 
 #[test]
+fn runtime_export_rejects_operator_supplied_clock() -> Result<()> {
+    let dir = tempdir()?;
+    let config_path = write_config(dir.path())?;
+
+    let output = command_output_with_timeout(
+        Command::new(env!("CARGO_BIN_EXE_discovery_runtime_export")).args([
+            "--config",
+            config_path.to_str().context("non-utf8 config path")?,
+            "--scheduled",
+            "--json",
+            "--now",
+            "2026-05-03T10:00:00Z",
+        ]),
+    )
+    .context("failed running discovery runtime export binary")?;
+
+    assert!(
+        !output.status.success(),
+        "runtime export --now unexpectedly succeeded: stdout=\n{}\nstderr=\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("not accepted by production runtime export"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+#[test]
 fn scheduled_export_does_not_skip_artifact_from_stale_policy() -> Result<()> {
     let dir = tempdir()?;
     let config_path = write_config(dir.path())?;
@@ -184,7 +264,7 @@ fn scheduled_export_does_not_skip_artifact_from_stale_policy() -> Result<()> {
     let artifact_dir = dir.path().join("artifacts");
     let store = SqliteStore::open(&db_path)?;
     ensure_discovery_v2_schema(&store)?;
-    let now = ts("2026-05-03T10:00:00Z")?;
+    let now = test_now();
 
     let current_gate = publication_gate(&config, now);
     let current_fingerprint = current_gate
@@ -207,7 +287,7 @@ fn scheduled_export_does_not_skip_artifact_from_stale_policy() -> Result<()> {
     write_json_atomic(&artifact_latest_path(&artifact_dir), &stale_artifact)?;
     persist_publication(&store, &config, now, &current_fingerprint)?;
 
-    let output = run_scheduled_export(&config_path, "2026-05-03T10:00:00Z")?;
+    let output = run_scheduled_export(&config_path)?;
     assert_eq!(output["state"], "written");
     assert_eq!(output["fresh_under_current_gate"], true);
     assert_eq!(
@@ -226,7 +306,7 @@ fn scheduled_export_does_not_skip_when_db_publication_is_newer() -> Result<()> {
     let artifact_dir = dir.path().join("artifacts");
     let store = SqliteStore::open(&db_path)?;
     ensure_discovery_v2_schema(&store)?;
-    let now = ts("2026-05-03T10:00:00Z")?;
+    let now = test_now();
 
     let current_gate = publication_gate(&config, now);
     let current_fingerprint = current_gate
@@ -244,7 +324,7 @@ fn scheduled_export_does_not_skip_when_db_publication_is_newer() -> Result<()> {
     write_json_atomic(&artifact_latest_path(&artifact_dir), &stale_artifact)?;
     let new_cursor = persist_publication(&store, &config, now, &current_fingerprint)?;
 
-    let output = run_scheduled_export(&config_path, "2026-05-03T10:00:00Z")?;
+    let output = run_scheduled_export(&config_path)?;
 
     assert_ne!(old_cursor.signature, new_cursor.signature);
     assert_eq!(output["state"], "written");
@@ -264,7 +344,7 @@ fn scheduled_export_does_not_skip_when_db_metric_snapshot_changed() -> Result<()
     let artifact_dir = dir.path().join("artifacts");
     let store = SqliteStore::open(&db_path)?;
     ensure_discovery_v2_schema(&store)?;
-    let now = ts("2026-05-03T10:00:00Z")?;
+    let now = test_now();
 
     let current_gate = publication_gate(&config, now);
     let current_fingerprint = current_gate
@@ -287,9 +367,40 @@ fn scheduled_export_does_not_skip_when_db_metric_snapshot_changed() -> Result<()
         "metric-drift",
     )?;
 
-    let output = run_scheduled_export(&config_path, "2026-05-03T10:00:00Z")?;
+    let output = run_scheduled_export(&config_path)?;
 
     assert_eq!(output["state"], "written");
+    Ok(())
+}
+
+#[test]
+fn scheduled_export_does_not_skip_future_dated_latest_artifact() -> Result<()> {
+    let dir = tempdir()?;
+    let config_path = write_config(dir.path())?;
+    let config = load_from_path(&config_path)?;
+    let db_path = dir.path().join("runtime.db");
+    let artifact_dir = dir.path().join("artifacts");
+    let store = SqliteStore::open(&db_path)?;
+    ensure_discovery_v2_schema(&store)?;
+    let now = test_now();
+
+    let current_gate = publication_gate(&config, now);
+    let current_fingerprint = current_gate
+        .expected_policy_fingerprint
+        .clone()
+        .expect("current fingerprint");
+    persist_publication(&store, &config, now, &current_fingerprint)?;
+    let future_artifact =
+        store.export_discovery_runtime_artifact(now + Duration::minutes(5), current_gate)?;
+    write_json_atomic(&artifact_latest_path(&artifact_dir), &future_artifact)?;
+
+    let output = run_scheduled_export(&config_path)?;
+
+    assert_eq!(output["state"], "written");
+    let exported_at = output["exported_at"]
+        .as_str()
+        .context("missing exported_at")?;
+    assert_ne!(exported_at, future_artifact.exported_at.to_rfc3339());
     Ok(())
 }
 
@@ -302,7 +413,7 @@ fn scheduled_export_rejects_not_due_artifact_when_publication_is_not_healthy() -
     let artifact_dir = dir.path().join("artifacts");
     let store = SqliteStore::open(&db_path)?;
     ensure_discovery_v2_schema(&store)?;
-    let now = ts("2026-05-03T10:00:00Z")?;
+    let now = test_now();
 
     let current_gate = publication_gate(&config, now);
     let current_fingerprint = current_gate
@@ -323,7 +434,7 @@ fn scheduled_export_rejects_not_due_artifact_when_publication_is_not_healthy() -
         "blocked",
     )?;
 
-    let output = run_scheduled_export_output(&config_path, "2026-05-03T10:00:00Z")?;
+    let output = run_scheduled_export_output(&config_path)?;
 
     assert!(
         !output.status.success(),

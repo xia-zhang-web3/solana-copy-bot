@@ -4,14 +4,9 @@ pub(crate) async fn run() -> Result<()> {
     let cli_config = parse_config_arg();
     let default_path = cli_config.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
     let (mut config, loaded_config_path) = load_from_env_or_default(&default_path)?;
-    let (applied_source_override, invalid_source_override_error) =
-        match load_ingestion_source_override() {
-            Ok(source_override) => (
-                apply_ingestion_source_override(&mut config.ingestion.source, source_override),
-                None,
-            ),
-            Err(error) => (None, Some(error)),
-        };
+    let source_override = load_ingestion_source_override()?;
+    let applied_source_override =
+        apply_ingestion_source_override(&mut config.ingestion.source, source_override);
     init_tracing(&config.system.log_level, config.system.log_json)?;
     info!(
         config_path = %loaded_config_path.display(),
@@ -24,12 +19,6 @@ pub(crate) async fn run() -> Result<()> {
             "applying ingestion source override from failover file (override has highest priority)"
         );
     }
-    if let Some(error) = invalid_source_override_error.as_ref() {
-        warn!(
-            error = %error,
-            "ignoring invalid ingestion source override file"
-        );
-    }
     let migrations_dir = resolve_migrations_dir(&loaded_config_path, &config.system.migrations_dir);
     let startup_reporter = build_startup_progress_reporter();
     run_inline_startup_step(
@@ -38,6 +27,7 @@ pub(crate) async fn run() -> Result<()> {
         Some(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
         || {
             validate_execution_runtime_contract(&config.execution, &config.system.env)?;
+            validate_live_ingestion_source_contract(&config.ingestion.source, &config.system.env)?;
             validate_execution_risk_contract(&config.risk)?;
             validate_live_execution_policy_contract(
                 &config.execution,
@@ -64,7 +54,7 @@ pub(crate) async fn run() -> Result<()> {
         warn!(
             deferred_migrations = ?deferred_migrations,
             detail = "deferred_off_startup_critical_path",
-            "startup deferred optional sqlite performance migrations; runtime may use bounded fallback query paths until they are applied offline"
+            "startup deferred sqlite migrations; timestamp-sensitive runtime surfaces fail closed until required indexes are applied offline"
         );
     }
     match perform_startup_wal_checkpoint(&startup_reporter) {

@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn observed_swap_writer_does_not_block_runtime_under_sqlite_lock() -> Result<()> {
+    let _contention_guard = sqlite_contention_delta_test_guard();
     let unique = format!(
         "copybot-app-observed-swap-writer-{}-{}",
         std::process::id(),
@@ -10,8 +11,7 @@ fn observed_swap_writer_does_not_block_runtime_under_sqlite_lock() -> Result<()>
             .unwrap_or(Utc::now().timestamp_micros() * 1000)
     );
     let db_path = std::env::temp_dir().join(format!("{unique}.db"));
-    let seed_store = SqliteStore::open(Path::new(&db_path))?;
-    seed_store.ensure_observed_swap_writer_tables()?;
+    let _seed_store = prepare_observed_writer_store_for_test(Path::new(&db_path))?;
 
     let blocker_conn = Connection::open(Path::new(&db_path))
         .context("failed to open blocker sqlite connection")?;
@@ -80,6 +80,7 @@ fn observed_swap_writer_does_not_block_runtime_under_sqlite_lock() -> Result<()>
 
 #[test]
 fn observed_swap_writer_enqueue_returns_before_locked_batch_commits() -> Result<()> {
+    let _contention_guard = sqlite_contention_delta_test_guard();
     let unique = format!(
         "copybot-app-observed-swap-enqueue-{}-{}",
         std::process::id(),
@@ -88,8 +89,7 @@ fn observed_swap_writer_enqueue_returns_before_locked_batch_commits() -> Result<
             .unwrap_or(Utc::now().timestamp_micros() * 1000)
     );
     let db_path = std::env::temp_dir().join(format!("{unique}.db"));
-    let seed_store = SqliteStore::open(Path::new(&db_path))?;
-    seed_store.ensure_observed_swap_writer_tables()?;
+    let _seed_store = prepare_observed_writer_store_for_test(Path::new(&db_path))?;
 
     let blocker_conn = Connection::open(Path::new(&db_path))
         .context("failed to open blocker sqlite connection")?;
@@ -175,6 +175,7 @@ fn observed_swap_writer_enqueue_returns_before_locked_batch_commits() -> Result<
 
 #[test]
 fn observed_swap_writer_retries_retryable_raw_lock_without_terminal_failure() -> Result<()> {
+    let _contention_guard = sqlite_contention_delta_test_guard();
     let unique = format!(
         "copybot-app-observed-swap-retryable-lock-{}-{}",
         std::process::id(),
@@ -183,8 +184,7 @@ fn observed_swap_writer_retries_retryable_raw_lock_without_terminal_failure() ->
             .unwrap_or(Utc::now().timestamp_micros() * 1000)
     );
     let db_path = std::env::temp_dir().join(format!("{unique}.db"));
-    let seed_store = SqliteStore::open(Path::new(&db_path))?;
-    seed_store.ensure_observed_swap_writer_tables()?;
+    let _seed_store = prepare_observed_writer_store_for_test(Path::new(&db_path))?;
 
     let control_conn = Connection::open(Path::new(&db_path))
         .context("failed to open retryable-lock control sqlite connection")?;
@@ -271,6 +271,7 @@ fn observed_swap_writer_retries_retryable_raw_lock_without_terminal_failure() ->
 
 #[test]
 fn observed_swap_writer_try_enqueue_returns_false_when_channel_is_full() -> Result<()> {
+    let _contention_guard = sqlite_contention_delta_test_guard();
     let unique = format!(
         "copybot-app-observed-swap-try-enqueue-full-{}-{}",
         std::process::id(),
@@ -279,8 +280,7 @@ fn observed_swap_writer_try_enqueue_returns_false_when_channel_is_full() -> Resu
             .unwrap_or(Utc::now().timestamp_micros() * 1000)
     );
     let db_path = std::env::temp_dir().join(format!("{unique}.db"));
-    let seed_store = SqliteStore::open(Path::new(&db_path))?;
-    seed_store.ensure_observed_swap_writer_tables()?;
+    let _seed_store = prepare_observed_writer_store_for_test(Path::new(&db_path))?;
 
     let blocker_conn = Connection::open(Path::new(&db_path))
         .context("failed to open blocker sqlite connection")?;
@@ -341,8 +341,60 @@ fn observed_swap_writer_try_enqueue_returns_false_when_channel_is_full() -> Resu
 }
 
 #[test]
+fn observed_swap_writer_start_fails_until_recent_raw_journal_is_ready() -> Result<()> {
+    let unique = format!(
+        "copybot-app-observed-swap-journal-startup-fail-{}-{}",
+        std::process::id(),
+        Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or(Utc::now().timestamp_micros() * 1000)
+    );
+    let raw_db_path = std::env::temp_dir().join(format!("{unique}-raw.db"));
+    let journal_parent_file = std::env::temp_dir().join(format!("{unique}-journal-parent"));
+    std::fs::write(&journal_parent_file, b"not a directory")?;
+    let journal_db_path = journal_parent_file.join("journal.db");
+
+    let error = match ObservedSwapWriter::start_with_config(
+        raw_db_path
+            .to_str()
+            .context("sqlite path must be valid utf-8")?
+            .to_string(),
+        ObservedSwapWriterConfig::for_test(
+            1,
+            1,
+            Some(ObservedSwapRecentRawJournalConfig {
+                sqlite_path: journal_db_path
+                    .to_str()
+                    .context("journal path must be valid utf-8")?
+                    .to_string(),
+                retention_days: 7,
+                writer_queue_capacity_batches: 1,
+                write_coalesce_max_batches: 1,
+                overflow_capacity_batches: 1,
+                skip_prune_while_backlogged: true,
+                skip_startup_prune: true,
+            }),
+        ),
+    ) {
+        Ok(writer) => {
+            let _ = writer.shutdown();
+            return Err(anyhow!(
+                "writer startup must fail before returning when journal startup fails"
+            ));
+        }
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains("recent raw journal startup"));
+
+    let _ = std::fs::remove_file(raw_db_path);
+    let _ = std::fs::remove_file(journal_parent_file);
+    Ok(())
+}
+
+#[test]
 fn observed_swap_writer_discovery_critical_enqueue_uses_reserved_capacity_before_full_stage1(
 ) -> Result<()> {
+    let _contention_guard = sqlite_contention_delta_test_guard();
     let unique = format!(
         "copybot-app-observed-swap-critical-reserve-{}-{}",
         std::process::id(),
@@ -351,8 +403,7 @@ fn observed_swap_writer_discovery_critical_enqueue_uses_reserved_capacity_before
             .unwrap_or(Utc::now().timestamp_micros() * 1000)
     );
     let db_path = std::env::temp_dir().join(format!("{unique}.db"));
-    let seed_store = SqliteStore::open(Path::new(&db_path))?;
-    seed_store.ensure_observed_swap_writer_tables()?;
+    let _seed_store = prepare_observed_writer_store_for_test(Path::new(&db_path))?;
 
     let blocker_conn = Connection::open(Path::new(&db_path))
         .context("failed to open blocker sqlite connection")?;

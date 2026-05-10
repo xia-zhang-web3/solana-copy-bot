@@ -177,14 +177,7 @@ mod tests {
 }
 ```
 
-Accepted patterns:
-
-```rust
-#[cfg(test)]
-mod tests;
-```
-
-with test bodies in:
+Accepted test locations:
 
 ```text
 src/tests.rs
@@ -194,8 +187,9 @@ src/<module>/tests.rs
 tests/<integration_test>.rs
 ```
 
-New production files may contain only a test module declaration, not test
-bodies. Existing inline tests are grandfathered only as debt and must not grow.
+New production files must not add test module declarations or test bodies.
+Existing inline test bodies and external test module declarations are
+grandfathered only as debt and must not grow.
 
 ## 7. Dependency Policy
 
@@ -266,12 +260,15 @@ The guard must check:
 1. oversized files,
 2. growth of grandfathered oversized files,
 3. inline `#[cfg(test)] mod tests` bodies in production files,
-4. new files under `crates/app/src/bin`,
-5. forbidden dependencies in operator crates,
-6. duplicate workspace bin names, including explicit `[[bin]]` names,
-7. production-local build commands in rollout docs,
-8. build profile presence,
-9. artifact deploy docs presence.
+4. new external `#[cfg(test)] mod tests;` facades in production files,
+5. new `include!` shards,
+6. new files under quarantined `src/bin` directories,
+7. forbidden dependencies in operator crates,
+8. direct `copybot-app` dependency identity growth, including package aliases,
+9. duplicate workspace bin names, including explicit `[[bin]]` names,
+10. production-local build commands in rollout docs,
+11. build profile presence,
+12. artifact deploy docs presence.
 
 The guard must support:
 

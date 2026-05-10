@@ -89,9 +89,15 @@ pub(super) fn recent_raw_bulk_write_test_hook_requests_budget_exhaustion(
 }
 
 pub(super) fn parse_rfc3339_utc(raw: &str, field_name: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(raw)
-        .map(|dt| dt.with_timezone(&Utc))
-        .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))
+    if !raw.ends_with("+00:00") {
+        bail!("{field_name} must use canonical UTC offset +00:00: {raw}");
+    }
+    let parsed = DateTime::parse_from_rfc3339(raw)
+        .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))?;
+    if parsed.offset().local_minus_utc() != 0 {
+        bail!("{field_name} must use UTC offset +00:00: {raw}");
+    }
+    Ok(parsed.with_timezone(&Utc))
 }
 
 pub(super) fn parse_optional_rfc3339_utc(
@@ -100,6 +106,11 @@ pub(super) fn parse_optional_rfc3339_utc(
 ) -> Result<Option<DateTime<Utc>>> {
     raw.map(|raw| parse_rfc3339_utc(&raw, field_name))
         .transpose()
+}
+
+pub(super) fn parse_sqlite_slot(raw: i64, field_name: &str) -> Result<u64> {
+    anyhow::ensure!(raw >= 0, "{field_name} is negative: {raw}");
+    Ok(raw as u64)
 }
 
 pub(super) fn parse_optional_day_start_utc(
@@ -144,8 +155,6 @@ pub(super) fn ensure_recent_raw_journal_tables_on_conn(conn: &Connection) -> Res
             slot INTEGER NOT NULL,
             ts TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_observed_swaps_ts_slot_signature
-            ON observed_swaps(ts, slot, signature);
         CREATE TABLE IF NOT EXISTS recent_raw_journal_state (
             id INTEGER PRIMARY KEY CHECK(id = 1),
             covered_since_ts TEXT,
@@ -160,7 +169,123 @@ pub(super) fn ensure_recent_raw_journal_tables_on_conn(conn: &Connection) -> Res
             updated_at TEXT NOT NULL
         );",
     )
-    .context("failed ensuring recent raw journal tables exist")
+    .context("failed ensuring recent raw journal tables exist")?;
+    ensure_recent_raw_observed_swaps_ts_index_empty_safe(conn)?;
+    ensure_recent_raw_observed_swaps_non_utc_index_empty_safe(conn)
+}
+
+fn ensure_recent_raw_observed_swaps_ts_index_empty_safe(conn: &Connection) -> Result<()> {
+    if observed_swaps_ts_slot_signature_index_is_valid(conn)? {
+        return Ok(());
+    }
+    let has_rows = conn
+        .query_row("SELECT 1 FROM observed_swaps LIMIT 1", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .optional()
+        .context(
+            "failed checking observed_swaps row presence before legacy recent_raw index ensure",
+        )?
+        .is_some();
+    if has_rows {
+        bail!(
+            "legacy recent_raw observed_swaps index idx_observed_swaps_ts_slot_signature \
+             is missing or malformed on a non-empty table; run migration 0007 offline"
+        );
+    }
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_observed_swaps_ts_slot_signature;
+         CREATE INDEX idx_observed_swaps_ts_slot_signature
+            ON observed_swaps(ts, slot, signature);",
+    )
+    .context("failed preparing empty legacy recent_raw observed_swaps ts index")?;
+    Ok(())
+}
+
+fn ensure_recent_raw_observed_swaps_non_utc_index_empty_safe(conn: &Connection) -> Result<()> {
+    if super::recent_raw_timestamp_guard::ensure_recent_raw_timestamp_guard_index_valid(conn)
+        .is_ok()
+    {
+        return Ok(());
+    }
+    let has_rows = conn
+        .query_row("SELECT 1 FROM observed_swaps LIMIT 1", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .optional()
+        .context(
+            "failed checking observed_swaps row presence before legacy recent_raw timestamp guard index ensure",
+        )?
+        .is_some();
+    if has_rows {
+        bail!(
+            "legacy recent_raw observed_swaps index idx_observed_swaps_non_utc_ts \
+             is missing or malformed on a non-empty table; run migration 0040 offline"
+        );
+    }
+    conn.execute_batch(&format!(
+        "DROP INDEX IF EXISTS {index};
+         CREATE INDEX {index}
+            ON observed_swaps(ts)
+            WHERE {predicate};",
+        index = super::recent_raw_timestamp_guard::OBSERVED_SWAPS_NON_UTC_TIMESTAMP_INDEX,
+        predicate = super::recent_raw_timestamp_guard::OBSERVED_SWAPS_NON_UTC_TIMESTAMP_PREDICATE
+    ))
+    .context("failed preparing empty legacy recent_raw timestamp guard index")?;
+    Ok(())
+}
+
+fn observed_swaps_ts_slot_signature_index_is_valid(conn: &Connection) -> Result<bool> {
+    let index_flags = conn
+        .query_row(
+            "SELECT [unique], partial
+             FROM pragma_index_list('observed_swaps')
+             WHERE name = 'idx_observed_swaps_ts_slot_signature'",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .context("failed checking legacy recent_raw observed_swaps ts index flags")?;
+    let Some((unique, partial)) = index_flags else {
+        return Ok(false);
+    };
+    if unique != 0 || partial != 0 {
+        return Ok(false);
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, [desc], coll, key
+             FROM pragma_index_xinfo('idx_observed_swaps_ts_slot_signature')
+             ORDER BY seqno",
+        )
+        .context("failed preparing legacy recent_raw observed_swaps ts index introspection")?;
+    let key_columns = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, _, _, key)| *key != 0)
+        .collect::<Vec<_>>();
+    if key_columns.len() != 3 {
+        return Ok(false);
+    }
+    for ((name, desc, coll, _), expected) in
+        key_columns.iter().zip(["ts", "slot", "signature"].iter())
+    {
+        if name.as_deref() != Some(*expected) {
+            return Ok(false);
+        }
+        if *desc != 0 || coll.as_deref() != Some("BINARY") {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub(super) fn recent_raw_journal_bulk_insert_sql(row_count: usize) -> String {

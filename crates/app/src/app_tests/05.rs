@@ -167,17 +167,23 @@
 
         while let Some(swap) = upstream.pop_front() {
             let should_refresh = if throttle_retry_refresh {
-                refresh_discovery_critical_target_buy_mints_for_backpressure_if_due(
-                    &store,
+                if should_refresh_discovery_critical_target_buy_mints_for_backpressure(
                     &follow_snapshot,
                     &open_shadow_lots,
                     shadow_strategy_fail_closed,
-                    &mut discovery_critical_target_buy_mints,
-                    &mut backpressure_refresh_state,
+                    Some(&mut backpressure_refresh_state),
                     retry_refresh_now,
-                )?
+                ) {
+                    refresh_discovery_critical_target_buy_mints_or_warn_old(
+                        &store,
+                        &mut discovery_critical_target_buy_mints,
+                    )?;
+                    true
+                } else {
+                    false
+                }
             } else {
-                refresh_discovery_critical_target_buy_mints_or_warn(
+                refresh_discovery_critical_target_buy_mints_or_warn_old(
                     &store,
                     &mut discovery_critical_target_buy_mints,
                 )?;

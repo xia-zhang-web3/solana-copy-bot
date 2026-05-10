@@ -38,6 +38,7 @@ impl SqliteStore {
                 access_path,
             });
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
 
         let mut total_rows_seen = 0usize;
         let mut time_budget_exhausted = false;
@@ -116,6 +117,7 @@ impl SqliteStore {
                 access_path,
             });
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
 
         let index_hint = match access_path {
             ObservedSolLegCursorAccessPath::SolLegPartialIndex => {
@@ -167,13 +169,33 @@ impl SqliteStore {
                 ],
             ),
         };
-        let mut stmt = self
-            .conn
-            .prepare(&query)
-            .context("failed to prepare observed_swaps sol-leg window cursor query")?;
-        let mut rows = stmt
-            .query(rusqlite::params_from_iter(params))
-            .context("failed to query observed_swaps sol-leg window cursor")?;
+        let mut stmt = match self.conn.prepare(&query) {
+            Ok(stmt) => stmt,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedSolLegCursorPage {
+                    rows_seen: 0,
+                    time_budget_exhausted: true,
+                    access_path,
+                })
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to prepare observed_swaps sol-leg window cursor query")
+            }
+        };
+        let mut rows = match stmt.query(rusqlite::params_from_iter(params)) {
+            Ok(rows) => rows,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedSolLegCursorPage {
+                    rows_seen: 0,
+                    time_budget_exhausted: true,
+                    access_path,
+                })
+            }
+            Err(error) => {
+                return Err(error).context("failed to query observed_swaps sol-leg window cursor")
+            }
+        };
 
         let mut seen = 0usize;
         let mut time_budget_exhausted = false;
@@ -181,7 +203,7 @@ impl SqliteStore {
             let next_row = match rows.next() {
                 Ok(row) => row,
                 Err(error) => {
-                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                    if sqlite_interrupted_after_deadline(&error, deadline) {
                         time_budget_exhausted = true;
                         break;
                     }

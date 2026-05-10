@@ -12,6 +12,12 @@ impl SqliteStore {
         if wallet_ids.is_empty() {
             return Ok(ObservedWalletActivityPage::default());
         }
+        if let Err(error) = ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn) {
+            if anyhow_error_is_sqlite_interrupted(&error) {
+                return Ok(observed_wallet_activity_budget_exhausted_page());
+            }
+            return Err(error);
+        }
 
         let placeholders = std::iter::repeat_n("?", wallet_ids.len())
             .collect::<Vec<_>>()
@@ -31,13 +37,26 @@ impl SqliteStore {
         );
         let mut summary_params = vec![since_raw.clone().into(), until_raw.clone().into()];
         summary_params.extend(wallet_ids.iter().cloned().map(rusqlite::types::Value::from));
-        let mut summary_stmt = self
-            .conn
-            .prepare(&summary_query)
-            .context("failed to prepare observed wallet activity summary query")?;
-        let mut summary_rows = summary_stmt
-            .query(rusqlite::params_from_iter(summary_params))
-            .context("failed querying observed wallet activity summary rows")?;
+        let mut summary_stmt = match self.conn.prepare(&summary_query) {
+            Ok(stmt) => stmt,
+            Err(error) if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+                return Ok(observed_wallet_activity_budget_exhausted_page());
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to prepare observed wallet activity summary query");
+            }
+        };
+        let mut summary_rows = match summary_stmt.query(rusqlite::params_from_iter(summary_params))
+        {
+            Ok(rows) => rows,
+            Err(error) if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+                return Ok(observed_wallet_activity_budget_exhausted_page());
+            }
+            Err(error) => {
+                return Err(error).context("failed querying observed wallet activity summary rows");
+            }
+        };
         let mut rows_seen = 0usize;
         loop {
             let next_row = match summary_rows.next() {
@@ -196,13 +215,25 @@ impl SqliteStore {
         );
         let mut max_tx_params = vec![since_raw.into(), until_raw.into()];
         max_tx_params.extend(wallet_ids.iter().cloned().map(rusqlite::types::Value::from));
-        let mut max_tx_stmt = self
-            .conn
-            .prepare(&max_tx_query)
-            .context("failed to prepare observed wallet activity max-tx query")?;
-        let mut max_tx_rows = max_tx_stmt
-            .query(rusqlite::params_from_iter(max_tx_params))
-            .context("failed querying observed wallet activity max-tx rows")?;
+        let mut max_tx_stmt = match self.conn.prepare(&max_tx_query) {
+            Ok(stmt) => stmt,
+            Err(error) if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+                return Ok(observed_wallet_activity_budget_exhausted_page());
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to prepare observed wallet activity max-tx query");
+            }
+        };
+        let mut max_tx_rows = match max_tx_stmt.query(rusqlite::params_from_iter(max_tx_params)) {
+            Ok(rows) => rows,
+            Err(error) if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+                return Ok(observed_wallet_activity_budget_exhausted_page());
+            }
+            Err(error) => {
+                return Err(error).context("failed querying observed wallet activity max-tx rows");
+            }
+        };
         loop {
             let next_row = match max_tx_rows.next() {
                 Ok(row) => row,
@@ -245,5 +276,15 @@ impl SqliteStore {
             active_day_count_source,
             ..ObservedWalletActivityPage::default()
         })
+    }
+}
+
+fn observed_wallet_activity_budget_exhausted_page() -> ObservedWalletActivityPage {
+    ObservedWalletActivityPage {
+        rows: Vec::new(),
+        rows_seen: 0,
+        time_budget_exhausted: true,
+        active_day_count_source: None,
+        ..ObservedWalletActivityPage::default()
     }
 }

@@ -4,13 +4,11 @@ impl SqliteStore {
     pub(crate) fn observed_sol_leg_cursor_access_path(
         &self,
     ) -> Result<ObservedSolLegCursorAccessPath> {
-        Ok(
-            if self.sqlite_index_exists("idx_observed_swaps_sol_leg_ts_slot_signature")? {
-                ObservedSolLegCursorAccessPath::SolLegPartialIndex
-            } else {
-                ObservedSolLegCursorAccessPath::TsCursorFallback
-            },
-        )
+        Ok(if self.observed_swaps_sol_leg_index_valid()? {
+            ObservedSolLegCursorAccessPath::SolLegPartialIndex
+        } else {
+            ObservedSolLegCursorAccessPath::TsCursorFallback
+        })
     }
 
     pub(crate) fn ensure_observed_sol_leg_target_buy_mint_filter_table(&self) -> Result<()> {

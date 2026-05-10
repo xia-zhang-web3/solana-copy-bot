@@ -1,6 +1,7 @@
     fn run_discovery_critical_pending_backlog_output_saturation_scenario(
         block_ingestion_on_full_pending_backlog: bool,
     ) -> Result<DiscoveryCriticalPendingBacklogOutputSaturationSummary> {
+        let _contention_guard = sqlite_contention_delta_test_guard();
         let (_store, db_path) =
             make_test_store("discovery-critical-pending-backlog-output-saturation")?;
         seed_runtime_raw_insert_backpressure(&db_path)?;

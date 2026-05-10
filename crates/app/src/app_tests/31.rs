@@ -189,7 +189,7 @@
     }
 
     #[test]
-    fn discovery_critical_irrelevant_backpressure_refresh_narrows_stale_empty_target_set_stage1(
+    fn discovery_critical_irrelevant_backpressure_refresh_ignores_legacy_target_mints_stage1(
     ) -> Result<()> {
         let (store, db_path) =
             make_test_store("discovery-critical-backpressure-refresh-target-mints")?;
@@ -225,18 +225,17 @@
                 &empty_follow_snapshot,
                 &HashSet::new(),
                 true,
-                &mut stale_target_buy_mints,
-                &mut backpressure_refresh_state,
-            )?,
-            "once the exact rebuild target mints are refreshed from persisted state, the same generic SOL buy must stop being treated as discovery-critical"
-        );
-        assert_eq!(
-            stale_target_buy_mints,
-            HashSet::from(["token-target".to_string()]),
-            "refresh should narrow the in-memory target mint ownership onto the persisted rebuild exact buy-mint set"
+            &mut stale_target_buy_mints,
+            &mut backpressure_refresh_state,
+        )?,
+            "legacy rebuild target mints are ignored, so the same generic SOL buy must stay non-discovery-critical"
         );
         assert!(
-            refresh_discovery_critical_irrelevant_persistence_for_backpressure(
+            stale_target_buy_mints.is_empty(),
+            "production refresh must not import legacy rebuild target mints into the app runtime"
+        );
+        assert!(
+            !refresh_discovery_critical_irrelevant_persistence_for_backpressure(
                 &store,
                 &target_buy,
                 &empty_follow_snapshot,
@@ -245,7 +244,7 @@
                 &mut stale_target_buy_mints,
                 &mut backpressure_refresh_state,
             )?,
-            "a SOL buy into the persisted rebuild target mint must remain discovery-critical after refresh"
+            "a SOL buy into a legacy rebuild target mint must not become discovery-critical through old state"
         );
 
         let _ = std::fs::remove_file(db_path);

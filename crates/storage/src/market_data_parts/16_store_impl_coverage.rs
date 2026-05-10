@@ -2,6 +2,7 @@ use super::*;
 
 impl SqliteStore {
     pub fn observed_swaps_coverage_snapshot(&self) -> Result<ObservedSwapsCoverageSnapshot> {
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         let row_count: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM observed_swaps", [], |row| row.get(0))
@@ -30,7 +31,7 @@ impl SqliteStore {
                 |(ts_raw, slot_raw, signature)| -> Result<DiscoveryRuntimeCursor> {
                     Ok(DiscoveryRuntimeCursor {
                         ts_utc: parse_rfc3339_utc(&ts_raw, "observed_swaps.ts")?,
-                        slot: slot_raw.max(0) as u64,
+                        slot: parse_sqlite_slot(slot_raw, "observed_swaps.slot")?,
                         signature,
                     })
                 },
@@ -47,6 +48,7 @@ impl SqliteStore {
         if !self.sqlite_table_exists("observed_swaps")? {
             return Ok(None);
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         let cursor_raw = self
             .conn
             .query_row(OBSERVED_SWAPS_TAIL_CURSOR_QUERY, [], |row| {
@@ -63,7 +65,7 @@ impl SqliteStore {
                 |(ts_raw, slot_raw, signature)| -> Result<DiscoveryRuntimeCursor> {
                     Ok(DiscoveryRuntimeCursor {
                         ts_utc: parse_rfc3339_utc(&ts_raw, "observed_swaps tail ts")?,
-                        slot: slot_raw.max(0) as u64,
+                        slot: parse_sqlite_slot(slot_raw, "observed_swaps tail slot")?,
                         signature,
                     })
                 },
@@ -80,24 +82,38 @@ impl SqliteStore {
         if limit == 0 || !self.sqlite_table_exists("observed_swaps")? {
             return Ok((Vec::new(), false));
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         if Instant::now() >= deadline {
             return Ok((Vec::new(), true));
         }
 
         let limit = (limit.min(i64::MAX as usize)) as i64;
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
-        let mut stmt = self
-            .conn
-            .prepare(OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY)
-            .context("failed to prepare bounded observed_swaps after-cursor page query")?;
-        let mut rows = stmt
-            .query(params![
-                cursor.ts_utc.to_rfc3339(),
-                cursor.slot as i64,
-                cursor.signature.as_str(),
-                limit,
-            ])
-            .context("failed querying bounded observed_swaps after-cursor page")?;
+        let mut stmt = match self.conn.prepare(OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY) {
+            Ok(stmt) => stmt,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok((Vec::new(), true));
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to prepare bounded observed_swaps after-cursor page query");
+            }
+        };
+        let mut rows = match stmt.query(params![
+            cursor.ts_utc.to_rfc3339(),
+            cursor.slot as i64,
+            cursor.signature.as_str(),
+            limit,
+        ]) {
+            Ok(rows) => rows,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok((Vec::new(), true));
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed querying bounded observed_swaps after-cursor page");
+            }
+        };
 
         let mut swaps = Vec::new();
         let mut time_budget_exhausted = false;
@@ -109,7 +125,7 @@ impl SqliteStore {
             let next_row = match rows.next() {
                 Ok(row) => row,
                 Err(error) => {
-                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                    if sqlite_interrupted_after_deadline(&error, deadline) {
                         time_budget_exhausted = true;
                         break;
                     }
@@ -127,6 +143,7 @@ impl SqliteStore {
     }
 
     pub fn observed_swaps_row_count_since(&self, since: DateTime<Utc>) -> Result<u64> {
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         let row_count: i64 = self
             .conn
             .query_row(
@@ -166,6 +183,7 @@ impl SqliteStore {
     }
 
     pub fn wallet_activity_days_row_count_since(&self, window_start: DateTime<Utc>) -> Result<u64> {
+        validate_wallet_activity_days_last_seen_canonical_utc(&self.conn)?;
         let row_count: i64 = self
             .conn
             .query_row(
@@ -193,6 +211,7 @@ impl SqliteStore {
         if wallet_ids.is_empty() {
             return Ok(Vec::new());
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
 
         let placeholders = std::iter::repeat_n("?", wallet_ids.len())
             .collect::<Vec<_>>()

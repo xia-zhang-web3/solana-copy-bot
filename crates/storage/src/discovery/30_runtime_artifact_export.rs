@@ -93,6 +93,13 @@ impl SqliteStore {
                     "discovery runtime artifact export requires publication-bound runtime cursor ({truth_detail})"
                 ));
             }
+            if !publication_state
+                .has_fresh_publication_runtime_cursor_under_gate(&export_gate, exported_at)
+            {
+                return Err(anyhow::anyhow!(
+                    "discovery runtime artifact export requires fresh publication-bound runtime cursor ({truth_detail})"
+                ));
+            }
             let published_window_start = publication_state
                 .last_published_window_start
                 .expect("validated complete publication truth above");

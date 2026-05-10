@@ -171,6 +171,7 @@ pub(super) fn token_market_stats_on_conn(
     token: &str,
     as_of: DateTime<Utc>,
 ) -> Result<TokenMarketStats> {
+    validate_observed_swaps_timestamps_canonical_utc(conn)?;
     let window_start = (as_of - Duration::minutes(5)).to_rfc3339();
     let window_end = as_of.to_rfc3339();
     let (volume_5m_sol, liquidity_sol_proxy, unique_traders_5m_raw): (f64, f64, i64) = conn

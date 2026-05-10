@@ -149,6 +149,56 @@ source = "laserstream"
 }
 
 #[test]
+fn load_from_path_rejects_mock_ingestion_source_for_production_env() {
+    with_temp_config_file(
+        r#"
+[system]
+env = "prod-live"
+
+[ingestion]
+source = "mock"
+"#,
+        |config_path| {
+            with_clean_copybot_env(|| {
+                let err = load_from_path(config_path)
+                    .expect_err("mock ingestion must not load in production")
+                    .to_string();
+                assert!(
+                    err.contains("ingestion.source=mock"),
+                    "unexpected error: {err}"
+                );
+            });
+        },
+    );
+}
+
+#[test]
+fn load_from_env_rejects_mock_ingestion_source_override_for_production_env() {
+    with_temp_config_file(
+        r#"
+[system]
+env = "prod-live"
+
+[ingestion]
+source = "yellowstone_grpc"
+"#,
+        |config_path| {
+            with_clean_copybot_env(|| {
+                with_env_var("SOLANA_COPY_BOT_INGESTION_SOURCE", "mock", || {
+                    let err = load_from_env_or_default(config_path)
+                        .expect_err("mock ingestion env override must not load in production")
+                        .to_string();
+                    assert!(
+                        err.contains("ingestion.source=mock"),
+                        "unexpected error: {err}"
+                    );
+                });
+            });
+        },
+    );
+}
+
+#[test]
 fn load_from_path_rejects_unsatisfiable_discovery_active_days() {
     with_temp_config_file(
         r#"

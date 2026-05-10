@@ -1,4 +1,5 @@
 use super::*;
+use crate::market_data::validate_wallet_activity_days_last_seen_canonical_utc;
 
 impl SqliteStore {
     pub fn wal_autocheckpoint_pages(&self) -> Result<i64> {
@@ -22,6 +23,7 @@ impl SqliteStore {
         if wallet_ids.is_empty() {
             return Ok(WalletActivityDayCoverageSummary::default());
         }
+        validate_wallet_activity_days_last_seen_canonical_utc(&self.conn)?;
 
         let mut canonical_wallet_ids = wallet_ids.to_vec();
         canonical_wallet_ids.sort();

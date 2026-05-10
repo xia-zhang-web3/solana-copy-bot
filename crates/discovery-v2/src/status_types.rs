@@ -38,6 +38,7 @@ pub struct DiscoveryV2CoverageSample {
     pub slot: u64,
     pub signature: String,
     pub wallet_id: String,
+    pub covers_window_start: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

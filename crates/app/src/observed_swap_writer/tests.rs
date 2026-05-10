@@ -14,18 +14,44 @@ use super::{
     RECENT_RAW_JOURNAL_PHASE_PRUNE_START, RECENT_RAW_JOURNAL_PHASE_WRITE_END,
     RECENT_RAW_JOURNAL_PHASE_WRITE_START,
 };
+use crate::app_tests::sqlite_contention_delta_test_guard;
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use copybot_core_types::SwapEvent;
-use copybot_storage_core::{sqlite_contention_snapshot, RecentRawJournalWriteSummary, SqliteStore};
+use copybot_storage_core::{
+    ensure_discovery_v2_schema, sqlite_contention_snapshot, RecentRawJournalWriteSummary,
+    SqliteStore,
+};
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc as std_mpsc, Arc};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 use tokio::runtime::Builder;
 use tokio::time::{sleep, timeout, Duration};
+
+static RECENT_RAW_JOURNAL_PHASE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn recent_raw_journal_phase_test_guard() -> MutexGuard<'static, ()> {
+    RECENT_RAW_JOURNAL_PHASE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn prepare_observed_writer_store_for_test(path: &Path) -> Result<SqliteStore> {
+    let store = SqliteStore::open(path)?;
+    ensure_discovery_v2_schema(&store)?;
+    store.ensure_observed_swap_writer_tables()?;
+    Ok(store)
+}
+
+fn prepare_recent_raw_journal_store_for_test(path: &Path) -> Result<SqliteStore> {
+    let store = SqliteStore::open(path)?;
+    ensure_discovery_v2_schema(&store)?;
+    store.ensure_recent_raw_journal_tables()?;
+    Ok(store)
+}
 
 #[path = "tests_00_helpers_core.rs"]
 mod helpers_core;

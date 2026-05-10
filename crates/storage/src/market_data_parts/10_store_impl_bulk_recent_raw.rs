@@ -80,7 +80,10 @@ impl SqliteStore {
                     let mut stmt = match conn.prepare_cached(&sql) {
                         Ok(stmt) => stmt,
                         Err(error)
-                            if recent_raw_journal_sqlite_error_is_operation_interrupted(&error) =>
+                            if Instant::now() >= deadline
+                                && recent_raw_journal_sqlite_error_is_operation_interrupted(
+                                    &error,
+                                ) =>
                         {
                             prepare_duration_ms = prepare_duration_ms
                                 .saturating_add(recent_raw_elapsed_ms(prepare_started));
@@ -113,7 +116,10 @@ impl SqliteStore {
                     let changed = match execute_result {
                         Ok(changed) => changed,
                         Err(error)
-                            if recent_raw_journal_sqlite_error_is_operation_interrupted(&error) =>
+                            if Instant::now() >= deadline
+                                && recent_raw_journal_sqlite_error_is_operation_interrupted(
+                                    &error,
+                                ) =>
                         {
                             deadline_exhausted_during_execute = true;
                             time_budget_exhausted = true;
@@ -181,7 +187,10 @@ impl SqliteStore {
                     recent_raw_elapsed_ms(transaction_started);
                 Ok((summary, time_budget_exhausted))
             }
-            Err(error) if recent_raw_journal_anyhow_error_is_operation_interrupted(&error) => {
+            Err(error)
+                if Instant::now() >= deadline
+                    && recent_raw_journal_anyhow_error_is_operation_interrupted(&error) =>
+            {
                 let state = self.recent_raw_journal_state_cached()?;
                 Ok((recent_raw_journal_write_summary(&state, 0, 0), true))
             }

@@ -1,4 +1,19 @@
     const TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE: usize = 128;
+    static SQLITE_CONTENTION_DELTA_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    pub(crate) fn sqlite_contention_delta_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        SQLITE_CONTENTION_DELTA_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct DiscoveryCriticalPersistedRebuildPayloadTargetMints {
+        #[serde(default)]
+        discovery_critical_target_buy_mints: Vec<String>,
+        #[serde(default)]
+        unique_buy_mints: Vec<String>,
+    }
 
     fn make_test_store(name: &str) -> Result<(SqliteStore, PathBuf)> {
         let unique = format!(

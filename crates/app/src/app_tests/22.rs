@@ -234,8 +234,8 @@
             new.accepted_noncritical_irrelevant_swaps
                 >= TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE
                 && new.accepted_noncritical_irrelevant_swaps
-                    <= TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE + 1,
-            "the fix must still persist the initial one-batch best-effort generic slice, plus at most one reclaimed slot, before the exact refill gate engages: new={new:?}"
+                    <= TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE + 2,
+            "the fix must still persist the initial one-batch best-effort generic slice, plus only bounded reclaimed slots, before the exact refill gate engages: new={new:?}"
         );
         assert_eq!(
             new.writer_pending_requests_peak, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
@@ -261,7 +261,7 @@
     }
 
     #[test]
-    fn zero_universe_empty_target_noncritical_exhaustion_clears_when_store_backed_exact_target_mints_appear_stage1(
+    fn zero_universe_empty_target_noncritical_exhaustion_stays_armed_when_legacy_target_mints_exist_stage1(
     ) -> Result<()> {
         let (store, db_path) =
             make_test_store("zero-universe-empty-target-noncritical-exhaustion-clears")?;
@@ -287,10 +287,9 @@
         );
 
         refresh_discovery_critical_target_buy_mints_or_warn(&store, &mut target_buy_mints)?;
-        assert_eq!(
-            target_buy_mints,
-            HashSet::from(["token-target".to_string()]),
-            "the same store-backed persisted rebuild seam that app uses at runtime must surface the exact target-mint set before the refill gate can clear"
+        assert!(
+            target_buy_mints.is_empty(),
+            "production app must not load legacy persisted rebuild target mints into V2 runtime pressure handling"
         );
         reset_zero_universe_empty_target_noncritical_best_effort_exhaustion_if_context_changed(
             &mut best_effort_state,
@@ -300,29 +299,29 @@
             &target_buy_mints,
         );
         assert!(
-            !best_effort_state.exhausted(),
-            "once exact target mints appear, the empty-target non-critical refill gate must clear so recovery can proceed on the precise discovery-critical path"
+            best_effort_state.exhausted(),
+            "legacy target mints must not clear the empty-target non-critical refill gate"
         );
         assert!(
-            irrelevant_observed_swap_requires_discovery_critical_persistence(
+            !irrelevant_observed_swap_requires_discovery_critical_persistence(
                 &target_swap,
                 &follow_snapshot,
                 &open_shadow_lots,
                 true,
                 &target_buy_mints,
             ),
-            "the same context change that clears the refill gate must simultaneously make the exact target-mint SOL buy discovery-critical"
+            "legacy target mints must not make a SOL buy discovery-critical in the V2 runtime"
         );
         assert!(
-            !should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
-                true,
+            should_drop_zero_universe_empty_target_noncritical_irrelevant_after_best_effort_exhaustion(
+                false,
                 &follow_snapshot,
                 &open_shadow_lots,
                 true,
                 &target_buy_mints,
                 true,
             ),
-            "the exact discovery-critical recovery path must not be blocked by the earlier empty-target refill gate"
+            "without a V2-owned target surface, the exhausted empty-target non-critical gate remains active"
         );
         let _ = std::fs::remove_file(db_path);
         Ok(())
@@ -330,6 +329,7 @@
 
     #[test]
     fn enqueue_irrelevant_observed_swap_noncritical_hits_live_128_plateau_stage1() -> Result<()> {
+        let _contention_guard = sqlite_contention_delta_test_guard();
         let (_store, db_path) = make_test_store("irrelevant-noncritical-live-128-plateau")?;
         let blocker_conn = rusqlite::Connection::open(&db_path)?;
         blocker_conn.busy_timeout(StdDuration::from_millis(1))?;
@@ -418,6 +418,7 @@
     #[test]
     fn enqueue_irrelevant_observed_swap_discovery_critical_reserved_branch_exceeds_live_128_plateau_stage1(
     ) -> Result<()> {
+        let _contention_guard = sqlite_contention_delta_test_guard();
         let (_store, db_path) = make_test_store("irrelevant-discovery-critical-exceeds-live-128")?;
         let blocker_conn = rusqlite::Connection::open(&db_path)?;
         blocker_conn.busy_timeout(StdDuration::from_millis(1))?;

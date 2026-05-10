@@ -16,6 +16,7 @@ use copybot_storage_core::{
 use copybot_storage_core::{
     StartupStepProgressReporter, StartupStepRuntimePolicy, StartupStepTimeoutBehavior,
 };
+#[cfg(test)]
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::env;
@@ -69,7 +70,9 @@ use crate::app_loop_shadow::{
     prepare_shadow_scheduler_before_select,
 };
 use crate::app_loop_shutdown::shutdown_app_loop_tasks;
-use crate::config_contract::validate_execution_runtime_contract;
+use crate::config_contract::{
+    validate_execution_runtime_contract, validate_live_ingestion_source_contract,
+};
 use crate::discovery_runtime::{DiscoveryService, RuntimePublicationTruthResolution};
 use crate::history_retention::HistoryRetentionRunner;
 use crate::irrelevant_backpressure::*;
@@ -158,7 +161,7 @@ use crate::runtime_helpers::*;
 use crate::sqlite_maintenance::*;
 
 #[cfg(test)]
-mod app_tests;
+pub(crate) mod app_tests;
 
 #[tokio::main]
 async fn main() -> Result<()> {

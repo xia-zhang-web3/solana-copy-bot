@@ -1,12 +1,11 @@
-use anyhow::Result;
-use chrono::{DateTime, Utc};
-use copybot_config::{DiscoveryConfig, ShadowConfig};
-use copybot_discovery_v2::{
-    discovery_v2_policy_fingerprint, DiscoveryV2BuildOptions, DISCOVERY_V2_SCORING_SOURCE,
+use chrono::DateTime;
+use chrono::Utc;
+use copybot_config::{
+    discovery_v2_policy_fingerprint, DiscoveryConfig, DiscoveryV2PolicyFingerprintInput,
+    ShadowConfig, DISCOVERY_V2_SCORING_SOURCE,
 };
 use copybot_storage_core::{
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow, DiscoveryRuntimeMode,
-    SqliteDiscoveryStore,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -49,33 +48,19 @@ impl DiscoveryService {
         &self,
         execution_enabled: bool,
     ) -> String {
-        let options =
-            DiscoveryV2BuildOptions::from_config(&self.config, execution_enabled, Utc::now());
-        discovery_v2_policy_fingerprint(&self.config, &self.shadow_quality, &options)
-    }
-
-    pub(crate) fn runtime_publication_truth_resolution(
-        &self,
-        store: &SqliteDiscoveryStore,
-        now: DateTime<Utc>,
-    ) -> Result<Option<RuntimePublicationTruthResolution>> {
-        let Some(publication_state) = store.discovery_publication_state_read_only()? else {
-            return Ok(None);
+        let options = DiscoveryV2PolicyFingerprintInput {
+            window_minutes: u64::from(self.config.scoring_window_days.max(1))
+                .saturating_mul(24 * 60),
+            max_tail_lag_seconds: self.config.refresh_seconds.max(1),
+            max_rows: self
+                .config
+                .max_window_swaps_in_memory
+                .max(self.config.max_fetch_swaps_per_cycle)
+                .max(1),
+            time_budget_ms: self.config.fetch_time_budget_ms.max(1),
+            execution_enabled,
         };
-        if publication_state.runtime_mode != DiscoveryRuntimeMode::Healthy {
-            return Ok(None);
-        }
-        let Some(runtime_truth) =
-            RuntimePublishedUniverseTruth::from_state(publication_state.clone())
-        else {
-            return Ok(None);
-        };
-        if publication_state.is_fresh_under_gate(&self.publication_freshness_gate(), now) {
-            return Ok(Some(RuntimePublicationTruthResolution::Recent(
-                runtime_truth,
-            )));
-        }
-        Ok(None)
+        discovery_v2_policy_fingerprint(&self.config, &self.shadow_quality, options)
     }
 }
 
@@ -90,7 +75,7 @@ pub(crate) struct RuntimePublishedUniverseTruth {
 }
 
 impl RuntimePublishedUniverseTruth {
-    fn from_state(publication_state: DiscoveryPublicationStateRow) -> Option<Self> {
+    pub(crate) fn from_state(publication_state: DiscoveryPublicationStateRow) -> Option<Self> {
         Some(Self {
             runtime_mode: publication_state.runtime_mode,
             reason: publication_state.reason,

@@ -261,10 +261,16 @@ fn observed_sol_leg_swap_cursor_query_works_before_and_after_deferred_index_migr
     let temp = tempdir().context("failed to create tempdir")?;
     let db_path = temp.path().join("observed-sol-leg-deferred-index-query.db");
     let legacy_migrations = temp.path().join("legacy-migrations");
-    copy_migrations_through(&legacy_migrations, "0038_alert_delivery_cursor.sql")?;
+    copy_migrations_through(
+        &legacy_migrations,
+        "0040_observed_swaps_non_utc_ts_index.sql",
+    )?;
 
     let mut store = SqliteStore::open(Path::new(&db_path))?;
     store.run_migrations(&legacy_migrations)?;
+    store
+        .conn
+        .execute_batch("DROP INDEX IF EXISTS idx_observed_swaps_sol_leg_ts_slot_signature;")?;
 
     let base = DateTime::parse_from_rfc3339("2026-03-01T12:00:00Z")
         .expect("valid timestamp")
@@ -348,7 +354,9 @@ fn observed_sol_leg_swap_cursor_query_works_before_and_after_deferred_index_migr
     );
 
     let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
-    store.run_migrations(&migration_dir)?;
+    let sol_leg_index_sql =
+        fs::read_to_string(migration_dir.join("0039_observed_swaps_sol_leg_ts_index.sql"))?;
+    store.conn.execute_batch(&sol_leg_index_sql)?;
 
     let mut after_index = Vec::new();
     let optimized = store.for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget(

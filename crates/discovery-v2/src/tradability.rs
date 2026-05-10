@@ -5,7 +5,8 @@ use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::{SwapEvent, TokenQualityCacheRow};
 use std::collections::{HashMap, VecDeque};
 
-pub(crate) const TOKEN_ROLLING_MARKET_WINDOW_SECONDS: i64 = 5 * 60;
+pub(crate) const TOKEN_ROLLING_MARKET_WINDOW_SECONDS: i64 =
+    copybot_config::DISCOVERY_V2_TOKEN_ROLLING_MARKET_WINDOW_SECONDS;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum BuyTradability {

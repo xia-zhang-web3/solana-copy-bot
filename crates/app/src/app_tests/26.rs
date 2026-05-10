@@ -98,6 +98,21 @@
     }
 
     #[test]
+    fn validate_live_ingestion_source_contract_rejects_mock_for_prod_live() {
+        let err = validate_live_ingestion_source_contract("mock", "prod-live")
+            .expect_err("prod-live must not accept mock ingestion")
+            .to_string();
+        assert!(
+            err.contains("ingestion.source=mock"),
+            "unexpected error: {err}"
+        );
+        validate_live_ingestion_source_contract("yellowstone_grpc", "prod-live")
+            .expect("yellowstone_grpc remains valid in prod-live");
+        validate_live_ingestion_source_contract("mock", "dev")
+            .expect("mock remains valid outside production envs");
+    }
+
+    #[test]
     fn parse_ingestion_source_override_reads_supported_source_key() {
         let content = r#"
 # comment
@@ -147,6 +162,37 @@ SOLANA_COPY_BOT_INGESTION_SOURCE=yellowstone
                 .as_deref(),
             Some("yellowstone_grpc")
         );
+    }
+
+    #[test]
+    fn load_ingestion_source_override_reports_unreadable_override_file() {
+        let _guard = APP_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = env::var_os("SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE");
+        let override_dir = std::env::temp_dir().join(format!(
+            "copybot-ingestion-override-dir-{}-{}",
+            std::process::id(),
+            Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(Utc::now().timestamp_micros() * 1000)
+        ));
+        std::fs::create_dir(&override_dir).expect("test override dir should be created");
+        env::set_var("SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE", &override_dir);
+
+        let error = load_ingestion_source_override()
+            .expect_err("unreadable override path must be reported");
+        assert!(
+            error.to_string().contains("failed reading ingestion source override file"),
+            "unexpected error: {error:#}"
+        );
+
+        if let Some(previous) = previous {
+            env::set_var("SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE", previous);
+        } else {
+            env::remove_var("SOLANA_COPY_BOT_INGESTION_OVERRIDE_FILE");
+        }
+        let _ = std::fs::remove_dir(override_dir);
     }
 
     #[test]

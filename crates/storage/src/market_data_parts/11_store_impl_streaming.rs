@@ -9,6 +9,7 @@ impl SqliteStore {
     where
         F: FnMut(SwapEvent) -> Result<()>,
     {
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         let mut stmt = self
             .conn
             .prepare(
@@ -54,22 +55,41 @@ impl SqliteStore {
                 time_budget_exhausted: true,
             });
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         let limit = (limit.min(i64::MAX as usize)) as i64;
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+        let mut stmt = match self.conn.prepare(
+            "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
                             qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
                      FROM observed_swaps
                      WHERE ts >= ?1
                      ORDER BY ts ASC, slot ASC, signature ASC
                      LIMIT ?2",
-            )
-            .context("failed to prepare observed_swaps bounded streaming query")?;
-        let mut rows = stmt
-            .query(params![since.to_rfc3339(), limit])
-            .context("failed to stream observed_swaps bounded rows")?;
+        ) {
+            Ok(stmt) => stmt,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedSwapCursorPage {
+                    rows_seen: 0,
+                    time_budget_exhausted: true,
+                })
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to prepare observed_swaps bounded streaming query")
+            }
+        };
+        let mut rows = match stmt.query(params![since.to_rfc3339(), limit]) {
+            Ok(rows) => rows,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedSwapCursorPage {
+                    rows_seen: 0,
+                    time_budget_exhausted: true,
+                })
+            }
+            Err(error) => {
+                return Err(error).context("failed to stream observed_swaps bounded rows")
+            }
+        };
 
         let mut seen = 0usize;
         let mut time_budget_exhausted = false;
@@ -77,7 +97,7 @@ impl SqliteStore {
             let next_row = match rows.next() {
                 Ok(row) => row,
                 Err(error) => {
-                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                    if sqlite_interrupted_after_deadline(&error, deadline) {
                         time_budget_exhausted = true;
                         break;
                     }
@@ -107,6 +127,7 @@ impl SqliteStore {
     where
         F: FnMut(SwapEvent) -> Result<()>,
     {
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         let mut stmt = self
             .conn
             .prepare(
@@ -155,6 +176,7 @@ impl SqliteStore {
                 time_budget_exhausted: true,
             });
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
 
         let mut total_rows_seen = 0usize;
         let mut time_budget_exhausted = false;
@@ -220,6 +242,7 @@ impl SqliteStore {
                 time_budget_exhausted: true,
             });
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
 
         let limit = (limit.min(i64::MAX as usize)) as i64;
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
@@ -257,13 +280,30 @@ impl SqliteStore {
                 ],
             ),
         };
-        let mut stmt = self
-            .conn
-            .prepare(query)
-            .context("failed to prepare observed_swaps window cursor query")?;
-        let mut rows = stmt
-            .query(rusqlite::params_from_iter(params))
-            .context("failed to query observed_swaps by window cursor")?;
+        let mut stmt = match self.conn.prepare(query) {
+            Ok(stmt) => stmt,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedSwapCursorPage {
+                    rows_seen: 0,
+                    time_budget_exhausted: true,
+                })
+            }
+            Err(error) => {
+                return Err(error).context("failed to prepare observed_swaps window cursor query")
+            }
+        };
+        let mut rows = match stmt.query(rusqlite::params_from_iter(params)) {
+            Ok(rows) => rows,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedSwapCursorPage {
+                    rows_seen: 0,
+                    time_budget_exhausted: true,
+                })
+            }
+            Err(error) => {
+                return Err(error).context("failed to query observed_swaps by window cursor")
+            }
+        };
 
         let mut seen = 0usize;
         let mut time_budget_exhausted = false;
@@ -271,7 +311,7 @@ impl SqliteStore {
             let next_row = match rows.next() {
                 Ok(row) => row,
                 Err(error) => {
-                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                    if sqlite_interrupted_after_deadline(&error, deadline) {
                         time_budget_exhausted = true;
                         break;
                     }

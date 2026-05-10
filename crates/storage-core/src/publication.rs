@@ -95,6 +95,14 @@ pub fn validate_discovery_runtime_artifact_export_readiness(
             "discovery runtime artifact requires publication-bound runtime cursor ({truth_detail})"
         ));
     }
+    if !artifact
+        .publication_state
+        .has_fresh_publication_runtime_cursor_under_gate(export_gate, now)
+    {
+        return Err(anyhow::anyhow!(
+            "discovery runtime artifact requires fresh publication-bound runtime cursor ({truth_detail})"
+        ));
+    }
     validate_runtime_artifact_snapshot_shape(artifact)
 }
 
@@ -258,6 +266,13 @@ impl SqliteDiscoveryStore {
         if !publication_state.matches_publication_runtime_cursor(&runtime_cursor) {
             return Err(anyhow::anyhow!(
                 "discovery runtime artifact export requires publication-bound runtime cursor ({truth_detail})"
+            ));
+        }
+        if !publication_state
+            .has_fresh_publication_runtime_cursor_under_gate(&export_gate, exported_at)
+        {
+            return Err(anyhow::anyhow!(
+                "discovery runtime artifact export requires fresh publication-bound runtime cursor ({truth_detail})"
             ));
         }
         let published_window_start = publication_state

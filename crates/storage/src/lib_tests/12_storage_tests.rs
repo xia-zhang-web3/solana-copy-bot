@@ -475,16 +475,12 @@ fn sqlite_startup_bootstrap_reports_stage_progress() -> Result<()> {
         );
     }
     assert!(
-            recorded.iter().any(|event| {
-                event.stage == "sqlite_migrations_deferred"
-                    && event.outcome == StartupStepOutcome::Skipped
-                    && event
-                        .detail
-                        .as_deref()
-                        .map(|detail| detail.contains("0039_observed_swaps_sol_leg_ts_index.sql"))
-                        .unwrap_or(false)
-            }),
-            "startup bootstrap must emit an explicit deferred migration outcome for startup-deferred performance indexes"
-        );
+        recorded.iter().any(|event| {
+            event.stage == "sqlite_migrations_deferred"
+                && event.outcome == StartupStepOutcome::Completed
+                && event.detail.as_deref() == Some("deferred_count=0")
+        }),
+        "fresh startup bootstrap must report that deferred performance indexes were applied inline"
+    );
     Ok(())
 }

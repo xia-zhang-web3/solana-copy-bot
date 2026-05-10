@@ -9,6 +9,8 @@ cd "$ROOT_DIR"
 source "$SCRIPT_DIR/lib/architecture_guard/core.sh"
 # shellcheck source=tools/lib/architecture_guard/file_checks.sh
 source "$SCRIPT_DIR/lib/architecture_guard/file_checks.sh"
+# shellcheck source=tools/lib/architecture_guard/dependency_checks.sh
+source "$SCRIPT_DIR/lib/architecture_guard/dependency_checks.sh"
 # shellcheck source=tools/lib/architecture_guard/workspace_checks.sh
 source "$SCRIPT_DIR/lib/architecture_guard/workspace_checks.sh"
 
@@ -42,6 +44,8 @@ for path in "${files[@]}"; do
   check_include_sharding "$path"
   check_forbidden_new_bin "$path"
   check_forbidden_cargo_bins "$path"
+  check_app_dependency_growth "$path"
+  check_workspace_dependency_identity_growth "$path"
   check_forbidden_operator_deps "$path"
   check_doc_build_commands "$path"
 done

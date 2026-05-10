@@ -1,4 +1,8 @@
 use super::{upsert_wallet_activity_days_on_conn, wallet_metrics_window_start_query_variants};
+use crate::market_data::{
+    validate_observed_swaps_timestamps_canonical_utc,
+    validate_wallet_activity_days_last_seen_canonical_utc,
+};
 use crate::{SqliteStore, WalletActivityDayRow};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -23,6 +27,7 @@ impl SqliteStore {
         if wallet_ids.is_empty() {
             return Ok(HashMap::new());
         }
+        validate_wallet_activity_days_last_seen_canonical_utc(&self.conn)?;
 
         let day_start = window_start.date_naive();
         let mut counts = HashMap::new();
@@ -74,6 +79,7 @@ impl SqliteStore {
         window_start: DateTime<Utc>,
     ) -> Result<usize> {
         self.with_immediate_transaction_retry("wallet_activity_days backfill", |conn| {
+            validate_observed_swaps_timestamps_canonical_utc(conn)?;
             conn.execute(
                 "INSERT INTO wallet_activity_days(wallet_id, activity_day, last_seen)
                  SELECT wallet_id, substr(ts, 1, 10) AS activity_day, MAX(ts) AS last_seen

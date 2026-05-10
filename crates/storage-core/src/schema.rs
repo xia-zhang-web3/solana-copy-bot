@@ -1,3 +1,11 @@
+use crate::observed_timestamp::{
+    ensure_observed_swaps_timestamp_validation_index_empty_safe,
+    observed_swaps_non_utc_timestamp_index_is_valid,
+};
+use crate::schema_indexes::{
+    ensure_observed_swaps_read_indexes_empty_safe, followlist_active_wallet_index_is_valid,
+    validate_observed_swaps_read_indexes,
+};
 use crate::SqliteDiscoveryStore;
 use anyhow::{Context, Result};
 
@@ -6,6 +14,8 @@ pub fn ensure_discovery_v2_schema(store: &SqliteDiscoveryStore) -> Result<()> {
         .conn
         .execute_batch(SCHEMA)
         .context("failed ensuring discovery v2 storage-core schema")?;
+    ensure_observed_swaps_timestamp_validation_index_empty_safe(&store.conn)?;
+    ensure_observed_swaps_read_indexes_empty_safe(store)?;
     ensure_discovery_strategy_state_table(store)?;
     ensure_discovery_runtime_state_table(store)?;
     Ok(())
@@ -95,6 +105,17 @@ pub(crate) fn ensure_discovery_runtime_state_table(store: &SqliteDiscoveryStore)
 }
 
 pub fn validate_discovery_v2_schema_read_only(store: &SqliteDiscoveryStore) -> Result<()> {
+    validate_discovery_v2_schema_read_only_inner(store, true)
+}
+
+pub fn validate_discovery_v2_status_schema_read_only(store: &SqliteDiscoveryStore) -> Result<()> {
+    validate_discovery_v2_schema_read_only_inner(store, false)
+}
+
+fn validate_discovery_v2_schema_read_only_inner(
+    store: &SqliteDiscoveryStore,
+    require_runtime_state: bool,
+) -> Result<()> {
     for table in [
         "observed_swaps",
         "token_quality_cache",
@@ -102,11 +123,13 @@ pub fn validate_discovery_v2_schema_read_only(store: &SqliteDiscoveryStore) -> R
         "wallet_metrics",
         "followlist",
         "discovery_strategy_state",
-        "discovery_runtime_state",
     ] {
         if !store.sqlite_table_exists(table)? {
             anyhow::bail!("discovery v2 schema missing required table: {table}");
         }
+    }
+    if require_runtime_state && !store.sqlite_table_exists("discovery_runtime_state")? {
+        anyhow::bail!("discovery v2 schema missing required table: discovery_runtime_state");
     }
     for (table, column) in [
         ("observed_swaps", "signature"),
@@ -170,14 +193,24 @@ pub fn validate_discovery_v2_schema_read_only(store: &SqliteDiscoveryStore) -> R
             "publication_runtime_cursor_signature",
         ),
         ("discovery_strategy_state", "updated_at"),
-        ("discovery_runtime_state", "id"),
-        ("discovery_runtime_state", "cursor_ts"),
-        ("discovery_runtime_state", "cursor_slot"),
-        ("discovery_runtime_state", "cursor_signature"),
-        ("discovery_runtime_state", "updated_at"),
     ] {
         if !column_exists(store, table, column)? {
             anyhow::bail!("discovery v2 schema missing required column: {table}.{column}");
+        }
+    }
+    if require_runtime_state {
+        for column in [
+            "id",
+            "cursor_ts",
+            "cursor_slot",
+            "cursor_signature",
+            "updated_at",
+        ] {
+            if !column_exists(store, "discovery_runtime_state", column)? {
+                anyhow::bail!(
+                    "discovery v2 schema missing required column: discovery_runtime_state.{column}"
+                );
+            }
         }
     }
     if !followlist_active_wallet_index_is_valid(store)? {
@@ -185,6 +218,12 @@ pub fn validate_discovery_v2_schema_read_only(store: &SqliteDiscoveryStore) -> R
             "discovery v2 schema missing or malformed required index: idx_followlist_one_active_wallet"
         );
     }
+    if !observed_swaps_non_utc_timestamp_index_is_valid(store)? {
+        anyhow::bail!(
+            "discovery v2 schema missing or malformed required index: idx_observed_swaps_non_utc_ts"
+        );
+    }
+    validate_observed_swaps_read_indexes(store)?;
     Ok(())
 }
 
@@ -224,73 +263,6 @@ fn column_exists(store: &SqliteDiscoveryStore, table: &str, column: &str) -> Res
     Ok(false)
 }
 
-fn followlist_active_wallet_index_is_valid(store: &SqliteDiscoveryStore) -> Result<bool> {
-    use rusqlite::OptionalExtension;
-
-    let index_flags = store
-        .conn
-        .query_row(
-            "SELECT [unique], partial FROM pragma_index_list('followlist') WHERE name = ?1",
-            ["idx_followlist_one_active_wallet"],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .optional()
-        .context("failed checking followlist active wallet index flags")?;
-    let Some((unique, partial)) = index_flags else {
-        return Ok(false);
-    };
-    if unique != 1 || partial != 1 {
-        return Ok(false);
-    }
-
-    let mut stmt = store
-        .conn
-        .prepare(
-            "SELECT name FROM pragma_index_info('idx_followlist_one_active_wallet') ORDER BY seqno",
-        )
-        .context("failed preparing followlist active wallet index column introspection")?;
-    let columns = stmt
-        .query_map([], |row| row.get::<_, String>(0))
-        .context("failed querying followlist active wallet index columns")?
-        .collect::<rusqlite::Result<Vec<String>>>()
-        .context("failed collecting followlist active wallet index columns")?;
-    if columns.as_slice() != ["wallet_id"] {
-        return Ok(false);
-    }
-
-    let index_sql: Option<String> = store
-        .conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1 LIMIT 1",
-            ["idx_followlist_one_active_wallet"],
-            |row| row.get(0),
-        )
-        .optional()
-        .context("failed reading followlist active wallet index sql")?;
-    let Some(index_sql) = index_sql else {
-        return Ok(false);
-    };
-    Ok(followlist_active_wallet_index_predicate_is_valid(
-        &index_sql,
-    ))
-}
-
-fn followlist_active_wallet_index_predicate_is_valid(index_sql: &str) -> bool {
-    let compact_sql: String = index_sql
-        .chars()
-        .filter(|ch| !ch.is_whitespace() && *ch != '"' && *ch != '`' && *ch != '[' && *ch != ']')
-        .flat_map(char::to_lowercase)
-        .collect();
-    let Some((_, predicate)) = compact_sql.split_once("where") else {
-        return false;
-    };
-    let predicate = predicate.strip_suffix(';').unwrap_or(predicate);
-    matches!(
-        predicate,
-        "active=1" | "(active=1)" | "1=active" | "(1=active)"
-    )
-}
-
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS observed_swaps (
     signature TEXT PRIMARY KEY,
@@ -307,8 +279,6 @@ CREATE TABLE IF NOT EXISTS observed_swaps (
     slot INTEGER NOT NULL,
     ts TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_observed_swaps_ts_slot_signature
-    ON observed_swaps(ts, slot, signature);
 
 CREATE TABLE IF NOT EXISTS token_quality_cache (
     mint TEXT PRIMARY KEY,

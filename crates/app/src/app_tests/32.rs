@@ -179,6 +179,7 @@
     #[test]
     fn enqueue_irrelevant_observed_swap_discovery_critical_uses_reserved_writer_capacity_without_waiting_for_commit_stage1(
     ) -> Result<()> {
+        let _contention_guard = sqlite_contention_delta_test_guard();
         let (_store, db_path) = make_test_store("irrelevant-discovery-critical-priority-enqueue")?;
         let blocker_conn = rusqlite::Connection::open(&db_path)?;
         blocker_conn.busy_timeout(StdDuration::from_millis(1))?;

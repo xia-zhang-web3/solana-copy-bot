@@ -3,14 +3,29 @@ use anyhow::{anyhow, Result};
 use crate::AppConfig;
 
 pub(super) fn validate_loaded_config(config: &AppConfig) -> Result<()> {
+    validate_live_ingestion_source_config(config)?;
     validate_shadow_universe_config(config)?;
     validate_shadow_quality_thresholds(config)?;
+    validate_discovery_v2_float_gates(config)?;
     validate_discovery_storage_mitigation_config(config)?;
     validate_recent_raw_journal_config(config)?;
     validate_runtime_restore_ops_config(config)?;
     validate_discovery_aggregate_activation_config(config)?;
     validate_risk_sol_boundary_config(config)?;
     validate_history_retention_config(config)?;
+    Ok(())
+}
+
+fn validate_live_ingestion_source_config(config: &AppConfig) -> Result<()> {
+    let env = config.system.env.trim().to_ascii_lowercase();
+    let prod_like = matches!(env.as_str(), "prod" | "production" | "live" | "prod-live")
+        || env.starts_with("prod-");
+    if prod_like && config.ingestion.source == "mock" {
+        return Err(anyhow!(
+            "ingestion.source=mock is not allowed in production env {}; use yellowstone_grpc",
+            config.system.env
+        ));
+    }
     Ok(())
 }
 
@@ -42,6 +57,48 @@ fn validate_shadow_quality_thresholds(config: &AppConfig) -> Result<()> {
         return Err(anyhow!(
             "shadow.min_holders ({min_holders}) must be either 0 (disable holder gate) or >= 5"
         ));
+    }
+    Ok(())
+}
+
+fn validate_discovery_v2_float_gates(config: &AppConfig) -> Result<()> {
+    validate_finite_non_negative(
+        "discovery.min_leader_notional_sol",
+        config.discovery.min_leader_notional_sol,
+    )?;
+    validate_finite_non_negative("discovery.min_score", config.discovery.min_score)?;
+    validate_finite_ratio(
+        "discovery.min_tradable_ratio",
+        config.discovery.min_tradable_ratio,
+    )?;
+    validate_finite_ratio("discovery.max_rug_ratio", config.discovery.max_rug_ratio)?;
+    validate_finite_non_negative(
+        "discovery.thin_market_min_volume_sol",
+        config.discovery.thin_market_min_volume_sol,
+    )?;
+    validate_finite_non_negative(
+        "shadow.min_leader_notional_sol",
+        config.shadow.min_leader_notional_sol,
+    )?;
+    validate_finite_non_negative("shadow.min_liquidity_sol", config.shadow.min_liquidity_sol)?;
+    validate_finite_non_negative("shadow.min_volume_5m_sol", config.shadow.min_volume_5m_sol)?;
+    Ok(())
+}
+
+fn validate_finite_non_negative(label: &str, value: f64) -> Result<()> {
+    if !value.is_finite() {
+        return Err(anyhow!("{label} must be finite, got {value}"));
+    }
+    if value < 0.0 {
+        return Err(anyhow!("{label} must be >= 0, got {value}"));
+    }
+    Ok(())
+}
+
+fn validate_finite_ratio(label: &str, value: f64) -> Result<()> {
+    validate_finite_non_negative(label, value)?;
+    if value > 1.0 {
+        return Err(anyhow!("{label} must be <= 1, got {value}"));
     }
     Ok(())
 }

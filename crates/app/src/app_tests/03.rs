@@ -1,6 +1,7 @@
     fn run_empty_target_discovery_critical_backpressure_scenario(
         broad_empty_target_bootstrap_enabled: bool,
     ) -> Result<EmptyTargetDiscoveryCriticalBackpressureSummary> {
+        let _contention_guard = sqlite_contention_delta_test_guard();
         let (_store, db_path) =
             make_test_store("empty-target-discovery-critical-backpressure-plateau")?;
         seed_runtime_raw_insert_backpressure(&db_path)?;
@@ -230,6 +231,7 @@
     fn run_broad_unique_buy_fallback_backpressure_scenario(
         broad_unique_buy_fallback_enabled: bool,
     ) -> Result<BroadUniqueBuyFallbackBackpressureSummary> {
+        let _contention_guard = sqlite_contention_delta_test_guard();
         let (store, db_path) = make_test_store("broad-unique-buy-fallback-backpressure-plateau")?;
         seed_runtime_raw_insert_backpressure(&db_path)?;
         let broad_unique_buy_mints: Vec<String> = (0..(OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY

@@ -58,7 +58,7 @@ Default limits:
 Exceptions require an explicit architecture waiver in the batch summary. A
 waiver must explain why the file cannot be split now and when it will be split.
 
-Existing oversized files are quarantined. Examples:
+No active oversized-file waivers remain. Previously quarantined files include:
 
 - `crates/discovery/src/lib.rs`
 - `crates/storage/src/lib.rs`
@@ -67,10 +67,9 @@ Existing oversized files are quarantined. Examples:
 - `crates/app/src/main.rs`
 - `crates/app/src/observed_swap_writer.rs`
 
-Rules for quarantined files:
+Rules for previously quarantined files:
 
-- do not add new features to them
-- do not add new tests to them
+- keep them below the normal guard limits
 - do not add new operator/report logic to them
 - only touch them for extraction, deletion, narrow emergency fixes, or wiring
   required to move code out
@@ -190,7 +189,7 @@ Target split:
 - `copybot-storage-core`: minimal SQLite APIs used by operators/runtime
 - `copybot-storage-ops`: backfill, repair, restore, and maintenance tooling
 - `copybot-operators`: standalone operational reports and maintenance commands
-- `copybot-live-proof`: bundled live proof commands
+- `copybot-live-ops`: bundled live proof and service-control commands
 
 Legacy monoliths remain only as compatibility shells while code is extracted.
 

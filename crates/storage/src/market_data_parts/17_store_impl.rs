@@ -3,6 +3,7 @@ use super::*;
 impl SqliteStore {
     pub fn list_unique_sol_buy_mints_since(&self, since: DateTime<Utc>) -> Result<HashSet<String>> {
         const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         let mut stmt = self
             .conn
             .prepare(
@@ -73,11 +74,9 @@ impl SqliteStore {
 
     pub(crate) fn row_to_swap_event(row: &rusqlite::Row<'_>) -> Result<SwapEvent> {
         let ts_raw: String = row.get(8).context("failed reading observed_swaps.ts")?;
-        let ts_utc = DateTime::parse_from_rfc3339(&ts_raw)
-            .map(|dt| dt.with_timezone(&Utc))
-            .with_context(|| format!("invalid observed_swaps.ts rfc3339 value: {ts_raw}"))?;
+        let ts_utc = parse_rfc3339_utc(&ts_raw, "observed_swaps.ts")?;
         let slot_raw: i64 = row.get(7).context("failed reading observed_swaps.slot")?;
-        let slot = if slot_raw < 0 { 0 } else { slot_raw as u64 };
+        let slot = parse_sqlite_slot(slot_raw, "observed_swaps.slot")?;
         let exact_amounts = Self::read_exact_swap_amounts(row)?;
 
         Ok(SwapEvent {

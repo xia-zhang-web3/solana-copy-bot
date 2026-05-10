@@ -26,6 +26,8 @@ use std::time::{Duration as StdDuration, Instant};
 mod recent_raw_helpers;
 #[path = "market_data_parts/02_recent_raw_state_helpers.rs"]
 mod recent_raw_state_helpers;
+#[path = "market_data_parts/02_recent_raw_timestamp_guard.rs"]
+mod recent_raw_timestamp_guard;
 #[path = "market_data_parts/90_rpc_quality_helpers.rs"]
 mod rpc_quality_helpers;
 #[path = "market_data_parts/13_store_impl_activity_helpers.rs"]
@@ -76,6 +78,59 @@ pub use self::types_and_progress::{
     ObservedSolLegCursorPage, ObservedSwapCursorPage, ObservedWalletActivityDayCountSource,
     ObservedWalletActivityPage, ObservedWalletActivityRow,
 };
+
+pub(crate) fn validate_observed_swaps_timestamps_canonical_utc(conn: &Connection) -> Result<()> {
+    ensure_recent_raw_observed_swaps_timestamps_canonical_utc(conn)
+}
+
+pub(crate) fn validate_wallet_activity_days_last_seen_canonical_utc(
+    conn: &Connection,
+) -> Result<()> {
+    let invalid_ts: Option<String> = conn
+        .query_row(
+            "SELECT last_seen
+             FROM wallet_activity_days
+             WHERE NOT (
+                (
+                    (length(last_seen) = 25 AND substr(last_seen, 20, 6) = '+00:00')
+                    OR (
+                        length(last_seen) BETWEEN 27 AND 35
+                        AND substr(last_seen, 20, 1) = '.'
+                        AND substr(last_seen, -6) = '+00:00'
+                        AND substr(last_seen, 21, length(last_seen) - 26) GLOB '[0-9]*'
+                        AND substr(last_seen, 21, length(last_seen) - 26) NOT GLOB '*[^0-9]*'
+                    )
+                )
+                AND substr(last_seen, 5, 1) = '-'
+                AND substr(last_seen, 8, 1) = '-'
+                AND substr(last_seen, 11, 1) = 'T'
+                AND substr(last_seen, 14, 1) = ':'
+                AND substr(last_seen, 17, 1) = ':'
+                AND substr(last_seen, 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+                AND substr(last_seen, 6, 2) GLOB '[0-9][0-9]'
+                AND CAST(substr(last_seen, 6, 2) AS INTEGER) BETWEEN 1 AND 12
+                AND substr(last_seen, 9, 2) GLOB '[0-9][0-9]'
+                AND CAST(substr(last_seen, 9, 2) AS INTEGER) BETWEEN 1 AND 31
+                AND substr(last_seen, 12, 2) GLOB '[0-9][0-9]'
+                AND CAST(substr(last_seen, 12, 2) AS INTEGER) BETWEEN 0 AND 23
+                AND substr(last_seen, 15, 2) GLOB '[0-9][0-9]'
+                AND CAST(substr(last_seen, 15, 2) AS INTEGER) BETWEEN 0 AND 59
+                AND substr(last_seen, 18, 2) GLOB '[0-9][0-9]'
+                AND CAST(substr(last_seen, 18, 2) AS INTEGER) BETWEEN 0 AND 59
+                AND julianday(last_seen) IS NOT NULL
+                AND strftime('%Y-%m-%dT%H:%M:%S', last_seen) = substr(last_seen, 1, 19)
+             )
+             LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("failed validating wallet_activity_days.last_seen canonical UTC")?;
+    if let Some(raw) = invalid_ts {
+        bail!("wallet_activity_days.last_seen is not canonical UTC: {raw}");
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 #[path = "market_data/tests.rs"]

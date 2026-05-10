@@ -1,4 +1,4 @@
-use crate::observed::parse_rfc3339_utc;
+use crate::observed_timestamp::parse_rfc3339_utc;
 use crate::{
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow, DiscoveryRuntimeArtifact,
     DiscoveryRuntimeCursor, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,

@@ -1,5 +1,6 @@
     #[test]
     fn app_consumer_irrelevant_writer_backpressure_stays_follow_rejected_stage1() -> Result<()> {
+        let _contention_guard = sqlite_contention_delta_test_guard();
         let (_store, db_path) = make_test_store("follow-rejected-backpressure-stays-irrelevant")?;
         let blocker_conn = rusqlite::Connection::open(&db_path)?;
         blocker_conn.busy_timeout(StdDuration::from_millis(1))?;
@@ -169,6 +170,7 @@
     #[test]
     fn live_like_writer_plateau_and_stale_export_truth_can_coexist_without_output_pressure_stage1(
     ) -> Result<()> {
+        let _contention_guard = sqlite_contention_delta_test_guard();
         let (store, db_path) = make_test_store("live-like-writer-plateau-and-stale-export-truth")?;
         let stale_publish_at = DateTime::parse_from_rfc3339("2026-04-06T17:55:23Z")
             .expect("timestamp")

@@ -1,6 +1,7 @@
-#[test]
+    #[test]
     fn enqueue_irrelevant_observed_swap_reports_pending_backpressure_without_forgetting_signature(
     ) -> Result<()> {
+        let _contention_guard = sqlite_contention_delta_test_guard();
         let (_store, db_path) = make_test_store("irrelevant-observed-swap-backpressure")?;
         let blocker_conn = rusqlite::Connection::open(&db_path)?;
         blocker_conn.busy_timeout(StdDuration::from_millis(1))?;

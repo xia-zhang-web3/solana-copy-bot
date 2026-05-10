@@ -4,21 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-usage() {
-  cat >&2 <<'EOF'
-usage: tools/install_operator_artifacts.sh [options] <artifact-dir-or-tar.gz>
-
-Options:
-  --install-dir <path>   default: /var/www/solana-copy-bot/bin
-  --expect-package <pkg> default: copybot-discovery-v2
-  --expect-profile <p>   default: derived from package
-  --expect-target <t>    default: x86_64-unknown-linux-gnu
-  --dry-run              verify and print install/rollback plan only
-  --allow-dirty          allow artifacts marked git_dirty=true
-  --rollback <id>        switch symlinks to an installed release id
-  --help
-EOF
-}
+# shellcheck source=tools/lib/operator_artifact_install.sh
+source "$ROOT/tools/lib/operator_artifact_install.sh"
 
 install_dir="${INSTALL_DIR:-/var/www/solana-copy-bot/bin}"
 expect_package="${EXPECT_PACKAGE:-copybot-discovery-v2}"
@@ -85,6 +72,11 @@ if [ -n "$rollback_id" ] && [ -n "$artifact_input" ]; then
   exit 2
 fi
 
+if [ "$allow_dirty" = "1" ] && [ "$dry_run" != "1" ]; then
+  echo "--allow-dirty is restricted to local --dry-run artifact smoke checks" >&2
+  exit 2
+fi
+
 if [ -z "$artifact_input" ] && [ -z "$rollback_id" ]; then
   artifact_input="${ARTIFACT_DIR:-}"
 fi
@@ -108,13 +100,6 @@ case "$expect_target" in
     ;;
 esac
 
-default_profile_for_package() {
-  case "$1" in
-    copybot-app) printf 'release' ;;
-    *) printf 'operator-release' ;;
-  esac
-}
-
 default_profile="$(default_profile_for_package "$expect_package")"
 if [ -z "$expect_profile" ]; then
   expect_profile="$default_profile"
@@ -124,17 +109,6 @@ if [ "$expect_profile" != "$default_profile" ]; then
   exit 1
 fi
 
-host_target() {
-  local os arch
-  os="$(uname -s)"
-  arch="$(uname -m)"
-  if [ "$os" = "Linux" ] && [ "$arch" = "x86_64" ]; then
-    printf 'x86_64-unknown-linux-gnu'
-  else
-    printf '%s-%s' "$arch" "$os"
-  fi
-}
-
 if [ "$(host_target)" != "$expect_target" ]; then
   echo "host target $(host_target) does not match expected artifact target $expect_target" >&2
   exit 1
@@ -143,17 +117,6 @@ fi
 tmpdir=""
 lock_dir=""
 staging_dir=""
-cleanup() {
-  if [ -n "$tmpdir" ]; then
-    rm -rf "$tmpdir"
-  fi
-  if [ -n "$staging_dir" ]; then
-    rm -rf "$staging_dir"
-  fi
-  if [ -n "$lock_dir" ]; then
-    rmdir "$lock_dir" 2>/dev/null || true
-  fi
-}
 trap cleanup EXIT
 
 if [ -n "$rollback_id" ]; then
@@ -208,12 +171,32 @@ else
       archive_members="$(tar -tzf "$artifact_input")"
       if printf '%s\n' "$archive_members" | awk '
         /^$/ { next }
+        seen[$0]++ { duplicate=1 }
+        END { exit duplicate ? 0 : 1 }
+      '; then
+        echo "archive contains duplicate member paths" >&2
+        exit 1
+      fi
+      if printf '%s\n' "$archive_members" | awk '
+        /^$/ { next }
         /^\// { bad=1 }
         /^\.\// { bad=1 }
+        /\/\.\// { bad=1 }
+        /\/\// { bad=1 }
+        $0 == "." { bad=1 }
+        /(^|\/)\.(\/|$)/ { bad=1 }
         /(^|\/)\.\.(\/|$)/ { bad=1 }
         END { exit bad ? 0 : 1 }
       '; then
         echo "archive contains unsafe member paths" >&2
+        exit 1
+      fi
+      if tar -tzvf "$artifact_input" | awk '$1 ~ /^[lh]/ { bad=1 } END { exit bad ? 0 : 1 }'; then
+        echo "archive contains symlink or hardlink members" >&2
+        exit 1
+      fi
+      if tar -tzvf "$artifact_input" | awk '$1 !~ /^[-d]/ { bad=1 } END { exit bad ? 0 : 1 }'; then
+        echo "archive contains unsupported special members" >&2
         exit 1
       fi
       archive_top_level_count="$(printf '%s\n' "$archive_members" | awk -F/ '
@@ -250,6 +233,7 @@ if [ "$allow_dirty" = "1" ]; then
 fi
 if [ -n "$rollback_id" ]; then
   verify_args+=(--skip-workspace-bin-check)
+  verify_args+=(--installed-release-root "$install_dir/releases")
 fi
 python3 tools/verify_operator_artifact.py "${verify_args[@]}"
 
@@ -268,6 +252,11 @@ for item in json.load(open(sys.argv[1]))["binaries"]:
     print(item["name"])
 PY
 )"
+migration_bundle="$(manifest_migration_bundle "$artifact_dir/build-manifest.json")"
+if [ "$expect_package" = "copybot-app" ] && [ -z "$migration_bundle" ]; then
+  echo "copybot-app artifact missing required migration bundle" >&2
+  exit 1
+fi
 
 release_dir="$install_dir/releases/$artifact_id"
 package_dir="$install_dir/packages/$expect_package"
@@ -282,37 +271,37 @@ echo "install_dir=$install_dir"
 echo "release_dir=$release_dir"
 echo "package_current=$package_current_link -> $package_current_target"
 echo "binaries=$(printf '%s' "$bins" | tr '\n' ' ')"
-
-if [ "$dry_run" = "1" ]; then
-  if [ -n "$rollback_id" ]; then
-    echo "dry-run: rollback skipped"
-  else
-    echo "dry-run: install skipped"
-  fi
-  exit 0
+if [ -n "$migration_bundle" ]; then
+  echo "migration_bundle=$migration_bundle"
 fi
 
-mkdir -p "$install_dir"
-lock_dir="$install_dir/.install-$expect_package.lock"
-if ! mkdir "$lock_dir" 2>/dev/null; then
-  echo "another install appears to be active for $expect_package: $lock_dir" >&2
-  exit 1
-fi
-
-mkdir -p "$install_dir/releases" "$package_dir"
 if [ -z "$rollback_id" ] && [ -e "$release_dir" ]; then
   echo "refusing to overwrite existing immutable release directory: $release_dir" >&2
   exit 1
 fi
-if [ -z "$rollback_id" ]; then
-  staging_dir="$install_dir/releases/.staging-$artifact_id.$$"
-  if [ -e "$staging_dir" ]; then
-    echo "refusing to reuse existing staging directory: $staging_dir" >&2
+
+if [ "$dry_run" != "1" ]; then
+  mkdir -p "$install_dir"
+  lock_dir="$install_dir/.install-$expect_package.lock"
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    echo "another install appears to be active for $expect_package: $lock_dir" >&2
     exit 1
   fi
-  mkdir -p "$staging_dir"
-  cp "$artifact_dir/build-manifest.json" "$staging_dir/"
-  cp "$artifact_dir/SHA256SUMS" "$staging_dir/"
+
+  mkdir -p "$install_dir/releases" "$package_dir"
+  if [ -z "$rollback_id" ]; then
+    staging_dir="$install_dir/releases/.staging-$artifact_id.$$"
+    if [ -e "$staging_dir" ]; then
+      echo "refusing to reuse existing staging directory: $staging_dir" >&2
+      exit 1
+    fi
+    mkdir -p "$staging_dir"
+    cp "$artifact_dir/build-manifest.json" "$staging_dir/"
+    cp "$artifact_dir/SHA256SUMS" "$staging_dir/"
+    if [ -n "$migration_bundle" ]; then
+      cp "$artifact_dir/$migration_bundle" "$staging_dir/"
+    fi
+  fi
 fi
 
 for bin in $bins; do
@@ -332,26 +321,109 @@ if [ -e "$package_current_link" ] && [ ! -L "$package_current_link" ]; then
   echo "refusing to replace non-symlink package current path: $package_current_link" >&2
   exit 1
 fi
+if [ -L "$package_current_link" ] && [ ! -e "$package_current_link" ]; then
+  echo "refusing to activate over broken package current symlink: $package_current_link" >&2
+  exit 1
+fi
+validate_package_current_symlink_target "$package_current_link"
+if { [ -e "$current_manifest" ] || [ -L "$current_manifest" ]; } && [ ! -L "$current_manifest" ]; then
+  echo "refusing to replace non-symlink current manifest path: $current_manifest" >&2
+  exit 1
+fi
+if [ -L "$current_manifest" ] && [ ! -e "$current_manifest" ]; then
+  echo "refusing to activate over broken current manifest symlink: $current_manifest" >&2
+  exit 1
+fi
+validate_app_migrations_link "$expect_package" "$install_dir"
+
+previous_bins=""
+if [ -L "$package_current_link" ]; then
+  if [ ! -f "$package_current_link/build-manifest.json" ]; then
+    echo "refusing activation from unreadable previous package manifest: $package_current_link/build-manifest.json" >&2
+    exit 1
+  fi
+  previous_bins="$(manifest_binaries "$package_current_link/build-manifest.json")"
+fi
+
+new_bins=()
+for bin in $bins; do
+  new_bins+=("$bin")
+done
+
+for previous_bin in $previous_bins; do
+  if word_list_contains "$previous_bin" "${new_bins[@]}"; then
+    continue
+  fi
+  previous_path="$install_dir/$previous_bin"
+  if [ -L "$previous_path" ]; then
+    previous_target="$(readlink "$previous_path")"
+    if [ "$previous_target" != "packages/$expect_package/current/$previous_bin" ]; then
+      echo "refusing stale symlink with unexpected target: $previous_path -> $previous_target" >&2
+      exit 1
+    fi
+  elif [ -e "$previous_path" ]; then
+    echo "refusing to remove stale non-symlink binary path before activation: $previous_path" >&2
+    exit 1
+  fi
+done
+
+for bin in $bins; do
+  validate_scratch_symlink_path "$install_dir/$bin.new"
+done
+validate_scratch_symlink_path "$package_current_link.new"
+validate_scratch_symlink_path "$current_manifest.new"
+validate_app_migrations_scratch_link "$expect_package" "$install_dir"
+
+if [ "$dry_run" = "1" ]; then
+  if [ -n "$rollback_id" ]; then
+    echo "dry-run: rollback skipped after install-dir safety validation"
+  else
+    echo "dry-run: install skipped after install-dir safety validation"
+  fi
+  exit 0
+fi
 
 if [ -z "$rollback_id" ]; then
   for bin in $bins; do
     install -m 0755 "$artifact_dir/$bin" "$staging_dir/$bin"
   done
+  extract_release_migration_bundle_if_present "$expect_package" "$staging_dir"
   printf '%s\n' "$artifact_id" > "$staging_dir/INSTALL_COMPLETE"
   mv "$staging_dir" "$release_dir"
   staging_dir=""
+else
+  extract_release_migration_bundle_if_present "$expect_package" "$release_dir"
 fi
 
 for bin in $bins; do
-  ln -sfn "packages/$expect_package/current/$bin" "$install_dir/$bin.new"
-  mv -f "$install_dir/$bin.new" "$install_dir/$bin"
+  prepare_scratch_symlink "packages/$expect_package/current/$bin" "$install_dir/$bin.new"
+done
+prepare_scratch_symlink "$package_current_target" "$package_current_link.new"
+prepare_scratch_symlink "packages/$expect_package/current/build-manifest.json" "$current_manifest.new"
+prepare_app_migrations_scratch_link "$expect_package" "$install_dir"
+replace_app_migrations_link "$expect_package" "$install_dir"
+replace_symlink_no_deref "$current_manifest.new" "$current_manifest"
+for bin in $bins; do
+  replace_symlink_no_deref "$install_dir/$bin.new" "$install_dir/$bin"
+done
+replace_symlink_no_deref "$package_current_link.new" "$package_current_link"
+
+for previous_bin in $previous_bins; do
+  if word_list_contains "$previous_bin" "${new_bins[@]}"; then
+    continue
+  fi
+  previous_path="$install_dir/$previous_bin"
+  if [ -L "$previous_path" ]; then
+    previous_target="$(readlink "$previous_path")"
+    if [ "$previous_target" = "packages/$expect_package/current/$previous_bin" ]; then
+      rm -f "$previous_path"
+    fi
+  elif [ -e "$previous_path" ]; then
+    echo "refusing to remove stale non-symlink binary path: $previous_path" >&2
+    exit 1
+  fi
 done
 
-ln -sfn "packages/$expect_package/current/build-manifest.json" "$current_manifest.new"
-mv -f "$current_manifest.new" "$current_manifest"
-
-ln -sfn "$package_current_target" "$package_current_link.new"
-mv -f "$package_current_link.new" "$package_current_link"
 if [ -n "$rollback_id" ]; then
   echo "rolled back to $artifact_id"
 else

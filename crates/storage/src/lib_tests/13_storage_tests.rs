@@ -4,6 +4,17 @@ use super::*;
 fn sqlite_startup_bootstrap_defers_optional_sol_leg_index_migration() -> Result<()> {
     let temp = tempdir().context("failed to create tempdir")?;
     let db_path = temp.path().join("sqlite-startup-defers-sol-leg-index.db");
+    let base_migration_dir = temp.path().join("base-migrations");
+    copy_migrations_through(&base_migration_dir, "0038_alert_delivery_cursor.sql")?;
+    let mut store = SqliteStore::open(Path::new(&db_path))?;
+    store.run_migrations(&base_migration_dir)?;
+    store.conn.execute(
+        "INSERT INTO observed_swaps(signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts)
+         VALUES ('sig-nonempty-defer-sol-leg', 'wallet-a', 'dex', 'So11111111111111111111111111111111111111112', 'mint-a', 1.0, 1.0, 10, '2026-05-10T00:00:00+00:00')",
+        [],
+    )?;
+    drop(store);
+
     let migration_dir = temp.path().join("startup-deferred-migrations");
     copy_migrations_through(&migration_dir, "0038_alert_delivery_cursor.sql")?;
     fs::write(
@@ -72,6 +83,41 @@ fn sqlite_startup_bootstrap_defers_optional_sol_leg_index_migration() -> Result<
 }
 
 #[test]
+fn sqlite_startup_bootstrap_applies_deferred_indexes_on_fresh_empty_db() -> Result<()> {
+    let temp = tempdir().context("failed to create tempdir")?;
+    let db_path = temp.path().join("sqlite-startup-fresh-indexes.db");
+    let migration_dir = temp.path().join("startup-fresh-migrations");
+    copy_migrations_through(&migration_dir, "0040_observed_swaps_non_utc_ts_index.sql")?;
+
+    let bootstrap = SqliteStore::open_and_migrate_for_startup(
+        Path::new(&db_path),
+        &migration_dir,
+        &fast_sqlite_startup_policy(),
+        None,
+    )?;
+    assert!(bootstrap.deferred_migrations.is_empty());
+    for version in [
+        "0003_token_quality_indexes.sql",
+        "0007_observed_swaps_time_scan_index.sql",
+        "0008_shadow_perf_indexes.sql",
+        "0039_observed_swaps_sol_leg_ts_index.sql",
+        "0040_observed_swaps_non_utc_ts_index.sql",
+    ] {
+        let applied: Option<String> = bootstrap
+            .store
+            .conn
+            .query_row(
+                "SELECT version FROM schema_migrations WHERE version = ?1",
+                [version],
+                |row| row.get(0),
+            )
+            .optional()?;
+        assert_eq!(applied.as_deref(), Some(version));
+    }
+    Ok(())
+}
+
+#[test]
 fn sqlite_startup_bootstrap_does_not_report_deferred_sol_leg_index_after_offline_apply(
 ) -> Result<()> {
     let temp = tempdir().context("failed to create tempdir")?;
@@ -91,7 +137,8 @@ fn sqlite_startup_bootstrap_does_not_report_deferred_sol_leg_index_after_offline
     )?;
     drop(legacy_store);
 
-    let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    let migration_dir = temp.path().join("startup-migrations");
+    copy_migrations_through(&migration_dir, "0039_observed_swaps_sol_leg_ts_index.sql")?;
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let reporter_events = events.clone();
     let reporter: StartupStepProgressReporter = std::sync::Arc::new(move |event| {
@@ -164,6 +211,103 @@ fn sqlite_startup_bootstrap_does_not_report_deferred_sol_leg_index_after_offline
             Some("0039_observed_swaps_sol_leg_ts_index.sql"),
             "startup bootstrap should quickly record 0039 once the offline-created index already exists"
         );
+    Ok(())
+}
+
+#[test]
+fn sqlite_startup_bootstrap_records_valid_unrecorded_deferred_index_without_applying_sql(
+) -> Result<()> {
+    let temp = tempdir().context("failed to create tempdir")?;
+    let db_path = temp
+        .path()
+        .join("sqlite-startup-records-valid-unrecorded-index.db");
+    let legacy_migrations = temp.path().join("legacy-migrations");
+    copy_migrations_through(&legacy_migrations, "0006_token_quality_cache.sql")?;
+
+    let mut store = SqliteStore::open(Path::new(&db_path))?;
+    store.run_migrations(&legacy_migrations)?;
+    store.conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_observed_swaps_ts_slot_signature
+             ON observed_swaps(ts, slot, signature);",
+    )?;
+    drop(store);
+
+    let migration_dir = temp.path().join("startup-migrations");
+    copy_migrations_through(&migration_dir, "0006_token_quality_cache.sql")?;
+    fs::write(
+        migration_dir.join("0007_observed_swaps_time_scan_index.sql"),
+        "SELECT definitely_missing_function();\n",
+    )
+    .context("failed writing fake deferred migration")?;
+
+    let bootstrap = SqliteStore::open_and_migrate_for_startup(
+        Path::new(&db_path),
+        &migration_dir,
+        &fast_sqlite_startup_policy(),
+        None,
+    )?;
+    assert_eq!(bootstrap.applied_migrations, 0);
+    assert!(bootstrap.deferred_migrations.is_empty());
+    let applied: Option<String> = bootstrap
+        .store
+        .conn
+        .query_row(
+            "SELECT version
+             FROM schema_migrations
+             WHERE version = '0007_observed_swaps_time_scan_index.sql'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    assert_eq!(
+        applied.as_deref(),
+        Some("0007_observed_swaps_time_scan_index.sql")
+    );
+    Ok(())
+}
+
+#[test]
+fn sqlite_startup_bootstrap_defers_recorded_malformed_sol_leg_index() -> Result<()> {
+    let temp = tempdir().context("failed to create tempdir")?;
+    let db_path = temp
+        .path()
+        .join("sqlite-startup-recorded-malformed-sol-leg-index.db");
+    let legacy_migrations = temp.path().join("legacy-migrations");
+    copy_migrations_through(&legacy_migrations, "0038_alert_delivery_cursor.sql")?;
+
+    let mut store = SqliteStore::open(Path::new(&db_path))?;
+    store.run_migrations(&legacy_migrations)?;
+    store.conn.execute(
+        "INSERT INTO observed_swaps(signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts)
+         VALUES ('sig-recorded-malformed-sol-leg', 'wallet-a', 'dex', 'So11111111111111111111111111111111111111112', 'mint-a', 1.0, 1.0, 10, '2026-05-10T00:00:00+00:00')",
+        [],
+    )?;
+    store.conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_observed_swaps_sol_leg_ts_slot_signature
+             ON observed_swaps(ts, slot, signature);
+         INSERT INTO schema_migrations(version, applied_at)
+             VALUES ('0039_observed_swaps_sol_leg_ts_index.sql', datetime('now'));",
+    )?;
+    assert!(matches!(
+        store.observed_sol_leg_cursor_access_path()?,
+        ObservedSolLegCursorAccessPath::TsCursorFallback
+    ));
+    drop(store);
+
+    let migration_dir = temp.path().join("startup-migrations");
+    copy_migrations_through(&migration_dir, "0039_observed_swaps_sol_leg_ts_index.sql")?;
+    let bootstrap = SqliteStore::open_and_migrate_for_startup(
+        Path::new(&db_path),
+        &migration_dir,
+        &fast_sqlite_startup_policy(),
+        None,
+    )?;
+    assert!(
+        bootstrap
+            .deferred_migrations
+            .contains(&"0039_observed_swaps_sol_leg_ts_index.sql".to_string()),
+        "recorded but malformed SOL-leg index must still be deferred for offline repair"
+    );
     Ok(())
 }
 
@@ -244,4 +388,34 @@ fn discovery_runtime_artifact_roundtrip_restores_consistent_snapshot() -> Result
         .to_string()
         .contains("legacy copybot-storage runtime artifact restore is quarantined"));
     Ok(())
+}
+
+fn fast_sqlite_startup_policy() -> SqliteStartupPolicy {
+    SqliteStartupPolicy {
+        open_step: StartupStepRuntimePolicy::new(
+            StdDuration::from_millis(10),
+            Some(StdDuration::from_secs(1)),
+        ),
+        pragma_step: StartupStepRuntimePolicy::new(
+            StdDuration::from_millis(10),
+            Some(StdDuration::from_secs(1)),
+        ),
+        large_wal_checkpoint_step: StartupStepRuntimePolicy::new(
+            StdDuration::from_millis(10),
+            Some(StdDuration::from_secs(1)),
+        ),
+        schema_bootstrap_step: StartupStepRuntimePolicy::new(
+            StdDuration::from_millis(10),
+            Some(StdDuration::from_secs(1)),
+        ),
+        migrations_scan_step: StartupStepRuntimePolicy::new(
+            StdDuration::from_millis(10),
+            Some(StdDuration::from_secs(1)),
+        ),
+        migrations_apply_step: StartupStepRuntimePolicy::new(
+            StdDuration::from_millis(10),
+            Some(StdDuration::from_secs(1)),
+        ),
+        large_wal_checkpoint_threshold_bytes: SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES,
+    }
 }

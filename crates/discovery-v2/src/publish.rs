@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct DiscoveryV2PublishReport {
     pub dry_run: bool,
     pub committed: bool,
+    pub live_daemon_follow_surface_action: String,
     pub runtime_mode: String,
     pub reason: String,
     pub scoring_source: String,
@@ -71,6 +72,11 @@ pub fn publish_discovery_v2_status(
     Ok(DiscoveryV2PublishReport {
         dry_run: !commit,
         committed: commit,
+        live_daemon_follow_surface_action: if commit {
+            "restart_or_reload_copybot_app_before_live_follow_surface_uses_publication".to_string()
+        } else {
+            "none_for_dry_run".to_string()
+        },
         runtime_mode: runtime_mode.as_str().to_string(),
         reason: reason.to_string(),
         scoring_source: DISCOVERY_V2_SCORING_SOURCE.to_string(),

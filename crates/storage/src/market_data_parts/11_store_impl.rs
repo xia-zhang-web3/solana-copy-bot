@@ -142,6 +142,7 @@ impl SqliteStore {
     ) -> Result<usize> {
         let cutoff_ts = cutoff.to_rfc3339();
         let batch_limit = batch_size.max(1).min(i64::MAX as usize) as i64;
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         self.execute_with_retry(|conn| {
             conn.execute(
                 "DELETE FROM observed_swaps
@@ -175,6 +176,7 @@ impl SqliteStore {
     }
 
     pub fn load_observed_swaps_since(&self, since: DateTime<Utc>) -> Result<Vec<SwapEvent>> {
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         let mut stmt = self
             .conn
             .prepare(
@@ -201,18 +203,14 @@ impl SqliteStore {
     }
 
     pub fn oldest_observed_swap_timestamp(&self) -> Result<Option<DateTime<Utc>>> {
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         let raw: Option<String> = self
             .conn
             .query_row("SELECT MIN(ts) FROM observed_swaps", [], |row| row.get(0))
             .optional()
             .context("failed querying oldest observed_swaps timestamp")?
             .flatten();
-        raw.map(|raw| {
-            DateTime::parse_from_rfc3339(&raw)
-                .map(|ts| ts.with_timezone(&Utc))
-                .with_context(|| format!("invalid observed_swaps.ts rfc3339 value: {raw}"))
-        })
-        .transpose()
+        parse_optional_rfc3339_utc(raw, "observed_swaps.ts")
     }
 
     pub fn load_observed_buy_mints_in_window(
@@ -220,6 +218,7 @@ impl SqliteStore {
         since: DateTime<Utc>,
         until: DateTime<Utc>,
     ) -> Result<Vec<String>> {
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         let mut stmt = self
             .conn
             .prepare(

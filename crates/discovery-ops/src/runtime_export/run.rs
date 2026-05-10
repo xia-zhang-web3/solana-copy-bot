@@ -105,10 +105,11 @@ fn run_scheduled(
     let latest_path = artifact_latest_path(&artifact_dir);
     if !config.force && latest_path.exists() {
         let latest_artifact: DiscoveryRuntimeArtifact = load_json(&latest_path)?;
-        if config
+        let latest_age = config
             .now
-            .signed_duration_since(latest_artifact.exported_at)
-            < Duration::minutes(cadence_minutes.max(1) as i64)
+            .signed_duration_since(latest_artifact.exported_at);
+        if latest_age >= Duration::zero()
+            && latest_age < Duration::minutes(cadence_minutes.max(1) as i64)
         {
             let freshness =
                 assess_runtime_artifact_freshness(&latest_artifact, &freshness_gate, config.now);

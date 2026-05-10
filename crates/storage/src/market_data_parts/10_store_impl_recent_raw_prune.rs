@@ -12,6 +12,7 @@ impl SqliteStore {
         let batch_limit = batch_size.max(1).min(i64::MAX as usize) as i64;
         self.with_immediate_transaction_retry("recent raw journal retention prune", |conn| {
             ensure_recent_raw_journal_tables_on_conn(conn)?;
+            ensure_recent_raw_observed_swaps_timestamps_canonical_utc(conn)?;
             let deleted = conn
                 .execute(
                     "DELETE FROM observed_swaps

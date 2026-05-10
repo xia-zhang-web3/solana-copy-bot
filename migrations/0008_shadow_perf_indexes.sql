@@ -1,3 +1,7 @@
+DROP INDEX IF EXISTS idx_observed_swaps_token_in_out_ts;
+DROP INDEX IF EXISTS idx_observed_swaps_token_out_in_ts;
+DROP INDEX IF EXISTS idx_shadow_closed_trades_wallet_closed_ts;
+
 CREATE INDEX IF NOT EXISTS idx_observed_swaps_token_in_out_ts
     ON observed_swaps(token_in, token_out, ts);
 

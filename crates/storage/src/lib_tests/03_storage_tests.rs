@@ -159,7 +159,7 @@ fn persist_discovery_cycle_with_snapshot_metadata_writes_trusted_snapshot_row() 
 }
 
 #[test]
-fn discovery_trusted_selection_state_upgrade_preserves_legacy_row() -> Result<()> {
+fn discovery_trusted_selection_state_rejects_legacy_naive_timestamp() -> Result<()> {
     let temp = tempdir().context("failed to create tempdir")?;
     let db_path = temp
         .path()
@@ -184,35 +184,12 @@ fn discovery_trusted_selection_state_upgrade_preserves_legacy_row() -> Result<()
              ) VALUES (1, 1, 'legacy_bootstrap_pending', '2026-03-15 12:00:00');",
     )?;
 
-    let state = store
-        .discovery_trusted_selection_state()?
-        .expect("legacy discovery_strategy_state row should remain readable after upgrade");
-    assert!(state.bootstrap_required);
-    assert_eq!(state.reason, "legacy_bootstrap_pending");
-    assert_eq!(state.selection_state, TrustedSelectionState::Invalid);
-    assert_eq!(state.active_snapshot_id, None);
-    assert_eq!(state.active_snapshot_window_start, None);
-    assert_eq!(state.last_bootstrap_source_kind, None);
-    assert_eq!(state.last_bootstrap_at, None);
-
-    let mut stmt = store
-        .conn
-        .prepare("PRAGMA table_info(discovery_strategy_state)")?;
-    let columns: Vec<String> = stmt
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<rusqlite::Result<Vec<String>>>()?;
-    for required in [
-        "trusted_selection_state",
-        "active_trusted_snapshot_id",
-        "active_trusted_snapshot_window_start",
-        "last_trusted_bootstrap_source_kind",
-        "last_trusted_bootstrap_at",
-    ] {
-        assert!(
-            columns.iter().any(|column| column == required),
-            "expected upgraded discovery_strategy_state to contain column {required}"
-        );
-    }
+    let err = store
+        .discovery_trusted_selection_state()
+        .expect_err("legacy naive discovery_strategy_state timestamp must fail closed");
+    assert!(err
+        .to_string()
+        .contains("must use canonical UTC offset +00:00"));
     Ok(())
 }
 

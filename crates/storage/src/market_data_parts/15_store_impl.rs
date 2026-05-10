@@ -30,6 +30,7 @@ impl SqliteStore {
                 access_path,
             });
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
 
         let index_hint = match access_path {
             ObservedSolLegCursorAccessPath::SolLegPartialIndex => {
@@ -99,13 +100,35 @@ impl SqliteStore {
                 ],
             ),
         };
-        let mut stmt = self
-            .conn
-            .prepare(&query)
-            .context("failed to prepare observed_swaps exact-target SOL-leg window cursor query")?;
-        let mut rows = stmt
-            .query(rusqlite::params_from_iter(params))
-            .context("failed to query observed_swaps exact-target SOL-leg window cursor")?;
+        let mut stmt = match self.conn.prepare(&query) {
+            Ok(stmt) => stmt,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedSolLegCursorPage {
+                    rows_seen: 0,
+                    time_budget_exhausted: true,
+                    access_path,
+                })
+            }
+            Err(error) => {
+                return Err(error).context(
+                    "failed to prepare observed_swaps exact-target SOL-leg window cursor query",
+                )
+            }
+        };
+        let mut rows = match stmt.query(rusqlite::params_from_iter(params)) {
+            Ok(rows) => rows,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedSolLegCursorPage {
+                    rows_seen: 0,
+                    time_budget_exhausted: true,
+                    access_path,
+                })
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to query observed_swaps exact-target SOL-leg window cursor")
+            }
+        };
 
         let mut seen = 0usize;
         let mut time_budget_exhausted = false;
@@ -113,7 +136,7 @@ impl SqliteStore {
             let next_row = match rows.next() {
                 Ok(row) => row,
                 Err(error) => {
-                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                    if sqlite_interrupted_after_deadline(&error, deadline) {
                         time_budget_exhausted = true;
                         break;
                     }
@@ -176,6 +199,7 @@ impl SqliteStore {
                 time_budget_exhausted: true,
             });
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
 
         let limit = (limit.min(i64::MAX as usize)) as i64;
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
@@ -211,13 +235,31 @@ impl SqliteStore {
         query.push_str(" ORDER BY token_out ASC");
         query.push_str(&format!(" LIMIT ?{next_param}"));
         params.push(limit.into());
-        let mut stmt = self
-            .conn
-            .prepare(&query)
-            .context("failed to prepare observed_swaps distinct buy mint page query")?;
-        let mut rows = stmt
-            .query(rusqlite::params_from_iter(params))
-            .context("failed to query observed_swaps distinct buy mint page")?;
+        let mut stmt = match self.conn.prepare(&query) {
+            Ok(stmt) => stmt,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedBuyMintPage {
+                    mints: Vec::new(),
+                    time_budget_exhausted: true,
+                })
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to prepare observed_swaps distinct buy mint page query")
+            }
+        };
+        let mut rows = match stmt.query(rusqlite::params_from_iter(params)) {
+            Ok(rows) => rows,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedBuyMintPage {
+                    mints: Vec::new(),
+                    time_budget_exhausted: true,
+                })
+            }
+            Err(error) => {
+                return Err(error).context("failed to query observed_swaps distinct buy mint page")
+            }
+        };
 
         let mut mints = Vec::new();
         let mut time_budget_exhausted = false;
@@ -225,7 +267,7 @@ impl SqliteStore {
             let next_row = match rows.next() {
                 Ok(row) => row,
                 Err(error) => {
-                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                    if sqlite_interrupted_after_deadline(&error, deadline) {
                         time_budget_exhausted = true;
                         break;
                     }

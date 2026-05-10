@@ -7,6 +7,7 @@ impl SqliteStore {
         as_of: DateTime<Utc>,
     ) -> Result<TokenMarketStats> {
         const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         let as_of_raw = as_of.to_rfc3339();
 
         let first_seen_raw: Option<String> = self
@@ -25,11 +26,7 @@ impl SqliteStore {
 
         let first_seen = first_seen_raw
             .as_deref()
-            .map(|raw| {
-                DateTime::parse_from_rfc3339(raw)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .with_context(|| format!("invalid observed_swaps.ts rfc3339 value: {raw}"))
-            })
+            .map(|raw| parse_rfc3339_utc(raw, "observed_swaps.ts"))
             .transpose()?;
 
         let holders_proxy_raw: i64 = self

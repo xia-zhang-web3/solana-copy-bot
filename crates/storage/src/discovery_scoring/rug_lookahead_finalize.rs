@@ -6,6 +6,7 @@ pub(crate) fn rug_lookahead_stats_on_conn(
     buy_ts: DateTime<Utc>,
     lookahead_end: DateTime<Utc>,
 ) -> Result<(f64, u32)> {
+    validate_observed_swaps_timestamps_canonical_utc(conn)?;
     note_rug_lookahead_stats_call_for_tests();
     if rug_lookahead_unknown_failpoint_triggered() {
         return Err(anyhow!(
@@ -249,6 +250,7 @@ fn load_repair_rug_lookahead_events_for_token_on_conn(
     window_start: DateTime<Utc>,
     window_end: DateTime<Utc>,
 ) -> Result<Vec<RepairRugLookaheadEvent>> {
+    validate_observed_swaps_timestamps_canonical_utc(conn)?;
     let mut stmt = conn
         .prepare(
             "SELECT wallet_id, ts, sol_notional

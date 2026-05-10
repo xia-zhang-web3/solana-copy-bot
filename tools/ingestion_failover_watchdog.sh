@@ -9,6 +9,24 @@ STATE_FILE="${STATE_FILE:-${REPO_ROOT}/state/ingestion_failover_state.json}"
 COOLDOWN_FILE="${COOLDOWN_FILE:-${REPO_ROOT}/state/ingestion_failover_cooldown.json}"
 OVERRIDE_FILE="${OVERRIDE_FILE:-${REPO_ROOT}/state/ingestion_source_override.env}"
 CONFIG_PATH="${CONFIG_PATH:-${SOLANA_COPY_BOT_CONFIG:-${REPO_ROOT}/configs/paper.toml}}"
+DRY_RUN="${DRY_RUN:-false}"
+RUNTIME_SNAPSHOT_SCRIPT="${RUNTIME_SNAPSHOT_SCRIPT:-${SCRIPT_DIR}/runtime_snapshot.sh}"
+
+tmp_state=""
+tmp_override=""
+tmp_cooldown=""
+cleanup() {
+  if [[ -n "${tmp_state}" && -f "${tmp_state}" ]]; then
+    rm -f "${tmp_state}"
+  fi
+  if [[ -n "${tmp_override}" && -f "${tmp_override}" ]]; then
+    rm -f "${tmp_override}"
+  fi
+  if [[ -n "${tmp_cooldown}" && -f "${tmp_cooldown}" ]]; then
+    rm -f "${tmp_cooldown}"
+  fi
+}
+trap cleanup EXIT
 
 if [[ ! -f "${POLICY_FILE}" ]]; then
   echo "policy file not found: ${POLICY_FILE}" >&2
@@ -91,6 +109,7 @@ PY
 window_delta() {
   local key="$1"
   local window_seconds="$2"
+  local state_path="${WINDOW_STATE_FILE:-${STATE_FILE}}"
   jq -r \
     --arg key "${key}" \
     --argjson now_epoch "${now_epoch}" \
@@ -99,7 +118,7 @@ window_delta() {
       def points: [(.history // [])[] | select(.epoch >= ($now_epoch - $window_seconds))];
       (points) as $p
       | if ($p|length) >= 2 then (($p[-1][$key] // 0) - ($p[0][$key] // 0)) else 0 end
-    ' "${STATE_FILE}"
+    ' "${state_path}"
 }
 
 WINDOW_HOURS="$(policy_value runtime_snapshot_window_hours 1)"
@@ -120,12 +139,14 @@ SERVICE_NAME="$(policy_value service_name solana-copy-bot)"
 ALLOW_RESTART="$(policy_value allow_restart false)"
 HISTORY_RETENTION_SECONDS=1800
 
-mkdir -p "${REPO_ROOT}/state"
+if [[ "${DRY_RUN}" != "true" ]]; then
+  mkdir -p "$(dirname "${STATE_FILE}")" "$(dirname "${COOLDOWN_FILE}")" "$(dirname "${OVERRIDE_FILE}")"
+fi
 
 now_epoch="$(date -u +%s)"
 now_iso="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-if [[ -f "${COOLDOWN_FILE}" ]]; then
+if [[ "${DRY_RUN}" != "true" && -f "${COOLDOWN_FILE}" ]]; then
   cooldown_until_epoch="$(jq -r '.cooldown_until_epoch // 0' "${COOLDOWN_FILE}" 2>/dev/null || echo 0)"
   if [[ "${cooldown_until_epoch}" =~ ^[0-9]+$ ]] && (( now_epoch < cooldown_until_epoch )); then
     echo "watchdog: cooldown active until epoch=${cooldown_until_epoch}, skipping checks"
@@ -133,10 +154,14 @@ if [[ -f "${COOLDOWN_FILE}" ]]; then
   fi
 fi
 
-snapshot="$("${SCRIPT_DIR}/runtime_snapshot.sh" "${WINDOW_HOURS}" "${RISK_MINUTES}" 2>/dev/null || true)"
+if ! snapshot="$(CONFIG_PATH="${CONFIG_PATH}" "${RUNTIME_SNAPSHOT_SCRIPT}" "${WINDOW_HOURS}" "${RISK_MINUTES}" 2>&1)"; then
+  echo "watchdog: runtime snapshot failed; refusing fail-open skip" >&2
+  printf '%s\n' "${snapshot}" >&2
+  exit 1
+fi
 if [[ -z "${snapshot}" ]]; then
-  echo "watchdog: runtime snapshot unavailable, skipping"
-  exit 0
+  echo "watchdog: runtime snapshot unavailable; refusing fail-open skip" >&2
+  exit 1
 fi
 
 extract_metric() {
@@ -177,7 +202,11 @@ if [[ "${replaced_cmp}" == "1" ]]; then
   replaced_streak=$((prev_replaced_streak + 1))
 fi
 
-tmp_state="$(mktemp "${STATE_FILE}.tmp.XXXXXX")"
+if [[ "${DRY_RUN}" == "true" ]]; then
+  tmp_state="$(mktemp "${TMPDIR:-/tmp}/copybot-ingestion-failover-state.XXXXXX")"
+else
+  tmp_state="$(mktemp "${STATE_FILE}.tmp.XXXXXX")"
+fi
 if [[ -f "${STATE_FILE}" ]]; then
   jq \
     --arg now_iso "${now_iso}" \
@@ -241,7 +270,14 @@ else
       }]
     }' > "${tmp_state}"
 fi
-atomic_rename_with_fsync "${tmp_state}" "${STATE_FILE}"
+if [[ "${DRY_RUN}" == "true" ]]; then
+  WINDOW_STATE_FILE="${tmp_state}"
+  echo "watchdog: dry-run state update skipped path=${STATE_FILE}"
+else
+  atomic_rename_with_fsync "${tmp_state}" "${STATE_FILE}"
+  tmp_state=""
+  WINDOW_STATE_FILE="${STATE_FILE}"
+fi
 
 reconnect_delta_window=0
 inbound_delta_5m=0
@@ -287,12 +323,19 @@ if [[ -z "${reason}" ]]; then
   exit 0
 fi
 
+if [[ "${DRY_RUN}" == "true" ]]; then
+  echo "watchdog: dry-run trigger reason=${reason}; override and cooldown writes skipped"
+  exit 0
+fi
+
 cooldown_until_epoch=$((now_epoch + COOLDOWN_MINUTES * 60))
 cooldown_until_ts="$(epoch_to_iso_utc "${cooldown_until_epoch}")"
 
 tmp_override="$(mktemp "${OVERRIDE_FILE}.tmp.XXXXXX")"
 cat > "${tmp_override}" <<EOF
-SOLANA_COPY_BOT_INGESTION_SOURCE=helius_ws
+# SOLANA_COPY_BOT_INGESTION_SOURCE is intentionally unset.
+# Legacy websocket fallback was removed; the watchdog records the trigger but
+# must not restart the daemon into an unsupported source.
 SOLANA_COPY_BOT_INGESTION_SOURCE_REASON=${reason}
 SOLANA_COPY_BOT_INGESTION_SOURCE_TS=${now_iso}
 EOF
@@ -326,15 +369,10 @@ jq -n \
   }' > "${tmp_cooldown}"
 atomic_rename_with_fsync "${tmp_cooldown}" "${COOLDOWN_FILE}"
 
-echo "watchdog: failover armed reason=${reason}, override=${OVERRIDE_FILE}, cooldown_until=${cooldown_until_ts}"
+echo "watchdog: failover recorded reason=${reason}, override=${OVERRIDE_FILE}, cooldown_until=${cooldown_until_ts}"
 
 if [[ "${ALLOW_RESTART}" == "true" ]]; then
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl restart "${SERVICE_NAME}"
-    echo "watchdog: restarted service ${SERVICE_NAME}"
-  else
-    echo "watchdog: systemctl not found; restart skipped" >&2
-  fi
+  echo "watchdog: restart skipped; no supported alternate ingestion source is configured" >&2
 else
   echo "watchdog: allow_restart=false; restart skipped"
 fi

@@ -217,7 +217,7 @@ impl DiscoveryService {
             "latest_publication_ts": null,
             "publication_age_seconds": null,
             "latest_publication_window_start": null,
-            "published_scoring_source": "raw_window",
+            "published_scoring_source": null,
             "published_wallet_ids": [],
             "active_follow_wallet_ids": [],
             "current_raw_top_wallet_ids": [],

@@ -51,7 +51,7 @@ pub(super) async fn retry_pending_irrelevant_swaps(
                 dropped_noncritical_pending,
             pending_irrelevant_swap_queue_depth_after_prune =
                 pending_irrelevant_swaps.len(),
-            "dropped stale non-target irrelevant swap backlog after refreshing the exact rebuild target-mint set"
+            "dropped stale non-target irrelevant swap backlog after V2 fail-closed target-mint refresh"
         );
     }
     loop {

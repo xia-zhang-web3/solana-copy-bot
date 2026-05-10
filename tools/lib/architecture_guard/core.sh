@@ -64,7 +64,14 @@ baseline_file_content() {
 
 changed_files() {
   if [[ -n "${ARCH_GUARD_DIFF_RANGE:-}" ]]; then
-    git diff --name-only --diff-filter=ACMRTUXB "$ARCH_GUARD_DIFF_RANGE" | sort -u
+    {
+      git diff --name-only --diff-filter=ACMRTUXB "$ARCH_GUARD_DIFF_RANGE"
+      if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
+        git diff --name-only --diff-filter=ACMRTUXB
+        git diff --name-only --cached --diff-filter=ACMRTUXB
+        git ls-files --others --exclude-standard
+      fi
+    } | sort -u
     return
   fi
   {
@@ -114,7 +121,7 @@ doc_guard_file() {
     README.md | AGENTS.md | ARCHITECTURE_WAIVERS.md | ARTIFACT_DEPLOY.md | BUILD_POLICY.md | BUILD_REFACTOR_ROADMAP.md | BUILD_ARCHITECTURE_REDESIGN_NO_HOUR_BUILDS.md)
       return 0
       ;;
-    docs/*.md | docs/**/*.md)
+    docs/*.md | docs/**/*.md | ops/*.md | ops/**/*.md)
       return 0
       ;;
     *)

@@ -8,7 +8,6 @@ anyhow.workspace = true
 chrono.workspace = true
 copybot-config = { path = "../config" }
 copybot-core-types = { path = "../core-types" }
-copybot-discovery-v2 = { path = "../discovery-v2" }
 copybot-ingestion = { path = "../ingestion" }
 copybot-shadow = { path = "../shadow" }
 copybot-storage-core = { path = "../storage-core" }

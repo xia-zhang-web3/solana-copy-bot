@@ -1,4 +1,9 @@
 use crate::{
+    observed_timestamp::{
+        ensure_observed_swaps_timestamp_validation_index_empty_safe,
+        ensure_observed_swaps_timestamps_canonical_utc_read_only,
+    },
+    schema_indexes::ensure_observed_swaps_read_indexes_empty_safe_on_conn,
     ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary, SqliteDiscoveryStore,
     WalletActivityDayRow,
 };
@@ -129,6 +134,7 @@ impl SqliteDiscoveryStore {
         cutoff: DateTime<Utc>,
         batch_size: usize,
     ) -> Result<usize> {
+        ensure_observed_swaps_timestamps_canonical_utc_read_only(&self.conn)?;
         let cutoff_ts = cutoff.to_rfc3339();
         let batch_limit = batch_size.max(1).min(i64::MAX as usize) as i64;
         self.execute_with_retry(|conn| {
@@ -198,8 +204,6 @@ fn ensure_observed_swap_writer_tables_on_conn(conn: &Connection) -> Result<()> {
             slot INTEGER NOT NULL,
             ts TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_observed_swaps_ts_slot_signature
-            ON observed_swaps(ts, slot, signature);
         CREATE TABLE IF NOT EXISTS wallet_activity_days (
             wallet_id TEXT NOT NULL,
             activity_day TEXT NOT NULL,
@@ -209,7 +213,9 @@ fn ensure_observed_swap_writer_tables_on_conn(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_wallet_activity_days_day_wallet
             ON wallet_activity_days(activity_day, wallet_id);",
     )
-    .context("failed ensuring observed swap writer tables exist")
+    .context("failed ensuring observed swap writer tables exist")?;
+    ensure_observed_swaps_timestamp_validation_index_empty_safe(conn)?;
+    ensure_observed_swaps_read_indexes_empty_safe_on_conn(conn)
 }
 
 fn upsert_wallet_activity_days_on_conn(

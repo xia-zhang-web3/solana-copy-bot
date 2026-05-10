@@ -18,6 +18,11 @@ pub(super) fn blockers(
         u64::from(discovery.min_active_days.max(1)).saturating_mul(24 * 60);
     push_if(
         &mut blockers,
+        discovery_v2_float_gates_invalid(discovery, shadow),
+        "discovery_v2_float_gates_invalid",
+    );
+    push_if(
+        &mut blockers,
         window_minutes < required_active_window_minutes,
         "discovery_v2_active_days_unsatisfiable",
     );
@@ -88,6 +93,13 @@ pub(super) fn blockers(
     );
     push_if(
         &mut blockers,
+        coverage_sample
+            .as_ref()
+            .is_some_and(|sample| !sample.covers_window_start),
+        "observed_swaps_window_coverage_incomplete",
+    );
+    push_if(
+        &mut blockers,
         scan.rows_scanned == 0,
         "observed_swaps_window_scan_empty",
     );
@@ -114,4 +126,23 @@ fn push_if(blockers: &mut Vec<String>, condition: bool, blocker: &str) {
     if condition {
         blockers.push(blocker.to_string());
     }
+}
+
+fn discovery_v2_float_gates_invalid(discovery: &DiscoveryConfig, shadow: &ShadowConfig) -> bool {
+    !finite_non_negative(discovery.min_leader_notional_sol)
+        || !finite_non_negative(discovery.min_score)
+        || !finite_ratio(discovery.min_tradable_ratio)
+        || !finite_ratio(discovery.max_rug_ratio)
+        || !finite_non_negative(discovery.thin_market_min_volume_sol)
+        || !finite_non_negative(shadow.min_leader_notional_sol)
+        || !finite_non_negative(shadow.min_liquidity_sol)
+        || !finite_non_negative(shadow.min_volume_5m_sol)
+}
+
+fn finite_non_negative(value: f64) -> bool {
+    value.is_finite() && value >= 0.0
+}
+
+fn finite_ratio(value: f64) -> bool {
+    finite_non_negative(value) && value <= 1.0
 }

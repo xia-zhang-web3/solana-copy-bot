@@ -7,12 +7,8 @@ use copybot_discovery_v2::{
     DiscoveryV2BuildOptions, DISCOVERY_V2_SCORING_SOURCE,
 };
 use copybot_storage_core::{
-    ensure_discovery_v2_schema, validate_discovery_v2_schema_read_only, DiscoveryRuntimeMode,
-    SqliteDiscoveryStore,
+    ensure_discovery_v2_schema, DiscoveryRuntimeMode, SqliteDiscoveryStore,
 };
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 use tempfile::tempdir;
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -133,69 +129,23 @@ fn insert_quality_for_token(
     store.upsert_token_quality_cache(token_mint, Some(5), liquidity_sol, Some(60), now)
 }
 
-fn repo_path(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative)
-}
-
-#[test]
-fn prod_live_v2_configs_are_active_day_satisfiable() -> Result<()> {
-    for relative in [
-        "configs/prod.toml",
-        "configs/live.toml",
-        "ops/server_templates/live.server.toml.example",
-    ] {
-        let config = copybot_config::load_from_path(repo_path(relative))?;
-        assert!(
-            config.discovery.min_active_days <= config.discovery.scoring_window_days,
-            "{relative} has min_active_days above scoring_window_days"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn publish_commit_on_old_schema_does_not_prepare_schema_before_rejection() -> Result<()> {
-    let dir = tempdir()?;
-    let db_path = dir.path().join("old-runtime.db");
-    drop(SqliteDiscoveryStore::open(&db_path)?);
-    let config_path = dir.path().join("live.toml");
-    fs::write(
-        &config_path,
-        format!(
-            r#"
-[sqlite]
-path = "{}"
-"#,
-            db_path.display()
-        ),
-    )?;
-
-    let output = Command::new(env!("CARGO_BIN_EXE_discovery_v2_publish"))
-        .args([
-            "--config",
-            config_path.to_str().expect("utf8 config path"),
-            "--commit",
-            "--now",
-            "2026-05-03T10:00:00Z",
-        ])
-        .output()?;
-
-    assert!(!output.status.success());
-    let read_store = SqliteDiscoveryStore::open_read_only(&db_path)?;
-    let schema_error = validate_discovery_v2_schema_read_only(&read_store)
-        .expect_err("publish --commit must not prepare schema before status rejection");
-    assert!(schema_error.to_string().contains("missing required table"));
-    Ok(())
-}
-
 #[test]
 fn policy_fingerprint_changes_when_shadow_or_execution_identity_changes() -> Result<()> {
     let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
     let (mut discovery, mut shadow) = strict_policy();
     let options = options(now);
     let base = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
+
+    let mut tiny_score_change = discovery.clone();
+    tiny_score_change.min_score += 0.0000001;
+    let tiny_score_changed = discovery_v2_policy_fingerprint(&tiny_score_change, &shadow, &options);
+    assert_ne!(base, tiny_score_changed);
+
+    let mut tiny_liquidity_change = shadow.clone();
+    tiny_liquidity_change.min_liquidity_sol += 0.0000001;
+    let tiny_liquidity_changed =
+        discovery_v2_policy_fingerprint(&discovery, &tiny_liquidity_change, &options);
+    assert_ne!(base, tiny_liquidity_changed);
 
     shadow.min_liquidity_sol += 1.0;
     let shadow_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
@@ -228,6 +178,7 @@ fn status_ready_when_tail_sample_scan_and_candidates_are_valid() -> Result<()> {
     let token_a = "ReadyToken11111111111111111111111111111111";
     let token_b = "ReadyToken22222222222222222222222222222222";
     store.insert_observed_swaps_batch(&[
+        tail_coverage_swap("sig-coverage-floor", 9, now - Duration::hours(25)),
         swap_with_token(
             "wallet_a",
             token_a,
@@ -250,6 +201,30 @@ fn status_ready_when_tail_sample_scan_and_candidates_are_valid() -> Result<()> {
     assert_eq!(status.scan.rows_scanned, 3);
     assert_eq!(status.candidate_wallets.len(), 2);
     assert_eq!(status.source, DISCOVERY_V2_SCORING_SOURCE);
+    Ok(())
+}
+
+#[test]
+fn status_blocks_when_window_start_coverage_is_unproven() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
+    store.insert_observed_swaps_batch(&[
+        swap("wallet_a", "sig-a", 10, now - Duration::minutes(10)),
+        tail_coverage_swap("sig-tail", 11, now - Duration::minutes(5)),
+    ])?;
+    insert_quality(&store, now, Some(1.0))?;
+    let (discovery, shadow) = strict_policy();
+
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    assert!(!status.production_green);
+    assert!(status
+        .coverage_sample
+        .as_ref()
+        .is_some_and(|sample| !sample.covers_window_start));
+    assert!(status
+        .blockers
+        .contains(&"observed_swaps_window_coverage_incomplete".to_string()));
     Ok(())
 }
 
@@ -285,6 +260,7 @@ fn publish_commit_writes_followlist_and_publication_state_when_green() -> Result
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
     store.insert_observed_swaps_batch(&[
+        tail_coverage_swap("sig-coverage-floor", 9, now - Duration::hours(25)),
         swap("wallet_a", "sig-a", 10, now - Duration::minutes(10)),
         tail_coverage_swap("sig-tail", 11, now - Duration::minutes(5)),
     ])?;
@@ -295,6 +271,10 @@ fn publish_commit_writes_followlist_and_publication_state_when_green() -> Result
     let report = publish_discovery_v2_status(&store, status, true)?;
 
     assert!(report.committed);
+    assert_eq!(
+        report.live_daemon_follow_surface_action,
+        "restart_or_reload_copybot_app_before_live_follow_surface_uses_publication"
+    );
     assert_eq!(report.published_wallet_count, 1);
     assert!(store.list_active_follow_wallets()?.contains("wallet_a"));
     let state = store

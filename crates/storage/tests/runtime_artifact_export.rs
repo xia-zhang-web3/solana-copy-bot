@@ -24,6 +24,20 @@ fn seed_runtime_artifact_source_store(
     now: DateTime<Utc>,
     export_gate: DiscoveryPublicationFreshnessGate,
 ) -> Result<DiscoveryRuntimeArtifact> {
+    let runtime_cursor = DiscoveryRuntimeCursor {
+        ts_utc: now - Duration::minutes(1),
+        slot: 77,
+        signature: "runtime-artifact-cursor".to_string(),
+    };
+    seed_runtime_artifact_source_store_with_cursor(source_store, now, export_gate, runtime_cursor)
+}
+
+fn seed_runtime_artifact_source_store_with_cursor(
+    source_store: &SqliteStore,
+    now: DateTime<Utc>,
+    export_gate: DiscoveryPublicationFreshnessGate,
+    runtime_cursor: DiscoveryRuntimeCursor,
+) -> Result<DiscoveryRuntimeArtifact> {
     let metrics_window_start = metrics_window_start_for_gate(&export_gate, now);
     let published_at = now - Duration::minutes(5);
     let published_wallet_ids = vec!["wallet-alpha".to_string()];
@@ -77,11 +91,6 @@ fn seed_runtime_artifact_source_store(
         published_at,
         "seed_runtime_artifact_roundtrip",
     )?;
-    let runtime_cursor = DiscoveryRuntimeCursor {
-        ts_utc: now - Duration::minutes(1),
-        slot: 77,
-        signature: "runtime-artifact-cursor".to_string(),
-    };
     source_store.upsert_discovery_runtime_cursor(&runtime_cursor)?;
     source_store.set_discovery_publication_state_with_identity(
         &DiscoveryPublicationStateUpdate {
@@ -236,6 +245,36 @@ fn discovery_runtime_artifact_export_requires_explicit_expected_identity() -> Re
             "{error_text}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn discovery_runtime_artifact_export_rejects_stale_publication_cursor() -> Result<()> {
+    let temp = tempdir().context("failed to create tempdir")?;
+    let source_db_path = temp.path().join("runtime-artifact-source-stale-cursor.db");
+    let source_store = migrated_store(&source_db_path)?;
+    let now = DateTime::parse_from_rfc3339("2026-03-23T12:10:00Z")
+        .expect("timestamp")
+        .with_timezone(&Utc);
+    let stale_cursor = DiscoveryRuntimeCursor {
+        ts_utc: now - Duration::minutes(20),
+        slot: 77,
+        signature: "runtime-artifact-stale-cursor".to_string(),
+    };
+
+    let error = seed_runtime_artifact_source_store_with_cursor(
+        &source_store,
+        now,
+        v2_export_gate("test-policy-fingerprint"),
+        stale_cursor,
+    )
+    .expect_err("legacy export must reject stale publication-bound cursor");
+
+    let error_text = format!("{error:#}");
+    assert!(
+        error_text.contains("requires fresh publication-bound runtime cursor"),
+        "{error_text}"
+    );
     Ok(())
 }
 

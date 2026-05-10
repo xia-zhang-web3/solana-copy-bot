@@ -22,55 +22,16 @@ Normal deploy path:
 
 ## 2. Artifact Layout
 
-```text
-artifacts/
-  linux-x86_64/
-    <package>-<git_sha>/
-      build-manifest.json
-      SHA256SUMS
-      discovery_v2_status
-      discovery_v2_publish
-      discovery_runtime_export
-      discovery_recent_raw_snapshot
-      copybot_operator_emergency_stop
-      copybot_live_service_control_wrapper
-      copybot_yellowstone_source_probe
-      copybot_runtime_sqlite_wal_maintenance
-      copybot_runtime_sqlite_wal_pressure_report
-    <package>-<git_sha>.tar.gz
-    <package>-<git_sha>.tar.gz.sha256
-```
-
-Only include binaries built for the batch.
+Artifacts live under `artifacts/linux-x86_64/<package>-<git_sha>/` plus the
+matching `.tar.gz` and `.tar.gz.sha256`. Each artifact directory contains
+`build-manifest.json`, `SHA256SUMS`, and only the binaries built for that
+package.
 
 ## 3. Build Manifest
 
-Required `build-manifest.json`:
-
-```json
-{
-  "git_sha": "...",
-  "built_at": "...",
-  "builder_host": "...",
-  "rustc": "...",
-  "cargo": "...",
-  "target": "x86_64-unknown-linux-gnu",
-  "profile": "operator-release",
-  "checks": [
-    "cargo test --locked -p copybot-discovery-v2 --lib -- --test-threads=1; cargo test --locked -p copybot-discovery-v2 --tests --no-run",
-    "tools/architecture_guard.sh --changed",
-    "tools/architecture_guard.sh --all"
-  ],
-  "expected_binaries": ["discovery_v2_publish", "discovery_v2_status"],
-  "binaries": [
-    {
-      "name": "discovery_v2_status",
-      "source_package": "copybot-discovery-v2",
-      "sha256": "..."
-    }
-  ]
-}
-```
+`build-manifest.json` must bind git SHA, target, profile, executed checks,
+expected binaries, source package, and binary checksums. Production manifests
+must include locked package tests plus both architecture guard modes.
 
 ## 4. Builder Commands
 
@@ -125,6 +86,10 @@ The workflow builds operator packages and the live daemon artifact.
 Manual `workflow_dispatch` is the full artifact proof path and must build every
 matrix package, including `copybot-app`. Push and pull-request runs may skip the
 daemon artifact when the changed paths cannot affect the daemon runtime graph.
+Changes under `migrations/**` are daemon-affecting because `copybot-app`
+applies migrations on startup; CI must build the daemon artifact for migration
+changes unless the batch explicitly declares a separate migration-only rollout
+proof.
 
 Runtime daemon artifact:
 
@@ -146,22 +111,45 @@ artifacts/linux-x86_64/<package>-<git_sha>.tar.gz.sha256
 ```
 
 Use `ALLOW_DIRTY=1` only for local smoke artifacts. Production artifacts must
-come from a clean tree.
+come from a clean tree. `tools/install_operator_artifacts.sh --allow-dirty`
+is valid only with `--dry-run`; a dirty artifact must never be installed.
 
-The archive checksum is external. The internal `SHA256SUMS` covers the binaries.
-The manifest binds binary names, source package, target, profile, git SHA,
-checks, and binary checksums.
+The archive checksum is external. The internal `SHA256SUMS` covers the binaries
+and, for `copybot-app`, `migrations.tar.gz`. The manifest binds binary names,
+source package, target, profile, git SHA, dirty state, checks, binary checksums,
+and the daemon migration bundle checksum.
 
 ## 6. Config Rollout Review
 
-Artifact install does not approve config semantics by itself.
+Artifact install does not approve config semantics by itself. A daemon rollout
+must carry an explicit config acceptance note before restart.
 
 The current refactor branch intentionally changes the live/prod config surface:
 
 1. `configs/live.toml` uses `state/live_runtime.db`,
 2. live/prod/template Discovery V2 `min_active_days` is `1`,
-3. live/template metric snapshot cadence is `1800` seconds,
-4. live/template observed-swap retention is `7` days.
+3. live/prod/template metric snapshot cadence is `1800` seconds,
+4. live/prod/template observed-swap retention is `7` days,
+5. live/prod/template define `[recent_raw_journal]` and `[runtime_restore_ops]`
+   as active operational surfaces,
+6. live/prod/template set runtime restore bootstrap snapshot age and cadence gates,
+7. live config carries lower shadow/risk caps than prod and must be accepted
+   explicitly before daemon restart,
+8. live/prod/template execution remains disabled and must not be relaxed,
+9. live/prod/template aggregate/materialized discovery readiness remains
+   rejected as a production readiness path,
+10. live/prod/template runtime artifact/publication freshness gates must stay
+   bound to Discovery V2 source, policy fingerprint, and runtime cursor.
+
+Before daemon rollout, review every delta in:
+
+1. `configs/live.toml`,
+2. `configs/prod.toml`,
+3. `ops/server_templates/live.server.toml.example`,
+4. `ops/server_templates/app.env.example`,
+5. `ops/server_templates/*.service`,
+6. `ops/server_templates/*.timer`,
+7. `migrations/**` when the daemon artifact includes migration changes.
 
 Before daemon rollout, the rollout note must explicitly choose one of:
 
@@ -169,9 +157,27 @@ Before daemon rollout, the rollout note must explicitly choose one of:
 2. split them into a config-only rollout with separate proof,
 3. revert the config deltas before packaging the daemon artifact.
 
+The note must record date, operator, commit, artifact id, exact config files,
+chosen option, and whether production remains fail-closed. A green production
+state can only be recorded by the postflight live proof section, not by config
+review, code review, local tests, devnet, or operator observability.
+
 Read-only operator rollout does not imply daemon config acceptance.
 
 ## 7. Production Install
+
+Production preflight for any install or rollback:
+
+1. verify service state for every service that may use the package,
+2. record current server commit and target artifact `git_sha`,
+3. verify disk and memory headroom,
+4. verify no production-local cargo/rustc build is running,
+5. state the exact artifact path or rollback id, package, binary, and service
+   to touch,
+6. verify `execution.enabled` remains disabled when the daemon package is in
+   scope,
+7. verify config deltas were accepted, split, or reverted when the daemon
+   package is in scope.
 
 Install Discovery V2 status/publish operators:
 
@@ -180,8 +186,13 @@ tools/install_operator_artifacts.sh \
   --expect-package copybot-discovery-v2 \
   --expect-target x86_64-unknown-linux-gnu \
   --install-dir /var/www/solana-copy-bot/bin \
-  /tmp/copybot-discovery-v2-<git_sha>.tar.gz
+/tmp/copybot-discovery-v2-<git_sha>.tar.gz
 ```
+
+`discovery_v2_publish --commit` requires
+`--acknowledge-daemon-restart-required`. The live daemon samples publication
+truth at startup, so a committed publish must be followed by a daemon restart or
+an explicitly implemented reload before the live follow surface can use it.
 
 Install scheduled Discovery operators used by the runtime export and recent raw
 snapshot services:
@@ -196,29 +207,27 @@ tools/install_operator_artifacts.sh \
 
 The installer:
 
-1. extracts tarballs when needed,
-2. requires and verifies the external archive checksum sidecar,
-3. verifies `build-manifest.json`,
-4. verifies expected package/profile/target,
-5. verifies `SHA256SUMS`,
-6. rejects dirty artifacts unless `--allow-dirty` is explicitly passed,
-7. verifies the complete expected binary set for the package,
-8. stages into `bin/releases/.staging-<artifact_id>.<pid>/`,
-9. writes `INSTALL_COMPLETE`,
-10. atomically renames the staged release into `bin/releases/<artifact_id>/`,
-11. keeps stable top-level binary symlinks pointed through
-   `bin/packages/<package>/current/<binary>`,
-12. activates the package by atomically replacing
-   `bin/packages/<package>/current`,
-13. keeps `bin/operator-artifact-current-<package>.json` as a stable link to
-    the active package manifest.
+It verifies archive and binary checksums, manifest identity, package/profile/
+target, dirty state, expected binaries, migration bundle checksums, symlink
+targets, and immutable release collisions. Normal installs stage into
+`.staging-<artifact_id>.<pid>/`, write `INSTALL_COMPLETE`, atomically rename
+into `bin/releases/<artifact_id>/`, install `copybot-app` migrations when
+present, and then atomically switch `bin/packages/<package>/current`.
 
 The package-current symlink is the activation point. Top-level binary symlinks
 are stable service entrypoints, not per-release activation state.
 
-Read-only operators do not require daemon restart.
+Read-only operators do not require daemon restart, but they still require the
+production preflight above before touching `/var/www/solana-copy-bot/bin`.
 
-Install daemon artifact:
+Daemon artifact rollout order:
+
+1. complete daemon restart preflight,
+2. install the daemon artifact,
+3. restart the daemon,
+4. complete daemon restart postflight.
+
+Install daemon artifact after preflight:
 
 ```bash
 tools/install_operator_artifacts.sh \
@@ -226,7 +235,6 @@ tools/install_operator_artifacts.sh \
   --expect-target x86_64-unknown-linux-gnu \
   --install-dir /var/www/solana-copy-bot/bin \
   /tmp/copybot-app-<git_sha>.tar.gz
-sudo systemctl restart solana-copy-bot.service
 ```
 
 Systemd should point to:
@@ -235,9 +243,36 @@ Systemd should point to:
 /var/www/solana-copy-bot/bin/copybot-app
 ```
 
+Daemon restart preflight:
+
+1. record the server commit and artifact `git_sha`,
+2. verify `systemctl status solana-copy-bot.service --no-pager`,
+3. verify disk and memory headroom,
+4. verify no production-local cargo build is running,
+5. state the exact artifact path, package, binary, and service to touch,
+6. verify `execution.enabled` remains disabled in the active config,
+7. verify config deltas were accepted, split, or reverted.
+
+Restart after preflight and install:
+
+```bash
+sudo systemctl restart solana-copy-bot.service
+```
+
+Daemon restart postflight:
+
+1. verify `systemctl is-active solana-copy-bot.service`,
+2. record `NRestarts` / restart counter,
+3. inspect recent logs for startup publication truth and fatal errors,
+4. run bounded Discovery V2/runtime status proof,
+5. record whether runtime remains fail-closed or has live V2 green proof.
+
 ## 8. Rollback
 
 Discovery scheduled operator rollback:
+
+Run the production preflight before operator rollback, including the exact
+rollback artifact id.
 
 ```bash
 tools/install_operator_artifacts.sh \
@@ -255,12 +290,20 @@ Discovery V2 status/publish operator rollback uses the same command with
 
 Daemon rollback:
 
+Run the same daemon restart preflight before rollback, including exact rollback
+artifact id and config acceptance state.
+
 ```bash
 tools/install_operator_artifacts.sh \
   --expect-package copybot-app \
   --expect-target x86_64-unknown-linux-gnu \
   --install-dir /var/www/solana-copy-bot/bin \
   --rollback <previous_artifact_id>
+```
+
+Restart only after rollback preflight and successful artifact activation:
+
+```bash
 sudo systemctl restart solana-copy-bot.service
 ```
 
@@ -269,11 +312,23 @@ Then verify:
 ```bash
 systemctl is-active solana-copy-bot.service
 systemctl status --no-pager solana-copy-bot.service
+journalctl -u solana-copy-bot.service -n 200 --no-pager
 ```
 
 ## 9. Emergency Fallback
 
 Production-local build is emergency fallback only.
+
+Before any emergency build command:
+
+1. record current server commit and dirty state,
+2. state the exact package, binary, and service scope,
+3. check disk,
+4. check memory,
+5. verify no other `cargo` or `rustc` build is running,
+6. check service pressure,
+7. verify `execution.enabled = false` when the daemon is in scope,
+8. explain why artifact deploy cannot be used.
 
 Operator emergency build:
 
@@ -320,13 +375,6 @@ Daemon emergency build:
 ```bash
 CARGO_BUILD_JOBS=1 cargo build --release -p copybot-app --bin copybot-app # emergency fallback
 ```
-
-Before emergency build:
-
-1. check disk,
-2. check memory,
-3. check service pressure,
-4. explain why artifact deploy cannot be used.
 
 After emergency build:
 

@@ -5,14 +5,19 @@ mod discovery_rebuild_state;
 mod history_retention;
 mod market_context;
 mod migrations;
+mod migrations_index_guard;
 mod money;
 mod observed;
+mod observed_budget;
+mod observed_row;
+mod observed_timestamp;
 mod observed_writer;
 mod publication;
 mod publication_compat;
 mod quality;
 mod recent_raw;
 mod schema;
+mod schema_indexes;
 mod shadow_close;
 mod shadow_lots;
 mod shadow_metrics;
@@ -30,7 +35,10 @@ pub use crate::publication::{
     validate_discovery_runtime_artifact_export_readiness,
     validate_discovery_runtime_artifact_snapshot_shape,
 };
-pub use crate::schema::{ensure_discovery_v2_schema, validate_discovery_v2_schema_read_only};
+pub use crate::schema::{
+    ensure_discovery_v2_schema, validate_discovery_v2_schema_read_only,
+    validate_discovery_v2_status_schema_read_only,
+};
 pub use crate::sqlite_retry::sqlite_contention_snapshot;
 pub use crate::sqlite_retry::{is_fatal_sqlite_anyhow_error, is_retryable_sqlite_anyhow_error};
 pub use crate::startup_progress::{

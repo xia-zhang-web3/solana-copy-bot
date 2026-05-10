@@ -24,6 +24,9 @@ fn setup_rug_lookahead_conn() -> Result<Connection> {
              CREATE INDEX idx_observed_swaps_token_out_in_ts
                 ON observed_swaps(token_out, token_in, ts);",
     )?;
+    conn.execute_batch(include_str!(
+        "../../../../migrations/0040_observed_swaps_non_utc_ts_index.sql"
+    ))?;
     Ok(conn)
 }
 

@@ -27,8 +27,8 @@ mod status_rank;
 #[path = "status_types.rs"]
 mod status_types;
 
-pub const DISCOVERY_V2_SCORING_SOURCE: &str = "discovery_v2_operational_window";
 pub use crate::policy::TOKEN_QUALITY_TTL_SECONDS;
+pub use copybot_config::DISCOVERY_V2_SCORING_SOURCE;
 
 pub fn build_discovery_v2_status(
     store: &SqliteDiscoveryStore,

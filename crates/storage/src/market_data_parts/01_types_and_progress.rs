@@ -162,3 +162,22 @@ impl Drop for ProgressHandlerGuard<'_> {
         self.conn.progress_handler(0, None::<fn() -> bool>);
     }
 }
+
+pub(super) fn sqlite_interrupted_after_deadline(
+    error: &rusqlite::Error,
+    deadline: Instant,
+) -> bool {
+    error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) && Instant::now() >= deadline
+}
+
+pub(super) fn anyhow_error_is_sqlite_interrupted(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(|error| error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted))
+            || cause
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("interrupted")
+    })
+}

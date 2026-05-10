@@ -65,6 +65,7 @@ impl SqliteStore {
         if limit == 0 {
             return Ok(ObservedSwapCursorPage::default());
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         if Instant::now() >= deadline {
             return Ok(ObservedSwapCursorPage {
                 rows_seen: 0,
@@ -141,18 +142,35 @@ impl SqliteStore {
 
         let limit = (limit.min(i64::MAX as usize)) as i64;
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
-        let mut stmt = self
-            .conn
-            .prepare(OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY)
-            .context("failed to prepare observed_swaps cursor query")?;
-        let mut rows = stmt
-            .query(params![
-                cursor_ts.to_rfc3339(),
-                cursor_slot as i64,
-                cursor_signature,
-                limit,
-            ])
-            .context("failed to query observed_swaps by cursor")?;
+        let mut stmt = match self.conn.prepare(OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY) {
+            Ok(stmt) => stmt,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedSwapCursorPage {
+                    rows_seen: 0,
+                    time_budget_exhausted: true,
+                });
+            }
+            Err(error) => {
+                return Err(error).context("failed to prepare observed_swaps cursor query");
+            }
+        };
+        let mut rows = match stmt.query(params![
+            cursor_ts.to_rfc3339(),
+            cursor_slot as i64,
+            cursor_signature,
+            limit,
+        ]) {
+            Ok(rows) => rows,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedSwapCursorPage {
+                    rows_seen: 0,
+                    time_budget_exhausted: true,
+                });
+            }
+            Err(error) => {
+                return Err(error).context("failed to query observed_swaps by cursor");
+            }
+        };
 
         let mut seen = 0usize;
         let mut time_budget_exhausted = false;
@@ -160,7 +178,7 @@ impl SqliteStore {
             let next_row = match rows.next() {
                 Ok(row) => row,
                 Err(error) => {
-                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                    if sqlite_interrupted_after_deadline(&error, deadline) {
                         time_budget_exhausted = true;
                         break;
                     }
@@ -188,6 +206,7 @@ impl SqliteStore {
         if limit == 0 {
             return Ok((Vec::new(), false));
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
         let retained_limit = limit.min(i64::MAX as usize);
         let query_limit = retained_limit.saturating_add(1).min(i64::MAX as usize) as i64;
         let mut stmt = self

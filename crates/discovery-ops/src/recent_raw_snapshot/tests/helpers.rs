@@ -12,6 +12,8 @@ pub(super) fn make_fixture(name: &str) -> Result<Fixture> {
     let journal_db_path = temp.path().join(format!("{name}.db"));
     let config_path = temp.path().join(format!("{name}.toml"));
     let journal_store = SqliteStore::open(&journal_db_path)?;
+    ensure_discovery_v2_schema(&journal_store)?;
+    journal_store.ensure_recent_raw_journal_tables()?;
     std::fs::write(
             &config_path,
             format!(

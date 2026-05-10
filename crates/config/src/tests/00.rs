@@ -191,6 +191,44 @@ metric_snapshot_interval_seconds = 1800
 }
 
 #[test]
+fn load_from_path_rejects_non_finite_discovery_v2_float_gates() {
+    with_temp_config_file(
+        r#"
+[discovery]
+min_score = nan
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("non-finite discovery min_score must fail config load")
+                .to_string();
+            assert!(
+                err.contains("discovery.min_score must be finite"),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_non_finite_shadow_quality_gates() {
+    with_temp_config_file(
+        r#"
+[shadow]
+min_liquidity_sol = inf
+"#,
+        |config_path| {
+            let err = load_from_path(config_path)
+                .expect_err("non-finite shadow min_liquidity_sol must fail config load")
+                .to_string();
+            assert!(
+                err.contains("shadow.min_liquidity_sol must be finite"),
+                "unexpected error: {err}"
+            );
+        },
+    );
+}
+
+#[test]
 fn load_from_env_rejects_empty_yellowstone_program_ids_override() {
     assert_string_list_env_rejected_contains(
         "SOLANA_COPY_BOT_YELLOWSTONE_PROGRAM_IDS",

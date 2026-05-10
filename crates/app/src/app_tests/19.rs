@@ -28,7 +28,7 @@
                 refresh_now,
             ) {
                 old_refresh_attempts = old_refresh_attempts.saturating_add(1);
-                refresh_discovery_critical_target_buy_mints_or_warn(
+                refresh_discovery_critical_target_buy_mints_or_warn_old(
                     &store,
                     &mut target_buy_mints_old,
                 )?;
@@ -41,7 +41,7 @@
                     true,
                     &target_buy_mints_old,
                 ),
-                "old/current path should still classify target-mint SOL buys as discovery-critical after each refresh"
+                "legacy helper should still classify target-mint SOL buys as discovery-critical for the historical A/B side"
             );
 
             if should_refresh_discovery_critical_target_buy_mints_for_backpressure(
@@ -58,24 +58,24 @@
                 )?;
             }
             assert!(
-                irrelevant_observed_swap_requires_discovery_critical_persistence(
+                !irrelevant_observed_swap_requires_discovery_critical_persistence(
                     &swap,
                     &follow_snapshot,
                     &open_shadow_lots,
                     true,
                     &target_buy_mints_new,
                 ),
-                "throttling refresh cadence must preserve exact target-mint discovery-critical classification; it only removes redundant repeated live_runtime reads"
+                "production refresh must not recover legacy persisted rebuild target mints; V2 runtime cannot let old target-mint state keep an irrelevant swap discovery-critical"
             );
         }
 
         assert_eq!(
             old_refresh_attempts, 128,
-            "old/current path should attempt a live_runtime target-mint refresh on every backpressured discovery-critical irrelevant swap in the same burst"
+            "legacy helper should attempt a target-mint refresh on every backpressured discovery-critical irrelevant swap in the same burst"
         );
         assert_eq!(
             new_refresh_attempts, 1,
-            "new path must collapse same-burst backpressure refreshes to one live_runtime read per interval"
+            "new path must collapse same-burst backpressure refreshes to one no-op attempt per interval"
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -83,7 +83,7 @@
     }
 
     #[test]
-    fn load_discovery_critical_target_buy_mints_prefers_exact_candidate_targets_over_broad_unique_buy_universe_stage1(
+    fn load_discovery_critical_target_buy_mints_ignores_legacy_exact_candidate_targets_stage1(
     ) -> Result<()> {
         let (store, db_path) =
             make_test_store("load-discovery-critical-target-buy-mints-prefers-exact-surface")?;
@@ -99,13 +99,9 @@
         )?;
 
         let loaded = load_discovery_critical_target_buy_mints(&store)?;
-        assert_eq!(
-            loaded,
-            HashSet::from([
-                "token-target-a".to_string(),
-                "token-target-b".to_string(),
-            ]),
-            "once discovery persists an exact candidate target-mint surface, app must prefer it over the much broader unique-buy-mint universe when deciding which irrelevant SOL legs are discovery-critical under pressure"
+        assert!(
+            loaded.is_empty(),
+            "production app must ignore legacy persisted rebuild target mints; Discovery V2 runtime identity must not be extended by old rebuild state"
         );
 
         let _ = std::fs::remove_file(db_path);
@@ -202,28 +198,15 @@
             true,
             &refreshed_target_buy_mints,
         );
-        assert_eq!(
-            dropped,
-            DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY.saturating_sub(1),
-            "once the exact rebuild target mints materialize, the app must drop the stale generic backlog instead of letting it keep the bounded queue full"
-        );
-        assert_eq!(pending_irrelevant_swaps.len(), 1);
-        assert_eq!(
-            pending_irrelevant_swaps
-                .front()
-                .expect("target swap should remain queued")
-                .swap
-                .signature,
-            target_swap.signature,
-            "pruning must preserve the still-relevant target-mint market-context swap rather than wiping the queue indiscriminately"
-        );
+        assert_eq!(dropped, DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY);
+        assert!(pending_irrelevant_swaps.is_empty());
         assert!(
             !pending_irrelevant_swap_backpressure_blocks_ingestion(&pending_irrelevant_swaps),
-            "after stale generic backlog is pruned, ingestion should no longer be paused before the later target-mint context can be retried"
+            "after legacy target-mint refresh is ignored, ingestion should no longer be paused by stale discovery-critical backlog"
         );
         assert!(
-            recent_signatures.contains(&target_swap.signature),
-            "the preserved target-mint swap must stay inside recent-signature dedupe state until it is retried"
+            !recent_signatures.contains(&target_swap.signature),
+            "the target-mint swap must not stay pinned by legacy rebuild state"
         );
         assert!(
             !recent_signatures.contains("sig-generic-pending-0000"),

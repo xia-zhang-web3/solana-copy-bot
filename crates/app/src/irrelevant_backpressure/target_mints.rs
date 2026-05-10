@@ -1,36 +1,17 @@
 use super::*;
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct DiscoveryCriticalPersistedRebuildPayloadTargetMints {
-    #[serde(default)]
-    pub(crate) discovery_critical_target_buy_mints: Vec<String>,
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub(crate) unique_buy_mints: Vec<String>,
-}
-
 pub(crate) fn zero_universe_fail_closed_discovery_market_context_mode(
     follow_snapshot: &FollowSnapshot,
-    open_shadow_lots: &HashSet<(String, String)>,
+    _open_shadow_lots: &HashSet<(String, String)>,
     shadow_strategy_fail_closed: bool,
 ) -> bool {
-    shadow_strategy_fail_closed && follow_snapshot.active.is_empty() && open_shadow_lots.is_empty()
+    shadow_strategy_fail_closed && follow_snapshot.active.is_empty()
 }
 
 pub(crate) fn load_discovery_critical_target_buy_mints(
-    store: &SqliteStore,
+    _store: &SqliteStore,
 ) -> Result<HashSet<String>> {
-    let Some(state_row) = store.load_discovery_persisted_rebuild_state_read_only()? else {
-        return Ok(HashSet::new());
-    };
-    let payload: DiscoveryCriticalPersistedRebuildPayloadTargetMints =
-        serde_json::from_str(&state_row.state_json).context(
-            "failed parsing discovery persisted rebuild payload while loading target buy mints for critical market-context persistence",
-        )?;
-    Ok(payload
-        .discovery_critical_target_buy_mints
-        .into_iter()
-        .collect())
+    Ok(HashSet::new())
 }
 
 pub(crate) fn refresh_discovery_critical_target_buy_mints_or_warn(

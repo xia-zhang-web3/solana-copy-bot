@@ -8,7 +8,7 @@ pub(super) use anyhow::{Context, Result};
 pub(super) use chrono::{DateTime, Duration, Utc};
 pub(super) use copybot_core_types::SwapEvent;
 pub(super) use copybot_runtime_artifacts::{load_json, write_json_atomic};
-pub(super) use copybot_storage_core::RecentRawJournalStateRow;
+pub(super) use copybot_storage_core::{ensure_discovery_v2_schema, RecentRawJournalStateRow};
 pub(super) use serde_json::Value;
 pub(super) use std::path::{Path, PathBuf};
 pub(super) use std::sync::atomic::{AtomicBool, Ordering};

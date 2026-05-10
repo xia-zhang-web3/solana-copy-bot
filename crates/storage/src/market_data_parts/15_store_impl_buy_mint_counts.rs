@@ -42,6 +42,7 @@ impl SqliteStore {
                 time_budget_exhausted: true,
             });
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
 
         let limit = (limit.min(i64::MAX as usize)) as i64;
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
@@ -75,13 +76,32 @@ impl SqliteStore {
         query.push_str(&format!(" LIMIT ?{next_param}"));
         params.push(limit.into());
 
-        let mut stmt = self
-            .conn
-            .prepare(&query)
-            .context("failed to prepare observed_swaps grouped buy mint count page query")?;
-        let mut rows = stmt
-            .query(rusqlite::params_from_iter(params))
-            .context("failed to query observed_swaps grouped buy mint count page")?;
+        let mut stmt = match self.conn.prepare(&query) {
+            Ok(stmt) => stmt,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedBuyMintCountPage {
+                    rows: Vec::new(),
+                    time_budget_exhausted: true,
+                })
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to prepare observed_swaps grouped buy mint count page query")
+            }
+        };
+        let mut rows = match stmt.query(rusqlite::params_from_iter(params)) {
+            Ok(rows) => rows,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedBuyMintCountPage {
+                    rows: Vec::new(),
+                    time_budget_exhausted: true,
+                })
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to query observed_swaps grouped buy mint count page")
+            }
+        };
 
         let mut mint_rows = Vec::new();
         let mut time_budget_exhausted = false;
@@ -89,7 +109,7 @@ impl SqliteStore {
             let next_row = match rows.next() {
                 Ok(row) => row,
                 Err(error) => {
-                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                    if sqlite_interrupted_after_deadline(&error, deadline) {
                         time_budget_exhausted = true;
                         break;
                     }
@@ -130,6 +150,7 @@ impl SqliteStore {
                 time_budget_exhausted: true,
             });
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
 
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
         match self.conn.query_row(
@@ -152,7 +173,7 @@ impl SqliteStore {
                 count: count.max(0) as usize,
                 time_budget_exhausted: false,
             }),
-            Err(error) if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
                 Ok(ObservedBuyMintCount {
                     count: 0,
                     time_budget_exhausted: true,
@@ -179,6 +200,7 @@ impl SqliteStore {
                 time_budget_exhausted: true,
             });
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
 
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
         let since_op = if since_inclusive { ">=" } else { ">" };
@@ -200,7 +222,7 @@ impl SqliteStore {
                 buy_count: count.max(0) as usize,
                 time_budget_exhausted: false,
             }),
-            Err(error) if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
                 Ok(ObservedBuyMintOccurrenceCount {
                     buy_count: 0,
                     time_budget_exhausted: true,
@@ -229,6 +251,7 @@ impl SqliteStore {
                 time_budget_exhausted: true,
             });
         }
+        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
 
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
         let since_op = if since_inclusive { ">=" } else { ">" };
@@ -256,13 +279,32 @@ impl SqliteStore {
                  ORDER BY token_out ASC",
             token_placeholders.join(", ")
         );
-        let mut stmt = self
-            .conn
-            .prepare(&query)
-            .context("failed to prepare exact observed_swaps buy mint batch count query")?;
-        let mut rows = stmt
-            .query(rusqlite::params_from_iter(params))
-            .context("failed to query exact observed_swaps buy mint batch count page")?;
+        let mut stmt = match self.conn.prepare(&query) {
+            Ok(stmt) => stmt,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedBuyMintCountPage {
+                    rows: Vec::new(),
+                    time_budget_exhausted: true,
+                })
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to prepare exact observed_swaps buy mint batch count query")
+            }
+        };
+        let mut rows = match stmt.query(rusqlite::params_from_iter(params)) {
+            Ok(rows) => rows,
+            Err(error) if sqlite_interrupted_after_deadline(&error, deadline) => {
+                return Ok(ObservedBuyMintCountPage {
+                    rows: Vec::new(),
+                    time_budget_exhausted: true,
+                })
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to query exact observed_swaps buy mint batch count page")
+            }
+        };
 
         let mut mint_rows = Vec::new();
         let mut time_budget_exhausted = false;
@@ -270,7 +312,7 @@ impl SqliteStore {
             let next_row = match rows.next() {
                 Ok(row) => row,
                 Err(error) => {
-                    if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                    if sqlite_interrupted_after_deadline(&error, deadline) {
                         time_budget_exhausted = true;
                         break;
                     }

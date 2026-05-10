@@ -16,7 +16,7 @@ pub(super) fn row_to_swap_event(row: &Row<'_>) -> Result<SwapEvent> {
         token_out: row.get(4)?,
         amount_in: row.get(5)?,
         amount_out: row.get(6)?,
-        slot: slot_raw.max(0) as u64,
+        slot: parse_sqlite_slot(slot_raw, "observed_swaps.slot")?,
         ts_utc: parse_rfc3339_utc(&ts_raw, "observed_swaps.ts")?,
         exact_amounts: read_exact_swap_amounts(row)?,
     })
@@ -56,10 +56,14 @@ pub(super) fn parse_cursor(
     match (ts_raw, slot_raw, signature) {
         (Some(ts_raw), Some(slot_raw), Some(signature)) => Ok(Some(DiscoveryRuntimeCursor {
             ts_utc: parse_rfc3339_utc(&ts_raw, "recent_raw_journal_state.cursor_ts")?,
-            slot: slot_raw.max(0) as u64,
+            slot: parse_sqlite_slot(
+                slot_raw,
+                "recent_raw_journal_state.covered_through_cursor_slot",
+            )?,
             signature,
         })),
-        _ => Ok(None),
+        (None, None, None) => Ok(None),
+        _ => bail!("recent_raw_journal_state cursor columns are partially populated"),
     }
 }
 
@@ -72,9 +76,22 @@ pub(super) fn parse_optional_rfc3339_utc(
 }
 
 pub(super) fn parse_rfc3339_utc(raw: &str, field_name: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(raw)
-        .map(|dt| dt.with_timezone(&Utc))
-        .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))
+    if !raw.ends_with("+00:00") {
+        bail!("{field_name} timestamp must use canonical UTC offset +00:00: {raw}");
+    }
+    let parsed = DateTime::parse_from_rfc3339(raw)
+        .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))?;
+    if parsed.offset().local_minus_utc() != 0 {
+        bail!("{field_name} timestamp must use UTC offset +00:00: {raw}");
+    }
+    Ok(parsed.with_timezone(&Utc))
+}
+
+pub(super) fn parse_sqlite_slot(raw: i64, field_name: &str) -> Result<u64> {
+    if raw < 0 {
+        bail!("{field_name} is negative: {raw}");
+    }
+    Ok(raw as u64)
 }
 
 pub(super) fn cursor_cmp(

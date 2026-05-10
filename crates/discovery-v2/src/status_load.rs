@@ -30,18 +30,16 @@ pub(super) fn load_coverage_sample(
     store: &SqliteDiscoveryStore,
     window_start: DateTime<Utc>,
 ) -> Result<Option<DiscoveryV2CoverageSample>> {
-    let (rows, _) = store
-        .load_recent_observed_swaps_since(window_start, 1)
+    let sample = store
+        .observed_swaps_coverage_start_read_only()
         .context("failed loading discovery v2 coverage sample")?;
-    Ok(rows
-        .into_iter()
-        .next()
-        .map(|swap| DiscoveryV2CoverageSample {
-            ts: swap.ts_utc,
-            slot: swap.slot,
-            signature: swap.signature,
-            wallet_id: swap.wallet,
-        }))
+    Ok(sample.map(|swap| DiscoveryV2CoverageSample {
+        ts: swap.ts_utc,
+        slot: swap.slot,
+        signature: swap.signature,
+        wallet_id: swap.wallet,
+        covers_window_start: swap.ts_utc <= window_start,
+    }))
 }
 
 pub(super) fn load_window_tail_swaps(

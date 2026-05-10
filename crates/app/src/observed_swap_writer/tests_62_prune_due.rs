@@ -10,8 +10,7 @@ fn recent_raw_journal_prune_due_stays_paused_while_overflow_backlog_exists_stage
             .unwrap_or(Utc::now().timestamp_micros() * 1000)
     );
     let journal_db_path = std::env::temp_dir().join(format!("{unique}.db"));
-    let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
-    journal_store.ensure_recent_raw_journal_tables()?;
+    let journal_store = prepare_recent_raw_journal_store_for_test(Path::new(&journal_db_path))?;
     let now = DateTime::parse_from_rfc3339("2026-04-08T12:00:00Z")
         .expect("timestamp")
         .with_timezone(&Utc);

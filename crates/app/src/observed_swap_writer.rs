@@ -63,6 +63,7 @@ const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_WINDOW: StdDuration =
     StdDuration::from_millis(10);
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_POLL: StdDuration =
     StdDuration::from_millis(2);
+const OBSERVED_SWAP_RECENT_RAW_JOURNAL_STARTUP_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_ROW_DEBT_CAP_EXCEEDED: &str =
     "observed_swap_writer_recent_raw_journal_overflow_row_debt_capacity_exceeded";
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE: StdDuration = StdDuration::from_secs(10);

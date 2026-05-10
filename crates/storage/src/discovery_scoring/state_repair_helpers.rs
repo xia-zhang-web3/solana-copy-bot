@@ -4,6 +4,7 @@ pub(super) fn observed_swap_exact_cursor_exists_on_conn(
     conn: &Connection,
     cursor: &DiscoveryRuntimeCursor,
 ) -> Result<bool> {
+    validate_observed_swaps_timestamps_canonical_utc(conn)?;
     let slot = i64::try_from(cursor.slot).with_context(|| {
         format!(
             "observed_swaps exact cursor slot overflows i64: {}",
@@ -34,6 +35,7 @@ pub(super) fn load_observed_swaps_after_cursor_for_repair_on_conn(
     if limit == 0 {
         return Ok((Vec::new(), false));
     }
+    validate_observed_swaps_timestamps_canonical_utc(conn)?;
     let limit = (limit.min(i64::MAX as usize)) as i64;
     let mut stmt = conn
         .prepare(OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY)

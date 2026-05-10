@@ -114,10 +114,9 @@ fn recent_raw_journal_hot_writer_defers_rows_older_than_retention_horizon() -> R
     );
     let runtime_db_path = std::env::temp_dir().join(format!("{unique}.db"));
     let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
-    let seed_store = SqliteStore::open(Path::new(&runtime_db_path))?;
-    seed_store.ensure_observed_swap_writer_tables()?;
+    let _seed_store = prepare_observed_writer_store_for_test(Path::new(&runtime_db_path))?;
 
-    let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+    let journal_store = prepare_recent_raw_journal_store_for_test(Path::new(&journal_db_path))?;
     let journal_now = Utc::now();
     journal_store.insert_recent_raw_journal_batch(
         &[SwapEvent {
@@ -295,6 +294,7 @@ fn recent_raw_journal_coalesced_writes_reduce_post_checkpoint_saturation_without
 #[test]
 fn recent_raw_journal_full_overflow_coalesces_without_blocking_raw_persistence_stage1() -> Result<()>
 {
+    let _contention_guard = sqlite_contention_delta_test_guard();
     let unique = format!(
         "copybot-app-recent-raw-journal-full-overflow-{}-{}",
         std::process::id(),
@@ -304,10 +304,9 @@ fn recent_raw_journal_full_overflow_coalesces_without_blocking_raw_persistence_s
     );
     let runtime_db_path = std::env::temp_dir().join(format!("{unique}.db"));
     let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
-    let runtime_store = SqliteStore::open(Path::new(&runtime_db_path))?;
-    runtime_store.ensure_observed_swap_writer_tables()?;
-    let journal_seed_store = SqliteStore::open(Path::new(&journal_db_path))?;
-    journal_seed_store.ensure_recent_raw_journal_tables()?;
+    let runtime_store = prepare_observed_writer_store_for_test(Path::new(&runtime_db_path))?;
+    let journal_seed_store =
+        prepare_recent_raw_journal_store_for_test(Path::new(&journal_db_path))?;
     drop(journal_seed_store);
     let scenario_now = DateTime::parse_from_rfc3339("2026-04-28T20:05:00Z")
         .expect("timestamp")

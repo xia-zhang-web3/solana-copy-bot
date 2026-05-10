@@ -72,7 +72,6 @@
             &discovery,
             db_path.to_str().expect("utf8 db path"),
             now,
-            false,
         )?
         .expect("startup published universe should be available from publication truth");
         let initial_active_wallets = store.list_active_follow_wallets()?;
@@ -93,6 +92,64 @@
             "startup runtime snapshot must come from the exact published universe control plane, not from stale followlist residue or current ranking output"
         );
 
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_v2_publication_truth_requires_valid_v2_schema() -> Result<()> {
+        let (store, db_path) = make_test_store("startup-v2-schema-validation")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:10:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let mut config = copybot_config::DiscoveryConfig::default();
+        config.scoring_window_days = 2;
+        config.metric_snapshot_interval_seconds = 30 * 60;
+        let interval_seconds = config.metric_snapshot_interval_seconds.max(1) as i64;
+        let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
+        let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
+        let metrics_window_start =
+            bucketed_now - chrono::Duration::days(config.scoring_window_days.max(1) as i64);
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let runtime_cursor = DiscoveryRuntimeCursor {
+            ts_utc: now - chrono::Duration::minutes(1),
+            slot: 44,
+            signature: "startup-v2-schema-cursor".to_string(),
+        };
+        store.upsert_discovery_runtime_cursor(&runtime_cursor)?;
+        store.set_discovery_publication_state_with_identity(
+            &DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "startup_v2_schema_validation".to_string(),
+                last_published_at: Some(now - chrono::Duration::minutes(10)),
+                last_published_window_start: Some(metrics_window_start),
+                published_scoring_source: Some("discovery_v2_operational_window".to_string()),
+                published_wallet_ids: Some(vec!["wallet_published_exact".to_string()]),
+            },
+            false,
+            Some(
+                discovery
+                    .discovery_v2_publication_policy_fingerprint(false)
+                    .as_str(),
+            ),
+            Some(&runtime_cursor),
+        )?;
+        drop(store);
+
+        rusqlite::Connection::open(&db_path)?.execute(
+            "DROP INDEX IF EXISTS idx_observed_swaps_token_in_ts",
+            [],
+        )?;
+        let truth = startup_runtime_publication_truth(
+            &discovery,
+            db_path.to_str().expect("utf8 db path"),
+            now,
+        )
+        .expect("schema validation failure must fail closed, not abort startup");
+        assert!(
+            truth.is_none(),
+            "valid V2 publication identity must still require V2 schema validation"
+        );
         let _ = std::fs::remove_file(db_path);
         Ok(())
     }
@@ -135,7 +192,6 @@
             &discovery,
             db_path.to_str().expect("utf8 db path"),
             now,
-            false,
         )?;
         assert!(startup_published_truth.is_none());
         let initial_active_wallets = store.list_active_follow_wallets()?;
@@ -192,7 +248,6 @@
             &discovery,
             db_path.to_str().expect("utf8 db path"),
             now,
-            false,
         )?;
 
         assert!(startup_published_truth.is_none());
@@ -252,7 +307,6 @@
             &discovery,
             db_path.to_str().expect("utf8 db path"),
             now,
-            false,
         )?;
         assert!(startup_published_truth.is_none());
         let initial_active_wallets = store.list_active_follow_wallets()?;
@@ -281,12 +335,40 @@
             .expect("timestamp")
             .with_timezone(&Utc);
         let cases = [
-            ("unhealthy", DiscoveryRuntimeMode::FailClosed, true, false),
-            ("missing-fingerprint", DiscoveryRuntimeMode::Healthy, false, false),
-            ("cursor-mismatch", DiscoveryRuntimeMode::Healthy, true, true),
+            ("unhealthy", DiscoveryRuntimeMode::FailClosed, true, false, 60),
+            (
+                "missing-fingerprint",
+                DiscoveryRuntimeMode::Healthy,
+                false,
+                false,
+                60,
+            ),
+            (
+                "cursor-mismatch",
+                DiscoveryRuntimeMode::Healthy,
+                true,
+                true,
+                60,
+            ),
+            (
+                "stale-cursor",
+                DiscoveryRuntimeMode::Healthy,
+                true,
+                false,
+                601,
+            ),
+            (
+                "future-cursor",
+                DiscoveryRuntimeMode::Healthy,
+                true,
+                false,
+                -1,
+            ),
         ];
 
-        for (case_name, runtime_mode, include_fingerprint, cursor_mismatch) in cases {
+        for (case_name, runtime_mode, include_fingerprint, cursor_mismatch, cursor_age_seconds) in
+            cases
+        {
             let (store, db_path) = make_test_store(case_name)?;
             let mut config = copybot_config::DiscoveryConfig::default();
             config.scoring_window_days = 2;
@@ -298,7 +380,7 @@
                 bucketed_now - chrono::Duration::days(config.scoring_window_days.max(1) as i64);
             let discovery = DiscoveryService::new(config, permissive_shadow_quality());
             let current_cursor = DiscoveryRuntimeCursor {
-                ts_utc: now - chrono::Duration::minutes(1),
+                ts_utc: now - chrono::Duration::seconds(cursor_age_seconds),
                 slot: 101,
                 signature: format!("{case_name}-current-cursor"),
             };
@@ -332,8 +414,7 @@
                 &discovery,
                 db_path.to_str().expect("utf8 db path"),
                 now,
-                false,
-            )?;
+        )?;
 
             assert!(startup_published_truth.is_none(), "{case_name}");
             let _ = std::fs::remove_file(db_path);
@@ -359,8 +440,8 @@
     }
 
     #[test]
-    fn startup_without_recent_published_universe_keeps_historical_open_shadow_lots_loaded(
-    ) -> Result<()> {
+    fn startup_without_recent_published_universe_does_not_recover_open_shadow_lots() -> Result<()>
+    {
         let (store, db_path) = make_test_store("trusted-selection-startup-shadow-fail-close")?;
         let now = Utc::now();
         store.insert_shadow_lot("wallet-sell", "token-a", 5.0, 1.2, now)?;
@@ -378,30 +459,35 @@
         let initial_active_wallets = store.list_active_follow_wallets()?;
         let (follow_snapshot, _recovered_active_wallets, shadow_strategy_fail_closed) =
             startup_follow_snapshot_from_publication_truth(initial_active_wallets, None);
-        let open_shadow_lots = if shadow_strategy_fail_closed {
-            HashSet::new()
-        } else {
-            store.list_shadow_open_pairs()?
-        };
+        let stored_open_shadow_lots = store.list_shadow_open_pairs()?;
 
         let mut swap = test_swap("sig-sell-bootstrap-invalid");
         swap.wallet = "wallet-sell".to_string();
         swap.token_in = "token-a".to_string();
         swap.token_out = "So11111111111111111111111111111111111111112".to_string();
 
-        assert!(!shadow_strategy_fail_closed);
+        assert!(shadow_strategy_fail_closed);
+        assert_eq!(
+            stored_open_shadow_lots,
+            HashSet::from([("wallet-sell".to_string(), "token-a".to_string())])
+        );
+        let startup_open_shadow_lots = if shadow_strategy_fail_closed {
+            HashSet::new()
+        } else {
+            stored_open_shadow_lots
+        };
         assert!(
-            !open_shadow_lots.is_empty(),
-            "legacy trusted-selection recovery bookkeeping must not clear historical open shadow lots before discovery decides the runtime contract"
+            startup_open_shadow_lots.is_empty(),
+            "fail-closed startup must not recover historical open shadow lots"
         );
         assert_eq!(
             classify_observed_swap_shadow_relevance(
                 &swap,
                 &follow_snapshot,
                 &ShadowScheduler::new(),
-                &open_shadow_lots,
+                &startup_open_shadow_lots,
             ),
-            ObservedSwapShadowRelevance::Relevant(ShadowSwapSide::Sell)
+            ObservedSwapShadowRelevance::IrrelevantNotFollowed(ShadowSwapSide::Sell)
         );
 
         let _ = std::fs::remove_file(db_path);

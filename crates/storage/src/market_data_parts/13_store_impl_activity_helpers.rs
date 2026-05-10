@@ -18,6 +18,15 @@ impl SqliteStore {
             });
         }
 
+        if let Err(error) = validate_wallet_activity_days_last_seen_canonical_utc(&self.conn) {
+            if anyhow_error_is_sqlite_interrupted(&error) {
+                return Ok(ObservedWalletActivityDaySummaryPage {
+                    rows: HashMap::new(),
+                    time_budget_exhausted: true,
+                });
+            }
+            return Err(error);
+        }
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
         let placeholders = std::iter::repeat_n("?", wallet_ids.len())
             .collect::<Vec<_>>()
@@ -40,13 +49,30 @@ impl SqliteStore {
             rusqlite::types::Value::from(day_end),
         ];
         params.extend(wallet_ids.iter().cloned().map(rusqlite::types::Value::from));
-        let mut stmt = self
-            .conn
-            .prepare(&sql)
-            .context("failed to prepare wallet_activity_days summary query")?;
-        let mut rows = stmt
-            .query(rusqlite::params_from_iter(params))
-            .context("failed querying wallet_activity_days summaries")?;
+        let mut stmt = match self.conn.prepare(&sql) {
+            Ok(stmt) => stmt,
+            Err(error) if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+                return Ok(ObservedWalletActivityDaySummaryPage {
+                    rows: HashMap::new(),
+                    time_budget_exhausted: true,
+                });
+            }
+            Err(error) => {
+                return Err(error).context("failed to prepare wallet_activity_days summary query");
+            }
+        };
+        let mut rows = match stmt.query(rusqlite::params_from_iter(params)) {
+            Ok(rows) => rows,
+            Err(error) if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+                return Ok(ObservedWalletActivityDaySummaryPage {
+                    rows: HashMap::new(),
+                    time_budget_exhausted: true,
+                });
+            }
+            Err(error) => {
+                return Err(error).context("failed querying wallet_activity_days summaries");
+            }
+        };
         let mut activity_day_summaries = HashMap::new();
         loop {
             let next_row = match rows.next() {
@@ -109,6 +135,15 @@ impl SqliteStore {
             });
         }
 
+        if let Err(error) = ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn) {
+            if anyhow_error_is_sqlite_interrupted(&error) {
+                return Ok(ObservedWalletActiveDayCountPage {
+                    counts: HashMap::new(),
+                    time_budget_exhausted: true,
+                });
+            }
+            return Err(error);
+        }
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
         let placeholders = std::iter::repeat_n("?", wallet_ids.len())
             .collect::<Vec<_>>()
@@ -126,13 +161,31 @@ impl SqliteStore {
             rusqlite::types::Value::from(until.to_rfc3339()),
         ];
         params.extend(wallet_ids.iter().cloned().map(rusqlite::types::Value::from));
-        let mut stmt = self
-            .conn
-            .prepare(&sql)
-            .context("failed to prepare observed_swaps fallback day-count query")?;
-        let mut rows = stmt
-            .query(rusqlite::params_from_iter(params))
-            .context("failed querying observed_swaps fallback day counts")?;
+        let mut stmt = match self.conn.prepare(&sql) {
+            Ok(stmt) => stmt,
+            Err(error) if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+                return Ok(ObservedWalletActiveDayCountPage {
+                    counts: HashMap::new(),
+                    time_budget_exhausted: true,
+                });
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to prepare observed_swaps fallback day-count query");
+            }
+        };
+        let mut rows = match stmt.query(rusqlite::params_from_iter(params)) {
+            Ok(rows) => rows,
+            Err(error) if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) => {
+                return Ok(ObservedWalletActiveDayCountPage {
+                    counts: HashMap::new(),
+                    time_budget_exhausted: true,
+                });
+            }
+            Err(error) => {
+                return Err(error).context("failed querying observed_swaps fallback day counts");
+            }
+        };
         let mut counts = HashMap::new();
         loop {
             let next_row = match rows.next() {
@@ -165,24 +218,6 @@ impl SqliteStore {
             time_budget_exhausted: false,
         })
     }
-
-    pub(crate) fn sqlite_index_exists(&self, index_name: &str) -> Result<bool> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT 1
-                 FROM sqlite_master
-                 WHERE type = 'index'
-                   AND name = ?1
-                 LIMIT 1",
-                params![index_name],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()
-            .with_context(|| format!("failed checking sqlite index presence for {index_name}"))?
-            .is_some())
-    }
-
     pub fn for_each_observed_sol_leg_swap_in_window_after_cursor_with_budget<F>(
         &self,
         since: DateTime<Utc>,

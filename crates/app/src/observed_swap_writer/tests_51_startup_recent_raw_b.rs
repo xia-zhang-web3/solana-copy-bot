@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn recent_raw_journal_startup_prune_is_deferred_until_after_live_write_stage1() -> Result<()> {
+    let _phase_guard = super::recent_raw_journal_phase_test_guard();
     let unique = format!(
         "copybot-app-recent-raw-journal-deferred-startup-prune-{}-{}",
         std::process::id(),
@@ -24,6 +25,7 @@ fn recent_raw_journal_startup_prune_is_deferred_until_after_live_write_stage1() 
         exact_amounts: None,
     };
     let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
+    ensure_discovery_v2_schema(&journal_store)?;
     journal_store
         .insert_recent_raw_journal_batch(std::slice::from_ref(&stale_swap), stale_swap.ts_utc)?;
     journal_store.checkpoint_wal_truncate()?;
@@ -134,6 +136,7 @@ fn recent_raw_journal_startup_prune_is_deferred_until_after_live_write_stage1() 
 
 #[test]
 fn recent_raw_journal_writer_phase_telemetry_orders_write_and_prune_stage1() -> Result<()> {
+    let _phase_guard = super::recent_raw_journal_phase_test_guard();
     super::clear_recent_raw_journal_phase_events_for_test();
     let unique = format!(
         "copybot-app-recent-raw-journal-phase-order-{}-{}",
@@ -143,6 +146,10 @@ fn recent_raw_journal_writer_phase_telemetry_orders_write_and_prune_stage1() -> 
             .unwrap_or(Utc::now().timestamp_micros() * 1000)
     );
     let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
+    let prepare_store = SqliteStore::open(Path::new(&journal_db_path))?;
+    ensure_discovery_v2_schema(&prepare_store)?;
+    prepare_store.ensure_recent_raw_journal_tables()?;
+    drop(prepare_store);
     let (journal_sender, journal_receiver) =
         std_mpsc::sync_channel::<super::RecentRawJournalWriteRequest>(8);
     let (startup_sender, startup_receiver) = std_mpsc::channel::<std::result::Result<(), String>>();
@@ -206,6 +213,7 @@ fn recent_raw_journal_writer_phase_telemetry_orders_write_and_prune_stage1() -> 
 #[test]
 fn recent_raw_journal_hot_writer_deferred_prune_emits_skipped_without_prune_start_stage1(
 ) -> Result<()> {
+    let _phase_guard = super::recent_raw_journal_phase_test_guard();
     super::clear_recent_raw_journal_phase_events_for_test();
     let unique = format!(
         "copybot-app-recent-raw-journal-phase-skip-prune-{}-{}",
@@ -215,6 +223,10 @@ fn recent_raw_journal_hot_writer_deferred_prune_emits_skipped_without_prune_star
             .unwrap_or(Utc::now().timestamp_micros() * 1000)
     );
     let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
+    let prepare_store = SqliteStore::open(Path::new(&journal_db_path))?;
+    ensure_discovery_v2_schema(&prepare_store)?;
+    prepare_store.ensure_recent_raw_journal_tables()?;
+    drop(prepare_store);
     let (journal_sender, journal_receiver) =
         std_mpsc::sync_channel::<super::RecentRawJournalWriteRequest>(8);
     let (startup_sender, startup_receiver) = std_mpsc::channel::<std::result::Result<(), String>>();
@@ -281,6 +293,7 @@ fn recent_raw_journal_write_deadline_exhaustion_fails_closed_without_unproven_st
     );
     let journal_db_path = std::env::temp_dir().join(format!("{unique}-recent-raw.db"));
     let store = SqliteStore::open(Path::new(&journal_db_path))?;
+    ensure_discovery_v2_schema(&store)?;
     store.ensure_recent_raw_journal_tables()?;
     let completed_at = Utc::now();
     let swaps = (0..4usize)

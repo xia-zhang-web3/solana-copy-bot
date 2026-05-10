@@ -1,4 +1,4 @@
-use crate::observed::parse_rfc3339_utc;
+use crate::observed_timestamp::parse_rfc3339_utc;
 use crate::PersistedWalletMetricSnapshotRow;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};

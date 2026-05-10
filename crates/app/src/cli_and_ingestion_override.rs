@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use copybot_config::normalize_ingestion_source;
 use std::env;
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 
 use crate::constants::DEFAULT_INGESTION_OVERRIDE_PATH;
@@ -24,7 +25,12 @@ pub(crate) fn load_ingestion_source_override() -> Result<Option<String>> {
         .unwrap_or_else(|_| DEFAULT_INGESTION_OVERRIDE_PATH.to_string());
     let content = match fs::read_to_string(&override_path) {
         Ok(content) => content,
-        Err(_) => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed reading ingestion source override file {override_path}")
+            });
+        }
     };
     parse_ingestion_source_override(&content)
         .with_context(|| format!("invalid ingestion source override in {override_path}"))

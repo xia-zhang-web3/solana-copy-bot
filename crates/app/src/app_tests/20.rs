@@ -60,6 +60,7 @@
     #[test]
     fn sustained_discovery_critical_irrelevant_backpressure_buffers_multiple_swaps_before_ingestion_pause_stage1(
     ) -> Result<()> {
+        let _contention_guard = sqlite_contention_delta_test_guard();
         let (_store, db_path) = make_test_store("irrelevant-discovery-critical-sustained-buffer")?;
         let blocker_conn = rusqlite::Connection::open(&db_path)?;
         blocker_conn.busy_timeout(StdDuration::from_millis(1))?;

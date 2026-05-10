@@ -46,6 +46,18 @@ fn metric_row(window_start: DateTime<Utc>) -> WalletMetricRow {
     }
 }
 
+fn runtime_cursor(
+    ts_utc: DateTime<Utc>,
+    slot: u64,
+    signature: impl Into<String>,
+) -> DiscoveryRuntimeCursor {
+    DiscoveryRuntimeCursor {
+        ts_utc,
+        slot,
+        signature: signature.into(),
+    }
+}
+
 fn publication_update(
     now: DateTime<Utc>,
     window_start: DateTime<Utc>,
@@ -75,11 +87,7 @@ fn v2_publication_persists_runtime_cursor_for_artifact_export() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = ts("2026-05-03T10:00:00Z")?;
     let window_start = now - Duration::days(1);
-    let cursor = DiscoveryRuntimeCursor {
-        ts_utc: now - Duration::minutes(1),
-        slot: 42,
-        signature: "tail-sig".to_string(),
-    };
+    let cursor = runtime_cursor(now - Duration::minutes(1), 42, "tail-sig");
 
     store.persist_discovery_v2_publication(
         &[wallet_row(now)],
@@ -122,11 +130,7 @@ fn repeated_v2_publication_does_not_duplicate_active_follow_rows() -> Result<()>
     let (_dir, store) = test_store()?;
     let now = ts("2026-05-03T10:00:00Z")?;
     let window_start = now - Duration::days(1);
-    let cursor = DiscoveryRuntimeCursor {
-        ts_utc: now - Duration::minutes(1),
-        slot: 42,
-        signature: "tail-sig".to_string(),
-    };
+    let cursor = runtime_cursor(now - Duration::minutes(1), 42, "tail-sig");
     for offset in [0_i64, 1] {
         store.persist_discovery_v2_publication(
             &[wallet_row(now)],
@@ -149,39 +153,62 @@ fn repeated_v2_publication_does_not_duplicate_active_follow_rows() -> Result<()>
 }
 
 #[test]
-fn runtime_export_rejects_runtime_cursor_drift_after_publication() -> Result<()> {
-    let (_dir, store) = test_store()?;
+fn runtime_export_rejects_bad_publication_runtime_cursor() -> Result<()> {
     let now = ts("2026-05-03T10:00:00Z")?;
-    let window_start = now - Duration::days(1);
-    let publication_cursor = DiscoveryRuntimeCursor {
-        ts_utc: now - Duration::minutes(1),
-        slot: 42,
-        signature: "tail-sig".to_string(),
-    };
-    let drifted_cursor = DiscoveryRuntimeCursor {
-        ts_utc: now,
-        slot: 43,
-        signature: "tail-sig-2".to_string(),
-    };
-    store.persist_discovery_v2_publication(
-        &[wallet_row(now)],
-        &[metric_row(window_start)],
-        &["wallet_a".to_string()],
-        now,
-        "ready",
-        &publication_update(now, window_start),
-        V2_FINGERPRINT,
-        &publication_cursor,
-    )?;
-    store.set_discovery_runtime_cursor(&drifted_cursor)?;
+    let cases = [
+        (
+            "drift",
+            -60,
+            42,
+            0,
+            43,
+            "requires publication-bound runtime cursor",
+        ),
+        (
+            "stale",
+            -61,
+            42,
+            -61,
+            42,
+            "requires fresh publication-bound runtime cursor",
+        ),
+    ];
+    for (case_name, publication_offset, publication_slot, runtime_offset, runtime_slot, expected) in
+        cases
+    {
+        let (_dir, store) = test_store()?;
+        let window_start = now - Duration::days(1);
+        let publication_cursor = runtime_cursor(
+            now + Duration::seconds(publication_offset),
+            publication_slot,
+            format!("{case_name}-publication-cursor"),
+        );
+        store.persist_discovery_v2_publication(
+            &[wallet_row(now)],
+            &[metric_row(window_start)],
+            &["wallet_a".to_string()],
+            now,
+            "ready",
+            &publication_update(now, window_start),
+            V2_FINGERPRINT,
+            &publication_cursor,
+        )?;
+        let runtime_signature = if case_name == "drift" {
+            format!("{case_name}-runtime-cursor")
+        } else {
+            publication_cursor.signature.clone()
+        };
+        store.set_discovery_runtime_cursor(&runtime_cursor(
+            now + Duration::seconds(runtime_offset),
+            runtime_slot,
+            runtime_signature,
+        ))?;
 
-    let err = store
-        .export_discovery_runtime_artifact(now, v2_gate())
-        .expect_err("runtime cursor drift must fail closed");
-
-    assert!(err
-        .to_string()
-        .contains("requires publication-bound runtime cursor"));
+        let err = store
+            .export_discovery_runtime_artifact(now, v2_gate())
+            .expect_err("bad publication runtime cursor must fail closed");
+        assert!(err.to_string().contains(expected), "{case_name}: {err}");
+    }
     Ok(())
 }
 
@@ -191,11 +218,7 @@ fn runtime_export_rejects_future_dated_publication_time() -> Result<()> {
     let now = ts("2026-05-03T10:00:00Z")?;
     let window_start = now - Duration::days(1);
     let future_published_at = now + Duration::minutes(5);
-    let cursor = DiscoveryRuntimeCursor {
-        ts_utc: now - Duration::minutes(1),
-        slot: 42,
-        signature: "tail-sig".to_string(),
-    };
+    let cursor = runtime_cursor(now - Duration::minutes(1), 42, "tail-sig");
     store.persist_discovery_v2_publication(
         &[wallet_row(now)],
         &[metric_row(window_start)],
@@ -222,11 +245,7 @@ fn runtime_export_rejects_future_dated_publication_window() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = ts("2026-05-03T10:00:00Z")?;
     let future_window_start = now + Duration::minutes(1);
-    let cursor = DiscoveryRuntimeCursor {
-        ts_utc: now - Duration::minutes(1),
-        slot: 42,
-        signature: "tail-sig".to_string(),
-    };
+    let cursor = runtime_cursor(now - Duration::minutes(1), 42, "tail-sig");
     store.persist_discovery_v2_publication(
         &[wallet_row(now)],
         &[metric_row(future_window_start)],
@@ -253,11 +272,7 @@ fn runtime_export_rejects_publication_identity_mismatch() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = ts("2026-05-03T10:00:00Z")?;
     let window_start = now - Duration::days(1);
-    let cursor = DiscoveryRuntimeCursor {
-        ts_utc: now - Duration::minutes(1),
-        slot: 42,
-        signature: "tail-sig".to_string(),
-    };
+    let cursor = runtime_cursor(now - Duration::minutes(1), 42, "tail-sig");
 
     store.persist_discovery_v2_publication(
         &[wallet_row(now)],
@@ -285,11 +300,7 @@ fn runtime_export_rejects_fail_closed_publication_state() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = ts("2026-05-03T10:00:00Z")?;
     let window_start = now - Duration::days(1);
-    let cursor = DiscoveryRuntimeCursor {
-        ts_utc: now - Duration::minutes(1),
-        slot: 42,
-        signature: "tail-sig".to_string(),
-    };
+    let cursor = runtime_cursor(now - Duration::minutes(1), 42, "tail-sig");
     let mut update = publication_update(now, window_start);
     update.runtime_mode = DiscoveryRuntimeMode::FailClosed;
     store.persist_discovery_v2_publication(
@@ -318,11 +329,7 @@ fn runtime_export_rejects_gate_without_expected_identity() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = ts("2026-05-03T10:00:00Z")?;
     let window_start = now - Duration::days(1);
-    let cursor = DiscoveryRuntimeCursor {
-        ts_utc: now - Duration::minutes(1),
-        slot: 42,
-        signature: "tail-sig".to_string(),
-    };
+    let cursor = runtime_cursor(now - Duration::minutes(1), 42, "tail-sig");
     store.persist_discovery_v2_publication(
         &[wallet_row(now)],
         &[metric_row(window_start)],
@@ -351,11 +358,7 @@ fn runtime_artifact_snapshot_shape_rejects_extra_metric_rows() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = ts("2026-05-03T10:00:00Z")?;
     let window_start = now - Duration::days(1);
-    let cursor = DiscoveryRuntimeCursor {
-        ts_utc: now - Duration::minutes(1),
-        slot: 42,
-        signature: "tail-sig".to_string(),
-    };
+    let cursor = runtime_cursor(now - Duration::minutes(1), 42, "tail-sig");
     store.persist_discovery_v2_publication(
         &[wallet_row(now)],
         &[metric_row(window_start)],
@@ -387,11 +390,7 @@ fn runtime_artifact_snapshot_shape_rejects_duplicate_metric_rows() -> Result<()>
     let (_dir, store) = test_store()?;
     let now = ts("2026-05-03T10:00:00Z")?;
     let window_start = now - Duration::days(1);
-    let cursor = DiscoveryRuntimeCursor {
-        ts_utc: now - Duration::minutes(1),
-        slot: 42,
-        signature: "tail-sig".to_string(),
-    };
+    let cursor = runtime_cursor(now - Duration::minutes(1), 42, "tail-sig");
     store.persist_discovery_v2_publication(
         &[wallet_row(now)],
         &[metric_row(window_start)],
@@ -419,11 +418,7 @@ fn runtime_artifact_snapshot_shape_rejects_duplicate_published_wallet_ids() -> R
     let (_dir, store) = test_store()?;
     let now = ts("2026-05-03T10:00:00Z")?;
     let window_start = now - Duration::days(1);
-    let cursor = DiscoveryRuntimeCursor {
-        ts_utc: now - Duration::minutes(1),
-        slot: 42,
-        signature: "tail-sig".to_string(),
-    };
+    let cursor = runtime_cursor(now - Duration::minutes(1), 42, "tail-sig");
     store.persist_discovery_v2_publication(
         &[wallet_row(now)],
         &[metric_row(window_start)],

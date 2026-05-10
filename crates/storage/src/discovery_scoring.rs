@@ -6,7 +6,9 @@ use super::{
     WalletScoringQualitySource, WalletScoringSnapshot,
 };
 use crate::discovery_quality_types::{QualityCacheUpsert, QualityFetchBudget};
-use crate::market_data::OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY;
+use crate::market_data::{
+    validate_observed_swaps_timestamps_canonical_utc, OBSERVED_SWAPS_AFTER_CURSOR_PAGE_QUERY,
+};
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use copybot_core_types::SwapEvent;

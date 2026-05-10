@@ -123,12 +123,15 @@ if [ "$RUN_CHECKS" = "1" ]; then
     tools/architecture_guard.sh --all
   fi
   if [ "$(package_has_lib "$PACKAGE")" = "1" ]; then
-    test_check="cargo test --locked -p $PACKAGE --lib -- --test-threads=1; cargo test --locked -p $PACKAGE --tests --no-run"
+    test_check="cargo test --locked -p $PACKAGE --lib -- --test-threads=1; cargo test --locked -p $PACKAGE --tests -- --test-threads=1"
     cargo test --locked -p "$PACKAGE" --lib -- --test-threads=1
-    cargo test --locked -p "$PACKAGE" --tests --no-run
+    cargo test --locked -p "$PACKAGE" --tests -- --test-threads=1
+  elif [ "$PACKAGE" = "copybot-app" ]; then
+    test_check="cargo test --locked -p copybot-app --bin copybot-app -- --test-threads=1"
+    cargo test --locked -p copybot-app --bin copybot-app -- --test-threads=1
   else
-    test_check="cargo test --locked -p $PACKAGE --bins --no-run"
-    cargo test --locked -p "$PACKAGE" --bins --no-run
+    test_check="cargo test --locked -p $PACKAGE --bins -- --test-threads=1"
+    cargo test --locked -p "$PACKAGE" --bins -- --test-threads=1
   fi
 fi
 
@@ -172,6 +175,12 @@ for bin in $BINS; do
   cp "$target_dir/$bin" "$out/"
 done
 
+migration_bundle=""
+if [ "$PACKAGE" = "copybot-app" ]; then
+  migration_bundle="migrations.tar.gz"
+  COPYFILE_DISABLE=1 tar -C "$ROOT" -czf "$out/$migration_bundle" migrations
+fi
+
 (
   cd "$out"
   : > SHA256SUMS
@@ -182,6 +191,13 @@ done
       shasum -a 256 "$bin" >> SHA256SUMS
     fi
   done
+  if [ -n "$migration_bundle" ]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "$migration_bundle" >> SHA256SUMS
+    else
+      shasum -a 256 "$migration_bundle" >> SHA256SUMS
+    fi
+  fi
 )
 
 manifest_args=(
@@ -194,6 +210,9 @@ manifest_args=(
 )
 if [ "$dirty_suffix" = "-dirty" ]; then
   manifest_args+=(--git-dirty)
+fi
+if [ -n "$migration_bundle" ]; then
+  manifest_args+=(--migration-bundle "$migration_bundle")
 fi
 if [ "$RUN_CHECKS" = "1" ]; then
   if [ -x tools/architecture_guard.sh ]; then
@@ -208,7 +227,7 @@ for bin in $BINS; do
 done
 python3 tools/build_manifest.py "${manifest_args[@]}"
 
-tar -C "$ARTIFACT_ROOT/$ARTIFACT_ARCH" -czf "$archive" "$artifact_id"
+COPYFILE_DISABLE=1 tar -C "$ARTIFACT_ROOT/$ARTIFACT_ARCH" -czf "$archive" "$artifact_id"
 archive_name="$(basename "$archive")"
 (
   cd "$(dirname "$archive")"

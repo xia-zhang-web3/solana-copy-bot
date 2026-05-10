@@ -1,7 +1,10 @@
 use super::{
-    helpers_cursor::{cursor_cmp, parse_cursor, parse_optional_rfc3339_utc, parse_rfc3339_utc},
+    helpers_cursor::{
+        cursor_cmp, parse_cursor, parse_optional_rfc3339_utc, parse_rfc3339_utc, parse_sqlite_slot,
+    },
     BULK_INSERT_HARD_CAP_ROWS, BULK_INSERT_PARAMS_PER_ROW,
 };
+use crate::observed_timestamp::ensure_observed_swaps_timestamps_canonical_utc_read_only;
 use crate::{DiscoveryRuntimeCursor, RecentRawJournalStateRow, RecentRawJournalWriteSummary};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -134,13 +137,19 @@ pub(super) fn recent_raw_journal_state_cached_query(
             "recent_raw_journal_state.covered_since_ts",
         )?,
         covered_through_cursor: parse_cursor(cursor_ts, cursor_slot, cursor_sig)?,
-        row_count: rows.max(0) as usize,
-        last_batch_rows: batch_rows.max(0) as usize,
+        row_count: parse_recent_raw_count(rows, "recent_raw_journal_state.row_count")?,
+        last_batch_rows: parse_recent_raw_count(
+            batch_rows,
+            "recent_raw_journal_state.last_batch_rows",
+        )?,
         last_batch_completed_at: parse_optional_rfc3339_utc(
             batch_at,
             "recent_raw_journal_state.last_batch_completed_at",
         )?,
-        last_pruned_rows: pruned.max(0) as usize,
+        last_pruned_rows: parse_recent_raw_count(
+            pruned,
+            "recent_raw_journal_state.last_pruned_rows",
+        )?,
         last_pruned_at: parse_optional_rfc3339_utc(
             pruned_at,
             "recent_raw_journal_state.last_pruned_at",
@@ -149,17 +158,28 @@ pub(super) fn recent_raw_journal_state_cached_query(
     })
 }
 
+fn parse_recent_raw_count(value: i64, field: &str) -> Result<usize> {
+    usize::try_from(value).with_context(|| format!("{field} must be non-negative: {value}"))
+}
+
 pub(super) fn coverage_snapshot_on_conn(
     conn: &Connection,
 ) -> Result<(usize, Option<DateTime<Utc>>, Option<DiscoveryRuntimeCursor>)> {
+    ensure_observed_swaps_timestamps_canonical_utc_read_only(conn)?;
     let row_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM observed_swaps", [], |row| row.get(0))
         .context("failed counting recent raw journal observed_swaps rows")?;
     let covered_since_raw: Option<String> = conn
-        .query_row("SELECT MIN(ts) FROM observed_swaps", [], |row| row.get(0))
+        .query_row(
+            "SELECT ts
+             FROM observed_swaps
+             ORDER BY ts ASC
+             LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
         .optional()
-        .context("failed loading recent raw journal covered_since timestamp")?
-        .flatten();
+        .context("failed loading recent raw journal covered_since timestamp")?;
     let cursor_raw = conn
         .query_row(
             "SELECT ts, slot, signature
@@ -175,7 +195,7 @@ pub(super) fn coverage_snapshot_on_conn(
         .map(|(ts, slot, sig)| -> Result<_> {
             Ok(DiscoveryRuntimeCursor {
                 ts_utc: parse_rfc3339_utc(&ts, "observed_swaps.ts")?,
-                slot: slot.max(0) as u64,
+                slot: parse_sqlite_slot(slot, "observed_swaps.covered_through.slot")?,
                 signature: sig,
             })
         })

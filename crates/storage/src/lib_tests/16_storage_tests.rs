@@ -120,6 +120,73 @@ fn backfill_wallet_activity_days_since_uses_existing_observed_swaps() -> Result<
 }
 
 #[test]
+fn wallet_activity_days_reads_reject_noncanonical_last_seen() -> Result<()> {
+    let temp = tempdir().context("failed to create tempdir")?;
+    let db_path = temp
+        .path()
+        .join("wallet-activity-days-hidden-bad-last-seen.db");
+    let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    let mut store = SqliteStore::open(Path::new(&db_path))?;
+    store.run_migrations(&migration_dir)?;
+
+    store.conn.execute(
+        "INSERT INTO wallet_activity_days(wallet_id, activity_day, last_seen)
+         VALUES ('wallet-hidden-bad', '2026-03-06', '2026-03-06T12:00:00Z')",
+        [],
+    )?;
+    let window_start = DateTime::parse_from_rfc3339("2026-03-06T10:00:00+00:00")
+        .expect("ts")
+        .with_timezone(&Utc);
+
+    for error in [
+        store
+            .wallet_active_day_counts_since(&["wallet-hidden-bad".to_string()], window_start)
+            .expect_err("wallet activity counts must reject noncanonical last_seen"),
+        store
+            .wallet_activity_days_row_count_since(window_start)
+            .expect_err("wallet activity row count must reject noncanonical last_seen"),
+        store
+            .wallet_activity_day_coverage_since(&["wallet-hidden-bad".to_string()], window_start)
+            .expect_err("wallet activity coverage must reject noncanonical last_seen"),
+    ] {
+        assert!(
+            format!("{error:#}").contains("wallet_activity_days.last_seen is not canonical UTC"),
+            "unexpected error: {error:#}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn wallet_activity_days_backfill_rejects_hidden_noncanonical_observed_timestamp() -> Result<()> {
+    let temp = tempdir().context("failed to create tempdir")?;
+    let db_path = temp
+        .path()
+        .join("wallet-activity-days-backfill-hidden-bad-ts.db");
+    let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    let mut store = SqliteStore::open(Path::new(&db_path))?;
+    store.run_migrations(&migration_dir)?;
+
+    store.conn.execute(
+        "INSERT INTO observed_swaps(signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts)
+         VALUES ('wallet-activity-hidden-bad-ts', 'wallet-hidden-bad', 'raydium', 'SOL', 'TOKEN', 1.0, 2.0, 1, '2026-03-06T12:30:00Z')",
+        [],
+    )?;
+    let err = store
+        .backfill_wallet_activity_days_since(
+            DateTime::parse_from_rfc3339("2026-03-06T10:00:00+00:00")
+                .expect("ts")
+                .with_timezone(&Utc),
+        )
+        .expect_err("wallet activity backfill must reject bad observed timestamp before aggregate");
+    assert!(
+        format!("{err:#}").contains("observed_swaps.ts is not canonical UTC"),
+        "unexpected error: {err:#}"
+    );
+    Ok(())
+}
+
+#[test]
 fn discovery_scoring_coverage_marker_gates_window_readiness() -> Result<()> {
     let temp = tempdir().context("failed to create tempdir")?;
     let db_path = temp.path().join("discovery-scoring-coverage.db");

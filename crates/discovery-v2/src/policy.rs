@@ -1,9 +1,10 @@
 use chrono::{DateTime, Duration, Utc};
-use copybot_config::{DiscoveryConfig, ShadowConfig};
+use copybot_config::{
+    discovery_v2_policy_fingerprint as shared_discovery_v2_policy_fingerprint, DiscoveryConfig,
+    DiscoveryV2PolicyFingerprintInput, ShadowConfig, DISCOVERY_V2_TOKEN_QUALITY_TTL_SECONDS,
+};
 
-use crate::tradability::TOKEN_ROLLING_MARKET_WINDOW_SECONDS;
-
-pub const TOKEN_QUALITY_TTL_SECONDS: i64 = 10 * 60;
+pub const TOKEN_QUALITY_TTL_SECONDS: i64 = DISCOVERY_V2_TOKEN_QUALITY_TTL_SECONDS;
 
 #[derive(Debug, Clone)]
 pub struct DiscoveryV2BuildOptions {
@@ -44,50 +45,15 @@ pub fn discovery_v2_policy_fingerprint(
     shadow: &ShadowConfig,
     options: &DiscoveryV2BuildOptions,
 ) -> String {
-    format!(
-        concat!(
-            "scoring_source={};window_minutes={};max_tail_lag_seconds={};",
-            "max_rows={};time_budget_ms={};follow_top_n={};",
-            "decay_window_days={};rug_lookahead_seconds={};",
-            "metric_snapshot_interval_seconds={};",
-            "min_leader_notional_sol={:.6};min_trades={};min_active_days={};",
-            "min_score={:.6};max_tx_per_minute={};min_buy_count={};",
-            "min_tradable_ratio={:.6};require_open_positions_for_publication={};",
-            "max_rug_ratio={:.6};thin_market_min_volume_sol={:.6};",
-            "thin_market_min_unique_traders={};quality_gates_enabled={};",
-            "min_token_age_seconds={};min_holders={};min_liquidity_sol={:.6};",
-            "min_volume_5m_sol={:.6};min_unique_traders_5m={};",
-            "execution_enabled={};token_quality_ttl_seconds={};",
-            "token_rolling_market_window_seconds={}"
-        ),
-        crate::status::DISCOVERY_V2_SCORING_SOURCE,
-        options.window_minutes,
-        options.max_tail_lag_seconds,
-        options.max_rows,
-        options.time_budget_ms,
-        discovery.follow_top_n,
-        discovery.decay_window_days,
-        discovery.rug_lookahead_seconds,
-        discovery.metric_snapshot_interval_seconds,
-        discovery.min_leader_notional_sol,
-        discovery.min_trades,
-        discovery.min_active_days,
-        discovery.min_score,
-        discovery.max_tx_per_minute,
-        discovery.min_buy_count,
-        discovery.min_tradable_ratio,
-        discovery.require_open_positions_for_publication,
-        discovery.max_rug_ratio,
-        discovery.thin_market_min_volume_sol,
-        discovery.thin_market_min_unique_traders,
-        shadow.quality_gates_enabled,
-        shadow.min_token_age_seconds,
-        shadow.min_holders,
-        shadow.min_liquidity_sol,
-        shadow.min_volume_5m_sol,
-        shadow.min_unique_traders_5m,
-        options.execution_enabled,
-        TOKEN_QUALITY_TTL_SECONDS,
-        TOKEN_ROLLING_MARKET_WINDOW_SECONDS,
+    shared_discovery_v2_policy_fingerprint(
+        discovery,
+        shadow,
+        DiscoveryV2PolicyFingerprintInput {
+            window_minutes: options.window_minutes,
+            max_tail_lag_seconds: options.max_tail_lag_seconds,
+            max_rows: options.max_rows,
+            time_budget_ms: options.time_budget_ms,
+            execution_enabled: options.execution_enabled,
+        },
     )
 }

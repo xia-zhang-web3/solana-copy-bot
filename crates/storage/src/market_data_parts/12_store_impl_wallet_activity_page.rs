@@ -24,6 +24,12 @@ impl SqliteStore {
         }
 
         let wallet_limit = wallet_limit.min(900).max(1) as i64;
+        if let Err(error) = ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn) {
+            if anyhow_error_is_sqlite_interrupted(&error) {
+                return Ok(Self::observed_wallet_activity_wallet_id_query_exhausted_page());
+            }
+            return Err(error);
+        }
         let _progress_guard = ProgressHandlerGuard::install(&self.conn, deadline);
         let since_raw = since.to_rfc3339();
         let until_raw = until.to_rfc3339();

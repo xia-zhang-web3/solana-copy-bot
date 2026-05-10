@@ -437,15 +437,15 @@
     }
 
     #[test]
-    fn startup_follow_snapshot_keeps_runtime_open_without_recent_publication_or_residue() {
+    fn startup_follow_snapshot_fails_closed_without_recent_publication_even_without_residue() {
         let (snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
             startup_follow_snapshot_from_publication_truth(HashSet::new(), None);
 
         assert_eq!(recovered_active_wallets, 0);
-        assert!(!shadow_strategy_fail_closed);
+        assert!(shadow_strategy_fail_closed);
         assert!(
             snapshot.active.is_empty(),
-            "startup should stay open when there is no recent published universe and no recovered followlist residue"
+            "startup must stay fail-closed until a current V2 publication truth exists"
         );
     }
 

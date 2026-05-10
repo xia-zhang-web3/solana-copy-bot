@@ -82,6 +82,16 @@ impl DiscoveryPublicationStateRow {
             && self.has_valid_published_window_under_gate(gate, now)
     }
 
+    pub fn has_fresh_publication_runtime_cursor_under_gate(
+        &self,
+        gate: &DiscoveryPublicationFreshnessGate,
+        now: DateTime<Utc>,
+    ) -> bool {
+        self.publication_runtime_cursor
+            .as_ref()
+            .is_some_and(|cursor| gate.is_fresh_runtime_cursor(cursor, now))
+    }
+
     pub fn matches_expected_publication_identity(
         &self,
         gate: &DiscoveryPublicationFreshnessGate,
@@ -139,6 +149,19 @@ impl DiscoveryPublicationFreshnessGate {
                 .max(self.refresh_seconds.max(1))
                 .saturating_mul(2) as i64,
         )
+    }
+
+    pub fn runtime_cursor_max_age(&self) -> Duration {
+        Duration::seconds(self.refresh_seconds.max(1).min(i64::MAX as u64) as i64)
+    }
+
+    pub fn is_fresh_runtime_cursor(
+        &self,
+        cursor: &DiscoveryRuntimeCursor,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let cursor_age = now.signed_duration_since(cursor.ts_utc);
+        cursor_age >= Duration::zero() && cursor_age <= self.runtime_cursor_max_age()
     }
 
     fn expected_metrics_window_start(&self, now: DateTime<Utc>) -> DateTime<Utc> {

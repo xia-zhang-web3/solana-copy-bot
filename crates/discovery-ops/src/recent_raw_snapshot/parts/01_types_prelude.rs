@@ -10,9 +10,9 @@ pub(crate) use copybot_runtime_artifacts::{
     JOURNAL_SNAPSHOT_ARCHIVE_SUFFIX,
 };
 pub(crate) use copybot_storage_core::{
-    is_fatal_sqlite_anyhow_error, DiscoveryRuntimeCursor, RecentRawJournalStateRow,
-    RecentRawJournalWriteSummary, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
-    SqliteSnapshotSourceMetrics, SqliteSnapshotSummary, SqliteStore,
+    ensure_discovery_v2_schema, is_fatal_sqlite_anyhow_error, DiscoveryRuntimeCursor,
+    RecentRawJournalStateRow, RecentRawJournalWriteSummary, SqliteSnapshotOutcome,
+    SqliteSnapshotPolicy, SqliteSnapshotSourceMetrics, SqliteSnapshotSummary, SqliteStore,
 };
 pub(crate) use rusqlite::ErrorCode;
 pub(crate) use serde::{Deserialize, Serialize};

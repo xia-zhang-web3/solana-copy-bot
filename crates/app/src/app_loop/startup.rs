@@ -83,7 +83,7 @@ pub(super) fn initialize_app_loop_startup(
         .context("failed to load active follow wallets")?;
     let startup_gate_now = Utc::now();
     let runtime_publication_truth =
-        startup_runtime_publication_truth(discovery, sqlite_path, startup_gate_now, false)
+        startup_runtime_publication_truth(discovery, sqlite_path, startup_gate_now)
             .context("failed to load startup published follow universe")?;
     let (initial_follow_snapshot, recovered_active_wallets, shadow_strategy_fail_closed) =
         startup_follow_snapshot_from_publication_truth(

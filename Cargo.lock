@@ -198,7 +198,6 @@ dependencies = [
  "chrono",
  "copybot-config",
  "copybot-core-types",
- "copybot-discovery-v2",
  "copybot-ingestion",
  "copybot-shadow",
  "copybot-storage-core",

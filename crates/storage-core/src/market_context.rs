@@ -1,4 +1,7 @@
 use crate::{
+    observed_timestamp::{
+        ensure_observed_swaps_timestamps_canonical_utc_read_only, parse_rfc3339_utc,
+    },
     SqliteDiscoveryStore, TokenMarketStats, STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES,
     STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES, STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
     STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
@@ -16,26 +19,28 @@ impl SqliteDiscoveryStore {
         as_of: DateTime<Utc>,
     ) -> Result<TokenMarketStats> {
         let as_of_raw = as_of.to_rfc3339();
+        ensure_observed_swaps_timestamps_canonical_utc_read_only(&self.conn)?;
         let first_seen_raw: Option<String> = self
             .conn
             .query_row(
-                "SELECT MIN(ts)
+                "SELECT ts
                  FROM (
-                    SELECT ts FROM observed_swaps WHERE token_in = ?1 AND ts <= ?2
+                    SELECT ts FROM observed_swaps
+                    WHERE token_in = ?1 AND ts <= ?2
                     UNION ALL
-                    SELECT ts FROM observed_swaps WHERE token_out = ?1 AND ts <= ?2
-                 )",
+                    SELECT ts FROM observed_swaps
+                    WHERE token_out = ?1 AND ts <= ?2
+                 )
+                 ORDER BY ts ASC
+                 LIMIT 1",
                 params![token, &as_of_raw],
                 |row| row.get(0),
             )
+            .optional()
             .context("failed querying token first_seen")?;
         let first_seen = first_seen_raw
             .as_deref()
-            .map(|raw| {
-                DateTime::parse_from_rfc3339(raw)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .with_context(|| format!("invalid observed_swaps.ts value: {raw}"))
-            })
+            .map(|raw| parse_rfc3339_utc(raw, "observed_swaps.ts"))
             .transpose()?;
         let holders_proxy_raw: i64 = self
             .conn
@@ -65,11 +70,15 @@ impl SqliteDiscoveryStore {
                  FROM (
                     SELECT wallet_id, qty_out AS sol_notional
                     FROM observed_swaps
-                    WHERE token_in = ?1 AND token_out = ?2 AND ts >= ?3 AND ts <= ?4
+                    WHERE token_in = ?1 AND token_out = ?2
+                      AND ts >= ?3
+                      AND ts <= ?4
                     UNION ALL
                     SELECT wallet_id, qty_in AS sol_notional
                     FROM observed_swaps
-                    WHERE token_out = ?1 AND token_in = ?2 AND ts >= ?3 AND ts <= ?4
+                    WHERE token_out = ?1 AND token_in = ?2
+                      AND ts >= ?3
+                      AND ts <= ?4
                  )",
                 params![token, SOL_MINT, window_start, &as_of_raw],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -85,27 +94,38 @@ impl SqliteDiscoveryStore {
     }
 
     pub fn latest_token_sol_price(&self, token: &str, as_of: DateTime<Utc>) -> Result<Option<f64>> {
-        let price: Option<f64> = self
+        ensure_observed_swaps_timestamps_canonical_utc_read_only(&self.conn)?;
+        let price: Option<(f64, String)> = self
             .conn
             .query_row(
-                "SELECT price
+                "SELECT price, ts
                  FROM (
                     SELECT qty_in / qty_out AS price, ts
                     FROM observed_swaps
-                    WHERE token_in = ?1 AND token_out = ?2 AND qty_in > 0 AND qty_out > 0 AND ts <= ?3
+                    WHERE token_in = ?1 AND token_out = ?2
+                      AND qty_in > 0 AND qty_out > 0
+                      AND ts <= ?3
                     UNION ALL
                     SELECT qty_out / qty_in AS price, ts
                     FROM observed_swaps
-                    WHERE token_in = ?2 AND token_out = ?1 AND qty_in > 0 AND qty_out > 0 AND ts <= ?3
+                    WHERE token_in = ?2 AND token_out = ?1
+                      AND qty_in > 0 AND qty_out > 0
+                      AND ts <= ?3
                  )
                  ORDER BY ts DESC
                  LIMIT 1",
                 params![SOL_MINT, token, as_of.to_rfc3339()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .context("failed querying latest token/sol price")?;
-        Ok(price.filter(|value| value.is_finite() && *value > 0.0))
+        Ok(price
+            .map(|(value, ts)| {
+                parse_rfc3339_utc(&ts, "observed_swaps.ts")?;
+                Ok::<f64, anyhow::Error>(value)
+            })
+            .transpose()?
+            .filter(|value| value.is_finite() && *value > 0.0))
     }
 
     pub fn reliable_token_sol_price_for_stale_close(
@@ -132,18 +152,26 @@ impl SqliteDiscoveryStore {
         min_samples: usize,
         max_samples: usize,
     ) -> Result<Option<f64>> {
+        let window_start = as_of - Duration::minutes(window_minutes.max(1));
+        ensure_observed_swaps_timestamps_canonical_utc_read_only(&self.conn)?;
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT price_sol, sol_notional
+                "SELECT price_sol, sol_notional, ts
                  FROM (
                     SELECT qty_in / qty_out AS price_sol, qty_in AS sol_notional, ts
                     FROM observed_swaps
-                    WHERE token_in = ?1 AND token_out = ?2 AND qty_in > 0 AND qty_out > 0 AND ts >= ?3 AND ts <= ?4
+                    WHERE token_in = ?1 AND token_out = ?2
+                      AND qty_in > 0 AND qty_out > 0
+                      AND ts >= ?3
+                      AND ts <= ?4
                     UNION ALL
                     SELECT qty_out / qty_in AS price_sol, qty_out AS sol_notional, ts
                     FROM observed_swaps
-                    WHERE token_in = ?2 AND token_out = ?1 AND qty_in > 0 AND qty_out > 0 AND ts >= ?3 AND ts <= ?4
+                    WHERE token_in = ?2 AND token_out = ?1
+                      AND qty_in > 0 AND qty_out > 0
+                      AND ts >= ?3
+                      AND ts <= ?4
                  )
                  WHERE sol_notional >= ?5
                  ORDER BY ts DESC
@@ -154,7 +182,7 @@ impl SqliteDiscoveryStore {
             .query(params![
                 SOL_MINT,
                 token,
-                (as_of - Duration::minutes(window_minutes.max(1))).to_rfc3339(),
+                window_start.to_rfc3339(),
                 as_of.to_rfc3339(),
                 min_sol_notional,
                 max_samples as i64,
@@ -167,6 +195,8 @@ impl SqliteDiscoveryStore {
         {
             let price_sol: f64 = row.get(0).context("failed reading price_sol sample")?;
             let sol_notional: f64 = row.get(1).context("failed reading sol_notional sample")?;
+            let ts_raw: String = row.get(2).context("failed reading price sample ts")?;
+            parse_rfc3339_utc(&ts_raw, "observed_swaps.ts")?;
             if price_sol.is_finite()
                 && price_sol > 0.0
                 && sol_notional.is_finite()

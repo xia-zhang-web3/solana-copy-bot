@@ -11,6 +11,29 @@ pub(in crate::observed_swap_writer) fn poll_observed_swap_writer_downstream_star
     )
 }
 
+pub(in crate::observed_swap_writer) fn wait_observed_swap_writer_downstream_startup(
+    startup_receiver: Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
+) -> Result<()> {
+    let Some(receiver) = startup_receiver else {
+        return Ok(());
+    };
+    match receiver.recv_timeout(OBSERVED_SWAP_RECENT_RAW_JOURNAL_STARTUP_TIMEOUT) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(message)) => {
+            Err(anyhow!(message)).context("observed swap writer failed recent raw journal startup")
+        }
+        Err(std_mpsc::RecvTimeoutError::Timeout) => Err(anyhow!(
+            "recent raw journal writer did not report startup within {:?}",
+            OBSERVED_SWAP_RECENT_RAW_JOURNAL_STARTUP_TIMEOUT
+        ))
+        .context("observed swap writer failed recent raw journal startup"),
+        Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+            Err(anyhow!("recent raw journal writer startup channel closed"))
+                .context("observed swap writer failed recent raw journal startup")
+        }
+    }
+}
+
 pub(in crate::observed_swap_writer) fn poll_observed_swap_writer_startup_receiver(
     startup_receiver: &mut Option<std_mpsc::Receiver<std::result::Result<(), String>>>,
     failure_context: &'static str,

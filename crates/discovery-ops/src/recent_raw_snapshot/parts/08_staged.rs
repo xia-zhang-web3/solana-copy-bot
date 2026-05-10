@@ -178,7 +178,9 @@ pub(crate) fn resume_staged_snapshot_with_policy(
             };
         }
     };
-    if let Err(error) = staged_store.ensure_recent_raw_journal_tables() {
+    if let Err(error) = ensure_discovery_v2_schema(&staged_store)
+        .and_then(|_| staged_store.ensure_recent_raw_journal_tables())
+    {
         return StagedSnapshotAttemptResult::HardFailure {
             manifest: existing_manifest,
             progress,

@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
 
 pub(crate) fn canonical_wallet_metrics_window_start(window_start: DateTime<Utc>) -> String {
     window_start.to_rfc3339()
@@ -17,13 +17,17 @@ pub(crate) fn wallet_metrics_window_start_query_variants(
 }
 
 pub(crate) fn parse_rfc3339_utc(raw: &str, field_name: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(raw)
-        .map(|dt| dt.with_timezone(&Utc))
-        .or_else(|_| {
-            NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S")
-                .map(|naive| DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
-        })
-        .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))
+    if !raw.ends_with("+00:00") {
+        return Err(anyhow!(
+            "{field_name} must use canonical UTC offset +00:00: {raw}"
+        ));
+    }
+    let parsed = DateTime::parse_from_rfc3339(raw)
+        .with_context(|| format!("invalid {field_name} timestamp value: {raw}"))?;
+    if parsed.offset().local_minus_utc() != 0 {
+        return Err(anyhow!("{field_name} must use UTC offset +00:00: {raw}"));
+    }
+    Ok(parsed.with_timezone(&Utc))
 }
 
 pub(crate) fn parse_optional_rfc3339_utc(

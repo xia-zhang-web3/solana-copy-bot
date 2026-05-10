@@ -49,32 +49,6 @@ impl ObservedSwapWriter {
             .as_ref()
             .map(|(sender, _)| sender.clone());
         let journal_startup_receiver = journal_startup_channel.map(|(_, receiver)| receiver);
-        let raw_worker_config = config.clone();
-        let raw_worker_sqlite_path = sqlite_path.clone();
-
-        let raw_worker_telemetry = Arc::clone(&telemetry);
-        let raw_worker_terminal_failure_message = Arc::clone(&terminal_failure_message);
-        let raw_worker = thread::Builder::new()
-            .name("copybot-observed-swap-writer".to_string())
-            .spawn(move || {
-                let result = observed_swap_writer_loop(
-                    raw_worker_sqlite_path,
-                    receiver,
-                    journal_sender,
-                    journal_startup_receiver,
-                    raw_worker_config,
-                    raw_worker_telemetry,
-                    Arc::clone(&raw_worker_terminal_failure_message),
-                );
-                if let Err(error) = &result {
-                    set_terminal_failure_message(
-                        &raw_worker_terminal_failure_message,
-                        format!("{error:#}"),
-                    );
-                }
-                result
-            })
-            .context("failed to spawn observed swap writer thread")?;
 
         let journal_worker = if let Some(receiver) = journal_receiver {
             let journal_worker_telemetry = Arc::clone(&telemetry);
@@ -108,6 +82,34 @@ impl ObservedSwapWriter {
         } else {
             None
         };
+
+        wait_observed_swap_writer_downstream_startup(journal_startup_receiver)?;
+
+        let raw_worker_config = config.clone();
+        let raw_worker_sqlite_path = sqlite_path.clone();
+        let raw_worker_telemetry = Arc::clone(&telemetry);
+        let raw_worker_terminal_failure_message = Arc::clone(&terminal_failure_message);
+        let raw_worker = thread::Builder::new()
+            .name("copybot-observed-swap-writer".to_string())
+            .spawn(move || {
+                let result = observed_swap_writer_loop(
+                    raw_worker_sqlite_path,
+                    receiver,
+                    journal_sender,
+                    None,
+                    raw_worker_config,
+                    raw_worker_telemetry,
+                    Arc::clone(&raw_worker_terminal_failure_message),
+                );
+                if let Err(error) = &result {
+                    set_terminal_failure_message(
+                        &raw_worker_terminal_failure_message,
+                        format!("{error:#}"),
+                    );
+                }
+                result
+            })
+            .context("failed to spawn observed swap writer thread")?;
 
         Ok(Self {
             sender,

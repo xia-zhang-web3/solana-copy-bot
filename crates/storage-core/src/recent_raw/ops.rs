@@ -10,13 +10,18 @@ use super::{
     BULK_INSERT_HARD_CAP_ROWS, BULK_INSERT_PARAMS_PER_ROW,
 };
 use crate::{
+    observed_timestamp::{
+        ensure_observed_swaps_timestamp_validation_index_empty_safe,
+        ensure_observed_swaps_timestamps_canonical_utc_read_only,
+    },
+    schema_indexes::ensure_observed_swaps_read_indexes_empty_safe_on_conn,
     ObservedSwapCursorPage, RecentRawJournalStateRow, RecentRawJournalWriteSummary,
     SqliteDiscoveryStore,
 };
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_core_types::SwapEvent;
-use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection};
+use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, ErrorCode};
 use std::time::Instant;
 
 impl SqliteDiscoveryStore {
@@ -105,6 +110,7 @@ impl SqliteDiscoveryStore {
         let batch_limit = batch_size.max(1).min(i64::MAX as usize) as i64;
         self.with_immediate_transaction_retry("recent raw journal retention prune", |conn| {
             ensure_recent_raw_journal_tables_on_conn(conn)?;
+            ensure_observed_swaps_timestamps_canonical_utc_read_only(conn)?;
             let deleted = conn
                 .execute(
                     "DELETE FROM observed_swaps
@@ -137,6 +143,7 @@ impl SqliteDiscoveryStore {
     where
         F: FnMut(SwapEvent) -> Result<()>,
     {
+        ensure_recent_raw_scan_timestamps_utc_since(&self.conn)?;
         self.for_each_observed_swap_page(
             "WHERE ts >= ?1",
             vec![since.to_rfc3339().into()],
@@ -158,6 +165,7 @@ impl SqliteDiscoveryStore {
     where
         F: FnMut(SwapEvent) -> Result<()>,
     {
+        ensure_recent_raw_scan_timestamps_utc_since(&self.conn)?;
         self.for_each_observed_swap_page(
             "WHERE (ts, slot, signature) > (?1, ?2, ?3)",
             vec![
@@ -198,28 +206,69 @@ impl SqliteDiscoveryStore {
                     qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
              FROM observed_swaps
              {where_sql}
-             ORDER BY ts ASC, slot ASC, signature ASC
-             LIMIT ?{}",
+	             ORDER BY ts ASC, slot ASC, signature ASC
+	             LIMIT ?{}",
             values.len()
         );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let mut rows = stmt.query(params_from_iter(values))?;
-        let mut seen = 0usize;
-        while let Some(row) = rows.next()? {
-            if Instant::now() >= deadline {
-                return Ok(ObservedSwapCursorPage {
-                    rows_seen: seen,
-                    time_budget_exhausted: true,
-                });
+        self.conn
+            .progress_handler(1000, Some(move || Instant::now() >= deadline));
+        let result = (|| -> Result<ObservedSwapCursorPage> {
+            let mut stmt = match self.conn.prepare(&sql) {
+                Ok(stmt) => stmt,
+                Err(error) if Instant::now() >= deadline && sqlite_interrupted(&error) => {
+                    return Ok(ObservedSwapCursorPage {
+                        rows_seen: 0,
+                        time_budget_exhausted: true,
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let mut rows = match stmt.query(params_from_iter(values)) {
+                Ok(rows) => rows,
+                Err(error) if Instant::now() >= deadline && sqlite_interrupted(&error) => {
+                    return Ok(ObservedSwapCursorPage {
+                        rows_seen: 0,
+                        time_budget_exhausted: true,
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let mut seen = 0usize;
+            while let Some(row) = match rows.next() {
+                Ok(row) => row,
+                Err(error) if Instant::now() >= deadline && sqlite_interrupted(&error) => {
+                    return Ok(ObservedSwapCursorPage {
+                        rows_seen: seen,
+                        time_budget_exhausted: true,
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            } {
+                if Instant::now() >= deadline {
+                    return Ok(ObservedSwapCursorPage {
+                        rows_seen: seen,
+                        time_budget_exhausted: true,
+                    });
+                }
+                on_swap(row_to_swap_event(row)?)?;
+                seen = seen.saturating_add(1);
             }
-            on_swap(row_to_swap_event(row)?)?;
-            seen = seen.saturating_add(1);
-        }
-        Ok(ObservedSwapCursorPage {
-            rows_seen: seen,
-            time_budget_exhausted: false,
-        })
+            Ok(ObservedSwapCursorPage {
+                rows_seen: seen,
+                time_budget_exhausted: false,
+            })
+        })();
+        self.conn.progress_handler(0, None::<fn() -> bool>);
+        result
     }
+}
+
+fn sqlite_interrupted(error: &rusqlite::Error) -> bool {
+    error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted)
+}
+
+fn ensure_recent_raw_scan_timestamps_utc_since(conn: &Connection) -> Result<()> {
+    ensure_observed_swaps_timestamps_canonical_utc_read_only(conn)
 }
 
 fn ensure_recent_raw_journal_tables_on_conn(conn: &Connection) -> Result<()> {
@@ -239,8 +288,6 @@ fn ensure_recent_raw_journal_tables_on_conn(conn: &Connection) -> Result<()> {
             slot INTEGER NOT NULL,
             ts TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_observed_swaps_ts_slot_signature
-            ON observed_swaps(ts, slot, signature);
         CREATE TABLE IF NOT EXISTS recent_raw_journal_state (
             id INTEGER PRIMARY KEY CHECK(id = 1),
             covered_since_ts TEXT,
@@ -255,7 +302,9 @@ fn ensure_recent_raw_journal_tables_on_conn(conn: &Connection) -> Result<()> {
             updated_at TEXT NOT NULL
         );",
     )
-    .context("failed ensuring recent raw journal tables exist")
+    .context("failed ensuring recent raw journal tables exist")?;
+    ensure_observed_swaps_timestamp_validation_index_empty_safe(conn)?;
+    ensure_observed_swaps_read_indexes_empty_safe_on_conn(conn)
 }
 
 fn write_recent_raw_batch_on_conn(

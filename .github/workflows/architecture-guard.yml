@@ -80,3 +80,6 @@ jobs:
         run: |
           tools/architecture_guard.sh --changed
           tools/architecture_guard.sh --all
+
+      - name: Tool regression tests
+        run: python3 -m unittest discover -s tools/tests -p 'test_*.py'

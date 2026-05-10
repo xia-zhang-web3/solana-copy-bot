@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 
 pub(super) const USAGE: &str = "usage:
-  discovery_runtime_export --config <path> [--db-path <path>] (--output <path> | --scheduled) [--force] [--json] [--now <rfc3339>]";
+  discovery_runtime_export --config <path> [--db-path <path>] (--output <path> | --scheduled) [--force] [--json]";
 
 #[derive(Debug)]
 pub(super) enum Command {

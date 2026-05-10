@@ -1,8 +1,33 @@
+use super::recent_raw_timestamp_guard::{
+    ensure_recent_raw_timestamp_guard_index_valid, OBSERVED_SWAPS_NON_UTC_TIMESTAMP_INDEX,
+    OBSERVED_SWAPS_NON_UTC_TIMESTAMP_PREDICATE,
+};
 use super::*;
+
+pub(crate) fn ensure_recent_raw_observed_swaps_timestamps_canonical_utc(
+    conn: &Connection,
+) -> Result<()> {
+    ensure_recent_raw_timestamp_guard_index_valid(conn)?;
+    let sql = format!(
+        "SELECT ts
+         FROM observed_swaps INDEXED BY {OBSERVED_SWAPS_NON_UTC_TIMESTAMP_INDEX}
+         WHERE {OBSERVED_SWAPS_NON_UTC_TIMESTAMP_PREDICATE}
+         LIMIT 1"
+    );
+    let invalid_ts = conn
+        .query_row(&sql, [], |row| row.get::<_, String>(0))
+        .optional()
+        .context("failed validating recent raw observed_swaps timestamp canonical UTC")?;
+    if let Some(raw) = invalid_ts {
+        bail!("observed_swaps.ts is not canonical UTC: {raw}");
+    }
+    Ok(())
+}
 
 pub(super) fn recent_raw_journal_coverage_snapshot_on_conn(
     conn: &Connection,
 ) -> Result<(usize, Option<DateTime<Utc>>, Option<DiscoveryRuntimeCursor>)> {
+    ensure_recent_raw_observed_swaps_timestamps_canonical_utc(conn)?;
     let row_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM observed_swaps", [], |row| row.get(0))
         .context("failed counting recent raw journal observed_swaps rows")?;
@@ -31,7 +56,7 @@ pub(super) fn recent_raw_journal_coverage_snapshot_on_conn(
             |(ts_raw, slot_raw, signature)| -> Result<DiscoveryRuntimeCursor> {
                 Ok(DiscoveryRuntimeCursor {
                     ts_utc: parse_rfc3339_utc(&ts_raw, "observed_swaps.ts")?,
-                    slot: slot_raw.max(0) as u64,
+                    slot: parse_sqlite_slot(slot_raw, "observed_swaps.slot")?,
                     signature,
                 })
             },
@@ -91,12 +116,18 @@ pub(super) fn recent_raw_journal_state_query(
         covered_since,
         covered_through_cursor,
         row_count,
-        last_batch_rows: last_batch_rows.max(0) as usize,
+        last_batch_rows: parse_recent_raw_count(
+            last_batch_rows,
+            "recent_raw_journal_state.last_batch_rows",
+        )?,
         last_batch_completed_at: parse_optional_rfc3339_utc(
             last_batch_completed_at_raw,
             "recent_raw_journal_state.last_batch_completed_at",
         )?,
-        last_pruned_rows: last_pruned_rows.max(0) as usize,
+        last_pruned_rows: parse_recent_raw_count(
+            last_pruned_rows,
+            "recent_raw_journal_state.last_pruned_rows",
+        )?,
         last_pruned_at: parse_optional_rfc3339_utc(
             last_pruned_at_raw,
             "recent_raw_journal_state.last_pruned_at",
@@ -169,10 +200,14 @@ pub(super) fn recent_raw_journal_state_cached_query(
                 &ts_raw,
                 "recent_raw_journal_state.covered_through_cursor_ts",
             )?,
-            slot: slot_raw.max(0) as u64,
+            slot: parse_sqlite_slot(
+                slot_raw,
+                "recent_raw_journal_state.covered_through_cursor_slot",
+            )?,
             signature,
         }),
-        _ => None,
+        (None, None, None) => None,
+        _ => bail!("recent_raw_journal_state cursor columns are partially populated"),
     };
     Ok(RecentRawJournalStateRow {
         covered_since: parse_optional_rfc3339_utc(
@@ -180,13 +215,19 @@ pub(super) fn recent_raw_journal_state_cached_query(
             "recent_raw_journal_state.covered_since_ts",
         )?,
         covered_through_cursor,
-        row_count: row_count.max(0) as usize,
-        last_batch_rows: last_batch_rows.max(0) as usize,
+        row_count: parse_recent_raw_count(row_count, "recent_raw_journal_state.row_count")?,
+        last_batch_rows: parse_recent_raw_count(
+            last_batch_rows,
+            "recent_raw_journal_state.last_batch_rows",
+        )?,
         last_batch_completed_at: parse_optional_rfc3339_utc(
             last_batch_completed_at_raw,
             "recent_raw_journal_state.last_batch_completed_at",
         )?,
-        last_pruned_rows: last_pruned_rows.max(0) as usize,
+        last_pruned_rows: parse_recent_raw_count(
+            last_pruned_rows,
+            "recent_raw_journal_state.last_pruned_rows",
+        )?,
         last_pruned_at: parse_optional_rfc3339_utc(
             last_pruned_at_raw,
             "recent_raw_journal_state.last_pruned_at",
@@ -196,6 +237,10 @@ pub(super) fn recent_raw_journal_state_cached_query(
             "recent_raw_journal_state.updated_at",
         )?,
     })
+}
+
+fn parse_recent_raw_count(value: i64, field: &str) -> Result<usize> {
+    usize::try_from(value).with_context(|| format!("{field} must be non-negative: {value}"))
 }
 
 pub(super) fn recent_raw_journal_state_row_exists(conn: &Connection) -> Result<bool> {

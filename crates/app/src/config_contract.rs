@@ -16,3 +16,18 @@ pub(crate) fn validate_execution_runtime_contract(
     }
     Ok(())
 }
+
+pub(crate) fn validate_live_ingestion_source_contract(source: &str, env: &str) -> Result<()> {
+    let env_norm = env.trim().to_ascii_lowercase();
+    let prod_like = matches!(
+        env_norm.as_str(),
+        "prod" | "production" | "live" | "prod-live"
+    ) || env_norm.starts_with("prod-");
+    if prod_like && source == "mock" {
+        return Err(anyhow!(
+            "ingestion.source=mock is not supported in production env {}; use yellowstone_grpc",
+            env
+        ));
+    }
+    Ok(())
+}

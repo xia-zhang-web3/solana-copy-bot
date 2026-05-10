@@ -1,7 +1,7 @@
 use super::run::run_command;
 use super::types::{Command, ExportConfig, USAGE};
 use anyhow::{bail, Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use std::env;
 use std::path::PathBuf;
 
@@ -19,7 +19,6 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command> {
     let mut scheduled = false;
     let mut force = false;
     let mut json = false;
-    let mut now = Utc::now();
 
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -30,12 +29,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command> {
             "--scheduled" => scheduled = true,
             "--force" => force = true,
             "--json" => json = true,
-            "--now" => {
-                let value = take_string_arg(&mut args, "--now")?;
-                now = DateTime::parse_from_rfc3339(&value)
-                    .with_context(|| format!("invalid --now value {value}"))?
-                    .with_timezone(&Utc);
-            }
+            "--now" => bail!("--now is not accepted by production runtime export; use wall clock"),
             "-h" | "--help" => bail!("{USAGE}"),
             other => bail!("unknown argument {other}\n{USAGE}"),
         }
@@ -51,7 +45,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command> {
         scheduled,
         force,
         json,
-        now,
+        now: Utc::now(),
     }))
 }
 

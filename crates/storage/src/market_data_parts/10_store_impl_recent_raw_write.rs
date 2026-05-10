@@ -40,9 +40,8 @@ impl SqliteStore {
             {
                 let _progress_guard =
                     deadline.map(|deadline| ProgressHandlerGuard::install(conn, deadline));
-                let mut stmt = conn
-                    .prepare_cached(
-                        "INSERT OR IGNORE INTO observed_swaps(
+                let mut stmt = match conn.prepare_cached(
+                    "INSERT OR IGNORE INTO observed_swaps(
                             signature,
                             wallet_id,
                             dex,
@@ -57,8 +56,21 @@ impl SqliteStore {
                             slot,
                             ts
                          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                    )
-                    .context("failed to prepare recent raw journal batch insert statement")?;
+                ) {
+                    Ok(stmt) => stmt,
+                    Err(error)
+                        if deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                            && recent_raw_journal_sqlite_error_is_operation_interrupted(&error) =>
+                    {
+                        let state = recent_raw_journal_state_cached_query(conn)?;
+                        return Ok((recent_raw_journal_write_summary(&state, 0, 0), true));
+                    }
+                    Err(error) => {
+                        return Err(error).context(
+                            "failed to prepare recent raw journal batch insert statement",
+                        );
+                    }
+                };
 
                 for swap in swaps {
                     if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -90,7 +102,9 @@ impl SqliteStore {
                     ]) {
                         Ok(changed) => changed,
                         Err(error) => {
-                            if error.sqlite_error_code() == Some(ErrorCode::OperationInterrupted) {
+                            if deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                                && recent_raw_journal_sqlite_error_is_operation_interrupted(&error)
+                            {
                                 time_budget_exhausted = true;
                                 break;
                             }
