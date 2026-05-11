@@ -46,6 +46,8 @@ pub fn build_discovery_v2_status(
         options.max_rows,
         scan_deadline,
     )?;
+    let rows_seen = window_scan.rows_seen;
+    let unique_wallets_seen = window_scan.unique_wallets_seen;
     let scoring_data_now = tail
         .as_ref()
         .map(|status| status.cursor.ts_utc.min(options.now))
@@ -53,58 +55,57 @@ pub fn build_discovery_v2_status(
     let scan = scan_status(
         options.max_rows,
         options.time_budget_ms,
-        window_scan.rows_seen,
+        rows_seen,
         window_scan.time_budget_exhausted,
-        window_scan.unique_wallets_seen,
+        unique_wallets_seen,
     );
     if scan.budget_exhausted {
-        let candidate_wallets = Vec::new();
-        let filters = build_budget_exhausted_filter_status(window_scan.unique_wallets_seen);
-        let blockers = blockers(
+        return Ok(budget_exhausted_status(
             discovery,
             shadow,
-            &tail,
-            coverage_sample.as_ref(),
-            &scan,
-            &candidate_wallets,
-            options.execution_enabled,
-            options.window_minutes,
-        );
-        return Ok(DiscoveryV2Status {
-            source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
-            now: options.now,
             window_start,
-            window_minutes: options.window_minutes,
-            max_tail_lag_seconds: options.max_tail_lag_seconds,
             tail,
             coverage_sample,
             scan,
-            filters,
-            wallet_metrics_total: window_scan.unique_wallets_seen,
-            wallet_metrics_returned: 0,
-            wallet_metrics_truncated: window_scan.unique_wallets_seen > 0,
-            wallet_metrics: Vec::new(),
-            candidate_wallets,
-            execution_enabled: options.execution_enabled,
-            execution_disabled: !options.execution_enabled,
-            blockers,
-            production_green: false,
-            policy_fingerprint: discovery_v2_policy_fingerprint(discovery, shadow, &options),
-        });
+            unique_wallets_seen,
+            &options,
+        ));
     }
-    let mut wallet_metrics = window_scan
-        .wallets
-        .into_iter()
-        .map(|(wallet_id, acc)| {
-            wallet_metric_from_accumulator(
-                wallet_id,
-                acc,
-                discovery,
-                &window_scan.token_sol_history,
-                scoring_data_now,
-            )
-        })
-        .collect::<Vec<_>>();
+    let token_sol_history = window_scan.token_sol_history;
+    let mut wallet_metrics = Vec::with_capacity(window_scan.wallets.len());
+    let mut metric_time_budget_exhausted = false;
+    for (wallet_id, acc) in window_scan.wallets {
+        if Instant::now() >= scan_deadline {
+            metric_time_budget_exhausted = true;
+            break;
+        }
+        wallet_metrics.push(wallet_metric_from_accumulator(
+            wallet_id,
+            acc,
+            discovery,
+            &token_sol_history,
+            scoring_data_now,
+        ));
+    }
+    if metric_time_budget_exhausted {
+        let scan = scan_status(
+            options.max_rows,
+            options.time_budget_ms,
+            rows_seen,
+            true,
+            unique_wallets_seen,
+        );
+        return Ok(budget_exhausted_status(
+            discovery,
+            shadow,
+            window_start,
+            tail,
+            coverage_sample,
+            scan,
+            unique_wallets_seen,
+            &options,
+        ));
+    }
     sort_wallet_metrics(&mut wallet_metrics);
     let candidate_wallets = candidate_wallets(discovery, &wallet_metrics);
     let filters = build_filter_status(&wallet_metrics);
@@ -140,4 +141,49 @@ pub fn build_discovery_v2_status(
         production_green,
         policy_fingerprint: discovery_v2_policy_fingerprint(discovery, shadow, &options),
     })
+}
+
+fn budget_exhausted_status(
+    discovery: &DiscoveryConfig,
+    shadow: &ShadowConfig,
+    window_start: chrono::DateTime<chrono::Utc>,
+    tail: Option<DiscoveryV2TailStatus>,
+    coverage_sample: Option<DiscoveryV2CoverageSample>,
+    scan: DiscoveryV2ScanStatus,
+    unique_wallets_seen: usize,
+    options: &DiscoveryV2BuildOptions,
+) -> DiscoveryV2Status {
+    let candidate_wallets = Vec::new();
+    let filters = build_budget_exhausted_filter_status(unique_wallets_seen);
+    let blockers = blockers(
+        discovery,
+        shadow,
+        &tail,
+        coverage_sample.as_ref(),
+        &scan,
+        &candidate_wallets,
+        options.execution_enabled,
+        options.window_minutes,
+    );
+    DiscoveryV2Status {
+        source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
+        now: options.now,
+        window_start,
+        window_minutes: options.window_minutes,
+        max_tail_lag_seconds: options.max_tail_lag_seconds,
+        tail,
+        coverage_sample,
+        scan,
+        filters,
+        wallet_metrics_total: unique_wallets_seen,
+        wallet_metrics_returned: 0,
+        wallet_metrics_truncated: unique_wallets_seen > 0,
+        wallet_metrics: Vec::new(),
+        candidate_wallets,
+        execution_enabled: options.execution_enabled,
+        execution_disabled: !options.execution_enabled,
+        blockers,
+        production_green: false,
+        policy_fingerprint: discovery_v2_policy_fingerprint(discovery, shadow, options),
+    }
 }

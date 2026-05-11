@@ -1,5 +1,5 @@
 use crate::accumulator::WalletAccumulator;
-use crate::rug::compute_rug_evaluation;
+use crate::rug::{compute_rug_evaluation, RugEvaluation};
 use crate::token_market::SolLegTrade;
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::DiscoveryConfig;
@@ -66,32 +66,41 @@ pub(crate) fn wallet_metric_from_accumulator(
         .iter()
         .filter(|buy| buy.missing_quality_evidence)
         .count() as u32;
-    let rug = compute_rug_evaluation(&acc.buy_observations, token_sol_history, discovery, now);
-    let base_score = (0.35 * tanh01(acc.realized_pnl_sol / 2.0))
-        + (0.20 * tanh01(roi * 3.0))
-        + (0.15 * (win_rate * (acc.closed_trades as f64 / 8.0).min(1.0)).clamp(0.0, 1.0))
-        + (0.15 * hold_time_quality_score(hold_median_seconds))
-        + (0.10 * consistency_ratio.clamp(0.0, 1.0))
-        + (0.05 * if acc.suspicious { 0.0 } else { 1.0 });
-    let rug_penalty = if discovery.max_rug_ratio >= 1.0 {
-        1.0
-    } else {
-        (1.0 - rug.ratio).clamp(0.0, 1.0).powi(2)
-    };
-    let raw_score = (base_score * tradable_ratio.powf(1.5) * rug_penalty).clamp(0.0, 1.0);
-    let reject_reasons = reject_reasons(
+    let mut reject_reasons = pre_rug_reject_reasons(
         &acc,
         active_days,
         buy_total,
         tradable_ratio,
         missing_quality_evidence_buys,
-        rug.ratio,
-        rug.unevaluated,
         discovery,
         now,
     );
-    let mut score = raw_score;
-    let mut reject_reasons = reject_reasons;
+    let rug = if reject_reasons.is_empty() {
+        compute_rug_evaluation(&acc.buy_observations, token_sol_history, discovery, now)
+    } else {
+        RugEvaluation {
+            ratio: 0.0,
+            evaluated: 0,
+            unevaluated: 0,
+        }
+    };
+    push_rug_reject_reasons(&mut reject_reasons, rug.ratio, rug.unevaluated, discovery);
+    let mut score = if reject_reasons.is_empty() {
+        let base_score = (0.35 * tanh01(acc.realized_pnl_sol / 2.0))
+            + (0.20 * tanh01(roi * 3.0))
+            + (0.15 * (win_rate * (acc.closed_trades as f64 / 8.0).min(1.0)).clamp(0.0, 1.0))
+            + (0.15 * hold_time_quality_score(hold_median_seconds))
+            + (0.10 * consistency_ratio.clamp(0.0, 1.0))
+            + (0.05 * if acc.suspicious { 0.0 } else { 1.0 });
+        let rug_penalty = if discovery.max_rug_ratio >= 1.0 {
+            1.0
+        } else {
+            (1.0 - rug.ratio).clamp(0.0, 1.0).powi(2)
+        };
+        (base_score * tradable_ratio.powf(1.5) * rug_penalty).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     if !reject_reasons.is_empty() {
         score = 0.0;
     } else if score < discovery.min_score {
@@ -122,14 +131,12 @@ pub(crate) fn wallet_metric_from_accumulator(
     }
 }
 
-fn reject_reasons(
+fn pre_rug_reject_reasons(
     acc: &WalletAccumulator,
     active_days: u32,
     buy_total: u32,
     tradable_ratio: f64,
     missing_quality_evidence_buys: u32,
-    rug_ratio: f64,
-    unevaluated_rugs: u32,
     discovery: &DiscoveryConfig,
     now: DateTime<Utc>,
 ) -> Vec<String> {
@@ -171,17 +178,6 @@ fn reject_reasons(
         missing_quality_evidence_buys > 0,
         "token_quality_evidence_missing",
     );
-    let rug_enabled = discovery.max_rug_ratio < 1.0;
-    push_if(
-        &mut reasons,
-        rug_enabled && unevaluated_rugs > 0,
-        "rug_lookahead_unevaluated",
-    );
-    push_if(
-        &mut reasons,
-        rug_enabled && rug_ratio > discovery.max_rug_ratio,
-        "rug_gate",
-    );
     push_if(
         &mut reasons,
         discovery.require_open_positions_for_publication
@@ -189,6 +185,25 @@ fn reject_reasons(
         "open_position_required_missing",
     );
     reasons
+}
+
+fn push_rug_reject_reasons(
+    reasons: &mut Vec<String>,
+    rug_ratio: f64,
+    unevaluated_rugs: u32,
+    discovery: &DiscoveryConfig,
+) {
+    let rug_enabled = discovery.max_rug_ratio < 1.0;
+    push_if(
+        reasons,
+        rug_enabled && unevaluated_rugs > 0,
+        "rug_lookahead_unevaluated",
+    );
+    push_if(
+        reasons,
+        rug_enabled && rug_ratio > discovery.max_rug_ratio,
+        "rug_gate",
+    );
 }
 
 fn push_if(reasons: &mut Vec<String>, condition: bool, reason: &str) {
