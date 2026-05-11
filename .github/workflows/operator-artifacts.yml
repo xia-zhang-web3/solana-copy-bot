@@ -92,7 +92,7 @@ jobs:
           - label: Discovery V2 operators
             package: copybot-discovery-v2
             profile: operator-release
-            wanted_bins: discovery_v2_status discovery_v2_publish
+            wanted_bins: discovery_v2_prepare_quality discovery_v2_status discovery_v2_publish
             artifact_name: discovery-v2-operators
           - label: Discovery scheduled operators
             package: copybot-discovery-ops
