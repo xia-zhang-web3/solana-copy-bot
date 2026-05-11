@@ -99,6 +99,31 @@ fn quality_prepare_commit_writes_observed_proxy_evidence() -> Result<()> {
 }
 
 #[test]
+fn quality_prepare_commit_does_not_write_partial_window() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-11T10:00:00Z")?.with_timezone(&Utc);
+    store.insert_observed_swaps_batch(&[
+        buy("wallet-a", "sig-a", 10, now - Duration::minutes(10)),
+        buy("wallet-b", "sig-b", 11, now - Duration::minutes(8)),
+    ])?;
+    let (mut discovery, mut shadow) = policy();
+    discovery.max_window_swaps_in_memory = 1;
+    shadow.min_holders = 1;
+
+    let report =
+        prepare_discovery_v2_quality(&store, &discovery, &shadow, options(&discovery, now, true))?;
+
+    assert!(!report.committed);
+    assert_eq!(report.upserted, 0);
+    assert!(report.max_rows_exhausted);
+    assert!(report
+        .blockers
+        .contains(&"discovery_v2_quality_prepare_max_rows_exhausted".to_string()));
+    assert!(store.get_token_quality_cache(TOKEN_MINT)?.is_none());
+    Ok(())
+}
+
+#[test]
 fn quality_prepare_skips_fresh_complete_cache() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-11T10:00:00Z")?.with_timezone(&Utc);

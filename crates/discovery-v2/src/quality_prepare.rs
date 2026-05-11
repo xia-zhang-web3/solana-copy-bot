@@ -109,7 +109,7 @@ pub fn prepare_discovery_v2_quality(
 
     let ttl = Duration::seconds(TOKEN_QUALITY_TTL_SECONDS);
     let mut skipped_fresh_complete = 0usize;
-    let mut upserted = 0usize;
+    let mut upsert_candidates = Vec::new();
     let mut incomplete_after_prepare = 0usize;
     for evidence in &considered {
         let existing = store
@@ -141,23 +141,12 @@ pub fn prepare_discovery_v2_quality(
             incomplete_after_prepare = incomplete_after_prepare.saturating_add(1);
             continue;
         }
-        if options.commit {
-            store
-                .upsert_token_quality_cache(
-                    &evidence.mint,
-                    holders,
-                    liquidity_sol,
-                    token_age_seconds,
-                    options.now,
-                )
-                .with_context(|| {
-                    format!(
-                        "failed upserting discovery v2 quality evidence for {}",
-                        evidence.mint
-                    )
-                })?;
-        }
-        upserted = upserted.saturating_add(1);
+        upsert_candidates.push((
+            evidence.mint.clone(),
+            holders,
+            liquidity_sol,
+            token_age_seconds,
+        ));
     }
 
     let mut blockers = Vec::new();
@@ -180,9 +169,32 @@ pub fn prepare_discovery_v2_quality(
         blockers.push("discovery_v2_quality_prepare_invalid_max_rows".to_string());
     }
 
+    let commit_allowed = options.commit && blockers.is_empty();
+    let mut upserted = if options.commit {
+        0
+    } else {
+        upsert_candidates.len()
+    };
+    if commit_allowed {
+        for (mint, holders, liquidity_sol, token_age_seconds) in &upsert_candidates {
+            store
+                .upsert_token_quality_cache(
+                    mint,
+                    *holders,
+                    *liquidity_sol,
+                    *token_age_seconds,
+                    options.now,
+                )
+                .with_context(|| {
+                    format!("failed upserting discovery v2 quality evidence for {mint}")
+                })?;
+            upserted = upserted.saturating_add(1);
+        }
+    }
+
     Ok(DiscoveryV2PrepareQualityReport {
         dry_run: !options.commit,
-        committed: options.commit,
+        committed: commit_allowed,
         quality_source: "observed_window_proxy".to_string(),
         now: options.now,
         window_start,
