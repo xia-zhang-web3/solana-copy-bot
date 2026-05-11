@@ -1,7 +1,11 @@
 use super::status_types::{DiscoveryV2CoverageSample, DiscoveryV2TailStatus};
 use super::TOKEN_QUALITY_TTL_SECONDS;
+use crate::accumulator::WalletAccumulator;
+use crate::token_market::{is_sol_buy, SolLegTrade};
+use crate::tradability::DiscoveryV2WindowAccumulator;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
+use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::{SwapEvent, TokenQualityCacheRow};
 use copybot_storage_core::SqliteDiscoveryStore;
 use std::collections::{HashMap, HashSet};
@@ -42,37 +46,76 @@ pub(super) fn load_coverage_sample(
     }))
 }
 
-pub(super) fn load_window_tail_swaps(
+pub(super) struct DiscoveryV2WindowScan {
+    pub(super) wallets: HashMap<String, WalletAccumulator>,
+    pub(super) token_sol_history: HashMap<String, Vec<SolLegTrade>>,
+    pub(super) rows_seen: usize,
+    pub(super) time_budget_exhausted: bool,
+}
+
+pub(super) fn scan_window_metrics(
     store: &SqliteDiscoveryStore,
+    discovery: &DiscoveryConfig,
+    shadow: &ShadowConfig,
     window_start: DateTime<Utc>,
     now: DateTime<Utc>,
     max_rows: usize,
     deadline: Instant,
-) -> Result<(Vec<SwapEvent>, bool, bool)> {
-    store
-        .load_recent_observed_swaps_in_window_with_budget(window_start, now, max_rows, deadline)
-        .context("failed loading discovery v2 current window tail")
+) -> Result<DiscoveryV2WindowScan> {
+    let ttl = Duration::seconds(TOKEN_QUALITY_TTL_SECONDS);
+    let mut token_quality_cache = HashMap::new();
+    let mut token_quality_lookups = HashSet::new();
+    let mut accumulator = DiscoveryV2WindowAccumulator::default();
+    let mut rows_seen = 0usize;
+    let page = store
+        .for_each_observed_swap_in_window_after_cursor_with_budget(
+            window_start,
+            now,
+            None,
+            max_rows.saturating_add(1),
+            deadline,
+            |swap| {
+                rows_seen = rows_seen.saturating_add(1);
+                if rows_seen > max_rows {
+                    return Ok(());
+                }
+                load_quality_for_buy_once(
+                    store,
+                    &swap,
+                    now,
+                    ttl,
+                    &mut token_quality_lookups,
+                    &mut token_quality_cache,
+                )?;
+                accumulator.observe_swap(&swap, discovery, shadow, &token_quality_cache);
+                Ok(())
+            },
+        )
+        .context("failed streaming discovery v2 current window")?;
+    let (wallets, token_sol_history) = accumulator.into_parts();
+    Ok(DiscoveryV2WindowScan {
+        wallets,
+        token_sol_history,
+        rows_seen,
+        time_budget_exhausted: page.time_budget_exhausted,
+    })
 }
 
-pub(super) fn load_token_quality_cache_for_swaps(
+fn load_quality_for_buy_once(
     store: &SqliteDiscoveryStore,
-    swaps: &[SwapEvent],
+    swap: &SwapEvent,
     now: DateTime<Utc>,
-) -> Result<HashMap<String, TokenQualityCacheRow>> {
-    let mut mints = HashSet::new();
-    for swap in swaps {
-        if crate::token_market::is_sol_buy(swap) {
-            mints.insert(swap.token_out.clone());
+    ttl: Duration,
+    looked_up: &mut HashSet<String>,
+    cache: &mut HashMap<String, TokenQualityCacheRow>,
+) -> Result<()> {
+    if !is_sol_buy(swap) || !looked_up.insert(swap.token_out.clone()) {
+        return Ok(());
+    }
+    if let Some(row) = store.get_token_quality_cache(&swap.token_out)? {
+        if row.fetched_at <= now && now - row.fetched_at <= ttl {
+            cache.insert(swap.token_out.clone(), row);
         }
     }
-    let ttl = Duration::seconds(TOKEN_QUALITY_TTL_SECONDS);
-    let mut cache = HashMap::new();
-    for mint in mints {
-        if let Some(row) = store.get_token_quality_cache(&mint)? {
-            if row.fetched_at <= now && now - row.fetched_at <= ttl {
-                cache.insert(mint, row);
-            }
-        }
-    }
-    Ok(cache)
+    Ok(())
 }

@@ -2,12 +2,8 @@ use crate::filters::build_filter_status;
 use crate::metric::wallet_metric_from_accumulator;
 use crate::policy::{discovery_v2_policy_fingerprint, DiscoveryV2BuildOptions};
 use crate::status::status_blockers::blockers;
-use crate::status::status_load::{
-    load_coverage_sample, load_tail_status, load_token_quality_cache_for_swaps,
-    load_window_tail_swaps,
-};
+use crate::status::status_load::{load_coverage_sample, load_tail_status, scan_window_metrics};
 use crate::status::status_rank::{candidate_wallets, scan_status, sort_wallet_metrics};
-use crate::tradability::{build_token_sol_history, build_wallet_accumulators};
 use anyhow::Result;
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_storage_core::SqliteDiscoveryStore;
@@ -40,28 +36,28 @@ pub fn build_discovery_v2_status(
     let scan_deadline = Instant::now() + StdDuration::from_millis(options.time_budget_ms);
     let tail = load_tail_status(store, options.now, options.max_tail_lag_seconds)?;
     let coverage_sample = load_coverage_sample(store, window_start)?;
-    let (swaps, window_truncated, time_budget_exhausted) = load_window_tail_swaps(
+    let window_scan = scan_window_metrics(
         store,
+        discovery,
+        shadow,
         window_start,
         options.now,
         options.max_rows,
         scan_deadline,
     )?;
-    let token_quality_cache = load_token_quality_cache_for_swaps(store, &swaps, options.now)?;
-    let accumulators = build_wallet_accumulators(&swaps, discovery, shadow, &token_quality_cache);
-    let token_sol_history = build_token_sol_history(&swaps);
     let scoring_data_now = tail
         .as_ref()
         .map(|status| status.cursor.ts_utc.min(options.now))
         .unwrap_or(options.now);
-    let mut wallet_metrics = accumulators
+    let mut wallet_metrics = window_scan
+        .wallets
         .into_iter()
         .map(|(wallet_id, acc)| {
             wallet_metric_from_accumulator(
                 wallet_id,
                 acc,
                 discovery,
-                &token_sol_history,
+                &window_scan.token_sol_history,
                 scoring_data_now,
             )
         })
@@ -71,8 +67,8 @@ pub fn build_discovery_v2_status(
     let scan = scan_status(
         options.max_rows,
         options.time_budget_ms,
-        swaps.len().saturating_add(usize::from(window_truncated)),
-        time_budget_exhausted,
+        window_scan.rows_seen,
+        window_scan.time_budget_exhausted,
         &wallet_metrics,
     );
     let filters = build_filter_status(&wallet_metrics);

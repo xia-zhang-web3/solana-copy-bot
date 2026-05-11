@@ -22,52 +22,63 @@ struct TokenRollingState {
     sol_traders_5m: HashMap<String, u32>,
 }
 
-pub(crate) fn build_wallet_accumulators(
-    swaps: &[SwapEvent],
-    discovery: &DiscoveryConfig,
-    shadow: &ShadowConfig,
-    token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
-) -> HashMap<String, WalletAccumulator> {
-    let mut wallets = HashMap::new();
-    let mut token_states = HashMap::new();
-    for swap in swaps {
+#[derive(Debug, Default)]
+pub(crate) struct DiscoveryV2WindowAccumulator {
+    wallets: HashMap<String, WalletAccumulator>,
+    token_states: HashMap<String, TokenRollingState>,
+    token_sol_history: HashMap<String, Vec<SolLegTrade>>,
+}
+
+impl DiscoveryV2WindowAccumulator {
+    pub(crate) fn observe_swap(
+        &mut self,
+        swap: &SwapEvent,
+        discovery: &DiscoveryConfig,
+        shadow: &ShadowConfig,
+        token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
+    ) {
+        if let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) {
+            self.token_sol_history
+                .entry(token.to_string())
+                .or_default()
+                .push(SolLegTrade {
+                    ts: swap.ts_utc,
+                    wallet_id: swap.wallet.clone(),
+                    sol_notional: sol_notional.max(0.0),
+                });
+        }
         let tradability = update_token_state_and_buy_tradability(
-            &mut token_states,
+            &mut self.token_states,
             token_quality_cache,
             shadow,
             swap,
         );
-        let entry = wallets
+        let entry = self
+            .wallets
             .entry(swap.wallet.clone())
             .or_insert_with(|| WalletAccumulator::new(swap.ts_utc));
         entry.observe_swap(swap, discovery, tradability);
     }
-    wallets
+
+    pub(crate) fn into_parts(
+        mut self,
+    ) -> (
+        HashMap<String, WalletAccumulator>,
+        HashMap<String, Vec<SolLegTrade>>,
+    ) {
+        for trades in self.token_sol_history.values_mut() {
+            sort_sol_trades(trades);
+        }
+        (self.wallets, self.token_sol_history)
+    }
 }
 
-pub(crate) fn build_token_sol_history(swaps: &[SwapEvent]) -> HashMap<String, Vec<SolLegTrade>> {
-    let mut history: HashMap<String, Vec<SolLegTrade>> = HashMap::new();
-    for swap in swaps {
-        let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) else {
-            continue;
-        };
-        history
-            .entry(token.to_string())
-            .or_default()
-            .push(SolLegTrade {
-                ts: swap.ts_utc,
-                wallet_id: swap.wallet.clone(),
-                sol_notional: sol_notional.max(0.0),
-            });
-    }
-    for trades in history.values_mut() {
-        trades.sort_by(|left, right| {
-            left.ts
-                .cmp(&right.ts)
-                .then_with(|| left.wallet_id.cmp(&right.wallet_id))
-        });
-    }
-    history
+fn sort_sol_trades(trades: &mut [SolLegTrade]) {
+    trades.sort_by(|left, right| {
+        left.ts
+            .cmp(&right.ts)
+            .then_with(|| left.wallet_id.cmp(&right.wallet_id))
+    });
 }
 
 fn update_token_state_and_buy_tradability(

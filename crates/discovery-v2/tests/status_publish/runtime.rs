@@ -164,7 +164,7 @@ fn status_blocks_when_scan_time_budget_is_exhausted() -> Result<()> {
 }
 
 #[test]
-fn status_scans_current_tail_and_blocks_when_window_is_truncated() -> Result<()> {
+fn status_blocks_when_window_scan_is_truncated() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
     let old_token = "OldToken111111111111111111111111111111111";
@@ -196,7 +196,7 @@ fn status_scans_current_tail_and_blocks_when_window_is_truncated() -> Result<()>
     assert!(!status.production_green);
     assert_eq!(status.scan.rows_scanned, 1);
     assert!(status.scan.max_rows_exhausted);
-    assert_eq!(status.wallet_metrics[0].wallet_id, "new_wallet");
+    assert_eq!(status.wallet_metrics[0].wallet_id, "old_wallet");
     Ok(())
 }
 

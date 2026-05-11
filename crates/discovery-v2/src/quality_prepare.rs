@@ -81,15 +81,28 @@ pub fn prepare_discovery_v2_quality(
 ) -> Result<DiscoveryV2PrepareQualityReport> {
     let window_start = options.window_start();
     let deadline = Instant::now() + StdDuration::from_millis(options.time_budget_ms);
-    let (swaps, window_truncated, time_budget_exhausted) = store
-        .load_recent_observed_swaps_in_window_with_budget(
+    let mut rows_seen = 0usize;
+    let mut evidence = HashMap::<String, ObservedQualityEvidence>::new();
+    let page = store
+        .for_each_observed_swap_in_window_after_cursor_with_budget(
             window_start,
             options.now,
-            options.max_rows,
+            None,
+            options.max_rows.saturating_add(1),
             deadline,
+            |swap| {
+                rows_seen = rows_seen.saturating_add(1);
+                if rows_seen > options.max_rows {
+                    return Ok(());
+                }
+                observe_quality_evidence(&mut evidence, &swap);
+                Ok(())
+            },
         )
-        .context("failed loading discovery v2 quality prepare window")?;
-    let evidence = build_observed_quality_evidence(&swaps);
+        .context("failed streaming discovery v2 quality prepare window")?;
+    evidence.retain(|_, value| value.buy_count > 0);
+    let window_truncated = rows_seen > options.max_rows;
+    let time_budget_exhausted = page.time_budget_exhausted;
     let unique_buy_mints = evidence.len();
     let mut ranked = evidence.into_values().collect::<Vec<_>>();
     ranked.sort_by(|left, right| {
@@ -150,7 +163,7 @@ pub fn prepare_discovery_v2_quality(
     }
 
     let mut blockers = Vec::new();
-    if swaps.is_empty() {
+    if rows_seen == 0 {
         blockers.push("discovery_v2_quality_prepare_observed_window_empty".to_string());
     }
     if window_truncated {
@@ -201,7 +214,7 @@ pub fn prepare_discovery_v2_quality(
         window_minutes: options.window_minutes,
         max_rows: options.max_rows,
         max_mints: options.max_mints,
-        rows_scanned: swaps.len().saturating_add(usize::from(window_truncated)),
+        rows_scanned: rows_seen,
         unique_buy_mints,
         mints_considered: considered.len(),
         skipped_fresh_complete,
@@ -213,37 +226,33 @@ pub fn prepare_discovery_v2_quality(
     })
 }
 
-fn build_observed_quality_evidence(
-    swaps: &[SwapEvent],
-) -> HashMap<String, ObservedQualityEvidence> {
-    let mut evidence = HashMap::<String, ObservedQualityEvidence>::new();
-    for swap in swaps {
-        let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) else {
-            continue;
-        };
-        if !sol_notional.is_finite() || sol_notional <= 0.0 {
-            continue;
-        }
-        let entry = evidence
-            .entry(token.to_string())
-            .or_insert_with(|| ObservedQualityEvidence {
-                mint: token.to_string(),
-                first_seen: swap.ts_utc,
-                max_sol_notional: 0.0,
-                buy_count: 0,
-                sol_trade_count: 0,
-                wallets: HashSet::new(),
-            });
-        entry.first_seen = entry.first_seen.min(swap.ts_utc);
-        entry.max_sol_notional = entry.max_sol_notional.max(sol_notional);
-        entry.sol_trade_count = entry.sol_trade_count.saturating_add(1);
-        entry.wallets.insert(swap.wallet.clone());
-        if is_sol_buy(swap) {
-            entry.buy_count = entry.buy_count.saturating_add(1);
-        }
+fn observe_quality_evidence(
+    evidence: &mut HashMap<String, ObservedQualityEvidence>,
+    swap: &SwapEvent,
+) {
+    let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) else {
+        return;
+    };
+    if !sol_notional.is_finite() || sol_notional <= 0.0 {
+        return;
     }
-    evidence.retain(|_, value| value.buy_count > 0);
-    evidence
+    let entry = evidence
+        .entry(token.to_string())
+        .or_insert_with(|| ObservedQualityEvidence {
+            mint: token.to_string(),
+            first_seen: swap.ts_utc,
+            max_sol_notional: 0.0,
+            buy_count: 0,
+            sol_trade_count: 0,
+            wallets: HashSet::new(),
+        });
+    entry.first_seen = entry.first_seen.min(swap.ts_utc);
+    entry.max_sol_notional = entry.max_sol_notional.max(sol_notional);
+    entry.sol_trade_count = entry.sol_trade_count.saturating_add(1);
+    entry.wallets.insert(swap.wallet.clone());
+    if is_sol_buy(swap) {
+        entry.buy_count = entry.buy_count.saturating_add(1);
+    }
 }
 
 fn quality_row_has_required_fields(
