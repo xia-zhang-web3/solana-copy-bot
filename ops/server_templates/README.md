@@ -15,6 +15,8 @@ the active Discovery V2 / artifact-first workflow.
 5. `copybot-discovery-runtime-export.timer`
 6. `copybot-discovery-recent-raw-snapshot.service`
 7. `copybot-discovery-recent-raw-snapshot.timer`
+8. `copybot-discovery-v2-prepare-quality.service`
+9. `copybot-discovery-v2-prepare-quality.timer`
 
 ## Removed Files
 
@@ -50,6 +52,9 @@ Required invariants:
 
 `copybot-discovery-recent-raw-snapshot.timer` maintains the recent_raw snapshot
 surface.
+
+`copybot-discovery-v2-prepare-quality.timer` refreshes bounded observed-window
+token quality evidence used by Discovery V2 gates.
 
 Both timers are maintenance surfaces, not production-green proof by themselves.
 Discovery V2 status / publish checks decide the current publication contract.

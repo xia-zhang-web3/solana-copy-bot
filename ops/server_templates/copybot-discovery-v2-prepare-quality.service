@@ -1,0 +1,11 @@
+[Unit]
+Description=Copybot Discovery V2 Quality Prepare
+After=solana-copy-bot.service
+
+[Service]
+Type=oneshot
+User=copybot
+WorkingDirectory=/var/www/solana-copy-bot
+EnvironmentFile=/etc/solana-copy-bot/app.env
+ExecStart=/var/www/solana-copy-bot/bin/discovery_v2_prepare_quality --config /etc/solana-copy-bot/live.server.toml --max-mints 20000 --commit
+TimeoutStartSec=240

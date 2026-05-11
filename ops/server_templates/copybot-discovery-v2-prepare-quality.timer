@@ -1,0 +1,12 @@
+[Unit]
+Description=Copybot Discovery V2 Quality Prepare Timer
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=5m
+RandomizedDelaySec=20s
+Persistent=true
+Unit=copybot-discovery-v2-prepare-quality.service
+
+[Install]
+WantedBy=timers.target
