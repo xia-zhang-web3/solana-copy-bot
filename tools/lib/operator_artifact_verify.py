@@ -12,7 +12,11 @@ SAFE_PACKAGE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 SAFE_TARGETS = {"x86_64-unknown-linux-gnu"}
 EXPECTED_PACKAGE_BINARIES = {
     "copybot-app": {"copybot-app"},
-    "copybot-discovery-v2": {"discovery_v2_publish", "discovery_v2_status"},
+    "copybot-discovery-v2": {
+        "discovery_v2_prepare_quality",
+        "discovery_v2_publish",
+        "discovery_v2_status",
+    },
     "copybot-discovery-ops": {
         "discovery_recent_raw_snapshot",
         "discovery_runtime_export",

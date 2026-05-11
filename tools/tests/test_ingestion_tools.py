@@ -298,7 +298,11 @@ class OperatorArtifactVerifierTests(unittest.TestCase):
     def test_verifier_rejects_dirty_artifact_without_required_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             artifact_dir = Path(tmp) / ("copybot-discovery-v2-" + "a" * 40 + "-dirty")
-            binaries = ["discovery_v2_publish", "discovery_v2_status"]
+            binaries = [
+                "discovery_v2_prepare_quality",
+                "discovery_v2_publish",
+                "discovery_v2_status",
+            ]
             self.write_artifact(
                 artifact_dir,
                 "copybot-discovery-v2",
@@ -337,7 +341,11 @@ class OperatorArtifactVerifierTests(unittest.TestCase):
             self.write_artifact(
                 artifact_dir,
                 "copybot-discovery-v2",
-                ["discovery_v2_publish", "discovery_v2_status"],
+                [
+                    "discovery_v2_prepare_quality",
+                    "discovery_v2_publish",
+                    "discovery_v2_status",
+                ],
                 profile="operator-release",
                 git_dirty=False,
             )
