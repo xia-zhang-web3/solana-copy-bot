@@ -196,7 +196,14 @@ fn status_blocks_when_window_scan_is_truncated() -> Result<()> {
     assert!(!status.production_green);
     assert_eq!(status.scan.rows_scanned, 1);
     assert!(status.scan.max_rows_exhausted);
-    assert_eq!(status.wallet_metrics[0].wallet_id, "old_wallet");
+    assert_eq!(status.scan.unique_wallets, 1);
+    assert_eq!(status.wallet_metrics_total, 1);
+    assert_eq!(status.wallet_metrics_returned, 0);
+    assert!(status.wallet_metrics_truncated);
+    assert!(status.wallet_metrics.is_empty());
+    assert!(status
+        .blockers
+        .contains(&"discovery_v2_scan_budget_exhausted".to_string()));
     Ok(())
 }
 

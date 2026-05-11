@@ -60,6 +60,10 @@ impl DiscoveryV2WindowAccumulator {
         entry.observe_swap(swap, discovery, tradability);
     }
 
+    pub(crate) fn wallet_count(&self) -> usize {
+        self.wallets.len()
+    }
+
     pub(crate) fn into_parts(
         mut self,
     ) -> (

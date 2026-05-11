@@ -30,3 +30,18 @@ pub(crate) fn build_filter_status(
         reject_breakdown,
     }
 }
+
+pub(crate) fn build_budget_exhausted_filter_status(
+    total_wallets: usize,
+) -> DiscoveryV2FilterStatus {
+    let mut reject_breakdown = BTreeMap::new();
+    if total_wallets > 0 {
+        reject_breakdown.insert("scan_budget_exhausted".to_string(), total_wallets as u64);
+    }
+    DiscoveryV2FilterStatus {
+        total_wallets,
+        eligible_wallets: 0,
+        rejected_wallets: total_wallets,
+        reject_breakdown,
+    }
+}

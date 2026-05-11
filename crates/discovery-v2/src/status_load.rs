@@ -50,6 +50,7 @@ pub(super) struct DiscoveryV2WindowScan {
     pub(super) wallets: HashMap<String, WalletAccumulator>,
     pub(super) token_sol_history: HashMap<String, Vec<SolLegTrade>>,
     pub(super) rows_seen: usize,
+    pub(super) unique_wallets_seen: usize,
     pub(super) time_budget_exhausted: bool,
 }
 
@@ -92,11 +93,23 @@ pub(super) fn scan_window_metrics(
             },
         )
         .context("failed streaming discovery v2 current window")?;
+    let unique_wallets_seen = accumulator.wallet_count();
+    if page.time_budget_exhausted || rows_seen > max_rows {
+        return Ok(DiscoveryV2WindowScan {
+            wallets: HashMap::new(),
+            token_sol_history: HashMap::new(),
+            rows_seen,
+            unique_wallets_seen,
+            time_budget_exhausted: page.time_budget_exhausted,
+        });
+    }
     let (wallets, token_sol_history) = accumulator.into_parts();
+    let unique_wallets_seen = wallets.len();
     Ok(DiscoveryV2WindowScan {
         wallets,
         token_sol_history,
         rows_seen,
+        unique_wallets_seen,
         time_budget_exhausted: page.time_budget_exhausted,
     })
 }

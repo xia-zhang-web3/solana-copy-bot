@@ -1,4 +1,4 @@
-use crate::filters::build_filter_status;
+use crate::filters::{build_budget_exhausted_filter_status, build_filter_status};
 use crate::metric::wallet_metric_from_accumulator;
 use crate::policy::{discovery_v2_policy_fingerprint, DiscoveryV2BuildOptions};
 use crate::status::status_blockers::blockers;
@@ -50,6 +50,48 @@ pub fn build_discovery_v2_status(
         .as_ref()
         .map(|status| status.cursor.ts_utc.min(options.now))
         .unwrap_or(options.now);
+    let scan = scan_status(
+        options.max_rows,
+        options.time_budget_ms,
+        window_scan.rows_seen,
+        window_scan.time_budget_exhausted,
+        window_scan.unique_wallets_seen,
+    );
+    if scan.budget_exhausted {
+        let candidate_wallets = Vec::new();
+        let filters = build_budget_exhausted_filter_status(window_scan.unique_wallets_seen);
+        let blockers = blockers(
+            discovery,
+            shadow,
+            &tail,
+            coverage_sample.as_ref(),
+            &scan,
+            &candidate_wallets,
+            options.execution_enabled,
+            options.window_minutes,
+        );
+        return Ok(DiscoveryV2Status {
+            source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
+            now: options.now,
+            window_start,
+            window_minutes: options.window_minutes,
+            max_tail_lag_seconds: options.max_tail_lag_seconds,
+            tail,
+            coverage_sample,
+            scan,
+            filters,
+            wallet_metrics_total: window_scan.unique_wallets_seen,
+            wallet_metrics_returned: 0,
+            wallet_metrics_truncated: window_scan.unique_wallets_seen > 0,
+            wallet_metrics: Vec::new(),
+            candidate_wallets,
+            execution_enabled: options.execution_enabled,
+            execution_disabled: !options.execution_enabled,
+            blockers,
+            production_green: false,
+            policy_fingerprint: discovery_v2_policy_fingerprint(discovery, shadow, &options),
+        });
+    }
     let mut wallet_metrics = window_scan
         .wallets
         .into_iter()
@@ -65,13 +107,6 @@ pub fn build_discovery_v2_status(
         .collect::<Vec<_>>();
     sort_wallet_metrics(&mut wallet_metrics);
     let candidate_wallets = candidate_wallets(discovery, &wallet_metrics);
-    let scan = scan_status(
-        options.max_rows,
-        options.time_budget_ms,
-        window_scan.rows_seen,
-        window_scan.time_budget_exhausted,
-        &wallet_metrics,
-    );
     let filters = build_filter_status(&wallet_metrics);
     let blockers = blockers(
         discovery,
