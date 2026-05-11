@@ -17,5 +17,6 @@ pub use crate::quality_prepare::{
 pub use crate::status::{
     build_discovery_v2_status, DiscoveryV2CoverageSample, DiscoveryV2FilterStatus,
     DiscoveryV2ScanStatus, DiscoveryV2Status, DiscoveryV2TailStatus, DISCOVERY_V2_SCORING_SOURCE,
+    OPERATOR_WALLET_METRIC_LIMIT,
 };
 pub use metric::DiscoveryV2WalletMetric;

@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use copybot_storage_core::DiscoveryRuntimeCursor;
 use serde::{Deserialize, Serialize};
 
+pub const OPERATOR_WALLET_METRIC_LIMIT: usize = 250;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryV2Status {
     pub source: String,
@@ -15,6 +17,9 @@ pub struct DiscoveryV2Status {
     pub coverage_sample: Option<DiscoveryV2CoverageSample>,
     pub scan: DiscoveryV2ScanStatus,
     pub filters: DiscoveryV2FilterStatus,
+    pub wallet_metrics_total: usize,
+    pub wallet_metrics_returned: usize,
+    pub wallet_metrics_truncated: bool,
     pub wallet_metrics: Vec<DiscoveryV2WalletMetric>,
     pub candidate_wallets: Vec<String>,
     pub execution_enabled: bool,
@@ -22,6 +27,19 @@ pub struct DiscoveryV2Status {
     pub blockers: Vec<String>,
     pub production_green: bool,
     pub policy_fingerprint: String,
+}
+
+impl DiscoveryV2Status {
+    pub fn bounded_operator_wallet_metrics(mut self) -> Self {
+        let total = self.wallet_metrics_total.max(self.wallet_metrics.len());
+        if self.wallet_metrics.len() > OPERATOR_WALLET_METRIC_LIMIT {
+            self.wallet_metrics.truncate(OPERATOR_WALLET_METRIC_LIMIT);
+        }
+        self.wallet_metrics_total = total;
+        self.wallet_metrics_returned = self.wallet_metrics.len();
+        self.wallet_metrics_truncated = self.wallet_metrics_returned < total;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

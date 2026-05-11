@@ -12,6 +12,7 @@ use std::time::{Duration as StdDuration, Instant};
 pub use crate::filters::DiscoveryV2FilterStatus;
 pub use status_types::{
     DiscoveryV2CoverageSample, DiscoveryV2ScanStatus, DiscoveryV2Status, DiscoveryV2TailStatus,
+    OPERATOR_WALLET_METRIC_LIMIT,
 };
 
 #[path = "status_blockers.rs"]
@@ -93,6 +94,9 @@ pub fn build_discovery_v2_status(
         coverage_sample,
         scan,
         filters,
+        wallet_metrics_total: wallet_metrics.len(),
+        wallet_metrics_returned: wallet_metrics.len(),
+        wallet_metrics_truncated: false,
         wallet_metrics,
         candidate_wallets,
         execution_enabled: options.execution_enabled,

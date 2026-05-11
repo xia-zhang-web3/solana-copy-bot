@@ -69,6 +69,12 @@ pub fn publish_discovery_v2_status(
             &runtime_cursor,
         )?;
     }
+    let policy_fingerprint = status.policy_fingerprint.clone();
+    let published_wallet_count = if status.production_green {
+        status.candidate_wallets.len()
+    } else {
+        0
+    };
     Ok(DiscoveryV2PublishReport {
         dry_run: !commit,
         committed: commit,
@@ -80,13 +86,9 @@ pub fn publish_discovery_v2_status(
         runtime_mode: runtime_mode.as_str().to_string(),
         reason: reason.to_string(),
         scoring_source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
-        policy_fingerprint: status.policy_fingerprint.clone(),
-        published_wallet_count: if status.production_green {
-            status.candidate_wallets.len()
-        } else {
-            0
-        },
-        status,
+        policy_fingerprint,
+        published_wallet_count,
+        status: status.bounded_operator_wallet_metrics(),
     })
 }
 

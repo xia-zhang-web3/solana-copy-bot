@@ -4,7 +4,7 @@ use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_discovery_v2::{
     build_discovery_v2_status, discovery_v2_policy_fingerprint, publish_discovery_v2_status,
-    DiscoveryV2BuildOptions, DISCOVERY_V2_SCORING_SOURCE,
+    DiscoveryV2BuildOptions, DISCOVERY_V2_SCORING_SOURCE, OPERATOR_WALLET_METRIC_LIMIT,
 };
 use copybot_storage_core::{
     ensure_discovery_v2_schema, DiscoveryRuntimeMode, SqliteDiscoveryStore,
@@ -291,6 +291,52 @@ fn publish_commit_writes_followlist_and_publication_state_when_green() -> Result
     assert_eq!(state.publication_runtime_cursor.as_ref(), Some(&cursor));
     assert_eq!(cursor.slot, 11);
     assert_eq!(cursor.signature, "sig-tail");
+    Ok(())
+}
+
+#[test]
+fn publish_report_bounds_operator_wallet_metrics_without_losing_totals() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
+    let mut swaps = vec![swap(
+        "coverage_wallet",
+        "sig-coverage-floor",
+        1,
+        now - Duration::hours(25),
+    )];
+    for index in 0..(OPERATOR_WALLET_METRIC_LIMIT + 25) {
+        swaps.push(swap(
+            &format!("wallet_{index:04}"),
+            &format!("sig-wallet-{index:04}"),
+            10 + index as u64,
+            now - Duration::minutes(120 + index as i64),
+        ));
+    }
+    store.insert_observed_swaps_batch(&swaps)?;
+    insert_quality(&store, now, Some(1.0))?;
+    let (mut discovery, shadow) = strict_policy();
+    discovery.follow_top_n = 1;
+    let mut options = options(now);
+    options.max_rows = OPERATOR_WALLET_METRIC_LIMIT + 100;
+
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options)?;
+    let total_wallets = status.wallet_metrics.len();
+    assert!(total_wallets > OPERATOR_WALLET_METRIC_LIMIT);
+
+    let report = publish_discovery_v2_status(&store, status, false)?;
+
+    assert_eq!(report.status.filters.total_wallets, total_wallets);
+    assert_eq!(report.status.scan.unique_wallets, total_wallets);
+    assert_eq!(report.status.wallet_metrics_total, total_wallets);
+    assert_eq!(
+        report.status.wallet_metrics_returned,
+        OPERATOR_WALLET_METRIC_LIMIT
+    );
+    assert!(report.status.wallet_metrics_truncated);
+    assert_eq!(
+        report.status.wallet_metrics.len(),
+        OPERATOR_WALLET_METRIC_LIMIT
+    );
     Ok(())
 }
 

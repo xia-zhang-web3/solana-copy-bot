@@ -41,13 +41,9 @@ pub(crate) fn compute_rug_evaluation(
         };
         let mut volume_sol = 0.0;
         let mut unique_traders = HashSet::new();
-        for trade in trades {
-            if trade.ts < buy.ts {
-                continue;
-            }
-            if trade.ts > window_end {
-                break;
-            }
+        let start = trades.partition_point(|trade| trade.ts < buy.ts);
+        let end = trades.partition_point(|trade| trade.ts <= window_end);
+        for trade in &trades[start..end] {
             volume_sol += trade.sol_notional;
             unique_traders.insert(trade.wallet_id.as_str());
         }

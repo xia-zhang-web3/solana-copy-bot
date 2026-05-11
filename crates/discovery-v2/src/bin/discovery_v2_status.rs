@@ -14,7 +14,10 @@ fn main() -> Result<()> {
         return Ok(());
     };
     let status = run(config)?;
-    println!("{}", serde_json::to_string_pretty(&status)?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&status.bounded_operator_wallet_metrics())?
+    );
     Ok(())
 }
 
