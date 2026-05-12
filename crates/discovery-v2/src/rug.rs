@@ -45,7 +45,7 @@ pub(crate) fn compute_rug_evaluation(
         let end = trades.partition_point(|trade| trade.ts <= window_end);
         for trade in &trades[start..end] {
             volume_sol += trade.sol_notional;
-            unique_traders.insert(trade.wallet_id.as_str());
+            unique_traders.insert(trade.trader_id);
         }
         let thin_volume = volume_sol + 1e-12 < discovery.thin_market_min_volume_sol;
         let thin_traders = unique_traders.len() < discovery.thin_market_min_unique_traders as usize;

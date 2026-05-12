@@ -5,7 +5,7 @@ pub(crate) const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 #[derive(Debug, Clone)]
 pub(crate) struct SolLegTrade {
     pub ts: chrono::DateTime<chrono::Utc>,
-    pub wallet_id: String,
+    pub trader_id: u32,
     pub sol_notional: f64,
 }
 

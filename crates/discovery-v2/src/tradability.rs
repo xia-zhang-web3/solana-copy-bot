@@ -19,12 +19,13 @@ pub(crate) enum BuyTradability {
 struct TokenRollingState {
     sol_trades_5m: VecDeque<SolLegTrade>,
     sol_volume_5m: f64,
-    sol_traders_5m: HashMap<String, u32>,
+    sol_traders_5m: HashMap<u32, u32>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct DiscoveryV2WindowAccumulator {
     wallets: HashMap<String, WalletAccumulator>,
+    trader_ids: HashMap<String, u32>,
     token_states: HashMap<String, TokenRollingState>,
     token_sol_history: HashMap<String, Vec<SolLegTrade>>,
 }
@@ -37,13 +38,14 @@ impl DiscoveryV2WindowAccumulator {
         shadow: &ShadowConfig,
         token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
     ) {
+        let trader_id = self.trader_id_for_wallet(&swap.wallet);
         if let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) {
             self.token_sol_history
                 .entry(token.to_string())
                 .or_default()
                 .push(SolLegTrade {
                     ts: swap.ts_utc,
-                    wallet_id: swap.wallet.clone(),
+                    trader_id,
                     sol_notional: sol_notional.max(0.0),
                 });
         }
@@ -51,6 +53,7 @@ impl DiscoveryV2WindowAccumulator {
             &mut self.token_states,
             token_quality_cache,
             shadow,
+            trader_id,
             swap,
         );
         let entry = self
@@ -75,13 +78,26 @@ impl DiscoveryV2WindowAccumulator {
         }
         (self.wallets, self.token_sol_history)
     }
+
+    fn trader_id_for_wallet(&mut self, wallet: &str) -> u32 {
+        if let Some(id) = self.trader_ids.get(wallet) {
+            return *id;
+        }
+        let next = self
+            .trader_ids
+            .len()
+            .saturating_add(1)
+            .min(u32::MAX as usize) as u32;
+        self.trader_ids.insert(wallet.to_string(), next);
+        next
+    }
 }
 
 fn sort_sol_trades(trades: &mut [SolLegTrade]) {
     trades.sort_by(|left, right| {
         left.ts
             .cmp(&right.ts)
-            .then_with(|| left.wallet_id.cmp(&right.wallet_id))
+            .then_with(|| left.trader_id.cmp(&right.trader_id))
     });
 }
 
@@ -89,6 +105,7 @@ fn update_token_state_and_buy_tradability(
     token_states: &mut HashMap<String, TokenRollingState>,
     token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
     shadow: &ShadowConfig,
+    trader_id: u32,
     swap: &SwapEvent,
 ) -> Option<BuyTradability> {
     let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) else {
@@ -98,13 +115,13 @@ fn update_token_state_and_buy_tradability(
     evict_expired_token_trades(state, swap.ts_utc);
     let trade = SolLegTrade {
         ts: swap.ts_utc,
-        wallet_id: swap.wallet.clone(),
+        trader_id,
         sol_notional: sol_notional.max(0.0),
     };
     state.sol_volume_5m += trade.sol_notional;
     state
         .sol_traders_5m
-        .entry(trade.wallet_id.clone())
+        .entry(trade.trader_id)
         .and_modify(|count| *count += 1)
         .or_insert(1);
     state.sol_trades_5m.push_back(trade);
@@ -185,10 +202,10 @@ fn evict_expired_token_trades(state: &mut TokenRollingState, now: DateTime<Utc>)
     {
         let expired = state.sol_trades_5m.pop_front().expect("front checked");
         state.sol_volume_5m = (state.sol_volume_5m - expired.sol_notional).max(0.0);
-        if let Some(count) = state.sol_traders_5m.get_mut(&expired.wallet_id) {
+        if let Some(count) = state.sol_traders_5m.get_mut(&expired.trader_id) {
             *count -= 1;
             if *count == 0 {
-                state.sol_traders_5m.remove(&expired.wallet_id);
+                state.sol_traders_5m.remove(&expired.trader_id);
             }
         }
     }
