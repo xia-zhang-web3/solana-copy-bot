@@ -67,7 +67,7 @@ pub(crate) fn startup_runtime_publication_truth(
     };
     let freshness_gate = discovery.publication_freshness_gate();
     let expected_policy_fingerprint = discovery.discovery_v2_publication_policy_fingerprint(false);
-    if !publication_state.is_fresh_under_gate(&freshness_gate, now)
+    if !publication_truth_is_recent_for_runtime(&publication_state, now, &freshness_gate)
         || !publication_runtime_cursor_is_fresh_for_publication(
             &publication_state,
             now,
@@ -84,6 +84,22 @@ pub(crate) fn startup_runtime_publication_truth(
         return Ok(None);
     };
     Ok(Some(RuntimePublicationTruthResolution::Recent(truth)))
+}
+
+fn publication_truth_is_recent_for_runtime(
+    publication_state: &copybot_storage_core::DiscoveryPublicationStateRow,
+    now: DateTime<Utc>,
+    freshness_gate: &copybot_storage_core::DiscoveryPublicationFreshnessGate,
+) -> bool {
+    let Some(last_published_at) = publication_state.last_published_at else {
+        return false;
+    };
+    let published_age = now.signed_duration_since(last_published_at);
+    publication_state.has_complete_publication_truth()
+        && published_age >= chrono::Duration::zero()
+        && published_age <= freshness_gate.published_universe_max_age()
+        && publication_state
+            .has_valid_published_window_under_gate(freshness_gate, last_published_at)
 }
 
 fn publication_runtime_cursor_is_fresh_for_publication(

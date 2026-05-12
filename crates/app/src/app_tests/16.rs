@@ -2,20 +2,18 @@
     fn startup_recent_v2_published_universe_ignores_stale_followlist_residue() -> Result<()> {
         let (store, db_path) =
             make_test_store("startup-published-universe-ignores-stale-followlist")?;
-        let now = DateTime::parse_from_rfc3339("2026-03-17T12:10:00Z")
+        let now = DateTime::parse_from_rfc3339("2026-03-17T13:00:00Z")
             .expect("timestamp")
             .with_timezone(&Utc);
+        let last_published_at = now - chrono::Duration::minutes(42);
         let mut config = copybot_config::DiscoveryConfig::default();
         config.scoring_window_days = 2;
         config.metric_snapshot_interval_seconds = 30 * 60;
         config.follow_top_n = 1;
         config.min_score = 0.1;
 
-        let interval_seconds = config.metric_snapshot_interval_seconds.max(1) as i64;
-        let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
-        let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
-        let metrics_window_start =
-            bucketed_now - chrono::Duration::days(config.scoring_window_days.max(1) as i64);
+        let metrics_window_start = last_published_at
+            - chrono::Duration::days(config.scoring_window_days.max(1) as i64);
 
         store.upsert_wallet(
             "wallet_ranked_now",
@@ -49,7 +47,7 @@
         let publication_policy_fingerprint =
             discovery.discovery_v2_publication_policy_fingerprint(false);
         let publication_cursor = DiscoveryRuntimeCursor {
-            ts_utc: now - chrono::Duration::minutes(4),
+            ts_utc: last_published_at - chrono::Duration::seconds(2),
             slot: 42,
             signature: "startup-v2-publication-cursor".to_string(),
         };
@@ -63,7 +61,7 @@
             &DiscoveryPublicationStateUpdate {
                 runtime_mode: DiscoveryRuntimeMode::Healthy,
                 reason: "startup_recent_published_universe".to_string(),
-                last_published_at: Some(now - chrono::Duration::minutes(10)),
+                last_published_at: Some(last_published_at),
                 last_published_window_start: Some(metrics_window_start),
                 published_scoring_source: Some("discovery_v2_operational_window".to_string()),
                 published_wallet_ids: Some(expected_published_wallets.clone()),
