@@ -99,6 +99,35 @@ fn quality_prepare_commit_writes_observed_proxy_evidence() -> Result<()> {
 }
 
 #[test]
+fn quality_prepare_caps_wallet_evidence_at_required_threshold() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-11T10:00:00Z")?.with_timezone(&Utc);
+    let swaps = (0..20)
+        .map(|index| {
+            buy(
+                &format!("wallet-{index:02}"),
+                &format!("sig-{index:02}"),
+                10 + index,
+                now - Duration::minutes(10),
+            )
+        })
+        .collect::<Vec<_>>();
+    store.insert_observed_swaps_batch(&swaps)?;
+    let (discovery, mut shadow) = policy();
+    shadow.min_holders = 5;
+
+    let report =
+        prepare_discovery_v2_quality(&store, &discovery, &shadow, options(&discovery, now, true))?;
+    let row = store
+        .get_token_quality_cache(TOKEN_MINT)?
+        .expect("quality prepare should materialize capped holder evidence");
+
+    assert!(report.committed);
+    assert_eq!(row.holders, Some(5));
+    Ok(())
+}
+
+#[test]
 fn quality_prepare_commit_does_not_write_partial_window() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-11T10:00:00Z")?.with_timezone(&Utc);

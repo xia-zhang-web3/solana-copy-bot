@@ -83,6 +83,7 @@ pub fn prepare_discovery_v2_quality(
     let deadline = Instant::now() + StdDuration::from_millis(options.time_budget_ms);
     let mut rows_seen = 0usize;
     let mut evidence = HashMap::<String, ObservedQualityEvidence>::new();
+    let wallet_evidence_cap = wallet_evidence_cap(shadow);
     let page = store
         .for_each_observed_swap_in_window_after_cursor_with_budget(
             window_start,
@@ -95,7 +96,7 @@ pub fn prepare_discovery_v2_quality(
                 if rows_seen > options.max_rows {
                     return Ok(());
                 }
-                observe_quality_evidence(&mut evidence, &swap);
+                observe_quality_evidence(&mut evidence, &swap, wallet_evidence_cap);
                 Ok(())
             },
         )
@@ -229,6 +230,7 @@ pub fn prepare_discovery_v2_quality(
 fn observe_quality_evidence(
     evidence: &mut HashMap<String, ObservedQualityEvidence>,
     swap: &SwapEvent,
+    wallet_evidence_cap: usize,
 ) {
     let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) else {
         return;
@@ -249,10 +251,20 @@ fn observe_quality_evidence(
     entry.first_seen = entry.first_seen.min(swap.ts_utc);
     entry.max_sol_notional = entry.max_sol_notional.max(sol_notional);
     entry.sol_trade_count = entry.sol_trade_count.saturating_add(1);
-    entry.wallets.insert(swap.wallet.clone());
+    if entry.wallets.len() < wallet_evidence_cap || entry.wallets.contains(&swap.wallet) {
+        entry.wallets.insert(swap.wallet.clone());
+    }
     if is_sol_buy(swap) {
         entry.buy_count = entry.buy_count.saturating_add(1);
     }
+}
+
+fn wallet_evidence_cap(shadow: &ShadowConfig) -> usize {
+    shadow
+        .min_holders
+        .max(shadow.min_unique_traders_5m)
+        .max(1)
+        .min(usize::MAX as u64) as usize
 }
 
 fn quality_row_has_required_fields(
