@@ -2,8 +2,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use copybot_config::load_from_path;
 use copybot_discovery_v2::{
-    build_discovery_v2_status, publish_discovery_v2_status, DiscoveryV2BuildOptions,
-    DiscoveryV2PublishReport,
+    build_discovery_v2_status, live_portfolio_rpc_url_from_config, publish_discovery_v2_status,
+    DiscoveryV2BuildOptions, DiscoveryV2PublishReport,
 };
 use copybot_storage_core::{
     ensure_discovery_v2_schema, validate_discovery_v2_status_schema_read_only, SqliteDiscoveryStore,
@@ -79,7 +79,8 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
         &loaded.discovery,
         loaded.execution.enabled,
         Utc::now(),
-    );
+    )
+    .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded));
     let read_store = SqliteDiscoveryStore::open_read_only(&db_path)
         .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
     validate_discovery_v2_status_schema_read_only(&read_store).with_context(|| {

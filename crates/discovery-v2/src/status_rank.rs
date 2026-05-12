@@ -1,6 +1,5 @@
 use super::status_types::DiscoveryV2ScanStatus;
 use crate::metric::DiscoveryV2WalletMetric;
-use copybot_config::DiscoveryConfig;
 
 pub(super) fn sort_wallet_metrics(metrics: &mut [DiscoveryV2WalletMetric]) {
     metrics.sort_by(|left, right| {
@@ -11,18 +10,6 @@ pub(super) fn sort_wallet_metrics(metrics: &mut [DiscoveryV2WalletMetric]) {
             .then_with(|| right.trades.cmp(&left.trades))
             .then_with(|| left.wallet_id.cmp(&right.wallet_id))
     });
-}
-
-pub(super) fn candidate_wallets(
-    discovery: &DiscoveryConfig,
-    metrics: &[DiscoveryV2WalletMetric],
-) -> Vec<String> {
-    metrics
-        .iter()
-        .filter(|metric| metric.eligible && metric.score >= discovery.min_score)
-        .take(discovery.follow_top_n.max(1) as usize)
-        .map(|metric| metric.wallet_id.clone())
-        .collect()
 }
 
 pub(super) fn scan_status(

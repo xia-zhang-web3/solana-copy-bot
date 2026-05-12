@@ -19,6 +19,12 @@ pub struct DiscoveryConfig {
     pub min_buy_count: u32,
     pub min_tradable_ratio: f64,
     pub require_open_positions_for_publication: bool,
+    pub live_portfolio_gate_enabled: bool,
+    pub min_live_sol_balance: f64,
+    pub min_live_portfolio_value_sol: f64,
+    pub live_portfolio_max_wallets: usize,
+    pub live_portfolio_request_timeout_ms: u64,
+    pub live_portfolio_max_token_accounts: usize,
     pub max_rug_ratio: f64,
     pub rug_lookahead_seconds: u64,
     pub metric_snapshot_interval_seconds: u64,
@@ -51,6 +57,12 @@ impl Default for DiscoveryConfig {
             min_buy_count: 10,
             min_tradable_ratio: 0.25,
             require_open_positions_for_publication: false,
+            live_portfolio_gate_enabled: false,
+            min_live_sol_balance: 0.25,
+            min_live_portfolio_value_sol: 0.25,
+            live_portfolio_max_wallets: 60,
+            live_portfolio_request_timeout_ms: 8_000,
+            live_portfolio_max_token_accounts: 128,
             max_rug_ratio: 0.60,
             rug_lookahead_seconds: 30 * 60,
             metric_snapshot_interval_seconds: 30 * 60,
@@ -90,6 +102,27 @@ impl fmt::Debug for DiscoveryConfig {
             .field(
                 "require_open_positions_for_publication",
                 &self.require_open_positions_for_publication,
+            )
+            .field(
+                "live_portfolio_gate_enabled",
+                &self.live_portfolio_gate_enabled,
+            )
+            .field("min_live_sol_balance", &self.min_live_sol_balance)
+            .field(
+                "min_live_portfolio_value_sol",
+                &self.min_live_portfolio_value_sol,
+            )
+            .field(
+                "live_portfolio_max_wallets",
+                &self.live_portfolio_max_wallets,
+            )
+            .field(
+                "live_portfolio_request_timeout_ms",
+                &self.live_portfolio_request_timeout_ms,
+            )
+            .field(
+                "live_portfolio_max_token_accounts",
+                &self.live_portfolio_max_token_accounts,
             )
             .field("max_rug_ratio", &self.max_rug_ratio)
             .field("rug_lookahead_seconds", &self.rug_lookahead_seconds)

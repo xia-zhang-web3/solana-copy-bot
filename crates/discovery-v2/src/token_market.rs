@@ -7,6 +7,7 @@ pub(crate) struct SolLegTrade {
     pub ts: chrono::DateTime<chrono::Utc>,
     pub trader_id: u32,
     pub sol_notional: f64,
+    pub token_qty: f64,
 }
 
 pub(crate) fn is_sol_buy(swap: &SwapEvent) -> bool {
@@ -17,11 +18,11 @@ pub(crate) fn is_sol_sell(swap: &SwapEvent) -> bool {
     swap.token_out == SOL_MINT && swap.token_in != SOL_MINT
 }
 
-pub(crate) fn sol_leg_token_and_notional(swap: &SwapEvent) -> Option<(&str, f64)> {
+pub(crate) fn sol_leg_token_and_notional(swap: &SwapEvent) -> Option<(&str, f64, f64)> {
     if is_sol_buy(swap) {
-        Some((swap.token_out.as_str(), swap.amount_in))
+        Some((swap.token_out.as_str(), swap.amount_in, swap.amount_out))
     } else if is_sol_sell(swap) {
-        Some((swap.token_in.as_str(), swap.amount_out))
+        Some((swap.token_in.as_str(), swap.amount_out, swap.amount_in))
     } else {
         None
     }

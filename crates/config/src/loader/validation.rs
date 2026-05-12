@@ -71,6 +71,14 @@ fn validate_discovery_v2_float_gates(config: &AppConfig) -> Result<()> {
         "discovery.min_tradable_ratio",
         config.discovery.min_tradable_ratio,
     )?;
+    validate_finite_non_negative(
+        "discovery.min_live_sol_balance",
+        config.discovery.min_live_sol_balance,
+    )?;
+    validate_finite_non_negative(
+        "discovery.min_live_portfolio_value_sol",
+        config.discovery.min_live_portfolio_value_sol,
+    )?;
     validate_finite_ratio("discovery.max_rug_ratio", config.discovery.max_rug_ratio)?;
     validate_finite_non_negative(
         "discovery.thin_market_min_volume_sol",
@@ -142,6 +150,36 @@ fn validate_discovery_storage_mitigation_config(config: &AppConfig) -> Result<()
             "discovery.fetch_time_budget_ms ({}) must be >= 1",
             config.discovery.fetch_time_budget_ms
         ));
+    }
+    if config.discovery.live_portfolio_gate_enabled {
+        if config.discovery.live_portfolio_max_wallets
+            < config.discovery.follow_top_n.max(1) as usize
+        {
+            return Err(anyhow!(
+                "discovery.live_portfolio_max_wallets ({}) must be >= discovery.follow_top_n ({})",
+                config.discovery.live_portfolio_max_wallets,
+                config.discovery.follow_top_n
+            ));
+        }
+        if config.discovery.live_portfolio_request_timeout_ms == 0 {
+            return Err(anyhow!(
+                "discovery.live_portfolio_request_timeout_ms ({}) must be >= 1",
+                config.discovery.live_portfolio_request_timeout_ms
+            ));
+        }
+        if config.discovery.live_portfolio_max_token_accounts == 0 {
+            return Err(anyhow!(
+                "discovery.live_portfolio_max_token_accounts ({}) must be >= 1",
+                config.discovery.live_portfolio_max_token_accounts
+            ));
+        }
+        if config.discovery.min_live_sol_balance <= 0.0
+            && config.discovery.min_live_portfolio_value_sol <= 0.0
+        {
+            return Err(anyhow!(
+                "discovery live portfolio gate requires min_live_sol_balance or min_live_portfolio_value_sol > 0"
+            ));
+        }
     }
     Ok(())
 }

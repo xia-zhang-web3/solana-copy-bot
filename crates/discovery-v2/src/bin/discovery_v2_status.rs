@@ -1,7 +1,10 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use copybot_config::load_from_path;
-use copybot_discovery_v2::{build_discovery_v2_status, DiscoveryV2BuildOptions, DiscoveryV2Status};
+use copybot_discovery_v2::{
+    build_discovery_v2_status, live_portfolio_rpc_url_from_config, DiscoveryV2BuildOptions,
+    DiscoveryV2Status,
+};
 use copybot_storage_core::{validate_discovery_v2_status_schema_read_only, SqliteDiscoveryStore};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -83,7 +86,8 @@ fn run(config: Config) -> Result<DiscoveryV2Status> {
         &loaded.discovery,
         loaded.execution.enabled,
         Utc::now(),
-    );
+    )
+    .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded));
     build_discovery_v2_status(&store, &loaded.discovery, &loaded.shadow, options)
 }
 

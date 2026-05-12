@@ -232,7 +232,7 @@ fn observe_quality_evidence(
     swap: &SwapEvent,
     wallet_evidence_cap: usize,
 ) {
-    let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) else {
+    let Some((token, sol_notional, _token_qty)) = sol_leg_token_and_notional(swap) else {
         return;
     };
     if !sol_notional.is_finite() || sol_notional <= 0.0 {

@@ -39,7 +39,7 @@ impl DiscoveryV2WindowAccumulator {
         token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
     ) {
         let trader_id = self.trader_id_for_wallet(&swap.wallet);
-        if let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) {
+        if let Some((token, sol_notional, token_qty)) = sol_leg_token_and_notional(swap) {
             self.token_sol_history
                 .entry(token.to_string())
                 .or_default()
@@ -47,6 +47,7 @@ impl DiscoveryV2WindowAccumulator {
                     ts: swap.ts_utc,
                     trader_id,
                     sol_notional: sol_notional.max(0.0),
+                    token_qty: token_qty.max(0.0),
                 });
         }
         let tradability = update_token_state_and_buy_tradability(
@@ -108,7 +109,7 @@ fn update_token_state_and_buy_tradability(
     trader_id: u32,
     swap: &SwapEvent,
 ) -> Option<BuyTradability> {
-    let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) else {
+    let Some((token, sol_notional, token_qty)) = sol_leg_token_and_notional(swap) else {
         return None;
     };
     let state = token_states.entry(token.to_string()).or_default();
@@ -117,6 +118,7 @@ fn update_token_state_and_buy_tradability(
         ts: swap.ts_utc,
         trader_id,
         sol_notional: sol_notional.max(0.0),
+        token_qty: token_qty.max(0.0),
     };
     state.sol_volume_5m += trade.sol_notional;
     state

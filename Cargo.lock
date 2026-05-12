@@ -255,6 +255,7 @@ dependencies = [
  "copybot-config",
  "copybot-core-types",
  "copybot-storage-core",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

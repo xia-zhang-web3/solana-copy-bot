@@ -85,6 +85,7 @@ fn options(now: DateTime<Utc>) -> DiscoveryV2BuildOptions {
         max_rows: 100,
         time_budget_ms: 5_000,
         execution_enabled: false,
+        live_portfolio_rpc_url: None,
     }
 }
 
@@ -163,11 +164,20 @@ fn policy_fingerprint_changes_when_shadow_or_execution_identity_changes() -> Res
     let metric_snapshot_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
     assert_ne!(decay_changed, metric_snapshot_changed);
 
+    discovery.live_portfolio_gate_enabled = true;
+    let live_portfolio_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
+    assert_ne!(metric_snapshot_changed, live_portfolio_changed);
+
+    discovery.min_live_portfolio_value_sol += 0.0000001;
+    let live_portfolio_value_changed =
+        discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
+    assert_ne!(live_portfolio_changed, live_portfolio_value_changed);
+
     let mut execution_changed = options;
     execution_changed.execution_enabled = true;
     let execution_changed =
         discovery_v2_policy_fingerprint(&discovery, &shadow, &execution_changed);
-    assert_ne!(metric_snapshot_changed, execution_changed);
+    assert_ne!(live_portfolio_value_changed, execution_changed);
     Ok(())
 }
 

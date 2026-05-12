@@ -1,15 +1,17 @@
 use crate::filters::{build_budget_exhausted_filter_status, build_filter_status};
+use crate::live_portfolio::apply_live_portfolio_gate;
 use crate::metric::wallet_metric_from_accumulator;
 use crate::policy::{discovery_v2_policy_fingerprint, DiscoveryV2BuildOptions};
 use crate::status::status_blockers::blockers;
 use crate::status::status_load::{load_coverage_sample, load_tail_status, scan_window_metrics};
-use crate::status::status_rank::{candidate_wallets, scan_status, sort_wallet_metrics};
+use crate::status::status_rank::{scan_status, sort_wallet_metrics};
 use anyhow::Result;
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_storage_core::SqliteDiscoveryStore;
 use std::time::{Duration as StdDuration, Instant};
 
 pub use crate::filters::DiscoveryV2FilterStatus;
+pub use crate::live_portfolio::DiscoveryV2LivePortfolioStatus;
 pub use status_types::{
     DiscoveryV2CoverageSample, DiscoveryV2ScanStatus, DiscoveryV2Status, DiscoveryV2TailStatus,
     OPERATOR_WALLET_METRIC_LIMIT,
@@ -107,9 +109,16 @@ pub fn build_discovery_v2_status(
         ));
     }
     sort_wallet_metrics(&mut wallet_metrics);
-    let candidate_wallets = candidate_wallets(discovery, &wallet_metrics);
+    let (candidate_wallets, live_portfolio) = apply_live_portfolio_gate(
+        store,
+        discovery,
+        shadow,
+        &options,
+        &token_sol_history,
+        &mut wallet_metrics,
+    )?;
     let filters = build_filter_status(&wallet_metrics);
-    let blockers = blockers(
+    let mut blockers = blockers(
         discovery,
         shadow,
         &tail,
@@ -119,6 +128,18 @@ pub fn build_discovery_v2_status(
         options.execution_enabled,
         options.window_minutes,
     );
+    if live_portfolio
+        .as_ref()
+        .is_some_and(|status| status.rpc_missing)
+    {
+        blockers.push("discovery_v2_live_portfolio_rpc_missing".to_string());
+    }
+    if live_portfolio.as_ref().is_some_and(|status| {
+        status.checked_wallets >= status.max_wallets
+            && candidate_wallets.len() < discovery.follow_top_n.max(1) as usize
+    }) {
+        blockers.push("discovery_v2_live_portfolio_candidate_budget_exhausted".to_string());
+    }
     let production_green = blockers.is_empty();
     Ok(DiscoveryV2Status {
         source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
@@ -129,6 +150,7 @@ pub fn build_discovery_v2_status(
         tail,
         coverage_sample,
         scan,
+        live_portfolio,
         filters,
         wallet_metrics_total: wallet_metrics.len(),
         wallet_metrics_returned: wallet_metrics.len(),
@@ -174,6 +196,7 @@ fn budget_exhausted_status(
         tail,
         coverage_sample,
         scan,
+        live_portfolio: None,
         filters,
         wallet_metrics_total: unique_wallets_seen,
         wallet_metrics_returned: 0,

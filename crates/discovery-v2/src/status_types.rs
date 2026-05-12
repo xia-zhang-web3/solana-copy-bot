@@ -1,4 +1,5 @@
 use crate::filters::DiscoveryV2FilterStatus;
+use crate::live_portfolio::DiscoveryV2LivePortfolioStatus;
 use crate::metric::DiscoveryV2WalletMetric;
 use chrono::{DateTime, Utc};
 use copybot_storage_core::DiscoveryRuntimeCursor;
@@ -16,6 +17,7 @@ pub struct DiscoveryV2Status {
     pub tail: Option<DiscoveryV2TailStatus>,
     pub coverage_sample: Option<DiscoveryV2CoverageSample>,
     pub scan: DiscoveryV2ScanStatus,
+    pub live_portfolio: Option<DiscoveryV2LivePortfolioStatus>,
     pub filters: DiscoveryV2FilterStatus,
     pub wallet_metrics_total: usize,
     pub wallet_metrics_returned: usize,
