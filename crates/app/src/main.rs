@@ -155,7 +155,8 @@ use crate::runtime_bootstrap::{
 #[cfg(test)]
 use crate::runtime_follow_surface::follow_event_retention_duration;
 use crate::runtime_follow_surface::{
-    startup_follow_snapshot_from_publication_truth, startup_runtime_publication_truth,
+    runtime_follow_reload_from_publication_truth, startup_follow_snapshot_from_publication_truth,
+    startup_runtime_publication_truth,
 };
 use crate::runtime_helpers::*;
 use crate::sqlite_maintenance::*;

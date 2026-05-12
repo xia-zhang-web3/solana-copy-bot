@@ -309,7 +309,7 @@ fn publish_commit_writes_followlist_and_publication_state_when_green() -> Result
     assert!(report.committed);
     assert_eq!(
         report.live_daemon_follow_surface_action,
-        "restart_or_reload_copybot_app_before_live_follow_surface_uses_publication"
+        "copybot_app_live_reload_will_pick_up_publication_without_restart"
     );
     assert_eq!(report.published_wallet_count, 1);
     assert!(store.list_active_follow_wallets()?.contains("wallet_a"));

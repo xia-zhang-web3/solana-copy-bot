@@ -115,17 +115,6 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
             db_path.display()
         )
     })?;
-    let write_options = DiscoveryV2BuildOptions::from_config(
-        &loaded.discovery,
-        loaded.execution.enabled,
-        Utc::now(),
-    );
-    let status = build_discovery_v2_status(
-        &write_store,
-        &loaded.discovery,
-        &loaded.shadow,
-        write_options,
-    )?;
     publish_discovery_v2_status(&write_store, status, true)
 }
 

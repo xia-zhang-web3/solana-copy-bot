@@ -17,6 +17,8 @@ the active Discovery V2 / artifact-first workflow.
 7. `copybot-discovery-recent-raw-snapshot.timer`
 8. `copybot-discovery-v2-prepare-quality.service`
 9. `copybot-discovery-v2-prepare-quality.timer`
+10. `copybot-discovery-v2-publish.service`
+11. `copybot-discovery-v2-publish.timer`
 
 ## Removed Files
 
@@ -56,8 +58,13 @@ surface.
 `copybot-discovery-v2-prepare-quality.timer` refreshes bounded observed-window
 token quality evidence used by Discovery V2 gates.
 
-Both timers are maintenance surfaces, not production-green proof by themselves.
-Discovery V2 status / publish checks decide the current publication contract.
+`copybot-discovery-v2-publish.timer` commits a fresh V2 publication on cadence.
+`copybot-app` live-reloads fresh publication truth from SQLite, so this timer
+does not restart the daemon.
+
+These timers are maintenance surfaces, not production-green proof by
+themselves. Discovery V2 status / publish checks decide the current publication
+contract.
 
 ## Config Contract
 

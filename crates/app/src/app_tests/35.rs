@@ -184,3 +184,66 @@
             parse_app_log_env_filter("info").expect("missing env must use default app log filter");
         });
     }
+
+    #[test]
+    fn runtime_follow_live_reload_promotes_and_demotes_publication_wallets() {
+        let now = DateTime::parse_from_rfc3339("2026-05-12T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let mut current = FollowSnapshot::default();
+        current.active.insert("wallet_old".to_string());
+        current.active.insert("wallet_keep".to_string());
+        let truth = RuntimePublicationTruthResolution::Recent(
+            crate::discovery_runtime::RuntimePublishedUniverseTruth {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "ready".to_string(),
+                last_published_at: now,
+                last_published_window_start: now - chrono::Duration::days(1),
+                published_scoring_source: Some(
+                    copybot_config::DISCOVERY_V2_SCORING_SOURCE.to_string(),
+                ),
+                published_wallet_ids: vec!["wallet_keep".to_string(), "wallet_new".to_string()],
+            },
+        );
+
+        let reload =
+            runtime_follow_reload_from_publication_truth(&current, true, Some(&truth), now)
+                .expect("changed publication should reload");
+
+        assert!(!reload.shadow_strategy_fail_closed);
+        assert_eq!(reload.active_follow_wallets, 2);
+        assert_eq!(reload.added_wallets, 1);
+        assert_eq!(reload.removed_wallets, 1);
+        assert!(reload.follow_snapshot.active.contains("wallet_keep"));
+        assert!(reload.follow_snapshot.active.contains("wallet_new"));
+        assert!(!reload.follow_snapshot.active.contains("wallet_old"));
+        assert_eq!(
+            reload.follow_snapshot.promoted_at.get("wallet_new"),
+            Some(&now)
+        );
+        assert_eq!(
+            reload.follow_snapshot.demoted_at.get("wallet_old"),
+            Some(&now)
+        );
+    }
+
+    #[test]
+    fn runtime_follow_live_reload_fails_closed_without_current_publication() {
+        let now = DateTime::parse_from_rfc3339("2026-05-12T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let mut current = FollowSnapshot::default();
+        current.active.insert("wallet_a".to_string());
+        current.active.insert("wallet_b".to_string());
+
+        let reload = runtime_follow_reload_from_publication_truth(&current, false, None, now)
+            .expect("missing publication should fail closed when current runtime follows wallets");
+
+        assert!(reload.shadow_strategy_fail_closed);
+        assert_eq!(reload.active_follow_wallets, 0);
+        assert_eq!(reload.added_wallets, 0);
+        assert_eq!(reload.removed_wallets, 2);
+        assert!(reload.follow_snapshot.active.is_empty());
+        assert_eq!(reload.follow_snapshot.demoted_at.get("wallet_a"), Some(&now));
+        assert_eq!(reload.follow_snapshot.demoted_at.get("wallet_b"), Some(&now));
+    }

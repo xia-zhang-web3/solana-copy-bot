@@ -4,6 +4,14 @@ mod startup;
 
 use startup::{initialize_app_loop_startup, AppLoopStartup};
 
+fn runtime_follow_reload_interval(seconds: u64) -> time::Interval {
+    let interval = Duration::from_secs(seconds.max(1));
+    let start = time::Instant::now() + interval;
+    let mut ticker = time::interval_at(start, interval);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    ticker
+}
+
 pub(super) async fn run_app_loop(
     store: SqliteStore,
     mut ingestion: IngestionService,
@@ -33,9 +41,9 @@ pub(super) async fn run_app_loop(
         mut interval,
         mut risk_refresh_interval,
         mut shadow_interval,
-        follow_snapshot,
+        mut follow_snapshot,
         mut open_shadow_lots,
-        shadow_strategy_fail_closed,
+        mut shadow_strategy_fail_closed,
         stale_lot_max_hold_hours,
         stale_lot_terminal_zero_price_hours,
         stale_lot_recovery_zero_price_enabled,
@@ -84,6 +92,8 @@ pub(super) async fn run_app_loop(
         shadow_refresh_seconds,
         pause_new_trades_on_outage,
     )?;
+    let mut runtime_follow_reload_interval =
+        runtime_follow_reload_interval(discovery_fetch_refresh_seconds);
 
     loop {
         operator_emergency_stop.refresh(&store, Utc::now())?;
@@ -154,6 +164,38 @@ pub(super) async fn run_app_loop(
             }
             _ = risk_refresh_interval.tick() => {
                 handle_risk_refresh_tick(&store, &ingestion, &mut shadow_risk_guard)?;
+            }
+            _ = runtime_follow_reload_interval.tick() => {
+                let reload_now = Utc::now();
+                let runtime_publication_truth =
+                    startup_runtime_publication_truth(&discovery, &sqlite_path, reload_now)
+                        .context("failed to reload runtime V2 follow publication")?;
+                if let Some(reload) = runtime_follow_reload_from_publication_truth(
+                    follow_snapshot.as_ref(),
+                    shadow_strategy_fail_closed,
+                    runtime_publication_truth.as_ref(),
+                    reload_now,
+                ) {
+                    if reload.shadow_strategy_fail_closed {
+                        open_shadow_lots.clear();
+                        warn!(
+                            previous_active_follow_wallets = follow_snapshot.active.len(),
+                            source = reload.source,
+                            "runtime follow universe fail-closed during live reload"
+                        );
+                    } else {
+                        refresh_shadow_open_lot_index_or_warn(&store, &mut open_shadow_lots)?;
+                        info!(
+                            active_follow_wallets = reload.active_follow_wallets,
+                            added_wallets = reload.added_wallets,
+                            removed_wallets = reload.removed_wallets,
+                            source = reload.source,
+                            "runtime follow universe reloaded from V2 publication"
+                        );
+                    }
+                    shadow_strategy_fail_closed = reload.shadow_strategy_fail_closed;
+                    follow_snapshot = Arc::new(reload.follow_snapshot);
+                }
             }
             observed_swap_retention_join = async {
                 match observed_swap_retention_handle.as_mut() {

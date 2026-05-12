@@ -1,6 +1,16 @@
 use crate::discovery_runtime::RuntimePublishedUniverseTruth;
 use crate::*;
 use copybot_config::DISCOVERY_V2_SCORING_SOURCE;
+use std::collections::HashSet;
+
+pub(crate) struct RuntimeFollowReload {
+    pub(crate) follow_snapshot: FollowSnapshot,
+    pub(crate) shadow_strategy_fail_closed: bool,
+    pub(crate) active_follow_wallets: usize,
+    pub(crate) added_wallets: usize,
+    pub(crate) removed_wallets: usize,
+    pub(crate) source: &'static str,
+}
 
 #[cfg(test)]
 pub(crate) fn follow_event_retention_duration(
@@ -74,6 +84,51 @@ pub(crate) fn startup_runtime_publication_truth(
         return Ok(None);
     };
     Ok(Some(RuntimePublicationTruthResolution::Recent(truth)))
+}
+
+pub(crate) fn runtime_follow_reload_from_publication_truth(
+    current: &FollowSnapshot,
+    current_shadow_strategy_fail_closed: bool,
+    runtime_publication_truth: Option<&RuntimePublicationTruthResolution>,
+    now: DateTime<Utc>,
+) -> Option<RuntimeFollowReload> {
+    let next_active = match runtime_publication_truth {
+        Some(RuntimePublicationTruthResolution::Recent(truth)) => truth.active_wallets(),
+        Some(RuntimePublicationTruthResolution::BootstrapDegraded(_)) | None => HashSet::new(),
+    };
+    let next_shadow_strategy_fail_closed = runtime_publication_truth.is_none()
+        || matches!(
+            runtime_publication_truth,
+            Some(RuntimePublicationTruthResolution::BootstrapDegraded(_))
+        );
+    if current.active == next_active
+        && current_shadow_strategy_fail_closed == next_shadow_strategy_fail_closed
+    {
+        return None;
+    }
+
+    let added_wallets = next_active.difference(&current.active).count();
+    let removed_wallets = current.active.difference(&next_active).count();
+    let mut next = current.clone();
+    for wallet_id in next_active.difference(&current.active) {
+        next.promoted_at.insert(wallet_id.clone(), now);
+    }
+    for wallet_id in current.active.difference(&next_active) {
+        next.demoted_at.insert(wallet_id.clone(), now);
+    }
+    next.active = next_active;
+    Some(RuntimeFollowReload {
+        active_follow_wallets: next.active.len(),
+        follow_snapshot: next,
+        shadow_strategy_fail_closed: next_shadow_strategy_fail_closed,
+        added_wallets,
+        removed_wallets,
+        source: if runtime_publication_truth.is_some() {
+            "discovery_v2_publication"
+        } else {
+            "fail_closed_missing_current_publication"
+        },
+    })
 }
 
 fn publication_truth_has_current_v2_identity(

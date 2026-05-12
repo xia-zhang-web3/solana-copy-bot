@@ -79,7 +79,7 @@ pub fn publish_discovery_v2_status(
         dry_run: !commit,
         committed: commit,
         live_daemon_follow_surface_action: if commit {
-            "restart_or_reload_copybot_app_before_live_follow_surface_uses_publication".to_string()
+            "copybot_app_live_reload_will_pick_up_publication_without_restart".to_string()
         } else {
             "none_for_dry_run".to_string()
         },
