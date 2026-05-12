@@ -85,7 +85,7 @@ pub fn prepare_discovery_v2_quality(
     let mut evidence = HashMap::<String, ObservedQualityEvidence>::new();
     let wallet_evidence_cap = wallet_evidence_cap(shadow);
     let page = store
-        .for_each_observed_swap_in_window_after_cursor_with_budget(
+        .for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget(
             window_start,
             options.now,
             None,

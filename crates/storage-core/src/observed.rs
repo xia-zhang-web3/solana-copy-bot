@@ -237,6 +237,47 @@ impl SqliteDiscoveryStore {
         cursor: Option<&DiscoveryRuntimeCursor>,
         limit: usize,
         deadline: Instant,
+        on_swap: F,
+    ) -> Result<ObservedSwapCursorPage>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
+        self.for_each_observed_swap_in_window_after_cursor_with_budget_filtered(
+            since, until, cursor, limit, deadline, None, on_swap,
+        )
+    }
+
+    pub fn for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget<F>(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        cursor: Option<&DiscoveryRuntimeCursor>,
+        limit: usize,
+        deadline: Instant,
+        on_swap: F,
+    ) -> Result<ObservedSwapCursorPage>
+    where
+        F: FnMut(SwapEvent) -> Result<()>,
+    {
+        self.for_each_observed_swap_in_window_after_cursor_with_budget_filtered(
+            since,
+            until,
+            cursor,
+            limit,
+            deadline,
+            Some(()),
+            on_swap,
+        )
+    }
+
+    fn for_each_observed_swap_in_window_after_cursor_with_budget_filtered<F>(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+        cursor: Option<&DiscoveryRuntimeCursor>,
+        limit: usize,
+        deadline: Instant,
+        sol_leg_only: Option<()>,
         mut on_swap: F,
     ) -> Result<ObservedSwapCursorPage>
     where
@@ -255,16 +296,18 @@ impl SqliteDiscoveryStore {
         let limit = limit.min(i64::MAX as usize) as i64;
         let since_raw = since.to_rfc3339();
         let until_raw = until.to_rfc3339();
-        let (query, values): (&str, Vec<SqlValue>) = match cursor {
-            Some(cursor) => (
+        let (query, values): (&str, Vec<SqlValue>) = match (cursor, sol_leg_only) {
+            (Some(cursor), Some(())) => (
                 "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
                         qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
-                 FROM observed_swaps
-	                 WHERE ts >= ?1
-	                   AND ts <= ?2
-	                   AND (ts, slot, signature) > (?3, ?4, ?5)
-	                 ORDER BY ts ASC, slot ASC, signature ASC
-	                 LIMIT ?6",
+                 FROM observed_swaps INDEXED BY idx_observed_swaps_sol_leg_ts_slot_signature
+                 WHERE ts >= ?1
+                   AND ts <= ?2
+                   AND (token_in = 'So11111111111111111111111111111111111111112'
+                        OR token_out = 'So11111111111111111111111111111111111111112')
+                   AND (ts, slot, signature) > (?3, ?4, ?5)
+                 ORDER BY ts ASC, slot ASC, signature ASC
+                 LIMIT ?6",
                 vec![
                     since_raw.clone().into(),
                     until_raw.clone().into(),
@@ -274,13 +317,47 @@ impl SqliteDiscoveryStore {
                     limit.into(),
                 ],
             ),
-            None => (
+            (None, Some(())) => (
+                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+                 FROM observed_swaps INDEXED BY idx_observed_swaps_sol_leg_ts_slot_signature
+                 WHERE ts >= ?1
+                   AND ts <= ?2
+                   AND (token_in = 'So11111111111111111111111111111111111111112'
+                        OR token_out = 'So11111111111111111111111111111111111111112')
+                 ORDER BY ts ASC, slot ASC, signature ASC
+                 LIMIT ?3",
+                vec![
+                    since_raw.clone().into(),
+                    until_raw.clone().into(),
+                    limit.into(),
+                ],
+            ),
+            (Some(cursor), None) => (
                 "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
                         qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
                  FROM observed_swaps
-	                 WHERE ts >= ?1 AND ts <= ?2
-	                 ORDER BY ts ASC, slot ASC, signature ASC
-	                 LIMIT ?3",
+                 WHERE ts >= ?1
+                   AND ts <= ?2
+                   AND (ts, slot, signature) > (?3, ?4, ?5)
+                 ORDER BY ts ASC, slot ASC, signature ASC
+                 LIMIT ?6",
+                vec![
+                    since_raw.clone().into(),
+                    until_raw.clone().into(),
+                    cursor.ts_utc.to_rfc3339().into(),
+                    (cursor.slot as i64).into(),
+                    cursor.signature.clone().into(),
+                    limit.into(),
+                ],
+            ),
+            (None, None) => (
+                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+                 FROM observed_swaps
+                 WHERE ts >= ?1 AND ts <= ?2
+                 ORDER BY ts ASC, slot ASC, signature ASC
+                 LIMIT ?3",
                 vec![since_raw.into(), until_raw.into(), limit.into()],
             ),
         };
