@@ -3,8 +3,8 @@ Description=Copybot Discovery V2 Quality Prepare Timer
 
 [Timer]
 OnBootSec=2m
-OnUnitActiveSec=5m
-RandomizedDelaySec=20s
+OnUnitActiveSec=30m
+RandomizedDelaySec=2m
 Persistent=true
 Unit=copybot-discovery-v2-prepare-quality.service
 
