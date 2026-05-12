@@ -75,9 +75,11 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
         config.db_path.as_deref(),
         &loaded.sqlite.path,
     );
-    let now = Utc::now();
-    let options =
-        DiscoveryV2BuildOptions::from_config(&loaded.discovery, loaded.execution.enabled, now);
+    let read_options = DiscoveryV2BuildOptions::from_config(
+        &loaded.discovery,
+        loaded.execution.enabled,
+        Utc::now(),
+    );
     let read_store = SqliteDiscoveryStore::open_read_only(&db_path)
         .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
     validate_discovery_v2_status_schema_read_only(&read_store).with_context(|| {
@@ -90,7 +92,7 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
         &read_store,
         &loaded.discovery,
         &loaded.shadow,
-        options.clone(),
+        read_options.clone(),
     )?;
     if !config.commit {
         return publish_discovery_v2_status(&read_store, status, false);
@@ -113,8 +115,17 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
             db_path.display()
         )
     })?;
-    let status =
-        build_discovery_v2_status(&write_store, &loaded.discovery, &loaded.shadow, options)?;
+    let write_options = DiscoveryV2BuildOptions::from_config(
+        &loaded.discovery,
+        loaded.execution.enabled,
+        Utc::now(),
+    );
+    let status = build_discovery_v2_status(
+        &write_store,
+        &loaded.discovery,
+        &loaded.shadow,
+        write_options,
+    )?;
     publish_discovery_v2_status(&write_store, status, true)
 }
 

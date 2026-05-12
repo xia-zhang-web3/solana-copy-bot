@@ -205,6 +205,42 @@ fn status_ready_when_tail_sample_scan_and_candidates_are_valid() -> Result<()> {
 }
 
 #[test]
+fn status_requires_refreshed_clock_when_live_tail_advances() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
+    store.insert_observed_swaps_batch(&[
+        tail_coverage_swap("sig-coverage-floor", 9, now - Duration::hours(25)),
+        swap("wallet_a", "sig-a", 10, now - Duration::minutes(10)),
+        tail_coverage_swap("sig-tail", 11, now - Duration::minutes(2)),
+    ])?;
+    insert_quality(&store, now, Some(1.0))?;
+    let (discovery, shadow) = strict_policy();
+    let initial_status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+    assert!(initial_status.production_green);
+
+    store.insert_observed_swap(&tail_coverage_swap(
+        "sig-tail-advanced",
+        12,
+        now + Duration::minutes(1),
+    ))?;
+    let stale_clock_status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+    assert!(!stale_clock_status.production_green);
+    assert!(stale_clock_status
+        .blockers
+        .contains(&"observed_swaps_tail_future_dated".to_string()));
+
+    let refreshed_clock_status = build_discovery_v2_status(
+        &store,
+        &discovery,
+        &shadow,
+        options(now + Duration::minutes(2)),
+    )?;
+    assert!(refreshed_clock_status.production_green);
+    assert!(refreshed_clock_status.blockers.is_empty());
+    Ok(())
+}
+
+#[test]
 fn status_blocks_when_window_start_coverage_is_unproven() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
