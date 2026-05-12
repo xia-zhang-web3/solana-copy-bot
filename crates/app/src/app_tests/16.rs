@@ -48,12 +48,17 @@
         let discovery = DiscoveryService::new(config, permissive_shadow_quality());
         let publication_policy_fingerprint =
             discovery.discovery_v2_publication_policy_fingerprint(false);
-        let runtime_cursor = DiscoveryRuntimeCursor {
-            ts_utc: now - chrono::Duration::minutes(1),
+        let publication_cursor = DiscoveryRuntimeCursor {
+            ts_utc: now - chrono::Duration::minutes(4),
             slot: 42,
-            signature: "startup-v2-cursor".to_string(),
+            signature: "startup-v2-publication-cursor".to_string(),
         };
-        store.upsert_discovery_runtime_cursor(&runtime_cursor)?;
+        let advanced_runtime_cursor = DiscoveryRuntimeCursor {
+            ts_utc: now - chrono::Duration::minutes(1),
+            slot: 84,
+            signature: "startup-v2-advanced-runtime-cursor".to_string(),
+        };
+        store.upsert_discovery_runtime_cursor(&advanced_runtime_cursor)?;
         store.set_discovery_publication_state_with_identity(
             &DiscoveryPublicationStateUpdate {
                 runtime_mode: DiscoveryRuntimeMode::Healthy,
@@ -65,7 +70,7 @@
             },
             false,
             Some(publication_policy_fingerprint.as_str()),
-            Some(&runtime_cursor),
+            Some(&publication_cursor),
         )?;
 
         let startup_published_truth = startup_runtime_publication_truth(
@@ -329,46 +334,33 @@
     }
 
     #[test]
-    fn startup_v2_identity_rejects_unhealthy_missing_fingerprint_and_cursor_mismatch() -> Result<()>
-    {
+    fn startup_v2_identity_rejects_unhealthy_missing_fingerprint_and_stale_cursor() -> Result<()> {
         let now = DateTime::parse_from_rfc3339("2026-03-17T12:10:00Z")
             .expect("timestamp")
             .with_timezone(&Utc);
         let cases = [
-            ("unhealthy", DiscoveryRuntimeMode::FailClosed, true, false, 60),
+            ("unhealthy", DiscoveryRuntimeMode::FailClosed, true, 60),
             (
                 "missing-fingerprint",
                 DiscoveryRuntimeMode::Healthy,
                 false,
-                false,
-                60,
-            ),
-            (
-                "cursor-mismatch",
-                DiscoveryRuntimeMode::Healthy,
-                true,
-                true,
                 60,
             ),
             (
                 "stale-cursor",
                 DiscoveryRuntimeMode::Healthy,
                 true,
-                false,
-                601,
+                3601,
             ),
             (
                 "future-cursor",
                 DiscoveryRuntimeMode::Healthy,
                 true,
-                false,
                 -1,
             ),
         ];
 
-        for (case_name, runtime_mode, include_fingerprint, cursor_mismatch, cursor_age_seconds) in
-            cases
-        {
+        for (case_name, runtime_mode, include_fingerprint, cursor_age_seconds) in cases {
             let (store, db_path) = make_test_store(case_name)?;
             let mut config = copybot_config::DiscoveryConfig::default();
             config.scoring_window_days = 2;
@@ -384,15 +376,6 @@
                 slot: 101,
                 signature: format!("{case_name}-current-cursor"),
             };
-            let publication_cursor = if cursor_mismatch {
-                DiscoveryRuntimeCursor {
-                    ts_utc: now - chrono::Duration::minutes(1),
-                    slot: 102,
-                    signature: format!("{case_name}-publication-cursor"),
-                }
-            } else {
-                current_cursor.clone()
-            };
             let fingerprint = include_fingerprint
                 .then(|| discovery.discovery_v2_publication_policy_fingerprint(false));
             store.upsert_discovery_runtime_cursor(&current_cursor)?;
@@ -407,7 +390,7 @@
                 },
                 false,
                 fingerprint.as_deref(),
-                Some(&publication_cursor),
+                Some(&current_cursor),
             )?;
 
             let startup_published_truth = startup_runtime_publication_truth(

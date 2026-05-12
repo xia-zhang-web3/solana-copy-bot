@@ -65,16 +65,16 @@ pub(crate) fn startup_runtime_publication_truth(
     let Some(publication_state) = store.discovery_publication_state_read_only()? else {
         return Ok(None);
     };
-    let Some(current_cursor) = store.load_discovery_runtime_cursor()? else {
-        return Ok(None);
-    };
     let freshness_gate = discovery.publication_freshness_gate();
     let expected_policy_fingerprint = discovery.discovery_v2_publication_policy_fingerprint(false);
     if !publication_state.is_fresh_under_gate(&freshness_gate, now)
-        || !publication_state.has_fresh_publication_runtime_cursor_under_gate(&freshness_gate, now)
-        || !publication_truth_has_current_v2_identity(
+        || !publication_runtime_cursor_is_fresh_for_publication(
             &publication_state,
-            &current_cursor,
+            now,
+            &freshness_gate,
+        )
+        || !publication_truth_has_v2_identity(
+            &publication_state,
             expected_policy_fingerprint.as_str(),
         )
     {
@@ -84,6 +84,21 @@ pub(crate) fn startup_runtime_publication_truth(
         return Ok(None);
     };
     Ok(Some(RuntimePublicationTruthResolution::Recent(truth)))
+}
+
+fn publication_runtime_cursor_is_fresh_for_publication(
+    publication_state: &copybot_storage_core::DiscoveryPublicationStateRow,
+    now: DateTime<Utc>,
+    freshness_gate: &copybot_storage_core::DiscoveryPublicationFreshnessGate,
+) -> bool {
+    publication_state
+        .publication_runtime_cursor
+        .as_ref()
+        .is_some_and(|cursor| {
+            let cursor_age = now.signed_duration_since(cursor.ts_utc);
+            cursor_age >= chrono::Duration::zero()
+                && cursor_age <= freshness_gate.published_universe_max_age()
+        })
 }
 
 pub(crate) fn runtime_follow_reload_from_publication_truth(
@@ -131,9 +146,8 @@ pub(crate) fn runtime_follow_reload_from_publication_truth(
     })
 }
 
-fn publication_truth_has_current_v2_identity(
+fn publication_truth_has_v2_identity(
     publication_state: &copybot_storage_core::DiscoveryPublicationStateRow,
-    current_cursor: &copybot_storage_core::DiscoveryRuntimeCursor,
     expected_policy_fingerprint: &str,
 ) -> bool {
     publication_state.runtime_mode == copybot_storage_core::DiscoveryRuntimeMode::Healthy
@@ -145,5 +159,5 @@ fn publication_truth_has_current_v2_identity(
             .publication_policy_fingerprint
             .as_deref()
             .is_some_and(|fingerprint| fingerprint == expected_policy_fingerprint)
-        && publication_state.publication_runtime_cursor.as_ref() == Some(current_cursor)
+        && publication_state.publication_runtime_cursor.is_some()
 }
