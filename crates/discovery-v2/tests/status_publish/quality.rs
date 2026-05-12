@@ -89,7 +89,7 @@ fn status_blocks_when_token_quality_evidence_is_stale() -> Result<()> {
         swap("wallet_a", "sig-a", 10, now - Duration::minutes(10)),
         tail_coverage_swap("sig-tail", 11, now - Duration::minutes(8)),
     ])?;
-    insert_quality(&store, now - Duration::minutes(20), Some(1.0))?;
+    insert_quality(&store, now - Duration::hours(3), Some(1.0))?;
     let (discovery, shadow) = strict_policy();
 
     let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;

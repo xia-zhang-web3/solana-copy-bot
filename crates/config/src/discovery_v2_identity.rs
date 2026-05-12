@@ -1,7 +1,7 @@
 use crate::{DiscoveryConfig, ShadowConfig};
 
 pub const DISCOVERY_V2_SCORING_SOURCE: &str = "discovery_v2_operational_window";
-pub const DISCOVERY_V2_TOKEN_QUALITY_TTL_SECONDS: i64 = 10 * 60;
+pub const DISCOVERY_V2_TOKEN_QUALITY_TTL_SECONDS: i64 = 2 * 60 * 60;
 pub const DISCOVERY_V2_TOKEN_ROLLING_MARKET_WINDOW_SECONDS: i64 = 5 * 60;
 
 #[derive(Debug, Clone, Copy)]
