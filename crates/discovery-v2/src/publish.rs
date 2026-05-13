@@ -5,6 +5,7 @@ use copybot_storage_core::{
     DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode, SqliteDiscoveryStore,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryV2PublishReport {
@@ -16,7 +17,17 @@ pub struct DiscoveryV2PublishReport {
     pub scoring_source: String,
     pub policy_fingerprint: String,
     pub published_wallet_count: usize,
+    pub publication_rotation: DiscoveryV2PublicationRotationReport,
     pub status: DiscoveryV2Status,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryV2PublicationRotationReport {
+    pub previous_active_wallet_count: usize,
+    pub desired_wallet_count: usize,
+    pub retained_wallet_count: usize,
+    pub added_wallet_count: usize,
+    pub removed_wallet_count: usize,
 }
 
 pub fn publish_discovery_v2_status(
@@ -34,6 +45,12 @@ pub fn publish_discovery_v2_status(
     } else {
         "discovery_v2_operational_window_blocked"
     };
+    let publishable_wallets = if status.production_green {
+        status.candidate_wallets.as_slice()
+    } else {
+        &[]
+    };
+    let mut publication_rotation = publication_rotation_report(store, publishable_wallets)?;
     if commit {
         if !status.production_green {
             bail!(
@@ -58,7 +75,7 @@ pub fn publish_discovery_v2_status(
             published_scoring_source: Some(DISCOVERY_V2_SCORING_SOURCE.to_string()),
             published_wallet_ids: Some(status.candidate_wallets.clone()),
         };
-        store.persist_discovery_v2_publication(
+        let followlist_update = store.persist_discovery_v2_publication(
             &wallet_rows(&status),
             &metric_rows(&status),
             &status.candidate_wallets,
@@ -68,6 +85,8 @@ pub fn publish_discovery_v2_status(
             status.policy_fingerprint.as_str(),
             &runtime_cursor,
         )?;
+        publication_rotation.added_wallet_count = followlist_update.activated;
+        publication_rotation.removed_wallet_count = followlist_update.deactivated;
     }
     let policy_fingerprint = status.policy_fingerprint.clone();
     let published_wallet_count = if status.production_green {
@@ -88,8 +107,32 @@ pub fn publish_discovery_v2_status(
         scoring_source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
         policy_fingerprint,
         published_wallet_count,
+        publication_rotation,
         status: status.bounded_operator_wallet_metrics(),
     })
+}
+
+fn publication_rotation_report(
+    store: &SqliteDiscoveryStore,
+    desired_wallets: &[String],
+) -> Result<DiscoveryV2PublicationRotationReport> {
+    let current = store.list_active_follow_wallets()?;
+    Ok(publication_rotation_from_current(&current, desired_wallets))
+}
+
+fn publication_rotation_from_current(
+    current: &HashSet<String>,
+    desired_wallets: &[String],
+) -> DiscoveryV2PublicationRotationReport {
+    let desired = desired_wallets.iter().cloned().collect::<HashSet<_>>();
+    let retained_wallet_count = desired.intersection(current).count();
+    DiscoveryV2PublicationRotationReport {
+        previous_active_wallet_count: current.len(),
+        desired_wallet_count: desired.len(),
+        retained_wallet_count,
+        added_wallet_count: desired.difference(current).count(),
+        removed_wallet_count: current.difference(&desired).count(),
+    }
 }
 
 fn wallet_rows(status: &DiscoveryV2Status) -> Vec<WalletUpsertRow> {

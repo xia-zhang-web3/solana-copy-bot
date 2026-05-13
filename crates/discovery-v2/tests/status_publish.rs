@@ -208,6 +208,7 @@ fn status_ready_when_tail_sample_scan_and_candidates_are_valid() -> Result<()> {
 
     assert!(status.production_green);
     assert!(status.blockers.is_empty());
+    assert!(status.build_elapsed_ms > 0);
     assert_eq!(status.scan.rows_scanned, 3);
     assert_eq!(status.candidate_wallets.len(), 2);
     assert_eq!(status.source, DISCOVERY_V2_SCORING_SOURCE);
@@ -322,6 +323,11 @@ fn publish_commit_writes_followlist_and_publication_state_when_green() -> Result
         "copybot_app_live_reload_will_pick_up_publication_without_restart"
     );
     assert_eq!(report.published_wallet_count, 1);
+    assert_eq!(report.publication_rotation.previous_active_wallet_count, 0);
+    assert_eq!(report.publication_rotation.desired_wallet_count, 1);
+    assert_eq!(report.publication_rotation.retained_wallet_count, 0);
+    assert_eq!(report.publication_rotation.added_wallet_count, 1);
+    assert_eq!(report.publication_rotation.removed_wallet_count, 0);
     assert!(store.list_active_follow_wallets()?.contains("wallet_a"));
     let state = store
         .discovery_publication_state_read_only()?

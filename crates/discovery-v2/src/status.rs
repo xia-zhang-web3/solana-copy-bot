@@ -35,6 +35,7 @@ pub fn build_discovery_v2_status(
     shadow: &ShadowConfig,
     options: DiscoveryV2BuildOptions,
 ) -> Result<DiscoveryV2Status> {
+    let build_started = Instant::now();
     let window_start = options.window_start();
     let scan_deadline = Instant::now() + StdDuration::from_millis(options.time_budget_ms);
     let tail = load_tail_status(store, options.now, options.max_tail_lag_seconds)?;
@@ -72,6 +73,7 @@ pub fn build_discovery_v2_status(
             scan,
             unique_wallets_seen,
             &options,
+            elapsed_ms_ceil(build_started.elapsed()),
         ));
     }
     let retained_metric_limit = retained_wallet_metric_limit(discovery);
@@ -107,6 +109,7 @@ pub fn build_discovery_v2_status(
             scan,
             unique_wallets_seen,
             &options,
+            elapsed_ms_ceil(build_started.elapsed()),
         ));
     }
     sort_wallet_metrics(&mut wallet_metrics);
@@ -144,6 +147,7 @@ pub fn build_discovery_v2_status(
     Ok(DiscoveryV2Status {
         source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
         now: options.now,
+        build_elapsed_ms: elapsed_ms_ceil(build_started.elapsed()),
         window_start,
         window_minutes: options.window_minutes,
         max_tail_lag_seconds: options.max_tail_lag_seconds,
@@ -180,6 +184,7 @@ fn budget_exhausted_status(
     scan: DiscoveryV2ScanStatus,
     unique_wallets_seen: usize,
     options: &DiscoveryV2BuildOptions,
+    build_elapsed_ms: u64,
 ) -> DiscoveryV2Status {
     let candidate_wallets = Vec::new();
     let filters = build_budget_exhausted_filter_status(unique_wallets_seen);
@@ -196,6 +201,7 @@ fn budget_exhausted_status(
     DiscoveryV2Status {
         source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
         now: options.now,
+        build_elapsed_ms,
         window_start,
         window_minutes: options.window_minutes,
         max_tail_lag_seconds: options.max_tail_lag_seconds,
@@ -215,4 +221,8 @@ fn budget_exhausted_status(
         production_green: false,
         policy_fingerprint: discovery_v2_policy_fingerprint(discovery, shadow, options),
     }
+}
+
+fn elapsed_ms_ceil(duration: StdDuration) -> u64 {
+    duration.as_millis().max(1).min(u64::MAX as u128) as u64
 }

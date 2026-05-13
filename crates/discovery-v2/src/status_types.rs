@@ -11,6 +11,7 @@ pub const OPERATOR_WALLET_METRIC_LIMIT: usize = 250;
 pub struct DiscoveryV2Status {
     pub source: String,
     pub now: DateTime<Utc>,
+    pub build_elapsed_ms: u64,
     pub window_start: DateTime<Utc>,
     pub window_minutes: u64,
     pub max_tail_lag_seconds: u64,

@@ -101,18 +101,6 @@ pub(super) async fn handle_irrelevant_observed_swap(
         }
         Ok(IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure) => {
             let writer_snapshot = observed_swap_writer.snapshot();
-            warn_irrelevant_observed_swap_writer_backpressure(
-                &swap,
-                source_branch,
-                discovery_critical_irrelevant_persistence,
-                follow_snapshot,
-                open_shadow_lots,
-                shadow_strategy_fail_closed,
-                discovery_critical_target_buy_mints,
-                pending_irrelevant_swaps,
-                &writer_snapshot,
-                ingestion_snapshot,
-            );
             let discovery_critical_irrelevant_persistence =
                 refresh_discovery_critical_irrelevant_persistence_for_backpressure(
                     store,
@@ -158,6 +146,18 @@ pub(super) async fn handle_irrelevant_observed_swap(
                 }
                 return Ok(());
             }
+            warn_irrelevant_observed_swap_writer_backpressure(
+                &swap,
+                source_branch,
+                discovery_critical_irrelevant_persistence,
+                follow_snapshot,
+                open_shadow_lots,
+                shadow_strategy_fail_closed,
+                discovery_critical_target_buy_mints,
+                pending_irrelevant_swaps,
+                &writer_snapshot,
+                ingestion_snapshot,
+            );
             let pending_queue_was_full =
                 pending_irrelevant_swap_queue_is_full(pending_irrelevant_swaps);
             if should_drop_backpressured_discovery_critical_irrelevant_observed_swap(
