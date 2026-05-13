@@ -99,6 +99,35 @@ fn quality_prepare_commit_writes_observed_proxy_evidence() -> Result<()> {
 }
 
 #[test]
+fn quality_prepare_scans_only_fresh_quality_window() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-11T10:00:00Z")?.with_timezone(&Utc);
+    store.insert_observed_swaps_batch(&[
+        buy("wallet-a", "sig-old-a", 10, now - Duration::hours(3)),
+        buy(
+            "wallet-b",
+            "sig-old-b",
+            11,
+            now - Duration::hours(3) + Duration::minutes(1),
+        ),
+    ])?;
+    let (discovery, shadow) = policy();
+
+    let report =
+        prepare_discovery_v2_quality(&store, &discovery, &shadow, options(&discovery, now, true))?;
+
+    assert!(!report.committed);
+    assert_eq!(report.scoring_window_minutes, 24 * 60);
+    assert_eq!(report.window_minutes, 120);
+    assert_eq!(report.rows_scanned, 0);
+    assert!(report
+        .blockers
+        .contains(&"discovery_v2_quality_prepare_observed_window_empty".to_string()));
+    assert!(store.get_token_quality_cache(TOKEN_MINT)?.is_none());
+    Ok(())
+}
+
+#[test]
 fn quality_prepare_caps_wallet_evidence_at_required_threshold() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-11T10:00:00Z")?.with_timezone(&Utc);

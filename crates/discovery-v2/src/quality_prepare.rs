@@ -14,6 +14,7 @@ use std::time::{Duration as StdDuration, Instant};
 pub struct DiscoveryV2PrepareQualityOptions {
     pub now: DateTime<Utc>,
     pub window_minutes: u64,
+    pub scoring_window_minutes: u64,
     pub max_rows: usize,
     pub time_budget_ms: u64,
     pub max_mints: usize,
@@ -28,6 +29,7 @@ pub struct DiscoveryV2PrepareQualityReport {
     pub now: DateTime<Utc>,
     pub window_start: DateTime<Utc>,
     pub window_minutes: u64,
+    pub scoring_window_minutes: u64,
     pub max_rows: usize,
     pub max_mints: usize,
     pub rows_scanned: usize,
@@ -58,9 +60,12 @@ impl DiscoveryV2PrepareQualityOptions {
         max_mints: usize,
         commit: bool,
     ) -> Self {
+        let scoring_window_minutes = u64::from(discovery.scoring_window_days.max(1)) * 24 * 60;
+        let quality_window_minutes = quality_prepare_window_minutes(scoring_window_minutes);
         Self {
             now,
-            window_minutes: u64::from(discovery.scoring_window_days.max(1)) * 24 * 60,
+            window_minutes: quality_window_minutes,
+            scoring_window_minutes,
             max_rows: discovery.max_window_swaps_in_memory.max(1),
             time_budget_ms: discovery.fetch_time_budget_ms.max(1),
             max_mints: max_mints.max(1),
@@ -209,10 +214,11 @@ pub fn prepare_discovery_v2_quality(
     Ok(DiscoveryV2PrepareQualityReport {
         dry_run: !options.commit,
         committed: commit_allowed,
-        quality_source: "observed_window_proxy".to_string(),
+        quality_source: "observed_recent_quality_window_proxy".to_string(),
         now: options.now,
         window_start,
         window_minutes: options.window_minutes,
+        scoring_window_minutes: options.scoring_window_minutes,
         max_rows: options.max_rows,
         max_mints: options.max_mints,
         rows_scanned: rows_seen,
@@ -225,6 +231,12 @@ pub fn prepare_discovery_v2_quality(
         time_budget_exhausted,
         blockers,
     })
+}
+
+fn quality_prepare_window_minutes(scoring_window_minutes: u64) -> u64 {
+    let ttl_seconds = TOKEN_QUALITY_TTL_SECONDS.max(60) as u64;
+    let ttl_minutes = ttl_seconds.div_ceil(60);
+    scoring_window_minutes.max(1).min(ttl_minutes.max(1))
 }
 
 fn observe_quality_evidence(
