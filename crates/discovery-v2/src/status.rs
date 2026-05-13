@@ -38,6 +38,10 @@ pub fn build_discovery_v2_status(
     let window_start = options.window_start();
     let scan_deadline = Instant::now() + StdDuration::from_millis(options.time_budget_ms);
     let tail = load_tail_status(store, options.now, options.max_tail_lag_seconds)?;
+    let scoring_data_now = tail
+        .as_ref()
+        .map(|status| status.cursor.ts_utc.min(options.now))
+        .unwrap_or(options.now);
     let coverage_sample = load_coverage_sample(store, window_start)?;
     let window_scan = scan_window_metrics(
         store,
@@ -45,15 +49,12 @@ pub fn build_discovery_v2_status(
         shadow,
         window_start,
         options.now,
+        scoring_data_now,
         options.max_rows,
         scan_deadline,
     )?;
     let rows_seen = window_scan.rows_seen;
     let unique_wallets_seen = window_scan.unique_wallets_seen;
-    let scoring_data_now = tail
-        .as_ref()
-        .map(|status| status.cursor.ts_utc.min(options.now))
-        .unwrap_or(options.now);
     let scan = scan_status(
         options.max_rows,
         options.time_budget_ms,
@@ -73,7 +74,6 @@ pub fn build_discovery_v2_status(
             &options,
         ));
     }
-    let token_sol_history = window_scan.token_sol_history;
     let retained_metric_limit = retained_wallet_metric_limit(discovery);
     let mut wallet_metrics =
         Vec::with_capacity(retained_metric_limit.min(window_scan.wallets.len()));
@@ -85,13 +85,7 @@ pub fn build_discovery_v2_status(
             metric_time_budget_exhausted = true;
             break;
         }
-        let metric = wallet_metric_from_accumulator(
-            wallet_id,
-            acc,
-            discovery,
-            &token_sol_history,
-            scoring_data_now,
-        );
+        let metric = wallet_metric_from_accumulator(wallet_id, acc, discovery, scoring_data_now);
         wallet_metrics_total = wallet_metrics_total.saturating_add(1);
         filters.observe_metric(&metric);
         retain_top_wallet_metric(&mut wallet_metrics, metric, retained_metric_limit);
@@ -116,14 +110,8 @@ pub fn build_discovery_v2_status(
         ));
     }
     sort_wallet_metrics(&mut wallet_metrics);
-    let live_gate = apply_live_portfolio_gate(
-        store,
-        discovery,
-        shadow,
-        &options,
-        &token_sol_history,
-        &mut wallet_metrics,
-    )?;
+    let live_gate =
+        apply_live_portfolio_gate(store, discovery, shadow, &options, &mut wallet_metrics)?;
     for reason in &live_gate.live_reject_reasons {
         filters.observe_live_rejection(reason);
     }

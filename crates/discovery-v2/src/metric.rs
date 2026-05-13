@@ -1,10 +1,15 @@
 use crate::accumulator::WalletAccumulator;
-use crate::rug::{compute_rug_evaluation, RugEvaluation};
-use crate::token_market::SolLegTrade;
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::DiscoveryConfig;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, Copy)]
+struct RugEvaluation {
+    ratio: f64,
+    evaluated: u32,
+    unevaluated: u32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryV2WalletMetric {
@@ -39,7 +44,6 @@ pub(crate) fn wallet_metric_from_accumulator(
     wallet_id: String,
     acc: WalletAccumulator,
     discovery: &DiscoveryConfig,
-    token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
     now: DateTime<Utc>,
 ) -> DiscoveryV2WalletMetric {
     let active_days = acc.active_days.len() as u32;
@@ -80,7 +84,7 @@ pub(crate) fn wallet_metric_from_accumulator(
         now,
     );
     let rug = if reject_reasons.is_empty() {
-        compute_rug_evaluation(&acc.buy_observations, token_sol_history, discovery, now)
+        rug_evaluation_from_accumulator(&acc)
     } else {
         RugEvaluation {
             ratio: 0.0,
@@ -139,54 +143,21 @@ pub(crate) fn wallet_metric_from_accumulator(
     }
 }
 
-pub(crate) fn rug_history_tokens_for_pre_eligible_wallets(
-    wallets: &HashMap<String, WalletAccumulator>,
-    discovery: &DiscoveryConfig,
-    now: DateTime<Utc>,
-) -> HashSet<String> {
-    let mut tokens = HashSet::new();
-    for acc in wallets.values() {
-        if !needs_rug_evaluation(acc, discovery, now) {
-            continue;
-        }
-        for buy in &acc.buy_observations {
-            tokens.insert(buy.token.clone());
-        }
+fn rug_evaluation_from_accumulator(acc: &WalletAccumulator) -> RugEvaluation {
+    let total = acc.buy_observations.len() as u32;
+    let evaluated = acc.rug_lookahead_evaluated.min(total);
+    let rugged = acc.rug_lookahead_rugged.min(evaluated);
+    let unevaluated = total.saturating_sub(evaluated);
+    let risky = rugged.saturating_add(unevaluated);
+    RugEvaluation {
+        ratio: if total == 0 {
+            0.0
+        } else {
+            risky as f64 / total as f64
+        },
+        evaluated,
+        unevaluated,
     }
-    tokens
-}
-
-fn needs_rug_evaluation(
-    acc: &WalletAccumulator,
-    discovery: &DiscoveryConfig,
-    now: DateTime<Utc>,
-) -> bool {
-    let active_days = acc.active_days.len() as u32;
-    let buy_total = acc.buy_observations.len() as u32;
-    let tradable_ratio = if buy_total > 0 {
-        acc.buy_observations
-            .iter()
-            .filter(|buy| buy.tradable)
-            .count() as f64
-            / buy_total as f64
-    } else {
-        0.0
-    };
-    let missing_quality_evidence_buys = acc
-        .buy_observations
-        .iter()
-        .filter(|buy| buy.missing_quality_evidence)
-        .count() as u32;
-    pre_rug_reject_reasons(
-        acc,
-        active_days,
-        buy_total,
-        tradable_ratio,
-        missing_quality_evidence_buys,
-        discovery,
-        now,
-    )
-    .is_empty()
 }
 
 fn pre_rug_reject_reasons(

@@ -22,14 +22,14 @@ pub(crate) struct WalletAccumulator {
     pub suspicious: bool,
     pub positions: HashMap<String, VecDeque<OpenLot>>,
     pub buy_observations: Vec<BuyObservation>,
+    pub rug_lookahead_evaluated: u32,
+    pub rug_lookahead_rugged: u32,
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct BuyObservation {
-    pub token: String,
-    pub ts: DateTime<Utc>,
     pub tradable: bool,
     pub missing_quality_evidence: bool,
 }
@@ -60,6 +60,8 @@ impl WalletAccumulator {
             suspicious: false,
             positions: HashMap::new(),
             buy_observations: Vec::new(),
+            rug_lookahead_evaluated: 0,
+            rug_lookahead_rugged: 0,
             first_seen: ts,
             last_seen: ts,
         }
@@ -109,6 +111,13 @@ impl WalletAccumulator {
         })
     }
 
+    pub fn observe_rug_lookahead(&mut self, rugged: bool) {
+        self.rug_lookahead_evaluated = self.rug_lookahead_evaluated.saturating_add(1);
+        if rugged {
+            self.rug_lookahead_rugged = self.rug_lookahead_rugged.saturating_add(1);
+        }
+    }
+
     fn observe_buy(
         &mut self,
         token: &str,
@@ -124,8 +133,6 @@ impl WalletAccumulator {
         self.spent_sol += cost_sol;
         self.max_buy_notional_sol = self.max_buy_notional_sol.max(cost_sol);
         self.buy_observations.push(BuyObservation {
-            token: token.to_string(),
-            ts,
             tradable: matches!(tradability, BuyTradability::Tradable),
             missing_quality_evidence: matches!(tradability, BuyTradability::MissingQualityEvidence),
         });

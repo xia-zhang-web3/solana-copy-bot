@@ -6,7 +6,6 @@ mod metric;
 mod policy;
 mod publish;
 mod quality_prepare;
-mod rug;
 mod status;
 mod token_market;
 mod tradability;

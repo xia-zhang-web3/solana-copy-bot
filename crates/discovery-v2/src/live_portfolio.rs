@@ -1,6 +1,4 @@
 use crate::metric::DiscoveryV2WalletMetric;
-use crate::token_market::SolLegTrade;
-use crate::tradability::TOKEN_ROLLING_MARKET_WINDOW_SECONDS;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig, DISCOVERY_V2_TOKEN_QUALITY_TTL_SECONDS};
@@ -53,7 +51,6 @@ pub(super) fn apply_live_portfolio_gate(
     discovery: &DiscoveryConfig,
     shadow: &ShadowConfig,
     options: &crate::policy::DiscoveryV2BuildOptions,
-    token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
     metrics: &mut [DiscoveryV2WalletMetric],
 ) -> Result<LivePortfolioGateResult> {
     if !discovery.live_portfolio_gate_enabled {
@@ -116,11 +113,12 @@ pub(super) fn apply_live_portfolio_gate(
             }
         };
         let quality_cache = load_live_token_quality(store, &snapshot)?;
+        let price_cache = load_live_token_prices(store, &snapshot, options.now)?;
         let evaluation = evaluate_live_portfolio_snapshot(
             &snapshot,
             discovery,
             shadow,
-            token_sol_history,
+            &price_cache,
             &quality_cache,
             options.now,
         );
@@ -151,7 +149,7 @@ pub(crate) fn evaluate_live_portfolio_snapshot(
     snapshot: &LivePortfolioSnapshot,
     discovery: &DiscoveryConfig,
     shadow: &ShadowConfig,
-    token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
+    token_prices_sol: &HashMap<String, f64>,
     quality_cache: &HashMap<String, TokenQualityCacheRow>,
     now: DateTime<Utc>,
 ) -> LivePortfolioEvaluation {
@@ -165,7 +163,7 @@ pub(crate) fn evaluate_live_portfolio_snapshot(
         .iter()
         .filter(|position| position.amount > 0.0 && position.amount.is_finite())
     {
-        let Some(price) = recent_price_sol(&position.mint, token_sol_history, now) else {
+        let Some(price) = token_prices_sol.get(&position.mint).copied() else {
             continue;
         };
         if !quality_satisfies_shadow_gate(quality_cache.get(&position.mint), shadow, now) {
@@ -213,22 +211,21 @@ fn load_live_token_quality(
     Ok(rows)
 }
 
-fn recent_price_sol(
-    mint: &str,
-    token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
+fn load_live_token_prices(
+    store: &SqliteDiscoveryStore,
+    snapshot: &LivePortfolioSnapshot,
     now: DateTime<Utc>,
-) -> Option<f64> {
-    let cutoff = now - Duration::seconds(TOKEN_ROLLING_MARKET_WINDOW_SECONDS);
-    token_sol_history.get(mint)?.iter().rev().find_map(|trade| {
-        if trade.ts < cutoff
-            || trade.ts > now
-            || trade.sol_notional <= 0.0
-            || trade.token_qty <= 0.0
-        {
-            return None;
+) -> Result<HashMap<String, f64>> {
+    let mut rows = HashMap::new();
+    for position in &snapshot.token_positions {
+        if rows.contains_key(&position.mint) || position.amount <= 0.0 {
+            continue;
         }
-        Some(trade.sol_notional / trade.token_qty)
-    })
+        if let Some(price) = store.latest_token_sol_price(&position.mint, now)? {
+            rows.insert(position.mint.clone(), price);
+        }
+    }
+    Ok(rows)
 }
 
 fn quality_satisfies_shadow_gate(

@@ -23,10 +23,24 @@ struct TokenRollingState {
 }
 
 #[derive(Debug, Default)]
+struct TokenRugState {
+    pending_buys: VecDeque<PendingRugBuy>,
+}
+
+#[derive(Debug)]
+struct PendingRugBuy {
+    wallet_id: String,
+    window_end: DateTime<Utc>,
+    sol_volume: f64,
+    unique_traders: HashMap<u32, ()>,
+}
+
+#[derive(Debug, Default)]
 pub(crate) struct DiscoveryV2WindowAccumulator {
     wallets: HashMap<String, WalletAccumulator>,
     trader_ids: HashMap<String, u32>,
     token_states: HashMap<String, TokenRollingState>,
+    rug_states: HashMap<String, TokenRugState>,
 }
 
 impl DiscoveryV2WindowAccumulator {
@@ -38,6 +52,9 @@ impl DiscoveryV2WindowAccumulator {
         token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
     ) {
         let trader_id = self.trader_id_for_wallet(&swap.wallet);
+        if let Some((token, _)) = sol_leg_token_and_notional(swap) {
+            self.finalize_expired_rug_buys(token, swap.ts_utc, discovery);
+        }
         let tradability = update_token_state_and_buy_tradability(
             &mut self.token_states,
             token_quality_cache,
@@ -50,10 +67,32 @@ impl DiscoveryV2WindowAccumulator {
             .entry(swap.wallet.clone())
             .or_insert_with(|| WalletAccumulator::new(swap.ts_utc));
         entry.observe_swap(swap, discovery, tradability);
+        if let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) {
+            if is_sol_buy(swap) && swap.amount_out > 0.0 && swap.amount_in > 0.0 {
+                self.observe_pending_rug_buy(
+                    token,
+                    &swap.wallet,
+                    swap.ts_utc,
+                    discovery.rug_lookahead_seconds,
+                );
+            }
+            self.observe_rug_trade(token, trader_id, sol_notional.max(0.0), discovery);
+        }
     }
 
     pub(crate) fn wallet_count(&self) -> usize {
         self.wallets.len()
+    }
+
+    pub(crate) fn finalize_rug_lookahead(
+        &mut self,
+        now: DateTime<Utc>,
+        discovery: &DiscoveryConfig,
+    ) {
+        let tokens = self.rug_states.keys().cloned().collect::<Vec<_>>();
+        for token in tokens {
+            self.finalize_due_rug_buys(&token, now, discovery, true);
+        }
     }
 
     pub(crate) fn into_parts(self) -> (HashMap<String, WalletAccumulator>, HashMap<String, u32>) {
@@ -72,6 +111,90 @@ impl DiscoveryV2WindowAccumulator {
         self.trader_ids.insert(wallet.to_string(), next);
         next
     }
+
+    fn observe_pending_rug_buy(
+        &mut self,
+        token: &str,
+        wallet_id: &str,
+        opened_at: DateTime<Utc>,
+        lookahead_seconds: u64,
+    ) {
+        let lookahead = Duration::seconds(lookahead_seconds.max(1) as i64);
+        self.rug_states
+            .entry(token.to_string())
+            .or_default()
+            .pending_buys
+            .push_back(PendingRugBuy {
+                wallet_id: wallet_id.to_string(),
+                window_end: opened_at + lookahead,
+                sol_volume: 0.0,
+                unique_traders: HashMap::new(),
+            });
+    }
+
+    fn observe_rug_trade(
+        &mut self,
+        token: &str,
+        trader_id: u32,
+        sol_notional: f64,
+        discovery: &DiscoveryConfig,
+    ) {
+        let Some(state) = self.rug_states.get_mut(token) else {
+            return;
+        };
+        let trader_cap = discovery.thin_market_min_unique_traders.max(1) as usize;
+        for pending in &mut state.pending_buys {
+            pending.sol_volume += sol_notional;
+            if pending.unique_traders.len() < trader_cap {
+                pending.unique_traders.insert(trader_id, ());
+            }
+        }
+    }
+
+    fn finalize_expired_rug_buys(
+        &mut self,
+        token: &str,
+        observed_at: DateTime<Utc>,
+        discovery: &DiscoveryConfig,
+    ) {
+        self.finalize_due_rug_buys(token, observed_at, discovery, false);
+    }
+
+    fn finalize_due_rug_buys(
+        &mut self,
+        token: &str,
+        boundary: DateTime<Utc>,
+        discovery: &DiscoveryConfig,
+        inclusive: bool,
+    ) {
+        let finalized = {
+            let Some(state) = self.rug_states.get_mut(token) else {
+                return;
+            };
+            let mut finalized = Vec::new();
+            while state.pending_buys.front().is_some_and(|pending| {
+                pending.window_end < boundary || (inclusive && pending.window_end <= boundary)
+            }) {
+                let pending = state.pending_buys.pop_front().expect("front checked");
+                finalized.push((
+                    pending.wallet_id,
+                    rug_result(pending.sol_volume, pending.unique_traders.len(), discovery),
+                ));
+            }
+            finalized
+        };
+        for (wallet_id, rugged) in finalized {
+            if let Some(wallet) = self.wallets.get_mut(&wallet_id) {
+                wallet.observe_rug_lookahead(rugged);
+            }
+        }
+    }
+}
+
+fn rug_result(sol_volume: f64, unique_traders: usize, discovery: &DiscoveryConfig) -> bool {
+    let thin_volume = sol_volume + 1e-12 < discovery.thin_market_min_volume_sol;
+    let thin_traders = unique_traders < discovery.thin_market_min_unique_traders as usize;
+    thin_volume || thin_traders
 }
 
 fn update_token_state_and_buy_tradability(
@@ -81,7 +204,7 @@ fn update_token_state_and_buy_tradability(
     trader_id: u32,
     swap: &SwapEvent,
 ) -> Option<BuyTradability> {
-    let Some((token, sol_notional, token_qty)) = sol_leg_token_and_notional(swap) else {
+    let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) else {
         return None;
     };
     let state = token_states.entry(token.to_string()).or_default();
@@ -90,7 +213,6 @@ fn update_token_state_and_buy_tradability(
         ts: swap.ts_utc,
         trader_id,
         sol_notional: sol_notional.max(0.0),
-        token_qty: token_qty.max(0.0),
     };
     state.sol_volume_5m += trade.sol_notional;
     state
