@@ -21,17 +21,13 @@ pub(crate) struct WalletAccumulator {
     pub tx_per_minute: HashMap<i64, u32>,
     pub suspicious: bool,
     pub positions: HashMap<String, VecDeque<OpenLot>>,
-    pub buy_observations: Vec<BuyObservation>,
+    pub buy_total: u32,
+    pub tradable_buys: u32,
+    pub missing_quality_evidence_buys: u32,
     pub rug_lookahead_evaluated: u32,
     pub rug_lookahead_rugged: u32,
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct BuyObservation {
-    pub tradable: bool,
-    pub missing_quality_evidence: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -59,7 +55,9 @@ impl WalletAccumulator {
             tx_per_minute: HashMap::new(),
             suspicious: false,
             positions: HashMap::new(),
-            buy_observations: Vec::new(),
+            buy_total: 0,
+            tradable_buys: 0,
+            missing_quality_evidence_buys: 0,
             rug_lookahead_evaluated: 0,
             rug_lookahead_rugged: 0,
             first_seen: ts,
@@ -132,10 +130,14 @@ impl WalletAccumulator {
         }
         self.spent_sol += cost_sol;
         self.max_buy_notional_sol = self.max_buy_notional_sol.max(cost_sol);
-        self.buy_observations.push(BuyObservation {
-            tradable: matches!(tradability, BuyTradability::Tradable),
-            missing_quality_evidence: matches!(tradability, BuyTradability::MissingQualityEvidence),
-        });
+        self.buy_total = self.buy_total.saturating_add(1);
+        if matches!(tradability, BuyTradability::Tradable) {
+            self.tradable_buys = self.tradable_buys.saturating_add(1);
+        }
+        if matches!(tradability, BuyTradability::MissingQualityEvidence) {
+            self.missing_quality_evidence_buys =
+                self.missing_quality_evidence_buys.saturating_add(1);
+        }
         self.positions
             .entry(token.to_string())
             .or_default()
