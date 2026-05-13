@@ -59,13 +59,21 @@ pub(crate) fn wallet_metric_from_accumulator(
     } else {
         0.0
     };
-    let buy_total = acc.buy_total;
+    let buy_total = acc.buy_observations.len() as u32;
     let tradable_ratio = if buy_total > 0 {
-        acc.tradable_buys as f64 / buy_total as f64
+        acc.buy_observations
+            .iter()
+            .filter(|buy| buy.tradable)
+            .count() as f64
+            / buy_total as f64
     } else {
         0.0
     };
-    let missing_quality_evidence_buys = acc.missing_quality_evidence_buys;
+    let missing_quality_evidence_buys = acc
+        .buy_observations
+        .iter()
+        .filter(|buy| buy.missing_quality_evidence)
+        .count() as u32;
     let mut reject_reasons = pre_rug_reject_reasons(
         &acc,
         active_days,
@@ -136,7 +144,7 @@ pub(crate) fn wallet_metric_from_accumulator(
 }
 
 fn rug_evaluation_from_accumulator(acc: &WalletAccumulator) -> RugEvaluation {
-    let total = acc.buy_total;
+    let total = acc.buy_observations.len() as u32;
     let evaluated = acc.rug_lookahead_evaluated.min(total);
     let rugged = acc.rug_lookahead_rugged.min(evaluated);
     let unevaluated = total.saturating_sub(evaluated);

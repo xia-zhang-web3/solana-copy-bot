@@ -5,7 +5,7 @@ pub use types_history_retention::{
     ExecutionHistoryRetentionSummary, HistoryRetentionCutoffs, HistoryRetentionSummary,
 };
 pub use types_observed::{
-    DiscoveryV2WalletPrefilter, ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary,
+    ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary,
     SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot, WalletActivityDayRow,
 };
 pub use types_publication::{

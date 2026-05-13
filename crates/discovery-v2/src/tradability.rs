@@ -3,7 +3,7 @@ use crate::token_market::{is_sol_buy, sol_leg_token_and_notional, SolLegTrade};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::{SwapEvent, TokenQualityCacheRow};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 pub(crate) const TOKEN_ROLLING_MARKET_WINDOW_SECONDS: i64 =
     copybot_config::DISCOVERY_V2_TOKEN_ROLLING_MARKET_WINDOW_SECONDS;
@@ -41,17 +41,9 @@ pub(crate) struct DiscoveryV2WindowAccumulator {
     trader_ids: HashMap<String, u32>,
     token_states: HashMap<String, TokenRollingState>,
     rug_states: HashMap<String, TokenRugState>,
-    wallet_allowlist: Option<HashSet<String>>,
 }
 
 impl DiscoveryV2WindowAccumulator {
-    pub(crate) fn with_wallet_allowlist(wallets: HashSet<String>) -> Self {
-        Self {
-            wallet_allowlist: Some(wallets),
-            ..Self::default()
-        }
-    }
-
     pub(crate) fn observe_swap(
         &mut self,
         swap: &SwapEvent,
@@ -60,7 +52,6 @@ impl DiscoveryV2WindowAccumulator {
         token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
     ) {
         let trader_id = self.trader_id_for_wallet(&swap.wallet);
-        let accumulate_wallet = self.should_accumulate_wallet(&swap.wallet);
         if let Some((token, _)) = sol_leg_token_and_notional(swap) {
             self.finalize_expired_rug_buys(token, swap.ts_utc, discovery);
         }
@@ -71,19 +62,13 @@ impl DiscoveryV2WindowAccumulator {
             trader_id,
             swap,
         );
-        if accumulate_wallet {
-            let entry = self
-                .wallets
-                .entry(swap.wallet.clone())
-                .or_insert_with(|| WalletAccumulator::new(swap.ts_utc));
-            entry.observe_swap(swap, discovery, tradability);
-        }
+        let entry = self
+            .wallets
+            .entry(swap.wallet.clone())
+            .or_insert_with(|| WalletAccumulator::new(swap.ts_utc));
+        entry.observe_swap(swap, discovery, tradability);
         if let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) {
-            if accumulate_wallet
-                && is_sol_buy(swap)
-                && swap.amount_out > 0.0
-                && swap.amount_in > 0.0
-            {
+            if is_sol_buy(swap) && swap.amount_out > 0.0 && swap.amount_in > 0.0 {
                 self.observe_pending_rug_buy(
                     token,
                     &swap.wallet,
@@ -93,6 +78,10 @@ impl DiscoveryV2WindowAccumulator {
             }
             self.observe_rug_trade(token, trader_id, sol_notional.max(0.0), discovery);
         }
+    }
+
+    pub(crate) fn wallet_count(&self) -> usize {
+        self.wallets.len()
     }
 
     pub(crate) fn finalize_rug_lookahead(
@@ -108,13 +97,6 @@ impl DiscoveryV2WindowAccumulator {
 
     pub(crate) fn into_parts(self) -> (HashMap<String, WalletAccumulator>, HashMap<String, u32>) {
         (self.wallets, self.trader_ids)
-    }
-
-    fn should_accumulate_wallet(&self, wallet: &str) -> bool {
-        match &self.wallet_allowlist {
-            Some(allowlist) => allowlist.contains(wallet),
-            None => true,
-        }
     }
 
     fn trader_id_for_wallet(&mut self, wallet: &str) -> u32 {

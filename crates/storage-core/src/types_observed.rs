@@ -14,14 +14,6 @@ pub struct WalletActivityDayRow {
     pub last_seen: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DiscoveryV2WalletPrefilter {
-    pub rows_seen: usize,
-    pub unique_wallets: usize,
-    pub wallet_ids: Vec<String>,
-    pub time_budget_exhausted: bool,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SqliteBatchedDeleteSummary {
     pub deleted_rows: usize,

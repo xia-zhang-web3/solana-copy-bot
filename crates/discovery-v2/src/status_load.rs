@@ -11,8 +11,6 @@ use copybot_storage_core::SqliteDiscoveryStore;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-const FULL_METRIC_SCAN_ROW_THRESHOLD: usize = 100_000;
-
 pub(super) fn load_tail_status(
     store: &SqliteDiscoveryStore,
     now: DateTime<Utc>,
@@ -68,50 +66,7 @@ pub(super) fn scan_window_metrics(
     let ttl = Duration::seconds(TOKEN_QUALITY_TTL_SECONDS);
     let mut token_quality_cache = HashMap::new();
     let mut token_quality_lookups = HashSet::new();
-    let prefilter = store
-        .discovery_v2_wallet_prefilter_read_only(
-            window_start,
-            now,
-            max_rows.saturating_add(1),
-            discovery.min_trades,
-            discovery.min_buy_count,
-            discovery.min_active_days,
-            discovery.min_leader_notional_sol,
-            deadline,
-        )
-        .context("failed loading discovery v2 wallet prefilter")?;
-    if prefilter.time_budget_exhausted || prefilter.rows_seen > max_rows {
-        let unique_wallets_seen = if prefilter.rows_seen > max_rows {
-            prefilter.unique_wallets.min(max_rows)
-        } else {
-            prefilter.unique_wallets
-        };
-        return Ok(DiscoveryV2WindowScan {
-            wallets: HashMap::new(),
-            rows_seen: prefilter.rows_seen,
-            unique_wallets_seen,
-            time_budget_exhausted: prefilter.time_budget_exhausted,
-        });
-    }
-    if prefilter.rows_seen > FULL_METRIC_SCAN_ROW_THRESHOLD && prefilter.wallet_ids.is_empty() {
-        return Ok(DiscoveryV2WindowScan {
-            wallets: HashMap::new(),
-            rows_seen: prefilter.rows_seen,
-            unique_wallets_seen: prefilter.unique_wallets,
-            time_budget_exhausted: false,
-        });
-    }
-    let unique_wallets_seen = prefilter.unique_wallets;
-    let wallet_allowlist = if prefilter.rows_seen > FULL_METRIC_SCAN_ROW_THRESHOLD {
-        Some(prefilter.wallet_ids.into_iter().collect::<HashSet<_>>())
-    } else {
-        None
-    };
-    let mut accumulator = if let Some(allowlist) = wallet_allowlist.clone() {
-        DiscoveryV2WindowAccumulator::with_wallet_allowlist(allowlist)
-    } else {
-        DiscoveryV2WindowAccumulator::default()
-    };
+    let mut accumulator = DiscoveryV2WindowAccumulator::default();
     let mut rows_seen = 0usize;
     let page = store
         .for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget(
@@ -125,21 +80,20 @@ pub(super) fn scan_window_metrics(
                 if rows_seen > max_rows {
                     return Ok(());
                 }
-                if wallet_allowed_for_metrics(&swap.wallet, wallet_allowlist.as_ref()) {
-                    load_quality_for_buy_once(
-                        store,
-                        &swap,
-                        now,
-                        ttl,
-                        &mut token_quality_lookups,
-                        &mut token_quality_cache,
-                    )?;
-                }
+                load_quality_for_buy_once(
+                    store,
+                    &swap,
+                    now,
+                    ttl,
+                    &mut token_quality_lookups,
+                    &mut token_quality_cache,
+                )?;
                 accumulator.observe_swap(&swap, discovery, shadow, &token_quality_cache);
                 Ok(())
             },
         )
         .context("failed streaming discovery v2 current window")?;
+    let unique_wallets_seen = accumulator.wallet_count();
     if page.time_budget_exhausted || rows_seen > max_rows {
         return Ok(DiscoveryV2WindowScan {
             wallets: HashMap::new(),
@@ -150,19 +104,13 @@ pub(super) fn scan_window_metrics(
     }
     accumulator.finalize_rug_lookahead(evidence_through, discovery);
     let (wallets, _trader_ids) = accumulator.into_parts();
+    let unique_wallets_seen = wallets.len();
     Ok(DiscoveryV2WindowScan {
         wallets,
         rows_seen,
         unique_wallets_seen,
         time_budget_exhausted: page.time_budget_exhausted,
     })
-}
-
-fn wallet_allowed_for_metrics(wallet: &str, allowlist: Option<&HashSet<String>>) -> bool {
-    match allowlist {
-        Some(allowlist) => allowlist.contains(wallet),
-        None => true,
-    }
 }
 
 fn load_quality_for_buy_once(
