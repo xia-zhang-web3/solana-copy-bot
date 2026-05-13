@@ -11,6 +11,7 @@ mod observed;
 mod observed_budget;
 mod observed_row;
 mod observed_timestamp;
+mod observed_token_history;
 mod observed_writer;
 mod publication;
 mod publication_compat;

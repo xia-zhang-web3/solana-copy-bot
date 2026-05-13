@@ -163,13 +163,15 @@ fn collect_needed_token_sol_history(
         });
     }
 
+    let mut needed_tokens = needed_tokens.into_iter().collect::<Vec<_>>();
+    needed_tokens.sort();
     let mut rows_seen = 0usize;
     let mut history = HashMap::<String, Vec<SolLegTrade>>::new();
     let page = store
-        .for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget(
+        .for_each_sol_leg_observed_swap_for_tokens_in_window_with_budget(
+            &needed_tokens,
             window_start,
             now,
-            None,
             max_rows.saturating_add(1),
             deadline,
             |swap| {
@@ -181,9 +183,6 @@ fn collect_needed_token_sol_history(
                 else {
                     return Ok(());
                 };
-                if !needed_tokens.contains(token) {
-                    return Ok(());
-                }
                 let Some(trader_id) = trader_ids.get(&swap.wallet).copied() else {
                     return Ok(());
                 };
