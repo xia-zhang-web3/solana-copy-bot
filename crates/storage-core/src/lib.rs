@@ -9,6 +9,7 @@ mod migrations_index_guard;
 mod money;
 mod observed;
 mod observed_budget;
+mod observed_discovery_v2;
 mod observed_row;
 mod observed_timestamp;
 mod observed_writer;
@@ -54,11 +55,11 @@ pub use types::{
     DiscoveryRecentRawRestoreStateRow, DiscoveryRecentRawRestoreStateUpdate,
     DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
-    ExecutionHistoryRetentionSummary, FollowlistUpdateResult, HistoryRetentionCutoffs,
-    HistoryRetentionSummary, ObservedSwapBatchWriteMetrics, ObservedSwapCursorPage,
-    PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow, RecentRawJournalWriteSummary,
-    RiskEventRow, ShadowCloseOutcome, ShadowLotRow, SqliteBatchedDeleteSummary,
-    SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
+    DiscoveryV2WalletPrefilter, ExecutionHistoryRetentionSummary, FollowlistUpdateResult,
+    HistoryRetentionCutoffs, HistoryRetentionSummary, ObservedSwapBatchWriteMetrics,
+    ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow,
+    RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome, ShadowLotRow,
+    SqliteBatchedDeleteSummary, SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
     SqliteSnapshotDeferredReason, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
     SqliteSnapshotRetryReason, SqliteSnapshotSourceMetrics, SqliteSnapshotSummary,
     SqliteStartupLargeWalCheckpointSummary, SqliteStartupPolicy, StartupStepOutcome,
