@@ -2,7 +2,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use copybot_config::load_from_path;
 use copybot_discovery_v2::{
-    build_discovery_v2_status, live_portfolio_rpc_url_from_config, publish_discovery_v2_status,
+    build_discovery_v2_status, live_portfolio_rpc_url_from_config,
+    load_materialized_discovery_v2_status_for_publish, publish_discovery_v2_status,
     DiscoveryV2BuildOptions, DiscoveryV2PublishReport,
 };
 use copybot_storage_core::{
@@ -11,7 +12,7 @@ use copybot_storage_core::{
 use std::env;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "usage: discovery_v2_publish --config <path> [--db-path <path>] [--commit --acknowledge-daemon-restart-required]";
+const USAGE: &str = "usage: discovery_v2_publish --config <path> [--db-path <path>] [--materialized-status] [--commit --acknowledge-daemon-restart-required]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -29,6 +30,7 @@ struct Config {
     db_path: Option<PathBuf>,
     commit: bool,
     acknowledge_daemon_restart_required: bool,
+    materialized_status: bool,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -37,6 +39,7 @@ fn parse_args() -> Result<Option<Config>> {
     let mut db_path = None;
     let mut commit = false;
     let mut acknowledge_daemon_restart_required = false;
+    let mut materialized_status = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => {
@@ -54,6 +57,7 @@ fn parse_args() -> Result<Option<Config>> {
             ),
             "--commit" => commit = true,
             "--acknowledge-daemon-restart-required" => acknowledge_daemon_restart_required = true,
+            "--materialized-status" => materialized_status = true,
             "--dry-run" => commit = false,
             "--help" | "-h" => return Ok(None),
             other => bail!("unknown argument: {other}"),
@@ -64,6 +68,7 @@ fn parse_args() -> Result<Option<Config>> {
         db_path,
         commit,
         acknowledge_daemon_restart_required,
+        materialized_status,
     }))
 }
 
@@ -89,12 +94,22 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
             db_path.display()
         )
     })?;
-    let status = build_discovery_v2_status(
-        &read_store,
-        &loaded.discovery,
-        &loaded.shadow,
-        read_options.clone(),
-    )?;
+    let status = if config.materialized_status {
+        load_materialized_discovery_v2_status_for_publish(
+            &read_store,
+            &loaded.discovery,
+            &loaded.shadow,
+            &read_options,
+        )?
+        .0
+    } else {
+        build_discovery_v2_status(
+            &read_store,
+            &loaded.discovery,
+            &loaded.shadow,
+            read_options.clone(),
+        )?
+    };
     if !config.commit {
         return publish_discovery_v2_status(&read_store, status, false);
     }

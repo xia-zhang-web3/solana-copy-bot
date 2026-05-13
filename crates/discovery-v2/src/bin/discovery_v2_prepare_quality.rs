@@ -2,7 +2,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use copybot_config::load_from_path;
 use copybot_discovery_v2::{
-    prepare_discovery_v2_quality, DiscoveryV2PrepareQualityOptions, DiscoveryV2PrepareQualityReport,
+    live_portfolio_rpc_url_from_config, materialize_discovery_v2_status,
+    prepare_discovery_v2_quality, DiscoveryV2BuildOptions, DiscoveryV2MaterializedStatusReport,
+    DiscoveryV2PrepareQualityOptions, DiscoveryV2PrepareQualityReport,
 };
 use copybot_storage_core::{
     ensure_discovery_v2_schema, validate_discovery_v2_status_schema_read_only, SqliteDiscoveryStore,
@@ -10,8 +12,7 @@ use copybot_storage_core::{
 use std::env;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str =
-    "usage: discovery_v2_prepare_quality --config <path> [--db-path <path>] [--max-mints <n>] [--commit]";
+const USAGE: &str = "usage: discovery_v2_prepare_quality --config <path> [--db-path <path>] [--max-mints <n>] [--commit] [--materialize-status]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -29,6 +30,15 @@ struct Config {
     db_path: Option<PathBuf>,
     max_mints: usize,
     commit: bool,
+    materialize_status: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct PrepareQualityCliReport {
+    #[serde(flatten)]
+    quality: DiscoveryV2PrepareQualityReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    materialized_status: Option<DiscoveryV2MaterializedStatusReport>,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -37,6 +47,7 @@ fn parse_args() -> Result<Option<Config>> {
     let mut db_path = None;
     let mut max_mints = 10_000usize;
     let mut commit = false;
+    let mut materialize_status = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => {
@@ -48,6 +59,7 @@ fn parse_args() -> Result<Option<Config>> {
             "--max-mints" => max_mints = parse_usize_arg("--max-mints", args.next())?,
             "--commit" => commit = true,
             "--dry-run" => commit = false,
+            "--materialize-status" => materialize_status = true,
             "--window-minutes"
             | "--max-tail-lag-seconds"
             | "--max-rows"
@@ -59,15 +71,19 @@ fn parse_args() -> Result<Option<Config>> {
             other => bail!("unknown argument: {other}"),
         }
     }
+    if materialize_status && !commit {
+        bail!("--materialize-status requires --commit");
+    }
     Ok(Some(Config {
         config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
         db_path,
         max_mints,
         commit,
+        materialize_status,
     }))
 }
 
-fn run(config: Config) -> Result<DiscoveryV2PrepareQualityReport> {
+fn run(config: Config) -> Result<PrepareQualityCliReport> {
     let loaded = load_from_path(&config.config_path)
         .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
     let db_path = resolve_db_path(
@@ -90,7 +106,29 @@ fn run(config: Config) -> Result<DiscoveryV2PrepareQualityReport> {
                 db_path.display()
             )
         })?;
-        return prepare_discovery_v2_quality(&store, &loaded.discovery, &loaded.shadow, options);
+        let quality =
+            prepare_discovery_v2_quality(&store, &loaded.discovery, &loaded.shadow, options)?;
+        let materialized_status = if config.materialize_status && quality.committed {
+            let build_options = DiscoveryV2BuildOptions::from_config(
+                &loaded.discovery,
+                loaded.execution.enabled,
+                Utc::now(),
+            )
+            .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded));
+            let (_status, report) = materialize_discovery_v2_status(
+                &store,
+                &loaded.discovery,
+                &loaded.shadow,
+                build_options,
+            )?;
+            Some(report)
+        } else {
+            None
+        };
+        return Ok(PrepareQualityCliReport {
+            quality,
+            materialized_status,
+        });
     }
     let store = SqliteDiscoveryStore::open_read_only(&db_path)
         .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
@@ -100,7 +138,11 @@ fn run(config: Config) -> Result<DiscoveryV2PrepareQualityReport> {
             db_path.display()
         )
     })?;
-    prepare_discovery_v2_quality(&store, &loaded.discovery, &loaded.shadow, options)
+    let quality = prepare_discovery_v2_quality(&store, &loaded.discovery, &loaded.shadow, options)?;
+    Ok(PrepareQualityCliReport {
+        quality,
+        materialized_status: None,
+    })
 }
 
 fn resolve_db_path(config_path: &Path, override_path: Option<&Path>, configured: &str) -> PathBuf {

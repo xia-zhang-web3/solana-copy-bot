@@ -25,6 +25,7 @@ mod shadow_mutation;
 mod snapshot;
 mod sqlite_retry;
 mod startup_progress;
+mod status_snapshot;
 mod system_events;
 mod trusted_selection;
 mod types;
@@ -45,6 +46,7 @@ pub use crate::startup_progress::{
     report_startup_step_progress, run_observed_startup_step,
     run_observed_startup_step_with_completion_detail,
 };
+pub use crate::status_snapshot::DiscoveryV2StatusSnapshotRow;
 pub use migrations::SqliteStartupBootstrapResult;
 pub use money::{lamports_to_sol, signed_lamports_to_sol};
 pub use types::{

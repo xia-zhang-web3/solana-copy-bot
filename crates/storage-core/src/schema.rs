@@ -6,6 +6,7 @@ use crate::schema_indexes::{
     ensure_observed_swaps_read_indexes_empty_safe, followlist_active_wallet_index_is_valid,
     validate_observed_swaps_read_indexes,
 };
+use crate::status_snapshot::ensure_discovery_v2_status_snapshot_table;
 use crate::SqliteDiscoveryStore;
 use anyhow::{Context, Result};
 
@@ -18,6 +19,7 @@ pub fn ensure_discovery_v2_schema(store: &SqliteDiscoveryStore) -> Result<()> {
     ensure_observed_swaps_read_indexes_empty_safe(store)?;
     ensure_discovery_strategy_state_table(store)?;
     ensure_discovery_runtime_state_table(store)?;
+    ensure_discovery_v2_status_snapshot_table(store)?;
     Ok(())
 }
 
@@ -227,7 +229,7 @@ fn validate_discovery_v2_schema_read_only_inner(
     Ok(())
 }
 
-fn ensure_column(
+pub(crate) fn ensure_column(
     store: &SqliteDiscoveryStore,
     table: &str,
     column: &str,
@@ -250,7 +252,11 @@ fn ensure_column(
     Ok(())
 }
 
-fn column_exists(store: &SqliteDiscoveryStore, table: &str, column: &str) -> Result<bool> {
+pub(crate) fn column_exists(
+    store: &SqliteDiscoveryStore,
+    table: &str,
+    column: &str,
+) -> Result<bool> {
     let pragma = format!("PRAGMA table_info({table})");
     let mut stmt = store.conn.prepare(&pragma)?;
     let mut rows = stmt.query([])?;
@@ -352,6 +358,18 @@ CREATE TABLE IF NOT EXISTS discovery_runtime_state (
     cursor_ts TEXT NOT NULL,
     cursor_slot INTEGER NOT NULL,
     cursor_signature TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS discovery_v2_status_snapshot (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    policy_fingerprint TEXT NOT NULL,
+    status_now TEXT NOT NULL,
+    status_window_start TEXT NOT NULL,
+    runtime_cursor_ts TEXT,
+    runtime_cursor_slot INTEGER,
+    runtime_cursor_signature TEXT,
+    status_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 ";

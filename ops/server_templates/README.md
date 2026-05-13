@@ -58,11 +58,12 @@ Required invariants:
 surface.
 
 `copybot-discovery-v2-prepare-quality.timer` refreshes bounded observed-window
-token quality evidence used by Discovery V2 gates.
+token quality evidence used by Discovery V2 gates and materializes the current
+V2 status snapshot.
 
-`copybot-discovery-v2-publish.timer` commits a fresh V2 publication on cadence.
-`copybot-app` live-reloads fresh publication truth from SQLite, so this timer
-does not restart the daemon.
+`copybot-discovery-v2-publish.timer` commits only a fresh materialized V2 status
+snapshot on cadence. `copybot-app` live-reloads fresh publication truth from
+SQLite, so this timer does not restart the daemon.
 
 `copybot-discovery-v2-watchdog.timer` runs a read-only V2
 publication/followlist guard. It exits non-zero on warning or critical states
