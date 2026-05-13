@@ -247,3 +247,113 @@
         assert_eq!(reload.follow_snapshot.demoted_at.get("wallet_a"), Some(&now));
         assert_eq!(reload.follow_snapshot.demoted_at.get("wallet_b"), Some(&now));
     }
+
+    #[test]
+    fn startup_v2_publication_truth_tolerates_one_missed_publish_cycle() -> Result<()> {
+        let (store, db_path) = make_test_store("startup-v2-one-missed-publish-cycle")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:10:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let mut config = copybot_config::DiscoveryConfig::default();
+        config.scoring_window_days = 2;
+        config.refresh_seconds = 600;
+        config.metric_snapshot_interval_seconds = 30 * 60;
+        let last_published_at = now - chrono::Duration::minutes(61);
+        let metrics_window_start =
+            last_published_at - chrono::Duration::days(config.scoring_window_days.max(1) as i64);
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let publication_cursor = DiscoveryRuntimeCursor {
+            ts_utc: last_published_at - chrono::Duration::seconds(2),
+            slot: 45,
+            signature: "startup-v2-one-missed-cycle-cursor".to_string(),
+        };
+        store.upsert_discovery_runtime_cursor(&publication_cursor)?;
+        store.set_discovery_publication_state_with_identity(
+            &DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "startup_v2_one_missed_publish_cycle".to_string(),
+                last_published_at: Some(last_published_at),
+                last_published_window_start: Some(metrics_window_start),
+                published_scoring_source: Some("discovery_v2_operational_window".to_string()),
+                published_wallet_ids: Some(vec!["wallet_published_exact".to_string()]),
+            },
+            false,
+            Some(
+                discovery
+                    .discovery_v2_publication_policy_fingerprint(false)
+                    .as_str(),
+            ),
+            Some(&publication_cursor),
+        )?;
+
+        let startup_published_truth = startup_runtime_publication_truth(
+            &discovery,
+            db_path.to_str().expect("utf8 db path"),
+            now,
+        )?
+        .expect("one missed publish cycle should not drop an otherwise healthy V2 publication");
+
+        let RuntimePublicationTruthResolution::Recent(startup_published_truth) =
+            startup_published_truth
+        else {
+            panic!("expected recent truth for one missed publish cycle");
+        };
+        assert_eq!(
+            startup_published_truth.published_wallet_ids,
+            vec!["wallet_published_exact".to_string()]
+        );
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_v2_publication_truth_rejects_two_missed_publish_cycles() -> Result<()> {
+        let (store, db_path) = make_test_store("startup-v2-two-missed-publish-cycles")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-17T12:10:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let mut config = copybot_config::DiscoveryConfig::default();
+        config.scoring_window_days = 2;
+        config.refresh_seconds = 600;
+        config.metric_snapshot_interval_seconds = 30 * 60;
+        let last_published_at = now - chrono::Duration::minutes(91);
+        let metrics_window_start =
+            last_published_at - chrono::Duration::days(config.scoring_window_days.max(1) as i64);
+        let discovery = DiscoveryService::new(config, permissive_shadow_quality());
+        let publication_cursor = DiscoveryRuntimeCursor {
+            ts_utc: last_published_at - chrono::Duration::seconds(2),
+            slot: 46,
+            signature: "startup-v2-two-missed-cycles-cursor".to_string(),
+        };
+        store.upsert_discovery_runtime_cursor(&publication_cursor)?;
+        store.set_discovery_publication_state_with_identity(
+            &DiscoveryPublicationStateUpdate {
+                runtime_mode: DiscoveryRuntimeMode::Healthy,
+                reason: "startup_v2_two_missed_publish_cycles".to_string(),
+                last_published_at: Some(last_published_at),
+                last_published_window_start: Some(metrics_window_start),
+                published_scoring_source: Some("discovery_v2_operational_window".to_string()),
+                published_wallet_ids: Some(vec!["wallet_published_exact".to_string()]),
+            },
+            false,
+            Some(
+                discovery
+                    .discovery_v2_publication_policy_fingerprint(false)
+                    .as_str(),
+            ),
+            Some(&publication_cursor),
+        )?;
+
+        let startup_published_truth = startup_runtime_publication_truth(
+            &discovery,
+            db_path.to_str().expect("utf8 db path"),
+            now,
+        )?;
+
+        assert!(
+            startup_published_truth.is_none(),
+            "two missed publish cycles must still fail closed"
+        );
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }

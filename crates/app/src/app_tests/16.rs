@@ -348,7 +348,7 @@
                 "stale-cursor",
                 DiscoveryRuntimeMode::Healthy,
                 true,
-                3601,
+                5401,
             ),
             (
                 "future-cursor",

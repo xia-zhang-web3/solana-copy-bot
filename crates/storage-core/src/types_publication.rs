@@ -147,7 +147,7 @@ impl DiscoveryPublicationFreshnessGate {
         Duration::seconds(
             self.metric_snapshot_interval_seconds
                 .max(self.refresh_seconds.max(1))
-                .saturating_mul(2) as i64,
+                .saturating_mul(3) as i64,
         )
     }
 
