@@ -10,24 +10,40 @@ pub struct DiscoveryV2FilterStatus {
     pub reject_breakdown: BTreeMap<String, u64>,
 }
 
-pub(crate) fn build_filter_status(
-    wallet_metrics: &[DiscoveryV2WalletMetric],
-) -> DiscoveryV2FilterStatus {
-    let mut reject_breakdown = BTreeMap::new();
-    for metric in wallet_metrics {
+#[derive(Debug, Default)]
+pub(crate) struct DiscoveryV2FilterStatusBuilder {
+    total_wallets: usize,
+    eligible_wallets: usize,
+    reject_breakdown: BTreeMap<String, u64>,
+}
+
+impl DiscoveryV2FilterStatusBuilder {
+    pub(crate) fn observe_metric(&mut self, metric: &DiscoveryV2WalletMetric) {
+        self.total_wallets = self.total_wallets.saturating_add(1);
+        if metric.eligible {
+            self.eligible_wallets = self.eligible_wallets.saturating_add(1);
+        }
         for reason in &metric.reject_reasons {
-            *reject_breakdown.entry(reason.clone()).or_insert(0) += 1;
+            self.observe_reject_reason(reason);
         }
     }
-    let eligible_wallets = wallet_metrics
-        .iter()
-        .filter(|metric| metric.eligible)
-        .count();
-    DiscoveryV2FilterStatus {
-        total_wallets: wallet_metrics.len(),
-        eligible_wallets,
-        rejected_wallets: wallet_metrics.len().saturating_sub(eligible_wallets),
-        reject_breakdown,
+
+    pub(crate) fn observe_live_rejection(&mut self, reason: &str) {
+        self.eligible_wallets = self.eligible_wallets.saturating_sub(1);
+        self.observe_reject_reason(reason);
+    }
+
+    pub(crate) fn finish(self) -> DiscoveryV2FilterStatus {
+        DiscoveryV2FilterStatus {
+            total_wallets: self.total_wallets,
+            eligible_wallets: self.eligible_wallets,
+            rejected_wallets: self.total_wallets.saturating_sub(self.eligible_wallets),
+            reject_breakdown: self.reject_breakdown,
+        }
+    }
+
+    fn observe_reject_reason(&mut self, reason: &str) {
+        *self.reject_breakdown.entry(reason.to_string()).or_insert(0) += 1;
     }
 }
 

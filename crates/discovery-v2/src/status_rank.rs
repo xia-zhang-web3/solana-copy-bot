@@ -2,14 +2,43 @@ use super::status_types::DiscoveryV2ScanStatus;
 use crate::metric::DiscoveryV2WalletMetric;
 
 pub(super) fn sort_wallet_metrics(metrics: &mut [DiscoveryV2WalletMetric]) {
-    metrics.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| right.trades.cmp(&left.trades))
-            .then_with(|| left.wallet_id.cmp(&right.wallet_id))
-    });
+    metrics.sort_by(metric_rank_cmp);
+}
+
+pub(super) fn retain_top_wallet_metric(
+    metrics: &mut Vec<DiscoveryV2WalletMetric>,
+    metric: DiscoveryV2WalletMetric,
+    limit: usize,
+) {
+    if limit == 0 {
+        return;
+    }
+    if metrics.len() < limit {
+        metrics.push(metric);
+        return;
+    }
+    let Some((worst_index, worst)) = metrics
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| metric_rank_cmp(left, right))
+    else {
+        return;
+    };
+    if metric_rank_cmp(&metric, worst).is_lt() {
+        metrics[worst_index] = metric;
+    }
+}
+
+fn metric_rank_cmp(
+    left: &DiscoveryV2WalletMetric,
+    right: &DiscoveryV2WalletMetric,
+) -> std::cmp::Ordering {
+    right
+        .score
+        .partial_cmp(&left.score)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| right.trades.cmp(&left.trades))
+        .then_with(|| left.wallet_id.cmp(&right.wallet_id))
 }
 
 pub(super) fn scan_status(

@@ -366,8 +366,11 @@ fn publish_report_bounds_operator_wallet_metrics_without_losing_totals() -> Resu
     options.max_rows = OPERATOR_WALLET_METRIC_LIMIT + 100;
 
     let status = build_discovery_v2_status(&store, &discovery, &shadow, options)?;
-    let total_wallets = status.wallet_metrics.len();
+    let total_wallets = status.wallet_metrics_total;
     assert!(total_wallets > OPERATOR_WALLET_METRIC_LIMIT);
+    assert_eq!(status.wallet_metrics_returned, OPERATOR_WALLET_METRIC_LIMIT);
+    assert!(status.wallet_metrics_truncated);
+    assert_eq!(status.wallet_metrics.len(), OPERATOR_WALLET_METRIC_LIMIT);
 
     let report = publish_discovery_v2_status(&store, status, false)?;
 

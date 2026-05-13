@@ -42,6 +42,12 @@ pub(crate) struct LivePortfolioEvaluation {
     pub tradable_token_positions: u32,
 }
 
+pub(super) struct LivePortfolioGateResult {
+    pub(super) candidate_wallets: Vec<String>,
+    pub(super) status: Option<DiscoveryV2LivePortfolioStatus>,
+    pub(super) live_reject_reasons: Vec<String>,
+}
+
 pub(super) fn apply_live_portfolio_gate(
     store: &SqliteDiscoveryStore,
     discovery: &DiscoveryConfig,
@@ -49,12 +55,13 @@ pub(super) fn apply_live_portfolio_gate(
     options: &crate::policy::DiscoveryV2BuildOptions,
     token_sol_history: &HashMap<String, Vec<SolLegTrade>>,
     metrics: &mut [DiscoveryV2WalletMetric],
-) -> Result<(Vec<String>, Option<DiscoveryV2LivePortfolioStatus>)> {
+) -> Result<LivePortfolioGateResult> {
     if !discovery.live_portfolio_gate_enabled {
-        return Ok((
-            candidate_wallets_without_live_gate(discovery, metrics),
-            None,
-        ));
+        return Ok(LivePortfolioGateResult {
+            candidate_wallets: candidate_wallets_without_live_gate(discovery, metrics),
+            status: None,
+            live_reject_reasons: Vec::new(),
+        });
     }
     let mut status = DiscoveryV2LivePortfolioStatus {
         enabled: true,
@@ -66,6 +73,7 @@ pub(super) fn apply_live_portfolio_gate(
         rpc_missing: options.live_portfolio_rpc_url.is_none(),
     };
     let mut candidates = Vec::new();
+    let mut live_reject_reasons = Vec::new();
     let client = options
         .live_portfolio_rpc_url
         .as_deref()
@@ -90,14 +98,18 @@ pub(super) fn apply_live_portfolio_gate(
         }
         status.checked_wallets += 1;
         let Some(client) = client.as_ref() else {
-            reject_metric(metric, "live_portfolio_rpc_missing");
+            let reason = "live_portfolio_rpc_missing";
+            reject_metric(metric, reason);
+            live_reject_reasons.push(reason.to_string());
             status.rejected_wallets += 1;
             continue;
         };
         let snapshot = match client.fetch_snapshot(&metric.wallet_id) {
             Ok(snapshot) => snapshot,
             Err(_) => {
-                reject_metric(metric, "live_portfolio_rpc_unavailable");
+                let reason = "live_portfolio_rpc_unavailable";
+                reject_metric(metric, reason);
+                live_reject_reasons.push(reason.to_string());
                 status.rpc_failures += 1;
                 status.rejected_wallets += 1;
                 continue;
@@ -120,16 +132,19 @@ pub(super) fn apply_live_portfolio_gate(
             status.accepted_wallets += 1;
             candidates.push(metric.wallet_id.clone());
         } else {
-            reject_metric(
-                metric,
-                evaluation
-                    .reject_reason
-                    .unwrap_or("live_portfolio_rejected"),
-            );
+            let reason = evaluation
+                .reject_reason
+                .unwrap_or("live_portfolio_rejected");
+            reject_metric(metric, reason);
+            live_reject_reasons.push(reason.to_string());
             status.rejected_wallets += 1;
         }
     }
-    Ok((candidates, Some(status)))
+    Ok(LivePortfolioGateResult {
+        candidate_wallets: candidates,
+        status: Some(status),
+        live_reject_reasons,
+    })
 }
 
 pub(crate) fn evaluate_live_portfolio_snapshot(
