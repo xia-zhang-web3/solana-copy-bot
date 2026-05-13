@@ -97,7 +97,7 @@ jobs:
           - label: Discovery scheduled operators
             package: copybot-discovery-ops
             profile: operator-release
-            wanted_bins: discovery_runtime_export discovery_recent_raw_snapshot
+            wanted_bins: discovery_runtime_export discovery_recent_raw_snapshot discovery_v2_watchdog
             artifact_name: discovery-scheduled-operators
           - label: Source operators
             package: copybot-operators

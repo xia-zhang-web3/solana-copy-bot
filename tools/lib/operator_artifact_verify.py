@@ -20,6 +20,7 @@ EXPECTED_PACKAGE_BINARIES = {
     "copybot-discovery-ops": {
         "discovery_recent_raw_snapshot",
         "discovery_runtime_export",
+        "discovery_v2_watchdog",
     },
     "copybot-live-ops": {
         "copybot_live_service_control_wrapper",

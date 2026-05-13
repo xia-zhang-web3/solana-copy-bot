@@ -19,6 +19,8 @@ the active Discovery V2 / artifact-first workflow.
 9. `copybot-discovery-v2-prepare-quality.timer`
 10. `copybot-discovery-v2-publish.service`
 11. `copybot-discovery-v2-publish.timer`
+12. `copybot-discovery-v2-watchdog.service`
+13. `copybot-discovery-v2-watchdog.timer`
 
 ## Removed Files
 
@@ -61,6 +63,12 @@ token quality evidence used by Discovery V2 gates.
 `copybot-discovery-v2-publish.timer` commits a fresh V2 publication on cadence.
 `copybot-app` live-reloads fresh publication truth from SQLite, so this timer
 does not restart the daemon.
+
+`copybot-discovery-v2-watchdog.timer` runs a read-only V2
+publication/followlist guard. It exits non-zero on warning or critical states
+so systemd surfaces missed publish cycles, stale publication truth, identity
+mismatch, stale runtime cursor, or an empty/below-floor active followlist before
+the daemon loses its current V2 wallet universe.
 
 These timers are maintenance surfaces, not production-green proof by
 themselves. Discovery V2 status / publish checks decide the current publication

@@ -1,0 +1,10 @@
+[Unit]
+Description=Copybot Discovery V2 Watchdog
+After=solana-copy-bot.service
+
+[Service]
+Type=oneshot
+User=copybot
+Group=copybot
+SyslogIdentifier=discovery_v2_watchdog
+ExecStart=/var/www/solana-copy-bot/bin/discovery_v2_watchdog --config /etc/solana-copy-bot/live.server.toml --json --fail-on-warn

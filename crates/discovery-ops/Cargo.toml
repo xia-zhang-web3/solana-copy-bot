@@ -11,6 +11,10 @@ path = "src/bin/discovery_recent_raw_snapshot.rs"
 name = "discovery_runtime_export"
 path = "src/bin/discovery_runtime_export.rs"
 
+[[bin]]
+name = "discovery_v2_watchdog"
+path = "src/bin/discovery_v2_watchdog.rs"
+
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true

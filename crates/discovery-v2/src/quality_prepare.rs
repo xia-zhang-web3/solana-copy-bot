@@ -7,7 +7,7 @@ use copybot_config::ShadowConfig;
 use copybot_core_types::SwapEvent;
 use copybot_storage_core::SqliteDiscoveryStore;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::{Duration as StdDuration, Instant};
 
 #[derive(Debug, Clone)]
@@ -48,7 +48,7 @@ struct ObservedQualityEvidence {
     max_sol_notional: f64,
     buy_count: u64,
     sol_trade_count: u64,
-    wallets: HashSet<String>,
+    wallets: Vec<String>,
 }
 
 impl DiscoveryV2PrepareQualityOptions {
@@ -246,13 +246,15 @@ fn observe_quality_evidence(
             max_sol_notional: 0.0,
             buy_count: 0,
             sol_trade_count: 0,
-            wallets: HashSet::new(),
+            wallets: Vec::new(),
         });
     entry.first_seen = entry.first_seen.min(swap.ts_utc);
     entry.max_sol_notional = entry.max_sol_notional.max(sol_notional);
     entry.sol_trade_count = entry.sol_trade_count.saturating_add(1);
-    if entry.wallets.len() < wallet_evidence_cap || entry.wallets.contains(&swap.wallet) {
-        entry.wallets.insert(swap.wallet.clone());
+    if !entry.wallets.iter().any(|wallet| wallet == &swap.wallet)
+        && entry.wallets.len() < wallet_evidence_cap
+    {
+        entry.wallets.push(swap.wallet.clone());
     }
     if is_sol_buy(swap) {
         entry.buy_count = entry.buy_count.saturating_add(1);
