@@ -27,7 +27,6 @@ pub(crate) struct DiscoveryV2WindowAccumulator {
     wallets: HashMap<String, WalletAccumulator>,
     trader_ids: HashMap<String, u32>,
     token_states: HashMap<String, TokenRollingState>,
-    token_sol_history: HashMap<String, Vec<SolLegTrade>>,
 }
 
 impl DiscoveryV2WindowAccumulator {
@@ -39,17 +38,6 @@ impl DiscoveryV2WindowAccumulator {
         token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
     ) {
         let trader_id = self.trader_id_for_wallet(&swap.wallet);
-        if let Some((token, sol_notional, token_qty)) = sol_leg_token_and_notional(swap) {
-            self.token_sol_history
-                .entry(token.to_string())
-                .or_default()
-                .push(SolLegTrade {
-                    ts: swap.ts_utc,
-                    trader_id,
-                    sol_notional: sol_notional.max(0.0),
-                    token_qty: token_qty.max(0.0),
-                });
-        }
         let tradability = update_token_state_and_buy_tradability(
             &mut self.token_states,
             token_quality_cache,
@@ -68,16 +56,8 @@ impl DiscoveryV2WindowAccumulator {
         self.wallets.len()
     }
 
-    pub(crate) fn into_parts(
-        mut self,
-    ) -> (
-        HashMap<String, WalletAccumulator>,
-        HashMap<String, Vec<SolLegTrade>>,
-    ) {
-        for trades in self.token_sol_history.values_mut() {
-            sort_sol_trades(trades);
-        }
-        (self.wallets, self.token_sol_history)
+    pub(crate) fn into_parts(self) -> (HashMap<String, WalletAccumulator>, HashMap<String, u32>) {
+        (self.wallets, self.trader_ids)
     }
 
     fn trader_id_for_wallet(&mut self, wallet: &str) -> u32 {
@@ -92,14 +72,6 @@ impl DiscoveryV2WindowAccumulator {
         self.trader_ids.insert(wallet.to_string(), next);
         next
     }
-}
-
-fn sort_sol_trades(trades: &mut [SolLegTrade]) {
-    trades.sort_by(|left, right| {
-        left.ts
-            .cmp(&right.ts)
-            .then_with(|| left.trader_id.cmp(&right.trader_id))
-    });
 }
 
 fn update_token_state_and_buy_tradability(

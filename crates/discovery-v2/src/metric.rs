@@ -4,7 +4,7 @@ use crate::token_market::SolLegTrade;
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::DiscoveryConfig;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryV2WalletMetric {
@@ -137,6 +137,56 @@ pub(crate) fn wallet_metric_from_accumulator(
         last_seen: acc.last_seen,
         score,
     }
+}
+
+pub(crate) fn rug_history_tokens_for_pre_eligible_wallets(
+    wallets: &HashMap<String, WalletAccumulator>,
+    discovery: &DiscoveryConfig,
+    now: DateTime<Utc>,
+) -> HashSet<String> {
+    let mut tokens = HashSet::new();
+    for acc in wallets.values() {
+        if !needs_rug_evaluation(acc, discovery, now) {
+            continue;
+        }
+        for buy in &acc.buy_observations {
+            tokens.insert(buy.token.clone());
+        }
+    }
+    tokens
+}
+
+fn needs_rug_evaluation(
+    acc: &WalletAccumulator,
+    discovery: &DiscoveryConfig,
+    now: DateTime<Utc>,
+) -> bool {
+    let active_days = acc.active_days.len() as u32;
+    let buy_total = acc.buy_observations.len() as u32;
+    let tradable_ratio = if buy_total > 0 {
+        acc.buy_observations
+            .iter()
+            .filter(|buy| buy.tradable)
+            .count() as f64
+            / buy_total as f64
+    } else {
+        0.0
+    };
+    let missing_quality_evidence_buys = acc
+        .buy_observations
+        .iter()
+        .filter(|buy| buy.missing_quality_evidence)
+        .count() as u32;
+    pre_rug_reject_reasons(
+        acc,
+        active_days,
+        buy_total,
+        tradable_ratio,
+        missing_quality_evidence_buys,
+        discovery,
+        now,
+    )
+    .is_empty()
 }
 
 fn pre_rug_reject_reasons(
