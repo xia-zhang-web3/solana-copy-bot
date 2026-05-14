@@ -102,24 +102,25 @@ fn v2_watchdog_reports_ok_for_fresh_publication() -> Result<()> {
 }
 
 #[test]
-fn v2_watchdog_warns_after_one_missed_publish_cycle() -> Result<()> {
+fn v2_watchdog_allows_publication_until_fail_closed_gate() -> Result<()> {
     let tmp = tempfile::tempdir()?;
     let db_path = tmp.path().join("runtime.db");
     let now = DateTime::parse_from_rfc3339("2026-05-13T08:10:00Z")?.with_timezone(&Utc);
     seed_publication(
         &db_path,
         now,
-        now - Duration::minutes(61),
+        now - Duration::minutes(89),
         &["wallet_a", "wallet_b"],
     )?;
 
     let output = run_watchdog(watchdog_config(&db_path, now))?;
 
-    assert_eq!(output.state, WatchdogState::Warn);
-    assert!(output
-        .findings
-        .iter()
-        .any(|finding| finding.code == "discovery_v2_publication_one_cycle_late"));
+    assert_eq!(output.state, WatchdogState::Ok);
+    assert_eq!(
+        output.publication_warn_age_seconds,
+        output.publication_max_age_seconds
+    );
+    assert!(output.findings.is_empty());
     Ok(())
 }
 

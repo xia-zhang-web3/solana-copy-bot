@@ -75,12 +75,8 @@ fn assess_publication(
     publication: Option<&DiscoveryPublicationStateRow>,
     active_follow_wallet_count: usize,
 ) -> WatchdogOutput {
-    let warn_age_seconds = gate
-        .metric_snapshot_interval_seconds
-        .max(gate.refresh_seconds.max(1))
-        .saturating_mul(2)
-        .min(i64::MAX as u64) as i64;
     let max_age_seconds = gate.published_universe_max_age().num_seconds();
+    let warn_age_seconds = max_age_seconds;
     let mut findings = Vec::new();
     let mut output = base_output(
         config,
