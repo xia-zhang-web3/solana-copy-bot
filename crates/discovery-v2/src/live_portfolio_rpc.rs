@@ -7,6 +7,7 @@ use std::time::Duration;
 const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 
+#[derive(Clone)]
 pub(crate) struct LivePortfolioRpcClient {
     client: Client,
     rpc_url: String,

@@ -6,6 +6,9 @@ use copybot_core_types::TokenQualityCacheRow;
 use copybot_storage_core::SqliteDiscoveryStore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::thread;
+
+const LIVE_PORTFOLIO_RPC_BATCH_SIZE: usize = 8;
 
 #[derive(Debug, Clone)]
 pub(crate) struct LiveTokenPosition {
@@ -83,65 +86,107 @@ pub(super) fn apply_live_portfolio_gate(
         })
         .transpose()?;
 
-    for metric in metrics.iter_mut() {
-        if candidates.len() >= discovery.follow_top_n.max(1) as usize {
-            break;
-        }
-        if status.checked_wallets >= status.max_wallets {
-            break;
-        }
-        if !metric.eligible || metric.score < discovery.min_score {
-            continue;
-        }
-        status.checked_wallets += 1;
-        let Some(client) = client.as_ref() else {
+    let Some(client) = client.as_ref() else {
+        for metric in metrics.iter_mut() {
+            if status.checked_wallets >= status.max_wallets {
+                break;
+            }
+            if !metric.eligible || metric.score < discovery.min_score {
+                continue;
+            }
+            status.checked_wallets += 1;
             let reason = "live_portfolio_rpc_missing";
             reject_metric(metric, reason);
             live_reject_reasons.push(reason.to_string());
             status.rejected_wallets += 1;
-            continue;
-        };
-        let snapshot = match client.fetch_snapshot(&metric.wallet_id) {
-            Ok(snapshot) => snapshot,
-            Err(_) => {
-                let reason = "live_portfolio_rpc_unavailable";
+        }
+        return Ok(LivePortfolioGateResult {
+            candidate_wallets: candidates,
+            status: Some(status),
+            live_reject_reasons,
+        });
+    };
+
+    let eligible_wallets = metrics
+        .iter()
+        .enumerate()
+        .filter(|(_, metric)| metric.eligible && metric.score >= discovery.min_score)
+        .take(status.max_wallets)
+        .map(|(index, metric)| (index, metric.wallet_id.clone()))
+        .collect::<Vec<_>>();
+    for batch in eligible_wallets.chunks(LIVE_PORTFOLIO_RPC_BATCH_SIZE) {
+        let snapshots = fetch_live_portfolio_batch(client, batch);
+        for (index, snapshot) in snapshots {
+            if candidates.len() >= discovery.follow_top_n.max(1) as usize {
+                break;
+            }
+            let metric = &mut metrics[index];
+            status.checked_wallets += 1;
+            let snapshot = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(_) => {
+                    let reason = "live_portfolio_rpc_unavailable";
+                    reject_metric(metric, reason);
+                    live_reject_reasons.push(reason.to_string());
+                    status.rpc_failures += 1;
+                    status.rejected_wallets += 1;
+                    continue;
+                }
+            };
+            let quality_cache = load_live_token_quality(store, &snapshot)?;
+            let price_cache = load_live_token_prices(store, &snapshot, options.now)?;
+            let evaluation = evaluate_live_portfolio_snapshot(
+                &snapshot,
+                discovery,
+                shadow,
+                &price_cache,
+                &quality_cache,
+                options.now,
+            );
+            metric.live_sol_balance = Some(evaluation.sol_balance);
+            metric.live_token_value_sol = Some(evaluation.token_value_sol);
+            metric.live_token_positions = Some(evaluation.token_positions);
+            metric.live_tradable_token_positions = Some(evaluation.tradable_token_positions);
+            if evaluation.accepted {
+                status.accepted_wallets += 1;
+                candidates.push(metric.wallet_id.clone());
+            } else {
+                let reason = evaluation
+                    .reject_reason
+                    .unwrap_or("live_portfolio_rejected");
                 reject_metric(metric, reason);
                 live_reject_reasons.push(reason.to_string());
-                status.rpc_failures += 1;
                 status.rejected_wallets += 1;
-                continue;
             }
-        };
-        let quality_cache = load_live_token_quality(store, &snapshot)?;
-        let price_cache = load_live_token_prices(store, &snapshot, options.now)?;
-        let evaluation = evaluate_live_portfolio_snapshot(
-            &snapshot,
-            discovery,
-            shadow,
-            &price_cache,
-            &quality_cache,
-            options.now,
-        );
-        metric.live_sol_balance = Some(evaluation.sol_balance);
-        metric.live_token_value_sol = Some(evaluation.token_value_sol);
-        metric.live_token_positions = Some(evaluation.token_positions);
-        metric.live_tradable_token_positions = Some(evaluation.tradable_token_positions);
-        if evaluation.accepted {
-            status.accepted_wallets += 1;
-            candidates.push(metric.wallet_id.clone());
-        } else {
-            let reason = evaluation
-                .reject_reason
-                .unwrap_or("live_portfolio_rejected");
-            reject_metric(metric, reason);
-            live_reject_reasons.push(reason.to_string());
-            status.rejected_wallets += 1;
+        }
+        if candidates.len() >= discovery.follow_top_n.max(1) as usize {
+            break;
         }
     }
     Ok(LivePortfolioGateResult {
         candidate_wallets: candidates,
         status: Some(status),
         live_reject_reasons,
+    })
+}
+
+fn fetch_live_portfolio_batch(
+    client: &crate::live_portfolio_rpc::LivePortfolioRpcClient,
+    batch: &[(usize, String)],
+) -> Vec<(usize, Result<LivePortfolioSnapshot>)> {
+    thread::scope(|scope| {
+        let handles = batch
+            .iter()
+            .map(|(index, wallet_id)| {
+                let client = client.clone();
+                let wallet_id = wallet_id.clone();
+                scope.spawn(move || (*index, client.fetch_snapshot(&wallet_id)))
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("live portfolio RPC worker panicked"))
+            .collect()
     })
 }
 
