@@ -1,4 +1,6 @@
 use anyhow::{bail, Context, Result};
+use chrono::Utc;
+use copybot_discovery_v2::{materialize_discovery_v2_status, DiscoveryV2BuildOptions};
 use copybot_storage_core::{
     ensure_discovery_v2_schema, validate_discovery_v2_schema_read_only, SqliteDiscoveryStore,
 };
@@ -220,5 +222,57 @@ path = "{}"
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    Ok(())
+}
+
+#[test]
+fn status_cli_uses_materialized_snapshot_by_default() -> Result<()> {
+    let dir = tempdir()?;
+    let db_path = dir.path().join("runtime.db");
+    let store = SqliteDiscoveryStore::open(&db_path)?;
+    ensure_discovery_v2_schema(&store)?;
+    let config_path = dir.path().join("live.toml");
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[sqlite]
+path = "{}"
+"#,
+            db_path.display()
+        ),
+    )?;
+    let loaded = copybot_config::load_from_path(&config_path)?;
+    let materialized_now = Utc::now();
+    let options = DiscoveryV2BuildOptions::from_config(
+        &loaded.discovery,
+        loaded.execution.enabled,
+        materialized_now,
+    );
+    let (status, _report) =
+        materialize_discovery_v2_status(&store, &loaded.discovery, &loaded.shadow, options)?;
+    drop(store);
+
+    let output = command_output_with_timeout(
+        Command::new(env!("CARGO_BIN_EXE_discovery_v2_status"))
+            .args(["--config", config_path.to_str().expect("utf8 config path")]),
+    )?;
+
+    assert!(
+        output.status.success(),
+        "status cli failed: stdout=\n{}\nstderr=\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let cli_now = chrono::DateTime::parse_from_rfc3339(
+        json["now"].as_str().expect("status now must be a string"),
+    )?
+    .with_timezone(&Utc);
+    assert_eq!(cli_now, status.now);
+    assert_eq!(
+        json["build_elapsed_ms"].as_u64(),
+        Some(status.build_elapsed_ms)
+    );
     Ok(())
 }

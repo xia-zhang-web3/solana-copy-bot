@@ -2,14 +2,15 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use copybot_config::load_from_path;
 use copybot_discovery_v2::{
-    build_discovery_v2_status, live_portfolio_rpc_url_from_config, DiscoveryV2BuildOptions,
-    DiscoveryV2Status,
+    build_discovery_v2_status, live_portfolio_rpc_url_from_config,
+    load_materialized_discovery_v2_status_for_publish, DiscoveryV2BuildOptions, DiscoveryV2Status,
 };
 use copybot_storage_core::{validate_discovery_v2_status_schema_read_only, SqliteDiscoveryStore};
 use std::env;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "usage: discovery_v2_status --config <path> [--db-path <path>]";
+const USAGE: &str =
+    "usage: discovery_v2_status --config <path> [--db-path <path>] [--live-rebuild]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -28,6 +29,7 @@ fn main() -> Result<()> {
 struct Config {
     config_path: PathBuf,
     db_path: Option<PathBuf>,
+    live_rebuild: bool,
 }
 
 fn parse_args() -> Result<Option<Config>> {
@@ -41,6 +43,7 @@ where
     let mut args = args.into_iter();
     let mut config_path = None;
     let mut db_path = None;
+    let mut live_rebuild = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => {
@@ -49,6 +52,7 @@ where
             "--db-path" => {
                 db_path = Some(PathBuf::from(parse_string_arg("--db-path", args.next())?))
             }
+            "--live-rebuild" => live_rebuild = true,
             "--window-minutes"
             | "--max-tail-lag-seconds"
             | "--max-rows"
@@ -63,6 +67,7 @@ where
     Ok(Some(Config {
         config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
         db_path,
+        live_rebuild,
     }))
 }
 
@@ -88,7 +93,16 @@ fn run(config: Config) -> Result<DiscoveryV2Status> {
         Utc::now(),
     )
     .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded));
-    build_discovery_v2_status(&store, &loaded.discovery, &loaded.shadow, options)
+    if config.live_rebuild {
+        return build_discovery_v2_status(&store, &loaded.discovery, &loaded.shadow, options);
+    }
+    load_materialized_discovery_v2_status_for_publish(
+        &store,
+        &loaded.discovery,
+        &loaded.shadow,
+        &options,
+    )
+    .map(|(status, _report)| status)
 }
 
 fn resolve_db_path(config_path: &Path, override_path: Option<&Path>, configured: &str) -> PathBuf {
