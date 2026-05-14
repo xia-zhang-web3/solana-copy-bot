@@ -3,6 +3,11 @@ use crate::{DiscoveryConfig, ShadowConfig};
 pub const DISCOVERY_V2_SCORING_SOURCE: &str = "discovery_v2_operational_window";
 pub const DISCOVERY_V2_TOKEN_QUALITY_TTL_SECONDS: i64 = 2 * 60 * 60;
 pub const DISCOVERY_V2_TOKEN_ROLLING_MARKET_WINDOW_SECONDS: i64 = 5 * 60;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_WINDOW_HOURS: i64 = 24;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_MIN_CLOSED_TRADES: u64 = 3;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_MIN_ENTRY_SOL: f64 = 0.30;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_MAX_PNL_SOL: f64 = -0.05;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_MAX_ROI: f64 = -0.10;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DiscoveryV2PolicyFingerprintInput {
@@ -35,7 +40,12 @@ pub fn discovery_v2_policy_fingerprint(
             "min_token_age_seconds={};min_holders={};min_liquidity_sol_bits={:016x};",
             "min_volume_5m_sol_bits={:016x};min_unique_traders_5m={};",
             "execution_enabled={};token_quality_ttl_seconds={};",
-            "token_rolling_market_window_seconds={}"
+            "token_rolling_market_window_seconds={};",
+            "shadow_feedback_version=1;shadow_feedback_window_hours={};",
+            "shadow_feedback_min_closed_trades={};",
+            "shadow_feedback_min_entry_sol_bits={:016x};",
+            "shadow_feedback_max_pnl_sol_bits={:016x};",
+            "shadow_feedback_max_roi_bits={:016x}"
         ),
         DISCOVERY_V2_SCORING_SOURCE,
         input.window_minutes,
@@ -72,5 +82,10 @@ pub fn discovery_v2_policy_fingerprint(
         input.execution_enabled,
         DISCOVERY_V2_TOKEN_QUALITY_TTL_SECONDS,
         DISCOVERY_V2_TOKEN_ROLLING_MARKET_WINDOW_SECONDS,
+        DISCOVERY_V2_SHADOW_FEEDBACK_WINDOW_HOURS,
+        DISCOVERY_V2_SHADOW_FEEDBACK_MIN_CLOSED_TRADES,
+        DISCOVERY_V2_SHADOW_FEEDBACK_MIN_ENTRY_SOL.to_bits(),
+        DISCOVERY_V2_SHADOW_FEEDBACK_MAX_PNL_SOL.to_bits(),
+        DISCOVERY_V2_SHADOW_FEEDBACK_MAX_ROI.to_bits(),
     )
 }
