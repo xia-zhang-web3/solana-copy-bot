@@ -208,61 +208,6 @@ fn status_blocks_when_window_scan_is_truncated() -> Result<()> {
 }
 
 #[test]
-fn status_prefilter_keeps_market_evidence_from_filtered_wallets() -> Result<()> {
-    let (_dir, store) = test_store()?;
-    let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
-    let token = "SharedMarketToken1111111111111111111111111";
-    store.insert_observed_swaps_batch(&[
-        tail_coverage_swap("sig-coverage-floor", 1, now - Duration::hours(25)),
-        sell_with_token(
-            "noise_wallet",
-            token,
-            "sig-noise-before",
-            10,
-            now - Duration::minutes(20),
-        ),
-        swap_with_token(
-            "wallet_a",
-            token,
-            "sig-wallet-buy",
-            11,
-            now - Duration::minutes(19),
-        ),
-        swap_with_token(
-            "wallet_a",
-            token,
-            "sig-wallet-buy-2",
-            12,
-            now - Duration::minutes(18),
-        ),
-        sell_with_token(
-            "noise_wallet",
-            token,
-            "sig-noise-after",
-            13,
-            now - Duration::minutes(17),
-        ),
-        tail_coverage_swap("sig-tail", 14, now - Duration::minutes(1)),
-    ])?;
-    insert_quality_for_token(&store, token, now, Some(1.0))?;
-    let (mut discovery, mut shadow) = strict_policy();
-    discovery.min_buy_count = 2;
-    discovery.rug_lookahead_seconds = 180;
-    discovery.thin_market_min_unique_traders = 2;
-    shadow.min_unique_traders_5m = 2;
-
-    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
-
-    assert!(status.production_green, "blockers={:?}", status.blockers);
-    assert_eq!(status.candidate_wallets, vec!["wallet_a".to_string()]);
-    assert_eq!(status.scan.unique_wallets, 3);
-    assert_eq!(status.wallet_metrics_total, 1);
-    assert_eq!(status.wallet_metrics[0].tradable_ratio, 1.0);
-    assert_eq!(status.wallet_metrics[0].rug_ratio, 0.0);
-    Ok(())
-}
-
-#[test]
 fn status_blocks_when_rug_lookahead_is_unevaluated() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);

@@ -44,13 +44,12 @@ pub(crate) struct DiscoveryV2WindowAccumulator {
 }
 
 impl DiscoveryV2WindowAccumulator {
-    pub(crate) fn observe_swap_with_wallet_filter(
+    pub(crate) fn observe_swap(
         &mut self,
         swap: &SwapEvent,
         discovery: &DiscoveryConfig,
         shadow: &ShadowConfig,
         token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
-        include_wallet: bool,
     ) {
         let trader_id = self.trader_id_for_wallet(&swap.wallet);
         if let Some((token, _)) = sol_leg_token_and_notional(swap) {
@@ -62,17 +61,14 @@ impl DiscoveryV2WindowAccumulator {
             shadow,
             trader_id,
             swap,
-            include_wallet,
         );
-        if include_wallet {
-            let entry = self
-                .wallets
-                .entry(swap.wallet.clone())
-                .or_insert_with(|| WalletAccumulator::new(swap.ts_utc));
-            entry.observe_swap(swap, discovery, tradability);
-        }
+        let entry = self
+            .wallets
+            .entry(swap.wallet.clone())
+            .or_insert_with(|| WalletAccumulator::new(swap.ts_utc));
+        entry.observe_swap(swap, discovery, tradability);
         if let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) {
-            if include_wallet && is_sol_buy(swap) && swap.amount_out > 0.0 && swap.amount_in > 0.0 {
+            if is_sol_buy(swap) && swap.amount_out > 0.0 && swap.amount_in > 0.0 {
                 self.observe_pending_rug_buy(
                     token,
                     &swap.wallet,
@@ -82,6 +78,10 @@ impl DiscoveryV2WindowAccumulator {
             }
             self.observe_rug_trade(token, trader_id, sol_notional.max(0.0), discovery);
         }
+    }
+
+    pub(crate) fn wallet_count(&self) -> usize {
+        self.wallets.len()
     }
 
     pub(crate) fn finalize_rug_lookahead(
@@ -203,7 +203,6 @@ fn update_token_state_and_buy_tradability(
     shadow: &ShadowConfig,
     trader_id: u32,
     swap: &SwapEvent,
-    evaluate_buy: bool,
 ) -> Option<BuyTradability> {
     let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) else {
         return None;
@@ -222,7 +221,7 @@ fn update_token_state_and_buy_tradability(
         .and_modify(|count| *count += 1)
         .or_insert(1);
     state.sol_trades_5m.push_back(trade);
-    if evaluate_buy && is_sol_buy(swap) {
+    if is_sol_buy(swap) {
         Some(evaluate_buy_tradability(
             state,
             token_quality_cache.get(token),
