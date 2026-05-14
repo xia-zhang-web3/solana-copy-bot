@@ -97,12 +97,50 @@
     }
 
     #[test]
+    fn risk_guard_rug_rate_ignores_tiny_sample_below_floor() -> Result<()> {
+        let (store, db_path) = make_test_store("rug-rate-tiny-sample")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_rug_loss_window_minutes = 120;
+        cfg.shadow_rug_loss_count_threshold = 3;
+        cfg.shadow_rug_loss_rate_sample_size = 200;
+        cfg.shadow_rug_loss_rate_threshold = 0.04;
+        cfg.shadow_rug_loss_return_threshold = -0.70;
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        for index in 0..2 {
+            store.insert_shadow_closed_trade(
+                &format!("sig-rug-rate-small-{index}"),
+                &format!("wallet-{index}"),
+                &format!("token-{index}"),
+                1.0,
+                1.0,
+                0.2,
+                -0.8,
+                now - chrono::Duration::minutes(30 - index),
+                now - chrono::Duration::minutes(20 - index),
+            )?;
+        }
+
+        match guard.can_open_buy(&store, now, true) {
+            BuyRiskDecision::Allow => {}
+            other => panic!("tiny rug-rate sample must not hard-stop shadow, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn risk_guard_rug_rate_hard_stop_auto_clears_after_window_without_new_trades() -> Result<()> {
         let (store, db_path) = make_test_store("rug-rate-autoclear")?;
         let mut cfg = RiskConfig::default();
         cfg.shadow_rug_loss_window_minutes = 1;
         cfg.shadow_rug_loss_count_threshold = u64::MAX;
-        cfg.shadow_rug_loss_rate_sample_size = 200;
+        cfg.shadow_rug_loss_rate_sample_size = 3;
         cfg.shadow_rug_loss_rate_threshold = 0.5;
         cfg.shadow_rug_loss_return_threshold = -0.70;
         cfg.shadow_drawdown_1h_stop_sol = -999.0;
@@ -111,17 +149,19 @@
         let mut guard = ShadowRiskGuard::new(cfg);
         let now = Utc::now();
 
-        store.insert_shadow_closed_trade(
-            "sig-rug-rate-lock",
-            "wallet-a",
-            "token-a",
-            1.0,
-            1.0,
-            0.2,
-            -0.8,
-            now - chrono::Duration::seconds(55),
-            now - chrono::Duration::seconds(50),
-        )?;
+        for index in 0..3 {
+            store.insert_shadow_closed_trade(
+                &format!("sig-rug-rate-lock-{index}"),
+                &format!("wallet-{index}"),
+                &format!("token-{index}"),
+                1.0,
+                1.0,
+                0.2,
+                -0.8,
+                now - chrono::Duration::seconds(55 - index),
+                now - chrono::Duration::seconds(50 - index),
+            )?;
+        }
 
         match guard.can_open_buy(&store, now, true) {
             BuyRiskDecision::Blocked {

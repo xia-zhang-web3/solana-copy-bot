@@ -61,6 +61,13 @@ impl ShadowRiskGuard {
                 self.config.shadow_rug_loss_rate_sample_size.max(1),
                 self.config.shadow_rug_loss_return_threshold,
             )?;
+            let rug_rate_sample_floor = self
+                .config
+                .shadow_rug_loss_rate_sample_size
+                .min(self.config.shadow_rug_loss_count_threshold)
+                .max(1);
+            let rug_rate_breach = rug_sample_total >= rug_rate_sample_floor
+                && rug_rate_recent > self.config.shadow_rug_loss_rate_threshold;
 
             let hard_stop_breach = if pnl_24h_lamports <= drawdown_24h_stop_lamports {
                 Some((
@@ -72,13 +79,16 @@ impl ShadowRiskGuard {
                     ),
                 ))
             } else if rug_count_since >= self.config.shadow_rug_loss_count_threshold
-                || rug_rate_recent > self.config.shadow_rug_loss_rate_threshold
+                || rug_rate_breach
             {
                 Some((
                     "rug_loss",
                     format!(
-                        "rug_count_since={} sample_total={} rug_rate_recent={:.4}",
-                        rug_count_since, rug_sample_total, rug_rate_recent
+                        "rug_count_since={} sample_total={} rug_rate_sample_floor={} rug_rate_recent={:.4}",
+                        rug_count_since,
+                        rug_sample_total,
+                        rug_rate_sample_floor,
+                        rug_rate_recent
                     ),
                 ))
             } else {
