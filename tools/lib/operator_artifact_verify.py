@@ -16,6 +16,7 @@ EXPECTED_PACKAGE_BINARIES = {
         "discovery_v2_prepare_quality",
         "discovery_v2_publish",
         "discovery_v2_status",
+        "discovery_v2_wallet_report",
     },
     "copybot-discovery-ops": {
         "discovery_recent_raw_snapshot",

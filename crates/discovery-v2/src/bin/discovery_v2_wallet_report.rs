@@ -1,0 +1,168 @@
+use anyhow::{anyhow, bail, Context, Result};
+use chrono::Utc;
+use copybot_config::load_from_path;
+use copybot_discovery_v2::{
+    build_discovery_v2_status, build_discovery_v2_wallet_report,
+    live_portfolio_rpc_url_from_config, load_materialized_discovery_v2_status_for_publish,
+    DiscoveryV2BuildOptions, DiscoveryV2Status, DiscoveryV2WalletReport,
+    DiscoveryV2WalletReportOptions,
+};
+use copybot_storage_core::{validate_discovery_v2_status_schema_read_only, SqliteDiscoveryStore};
+use std::env;
+use std::path::{Path, PathBuf};
+
+const USAGE: &str = "usage: discovery_v2_wallet_report --config <path> [--db-path <path>] \
+                     [--top <n>] [--include-rejected] [--live-rebuild]";
+
+fn main() -> Result<()> {
+    let Some(config) = parse_args()? else {
+        println!("{USAGE}");
+        return Ok(());
+    };
+    let report = run(config)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct Config {
+    config_path: PathBuf,
+    db_path: Option<PathBuf>,
+    top: usize,
+    include_rejected: bool,
+    live_rebuild: bool,
+}
+
+fn parse_args() -> Result<Option<Config>> {
+    parse_args_from(env::args().skip(1))
+}
+
+fn parse_args_from<I>(args: I) -> Result<Option<Config>>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut args = args.into_iter();
+    let mut config_path = None;
+    let mut db_path = None;
+    let mut top = 15usize;
+    let mut include_rejected = false;
+    let mut live_rebuild = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--config" => {
+                config_path = Some(PathBuf::from(parse_string_arg("--config", args.next())?))
+            }
+            "--db-path" => {
+                db_path = Some(PathBuf::from(parse_string_arg("--db-path", args.next())?))
+            }
+            "--top" => top = parse_top(args.next())?,
+            "--include-rejected" => include_rejected = true,
+            "--live-rebuild" => live_rebuild = true,
+            "--window-minutes"
+            | "--max-tail-lag-seconds"
+            | "--max-rows"
+            | "--time-budget-ms"
+            | "--now" => bail!(
+                "{arg} is not accepted by production wallet report; use config values and wall clock"
+            ),
+            "--help" | "-h" => return Ok(None),
+            other => bail!("unknown argument: {other}"),
+        }
+    }
+    Ok(Some(Config {
+        config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
+        db_path,
+        top,
+        include_rejected,
+        live_rebuild,
+    }))
+}
+
+fn run(config: Config) -> Result<DiscoveryV2WalletReport> {
+    let loaded = load_from_path(&config.config_path)
+        .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
+    let db_path = resolve_db_path(
+        &config.config_path,
+        config.db_path.as_deref(),
+        &loaded.sqlite.path,
+    );
+    let store = SqliteDiscoveryStore::open_read_only(&db_path)
+        .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
+    validate_discovery_v2_status_schema_read_only(&store).with_context(|| {
+        format!(
+            "sqlite db is not discovery v2 schema-ready: {}",
+            db_path.display()
+        )
+    })?;
+    let now = Utc::now();
+    let options =
+        DiscoveryV2BuildOptions::from_config(&loaded.discovery, loaded.execution.enabled, now)
+            .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded));
+    let status = load_status(
+        &store,
+        &loaded.discovery,
+        &loaded.shadow,
+        options,
+        config.live_rebuild,
+    )?;
+    build_discovery_v2_wallet_report(
+        &store,
+        &loaded.discovery,
+        &loaded.shadow,
+        status,
+        DiscoveryV2WalletReportOptions {
+            now,
+            limit: config.top,
+            include_rejected: config.include_rejected,
+        },
+    )
+}
+
+fn load_status(
+    store: &SqliteDiscoveryStore,
+    discovery: &copybot_config::DiscoveryConfig,
+    shadow: &copybot_config::ShadowConfig,
+    options: DiscoveryV2BuildOptions,
+    live_rebuild: bool,
+) -> Result<DiscoveryV2Status> {
+    if live_rebuild {
+        return build_discovery_v2_status(store, discovery, shadow, options);
+    }
+    load_materialized_discovery_v2_status_for_publish(store, discovery, shadow, &options)
+        .map(|(status, _report)| status)
+}
+
+fn resolve_db_path(config_path: &Path, override_path: Option<&Path>, configured: &str) -> PathBuf {
+    if let Some(override_path) = override_path {
+        return override_path.to_path_buf();
+    }
+    let configured = PathBuf::from(configured);
+    if configured.is_absolute() {
+        configured
+    } else {
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(configured)
+    }
+}
+
+fn parse_string_arg(flag: &str, value: Option<String>) -> Result<String> {
+    let raw = value.ok_or_else(|| anyhow!("missing value for {flag}"))?;
+    let trimmed = raw.trim().to_string();
+    if trimmed.is_empty() {
+        bail!("{flag} cannot be empty");
+    }
+    Ok(trimmed)
+}
+
+fn parse_top(value: Option<String>) -> Result<usize> {
+    let raw = parse_string_arg("--top", value)?;
+    let top = raw
+        .parse::<usize>()
+        .with_context(|| format!("invalid --top value: {raw}"))?;
+    if top == 0 || top > 250 {
+        bail!("--top must be between 1 and 250");
+    }
+    Ok(top)
+}

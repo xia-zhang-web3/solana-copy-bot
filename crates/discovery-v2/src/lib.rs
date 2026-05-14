@@ -10,6 +10,7 @@ mod quality_prepare;
 mod status;
 mod token_market;
 mod tradability;
+mod wallet_report;
 
 pub use crate::materialized_status::{
     load_materialized_discovery_v2_status_for_publish, materialize_discovery_v2_status,
@@ -26,5 +27,9 @@ pub use crate::status::{
     build_discovery_v2_status, DiscoveryV2CoverageSample, DiscoveryV2FilterStatus,
     DiscoveryV2LivePortfolioStatus, DiscoveryV2ScanStatus, DiscoveryV2Status,
     DiscoveryV2TailStatus, DISCOVERY_V2_SCORING_SOURCE, OPERATOR_WALLET_METRIC_LIMIT,
+};
+pub use crate::wallet_report::{
+    build_discovery_v2_wallet_report, DiscoveryV2WalletFilterEvidence, DiscoveryV2WalletReport,
+    DiscoveryV2WalletReportOptions, DiscoveryV2WalletReportRow, DiscoveryV2WalletReportThresholds,
 };
 pub use metric::DiscoveryV2WalletMetric;

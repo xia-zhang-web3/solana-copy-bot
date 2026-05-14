@@ -302,6 +302,7 @@ class OperatorArtifactVerifierTests(unittest.TestCase):
                 "discovery_v2_prepare_quality",
                 "discovery_v2_publish",
                 "discovery_v2_status",
+                "discovery_v2_wallet_report",
             ]
             self.write_artifact(
                 artifact_dir,
@@ -345,6 +346,7 @@ class OperatorArtifactVerifierTests(unittest.TestCase):
                     "discovery_v2_prepare_quality",
                     "discovery_v2_publish",
                     "discovery_v2_status",
+                    "discovery_v2_wallet_report",
                 ],
                 profile="operator-release",
                 git_dirty=False,
