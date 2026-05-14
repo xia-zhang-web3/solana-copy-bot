@@ -3,8 +3,9 @@ use chrono::Utc;
 use copybot_config::load_from_path;
 use copybot_discovery_v2::{
     live_portfolio_rpc_url_from_config, materialize_discovery_v2_status,
-    prepare_discovery_v2_quality, DiscoveryV2BuildOptions, DiscoveryV2MaterializedStatusReport,
-    DiscoveryV2PrepareQualityOptions, DiscoveryV2PrepareQualityReport,
+    prepare_discovery_v2_quality, reusable_materialized_discovery_v2_status_for_prepare,
+    DiscoveryV2BuildOptions, DiscoveryV2MaterializedStatusReport, DiscoveryV2PrepareQualityOptions,
+    DiscoveryV2PrepareQualityReport,
 };
 use copybot_storage_core::{
     ensure_discovery_v2_schema, validate_discovery_v2_status_schema_read_only, SqliteDiscoveryStore,
@@ -115,13 +116,22 @@ fn run(config: Config) -> Result<PrepareQualityCliReport> {
                 Utc::now(),
             )
             .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded));
-            let (_status, report) = materialize_discovery_v2_status(
+            if let Some(report) = reusable_materialized_discovery_v2_status_for_prepare(
                 &store,
                 &loaded.discovery,
                 &loaded.shadow,
-                build_options,
-            )?;
-            Some(report)
+                &build_options,
+            )? {
+                Some(report)
+            } else {
+                let (_status, report) = materialize_discovery_v2_status(
+                    &store,
+                    &loaded.discovery,
+                    &loaded.shadow,
+                    build_options,
+                )?;
+                Some(report)
+            }
         } else {
             None
         };

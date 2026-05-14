@@ -4,7 +4,8 @@ use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_discovery_v2::{
     load_materialized_discovery_v2_status_for_publish, materialize_discovery_v2_status,
-    publish_discovery_v2_status, DiscoveryV2BuildOptions,
+    publish_discovery_v2_status, reusable_materialized_discovery_v2_status_for_prepare,
+    DiscoveryV2BuildOptions,
 };
 use copybot_storage_core::{ensure_discovery_v2_schema, SqliteDiscoveryStore};
 use tempfile::tempdir;
@@ -162,5 +163,47 @@ fn materialized_status_rejects_stale_snapshot() -> Result<()> {
     )
     .expect_err("stale materialized status must fail closed");
     assert!(err.to_string().contains("stale"));
+    Ok(())
+}
+
+#[test]
+fn prepare_can_reuse_green_materialized_status_before_rebuild_age() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-13T12:00:00+00:00")?.with_timezone(&Utc);
+    seed_green_status(&store, now)?;
+    let (discovery, shadow) = policy();
+    materialize_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    let reused = reusable_materialized_discovery_v2_status_for_prepare(
+        &store,
+        &discovery,
+        &shadow,
+        &options(now + Duration::seconds(30)),
+    )?
+    .expect("fresh green snapshot should be reusable");
+
+    assert!(!reused.committed);
+    assert!(reused.reused_existing_snapshot);
+    assert_eq!(reused.status_age_seconds, 30);
+    assert!(reused.production_green);
+    Ok(())
+}
+
+#[test]
+fn prepare_rebuilds_materialized_status_after_rebuild_age() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-13T12:00:00+00:00")?.with_timezone(&Utc);
+    seed_green_status(&store, now)?;
+    let (discovery, shadow) = policy();
+    materialize_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    let reused = reusable_materialized_discovery_v2_status_for_prepare(
+        &store,
+        &discovery,
+        &shadow,
+        &options(now + Duration::seconds(61)),
+    )?;
+
+    assert!(reused.is_none());
     Ok(())
 }

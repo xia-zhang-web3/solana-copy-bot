@@ -9,9 +9,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryV2MaterializedStatusReport {
     pub committed: bool,
+    pub reused_existing_snapshot: bool,
     pub source: String,
     pub status_now: DateTime<Utc>,
     pub status_age_seconds: i64,
+    pub rebuild_after_age_seconds: u64,
     pub max_status_age_seconds: u64,
     pub policy_fingerprint: String,
     pub production_green: bool,
@@ -39,6 +41,31 @@ pub fn materialize_discovery_v2_status(
     )?;
     let report = materialized_status_report(&status, discovery, options.now, true);
     Ok((status, report))
+}
+
+pub fn reusable_materialized_discovery_v2_status_for_prepare(
+    store: &SqliteDiscoveryStore,
+    discovery: &DiscoveryConfig,
+    shadow: &ShadowConfig,
+    options: &DiscoveryV2BuildOptions,
+) -> Result<Option<DiscoveryV2MaterializedStatusReport>> {
+    let Ok((status, mut report)) =
+        load_materialized_discovery_v2_status_for_publish(store, discovery, shadow, options)
+    else {
+        return Ok(None);
+    };
+    if !status.production_green {
+        return Ok(None);
+    }
+    let rebuild_after_age_seconds = materialized_status_rebuild_after_age_seconds(discovery);
+    if report.status_age_seconds < 0
+        || report.status_age_seconds > rebuild_after_age_seconds.min(i64::MAX as u64) as i64
+    {
+        return Ok(None);
+    }
+    report.committed = false;
+    report.reused_existing_snapshot = true;
+    Ok(Some(report))
 }
 
 pub fn load_materialized_discovery_v2_status_for_publish(
@@ -142,9 +169,11 @@ fn materialized_status_report(
 ) -> DiscoveryV2MaterializedStatusReport {
     DiscoveryV2MaterializedStatusReport {
         committed,
+        reused_existing_snapshot: false,
         source: status.source.clone(),
         status_now: status.now,
         status_age_seconds: now.signed_duration_since(status.now).num_seconds(),
+        rebuild_after_age_seconds: materialized_status_rebuild_after_age_seconds(discovery),
         max_status_age_seconds: materialized_status_max_age_seconds(discovery),
         policy_fingerprint: status.policy_fingerprint.clone(),
         production_green: status.production_green,
@@ -160,4 +189,8 @@ fn materialized_status_max_age_seconds(discovery: &DiscoveryConfig) -> u64 {
         .max(discovery.refresh_seconds)
         .max(1)
         .saturating_mul(2)
+}
+
+fn materialized_status_rebuild_after_age_seconds(discovery: &DiscoveryConfig) -> u64 {
+    materialized_status_max_age_seconds(discovery).saturating_sub(discovery.refresh_seconds.max(1))
 }

@@ -13,7 +13,7 @@ mod tradability;
 
 pub use crate::materialized_status::{
     load_materialized_discovery_v2_status_for_publish, materialize_discovery_v2_status,
-    DiscoveryV2MaterializedStatusReport,
+    reusable_materialized_discovery_v2_status_for_prepare, DiscoveryV2MaterializedStatusReport,
 };
 pub use crate::policy::{
     discovery_v2_policy_fingerprint, live_portfolio_rpc_url_from_config, DiscoveryV2BuildOptions,
