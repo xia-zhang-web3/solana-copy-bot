@@ -391,7 +391,7 @@ fn prepare_quality_materialize_reuses_fresh_green_snapshot_before_scan() -> Resu
     ensure_discovery_v2_schema(&store)?;
     let config_path = dir.path().join("live.toml");
     write_green_config(&config_path, &db_path)?;
-    let now = DateTime::parse_from_rfc3339("2026-05-14T12:00:00+00:00")?.with_timezone(&Utc);
+    let now = Utc::now();
     seed_green_materialized_status(&store, &config_path, now)?;
     drop(store);
 

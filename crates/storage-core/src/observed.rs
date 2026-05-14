@@ -44,6 +44,44 @@ impl SqliteDiscoveryStore {
         .transpose()
     }
 
+    pub fn observed_swaps_tail_cursor_at_or_before_read_only(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<Option<DiscoveryRuntimeCursor>> {
+        if !self.sqlite_table_exists("observed_swaps")? {
+            return Ok(None);
+        }
+        ensure_observed_swaps_timestamps_canonical_utc_read_only(&self.conn)?;
+        let now_raw = now.to_rfc3339();
+        let raw = self
+            .conn
+            .query_row(
+                "SELECT ts, slot, signature
+                 FROM observed_swaps
+                 WHERE ts <= ?1
+                 ORDER BY ts DESC, slot DESC, signature DESC
+                 LIMIT 1",
+                params![now_raw],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed loading observed_swaps non-future tail cursor")?;
+        raw.map(|(ts, slot, signature)| {
+            Ok(DiscoveryRuntimeCursor {
+                ts_utc: parse_rfc3339_utc(&ts, "observed_swaps.ts")?,
+                slot: parse_sqlite_slot(slot, "observed_swaps.tail_at_or_before.slot")?,
+                signature,
+            })
+        })
+        .transpose()
+    }
+
     pub fn observed_swaps_coverage_start_read_only(&self) -> Result<Option<SwapEvent>> {
         if !self.sqlite_table_exists("observed_swaps")? {
             return Ok(None);

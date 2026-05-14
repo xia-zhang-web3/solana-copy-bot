@@ -141,6 +141,29 @@ fn status_blocks_when_tail_is_future_dated() -> Result<()> {
 }
 
 #[test]
+fn status_uses_non_future_tail_when_absolute_tail_has_small_clock_skew() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
+    store.insert_observed_swaps_batch(&[
+        tail_coverage_swap("sig-coverage-floor", 9, now - Duration::hours(25)),
+        swap("wallet_a", "sig-a", 10, now - Duration::minutes(10)),
+        tail_coverage_swap("sig-tail-ready", 11, now - Duration::seconds(5)),
+        tail_coverage_swap("sig-tail-small-skew", 12, now + Duration::seconds(15)),
+    ])?;
+    insert_quality(&store, now, Some(1.0))?;
+    let (discovery, shadow) = strict_policy();
+
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    assert!(status.production_green);
+    assert!(status.blockers.is_empty());
+    let tail = status.tail.as_ref().expect("tail status");
+    assert_eq!(tail.cursor.signature, "sig-tail-ready");
+    assert!(!tail.future_dated);
+    Ok(())
+}
+
+#[test]
 fn status_blocks_when_scan_time_budget_is_exhausted() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);

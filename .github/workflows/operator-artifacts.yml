@@ -143,10 +143,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          candidate=""
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            range="${{ github.event.pull_request.base.sha }}..HEAD"
+            candidate="${{ github.event.pull_request.base.sha }}"
           elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-            range="${{ github.event.before }}..HEAD"
+            candidate="${{ github.event.before }}"
+          fi
+          if [ -n "$candidate" ] && git diff --name-only "$candidate..HEAD" >/dev/null 2>&1; then
+            range="$candidate..HEAD"
           elif git rev-parse HEAD^ >/dev/null 2>&1; then
             range="HEAD^..HEAD"
           else
