@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
+use copybot_core_types::SwapEvent;
 use copybot_discovery_v2::{materialize_discovery_v2_status, DiscoveryV2BuildOptions};
 use copybot_storage_core::{
     ensure_discovery_v2_schema, validate_discovery_v2_schema_read_only, SqliteDiscoveryStore,
@@ -13,6 +14,8 @@ use std::time::{Duration as StdDuration, Instant as StdInstant};
 use tempfile::tempdir;
 
 const CLI_TEST_TIMEOUT: StdDuration = StdDuration::from_secs(60);
+const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+const TOKEN_MINT: &str = "CliMaterializedToken111111111111111111111";
 
 fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -49,6 +52,109 @@ fn command_output_with_timeout(command: &mut Command) -> Result<Output> {
         }
         thread::sleep(StdDuration::from_millis(10));
     }
+}
+
+fn buy(wallet: &str, token: &str, signature: &str, slot: u64, ts_utc: DateTime<Utc>) -> SwapEvent {
+    SwapEvent {
+        wallet: wallet.to_string(),
+        dex: "test".to_string(),
+        token_in: SOL_MINT.to_string(),
+        token_out: token.to_string(),
+        amount_in: 1.0,
+        amount_out: 10.0,
+        signature: signature.to_string(),
+        slot,
+        ts_utc,
+        exact_amounts: None,
+    }
+}
+
+fn seed_green_materialized_status(
+    store: &SqliteDiscoveryStore,
+    config_path: &Path,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    store.insert_observed_swaps_batch(&[
+        buy(
+            "tail-wallet",
+            "CliCoverageToken111111111111111111111",
+            "sig-coverage",
+            9,
+            now - Duration::hours(25),
+        ),
+        buy(
+            "wallet-a",
+            TOKEN_MINT,
+            "sig-wallet-a",
+            10,
+            now - Duration::minutes(10),
+        ),
+        buy(
+            "tail-wallet",
+            "CliTailToken111111111111111111111111",
+            "sig-tail",
+            11,
+            now - Duration::seconds(30),
+        ),
+    ])?;
+    store.upsert_token_quality_cache(TOKEN_MINT, Some(5), Some(1.0), Some(60), now)?;
+    let loaded = copybot_config::load_from_path(config_path)?;
+    let options =
+        DiscoveryV2BuildOptions::from_config(&loaded.discovery, loaded.execution.enabled, now);
+    let (status, _report) =
+        materialize_discovery_v2_status(store, &loaded.discovery, &loaded.shadow, options)?;
+    assert!(
+        status.production_green,
+        "unexpected materialized blockers: {:?}",
+        status.blockers
+    );
+    Ok(())
+}
+
+fn write_green_config(config_path: &Path, db_path: &Path) -> Result<()> {
+    fs::write(
+        config_path,
+        format!(
+            r#"
+[sqlite]
+path = "{}"
+
+[risk]
+shadow_universe_min_active_follow_wallets = 1
+
+[discovery]
+scoring_window_days = 1
+decay_window_days = 1
+follow_top_n = 1
+min_leader_notional_sol = 0.0
+min_trades = 1
+min_active_days = 1
+min_score = 0.0
+min_buy_count = 1
+min_tradable_ratio = 0.25
+require_open_positions_for_publication = true
+max_rug_ratio = 0.6
+rug_lookahead_seconds = 60
+metric_snapshot_interval_seconds = 3600
+refresh_seconds = 60
+thin_market_min_volume_sol = 0.5
+thin_market_min_unique_traders = 1
+max_window_swaps_in_memory = 100
+max_fetch_swaps_per_cycle = 100
+fetch_time_budget_ms = 5000
+
+[shadow]
+quality_gates_enabled = true
+min_token_age_seconds = 30
+min_holders = 5
+min_liquidity_sol = 1.0
+min_volume_5m_sol = 0.5
+min_unique_traders_5m = 1
+"#,
+            db_path.display()
+        ),
+    )?;
+    Ok(())
 }
 
 #[test]
@@ -273,6 +379,47 @@ path = "{}"
     assert_eq!(
         json["build_elapsed_ms"].as_u64(),
         Some(status.build_elapsed_ms)
+    );
+    Ok(())
+}
+
+#[test]
+fn prepare_quality_materialize_reuses_fresh_green_snapshot_before_scan() -> Result<()> {
+    let dir = tempdir()?;
+    let db_path = dir.path().join("runtime.db");
+    let store = SqliteDiscoveryStore::open(&db_path)?;
+    ensure_discovery_v2_schema(&store)?;
+    let config_path = dir.path().join("live.toml");
+    write_green_config(&config_path, &db_path)?;
+    let now = DateTime::parse_from_rfc3339("2026-05-14T12:00:00+00:00")?.with_timezone(&Utc);
+    seed_green_materialized_status(&store, &config_path, now)?;
+    drop(store);
+
+    let output = command_output_with_timeout(
+        Command::new(env!("CARGO_BIN_EXE_discovery_v2_prepare_quality")).args([
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--commit",
+            "--materialize-status",
+        ]),
+    )?;
+
+    assert!(
+        output.status.success(),
+        "prepare cli failed: stdout=\n{}\nstderr=\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(json["skipped"].as_bool(), Some(true));
+    assert_eq!(
+        json["skip_reason"].as_str(),
+        Some("discovery_v2_materialized_status_reusable")
+    );
+    assert_eq!(json["rows_scanned"].as_u64(), Some(0));
+    assert_eq!(
+        json["materialized_status"]["reused_existing_snapshot"].as_bool(),
+        Some(true)
     );
     Ok(())
 }

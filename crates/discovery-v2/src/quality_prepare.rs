@@ -24,6 +24,9 @@ pub struct DiscoveryV2PrepareQualityOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryV2PrepareQualityReport {
     pub dry_run: bool,
+    pub skipped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
     pub committed: bool,
     pub quality_source: String,
     pub now: DateTime<Utc>,
@@ -75,6 +78,35 @@ impl DiscoveryV2PrepareQualityOptions {
 
     fn window_start(&self) -> DateTime<Utc> {
         self.now - Duration::minutes(self.window_minutes.min(i64::MAX as u64) as i64)
+    }
+}
+
+impl DiscoveryV2PrepareQualityReport {
+    pub fn skipped_for_reusable_materialized_status(
+        options: &DiscoveryV2PrepareQualityOptions,
+    ) -> Self {
+        Self {
+            dry_run: !options.commit,
+            skipped: true,
+            skip_reason: Some("discovery_v2_materialized_status_reusable".to_string()),
+            committed: false,
+            quality_source: "observed_recent_quality_window_proxy".to_string(),
+            now: options.now,
+            window_start: options.window_start(),
+            window_minutes: options.window_minutes,
+            scoring_window_minutes: options.scoring_window_minutes,
+            max_rows: options.max_rows,
+            max_mints: options.max_mints,
+            rows_scanned: 0,
+            unique_buy_mints: 0,
+            mints_considered: 0,
+            skipped_fresh_complete: 0,
+            upserted: 0,
+            incomplete_after_prepare: 0,
+            max_rows_exhausted: false,
+            time_budget_exhausted: false,
+            blockers: Vec::new(),
+        }
     }
 }
 
@@ -213,6 +245,8 @@ pub fn prepare_discovery_v2_quality(
 
     Ok(DiscoveryV2PrepareQualityReport {
         dry_run: !options.commit,
+        skipped: false,
+        skip_reason: None,
         committed: commit_allowed,
         quality_source: "observed_recent_quality_window_proxy".to_string(),
         now: options.now,
