@@ -3,7 +3,7 @@ use crate::status::{build_discovery_v2_status, DiscoveryV2Status, DISCOVERY_V2_S
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
-use copybot_storage_core::SqliteDiscoveryStore;
+use copybot_storage_core::{DiscoveryPublicationFreshnessGate, SqliteDiscoveryStore};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,11 +184,19 @@ fn materialized_status_report(
 }
 
 fn materialized_status_max_age_seconds(discovery: &DiscoveryConfig) -> u64 {
-    discovery
-        .metric_snapshot_interval_seconds
-        .max(discovery.refresh_seconds)
-        .max(1)
-        .saturating_mul(2)
+    let gate = DiscoveryPublicationFreshnessGate {
+        scoring_window_days: discovery.scoring_window_days as i64,
+        metric_snapshot_interval_seconds: discovery.metric_snapshot_interval_seconds,
+        refresh_seconds: discovery.refresh_seconds,
+        expected_scoring_source: None,
+        expected_policy_fingerprint: None,
+    };
+    let seconds = gate.published_universe_max_age().num_seconds();
+    if seconds <= 0 {
+        1
+    } else {
+        seconds as u64
+    }
 }
 
 fn materialized_status_rebuild_after_age_seconds(discovery: &DiscoveryConfig) -> u64 {
