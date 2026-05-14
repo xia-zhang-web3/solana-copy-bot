@@ -3,7 +3,7 @@ use crate::{
         lamports_to_sol, shadow_closed_trade_entry_cost_lamports, shadow_closed_trade_pnl_lamports,
         shadow_lot_cost_lamports, signed_lamports_to_sol,
     },
-    SqliteDiscoveryStore, SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
+    ShadowWalletFeedback, SqliteDiscoveryStore, SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
     SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
     SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE, SHADOW_LOT_OPEN_EPS,
     SHADOW_RISK_CONTEXT_MARKET,
@@ -12,6 +12,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_core_types::{Lamports, SignedLamports};
 use rusqlite::params;
+use std::collections::HashMap;
 
 impl SqliteDiscoveryStore {
     pub fn shadow_open_lots_count(&self) -> Result<u64> {
@@ -99,6 +100,60 @@ impl SqliteDiscoveryStore {
         since: DateTime<Utc>,
     ) -> Result<(u64, SignedLamports)> {
         self.shadow_realized_pnl_lamports_since_internal(since, true)
+    }
+
+    pub fn shadow_wallet_feedback_since(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<HashMap<String, ShadowWalletFeedback>> {
+        if !self.sqlite_table_exists("shadow_closed_trades")? {
+            return Ok(HashMap::new());
+        }
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT wallet_id, entry_cost_sol, entry_cost_lamports, pnl_sol, pnl_lamports
+                 FROM shadow_closed_trades
+                 WHERE closed_ts >= ?1
+                   AND COALESCE(close_context, 'market') NOT IN (?2, ?3, ?4)",
+            )
+            .context("failed to prepare shadow wallet feedback query")?;
+        let mut rows = stmt
+            .query(params![
+                since.to_rfc3339(),
+                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+                SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
+                SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE
+            ])
+            .context("failed querying shadow wallet feedback rows")?;
+        let mut feedback = HashMap::<String, ShadowWalletFeedback>::new();
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating shadow wallet feedback rows")?
+        {
+            let wallet_id: String = row
+                .get(0)
+                .context("failed reading shadow_closed_trades.wallet_id")?;
+            let entry_cost = lamports_to_sol(shadow_closed_trade_entry_cost_lamports(
+                row.get(1)
+                    .context("failed reading shadow_closed_trades.entry_cost_sol")?,
+                row.get(2)
+                    .context("failed reading shadow_closed_trades.entry_cost_lamports")?,
+                "shadow wallet feedback",
+            )?);
+            let pnl = signed_lamports_to_sol(shadow_closed_trade_pnl_lamports(
+                row.get(3)
+                    .context("failed reading shadow_closed_trades.pnl_sol")?,
+                row.get(4)
+                    .context("failed reading shadow_closed_trades.pnl_lamports")?,
+                "shadow wallet feedback",
+            )?);
+            let entry = feedback.entry(wallet_id).or_default();
+            entry.closed_trades = entry.closed_trades.saturating_add(1);
+            entry.entry_cost_sol += entry_cost;
+            entry.pnl_sol += pnl;
+        }
+        Ok(feedback)
     }
 
     fn shadow_realized_pnl_lamports_since_internal(

@@ -1,9 +1,14 @@
+use crate::shadow_feedback::{
+    SHADOW_FEEDBACK_MAX_PNL_SOL, SHADOW_FEEDBACK_MAX_ROI, SHADOW_FEEDBACK_MIN_CLOSED_TRADES,
+    SHADOW_FEEDBACK_MIN_ENTRY_SOL, SHADOW_FEEDBACK_WINDOW_HOURS,
+};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{
     discovery_v2_policy_fingerprint as shared_discovery_v2_policy_fingerprint, AppConfig,
     DiscoveryConfig, DiscoveryV2PolicyFingerprintInput, ShadowConfig,
     DISCOVERY_V2_TOKEN_QUALITY_TTL_SECONDS,
 };
+use std::fmt::Write;
 
 pub const TOKEN_QUALITY_TTL_SECONDS: i64 = DISCOVERY_V2_TOKEN_QUALITY_TTL_SECONDS;
 
@@ -78,7 +83,7 @@ pub fn discovery_v2_policy_fingerprint(
     shadow: &ShadowConfig,
     options: &DiscoveryV2BuildOptions,
 ) -> String {
-    shared_discovery_v2_policy_fingerprint(
+    let mut fingerprint = shared_discovery_v2_policy_fingerprint(
         discovery,
         shadow,
         DiscoveryV2PolicyFingerprintInput {
@@ -88,5 +93,15 @@ pub fn discovery_v2_policy_fingerprint(
             time_budget_ms: options.time_budget_ms,
             execution_enabled: options.execution_enabled,
         },
-    )
+    );
+    let _ = write!(
+        &mut fingerprint,
+        ";shadow_feedback_version=1;shadow_feedback_window_hours={};shadow_feedback_min_closed_trades={};shadow_feedback_min_entry_sol_bits={:016x};shadow_feedback_max_pnl_sol_bits={:016x};shadow_feedback_max_roi_bits={:016x}",
+        SHADOW_FEEDBACK_WINDOW_HOURS,
+        SHADOW_FEEDBACK_MIN_CLOSED_TRADES,
+        SHADOW_FEEDBACK_MIN_ENTRY_SOL.to_bits(),
+        SHADOW_FEEDBACK_MAX_PNL_SOL.to_bits(),
+        SHADOW_FEEDBACK_MAX_ROI.to_bits()
+    );
+    fingerprint
 }

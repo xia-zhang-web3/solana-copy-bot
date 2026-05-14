@@ -40,6 +40,23 @@ pub struct ShadowCloseOutcome {
     pub has_open_lots_after: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ShadowWalletFeedback {
+    pub closed_trades: u64,
+    pub entry_cost_sol: f64,
+    pub pnl_sol: f64,
+}
+
+impl ShadowWalletFeedback {
+    pub fn roi(&self) -> Option<f64> {
+        if self.entry_cost_sol > 0.0 {
+            Some(self.pnl_sol / self.entry_cost_sol)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TokenMarketStats {
     pub first_seen: Option<DateTime<Utc>>,

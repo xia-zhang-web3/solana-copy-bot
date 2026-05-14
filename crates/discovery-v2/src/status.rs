@@ -2,6 +2,7 @@ use crate::filters::{build_budget_exhausted_filter_status, DiscoveryV2FilterStat
 use crate::live_portfolio::apply_live_portfolio_gate;
 use crate::metric::wallet_metric_from_accumulator;
 use crate::policy::{discovery_v2_policy_fingerprint, DiscoveryV2BuildOptions};
+use crate::shadow_feedback::{apply_shadow_feedback, load_shadow_wallet_feedback};
 use crate::status::status_blockers::blockers;
 use crate::status::status_load::{load_coverage_sample, load_tail_status, scan_window_metrics};
 use crate::status::status_rank::{retain_top_wallet_metric, scan_status, sort_wallet_metrics};
@@ -80,6 +81,7 @@ pub fn build_discovery_v2_status(
     let mut wallet_metrics =
         Vec::with_capacity(retained_metric_limit.min(window_scan.wallets.len()));
     let mut filters = DiscoveryV2FilterStatusBuilder::default();
+    let shadow_feedback = load_shadow_wallet_feedback(store, options.now)?;
     let mut wallet_metrics_total = 0usize;
     let mut metric_time_budget_exhausted = false;
     for (wallet_id, acc) in window_scan.wallets {
@@ -87,7 +89,10 @@ pub fn build_discovery_v2_status(
             metric_time_budget_exhausted = true;
             break;
         }
-        let metric = wallet_metric_from_accumulator(wallet_id, acc, discovery, scoring_data_now);
+        let mut metric =
+            wallet_metric_from_accumulator(wallet_id, acc, discovery, scoring_data_now);
+        let feedback = shadow_feedback.get(&metric.wallet_id);
+        apply_shadow_feedback(&mut metric, feedback);
         wallet_metrics_total = wallet_metrics_total.saturating_add(1);
         filters.observe_metric(&metric);
         retain_top_wallet_metric(&mut wallet_metrics, metric, retained_metric_limit);

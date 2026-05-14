@@ -1,4 +1,4 @@
-use crate::metric::DiscoveryV2WalletMetric;
+use crate::metric::{reject_wallet_metric, DiscoveryV2WalletMetric};
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig, DISCOVERY_V2_TOKEN_QUALITY_TTL_SECONDS};
@@ -314,15 +314,7 @@ fn quality_satisfies_shadow_gate(
 }
 
 fn reject_metric(metric: &mut DiscoveryV2WalletMetric, reason: &str) {
-    metric.eligible = false;
-    metric.score = 0.0;
-    if !metric
-        .reject_reasons
-        .iter()
-        .any(|existing| existing == reason)
-    {
-        metric.reject_reasons.push(reason.to_string());
-    }
+    reject_wallet_metric(metric, reason);
 }
 
 fn candidate_wallets_without_live_gate(

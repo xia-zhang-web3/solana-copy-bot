@@ -33,6 +33,9 @@ pub struct DiscoveryV2WalletMetric {
     pub live_token_value_sol: Option<f64>,
     pub live_token_positions: Option<u32>,
     pub live_tradable_token_positions: Option<u32>,
+    pub shadow_closed_trades_24h: Option<u32>,
+    pub shadow_pnl_sol_24h: Option<f64>,
+    pub shadow_roi_24h: Option<f64>,
     pub eligible: bool,
     pub reject_reasons: Vec<String>,
     pub first_seen: DateTime<Utc>,
@@ -127,11 +130,26 @@ pub(crate) fn wallet_metric_from_accumulator(
         live_token_value_sol: None,
         live_token_positions: None,
         live_tradable_token_positions: None,
+        shadow_closed_trades_24h: None,
+        shadow_pnl_sol_24h: None,
+        shadow_roi_24h: None,
         eligible: reject_reasons.is_empty(),
         reject_reasons,
         first_seen: acc.first_seen,
         last_seen: acc.last_seen,
         score,
+    }
+}
+
+pub(crate) fn reject_wallet_metric(metric: &mut DiscoveryV2WalletMetric, reason: &str) {
+    metric.eligible = false;
+    metric.score = 0.0;
+    if !metric
+        .reject_reasons
+        .iter()
+        .any(|existing| existing == reason)
+    {
+        metric.reject_reasons.push(reason.to_string());
     }
 }
 
