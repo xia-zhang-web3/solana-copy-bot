@@ -68,31 +68,74 @@ pub(super) fn scan_window_metrics(
     let mut token_quality_lookups = HashSet::new();
     let mut accumulator = DiscoveryV2WindowAccumulator::default();
     let mut rows_seen = 0usize;
-    let page = store
-        .for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget(
-            window_start,
-            now,
-            None,
-            max_rows.saturating_add(1),
-            deadline,
-            |swap| {
-                rows_seen = rows_seen.saturating_add(1);
-                if rows_seen > max_rows {
-                    return Ok(());
-                }
-                load_quality_for_buy_once(
-                    store,
-                    &swap,
-                    now,
-                    ttl,
-                    &mut token_quality_lookups,
-                    &mut token_quality_cache,
-                )?;
-                accumulator.observe_swap(&swap, discovery, shadow, &token_quality_cache);
-                Ok(())
-            },
-        )
-        .context("failed streaming discovery v2 current window")?;
+    let page = if can_prefilter_wallets(discovery) {
+        let (wallet_ids, exhausted) = store
+            .discovery_v2_buy_gate_wallet_ids_in_window_with_budget(
+                window_start,
+                now,
+                discovery.min_buy_count,
+                discovery.min_leader_notional_sol,
+                deadline,
+            )
+            .context("failed loading discovery v2 buy-gate wallets")?;
+        if exhausted {
+            return Ok(DiscoveryV2WindowScan {
+                wallets: HashMap::new(),
+                rows_seen: 0,
+                unique_wallets_seen: 0,
+                time_budget_exhausted: true,
+            });
+        }
+        store
+            .for_each_sol_leg_observed_swap_in_window_for_wallets_with_budget(
+                window_start,
+                now,
+                &wallet_ids,
+                max_rows.saturating_add(1),
+                deadline,
+                |swap| {
+                    observe_status_swap(
+                        store,
+                        discovery,
+                        shadow,
+                        now,
+                        ttl,
+                        &mut token_quality_lookups,
+                        &mut token_quality_cache,
+                        &mut accumulator,
+                        &mut rows_seen,
+                        max_rows,
+                        swap,
+                    )
+                },
+            )
+            .context("failed streaming discovery v2 candidate wallet window")?
+    } else {
+        store
+            .for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget(
+                window_start,
+                now,
+                None,
+                max_rows.saturating_add(1),
+                deadline,
+                |swap| {
+                    observe_status_swap(
+                        store,
+                        discovery,
+                        shadow,
+                        now,
+                        ttl,
+                        &mut token_quality_lookups,
+                        &mut token_quality_cache,
+                        &mut accumulator,
+                        &mut rows_seen,
+                        max_rows,
+                        swap,
+                    )
+                },
+            )
+            .context("failed streaming discovery v2 current window")?
+    };
     let unique_wallets_seen = accumulator.wallet_count();
     if page.time_budget_exhausted || rows_seen > max_rows {
         return Ok(DiscoveryV2WindowScan {
@@ -111,6 +154,39 @@ pub(super) fn scan_window_metrics(
         unique_wallets_seen,
         time_budget_exhausted: page.time_budget_exhausted,
     })
+}
+
+fn can_prefilter_wallets(discovery: &DiscoveryConfig) -> bool {
+    discovery.min_buy_count > 0 || discovery.min_leader_notional_sol > 0.0
+}
+
+fn observe_status_swap(
+    store: &SqliteDiscoveryStore,
+    discovery: &DiscoveryConfig,
+    shadow: &ShadowConfig,
+    now: DateTime<Utc>,
+    ttl: Duration,
+    token_quality_lookups: &mut HashSet<String>,
+    token_quality_cache: &mut HashMap<String, TokenQualityCacheRow>,
+    accumulator: &mut DiscoveryV2WindowAccumulator,
+    rows_seen: &mut usize,
+    max_rows: usize,
+    swap: SwapEvent,
+) -> Result<()> {
+    *rows_seen = rows_seen.saturating_add(1);
+    if *rows_seen > max_rows {
+        return Ok(());
+    }
+    load_quality_for_buy_once(
+        store,
+        &swap,
+        now,
+        ttl,
+        token_quality_lookups,
+        token_quality_cache,
+    )?;
+    accumulator.observe_swap(&swap, discovery, shadow, token_quality_cache);
+    Ok(())
 }
 
 fn load_quality_for_buy_once(

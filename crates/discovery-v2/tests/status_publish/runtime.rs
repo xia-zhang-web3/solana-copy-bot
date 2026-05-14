@@ -208,6 +208,42 @@ fn status_blocks_when_window_scan_is_truncated() -> Result<()> {
 }
 
 #[test]
+fn status_prefilters_wallets_below_buy_gate_before_metric_scan() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
+    let token = "CandidatePrefilterToken11111111111111111111";
+    let mut swaps = vec![
+        tail_coverage_swap("sig-coverage-floor", 1, now - Duration::hours(25)),
+        swap_with_token("wallet_a", token, "sig-a-buy-1", 10, now - Duration::minutes(20)),
+        swap_with_token("wallet_a", token, "sig-a-buy-2", 11, now - Duration::minutes(19)),
+        sell_with_token("wallet_a", token, "sig-a-sell", 12, now - Duration::minutes(18)),
+    ];
+    for index in 0..20 {
+        swaps.push(swap_with_token(
+            &format!("noise_wallet_{index}"),
+            &format!("NoiseToken{index:02}111111111111111111111111"),
+            &format!("sig-noise-{index}"),
+            20 + index,
+            now - Duration::minutes(10),
+        ));
+    }
+    swaps.push(tail_coverage_swap("sig-tail", 100, now - Duration::minutes(1)));
+    store.insert_observed_swaps_batch(&swaps)?;
+    insert_quality_for_token(&store, token, now, Some(1.0))?;
+    let (mut discovery, shadow) = strict_policy();
+    discovery.min_buy_count = 2;
+
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    assert!(status.production_green, "blockers={:?}", status.blockers);
+    assert_eq!(status.candidate_wallets, vec!["wallet_a".to_string()]);
+    assert_eq!(status.scan.rows_scanned, 3);
+    assert_eq!(status.scan.unique_wallets, 1);
+    assert_eq!(status.wallet_metrics_total, 1);
+    Ok(())
+}
+
+#[test]
 fn status_blocks_when_rug_lookahead_is_unevaluated() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);

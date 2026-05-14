@@ -9,6 +9,7 @@ mod migrations_index_guard;
 mod money;
 mod observed;
 mod observed_budget;
+mod observed_discovery_v2;
 mod observed_row;
 mod observed_timestamp;
 mod observed_writer;
