@@ -200,5 +200,7 @@ fn materialized_status_max_age_seconds(discovery: &DiscoveryConfig) -> u64 {
 }
 
 fn materialized_status_rebuild_after_age_seconds(discovery: &DiscoveryConfig) -> u64 {
-    materialized_status_max_age_seconds(discovery).saturating_sub(discovery.refresh_seconds.max(1))
+    discovery
+        .metric_snapshot_interval_seconds
+        .max(discovery.refresh_seconds.max(1))
 }

@@ -186,7 +186,7 @@ fn prepare_can_reuse_green_materialized_status_before_rebuild_age() -> Result<()
     assert!(reused.reused_existing_snapshot);
     assert_eq!(reused.status_age_seconds, 30);
     assert_eq!(reused.max_status_age_seconds, 180);
-    assert_eq!(reused.rebuild_after_age_seconds, 120);
+    assert_eq!(reused.rebuild_after_age_seconds, 60);
     assert!(reused.production_green);
     Ok(())
 }
@@ -203,7 +203,7 @@ fn prepare_rebuilds_materialized_status_after_rebuild_age() -> Result<()> {
         &store,
         &discovery,
         &shadow,
-        &options(now + Duration::seconds(121)),
+        &options(now + Duration::seconds(61)),
     )?;
 
     assert!(reused.is_none());
