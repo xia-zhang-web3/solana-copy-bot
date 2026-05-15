@@ -57,9 +57,9 @@ Required invariants:
 `copybot-discovery-recent-raw-snapshot.timer` maintains the recent_raw snapshot
 surface.
 
-`copybot-discovery-v2-prepare-quality.timer` refreshes bounded observed-window
-token quality evidence used by Discovery V2 gates and materializes the current
-V2 status snapshot.
+`copybot-discovery-v2-prepare-quality.timer` incrementally refreshes bounded
+observed-window token quality evidence used by Discovery V2 gates and
+materializes the current V2 status snapshot.
 
 `copybot-discovery-v2-publish.timer` commits only a fresh materialized V2 status
 snapshot on cadence. `copybot-app` live-reloads fresh publication truth from
