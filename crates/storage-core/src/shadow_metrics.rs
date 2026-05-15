@@ -3,8 +3,8 @@ use crate::{
         lamports_to_sol, shadow_closed_trade_entry_cost_lamports, shadow_closed_trade_pnl_lamports,
         shadow_lot_cost_lamports, signed_lamports_to_sol,
     },
-    ShadowWalletFeedback, SqliteDiscoveryStore, SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
-    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
+    ShadowTokenLossCooldown, ShadowWalletFeedback, SqliteDiscoveryStore,
+    SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY, SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
     SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE, SHADOW_LOT_OPEN_EPS,
     SHADOW_RISK_CONTEXT_MARKET,
 };
@@ -154,6 +154,90 @@ impl SqliteDiscoveryStore {
             entry.pnl_sol += pnl;
         }
         Ok(feedback)
+    }
+
+    pub fn shadow_token_loss_cooldown_since(
+        &self,
+        token: &str,
+        since: DateTime<Utc>,
+        return_threshold: f64,
+        count_threshold: u64,
+    ) -> Result<Option<ShadowTokenLossCooldown>> {
+        if count_threshold == 0 || !self.sqlite_table_exists("shadow_closed_trades")? {
+            return Ok(None);
+        }
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT entry_cost_sol, entry_cost_lamports, pnl_sol, pnl_lamports, closed_ts
+                 FROM shadow_closed_trades
+                 WHERE token = ?1
+                   AND closed_ts >= ?2
+                   AND COALESCE(close_context, 'market') NOT IN (?3, ?4, ?5)
+                 ORDER BY closed_ts DESC, id DESC",
+            )
+            .context("failed to prepare shadow token loss cooldown query")?;
+        let mut rows = stmt
+            .query(params![
+                token,
+                since.to_rfc3339(),
+                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+                SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
+                SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE
+            ])
+            .context("failed querying shadow token loss cooldown rows")?;
+        let mut cooldown = ShadowTokenLossCooldown {
+            token: token.to_string(),
+            ..ShadowTokenLossCooldown::default()
+        };
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating shadow token loss cooldown rows")?
+        {
+            cooldown.sampled_trades = cooldown.sampled_trades.saturating_add(1);
+            let entry_cost = lamports_to_sol(shadow_closed_trade_entry_cost_lamports(
+                row.get(0)
+                    .context("failed reading shadow_closed_trades.entry_cost_sol")?,
+                row.get(1)
+                    .context("failed reading shadow_closed_trades.entry_cost_lamports")?,
+                "shadow token loss cooldown",
+            )?);
+            let pnl = signed_lamports_to_sol(shadow_closed_trade_pnl_lamports(
+                row.get(2)
+                    .context("failed reading shadow_closed_trades.pnl_sol")?,
+                row.get(3)
+                    .context("failed reading shadow_closed_trades.pnl_lamports")?,
+                "shadow token loss cooldown",
+            )?);
+            if entry_cost <= 0.0 {
+                continue;
+            }
+            let roi = pnl / entry_cost;
+            cooldown.entry_cost_sol += entry_cost;
+            cooldown.pnl_sol += pnl;
+            cooldown.worst_roi = Some(cooldown.worst_roi.map_or(roi, |worst: f64| worst.min(roi)));
+            if pnl <= entry_cost * return_threshold {
+                cooldown.loss_count = cooldown.loss_count.saturating_add(1);
+                let raw_closed_ts: String = row
+                    .get(4)
+                    .context("failed reading shadow_closed_trades.closed_ts")?;
+                let closed_ts = DateTime::parse_from_rfc3339(&raw_closed_ts)
+                    .with_context(|| {
+                        format!("invalid shadow_closed_trades.closed_ts: {raw_closed_ts}")
+                    })?
+                    .with_timezone(&Utc);
+                cooldown.last_closed_ts = Some(
+                    cooldown
+                        .last_closed_ts
+                        .map_or(closed_ts, |last: DateTime<Utc>| last.max(closed_ts)),
+                );
+            }
+        }
+        if cooldown.loss_count >= count_threshold {
+            Ok(Some(cooldown))
+        } else {
+            Ok(None)
+        }
     }
 
     fn shadow_realized_pnl_lamports_since_internal(

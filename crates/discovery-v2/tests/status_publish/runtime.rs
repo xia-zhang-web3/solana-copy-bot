@@ -361,8 +361,8 @@ fn shadow_feedback_rejects_losing_wallet_and_promotes_replacement() -> Result<()
             token_a,
             1.0,
             0.10,
-            0.03,
-            -0.07,
+            0.06,
+            -0.04,
             now - Duration::hours(2),
             now - Duration::hours(1) + Duration::minutes(i64::from(index)),
         )?;
@@ -398,7 +398,88 @@ fn shadow_feedback_rejects_losing_wallet_and_promotes_replacement() -> Result<()
     assert_eq!(bad_metric.shadow_closed_trades_24h, Some(3));
     assert!(bad_metric
         .shadow_pnl_sol_24h
-        .is_some_and(|pnl| (pnl + 0.21).abs() < 1e-9));
+        .is_some_and(|pnl| (pnl + 0.12).abs() < 1e-9));
+    assert!(bad_metric
+        .shadow_roi_24h
+        .is_some_and(|roi| roi <= -0.39 && roi >= -0.41));
+    Ok(())
+}
+
+#[test]
+fn shadow_feedback_rejects_single_catastrophic_loss() -> Result<()> {
+    let dir = tempdir()?;
+    let mut store = SqliteDiscoveryStore::open(dir.path().join("runtime.db"))?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    ensure_discovery_v2_schema(&store)?;
+
+    let now = DateTime::parse_from_rfc3339("2026-05-14T10:00:00Z")?.with_timezone(&Utc);
+    let bad_wallet = "wallet_shadow_catastrophe";
+    let good_wallet = "wallet_shadow_catastrophe_good";
+    let replacement_wallet = "wallet_shadow_catastrophe_replacement";
+    let token_a = "ShadowCatastropheToken11111111111111111111";
+    let token_b = "ShadowCatastropheToken22222222222222222222";
+    let token_c = "ShadowCatastropheToken33333333333333333333";
+
+    let swaps = vec![
+        tail_coverage_swap("sig-catastrophe-coverage", 1, now - Duration::hours(25)),
+        swap_with_token(bad_wallet, token_a, "sig-catastrophe-bad", 10, now - Duration::minutes(8)),
+        swap_with_token(good_wallet, token_b, "sig-catastrophe-good", 20, now - Duration::minutes(7)),
+        swap_with_token(
+            replacement_wallet,
+            token_c,
+            "sig-catastrophe-replacement",
+            30,
+            now - Duration::minutes(6),
+        ),
+        tail_coverage_swap("sig-catastrophe-tail", 99, now - Duration::minutes(2)),
+    ];
+    store.insert_observed_swaps_batch(&swaps)?;
+    insert_quality_for_token(&store, token_a, now, Some(1.0))?;
+    insert_quality_for_token(&store, token_b, now, Some(1.0))?;
+    insert_quality_for_token(&store, token_c, now, Some(1.0))?;
+    store.insert_shadow_closed_trade(
+        "shadow-catastrophic-loss",
+        bad_wallet,
+        token_a,
+        1.0,
+        0.20,
+        0.06,
+        -0.14,
+        now - Duration::hours(1),
+        now - Duration::minutes(30),
+    )?;
+
+    let (mut discovery, shadow) = strict_policy();
+    discovery.follow_top_n = 2;
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    assert!(status.production_green, "{:?}", status.blockers);
+    assert_eq!(status.candidate_wallets.len(), 2);
+    assert!(!status.candidate_wallets.contains(&bad_wallet.to_string()));
+    assert!(status.candidate_wallets.contains(&good_wallet.to_string()));
+    assert!(status
+        .candidate_wallets
+        .contains(&replacement_wallet.to_string()));
+    assert_eq!(
+        status
+            .filters
+            .reject_breakdown
+            .get("shadow_feedback_catastrophic_loss"),
+        Some(&1)
+    );
+    let bad_metric = status
+        .wallet_metrics
+        .iter()
+        .find(|metric| metric.wallet_id == bad_wallet)
+        .expect("bad wallet metric retained");
+    assert!(!bad_metric.eligible);
+    assert!(bad_metric
+        .reject_reasons
+        .contains(&"shadow_feedback_catastrophic_loss".to_string()));
+    assert_eq!(bad_metric.shadow_closed_trades_24h, Some(1));
     assert!(bad_metric
         .shadow_roi_24h
         .is_some_and(|roi| roi <= -0.69 && roi >= -0.71));

@@ -10,6 +10,7 @@ pub(crate) enum BuyRiskBlockReason {
     TimedPause,
     Infra,
     Universe,
+    TokenCooldown,
     FailClosed,
     OperatorEmergencyStop,
 }
@@ -22,6 +23,7 @@ impl BuyRiskBlockReason {
             Self::TimedPause => "risk_timed_pause",
             Self::Infra => "risk_infra_stop",
             Self::Universe => "risk_universe_stop",
+            Self::TokenCooldown => "risk_token_loss_cooldown",
             Self::FailClosed => "risk_fail_closed",
             Self::OperatorEmergencyStop => "operator_emergency_stop",
         }

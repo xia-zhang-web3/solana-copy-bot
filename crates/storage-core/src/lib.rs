@@ -59,7 +59,7 @@ pub use types::{
     ExecutionHistoryRetentionSummary, FollowlistUpdateResult, HistoryRetentionCutoffs,
     HistoryRetentionSummary, ObservedSwapBatchWriteMetrics, ObservedSwapCursorPage,
     PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow, RecentRawJournalWriteSummary,
-    RiskEventRow, ShadowCloseOutcome, ShadowLotRow, ShadowWalletFeedback,
+    RiskEventRow, ShadowCloseOutcome, ShadowLotRow, ShadowTokenLossCooldown, ShadowWalletFeedback,
     SqliteBatchedDeleteSummary, SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
     SqliteSnapshotDeferredReason, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
     SqliteSnapshotRetryReason, SqliteSnapshotSourceMetrics, SqliteSnapshotSummary,

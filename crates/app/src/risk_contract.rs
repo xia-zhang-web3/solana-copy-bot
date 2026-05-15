@@ -198,6 +198,25 @@ pub(crate) fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()
             config.shadow_rug_loss_rate_threshold
         ));
     }
+    if config.shadow_token_loss_cooldown_enabled {
+        if config.shadow_token_loss_cooldown_window_minutes == 0
+            || config.shadow_token_loss_cooldown_count_threshold == 0
+        {
+            return Err(anyhow!(
+                "risk.shadow_token_loss_cooldown_window_minutes/count_threshold must be >= 1 when enabled"
+            ));
+        }
+        if !config
+            .shadow_token_loss_cooldown_return_threshold
+            .is_finite()
+            || config.shadow_token_loss_cooldown_return_threshold >= 0.0
+        {
+            return Err(anyhow!(
+                "risk.shadow_token_loss_cooldown_return_threshold must be finite and < 0, got {}",
+                config.shadow_token_loss_cooldown_return_threshold
+            ));
+        }
+    }
 
     if config.shadow_infra_window_minutes == 0 || config.shadow_infra_lag_breach_minutes == 0 {
         return Err(anyhow!(

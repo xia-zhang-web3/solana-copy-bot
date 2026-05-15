@@ -58,6 +58,17 @@ impl ShadowWalletFeedback {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct ShadowTokenLossCooldown {
+    pub token: String,
+    pub loss_count: u64,
+    pub sampled_trades: u64,
+    pub entry_cost_sol: f64,
+    pub pnl_sol: f64,
+    pub worst_roi: Option<f64>,
+    pub last_closed_ts: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct TokenMarketStats {
     pub first_seen: Option<DateTime<Utc>>,
     pub holders_proxy: u64,

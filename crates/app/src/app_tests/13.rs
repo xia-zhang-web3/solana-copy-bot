@@ -97,6 +97,55 @@
     }
 
     #[test]
+    fn risk_guard_token_loss_cooldown_blocks_new_buys_for_toxic_token() -> Result<()> {
+        let (store, db_path) = make_test_store("token-loss-cooldown")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        cfg.shadow_token_loss_cooldown_enabled = true;
+        cfg.shadow_token_loss_cooldown_window_minutes = 120;
+        cfg.shadow_token_loss_cooldown_count_threshold = 2;
+        cfg.shadow_token_loss_cooldown_return_threshold = -0.60;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        for index in 0..2 {
+            store.insert_shadow_closed_trade(
+                &format!("sig-token-loss-{index}"),
+                &format!("wallet-{index}"),
+                "toxic-token",
+                1.0,
+                0.2,
+                0.06,
+                -0.14,
+                now - chrono::Duration::minutes(20 - index),
+                now - chrono::Duration::minutes(10 - index),
+            )?;
+        }
+
+        match guard.can_open_buy_for_token(&store, now, true, Some("toxic-token")) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TokenCooldown,
+                detail,
+            } => {
+                assert!(detail.contains("toxic-token"));
+                assert!(detail.contains("loss_count=2"));
+            }
+            other => panic!("expected token cooldown block, got {other:?}"),
+        }
+        match guard.can_open_buy_for_token(&store, now, true, Some("clean-token")) {
+            BuyRiskDecision::Allow => {}
+            other => panic!("clean token must not be blocked by another token cooldown: {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn risk_guard_rug_rate_ignores_tiny_sample_below_floor() -> Result<()> {
         let (store, db_path) = make_test_store("rug-rate-tiny-sample")?;
         let mut cfg = RiskConfig::default();

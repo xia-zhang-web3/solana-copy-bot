@@ -83,6 +83,8 @@ pub(super) async fn handle_relevant_observed_swap(
         return Ok(());
     }
 
+    let task_key = shadow_task_key_for_swap(&swap, side);
+
     if matches!(side, ShadowSwapSide::Buy) {
         if operator_emergency_stop.is_active() {
             app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
@@ -101,7 +103,12 @@ pub(super) async fn handle_relevant_observed_swap(
             return Ok(());
         }
 
-        match shadow_risk_guard.can_open_buy(store, now, pause_new_trades_on_outage) {
+        match shadow_risk_guard.can_open_buy_for_token(
+            store,
+            now,
+            pause_new_trades_on_outage,
+            Some(&task_key.token),
+        ) {
             BuyRiskDecision::Allow => {}
             BuyRiskDecision::Blocked { reason, detail } => {
                 app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
@@ -122,7 +129,6 @@ pub(super) async fn handle_relevant_observed_swap(
         }
     }
 
-    let task_key = shadow_task_key_for_swap(&swap, side);
     let task_input = ShadowTaskInput {
         swap,
         follow_snapshot: Arc::clone(&follow_snapshot),
