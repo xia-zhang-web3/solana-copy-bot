@@ -122,34 +122,45 @@ fn run(config: Config) -> Result<PrepareQualityCliReport> {
             )
             .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded))
         });
-        if let Some(build_options) = build_options.as_ref() {
-            if let Some(report) = reusable_materialized_discovery_v2_status_for_prepare(
-                &store,
-                &loaded.discovery,
-                &loaded.shadow,
-                build_options,
-            )? {
-                let quality =
-                    DiscoveryV2PrepareQualityReport::skipped_for_reusable_materialized_status(
-                        &options,
-                    );
-                return Ok(PrepareQualityCliReport {
-                    quality,
-                    materialized_status: Some(report),
-                });
+        if !config.incremental {
+            if let Some(build_options) = build_options.as_ref() {
+                if let Some(report) = reusable_materialized_discovery_v2_status_for_prepare(
+                    &store,
+                    &loaded.discovery,
+                    &loaded.shadow,
+                    build_options,
+                )? {
+                    let quality =
+                        DiscoveryV2PrepareQualityReport::skipped_for_reusable_materialized_status(
+                            &options,
+                        );
+                    return Ok(PrepareQualityCliReport {
+                        quality,
+                        materialized_status: Some(report),
+                    });
+                }
             }
         }
         let quality =
             prepare_discovery_v2_quality(&store, &loaded.discovery, &loaded.shadow, options)?;
         let materialized_status = if config.materialize_status && quality.committed {
             let build_options = build_options.expect("materialize status build options");
-            let (_status, report) = materialize_discovery_v2_status(
+            if let Some(report) = reusable_materialized_discovery_v2_status_for_prepare(
                 &store,
                 &loaded.discovery,
                 &loaded.shadow,
-                build_options,
-            )?;
-            Some(report)
+                &build_options,
+            )? {
+                Some(report)
+            } else {
+                let (_status, report) = materialize_discovery_v2_status(
+                    &store,
+                    &loaded.discovery,
+                    &loaded.shadow,
+                    build_options,
+                )?;
+                Some(report)
+            }
         } else {
             None
         };

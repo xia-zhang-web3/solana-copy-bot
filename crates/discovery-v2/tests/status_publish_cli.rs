@@ -423,3 +423,49 @@ fn prepare_quality_materialize_reuses_fresh_green_snapshot_before_scan() -> Resu
     );
     Ok(())
 }
+
+#[test]
+fn incremental_prepare_quality_runs_even_when_materialized_status_is_reusable() -> Result<()> {
+    let dir = tempdir()?;
+    let db_path = dir.path().join("runtime.db");
+    let store = SqliteDiscoveryStore::open(&db_path)?;
+    ensure_discovery_v2_schema(&store)?;
+    let config_path = dir.path().join("live.toml");
+    write_green_config(&config_path, &db_path)?;
+    let now = Utc::now();
+    seed_green_materialized_status(&store, &config_path, now)?;
+    drop(store);
+
+    let output = command_output_with_timeout(
+        Command::new(env!("CARGO_BIN_EXE_discovery_v2_prepare_quality")).args([
+            "--config",
+            config_path.to_str().expect("utf8 config path"),
+            "--commit",
+            "--incremental",
+            "--materialize-status",
+        ]),
+    )?;
+
+    assert!(
+        output.status.success(),
+        "prepare cli failed: stdout=\n{}\nstderr=\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(json["skipped"].as_bool(), Some(false));
+    assert_eq!(json["committed"].as_bool(), Some(true));
+    assert!(
+        json["rows_scanned"].as_u64().unwrap_or(0) > 0,
+        "incremental quality prepare should still scan the new tail while materialized status is reusable: {json}"
+    );
+    assert_eq!(
+        json["materialized_status"]["committed"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        json["materialized_status"]["reused_existing_snapshot"].as_bool(),
+        Some(true)
+    );
+    Ok(())
+}

@@ -192,6 +192,37 @@ fn prepare_can_reuse_green_materialized_status_before_rebuild_age() -> Result<()
 }
 
 #[test]
+fn prepare_reuse_window_tracks_metric_snapshot_interval() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-13T12:00:00+00:00")?.with_timezone(&Utc);
+    seed_green_status(&store, now)?;
+    let (mut discovery, shadow) = policy();
+    discovery.metric_snapshot_interval_seconds = 1_800;
+    discovery.refresh_seconds = 600;
+    materialize_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    let reused = reusable_materialized_discovery_v2_status_for_prepare(
+        &store,
+        &discovery,
+        &shadow,
+        &options(now + Duration::seconds(1_799)),
+    )?
+    .expect("snapshot should be reusable until the metric snapshot interval");
+
+    assert_eq!(reused.rebuild_after_age_seconds, 1_800);
+    assert!(reused.reused_existing_snapshot);
+
+    let expired = reusable_materialized_discovery_v2_status_for_prepare(
+        &store,
+        &discovery,
+        &shadow,
+        &options(now + Duration::seconds(1_801)),
+    )?;
+    assert!(expired.is_none());
+    Ok(())
+}
+
+#[test]
 fn prepare_rebuilds_materialized_status_after_rebuild_age() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-13T12:00:00+00:00")?.with_timezone(&Utc);
