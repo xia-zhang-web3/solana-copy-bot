@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 mod discovery_v2_identity;
 mod env_parsing;
 mod loader;
+mod risk_validation;
 mod schema;
 
 pub use self::discovery_v2_identity::{

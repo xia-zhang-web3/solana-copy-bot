@@ -1,6 +1,7 @@
 use super::*;
 
 impl ShadowRiskGuard {
+    #[allow(dead_code)]
     pub(crate) fn can_open_buy(
         &mut self,
         store: &SqliteStore,
@@ -10,11 +11,23 @@ impl ShadowRiskGuard {
         self.can_open_buy_for_token(store, now, pause_new_trades_on_outage, None)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn can_open_buy_for_token(
         &mut self,
         store: &SqliteStore,
         now: DateTime<Utc>,
         pause_new_trades_on_outage: bool,
+        token: Option<&str>,
+    ) -> BuyRiskDecision {
+        self.can_open_buy_for_signal(store, now, pause_new_trades_on_outage, None, token)
+    }
+
+    pub(crate) fn can_open_buy_for_signal(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        pause_new_trades_on_outage: bool,
+        wallet_id: Option<&str>,
         token: Option<&str>,
     ) -> BuyRiskDecision {
         if !self.config.shadow_killswitch_enabled {
@@ -127,6 +140,25 @@ impl ShadowRiskGuard {
             };
         }
 
+        if let Some(wallet_id) = wallet_id {
+            match self.wallet_loss_cooldown(store, now, wallet_id) {
+                Ok(Some(detail)) => {
+                    return BuyRiskDecision::Blocked {
+                        reason: BuyRiskBlockReason::WalletCooldown,
+                        detail,
+                    };
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let detail = format!("wallet_loss_cooldown_error: {error}");
+                    return BuyRiskDecision::Blocked {
+                        reason: BuyRiskBlockReason::FailClosed,
+                        detail,
+                    };
+                }
+            }
+        }
+
         if let Some(token) = token {
             match self.token_loss_cooldown(store, now, token) {
                 Ok(Some(detail)) => {
@@ -158,6 +190,61 @@ impl ShadowRiskGuard {
         BuyRiskDecision::Allow
     }
 
+    fn wallet_loss_cooldown(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        wallet_id: &str,
+    ) -> Result<Option<String>> {
+        if !self.config.shadow_wallet_loss_cooldown_enabled {
+            return Ok(None);
+        }
+        let window_minutes = self
+            .config
+            .shadow_wallet_loss_cooldown_window_minutes
+            .max(1);
+        let since = now - chrono::Duration::minutes(window_minutes as i64);
+        let Some(feedback) = store.shadow_wallet_loss_feedback_since(wallet_id, since)? else {
+            return Ok(None);
+        };
+        let roi = feedback.roi();
+        let catastrophic = feedback.closed_trades
+            >= self
+                .config
+                .shadow_wallet_loss_cooldown_catastrophe_min_closed_trades
+            && feedback.entry_cost_sol
+                >= self
+                    .config
+                    .shadow_wallet_loss_cooldown_catastrophe_min_entry_sol
+            && roi.is_some_and(|value| {
+                value <= self.config.shadow_wallet_loss_cooldown_catastrophe_max_roi
+            });
+        let negative_sample = feedback.closed_trades
+            >= self.config.shadow_wallet_loss_cooldown_min_closed_trades
+            && feedback.entry_cost_sol >= self.config.shadow_wallet_loss_cooldown_min_entry_sol
+            && (feedback.pnl_sol <= self.config.shadow_wallet_loss_cooldown_max_pnl_sol
+                || roi
+                    .is_some_and(|value| value <= self.config.shadow_wallet_loss_cooldown_max_roi));
+        if !catastrophic && !negative_sample {
+            return Ok(None);
+        }
+        let reason = if catastrophic {
+            "catastrophic"
+        } else {
+            "negative_sample"
+        };
+        Ok(Some(format!(
+            "wallet={} reason={} closed_trades={} window_minutes={} pnl={:.6} entry={:.6} roi={:.4}",
+            wallet_id,
+            reason,
+            feedback.closed_trades,
+            window_minutes,
+            feedback.pnl_sol,
+            feedback.entry_cost_sol,
+            roi.unwrap_or(0.0)
+        )))
+    }
+
     fn token_loss_cooldown(
         &self,
         store: &SqliteStore,
@@ -181,7 +268,7 @@ impl ShadowRiskGuard {
             return Ok(None);
         };
         Ok(Some(format!(
-            "token={} loss_count={} sampled_trades={} window_minutes={} threshold_return={:.4} pnl={:.6} entry={:.6} worst_roi={:.4}",
+            "token={} loss_count={} sampled_trades={} window_minutes={} threshold_return={:.4} pnl={:.6} entry={:.6} aggregate_roi={:.4} worst_roi={:.4}",
             cooldown.token,
             cooldown.loss_count,
             cooldown.sampled_trades,
@@ -189,6 +276,7 @@ impl ShadowRiskGuard {
             self.config.shadow_token_loss_cooldown_return_threshold,
             cooldown.pnl_sol,
             cooldown.entry_cost_sol,
+            cooldown.aggregate_roi().unwrap_or(0.0),
             cooldown.worst_roi.unwrap_or(0.0)
         )))
     }

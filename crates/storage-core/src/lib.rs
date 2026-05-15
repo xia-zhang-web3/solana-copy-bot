@@ -19,6 +19,7 @@ mod recent_raw;
 mod schema;
 mod schema_indexes;
 mod shadow_close;
+mod shadow_feedback_runtime;
 mod shadow_lots;
 mod shadow_metrics;
 mod shadow_mutation;

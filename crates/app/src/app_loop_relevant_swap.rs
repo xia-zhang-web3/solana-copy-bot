@@ -103,10 +103,11 @@ pub(super) async fn handle_relevant_observed_swap(
             return Ok(());
         }
 
-        match shadow_risk_guard.can_open_buy_for_token(
+        match shadow_risk_guard.can_open_buy_for_signal(
             store,
             now,
             pause_new_trades_on_outage,
+            Some(&swap.wallet),
             Some(&task_key.token),
         ) {
             BuyRiskDecision::Allow => {}

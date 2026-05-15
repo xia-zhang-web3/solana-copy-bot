@@ -144,6 +144,96 @@ pub(super) fn apply_risk_env_overrides(config: &mut AppConfig) -> Result<()> {
     {
         config.risk.shadow_rug_loss_rate_threshold = shadow_rug_loss_rate_threshold;
     }
+    if let Some(shadow_token_loss_cooldown_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_RISK_SHADOW_TOKEN_LOSS_COOLDOWN_ENABLED")?
+    {
+        config.risk.shadow_token_loss_cooldown_enabled = shadow_token_loss_cooldown_enabled;
+    }
+    if let Some(shadow_token_loss_cooldown_window_minutes) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_TOKEN_LOSS_COOLDOWN_WINDOW_MINUTES",
+        "u64",
+    )? {
+        config.risk.shadow_token_loss_cooldown_window_minutes =
+            shadow_token_loss_cooldown_window_minutes;
+    }
+    if let Some(shadow_token_loss_cooldown_count_threshold) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_TOKEN_LOSS_COOLDOWN_COUNT_THRESHOLD",
+        "u64",
+    )? {
+        config.risk.shadow_token_loss_cooldown_count_threshold =
+            shadow_token_loss_cooldown_count_threshold;
+    }
+    if let Some(shadow_token_loss_cooldown_return_threshold) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_TOKEN_LOSS_COOLDOWN_RETURN_THRESHOLD",
+        "f64",
+    )? {
+        config.risk.shadow_token_loss_cooldown_return_threshold =
+            shadow_token_loss_cooldown_return_threshold;
+    }
+    if let Some(shadow_wallet_loss_cooldown_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_RISK_SHADOW_WALLET_LOSS_COOLDOWN_ENABLED")?
+    {
+        config.risk.shadow_wallet_loss_cooldown_enabled = shadow_wallet_loss_cooldown_enabled;
+    }
+    if let Some(shadow_wallet_loss_cooldown_window_minutes) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_WALLET_LOSS_COOLDOWN_WINDOW_MINUTES",
+        "u64",
+    )? {
+        config.risk.shadow_wallet_loss_cooldown_window_minutes =
+            shadow_wallet_loss_cooldown_window_minutes;
+    }
+    if let Some(shadow_wallet_loss_cooldown_min_closed_trades) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_WALLET_LOSS_COOLDOWN_MIN_CLOSED_TRADES",
+        "u64",
+    )? {
+        config.risk.shadow_wallet_loss_cooldown_min_closed_trades =
+            shadow_wallet_loss_cooldown_min_closed_trades;
+    }
+    if let Some(shadow_wallet_loss_cooldown_min_entry_sol) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_WALLET_LOSS_COOLDOWN_MIN_ENTRY_SOL",
+        "f64",
+    )? {
+        config.risk.shadow_wallet_loss_cooldown_min_entry_sol =
+            shadow_wallet_loss_cooldown_min_entry_sol;
+    }
+    if let Some(shadow_wallet_loss_cooldown_max_pnl_sol) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_WALLET_LOSS_COOLDOWN_MAX_PNL_SOL",
+        "f64",
+    )? {
+        config.risk.shadow_wallet_loss_cooldown_max_pnl_sol =
+            shadow_wallet_loss_cooldown_max_pnl_sol;
+    }
+    if let Some(shadow_wallet_loss_cooldown_max_roi) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_WALLET_LOSS_COOLDOWN_MAX_ROI",
+        "f64",
+    )? {
+        config.risk.shadow_wallet_loss_cooldown_max_roi = shadow_wallet_loss_cooldown_max_roi;
+    }
+    if let Some(shadow_wallet_loss_cooldown_catastrophe_min_closed_trades) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_WALLET_LOSS_COOLDOWN_CATASTROPHE_MIN_CLOSED_TRADES",
+        "u64",
+    )? {
+        config
+            .risk
+            .shadow_wallet_loss_cooldown_catastrophe_min_closed_trades =
+            shadow_wallet_loss_cooldown_catastrophe_min_closed_trades;
+    }
+    if let Some(shadow_wallet_loss_cooldown_catastrophe_min_entry_sol) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_WALLET_LOSS_COOLDOWN_CATASTROPHE_MIN_ENTRY_SOL",
+        "f64",
+    )? {
+        config
+            .risk
+            .shadow_wallet_loss_cooldown_catastrophe_min_entry_sol =
+            shadow_wallet_loss_cooldown_catastrophe_min_entry_sol;
+    }
+    if let Some(shadow_wallet_loss_cooldown_catastrophe_max_roi) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_WALLET_LOSS_COOLDOWN_CATASTROPHE_MAX_ROI",
+        "f64",
+    )? {
+        config.risk.shadow_wallet_loss_cooldown_catastrophe_max_roi =
+            shadow_wallet_loss_cooldown_catastrophe_max_roi;
+    }
     if let Some(shadow_infra_window_minutes) =
         parse_env_number::<u64>("SOLANA_COPY_BOT_RISK_SHADOW_INFRA_WINDOW_MINUTES", "u64")?
     {

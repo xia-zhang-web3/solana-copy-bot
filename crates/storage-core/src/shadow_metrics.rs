@@ -216,24 +216,28 @@ impl SqliteDiscoveryStore {
             cooldown.entry_cost_sol += entry_cost;
             cooldown.pnl_sol += pnl;
             cooldown.worst_roi = Some(cooldown.worst_roi.map_or(roi, |worst: f64| worst.min(roi)));
+            let raw_closed_ts: String = row
+                .get(4)
+                .context("failed reading shadow_closed_trades.closed_ts")?;
+            let closed_ts = DateTime::parse_from_rfc3339(&raw_closed_ts)
+                .with_context(|| {
+                    format!("invalid shadow_closed_trades.closed_ts: {raw_closed_ts}")
+                })?
+                .with_timezone(&Utc);
+            cooldown.last_closed_ts = Some(
+                cooldown
+                    .last_closed_ts
+                    .map_or(closed_ts, |last: DateTime<Utc>| last.max(closed_ts)),
+            );
             if pnl <= entry_cost * return_threshold {
                 cooldown.loss_count = cooldown.loss_count.saturating_add(1);
-                let raw_closed_ts: String = row
-                    .get(4)
-                    .context("failed reading shadow_closed_trades.closed_ts")?;
-                let closed_ts = DateTime::parse_from_rfc3339(&raw_closed_ts)
-                    .with_context(|| {
-                        format!("invalid shadow_closed_trades.closed_ts: {raw_closed_ts}")
-                    })?
-                    .with_timezone(&Utc);
-                cooldown.last_closed_ts = Some(
-                    cooldown
-                        .last_closed_ts
-                        .map_or(closed_ts, |last: DateTime<Utc>| last.max(closed_ts)),
-                );
             }
         }
-        if cooldown.loss_count >= count_threshold {
+        let aggregate_loss = cooldown.sampled_trades >= count_threshold
+            && cooldown
+                .aggregate_roi()
+                .is_some_and(|roi| roi <= return_threshold);
+        if cooldown.loss_count >= count_threshold || aggregate_loss {
             Ok(Some(cooldown))
         } else {
             Ok(None)

@@ -68,6 +68,16 @@ pub struct ShadowTokenLossCooldown {
     pub last_closed_ts: Option<DateTime<Utc>>,
 }
 
+impl ShadowTokenLossCooldown {
+    pub fn aggregate_roi(&self) -> Option<f64> {
+        if self.entry_cost_sol > 0.0 {
+            Some(self.pnl_sol / self.entry_cost_sol)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TokenMarketStats {
     pub first_seen: Option<DateTime<Utc>>,

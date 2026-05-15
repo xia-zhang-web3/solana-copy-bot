@@ -146,6 +146,164 @@
     }
 
     #[test]
+    fn risk_guard_token_loss_cooldown_blocks_aggregate_series_loss() -> Result<()> {
+        let (store, db_path) = make_test_store("token-aggregate-loss-cooldown")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        cfg.shadow_token_loss_cooldown_enabled = true;
+        cfg.shadow_token_loss_cooldown_window_minutes = 120;
+        cfg.shadow_token_loss_cooldown_count_threshold = 3;
+        cfg.shadow_token_loss_cooldown_return_threshold = -0.20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        for index in 0..3 {
+            store.insert_shadow_closed_trade(
+                &format!("sig-token-aggregate-loss-{index}"),
+                &format!("wallet-{index}"),
+                "grinding-token",
+                1.0,
+                0.2,
+                0.155,
+                -0.045,
+                now - chrono::Duration::minutes(20 - index),
+                now - chrono::Duration::minutes(10 - index),
+            )?;
+        }
+
+        match guard.can_open_buy_for_token(&store, now, true, Some("grinding-token")) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TokenCooldown,
+                detail,
+            } => {
+                assert!(detail.contains("grinding-token"));
+                assert!(detail.contains("sampled_trades=3"));
+                assert!(detail.contains("aggregate_roi="));
+            }
+            other => panic!("expected aggregate token cooldown block, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_wallet_loss_cooldown_blocks_losing_wallet_only() -> Result<()> {
+        let (store, db_path) = make_test_store("wallet-loss-cooldown")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        cfg.shadow_wallet_loss_cooldown_enabled = true;
+        cfg.shadow_wallet_loss_cooldown_window_minutes = 120;
+        cfg.shadow_wallet_loss_cooldown_min_closed_trades = 3;
+        cfg.shadow_wallet_loss_cooldown_min_entry_sol = 0.3;
+        cfg.shadow_wallet_loss_cooldown_max_pnl_sol = -0.05;
+        cfg.shadow_wallet_loss_cooldown_max_roi = -0.10;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        for index in 0..3 {
+            store.insert_shadow_closed_trade(
+                &format!("sig-wallet-loss-{index}"),
+                "losing-wallet",
+                &format!("token-{index}"),
+                1.0,
+                0.2,
+                0.17,
+                -0.03,
+                now - chrono::Duration::minutes(20 - index),
+                now - chrono::Duration::minutes(10 - index),
+            )?;
+        }
+
+        match guard.can_open_buy_for_signal(
+            &store,
+            now,
+            true,
+            Some("losing-wallet"),
+            Some("fresh-token"),
+        ) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::WalletCooldown,
+                detail,
+            } => {
+                assert!(detail.contains("losing-wallet"));
+                assert!(detail.contains("negative_sample"));
+            }
+            other => panic!("expected wallet cooldown block, got {other:?}"),
+        }
+        match guard.can_open_buy_for_signal(
+            &store,
+            now,
+            true,
+            Some("clean-wallet"),
+            Some("fresh-token"),
+        ) {
+            BuyRiskDecision::Allow => {}
+            other => panic!("clean wallet must not inherit another wallet cooldown: {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_wallet_loss_cooldown_blocks_single_catastrophe() -> Result<()> {
+        let (store, db_path) = make_test_store("wallet-catastrophe-cooldown")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        cfg.shadow_wallet_loss_cooldown_enabled = true;
+        cfg.shadow_wallet_loss_cooldown_catastrophe_min_closed_trades = 1;
+        cfg.shadow_wallet_loss_cooldown_catastrophe_min_entry_sol = 0.2;
+        cfg.shadow_wallet_loss_cooldown_catastrophe_max_roi = -0.60;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_closed_trade(
+            "sig-wallet-catastrophe",
+            "catastrophe-wallet",
+            "token-a",
+            1.0,
+            0.2,
+            0.04,
+            -0.16,
+            now - chrono::Duration::minutes(20),
+            now - chrono::Duration::minutes(10),
+        )?;
+
+        match guard.can_open_buy_for_signal(
+            &store,
+            now,
+            true,
+            Some("catastrophe-wallet"),
+            Some("new-token"),
+        ) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::WalletCooldown,
+                detail,
+            } => {
+                assert!(detail.contains("catastrophe-wallet"));
+                assert!(detail.contains("catastrophic"));
+            }
+            other => panic!("expected catastrophic wallet cooldown block, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn risk_guard_rug_rate_ignores_tiny_sample_below_floor() -> Result<()> {
         let (store, db_path) = make_test_store("rug-rate-tiny-sample")?;
         let mut cfg = RiskConfig::default();

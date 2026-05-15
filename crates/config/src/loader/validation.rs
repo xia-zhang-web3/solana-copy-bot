@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 
+use crate::risk_validation::validate_shadow_risk_float_gates;
 use crate::AppConfig;
 
 pub(super) fn validate_loaded_config(config: &AppConfig) -> Result<()> {
@@ -7,6 +8,7 @@ pub(super) fn validate_loaded_config(config: &AppConfig) -> Result<()> {
     validate_shadow_universe_config(config)?;
     validate_shadow_quality_thresholds(config)?;
     validate_discovery_v2_float_gates(config)?;
+    validate_shadow_risk_float_gates(config)?;
     validate_discovery_storage_mitigation_config(config)?;
     validate_recent_raw_journal_config(config)?;
     validate_runtime_restore_ops_config(config)?;
