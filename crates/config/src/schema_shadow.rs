@@ -140,7 +140,7 @@ impl Default for RiskConfig {
             shadow_rug_loss_rate_sample_size: 200,
             shadow_rug_loss_rate_threshold: 0.04,
             shadow_token_loss_cooldown_enabled: true,
-            shadow_token_loss_cooldown_window_minutes: 120,
+            shadow_token_loss_cooldown_window_minutes: 1440,
             shadow_token_loss_cooldown_count_threshold: 2,
             shadow_token_loss_cooldown_return_threshold: -0.60,
             shadow_infra_window_minutes: 20,
