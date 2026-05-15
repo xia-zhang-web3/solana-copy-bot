@@ -5,10 +5,28 @@ use chrono::{DateTime, Duration, Utc};
 use copybot_config::DiscoveryConfig;
 use copybot_config::ShadowConfig;
 use copybot_core_types::SwapEvent;
-use copybot_storage_core::SqliteDiscoveryStore;
+use copybot_storage_core::{DiscoveryV2QualityEvidenceAggregate, SqliteDiscoveryStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration as StdDuration, Instant};
+
+pub(crate) const QUALITY_SOURCE: &str = "observed_recent_quality_window_proxy";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryV2PrepareQualityMode {
+    FullScan,
+    Incremental,
+}
+
+impl DiscoveryV2PrepareQualityMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FullScan => "full_scan",
+            Self::Incremental => "incremental",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct DiscoveryV2PrepareQualityOptions {
@@ -19,6 +37,7 @@ pub struct DiscoveryV2PrepareQualityOptions {
     pub time_budget_ms: u64,
     pub max_mints: usize,
     pub commit: bool,
+    pub mode: DiscoveryV2PrepareQualityMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +47,7 @@ pub struct DiscoveryV2PrepareQualityReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skip_reason: Option<String>,
     pub committed: bool,
+    pub mode: DiscoveryV2PrepareQualityMode,
     pub quality_source: String,
     pub now: DateTime<Utc>,
     pub window_start: DateTime<Utc>,
@@ -36,6 +56,10 @@ pub struct DiscoveryV2PrepareQualityReport {
     pub max_rows: usize,
     pub max_mints: usize,
     pub rows_scanned: usize,
+    pub evidence_rows_available: usize,
+    pub evidence_rows_pruned: usize,
+    pub incremental_state_reused: bool,
+    pub incremental_state_reset: bool,
     pub unique_buy_mints: usize,
     pub mints_considered: usize,
     pub skipped_fresh_complete: usize,
@@ -73,10 +97,16 @@ impl DiscoveryV2PrepareQualityOptions {
             time_budget_ms: discovery.fetch_time_budget_ms.max(1),
             max_mints: max_mints.max(1),
             commit,
+            mode: DiscoveryV2PrepareQualityMode::FullScan,
         }
     }
 
-    fn window_start(&self) -> DateTime<Utc> {
+    pub fn with_mode(mut self, mode: DiscoveryV2PrepareQualityMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub(crate) fn window_start(&self) -> DateTime<Utc> {
         self.now - Duration::minutes(self.window_minutes.min(i64::MAX as u64) as i64)
     }
 }
@@ -90,7 +120,8 @@ impl DiscoveryV2PrepareQualityReport {
             skipped: true,
             skip_reason: Some("discovery_v2_materialized_status_reusable".to_string()),
             committed: false,
-            quality_source: "observed_recent_quality_window_proxy".to_string(),
+            mode: options.mode,
+            quality_source: QUALITY_SOURCE.to_string(),
             now: options.now,
             window_start: options.window_start(),
             window_minutes: options.window_minutes,
@@ -98,6 +129,10 @@ impl DiscoveryV2PrepareQualityReport {
             max_rows: options.max_rows,
             max_mints: options.max_mints,
             rows_scanned: 0,
+            evidence_rows_available: 0,
+            evidence_rows_pruned: 0,
+            incremental_state_reused: false,
+            incremental_state_reset: false,
             unique_buy_mints: 0,
             mints_considered: 0,
             skipped_fresh_complete: 0,
@@ -116,6 +151,11 @@ pub fn prepare_discovery_v2_quality(
     shadow: &ShadowConfig,
     options: DiscoveryV2PrepareQualityOptions,
 ) -> Result<DiscoveryV2PrepareQualityReport> {
+    if options.mode == DiscoveryV2PrepareQualityMode::Incremental {
+        return crate::quality_prepare_incremental::prepare_discovery_v2_quality_incremental(
+            store, discovery, shadow, options,
+        );
+    }
     let window_start = options.window_start();
     let deadline = Instant::now() + StdDuration::from_millis(options.time_budget_ms);
     let mut rows_seen = 0usize;
@@ -248,7 +288,8 @@ pub fn prepare_discovery_v2_quality(
         skipped: false,
         skip_reason: None,
         committed: commit_allowed,
-        quality_source: "observed_recent_quality_window_proxy".to_string(),
+        mode: DiscoveryV2PrepareQualityMode::FullScan,
+        quality_source: QUALITY_SOURCE.to_string(),
         now: options.now,
         window_start,
         window_minutes: options.window_minutes,
@@ -256,6 +297,153 @@ pub fn prepare_discovery_v2_quality(
         max_rows: options.max_rows,
         max_mints: options.max_mints,
         rows_scanned: rows_seen,
+        evidence_rows_available: rows_seen.min(options.max_rows),
+        evidence_rows_pruned: 0,
+        incremental_state_reused: false,
+        incremental_state_reset: false,
+        unique_buy_mints,
+        mints_considered: considered.len(),
+        skipped_fresh_complete,
+        upserted,
+        incomplete_after_prepare,
+        max_rows_exhausted: window_truncated,
+        time_budget_exhausted,
+        blockers,
+    })
+}
+
+pub(crate) fn finish_quality_prepare_from_evidence(
+    store: &SqliteDiscoveryStore,
+    discovery: &DiscoveryConfig,
+    shadow: &ShadowConfig,
+    options: &DiscoveryV2PrepareQualityOptions,
+    window_start: DateTime<Utc>,
+    rows_seen: usize,
+    evidence_rows_available: usize,
+    evidence_rows_pruned: usize,
+    incremental_state_reused: bool,
+    incremental_state_reset: bool,
+    time_budget_exhausted: bool,
+    window_truncated: bool,
+    evidence: Vec<DiscoveryV2QualityEvidenceAggregate>,
+) -> Result<DiscoveryV2PrepareQualityReport> {
+    let unique_buy_mints = evidence.len();
+    let mut ranked = evidence;
+    ranked.sort_by(|left, right| {
+        right
+            .max_sol_notional
+            .partial_cmp(&left.max_sol_notional)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| right.buy_count.cmp(&left.buy_count))
+            .then_with(|| right.wallet_count.cmp(&left.wallet_count))
+            .then_with(|| left.first_seen.cmp(&right.first_seen))
+            .then_with(|| left.mint.cmp(&right.mint))
+    });
+    let considered = ranked
+        .into_iter()
+        .take(options.max_mints)
+        .collect::<Vec<_>>();
+
+    let ttl = Duration::seconds(TOKEN_QUALITY_TTL_SECONDS);
+    let mut skipped_fresh_complete = 0usize;
+    let mut upsert_candidates = Vec::new();
+    let mut incomplete_after_prepare = 0usize;
+    for evidence in &considered {
+        let existing = store
+            .get_token_quality_cache(&evidence.mint)
+            .with_context(|| format!("failed loading token quality cache for {}", evidence.mint))?;
+        if existing.as_ref().is_some_and(|row| {
+            row.fetched_at <= options.now
+                && options.now - row.fetched_at <= ttl
+                && quality_row_has_required_fields(row, shadow)
+        }) {
+            skipped_fresh_complete = skipped_fresh_complete.saturating_add(1);
+            continue;
+        }
+        let holders = Some(
+            evidence
+                .wallet_count
+                .max(1)
+                .min(wallet_evidence_cap(shadow) as u64),
+        );
+        let token_age_seconds = Some(
+            options
+                .now
+                .signed_duration_since(evidence.first_seen)
+                .num_seconds()
+                .max(0) as u64,
+        );
+        let liquidity_sol = Some(evidence.max_sol_notional.max(0.0));
+        if !observed_evidence_satisfies_required_fields(
+            holders,
+            liquidity_sol,
+            token_age_seconds,
+            shadow,
+        ) {
+            incomplete_after_prepare = incomplete_after_prepare.saturating_add(1);
+            continue;
+        }
+        upsert_candidates.push((
+            evidence.mint.clone(),
+            holders,
+            liquidity_sol,
+            token_age_seconds,
+        ));
+    }
+
+    let mut blockers = Vec::new();
+    if window_truncated {
+        blockers.push("discovery_v2_quality_prepare_max_rows_exhausted".to_string());
+    }
+    if time_budget_exhausted {
+        blockers.push("discovery_v2_quality_prepare_time_budget_exhausted".to_string());
+    }
+    if unique_buy_mints > options.max_mints {
+        blockers.push("discovery_v2_quality_prepare_mint_budget_exhausted".to_string());
+    }
+    if incomplete_after_prepare > 0 {
+        blockers.push("discovery_v2_quality_prepare_incomplete_evidence".to_string());
+    }
+    if discovery.max_window_swaps_in_memory == 0 {
+        blockers.push("discovery_v2_quality_prepare_invalid_max_rows".to_string());
+    }
+
+    let mut upserted = 0usize;
+    if blockers.is_empty() {
+        for (mint, holders, liquidity_sol, token_age_seconds) in &upsert_candidates {
+            store
+                .upsert_token_quality_cache(
+                    mint,
+                    *holders,
+                    *liquidity_sol,
+                    *token_age_seconds,
+                    options.now,
+                )
+                .with_context(|| {
+                    format!("failed upserting discovery v2 quality evidence for {mint}")
+                })?;
+            upserted = upserted.saturating_add(1);
+        }
+    }
+
+    Ok(DiscoveryV2PrepareQualityReport {
+        dry_run: false,
+        skipped: false,
+        skip_reason: None,
+        committed: false,
+        mode: DiscoveryV2PrepareQualityMode::Incremental,
+        quality_source: QUALITY_SOURCE.to_string(),
+        now: options.now,
+        window_start,
+        window_minutes: options.window_minutes,
+        scoring_window_minutes: options.scoring_window_minutes,
+        max_rows: options.max_rows,
+        max_mints: options.max_mints,
+        rows_scanned: rows_seen,
+        evidence_rows_available,
+        evidence_rows_pruned,
+        incremental_state_reused,
+        incremental_state_reset,
         unique_buy_mints,
         mints_considered: considered.len(),
         skipped_fresh_complete,

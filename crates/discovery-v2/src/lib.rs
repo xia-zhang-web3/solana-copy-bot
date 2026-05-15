@@ -7,6 +7,7 @@ mod metric;
 mod policy;
 mod publish;
 mod quality_prepare;
+mod quality_prepare_incremental;
 mod shadow_feedback;
 mod status;
 mod token_market;
@@ -22,7 +23,8 @@ pub use crate::policy::{
 };
 pub use crate::publish::{publish_discovery_v2_status, DiscoveryV2PublishReport};
 pub use crate::quality_prepare::{
-    prepare_discovery_v2_quality, DiscoveryV2PrepareQualityOptions, DiscoveryV2PrepareQualityReport,
+    prepare_discovery_v2_quality, DiscoveryV2PrepareQualityMode, DiscoveryV2PrepareQualityOptions,
+    DiscoveryV2PrepareQualityReport,
 };
 pub use crate::status::{
     build_discovery_v2_status, DiscoveryV2CoverageSample, DiscoveryV2FilterStatus,

@@ -2,6 +2,7 @@ use crate::observed_timestamp::{
     ensure_observed_swaps_timestamp_validation_index_empty_safe,
     observed_swaps_non_utc_timestamp_index_is_valid,
 };
+use crate::quality::ensure_discovery_v2_quality_prepare_tables;
 use crate::schema_indexes::{
     ensure_observed_swaps_read_indexes_empty_safe, followlist_active_wallet_index_is_valid,
     validate_observed_swaps_read_indexes,
@@ -20,6 +21,7 @@ pub fn ensure_discovery_v2_schema(store: &SqliteDiscoveryStore) -> Result<()> {
     ensure_discovery_strategy_state_table(store)?;
     ensure_discovery_runtime_state_table(store)?;
     ensure_discovery_v2_status_snapshot_table(store)?;
+    ensure_discovery_v2_quality_prepare_tables(store)?;
     Ok(())
 }
 

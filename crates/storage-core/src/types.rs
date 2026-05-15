@@ -12,6 +12,10 @@ pub use types_publication::{
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow, DiscoveryRuntimeArtifact,
     PersistedWalletMetricSnapshotRow, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
 };
+pub use types_quality::{
+    DiscoveryV2QualityEvidenceAggregate, DiscoveryV2QualityPrepareState,
+    DiscoveryV2QualityPrepareUpsert,
+};
 pub use types_recent_raw::{
     DiscoveryBootstrapDegradedStateRow, DiscoveryRecentRawRestoreStateRow,
     DiscoveryRecentRawRestoreStateUpdate, RecentRawJournalStateRow, RecentRawJournalWriteSummary,
@@ -55,6 +59,8 @@ mod types_history_retention;
 mod types_observed;
 #[path = "types_publication.rs"]
 mod types_publication;
+#[path = "types_quality.rs"]
+mod types_quality;
 #[path = "types_recent_raw.rs"]
 mod types_recent_raw;
 #[path = "types_runtime.rs"]

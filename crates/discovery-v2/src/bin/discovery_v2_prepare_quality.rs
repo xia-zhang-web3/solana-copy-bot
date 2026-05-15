@@ -4,8 +4,8 @@ use copybot_config::load_from_path;
 use copybot_discovery_v2::{
     live_portfolio_rpc_url_from_config, materialize_discovery_v2_status,
     prepare_discovery_v2_quality, reusable_materialized_discovery_v2_status_for_prepare,
-    DiscoveryV2BuildOptions, DiscoveryV2MaterializedStatusReport, DiscoveryV2PrepareQualityOptions,
-    DiscoveryV2PrepareQualityReport,
+    DiscoveryV2BuildOptions, DiscoveryV2MaterializedStatusReport, DiscoveryV2PrepareQualityMode,
+    DiscoveryV2PrepareQualityOptions, DiscoveryV2PrepareQualityReport,
 };
 use copybot_storage_core::{
     ensure_discovery_v2_schema, validate_discovery_v2_status_schema_read_only, SqliteDiscoveryStore,
@@ -13,7 +13,7 @@ use copybot_storage_core::{
 use std::env;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "usage: discovery_v2_prepare_quality --config <path> [--db-path <path>] [--max-mints <n>] [--commit] [--materialize-status]";
+const USAGE: &str = "usage: discovery_v2_prepare_quality --config <path> [--db-path <path>] [--max-mints <n>] [--commit] [--incremental] [--materialize-status]";
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -31,6 +31,7 @@ struct Config {
     db_path: Option<PathBuf>,
     max_mints: usize,
     commit: bool,
+    incremental: bool,
     materialize_status: bool,
 }
 
@@ -48,6 +49,7 @@ fn parse_args() -> Result<Option<Config>> {
     let mut db_path = None;
     let mut max_mints = 10_000usize;
     let mut commit = false;
+    let mut incremental = false;
     let mut materialize_status = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -60,6 +62,7 @@ fn parse_args() -> Result<Option<Config>> {
             "--max-mints" => max_mints = parse_usize_arg("--max-mints", args.next())?,
             "--commit" => commit = true,
             "--dry-run" => commit = false,
+            "--incremental" => incremental = true,
             "--materialize-status" => materialize_status = true,
             "--window-minutes"
             | "--max-tail-lag-seconds"
@@ -75,11 +78,15 @@ fn parse_args() -> Result<Option<Config>> {
     if materialize_status && !commit {
         bail!("--materialize-status requires --commit");
     }
+    if incremental && !commit {
+        bail!("--incremental requires --commit; use a copied DB for dry-run comparison");
+    }
     Ok(Some(Config {
         config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
         db_path,
         max_mints,
         commit,
+        incremental,
         materialize_status,
     }))
 }
@@ -97,7 +104,12 @@ fn run(config: Config) -> Result<PrepareQualityCliReport> {
         Utc::now(),
         config.max_mints,
         config.commit,
-    );
+    )
+    .with_mode(if config.incremental {
+        DiscoveryV2PrepareQualityMode::Incremental
+    } else {
+        DiscoveryV2PrepareQualityMode::FullScan
+    });
     if config.commit {
         let store = SqliteDiscoveryStore::open(&db_path)
             .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
