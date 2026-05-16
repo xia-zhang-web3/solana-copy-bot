@@ -2,6 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use copybot_core_types::{ExactSwapAmounts, SwapEvent};
 use copybot_storage_core::{ensure_discovery_v2_schema, SqliteDiscoveryStore};
+use rusqlite::Connection;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
@@ -172,6 +173,23 @@ fn sol_leg_projection_scan_reconstructs_buys_sells_and_respects_cursor() -> Resu
         exact_amounts: None,
     };
     store.insert_observed_swap(&later_buy)?;
+    let later_non_sol = SwapEvent {
+        signature: "sig-later-non-sol".to_string(),
+        wallet: "wallet-e".to_string(),
+        dex: "orca".to_string(),
+        token_in: "TOKEN-X".to_string(),
+        token_out: "TOKEN-Y".to_string(),
+        amount_in: 10.0,
+        amount_out: 11.0,
+        slot: 104,
+        ts_utc: ts("2026-05-05T11:45:00Z")?,
+        exact_amounts: None,
+    };
+    store.insert_observed_swap(&later_non_sol)?;
+    Connection::open(&db_path)?.execute(
+        "DROP INDEX idx_observed_swaps_sol_leg_ts_slot_signature",
+        [],
+    )?;
 
     let mut extended = Vec::new();
     let extended_page = store.for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget(

@@ -368,6 +368,17 @@ BEGIN
         NEW.slot,
         NEW.ts
     );
+END;
+
+CREATE TRIGGER IF NOT EXISTS observed_swaps_sol_leg_projection_delete
+AFTER DELETE ON observed_swaps
+BEGIN
+    DELETE FROM observed_sol_leg_swaps WHERE signature = OLD.signature;
+END;
+
+CREATE TRIGGER IF NOT EXISTS observed_swaps_sol_leg_coverage_insert
+AFTER INSERT ON observed_swaps
+BEGIN
     UPDATE observed_sol_leg_coverage
        SET covered_through_ts = CASE
                WHEN covered_through_ts IS NULL OR NEW.ts > covered_through_ts THEN NEW.ts
@@ -375,11 +386,5 @@ BEGIN
            END,
            updated_at = strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')
      WHERE id = 1;
-END;
-
-CREATE TRIGGER IF NOT EXISTS observed_swaps_sol_leg_projection_delete
-AFTER DELETE ON observed_swaps
-BEGIN
-    DELETE FROM observed_sol_leg_swaps WHERE signature = OLD.signature;
 END;
 ";
