@@ -6,6 +6,7 @@ use std::time::Duration as StdDuration;
 
 const SQLITE_WRITE_MAX_RETRIES: usize = 3;
 const SQLITE_WRITE_RETRY_BACKOFF_MS: [u64; SQLITE_WRITE_MAX_RETRIES] = [100, 300, 700];
+const SQLITE_OPERATOR_BEGIN_BACKOFF_MS: [u64; 6] = [250, 500, 1_000, 2_000, 4_000, 8_000];
 static SQLITE_WRITE_RETRY_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SQLITE_BUSY_ERROR_TOTAL: AtomicU64 = AtomicU64::new(0);
 
@@ -106,6 +107,36 @@ impl SqliteDiscoveryStore {
                         continue;
                     }
                     return Err(error).with_context(|| format!("failed to run {transaction_name}"));
+                }
+            }
+        }
+        unreachable!("retry loop must return on success or terminal error");
+    }
+
+    pub(crate) fn begin_immediate_transaction_with_operator_retry(
+        &self,
+        transaction_name: &str,
+    ) -> Result<()> {
+        for attempt in 0..=SQLITE_OPERATOR_BEGIN_BACKOFF_MS.len() {
+            match self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION") {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    let error = anyhow!(error)
+                        .context(format!("failed to open {transaction_name} transaction"));
+                    let retryable = is_retryable_sqlite_anyhow_error(&error);
+                    if retryable {
+                        note_sqlite_busy_error();
+                    }
+                    let Some(backoff_ms) = SQLITE_OPERATOR_BEGIN_BACKOFF_MS.get(attempt) else {
+                        return Err(error)
+                            .with_context(|| format!("failed to run {transaction_name}"));
+                    };
+                    if !retryable {
+                        return Err(error)
+                            .with_context(|| format!("failed to run {transaction_name}"));
+                    }
+                    note_sqlite_write_retry();
+                    std::thread::sleep(StdDuration::from_millis(*backoff_ms));
                 }
             }
         }

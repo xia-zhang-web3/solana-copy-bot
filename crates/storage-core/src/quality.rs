@@ -136,10 +136,7 @@ impl SqliteDiscoveryStore {
     }
 
     pub fn begin_discovery_v2_quality_prepare_update(&self) -> Result<()> {
-        self.conn
-            .execute_batch("BEGIN IMMEDIATE TRANSACTION")
-            .context("failed beginning discovery v2 quality prepare transaction")?;
-        Ok(())
+        self.begin_immediate_transaction_with_operator_retry("discovery v2 quality prepare")
     }
 
     pub fn commit_discovery_v2_quality_prepare_update(&self) -> Result<()> {
