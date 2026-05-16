@@ -33,6 +33,7 @@ struct PendingRugBuy {
     window_end: DateTime<Utc>,
     sol_volume: f64,
     unique_traders: HashMap<u32, ()>,
+    observed_trades: u32,
     saturated: bool,
 }
 
@@ -130,6 +131,7 @@ impl DiscoveryV2WindowAccumulator {
                 window_end: opened_at + lookahead,
                 sol_volume: 0.0,
                 unique_traders: HashMap::new(),
+                observed_trades: 0,
                 saturated: false,
             });
     }
@@ -141,21 +143,35 @@ impl DiscoveryV2WindowAccumulator {
         sol_notional: f64,
         discovery: &DiscoveryConfig,
     ) {
-        let Some(state) = self.rug_states.get_mut(token) else {
-            return;
-        };
+        let mut non_rugged_wallets = Vec::new();
         let trader_cap = discovery.thin_market_min_unique_traders.max(1) as usize;
         let volume_cap = discovery.thin_market_min_volume_sol.max(0.0);
-        for pending in &mut state.pending_buys {
-            if pending.saturated {
-                continue;
+        {
+            let Some(state) = self.rug_states.get_mut(token) else {
+                return;
+            };
+            for pending in &mut state.pending_buys {
+                pending.observed_trades = pending.observed_trades.saturating_add(1);
+                pending.sol_volume = (pending.sol_volume + sol_notional).min(volume_cap);
+                if pending.unique_traders.len() < trader_cap {
+                    pending.unique_traders.insert(trader_id, ());
+                }
+                pending.saturated = pending.sol_volume + 1e-12 >= volume_cap
+                    && pending.unique_traders.len() >= trader_cap;
+                if pending.saturated && pending.observed_trades > 1 {
+                    non_rugged_wallets.push(pending.wallet_id.clone());
+                }
             }
-            pending.sol_volume = (pending.sol_volume + sol_notional).min(volume_cap);
-            if pending.unique_traders.len() < trader_cap {
-                pending.unique_traders.insert(trader_id, ());
+            if !non_rugged_wallets.is_empty() {
+                state
+                    .pending_buys
+                    .retain(|pending| !(pending.saturated && pending.observed_trades > 1));
             }
-            pending.saturated = pending.sol_volume + 1e-12 >= volume_cap
-                && pending.unique_traders.len() >= trader_cap;
+        }
+        for wallet_id in non_rugged_wallets {
+            if let Some(wallet) = self.wallets.get_mut(&wallet_id) {
+                wallet.observe_rug_lookahead(false);
+            }
         }
     }
 

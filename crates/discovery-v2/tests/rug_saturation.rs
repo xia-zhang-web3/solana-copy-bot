@@ -60,6 +60,53 @@ fn rug_lookahead_saturation_preserves_non_rugged_result() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn saturated_rug_lookahead_is_evaluated_before_window_end() -> Result<()> {
+    let dir = tempdir()?;
+    let store = SqliteDiscoveryStore::open(dir.path().join("runtime.db"))?;
+    ensure_discovery_v2_schema(&store)?;
+    let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
+    let token = "EarlySaturatedRugToken1111111111111111111";
+    let wallet = "early_saturation_wallet";
+    let buy_ts = now - Duration::seconds(30);
+    let swaps = vec![
+        tail_coverage_swap(
+            "sig-early-saturation-coverage",
+            1,
+            now - Duration::hours(25),
+        ),
+        buy_swap(wallet, token, "sig-early-saturation-buy", 10, buy_ts),
+        sell_swap(
+            "early_saturation_noise_wallet",
+            token,
+            "sig-early-saturation-noise",
+            11,
+            buy_ts + Duration::seconds(5),
+        ),
+        tail_coverage_swap("sig-early-saturation-tail", 500, now - Duration::seconds(5)),
+    ];
+    store.insert_observed_swaps_batch(&swaps)?;
+    store.upsert_token_quality_cache(token, Some(5), Some(1.0), Some(60), now)?;
+
+    let (mut discovery, shadow) = strict_policy();
+    discovery.rug_lookahead_seconds = 600;
+    discovery.thin_market_min_volume_sol = 0.5;
+    discovery.thin_market_min_unique_traders = 2;
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    assert!(status.production_green, "{:?}", status.blockers);
+    assert_eq!(status.candidate_wallets, vec![wallet.to_string()]);
+    let metric = status
+        .wallet_metrics
+        .iter()
+        .find(|metric| metric.wallet_id == wallet)
+        .expect("candidate metric");
+    assert_eq!(metric.rug_lookahead_evaluated, 1);
+    assert_eq!(metric.rug_lookahead_unevaluated, 0);
+    assert_eq!(metric.rug_ratio, 0.0);
+    Ok(())
+}
+
 fn options(now: DateTime<Utc>) -> DiscoveryV2BuildOptions {
     DiscoveryV2BuildOptions {
         now,
