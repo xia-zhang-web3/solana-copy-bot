@@ -25,8 +25,8 @@ impl SqliteDiscoveryStore {
     ) -> Result<()> {
         ensure_discovery_v2_status_snapshot_table(self)?;
         let (cursor_ts, cursor_slot, cursor_signature) = snapshot_cursor_values(runtime_cursor);
-        self.conn
-            .execute(
+        self.execute_with_retry(|conn| {
+            conn.execute(
                 "INSERT INTO discovery_v2_status_snapshot(
                     id, policy_fingerprint, status_now, status_window_start,
                     runtime_cursor_ts, runtime_cursor_slot, runtime_cursor_signature,
@@ -52,7 +52,8 @@ impl SqliteDiscoveryStore {
                     Utc::now().to_rfc3339(),
                 ],
             )
-            .context("failed persisting discovery v2 status snapshot")?;
+        })
+        .context("failed persisting discovery v2 status snapshot")?;
         Ok(())
     }
 
@@ -111,9 +112,9 @@ pub(crate) fn ensure_discovery_v2_status_snapshot_table(
     store: &SqliteDiscoveryStore,
 ) -> Result<()> {
     store
-        .conn
-        .execute_batch(
-            "CREATE TABLE IF NOT EXISTS discovery_v2_status_snapshot (
+        .execute_with_retry_result(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS discovery_v2_status_snapshot (
                 id INTEGER PRIMARY KEY CHECK(id = 1),
                 policy_fingerprint TEXT NOT NULL,
                 status_now TEXT NOT NULL,
@@ -124,7 +125,8 @@ pub(crate) fn ensure_discovery_v2_status_snapshot_table(
                 status_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )",
-        )
+            )
+        })
         .context("failed ensuring discovery_v2_status_snapshot table")?;
     for (column, definition) in [
         ("policy_fingerprint", "TEXT NOT NULL DEFAULT ''"),
