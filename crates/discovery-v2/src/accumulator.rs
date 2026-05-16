@@ -26,6 +26,7 @@ pub(crate) struct WalletAccumulator {
     pub missing_quality_evidence_buys: u32,
     pub rug_lookahead_evaluated: u32,
     pub rug_lookahead_rugged: u32,
+    terminal_rejected: bool,
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
 }
@@ -60,6 +61,7 @@ impl WalletAccumulator {
             missing_quality_evidence_buys: 0,
             rug_lookahead_evaluated: 0,
             rug_lookahead_rugged: 0,
+            terminal_rejected: false,
             first_seen: ts,
             last_seen: ts,
         }
@@ -75,7 +77,9 @@ impl WalletAccumulator {
         self.active_days.insert(swap.ts_utc.date_naive());
         self.first_seen = self.first_seen.min(swap.ts_utc);
         self.last_seen = self.last_seen.max(swap.ts_utc);
-        self.mark_tx_minute(swap.ts_utc.timestamp() / 60, discovery.max_tx_per_minute);
+        if !self.terminal_rejected {
+            self.mark_tx_minute(swap.ts_utc.timestamp() / 60, discovery.max_tx_per_minute);
+        }
         if is_sol_buy(swap) {
             self.observe_buy(
                 swap.token_out.as_str(),
@@ -137,6 +141,10 @@ impl WalletAccumulator {
         if matches!(tradability, BuyTradability::MissingQualityEvidence) {
             self.missing_quality_evidence_buys =
                 self.missing_quality_evidence_buys.saturating_add(1);
+            self.prune_terminal_rejected_state();
+        }
+        if self.terminal_rejected {
+            return;
         }
         self.positions
             .entry(token.to_string())
@@ -151,6 +159,9 @@ impl WalletAccumulator {
 
     fn observe_sell(&mut self, token: &str, qty: f64, proceeds_sol: f64, ts: DateTime<Utc>) {
         self.sells = self.sells.saturating_add(1);
+        if self.terminal_rejected {
+            return;
+        }
         if qty <= 0.0 || proceeds_sol <= 0.0 {
             return;
         }
@@ -189,6 +200,14 @@ impl WalletAccumulator {
                 .entry(ts.date_naive())
                 .or_insert(0.0) += sell_pnl;
         }
+    }
+
+    fn prune_terminal_rejected_state(&mut self) {
+        self.terminal_rejected = true;
+        self.hold_samples_sec.clear();
+        self.realized_pnl_by_day.clear();
+        self.tx_per_minute.clear();
+        self.positions.clear();
     }
 
     fn mark_tx_minute(&mut self, minute_bucket: i64, max_tx_per_minute: u32) {

@@ -91,6 +91,96 @@ fn status_scan_does_not_materialize_sell_only_wallet_metrics() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn status_scan_keeps_missing_quality_wallet_rejected_after_prior_profit() -> Result<()> {
+    let dir = tempdir()?;
+    let store = SqliteDiscoveryStore::open(dir.path().join("runtime.db"))?;
+    ensure_discovery_v2_schema(&store)?;
+    let now = ts("2026-05-16T11:00:00Z")?;
+    let good_token = "GoodToken111111111111111111111111111111";
+    let missing_quality_token = "MissingQualityToken111111111111111111111";
+    let tail_token = "TailToken2222222222222222222222222222222";
+    store.insert_observed_swaps_batch(&[
+        buy(
+            "coverage_wallet",
+            tail_token,
+            "sig-missing-coverage",
+            1,
+            now - Duration::hours(25),
+        ),
+        buy(
+            "rejected_wallet",
+            good_token,
+            "sig-rejected-good-buy",
+            10,
+            now - Duration::minutes(15),
+        ),
+        sell(
+            "rejected_wallet",
+            good_token,
+            "sig-rejected-good-sell",
+            11,
+            now - Duration::minutes(14),
+        ),
+        buy(
+            "rejected_wallet",
+            missing_quality_token,
+            "sig-rejected-missing-quality",
+            12,
+            now - Duration::minutes(13),
+        ),
+        buy(
+            "candidate_wallet",
+            good_token,
+            "sig-candidate-good-buy",
+            13,
+            now - Duration::minutes(12),
+        ),
+        sell(
+            "candidate_wallet",
+            good_token,
+            "sig-candidate-good-sell",
+            14,
+            now - Duration::minutes(11),
+        ),
+        buy(
+            "candidate_wallet",
+            good_token,
+            "sig-candidate-good-open",
+            15,
+            now - Duration::minutes(10),
+        ),
+        buy(
+            "tail_wallet",
+            tail_token,
+            "sig-missing-tail",
+            16,
+            now - Duration::minutes(1),
+        ),
+    ])?;
+    store.upsert_token_quality_cache(good_token, Some(5), Some(1.0), Some(60), now)?;
+    store.upsert_token_quality_cache(tail_token, Some(5), Some(1.0), Some(60), now)?;
+    let (discovery, shadow) = policy();
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    assert!(status.production_green, "{:?}", status.blockers);
+    assert_eq!(
+        status.candidate_wallets,
+        vec!["candidate_wallet".to_string()]
+    );
+    let rejected = status
+        .wallet_metrics
+        .iter()
+        .find(|metric| metric.wallet_id == "rejected_wallet")
+        .expect("rejected wallet metric retained for operator evidence");
+    assert!(!rejected.eligible);
+    assert!(rejected
+        .reject_reasons
+        .iter()
+        .any(|reason| reason == "token_quality_evidence_missing"));
+    Ok(())
+}
+
 fn policy() -> (DiscoveryConfig, ShadowConfig) {
     let mut discovery = DiscoveryConfig::default();
     discovery.min_leader_notional_sol = 0.0;
