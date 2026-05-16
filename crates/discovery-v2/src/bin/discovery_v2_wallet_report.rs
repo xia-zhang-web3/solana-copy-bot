@@ -88,6 +88,9 @@ fn run(config: Config) -> Result<DiscoveryV2WalletReport> {
     );
     let store = SqliteDiscoveryStore::open_read_only(&db_path)
         .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
+    store
+        .tune_for_operator_scans()
+        .context("failed tuning sqlite connection for discovery v2 wallet report")?;
     validate_discovery_v2_status_schema_read_only(&store).with_context(|| {
         format!(
             "sqlite db is not discovery v2 schema-ready: {}",

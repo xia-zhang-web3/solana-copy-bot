@@ -49,6 +49,19 @@ impl SqliteDiscoveryStore {
             .with_context(|| format!("failed checking sqlite table existence: {table}"))?;
         Ok(exists.is_some())
     }
+
+    pub fn tune_for_operator_scans(&self) -> Result<()> {
+        self.conn
+            .pragma_update(None, "temp_store", "MEMORY")
+            .context("failed setting sqlite temp_store=MEMORY for operator scan")?;
+        self.conn
+            .pragma_update(None, "cache_size", -262_144_i64)
+            .context("failed setting sqlite cache_size for operator scan")?;
+        self.conn
+            .pragma_update(None, "mmap_size", 1_073_741_824_i64)
+            .context("failed setting sqlite mmap_size for operator scan")?;
+        Ok(())
+    }
 }
 
 fn configure_connection(conn: &Connection, read_only: bool) -> Result<()> {

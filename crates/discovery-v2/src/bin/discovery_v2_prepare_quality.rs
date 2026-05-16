@@ -113,6 +113,9 @@ fn run(config: Config) -> Result<PrepareQualityCliReport> {
     if config.commit {
         let store = SqliteDiscoveryStore::open(&db_path)
             .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
+        store
+            .tune_for_operator_scans()
+            .context("failed tuning sqlite connection for discovery v2 prepare")?;
         ensure_discovery_v2_schema(&store).context("failed ensuring discovery v2 schema")?;
         if !config.incremental {
             if config.materialize_status {
@@ -164,6 +167,9 @@ fn run(config: Config) -> Result<PrepareQualityCliReport> {
     }
     let store = SqliteDiscoveryStore::open_read_only(&db_path)
         .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
+    store
+        .tune_for_operator_scans()
+        .context("failed tuning sqlite connection for discovery v2 prepare")?;
     validate_discovery_v2_status_schema_read_only(&store)
         .context("sqlite db is not discovery v2 schema-ready")?;
     let quality = prepare_discovery_v2_quality(&store, &loaded.discovery, &loaded.shadow, options)?;

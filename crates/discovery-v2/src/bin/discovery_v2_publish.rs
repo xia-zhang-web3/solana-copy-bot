@@ -88,6 +88,9 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
     .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded));
     let read_store = SqliteDiscoveryStore::open_read_only(&db_path)
         .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
+    read_store
+        .tune_for_operator_scans()
+        .context("failed tuning sqlite connection for discovery v2 publish")?;
     validate_discovery_v2_status_schema_read_only(&read_store).with_context(|| {
         format!(
             "sqlite db is not ready for discovery v2 publish: {}; run schema preparation before --commit",
