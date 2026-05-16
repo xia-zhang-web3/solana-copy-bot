@@ -14,6 +14,15 @@ pub struct WalletActivityDayRow {
     pub last_seen: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WalletSolLegActivityWindow {
+    pub trades: u32,
+    pub active_days: u32,
+    pub first_seen: Option<DateTime<Utc>>,
+    pub last_seen: Option<DateTime<Utc>>,
+    pub time_budget_exhausted: bool,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SqliteBatchedDeleteSummary {
     pub deleted_rows: usize,

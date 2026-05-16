@@ -70,6 +70,10 @@ fn validate_discovery_v2_float_gates(config: &AppConfig) -> Result<()> {
     )?;
     validate_finite_non_negative("discovery.min_score", config.discovery.min_score)?;
     validate_finite_ratio(
+        "discovery.maturity_score_bonus",
+        config.discovery.maturity_score_bonus,
+    )?;
+    validate_finite_ratio(
         "discovery.min_tradable_ratio",
         config.discovery.min_tradable_ratio,
     )?;
@@ -120,6 +124,21 @@ fn validate_discovery_storage_mitigation_config(config: &AppConfig) -> Result<()
             config.discovery.min_active_days,
             config.discovery.scoring_window_days
         ));
+    }
+    if config.discovery.maturity_min_active_days > 0 {
+        if config.discovery.maturity_window_days == 0 {
+            return Err(anyhow!(
+                "discovery.maturity_window_days must be >= 1 when discovery.maturity_min_active_days ({}) is enabled",
+                config.discovery.maturity_min_active_days
+            ));
+        }
+        if config.discovery.maturity_min_active_days > config.discovery.maturity_window_days {
+            return Err(anyhow!(
+                "discovery.maturity_min_active_days ({}) must be <= discovery.maturity_window_days ({})",
+                config.discovery.maturity_min_active_days,
+                config.discovery.maturity_window_days
+            ));
+        }
     }
     if config.discovery.max_fetch_swaps_per_cycle > config.discovery.max_window_swaps_in_memory {
         return Err(anyhow!(

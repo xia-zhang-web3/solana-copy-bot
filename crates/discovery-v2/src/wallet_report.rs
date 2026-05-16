@@ -1,4 +1,7 @@
-use crate::{DiscoveryV2LivePortfolioStatus, DiscoveryV2Status, DiscoveryV2WalletMetric};
+use crate::{
+    DiscoveryV2LivePortfolioStatus, DiscoveryV2MaturityStatus, DiscoveryV2Status,
+    DiscoveryV2WalletMetric,
+};
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
@@ -25,6 +28,7 @@ pub struct DiscoveryV2WalletReport {
     pub blockers: Vec<String>,
     pub policy_fingerprint: String,
     pub thresholds: DiscoveryV2WalletReportThresholds,
+    pub maturity: DiscoveryV2MaturityStatus,
     pub live_portfolio: Option<DiscoveryV2LivePortfolioStatus>,
     pub wallet_metrics_total: usize,
     pub wallet_metrics_returned: usize,
@@ -41,6 +45,9 @@ pub struct DiscoveryV2WalletReportThresholds {
     pub min_score: f64,
     pub min_trades: u32,
     pub min_active_days: u32,
+    pub maturity_window_days: u32,
+    pub maturity_min_active_days: u32,
+    pub maturity_score_bonus: f64,
     pub min_buy_count: u32,
     pub min_leader_notional_sol: f64,
     pub min_tradable_ratio: f64,
@@ -65,6 +72,11 @@ pub struct DiscoveryV2WalletReportRow {
     pub active_follow: bool,
     pub eligible: bool,
     pub score: f64,
+    pub selection_score: f64,
+    pub maturity_window_days: u32,
+    pub maturity_active_days: u32,
+    pub maturity_trades: u32,
+    pub maturity_preferred: bool,
     pub trades: u32,
     pub active_days: u32,
     pub buys: u32,
@@ -167,6 +179,7 @@ pub fn build_discovery_v2_wallet_report(
         blockers: status.blockers,
         policy_fingerprint: status.policy_fingerprint,
         thresholds: thresholds(discovery, shadow),
+        maturity: status.maturity,
         live_portfolio: status.live_portfolio,
         wallet_metrics_total: status.wallet_metrics_total,
         wallet_metrics_returned: status.wallet_metrics_returned,
@@ -192,6 +205,11 @@ fn report_row(
         active_follow,
         eligible: metric.eligible,
         score: metric.score,
+        selection_score: metric.selection_score,
+        maturity_window_days: metric.maturity_window_days,
+        maturity_active_days: metric.maturity_active_days,
+        maturity_trades: metric.maturity_trades,
+        maturity_preferred: metric.maturity_preferred,
         trades: metric.trades,
         active_days: metric.active_days,
         buys: metric.buys,
@@ -285,6 +303,9 @@ fn thresholds(
         min_score: discovery.min_score,
         min_trades: discovery.min_trades,
         min_active_days: discovery.min_active_days,
+        maturity_window_days: discovery.maturity_window_days,
+        maturity_min_active_days: discovery.maturity_min_active_days,
+        maturity_score_bonus: discovery.maturity_score_bonus,
         min_buy_count: discovery.min_buy_count,
         min_leader_notional_sol: discovery.min_leader_notional_sol,
         min_tradable_ratio: discovery.min_tradable_ratio,

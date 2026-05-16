@@ -41,6 +41,11 @@ pub struct DiscoveryV2WalletMetric {
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     pub score: f64,
+    pub maturity_window_days: u32,
+    pub maturity_active_days: u32,
+    pub maturity_trades: u32,
+    pub maturity_preferred: bool,
+    pub selection_score: f64,
 }
 
 pub(crate) fn wallet_metric_from_accumulator(
@@ -138,12 +143,18 @@ pub(crate) fn wallet_metric_from_accumulator(
         first_seen: acc.first_seen,
         last_seen: acc.last_seen,
         score,
+        maturity_window_days: 0,
+        maturity_active_days: active_days,
+        maturity_trades: acc.trades,
+        maturity_preferred: false,
+        selection_score: score,
     }
 }
 
 pub(crate) fn reject_wallet_metric(metric: &mut DiscoveryV2WalletMetric, reason: &str) {
     metric.eligible = false;
     metric.score = 0.0;
+    metric.selection_score = 0.0;
     if !metric
         .reject_reasons
         .iter()

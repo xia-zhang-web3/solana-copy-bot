@@ -7,6 +7,7 @@ pub use types_history_retention::{
 pub use types_observed::{
     ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary,
     SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot, WalletActivityDayRow,
+    WalletSolLegActivityWindow,
 };
 pub use types_publication::{
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow, DiscoveryRuntimeArtifact,

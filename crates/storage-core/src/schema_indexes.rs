@@ -38,6 +38,12 @@ const OBSERVED_SWAPS_REQUIRED_READ_INDEXES: &[(&str, &[&str], bool, Option<&str>
         None,
     ),
     (
+        "idx_observed_swaps_wallet_ts",
+        &["wallet_id", "ts"],
+        false,
+        None,
+    ),
+    (
         "idx_observed_swaps_sol_leg_ts_slot_signature",
         &["ts", "slot", "signature"],
         true,
@@ -56,6 +62,8 @@ CREATE INDEX IF NOT EXISTS idx_observed_swaps_token_in_out_ts
     ON observed_swaps(token_in, token_out, ts);
 CREATE INDEX IF NOT EXISTS idx_observed_swaps_token_out_in_ts
     ON observed_swaps(token_out, token_in, ts);
+CREATE INDEX IF NOT EXISTS idx_observed_swaps_wallet_ts
+    ON observed_swaps(wallet_id, ts);
 CREATE INDEX IF NOT EXISTS idx_observed_swaps_sol_leg_ts_slot_signature
     ON observed_swaps(ts, slot, signature)
     WHERE token_in = 'So11111111111111111111111111111111111111112'

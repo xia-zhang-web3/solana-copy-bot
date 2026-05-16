@@ -221,6 +221,51 @@ min_active_days = 3
 }
 
 #[test]
+fn load_from_path_rejects_invalid_discovery_maturity_window() {
+    with_temp_config_file(
+        r#"
+[discovery]
+maturity_window_days = 2
+maturity_min_active_days = 3
+"#,
+        |config_path| {
+            with_clean_copybot_env(|| {
+                let err = load_from_path(config_path)
+                    .expect_err("unsatisfiable V2 maturity policy must fail config load")
+                    .to_string();
+                assert!(
+                    err.contains("discovery.maturity_min_active_days"),
+                    "unexpected error: {err}"
+                );
+            });
+        },
+    );
+}
+
+#[test]
+fn load_from_path_rejects_non_finite_discovery_maturity_bonus() {
+    with_temp_config_file(
+        r#"
+[discovery]
+maturity_window_days = 3
+maturity_min_active_days = 3
+maturity_score_bonus = nan
+"#,
+        |config_path| {
+            with_clean_copybot_env(|| {
+                let err = load_from_path(config_path)
+                    .expect_err("non-finite V2 maturity bonus must fail config load")
+                    .to_string();
+                assert!(
+                    err.contains("discovery.maturity_score_bonus"),
+                    "unexpected error: {err}"
+                );
+            });
+        },
+    );
+}
+
+#[test]
 fn load_from_path_rejects_legacy_discovery_aggregate_activation() {
     with_temp_config_file(
         r#"

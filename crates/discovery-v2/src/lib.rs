@@ -3,6 +3,7 @@ mod filters;
 mod live_portfolio;
 mod live_portfolio_rpc;
 mod materialized_status;
+mod maturity;
 mod metric;
 mod policy;
 mod publish;
@@ -28,8 +29,9 @@ pub use crate::quality_prepare::{
 };
 pub use crate::status::{
     build_discovery_v2_status, DiscoveryV2CoverageSample, DiscoveryV2FilterStatus,
-    DiscoveryV2LivePortfolioStatus, DiscoveryV2ScanStatus, DiscoveryV2Status,
-    DiscoveryV2TailStatus, DISCOVERY_V2_SCORING_SOURCE, OPERATOR_WALLET_METRIC_LIMIT,
+    DiscoveryV2LivePortfolioStatus, DiscoveryV2MaturityStatus, DiscoveryV2ScanStatus,
+    DiscoveryV2Status, DiscoveryV2TailStatus, DISCOVERY_V2_SCORING_SOURCE,
+    OPERATOR_WALLET_METRIC_LIMIT,
 };
 pub use crate::wallet_report::{
     build_discovery_v2_wallet_report, DiscoveryV2WalletFilterEvidence, DiscoveryV2WalletReport,

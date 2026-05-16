@@ -1,5 +1,6 @@
 use crate::filters::{build_budget_exhausted_filter_status, DiscoveryV2FilterStatusBuilder};
 use crate::live_portfolio::apply_live_portfolio_gate;
+use crate::maturity::{apply_maturity_ranking, configured_status as configured_maturity_status};
 use crate::metric::wallet_metric_from_accumulator;
 use crate::policy::{discovery_v2_policy_fingerprint, DiscoveryV2BuildOptions};
 use crate::shadow_feedback::{apply_shadow_feedback, load_shadow_wallet_feedback};
@@ -14,8 +15,8 @@ use std::time::{Duration as StdDuration, Instant};
 pub use crate::filters::DiscoveryV2FilterStatus;
 pub use crate::live_portfolio::DiscoveryV2LivePortfolioStatus;
 pub use status_types::{
-    DiscoveryV2CoverageSample, DiscoveryV2ScanStatus, DiscoveryV2Status, DiscoveryV2TailStatus,
-    OPERATOR_WALLET_METRIC_LIMIT,
+    DiscoveryV2CoverageSample, DiscoveryV2MaturityStatus, DiscoveryV2ScanStatus, DiscoveryV2Status,
+    DiscoveryV2TailStatus, OPERATOR_WALLET_METRIC_LIMIT,
 };
 
 #[path = "status_blockers.rs"]
@@ -117,6 +118,13 @@ pub fn build_discovery_v2_status(
             elapsed_ms_ceil(build_started.elapsed()),
         ));
     }
+    let maturity = apply_maturity_ranking(
+        store,
+        discovery,
+        options.now,
+        scan_deadline,
+        &mut wallet_metrics,
+    )?;
     sort_wallet_metrics(&mut wallet_metrics);
     let live_gate =
         apply_live_portfolio_gate(store, discovery, shadow, &options, &mut wallet_metrics)?;
@@ -148,6 +156,9 @@ pub fn build_discovery_v2_status(
     }) {
         blockers.push("discovery_v2_live_portfolio_candidate_budget_exhausted".to_string());
     }
+    if maturity.time_budget_exhausted {
+        blockers.push("discovery_v2_maturity_budget_exhausted".to_string());
+    }
     let production_green = blockers.is_empty();
     Ok(DiscoveryV2Status {
         source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
@@ -159,6 +170,7 @@ pub fn build_discovery_v2_status(
         tail,
         coverage_sample,
         scan,
+        maturity,
         live_portfolio,
         filters,
         wallet_metrics_total,
@@ -213,6 +225,7 @@ fn budget_exhausted_status(
         tail,
         coverage_sample,
         scan,
+        maturity: configured_maturity_status(discovery),
         live_portfolio: None,
         filters,
         wallet_metrics_total: unique_wallets_seen,

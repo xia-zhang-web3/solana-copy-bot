@@ -3,7 +3,7 @@ use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig, DISCOVERY_V2_SCORING_SOURCE};
 use copybot_discovery_v2::{
     build_discovery_v2_wallet_report, DiscoveryV2FilterStatus, DiscoveryV2LivePortfolioStatus,
-    DiscoveryV2ScanStatus, DiscoveryV2Status, DiscoveryV2WalletMetric,
+    DiscoveryV2MaturityStatus, DiscoveryV2ScanStatus, DiscoveryV2Status, DiscoveryV2WalletMetric,
     DiscoveryV2WalletReportOptions,
 };
 use copybot_storage_core::{ensure_discovery_v2_schema, SqliteDiscoveryStore};
@@ -65,6 +65,15 @@ fn status(now: DateTime<Utc>) -> DiscoveryV2Status {
             max_rows_exhausted: false,
             time_budget_exhausted: false,
             budget_exhausted: false,
+        },
+        maturity: DiscoveryV2MaturityStatus {
+            enabled: false,
+            window_days: 0,
+            min_active_days: 0,
+            score_bonus: 0.0,
+            evaluated_wallets: 0,
+            preferred_wallets: 0,
+            time_budget_exhausted: false,
         },
         live_portfolio: Some(DiscoveryV2LivePortfolioStatus {
             enabled: true,
@@ -130,6 +139,11 @@ fn metric(
         first_seen: now - Duration::hours(2),
         last_seen: now - Duration::minutes(5),
         score,
+        maturity_window_days: 0,
+        maturity_active_days: 1,
+        maturity_trades: 4,
+        maturity_preferred: false,
+        selection_score: score,
     }
 }
 

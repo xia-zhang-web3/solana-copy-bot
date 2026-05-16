@@ -14,6 +14,9 @@ pub struct DiscoveryConfig {
     pub refresh_seconds: u64,
     pub min_trades: u32,
     pub min_active_days: u32,
+    pub maturity_window_days: u32,
+    pub maturity_min_active_days: u32,
+    pub maturity_score_bonus: f64,
     pub min_score: f64,
     pub max_tx_per_minute: u32,
     pub min_buy_count: u32,
@@ -52,6 +55,9 @@ impl Default for DiscoveryConfig {
             refresh_seconds: 600,
             min_trades: 8,
             min_active_days: 3,
+            maturity_window_days: 0,
+            maturity_min_active_days: 0,
+            maturity_score_bonus: 0.0,
             min_score: 0.55,
             max_tx_per_minute: 50,
             min_buy_count: 10,
@@ -95,6 +101,9 @@ impl fmt::Debug for DiscoveryConfig {
             .field("refresh_seconds", &self.refresh_seconds)
             .field("min_trades", &self.min_trades)
             .field("min_active_days", &self.min_active_days)
+            .field("maturity_window_days", &self.maturity_window_days)
+            .field("maturity_min_active_days", &self.maturity_min_active_days)
+            .field("maturity_score_bonus", &self.maturity_score_bonus)
             .field("min_score", &self.min_score)
             .field("max_tx_per_minute", &self.max_tx_per_minute)
             .field("min_buy_count", &self.min_buy_count)

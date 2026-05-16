@@ -18,6 +18,7 @@ pub struct DiscoveryV2Status {
     pub tail: Option<DiscoveryV2TailStatus>,
     pub coverage_sample: Option<DiscoveryV2CoverageSample>,
     pub scan: DiscoveryV2ScanStatus,
+    pub maturity: DiscoveryV2MaturityStatus,
     pub live_portfolio: Option<DiscoveryV2LivePortfolioStatus>,
     pub filters: DiscoveryV2FilterStatus,
     pub wallet_metrics_total: usize,
@@ -71,4 +72,15 @@ pub struct DiscoveryV2ScanStatus {
     pub max_rows_exhausted: bool,
     pub time_budget_exhausted: bool,
     pub budget_exhausted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryV2MaturityStatus {
+    pub enabled: bool,
+    pub window_days: u32,
+    pub min_active_days: u32,
+    pub score_bonus: f64,
+    pub evaluated_wallets: usize,
+    pub preferred_wallets: usize,
+    pub time_budget_exhausted: bool,
 }

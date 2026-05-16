@@ -34,9 +34,16 @@ fn metric_rank_cmp(
     right: &DiscoveryV2WalletMetric,
 ) -> std::cmp::Ordering {
     right
-        .score
-        .partial_cmp(&left.score)
+        .selection_score
+        .partial_cmp(&left.selection_score)
         .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| right.maturity_active_days.cmp(&left.maturity_active_days))
         .then_with(|| right.trades.cmp(&left.trades))
         .then_with(|| left.wallet_id.cmp(&right.wallet_id))
 }

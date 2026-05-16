@@ -168,16 +168,100 @@ fn policy_fingerprint_changes_when_shadow_or_execution_identity_changes() -> Res
     let live_portfolio_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
     assert_ne!(metric_snapshot_changed, live_portfolio_changed);
 
+    discovery.maturity_window_days = 3;
+    discovery.maturity_min_active_days = 3;
+    discovery.maturity_score_bonus = 0.08;
+    let maturity_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
+    assert_ne!(live_portfolio_changed, maturity_changed);
+
     discovery.min_live_portfolio_value_sol += 0.0000001;
     let live_portfolio_value_changed =
         discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
-    assert_ne!(live_portfolio_changed, live_portfolio_value_changed);
+    assert_ne!(maturity_changed, live_portfolio_value_changed);
 
     let mut execution_changed = options;
     execution_changed.execution_enabled = true;
     let execution_changed =
         discovery_v2_policy_fingerprint(&discovery, &shadow, &execution_changed);
     assert_ne!(live_portfolio_value_changed, execution_changed);
+    Ok(())
+}
+
+#[test]
+fn maturity_prefers_multi_day_wallets_without_hard_rejecting_fresh_wallets() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
+    let mature_token = "MatureToken111111111111111111111111111111";
+    let fresh_token = "FreshToken1111111111111111111111111111111";
+    store.insert_observed_swaps_batch(&[
+        tail_coverage_swap("sig-coverage-floor", 9, now - Duration::hours(73)),
+        swap_with_token(
+            "zzz_mature_wallet",
+            mature_token,
+            "sig-mature-day-1",
+            10,
+            now - Duration::hours(49),
+        ),
+        swap_with_token(
+            "zzz_mature_wallet",
+            mature_token,
+            "sig-mature-day-2",
+            11,
+            now - Duration::hours(25),
+        ),
+        swap_with_token(
+            "aaa_fresh_wallet",
+            fresh_token,
+            "sig-fresh-current",
+            12,
+            now - Duration::minutes(12),
+        ),
+        swap_with_token(
+            "zzz_mature_wallet",
+            mature_token,
+            "sig-mature-current",
+            13,
+            now - Duration::minutes(10),
+        ),
+        tail_coverage_swap("sig-tail", 14, now - Duration::minutes(2)),
+    ])?;
+    insert_quality_for_token(&store, mature_token, now, Some(1.0))?;
+    insert_quality_for_token(&store, fresh_token, now, Some(1.0))?;
+    let (mut discovery, shadow) = strict_policy();
+    discovery.follow_top_n = 2;
+    discovery.maturity_window_days = 3;
+    discovery.maturity_min_active_days = 3;
+    discovery.maturity_score_bonus = 0.08;
+
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    assert!(status.production_green, "{:?}", status.blockers);
+    assert!(status.maturity.enabled);
+    assert_eq!(status.maturity.evaluated_wallets, 2);
+    assert_eq!(status.maturity.preferred_wallets, 1);
+    assert_eq!(
+        status.candidate_wallets,
+        vec![
+            "zzz_mature_wallet".to_string(),
+            "aaa_fresh_wallet".to_string()
+        ]
+    );
+    let mature = status
+        .wallet_metrics
+        .iter()
+        .find(|metric| metric.wallet_id == "zzz_mature_wallet")
+        .expect("mature metric");
+    let fresh = status
+        .wallet_metrics
+        .iter()
+        .find(|metric| metric.wallet_id == "aaa_fresh_wallet")
+        .expect("fresh metric");
+    assert!(mature.maturity_preferred);
+    assert_eq!(mature.maturity_active_days, 3);
+    assert!(mature.selection_score > mature.score);
+    assert!(!fresh.maturity_preferred);
+    assert_eq!(fresh.maturity_active_days, 1);
+    assert_eq!(fresh.selection_score, fresh.score);
     Ok(())
 }
 
