@@ -13,6 +13,7 @@ pub struct DiscoveryV2MaterializedStatusReport {
     pub source: String,
     pub status_now: DateTime<Utc>,
     pub status_age_seconds: i64,
+    pub refresh_after_age_seconds: u64,
     pub rebuild_after_age_seconds: u64,
     pub max_status_age_seconds: u64,
     pub policy_fingerprint: String,
@@ -57,9 +58,8 @@ pub fn reusable_materialized_discovery_v2_status_for_prepare(
     if !status.production_green {
         return Ok(None);
     }
-    let rebuild_after_age_seconds = materialized_status_rebuild_after_age_seconds(discovery);
     if report.status_age_seconds < 0
-        || report.status_age_seconds > rebuild_after_age_seconds.min(i64::MAX as u64) as i64
+        || report.status_age_seconds > report.rebuild_after_age_seconds.min(i64::MAX as u64) as i64
     {
         return Ok(None);
     }
@@ -173,6 +173,7 @@ fn materialized_status_report(
         source: status.source.clone(),
         status_now: status.now,
         status_age_seconds: now.signed_duration_since(status.now).num_seconds(),
+        refresh_after_age_seconds: materialized_status_refresh_after_age_seconds(discovery),
         rebuild_after_age_seconds: materialized_status_rebuild_after_age_seconds(discovery),
         max_status_age_seconds: materialized_status_max_age_seconds(discovery),
         policy_fingerprint: status.policy_fingerprint.clone(),
@@ -200,6 +201,10 @@ fn materialized_status_max_age_seconds(discovery: &DiscoveryConfig) -> u64 {
 }
 
 fn materialized_status_rebuild_after_age_seconds(discovery: &DiscoveryConfig) -> u64 {
+    materialized_status_max_age_seconds(discovery)
+}
+
+fn materialized_status_refresh_after_age_seconds(discovery: &DiscoveryConfig) -> u64 {
     discovery
         .metric_snapshot_interval_seconds
         .max(discovery.refresh_seconds.max(1))

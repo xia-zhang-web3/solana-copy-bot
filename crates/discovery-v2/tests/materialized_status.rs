@@ -186,7 +186,8 @@ fn prepare_can_reuse_green_materialized_status_before_rebuild_age() -> Result<()
     assert!(reused.reused_existing_snapshot);
     assert_eq!(reused.status_age_seconds, 30);
     assert_eq!(reused.max_status_age_seconds, 180);
-    assert_eq!(reused.rebuild_after_age_seconds, 60);
+    assert_eq!(reused.refresh_after_age_seconds, 60);
+    assert_eq!(reused.rebuild_after_age_seconds, 180);
     assert!(reused.production_green);
     Ok(())
 }
@@ -209,21 +210,30 @@ fn prepare_reuse_window_tracks_metric_snapshot_interval() -> Result<()> {
     )?
     .expect("snapshot should be reusable until the metric snapshot interval");
 
-    assert_eq!(reused.rebuild_after_age_seconds, 1_800);
+    assert_eq!(reused.refresh_after_age_seconds, 1_800);
+    assert_eq!(reused.rebuild_after_age_seconds, 5_400);
     assert!(reused.reused_existing_snapshot);
+
+    let still_reusable = reusable_materialized_discovery_v2_status_for_prepare(
+        &store,
+        &discovery,
+        &shadow,
+        &options(now + Duration::seconds(1_801)),
+    )?;
+    assert!(still_reusable.is_some());
 
     let expired = reusable_materialized_discovery_v2_status_for_prepare(
         &store,
         &discovery,
         &shadow,
-        &options(now + Duration::seconds(1_801)),
+        &options(now + Duration::seconds(5_401)),
     )?;
     assert!(expired.is_none());
     Ok(())
 }
 
 #[test]
-fn prepare_rebuilds_materialized_status_after_rebuild_age() -> Result<()> {
+fn prepare_reuses_materialized_status_until_hard_max_age() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-13T12:00:00+00:00")?.with_timezone(&Utc);
     seed_green_status(&store, now)?;
@@ -237,6 +247,13 @@ fn prepare_rebuilds_materialized_status_after_rebuild_age() -> Result<()> {
         &options(now + Duration::seconds(61)),
     )?;
 
-    assert!(reused.is_none());
+    assert!(reused.is_some());
+    let expired = reusable_materialized_discovery_v2_status_for_prepare(
+        &store,
+        &discovery,
+        &shadow,
+        &options(now + Duration::seconds(181)),
+    )?;
+    assert!(expired.is_none());
     Ok(())
 }
