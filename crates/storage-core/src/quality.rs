@@ -116,8 +116,9 @@ impl SqliteDiscoveryStore {
         token_age_seconds: Option<u64>,
         fetched_at: DateTime<Utc>,
     ) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO token_quality_cache(mint, holders, liquidity_sol, token_age_seconds, fetched_at)
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO token_quality_cache(mint, holders, liquidity_sol, token_age_seconds, fetched_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(mint) DO UPDATE SET
                 holders = excluded.holders,
@@ -131,7 +132,8 @@ impl SqliteDiscoveryStore {
                 token_age_seconds.map(|value| value as i64),
                 fetched_at.to_rfc3339(),
             ],
-        )?;
+            )
+        })?;
         Ok(())
     }
 
@@ -179,12 +181,14 @@ impl SqliteDiscoveryStore {
     }
 
     pub fn clear_discovery_v2_quality_prepare_state(&self) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM discovery_v2_quality_prepare_state", [])
-            .context("failed clearing discovery v2 quality prepare state")?;
-        self.conn
-            .execute("DELETE FROM discovery_v2_quality_observed_evidence", [])
-            .context("failed clearing discovery v2 quality observed evidence")?;
+        self.execute_with_retry(|conn| {
+            conn.execute("DELETE FROM discovery_v2_quality_prepare_state", [])
+        })
+        .context("failed clearing discovery v2 quality prepare state")?;
+        self.execute_with_retry(|conn| {
+            conn.execute("DELETE FROM discovery_v2_quality_observed_evidence", [])
+        })
+        .context("failed clearing discovery v2 quality observed evidence")?;
         Ok(())
     }
 
@@ -193,11 +197,12 @@ impl SqliteDiscoveryStore {
         window_start: DateTime<Utc>,
     ) -> Result<usize> {
         let deleted = self
-            .conn
-            .execute(
-                "DELETE FROM discovery_v2_quality_observed_evidence WHERE ts < ?1",
-                [window_start.to_rfc3339()],
-            )
+            .execute_with_retry(|conn| {
+                conn.execute(
+                    "DELETE FROM discovery_v2_quality_observed_evidence WHERE ts < ?1",
+                    [window_start.to_rfc3339()],
+                )
+            })
             .context("failed pruning discovery v2 quality observed evidence")?;
         Ok(deleted)
     }
@@ -232,8 +237,8 @@ impl SqliteDiscoveryStore {
         cursor: &DiscoveryRuntimeCursor,
         updated_at: DateTime<Utc>,
     ) -> Result<()> {
-        self.conn
-            .execute(
+        self.execute_with_retry(|conn| {
+            conn.execute(
                 "INSERT INTO discovery_v2_quality_prepare_state(
                     id, covered_from_ts, cursor_ts, cursor_slot, cursor_signature, updated_at
                  ) VALUES (1, ?1, ?2, ?3, ?4, ?5)
@@ -251,7 +256,8 @@ impl SqliteDiscoveryStore {
                     updated_at.to_rfc3339(),
                 ],
             )
-            .context("failed persisting discovery v2 quality prepare state")?;
+        })
+        .context("failed persisting discovery v2 quality prepare state")?;
         Ok(())
     }
 

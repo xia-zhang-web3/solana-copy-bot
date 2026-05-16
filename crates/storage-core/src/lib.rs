@@ -16,6 +16,7 @@ mod observed_writer;
 mod publication;
 mod publication_compat;
 mod quality;
+mod quality_evidence_write;
 mod recent_raw;
 mod schema;
 mod schema_indexes;
