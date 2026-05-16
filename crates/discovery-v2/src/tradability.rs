@@ -1,5 +1,5 @@
 use crate::accumulator::WalletAccumulator;
-use crate::token_market::{is_sol_buy, sol_leg_token_and_notional, SolLegTrade};
+use crate::token_market::{is_sol_buy, is_sol_sell, sol_leg_token_and_notional, SolLegTrade};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::{SwapEvent, TokenQualityCacheRow};
@@ -64,11 +64,13 @@ impl DiscoveryV2WindowAccumulator {
             trader_id,
             swap,
         );
-        let entry = self
-            .wallets
-            .entry(swap.wallet.clone())
-            .or_insert_with(|| WalletAccumulator::new(swap.ts_utc));
-        entry.observe_swap(swap, discovery, tradability);
+        if is_sol_buy(swap) || (is_sol_sell(swap) && self.wallets.contains_key(&swap.wallet)) {
+            let entry = self
+                .wallets
+                .entry(swap.wallet.clone())
+                .or_insert_with(|| WalletAccumulator::new(swap.ts_utc));
+            entry.observe_swap(swap, discovery, tradability);
+        }
         if let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) {
             if is_sol_buy(swap) && swap.amount_out > 0.0 && swap.amount_in > 0.0 {
                 self.observe_pending_rug_buy(
