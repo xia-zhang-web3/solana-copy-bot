@@ -11,6 +11,8 @@ use crate::{
     DiscoveryV2QualityPrepareUpsert,
 };
 
+const QUALITY_EVIDENCE_PRUNE_BATCH_ROWS: i64 = 4_096;
+
 pub(crate) fn ensure_discovery_v2_quality_prepare_tables(
     store: &SqliteDiscoveryStore,
 ) -> Result<()> {
@@ -196,15 +198,33 @@ impl SqliteDiscoveryStore {
         &self,
         window_start: DateTime<Utc>,
     ) -> Result<usize> {
-        let deleted = self
-            .execute_with_retry(|conn| {
-                conn.execute(
-                    "DELETE FROM discovery_v2_quality_observed_evidence WHERE ts < ?1",
-                    [window_start.to_rfc3339()],
-                )
-            })
-            .context("failed pruning discovery v2 quality observed evidence")?;
-        Ok(deleted)
+        let cutoff = window_start.to_rfc3339();
+        let mut total = 0usize;
+        loop {
+            let deleted = self
+                .execute_with_retry(|conn| {
+                    conn.execute(
+                        "DELETE FROM discovery_v2_quality_observed_evidence
+                         WHERE rowid IN (
+                            SELECT rowid
+                            FROM discovery_v2_quality_observed_evidence
+                            WHERE ts < ?1
+                            ORDER BY ts, slot, signature
+                            LIMIT ?2
+                         )",
+                        params![cutoff.as_str(), QUALITY_EVIDENCE_PRUNE_BATCH_ROWS],
+                    )
+                })
+                .context("failed pruning discovery v2 quality observed evidence")?;
+            if deleted == 0 {
+                break;
+            }
+            total = total.saturating_add(deleted);
+            if deleted < QUALITY_EVIDENCE_PRUNE_BATCH_ROWS as usize {
+                break;
+            }
+        }
+        Ok(total)
     }
 
     pub fn insert_discovery_v2_quality_observed_evidence(

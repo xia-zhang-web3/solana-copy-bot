@@ -1,6 +1,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
-use copybot_storage_core::{ensure_discovery_v2_schema, SqliteDiscoveryStore};
+use copybot_storage_core::{
+    ensure_discovery_v2_schema, DiscoveryV2QualityPrepareUpsert, SqliteDiscoveryStore,
+};
 use rusqlite::Connection;
 use tempfile::tempdir;
 
@@ -65,5 +67,35 @@ fn fresh_token_quality_cache_rejects_malformed_fetched_at() -> Result<()> {
     assert!(err
         .to_string()
         .contains("invalid token_quality_cache.fetched_at"));
+    Ok(())
+}
+
+#[test]
+fn quality_evidence_prune_deletes_old_rows_and_keeps_fresh_rows() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let cutoff = ts("2026-05-13T12:00:00+00:00")?;
+    for index in 0..5 {
+        let ts_utc = if index < 3 {
+            cutoff - Duration::minutes(1 + index)
+        } else {
+            cutoff + Duration::minutes(index)
+        };
+        store.insert_discovery_v2_quality_observed_evidence(&DiscoveryV2QualityPrepareUpsert {
+            signature: format!("sig-{index}"),
+            mint: "token-a".to_string(),
+            wallet_id: format!("wallet-{index}"),
+            ts_utc,
+            slot: 100 + index as u64,
+            sol_notional: 1.0,
+            is_buy: true,
+        })?;
+    }
+
+    let deleted = store.prune_discovery_v2_quality_observed_evidence(cutoff)?;
+    let remaining =
+        store.discovery_v2_quality_observed_evidence_count(cutoff, cutoff + Duration::hours(1))?;
+
+    assert_eq!(deleted, 3);
+    assert_eq!(remaining, 2);
     Ok(())
 }
