@@ -1,3 +1,4 @@
+use crate::observed_sol_leg_projection::ensure_observed_sol_leg_projection_schema;
 use crate::observed_timestamp::{
     ensure_observed_swaps_timestamp_validation_index_empty_safe,
     observed_swaps_non_utc_timestamp_index_is_valid,
@@ -18,6 +19,7 @@ pub fn ensure_discovery_v2_schema(store: &SqliteDiscoveryStore) -> Result<()> {
         .context("failed ensuring discovery v2 storage-core schema")?;
     ensure_observed_swaps_timestamp_validation_index_empty_safe(&store.conn)?;
     ensure_observed_swaps_read_indexes_empty_safe(store)?;
+    ensure_observed_sol_leg_projection_schema(store)?;
     ensure_discovery_strategy_state_table(store)?;
     ensure_discovery_runtime_state_table(store)?;
     ensure_discovery_v2_status_snapshot_table(store)?;

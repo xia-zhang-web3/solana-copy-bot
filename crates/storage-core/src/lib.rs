@@ -11,6 +11,7 @@ mod observed;
 mod observed_activity;
 mod observed_budget;
 mod observed_row;
+mod observed_sol_leg_projection;
 mod observed_timestamp;
 mod observed_writer;
 mod publication;

@@ -297,6 +297,11 @@ impl SqliteDiscoveryStore {
     where
         F: FnMut(SwapEvent) -> Result<()>,
     {
+        if self.observed_sol_leg_projection_covers_window(since, until)? {
+            return self.for_each_observed_sol_leg_projection_in_window_after_cursor_with_budget(
+                since, until, cursor, limit, deadline, on_swap,
+            );
+        }
         self.for_each_observed_swap_in_window_after_cursor_with_budget_filtered(
             since,
             until,
