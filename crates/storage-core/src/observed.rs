@@ -336,8 +336,9 @@ impl SqliteDiscoveryStore {
         let until_raw = until.to_rfc3339();
         let (query, values): (&str, Vec<SqlValue>) = match (cursor, sol_leg_only) {
             (Some(cursor), Some(())) => (
-                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
-                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+                "SELECT signature, wallet_id, '' AS dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                        NULL AS qty_in_raw, NULL AS qty_in_decimals,
+                        NULL AS qty_out_raw, NULL AS qty_out_decimals
                  FROM observed_swaps INDEXED BY idx_observed_swaps_sol_leg_ts_slot_signature
                  WHERE ts >= ?1
                    AND ts <= ?2
@@ -356,8 +357,9 @@ impl SqliteDiscoveryStore {
                 ],
             ),
             (None, Some(())) => (
-                "SELECT signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts,
-                        qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals
+                "SELECT signature, wallet_id, '' AS dex, token_in, token_out, qty_in, qty_out, slot, ts,
+                        NULL AS qty_in_raw, NULL AS qty_in_decimals,
+                        NULL AS qty_out_raw, NULL AS qty_out_decimals
                  FROM observed_swaps INDEXED BY idx_observed_swaps_sol_leg_ts_slot_signature
                  WHERE ts >= ?1
                    AND ts <= ?2
