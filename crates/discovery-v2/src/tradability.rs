@@ -33,6 +33,7 @@ struct PendingRugBuy {
     window_end: DateTime<Utc>,
     sol_volume: f64,
     unique_traders: HashMap<u32, ()>,
+    saturated: bool,
 }
 
 #[derive(Debug, Default)]
@@ -129,6 +130,7 @@ impl DiscoveryV2WindowAccumulator {
                 window_end: opened_at + lookahead,
                 sol_volume: 0.0,
                 unique_traders: HashMap::new(),
+                saturated: false,
             });
     }
 
@@ -143,11 +145,17 @@ impl DiscoveryV2WindowAccumulator {
             return;
         };
         let trader_cap = discovery.thin_market_min_unique_traders.max(1) as usize;
+        let volume_cap = discovery.thin_market_min_volume_sol.max(0.0);
         for pending in &mut state.pending_buys {
-            pending.sol_volume += sol_notional;
+            if pending.saturated {
+                continue;
+            }
+            pending.sol_volume = (pending.sol_volume + sol_notional).min(volume_cap);
             if pending.unique_traders.len() < trader_cap {
                 pending.unique_traders.insert(trader_id, ());
             }
+            pending.saturated = pending.sol_volume + 1e-12 >= volume_cap
+                && pending.unique_traders.len() >= trader_cap;
         }
     }
 
