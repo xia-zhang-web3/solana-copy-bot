@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
-use copybot_config::load_from_path;
+use copybot_config::{load_from_path, AppConfig};
 use copybot_discovery_v2::{
     live_portfolio_rpc_url_from_config, materialize_discovery_v2_status,
     prepare_discovery_v2_quality, reusable_materialized_discovery_v2_status_for_prepare,
@@ -114,21 +114,14 @@ fn run(config: Config) -> Result<PrepareQualityCliReport> {
         let store = SqliteDiscoveryStore::open(&db_path)
             .with_context(|| format!("failed opening sqlite db {}", db_path.display()))?;
         ensure_discovery_v2_schema(&store).context("failed ensuring discovery v2 schema")?;
-        let build_options = config.materialize_status.then(|| {
-            DiscoveryV2BuildOptions::from_config(
-                &loaded.discovery,
-                loaded.execution.enabled,
-                Utc::now(),
-            )
-            .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded))
-        });
         if !config.incremental {
-            if let Some(build_options) = build_options.as_ref() {
+            if config.materialize_status {
+                let build_options = materialized_status_build_options(&loaded);
                 if let Some(report) = reusable_materialized_discovery_v2_status_for_prepare(
                     &store,
                     &loaded.discovery,
                     &loaded.shadow,
-                    build_options,
+                    &build_options,
                 )? {
                     let quality =
                         DiscoveryV2PrepareQualityReport::skipped_for_reusable_materialized_status(
@@ -144,7 +137,7 @@ fn run(config: Config) -> Result<PrepareQualityCliReport> {
         let quality =
             prepare_discovery_v2_quality(&store, &loaded.discovery, &loaded.shadow, options)?;
         let materialized_status = if config.materialize_status && quality.committed {
-            let build_options = build_options.expect("materialize status build options");
+            let build_options = materialized_status_build_options(&loaded);
             if let Some(report) = reusable_materialized_discovery_v2_status_for_prepare(
                 &store,
                 &loaded.discovery,
@@ -178,6 +171,11 @@ fn run(config: Config) -> Result<PrepareQualityCliReport> {
         quality,
         materialized_status: None,
     })
+}
+
+fn materialized_status_build_options(loaded: &AppConfig) -> DiscoveryV2BuildOptions {
+    DiscoveryV2BuildOptions::from_config(&loaded.discovery, loaded.execution.enabled, Utc::now())
+        .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(loaded))
 }
 
 fn resolve_db_path(config_path: &Path, override_path: Option<&Path>, configured: &str) -> PathBuf {
