@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
-use copybot_storage_core::is_fatal_sqlite_anyhow_error;
+use copybot_storage_core::{is_fatal_sqlite_anyhow_error, is_retryable_sqlite_anyhow_error};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::Path;
+use std::time::Duration as StdDuration;
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
@@ -11,6 +12,9 @@ use crate::shadow_scheduler::{ShadowSwapSide, ShadowTaskInput, ShadowTaskOutput}
 use crate::swap_classification::classify_swap_side;
 use crate::telemetry::{reason_to_key, reason_to_stage};
 use copybot_shadow::ShadowProcessOutcome;
+
+const SHADOW_TASK_SQLITE_BUSY_TIMEOUT_SECS: u64 = 15;
+const SHADOW_TASK_RETRY_BACKOFF_MS: [u64; 4] = [100, 250, 500, 1_000];
 
 pub(crate) fn spawn_shadow_worker_task(
     shadow_workers: &mut JoinSet<ShadowTaskOutput>,
@@ -126,17 +130,47 @@ fn shadow_task(
         key,
     } = task_input;
     let signature = swap.signature.clone();
-    let outcome = (|| -> Result<ShadowProcessOutcome> {
+    let processing_now = Utc::now();
+    let outcome = retry_shadow_task_on_sqlite_contention(&signature, || -> Result<_> {
         let store = SqliteStore::open(Path::new(sqlite_path)).with_context(|| {
             format!("failed to open sqlite db for shadow worker task: {sqlite_path}")
         })?;
-        shadow.process_swap(&store, &swap, follow_snapshot.as_ref(), Utc::now())
-    })();
+        store.set_busy_timeout(StdDuration::from_secs(SHADOW_TASK_SQLITE_BUSY_TIMEOUT_SECS))?;
+        shadow.process_swap(&store, &swap, follow_snapshot.as_ref(), processing_now)
+    });
     ShadowTaskOutput {
         signature,
         key,
         outcome,
     }
+}
+
+fn retry_shadow_task_on_sqlite_contention<T, F>(signature: &str, mut operation: F) -> Result<T>
+where
+    F: FnMut() -> Result<T>,
+{
+    for attempt in 0..=SHADOW_TASK_RETRY_BACKOFF_MS.len() {
+        match operation() {
+            Ok(result) => return Ok(result),
+            Err(error) => {
+                if !is_retryable_sqlite_anyhow_error(&error) {
+                    return Err(error);
+                }
+                let Some(backoff_ms) = SHADOW_TASK_RETRY_BACKOFF_MS.get(attempt) else {
+                    return Err(error);
+                };
+                warn!(
+                    error = %error,
+                    signature,
+                    attempt = attempt + 1,
+                    retry_backoff_ms = *backoff_ms,
+                    "shadow processing retry after sqlite contention"
+                );
+                std::thread::sleep(StdDuration::from_millis(*backoff_ms));
+            }
+        }
+    }
+    unreachable!("shadow retry loop must return on success or terminal error");
 }
 
 #[cfg(test)]

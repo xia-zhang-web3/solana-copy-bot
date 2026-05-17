@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::anyhow;
 
@@ -64,4 +65,36 @@ fn handle_shadow_task_output_warns_and_continues_on_busy_lock() -> Result<()> {
     assert!(shadow_drop_reason_counts.is_empty());
     assert!(shadow_drop_stage_counts.is_empty());
     Ok(())
+}
+
+#[test]
+fn shadow_task_retry_recovers_from_transient_sqlite_lock() -> Result<()> {
+    let attempts = AtomicUsize::new(0);
+
+    let result = retry_shadow_task_on_sqlite_contention("sig-shadow-test", || {
+        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+        if attempt < 2 {
+            Err(anyhow!("database is locked"))
+        } else {
+            Ok("recorded")
+        }
+    })?;
+
+    assert_eq!(result, "recorded");
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    Ok(())
+}
+
+#[test]
+fn shadow_task_retry_does_not_retry_non_sqlite_errors() {
+    let attempts = AtomicUsize::new(0);
+
+    let error = retry_shadow_task_on_sqlite_contention("sig-shadow-test", || -> Result<()> {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        Err(anyhow!("token quality rejected"))
+    })
+    .expect_err("non-sqlite errors must not be retried");
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert!(error.to_string().contains("token quality rejected"));
 }
