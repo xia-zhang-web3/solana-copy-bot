@@ -148,6 +148,7 @@ shadow_soft_exposure_cap_sol = 10.0
 shadow_soft_exposure_resume_below_sol = 9.5
 shadow_soft_pause_minutes = 15
 shadow_hard_exposure_cap_sol = 12.0
+shadow_max_open_notional_per_token_sol = 1.0
 shadow_drawdown_1h_stop_sol = -0.7
 shadow_drawdown_1h_pause_minutes = 30
 shadow_drawdown_6h_stop_sol = -2.5

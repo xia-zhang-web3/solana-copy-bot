@@ -115,13 +115,12 @@ impl SqliteDiscoveryStore {
                 "SELECT wallet_id, entry_cost_sol, entry_cost_lamports, pnl_sol, pnl_lamports
                  FROM shadow_closed_trades
                  WHERE closed_ts >= ?1
-                   AND COALESCE(close_context, 'market') NOT IN (?2, ?3, ?4)",
+                   AND COALESCE(close_context, 'market') NOT IN (?2, ?3)",
             )
             .context("failed to prepare shadow wallet feedback query")?;
         let mut rows = stmt
             .query(params![
                 since.to_rfc3339(),
-                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
                 SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
                 SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE
             ])
@@ -173,7 +172,7 @@ impl SqliteDiscoveryStore {
                  FROM shadow_closed_trades
                  WHERE token = ?1
                    AND closed_ts >= ?2
-                   AND COALESCE(close_context, 'market') NOT IN (?3, ?4, ?5)
+                   AND COALESCE(close_context, 'market') NOT IN (?3, ?4)
                  ORDER BY closed_ts DESC, id DESC",
             )
             .context("failed to prepare shadow token loss cooldown query")?;
@@ -181,7 +180,6 @@ impl SqliteDiscoveryStore {
             .query(params![
                 token,
                 since.to_rfc3339(),
-                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
                 SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
                 SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE
             ])
@@ -331,16 +329,15 @@ impl SqliteDiscoveryStore {
                 "SELECT entry_cost_sol, entry_cost_lamports, pnl_sol, pnl_lamports
                  FROM shadow_closed_trades
                  WHERE closed_ts >= ?1
-                   AND COALESCE(close_context, 'market') NOT IN (?2, ?3, ?4)
+                   AND COALESCE(close_context, 'market') NOT IN (?2, ?3)
                  ORDER BY closed_ts DESC, id DESC
-                 LIMIT ?5",
+                 LIMIT ?4",
             )
             .context("failed to prepare shadow rug-loss sample query")?;
         let limit = sample_size.min(i64::MAX as u64) as i64;
         let mut rows = stmt
             .query(params![
                 since.to_rfc3339(),
-                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
                 SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
                 SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
                 limit

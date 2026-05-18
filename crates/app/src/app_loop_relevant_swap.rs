@@ -86,6 +86,24 @@ pub(super) async fn handle_relevant_observed_swap(
     let task_key = shadow_task_key_for_swap(&swap, side);
 
     if matches!(side, ShadowSwapSide::Buy) {
+        let key_tuple = (task_key.wallet.clone(), task_key.token.clone());
+        if open_shadow_lots.contains(&key_tuple) {
+            app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
+            let reason = "risk_open_position_exists";
+            *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
+            *shadow_drop_stage_counts.entry("risk").or_insert(0) += 1;
+            debug!(
+                stage = "risk",
+                reason,
+                side = "buy",
+                wallet = %task_key.wallet,
+                token = %task_key.token,
+                signature = %swap.signature,
+                "shadow gate dropped"
+            );
+            return Ok(());
+        }
+
         if operator_emergency_stop.is_active() {
             app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
             let reason_key = BuyRiskBlockReason::OperatorEmergencyStop.as_str();

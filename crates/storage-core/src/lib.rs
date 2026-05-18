@@ -26,6 +26,7 @@ mod shadow_feedback_runtime;
 mod shadow_lots;
 mod shadow_metrics;
 mod shadow_mutation;
+mod shadow_token_exposure;
 mod snapshot;
 mod sqlite_retry;
 mod startup_progress;

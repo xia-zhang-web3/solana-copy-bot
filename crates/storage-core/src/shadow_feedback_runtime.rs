@@ -5,7 +5,6 @@ use crate::{
     },
     ShadowWalletFeedback, SqliteDiscoveryStore, SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
     SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
-    SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -27,14 +26,13 @@ impl SqliteDiscoveryStore {
                  FROM shadow_closed_trades
                  WHERE wallet_id = ?1
                    AND closed_ts >= ?2
-                   AND COALESCE(close_context, 'market') NOT IN (?3, ?4, ?5)",
+                   AND COALESCE(close_context, 'market') NOT IN (?3, ?4)",
             )
             .context("failed to prepare shadow wallet runtime feedback query")?;
         let mut rows = stmt
             .query(params![
                 wallet_id,
                 since.to_rfc3339(),
-                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
                 SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
                 SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE
             ])

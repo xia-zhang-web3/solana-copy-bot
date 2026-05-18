@@ -126,6 +126,21 @@ pub(crate) fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()
             config.shadow_soft_exposure_cap_sol
         ));
     }
+    if !config.shadow_max_open_notional_per_token_sol.is_finite()
+        || config.shadow_max_open_notional_per_token_sol <= 0.0
+    {
+        return Err(anyhow!(
+            "risk.shadow_max_open_notional_per_token_sol must be finite and > 0, got {}",
+            config.shadow_max_open_notional_per_token_sol
+        ));
+    }
+    if config.shadow_max_open_notional_per_token_sol > config.shadow_hard_exposure_cap_sol {
+        return Err(anyhow!(
+            "risk.shadow_max_open_notional_per_token_sol ({}) must be <= risk.shadow_hard_exposure_cap_sol ({})",
+            config.shadow_max_open_notional_per_token_sol,
+            config.shadow_hard_exposure_cap_sol
+        ));
+    }
     if config.shadow_killswitch_enabled && config.shadow_soft_pause_minutes == 0 {
         return Err(anyhow!(
             "risk.shadow_soft_pause_minutes must be >= 1 when risk.shadow_killswitch_enabled=true"

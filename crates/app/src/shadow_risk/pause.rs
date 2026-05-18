@@ -163,6 +163,13 @@ impl ShadowRiskGuard {
         )
     }
 
+    pub(crate) fn shadow_max_open_notional_per_token_lamports(&self) -> Result<Lamports> {
+        sol_to_lamports_floor(
+            self.config.shadow_max_open_notional_per_token_sol,
+            "risk.shadow_max_open_notional_per_token_sol",
+        )
+    }
+
     pub(crate) fn shadow_drawdown_stop_lamports(
         &self,
         stop_sol: f64,

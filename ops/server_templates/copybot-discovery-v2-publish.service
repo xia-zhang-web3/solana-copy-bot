@@ -7,6 +7,6 @@ Type=oneshot
 User=copybot
 WorkingDirectory=/var/www/solana-copy-bot
 EnvironmentFile=/etc/solana-copy-bot/app.env
-ExecStart=/usr/bin/flock -n -E 75 /var/lock/copybot-discovery-v2.lock /var/www/solana-copy-bot/bin/discovery_v2_publish --config /etc/solana-copy-bot/live.server.toml --materialized-status --commit --acknowledge-daemon-restart-required
+ExecStart=/usr/bin/flock -n -E 75 /var/lock/copybot-discovery-v2.lock /var/www/solana-copy-bot/bin/discovery_v2_publish --config /etc/solana-copy-bot/live.server.toml --commit --acknowledge-daemon-restart-required
 SuccessExitStatus=75
 TimeoutStartSec=1200
