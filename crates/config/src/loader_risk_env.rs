@@ -170,6 +170,22 @@ pub(super) fn apply_risk_env_overrides(config: &mut AppConfig) -> Result<()> {
         config.risk.shadow_token_loss_cooldown_return_threshold =
             shadow_token_loss_cooldown_return_threshold;
     }
+    if let Some(shadow_token_loss_cooldown_catastrophe_min_entry_sol) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_TOKEN_LOSS_COOLDOWN_CATASTROPHE_MIN_ENTRY_SOL",
+        "f64",
+    )? {
+        config
+            .risk
+            .shadow_token_loss_cooldown_catastrophe_min_entry_sol =
+            shadow_token_loss_cooldown_catastrophe_min_entry_sol;
+    }
+    if let Some(shadow_token_loss_cooldown_catastrophe_max_roi) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_TOKEN_LOSS_COOLDOWN_CATASTROPHE_MAX_ROI",
+        "f64",
+    )? {
+        config.risk.shadow_token_loss_cooldown_catastrophe_max_roi =
+            shadow_token_loss_cooldown_catastrophe_max_roi;
+    }
     if let Some(shadow_wallet_loss_cooldown_enabled) =
         parse_env_bool("SOLANA_COPY_BOT_RISK_SHADOW_WALLET_LOSS_COOLDOWN_ENABLED")?
     {

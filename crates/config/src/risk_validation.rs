@@ -25,6 +25,10 @@ pub(crate) fn validate_shadow_risk_float_gates(config: &AppConfig) -> Result<()>
             config.risk.shadow_token_loss_cooldown_return_threshold,
         ),
         (
+            "risk.shadow_token_loss_cooldown_catastrophe_max_roi",
+            config.risk.shadow_token_loss_cooldown_catastrophe_max_roi,
+        ),
+        (
             "risk.shadow_wallet_loss_cooldown_max_pnl_sol",
             config.risk.shadow_wallet_loss_cooldown_max_pnl_sol,
         ),
@@ -42,6 +46,12 @@ pub(crate) fn validate_shadow_risk_float_gates(config: &AppConfig) -> Result<()>
     validate_finite_ratio(
         "risk.shadow_rug_loss_rate_threshold",
         config.risk.shadow_rug_loss_rate_threshold,
+    )?;
+    validate_finite_non_negative(
+        "risk.shadow_token_loss_cooldown_catastrophe_min_entry_sol",
+        config
+            .risk
+            .shadow_token_loss_cooldown_catastrophe_min_entry_sol,
     )?;
     validate_finite_non_negative(
         "risk.shadow_wallet_loss_cooldown_min_entry_sol",

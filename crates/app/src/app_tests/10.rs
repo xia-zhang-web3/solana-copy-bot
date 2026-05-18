@@ -90,3 +90,94 @@
         let _ = std::fs::remove_file(db_path);
         Ok(())
     }
+
+    #[test]
+    fn risk_guard_token_loss_cooldown_blocks_single_catastrophe() -> Result<()> {
+        let (store, db_path) = make_test_store("token-catastrophe-cooldown")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        cfg.shadow_token_loss_cooldown_enabled = true;
+        cfg.shadow_token_loss_cooldown_count_threshold = 3;
+        cfg.shadow_token_loss_cooldown_return_threshold = -0.60;
+        cfg.shadow_token_loss_cooldown_catastrophe_min_entry_sol = 0.15;
+        cfg.shadow_token_loss_cooldown_catastrophe_max_roi = -0.60;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_closed_trade(
+            "sig-token-catastrophe",
+            "wallet-a",
+            "toxic-token",
+            1.0,
+            0.2,
+            0.04,
+            -0.16,
+            now - chrono::Duration::minutes(20),
+            now - chrono::Duration::minutes(10),
+        )?;
+
+        match guard.can_open_buy_for_token(&store, now, true, Some("toxic-token")) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TokenCooldown,
+                detail,
+            } => {
+                assert!(detail.contains("toxic-token"));
+                assert!(detail.contains("reason=catastrophic"));
+                assert!(detail.contains("catastrophe_count=1"));
+            }
+            other => panic!("expected catastrophic token cooldown block, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_token_loss_cooldown_blocks_single_terminal_zero() -> Result<()> {
+        let (store, db_path) = make_test_store("token-terminal-zero-catastrophe")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        cfg.shadow_token_loss_cooldown_enabled = true;
+        cfg.shadow_token_loss_cooldown_count_threshold = 3;
+        cfg.shadow_token_loss_cooldown_catastrophe_min_entry_sol = 0.15;
+        cfg.shadow_token_loss_cooldown_catastrophe_max_roi = -0.60;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_closed_trade_exact_with_context(
+            "sig-token-terminal-zero",
+            "wallet-a",
+            "toxic-terminal-token",
+            1.0,
+            None,
+            0.2,
+            0.0,
+            -0.2,
+            copybot_storage_core::SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+            now - chrono::Duration::minutes(20),
+            now - chrono::Duration::minutes(10),
+        )?;
+
+        match guard.can_open_buy_for_token(&store, now, true, Some("toxic-terminal-token")) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TokenCooldown,
+                detail,
+            } => {
+                assert!(detail.contains("toxic-terminal-token"));
+                assert!(detail.contains("reason=catastrophic"));
+                assert!(detail.contains("catastrophe_count=1"));
+            }
+            other => panic!("expected terminal-zero token cooldown block, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }

@@ -293,21 +293,35 @@ impl ShadowRiskGuard {
             self.config
                 .shadow_token_loss_cooldown_count_threshold
                 .max(1),
+            self.config
+                .shadow_token_loss_cooldown_catastrophe_min_entry_sol,
+            self.config.shadow_token_loss_cooldown_catastrophe_max_roi,
         )?
         else {
             return Ok(None);
         };
+        let reason = if cooldown.catastrophe_count > 0 {
+            "catastrophic"
+        } else {
+            "series_loss"
+        };
         Ok(Some(format!(
-            "token={} loss_count={} sampled_trades={} window_minutes={} threshold_return={:.4} pnl={:.6} entry={:.6} aggregate_roi={:.4} worst_roi={:.4}",
+            "token={} reason={} catastrophe_count={} loss_count={} sampled_trades={} window_minutes={} threshold_return={:.4} catastrophe_threshold={:.4} catastrophe_entry_min={:.6} pnl={:.6} entry={:.6} aggregate_roi={:.4} worst_roi={:.4} catastrophe_worst_roi={:.4}",
             cooldown.token,
+            reason,
+            cooldown.catastrophe_count,
             cooldown.loss_count,
             cooldown.sampled_trades,
             window_minutes,
             self.config.shadow_token_loss_cooldown_return_threshold,
+            self.config.shadow_token_loss_cooldown_catastrophe_max_roi,
+            self.config
+                .shadow_token_loss_cooldown_catastrophe_min_entry_sol,
             cooldown.pnl_sol,
             cooldown.entry_cost_sol,
             cooldown.aggregate_roi().unwrap_or(0.0),
-            cooldown.worst_roi.unwrap_or(0.0)
+            cooldown.worst_roi.unwrap_or(0.0),
+            cooldown.catastrophe_worst_roi.unwrap_or(0.0)
         )))
     }
 

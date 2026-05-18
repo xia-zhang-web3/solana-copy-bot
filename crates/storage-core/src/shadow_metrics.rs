@@ -161,6 +161,8 @@ impl SqliteDiscoveryStore {
         since: DateTime<Utc>,
         return_threshold: f64,
         count_threshold: u64,
+        catastrophe_min_entry_sol: f64,
+        catastrophe_return_threshold: f64,
     ) -> Result<Option<ShadowTokenLossCooldown>> {
         if count_threshold == 0 || !self.sqlite_table_exists("shadow_closed_trades")? {
             return Ok(None);
@@ -168,7 +170,8 @@ impl SqliteDiscoveryStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT entry_cost_sol, entry_cost_lamports, pnl_sol, pnl_lamports, closed_ts
+                "SELECT entry_cost_sol, entry_cost_lamports, pnl_sol, pnl_lamports, closed_ts,
+                        COALESCE(close_context, 'market')
                  FROM shadow_closed_trades
                  WHERE token = ?1
                    AND closed_ts >= ?2
@@ -214,6 +217,21 @@ impl SqliteDiscoveryStore {
             cooldown.entry_cost_sol += entry_cost;
             cooldown.pnl_sol += pnl;
             cooldown.worst_roi = Some(cooldown.worst_roi.map_or(roi, |worst: f64| worst.min(roi)));
+            let close_context: String = row
+                .get(5)
+                .context("failed reading shadow_closed_trades.close_context")?;
+            if entry_cost >= catastrophe_min_entry_sol
+                && (roi <= catastrophe_return_threshold
+                    || close_context == SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE)
+            {
+                cooldown.catastrophe_count = cooldown.catastrophe_count.saturating_add(1);
+                cooldown.catastrophe_entry_cost_sol += entry_cost;
+                cooldown.catastrophe_worst_roi = Some(
+                    cooldown
+                        .catastrophe_worst_roi
+                        .map_or(roi, |worst: f64| worst.min(roi)),
+                );
+            }
             let raw_closed_ts: String = row
                 .get(4)
                 .context("failed reading shadow_closed_trades.closed_ts")?;
@@ -235,7 +253,10 @@ impl SqliteDiscoveryStore {
             && cooldown
                 .aggregate_roi()
                 .is_some_and(|roi| roi <= return_threshold);
-        if cooldown.loss_count >= count_threshold || aggregate_loss {
+        if cooldown.catastrophe_count > 0
+            || cooldown.loss_count >= count_threshold
+            || aggregate_loss
+        {
             Ok(Some(cooldown))
         } else {
             Ok(None)
