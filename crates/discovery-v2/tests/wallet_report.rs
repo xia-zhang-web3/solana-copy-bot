@@ -73,6 +73,9 @@ fn status(now: DateTime<Utc>) -> DiscoveryV2Status {
             score_bonus: 0.0,
             evaluated_wallets: 0,
             preferred_wallets: 0,
+            selected_primary_wallets: 0,
+            selected_secondary_wallets: 0,
+            selected_emergency_wallets: 0,
             time_budget_exhausted: false,
         },
         live_portfolio: Some(DiscoveryV2LivePortfolioStatus {

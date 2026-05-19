@@ -34,7 +34,7 @@ pub fn discovery_v2_policy_fingerprint(
             "metric_snapshot_interval_seconds={};",
             "min_leader_notional_sol_bits={:016x};min_trades={};min_active_days={};",
             "maturity_window_days={};maturity_min_active_days={};",
-            "maturity_score_bonus_bits={:016x};",
+            "maturity_score_bonus_bits={:016x};maturity_selection_version=2;",
             "min_score_bits={:016x};max_tx_per_minute={};min_buy_count={};",
             "min_tradable_ratio_bits={:016x};require_open_positions_for_publication={};",
             "live_portfolio_gate_enabled={};min_live_sol_balance_bits={:016x};",

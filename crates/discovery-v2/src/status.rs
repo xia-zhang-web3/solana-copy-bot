@@ -1,6 +1,9 @@
 use crate::filters::{build_budget_exhausted_filter_status, DiscoveryV2FilterStatusBuilder};
 use crate::live_portfolio::apply_live_portfolio_gate;
-use crate::maturity::{apply_maturity_ranking, configured_status as configured_maturity_status};
+use crate::maturity::{
+    apply_maturity_ranking, configured_status as configured_maturity_status,
+    observe_selected_maturity_tiers,
+};
 use crate::metric::wallet_metric_from_accumulator;
 use crate::policy::{discovery_v2_policy_fingerprint, DiscoveryV2BuildOptions};
 use crate::shadow_feedback::{apply_shadow_feedback, load_shadow_wallet_feedback};
@@ -125,7 +128,7 @@ pub fn build_discovery_v2_status(
         scan_deadline,
         &mut wallet_metrics,
     )?;
-    sort_wallet_metrics(&mut wallet_metrics);
+    sort_wallet_metrics(&mut wallet_metrics, discovery);
     let live_gate =
         apply_live_portfolio_gate(store, discovery, shadow, &options, &mut wallet_metrics)?;
     for reason in &live_gate.live_reject_reasons {
@@ -133,6 +136,8 @@ pub fn build_discovery_v2_status(
     }
     let filters = filters.finish();
     let candidate_wallets = live_gate.candidate_wallets;
+    let mut maturity = maturity;
+    observe_selected_maturity_tiers(&mut maturity, &wallet_metrics, &candidate_wallets);
     let live_portfolio = live_gate.status;
     let mut blockers = blockers(
         discovery,

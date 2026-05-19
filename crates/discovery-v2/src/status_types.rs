@@ -82,5 +82,11 @@ pub struct DiscoveryV2MaturityStatus {
     pub score_bonus: f64,
     pub evaluated_wallets: usize,
     pub preferred_wallets: usize,
+    #[serde(default)]
+    pub selected_primary_wallets: usize,
+    #[serde(default)]
+    pub selected_secondary_wallets: usize,
+    #[serde(default)]
+    pub selected_emergency_wallets: usize,
     pub time_budget_exhausted: bool,
 }
