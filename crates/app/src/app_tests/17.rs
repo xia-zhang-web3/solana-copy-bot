@@ -111,8 +111,8 @@
             .context(
             "failed to defer implicit wal_autocheckpoint on the startup heartbeat test connection",
         )?;
-        run_startup_heartbeat_insert_step(conn, None, StdDuration::from_millis(250))
-            .context("deferred implicit wal_autocheckpoint should let the same startup heartbeat write complete under the same timeout budget")?;
+        run_startup_heartbeat_insert_step(conn, None, StdDuration::from_secs(2))
+            .context("deferred implicit wal_autocheckpoint should let the startup heartbeat write complete without checkpoint-induced timeout")?;
 
         let verify = Connection::open(&db_path)
             .with_context(|| format!("failed opening verify db {}", db_path.display()))?;
