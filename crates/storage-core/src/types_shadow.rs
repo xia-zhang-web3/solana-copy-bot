@@ -57,6 +57,17 @@ impl ShadowWalletFeedback {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ShadowWalletTokenFastLossCooldown {
+    pub wallet_id: String,
+    pub token: String,
+    pub entry_cost_sol: f64,
+    pub pnl_sol: f64,
+    pub roi: f64,
+    pub hold_seconds: i64,
+    pub closed_ts: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ShadowTokenLossCooldown {
     pub token: String,

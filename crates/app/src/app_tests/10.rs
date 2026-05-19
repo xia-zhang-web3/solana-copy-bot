@@ -181,3 +181,128 @@
         let _ = std::fs::remove_file(db_path);
         Ok(())
     }
+
+    #[test]
+    fn risk_guard_wallet_token_fast_loss_blocks_rapid_reentry() -> Result<()> {
+        let (store, db_path) = make_test_store("wallet-token-fast-loss")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        cfg.shadow_wallet_loss_cooldown_enabled = false;
+        cfg.shadow_token_loss_cooldown_enabled = false;
+        cfg.shadow_wallet_token_fast_loss_cooldown_enabled = true;
+        cfg.shadow_wallet_token_fast_loss_cooldown_window_minutes = 60;
+        cfg.shadow_wallet_token_fast_loss_cooldown_max_hold_seconds = 60;
+        cfg.shadow_wallet_token_fast_loss_cooldown_min_entry_sol = 0.15;
+        cfg.shadow_wallet_token_fast_loss_cooldown_max_roi = -0.08;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_closed_trade(
+            "sig-fast-loss",
+            "wallet-a",
+            "token-a",
+            1.0,
+            0.2,
+            0.18,
+            -0.02,
+            now - chrono::Duration::seconds(30),
+            now - chrono::Duration::seconds(1),
+        )?;
+
+        match guard.can_open_buy_for_signal(&store, now, true, Some("wallet-a"), Some("token-a")) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::WalletTokenCooldown,
+                detail,
+            } => {
+                assert!(detail.contains("wallet-a"));
+                assert!(detail.contains("token-a"));
+                assert!(detail.contains("hold_seconds"));
+            }
+            other => panic!("expected wallet/token fast-loss cooldown block, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_wallet_token_fast_loss_ignores_slow_loss() -> Result<()> {
+        let (store, db_path) = make_test_store("wallet-token-slow-loss")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        cfg.shadow_wallet_loss_cooldown_enabled = false;
+        cfg.shadow_token_loss_cooldown_enabled = false;
+        cfg.shadow_wallet_token_fast_loss_cooldown_enabled = true;
+        cfg.shadow_wallet_token_fast_loss_cooldown_max_hold_seconds = 60;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_closed_trade(
+            "sig-slow-loss",
+            "wallet-a",
+            "token-a",
+            1.0,
+            0.2,
+            0.18,
+            -0.02,
+            now - chrono::Duration::minutes(10),
+            now - chrono::Duration::seconds(1),
+        )?;
+
+        match guard.can_open_buy_for_signal(&store, now, true, Some("wallet-a"), Some("token-a")) {
+            BuyRiskDecision::Allow => {}
+            other => panic!("expected slow pair loss not to block reentry, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_token_open_lot_count_blocks_second_open_lot() -> Result<()> {
+        let (store, db_path) = make_test_store("token-open-lot-count")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        cfg.shadow_wallet_loss_cooldown_enabled = false;
+        cfg.shadow_token_loss_cooldown_enabled = false;
+        cfg.shadow_wallet_token_fast_loss_cooldown_enabled = false;
+        cfg.shadow_max_open_lots_per_token = 1;
+        cfg.shadow_max_open_notional_per_token_sol = 10.0;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_lot("wallet-a", "crowded-token", 100.0, 0.2, now)?;
+
+        match guard.can_open_buy_for_signal(
+            &store,
+            now,
+            true,
+            Some("wallet-b"),
+            Some("crowded-token"),
+        ) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::ExposureCap,
+                detail,
+            } => {
+                assert!(detail.contains("crowded-token"));
+                assert!(detail.contains("risk_open_lots=1"));
+                assert!(detail.contains("per_token_lot_cap=1"));
+            }
+            other => panic!("expected token open lot count block, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }

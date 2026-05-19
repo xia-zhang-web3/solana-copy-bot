@@ -141,6 +141,9 @@ pub(crate) fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()
             config.shadow_hard_exposure_cap_sol
         ));
     }
+    if config.shadow_max_open_lots_per_token == 0 {
+        return Err(anyhow!("risk.shadow_max_open_lots_per_token must be >= 1"));
+    }
     if config.shadow_killswitch_enabled && config.shadow_soft_pause_minutes == 0 {
         return Err(anyhow!(
             "risk.shadow_soft_pause_minutes must be >= 1 when risk.shadow_killswitch_enabled=true"
@@ -249,6 +252,36 @@ pub(crate) fn validate_execution_risk_contract(config: &RiskConfig) -> Result<()
             return Err(anyhow!(
                 "risk.shadow_token_loss_cooldown_catastrophe_max_roi must be finite and < 0, got {}",
                 config.shadow_token_loss_cooldown_catastrophe_max_roi
+            ));
+        }
+    }
+
+    if config.shadow_wallet_token_fast_loss_cooldown_enabled {
+        if config.shadow_wallet_token_fast_loss_cooldown_window_minutes == 0
+            || config.shadow_wallet_token_fast_loss_cooldown_max_hold_seconds == 0
+        {
+            return Err(anyhow!(
+                "risk.shadow_wallet_token_fast_loss_cooldown window/max_hold must be >= 1 when enabled"
+            ));
+        }
+        if !config
+            .shadow_wallet_token_fast_loss_cooldown_min_entry_sol
+            .is_finite()
+            || config.shadow_wallet_token_fast_loss_cooldown_min_entry_sol < 0.0
+        {
+            return Err(anyhow!(
+                "risk.shadow_wallet_token_fast_loss_cooldown_min_entry_sol must be finite and >= 0, got {}",
+                config.shadow_wallet_token_fast_loss_cooldown_min_entry_sol
+            ));
+        }
+        if !config
+            .shadow_wallet_token_fast_loss_cooldown_max_roi
+            .is_finite()
+            || config.shadow_wallet_token_fast_loss_cooldown_max_roi >= 0.0
+        {
+            return Err(anyhow!(
+                "risk.shadow_wallet_token_fast_loss_cooldown_max_roi must be finite and < 0, got {}",
+                config.shadow_wallet_token_fast_loss_cooldown_max_roi
             ));
         }
     }

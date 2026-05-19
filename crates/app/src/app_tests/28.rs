@@ -411,6 +411,7 @@ fn risk_guard_blocks_shadow_token_open_notional_cap() -> Result<()> {
     cfg.shadow_rug_loss_count_threshold = u64::MAX;
     cfg.shadow_rug_loss_rate_threshold = 1.0;
     cfg.shadow_max_open_notional_per_token_sol = 0.5;
+    cfg.shadow_max_open_lots_per_token = 10;
     let mut guard = ShadowRiskGuard::new(cfg);
     let now = Utc::now();
 

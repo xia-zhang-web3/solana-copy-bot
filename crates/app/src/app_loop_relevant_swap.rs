@@ -103,6 +103,22 @@ pub(super) async fn handle_relevant_observed_swap(
             );
             return Ok(());
         }
+        if shadow_scheduler.key_has_pending_or_inflight(&task_key) {
+            app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
+            let reason = "risk_pending_position_exists";
+            *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
+            *shadow_drop_stage_counts.entry("risk").or_insert(0) += 1;
+            debug!(
+                stage = "risk",
+                reason,
+                side = "buy",
+                wallet = %task_key.wallet,
+                token = %task_key.token,
+                signature = %swap.signature,
+                "shadow gate dropped"
+            );
+            return Ok(());
+        }
 
         if operator_emergency_stop.is_active() {
             app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);

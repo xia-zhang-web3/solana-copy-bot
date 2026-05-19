@@ -12,6 +12,7 @@ pub(crate) enum BuyRiskBlockReason {
     Universe,
     TokenCooldown,
     WalletCooldown,
+    WalletTokenCooldown,
     FailClosed,
     OperatorEmergencyStop,
 }
@@ -26,6 +27,7 @@ impl BuyRiskBlockReason {
             Self::Universe => "risk_universe_stop",
             Self::TokenCooldown => "risk_token_loss_cooldown",
             Self::WalletCooldown => "risk_wallet_loss_cooldown",
+            Self::WalletTokenCooldown => "risk_wallet_token_fast_loss_cooldown",
             Self::FailClosed => "risk_fail_closed",
             Self::OperatorEmergencyStop => "operator_emergency_stop",
         }

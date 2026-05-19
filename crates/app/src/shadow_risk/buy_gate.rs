@@ -159,6 +159,25 @@ impl ShadowRiskGuard {
             }
         }
 
+        if let (Some(wallet_id), Some(token)) = (wallet_id, token) {
+            match self.wallet_token_fast_loss_cooldown(store, now, wallet_id, token) {
+                Ok(Some(detail)) => {
+                    return BuyRiskDecision::Blocked {
+                        reason: BuyRiskBlockReason::WalletTokenCooldown,
+                        detail,
+                    };
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let detail = format!("wallet_token_fast_loss_cooldown_error: {error}");
+                    return BuyRiskDecision::Blocked {
+                        reason: BuyRiskBlockReason::FailClosed,
+                        detail,
+                    };
+                }
+            }
+        }
+
         if let Some(token) = token {
             match self.token_open_notional_cap(store, token) {
                 Ok(Some(detail)) => {
@@ -258,20 +277,6 @@ impl ShadowRiskGuard {
             feedback.pnl_sol,
             feedback.entry_cost_sol,
             roi.unwrap_or(0.0)
-        )))
-    }
-
-    fn token_open_notional_cap(&self, store: &SqliteStore, token: &str) -> Result<Option<String>> {
-        let cap = self.shadow_max_open_notional_per_token_lamports()?;
-        let open_notional = store.shadow_risk_open_notional_lamports_for_token(token)?;
-        if open_notional < cap {
-            return Ok(None);
-        }
-        Ok(Some(format!(
-            "token={} risk_open_notional_sol={:.6} per_token_cap={:.6}",
-            token,
-            lamports_to_sol(open_notional),
-            lamports_to_sol(cap)
         )))
     }
 
