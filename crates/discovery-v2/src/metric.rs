@@ -36,6 +36,8 @@ pub struct DiscoveryV2WalletMetric {
     pub shadow_closed_trades_24h: Option<u32>,
     pub shadow_pnl_sol_24h: Option<f64>,
     pub shadow_roi_24h: Option<f64>,
+    #[serde(default)]
+    pub shadow_worst_trade_roi_24h: Option<f64>,
     pub eligible: bool,
     pub reject_reasons: Vec<String>,
     pub first_seen: DateTime<Utc>,
@@ -138,6 +140,7 @@ pub(crate) fn wallet_metric_from_accumulator(
         shadow_closed_trades_24h: None,
         shadow_pnl_sol_24h: None,
         shadow_roi_24h: None,
+        shadow_worst_trade_roi_24h: None,
         eligible: reject_reasons.is_empty(),
         reject_reasons,
         first_seen: acc.first_seen,

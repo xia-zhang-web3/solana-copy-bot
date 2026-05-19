@@ -45,6 +45,9 @@ pub struct ShadowWalletFeedback {
     pub closed_trades: u64,
     pub entry_cost_sol: f64,
     pub pnl_sol: f64,
+    pub worst_trade_entry_cost_sol: f64,
+    pub worst_trade_pnl_sol: f64,
+    pub worst_trade_roi: Option<f64>,
 }
 
 impl ShadowWalletFeedback {

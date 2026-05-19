@@ -151,6 +151,14 @@ impl SqliteDiscoveryStore {
             entry.closed_trades = entry.closed_trades.saturating_add(1);
             entry.entry_cost_sol += entry_cost;
             entry.pnl_sol += pnl;
+            if entry_cost > 0.0 {
+                let roi = pnl / entry_cost;
+                if entry.worst_trade_roi.is_none_or(|worst| roi < worst) {
+                    entry.worst_trade_entry_cost_sol = entry_cost;
+                    entry.worst_trade_pnl_sol = pnl;
+                    entry.worst_trade_roi = Some(roi);
+                }
+            }
         }
         Ok(feedback)
     }
