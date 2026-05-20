@@ -187,14 +187,14 @@ fn prepare_can_reuse_green_materialized_status_before_refresh_age() -> Result<()
     assert_eq!(reused.status_age_seconds, 30);
     assert_eq!(reused.max_status_age_seconds, 180);
     assert_eq!(reused.refresh_after_age_seconds, 60);
-    assert_eq!(reused.reuse_before_age_seconds, 90);
+    assert_eq!(reused.reuse_before_age_seconds, 120);
     assert_eq!(reused.rebuild_after_age_seconds, 180);
     assert!(reused.production_green);
     Ok(())
 }
 
 #[test]
-fn prepare_reuse_window_tracks_safe_midpoint_before_stale() -> Result<()> {
+fn prepare_reuse_window_keeps_refresh_margin_before_stale() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-13T12:00:00+00:00")?.with_timezone(&Utc);
     seed_green_status(&store, now)?;
@@ -207,12 +207,12 @@ fn prepare_reuse_window_tracks_safe_midpoint_before_stale() -> Result<()> {
         &store,
         &discovery,
         &shadow,
-        &options(now + Duration::seconds(2_699)),
+        &options(now + Duration::seconds(4_799)),
     )?
-    .expect("snapshot should be reusable before the safe midpoint");
+    .expect("snapshot should be reusable before the refresh margin");
 
     assert_eq!(reused.refresh_after_age_seconds, 1_800);
-    assert_eq!(reused.reuse_before_age_seconds, 2_700);
+    assert_eq!(reused.reuse_before_age_seconds, 4_800);
     assert_eq!(reused.rebuild_after_age_seconds, 5_400);
     assert!(reused.reused_existing_snapshot);
 
@@ -220,7 +220,7 @@ fn prepare_reuse_window_tracks_safe_midpoint_before_stale() -> Result<()> {
         &store,
         &discovery,
         &shadow,
-        &options(now + Duration::seconds(2_701)),
+        &options(now + Duration::seconds(4_801)),
     )?;
     assert!(expired_after_reuse_window.is_none());
 
@@ -246,7 +246,7 @@ fn prepare_rebuilds_materialized_status_at_reuse_threshold() -> Result<()> {
         &store,
         &discovery,
         &shadow,
-        &options(now + Duration::seconds(89)),
+        &options(now + Duration::seconds(119)),
     )?;
 
     assert!(reused.is_some());
@@ -254,7 +254,7 @@ fn prepare_rebuilds_materialized_status_at_reuse_threshold() -> Result<()> {
         &store,
         &discovery,
         &shadow,
-        &options(now + Duration::seconds(90)),
+        &options(now + Duration::seconds(120)),
     )?;
     assert!(reuse_expired.is_none());
     Ok(())
