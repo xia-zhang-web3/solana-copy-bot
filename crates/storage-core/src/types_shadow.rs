@@ -48,6 +48,14 @@ pub struct ShadowWalletFeedback {
     pub worst_trade_entry_cost_sol: f64,
     pub worst_trade_pnl_sol: f64,
     pub worst_trade_roi: Option<f64>,
+    pub worst_fast_loss_entry_cost_sol: f64,
+    pub worst_fast_loss_pnl_sol: f64,
+    pub worst_fast_loss_roi: Option<f64>,
+    pub worst_fast_loss_hold_seconds: i64,
+    pub worst_stale_priced_loss_entry_cost_sol: f64,
+    pub worst_stale_priced_loss_pnl_sol: f64,
+    pub worst_stale_priced_loss_roi: Option<f64>,
+    pub worst_stale_priced_loss_hold_seconds: i64,
 }
 
 impl ShadowWalletFeedback {
@@ -58,6 +66,60 @@ impl ShadowWalletFeedback {
             None
         }
     }
+
+    pub fn record_risk_trade(&mut self, entry_cost_sol: f64, pnl_sol: f64) {
+        self.closed_trades = self.closed_trades.saturating_add(1);
+        self.entry_cost_sol += entry_cost_sol;
+        self.pnl_sol += pnl_sol;
+        self.record_worst_trade(entry_cost_sol, pnl_sol);
+    }
+
+    pub fn record_fast_loss(&mut self, entry_cost_sol: f64, pnl_sol: f64, hold_seconds: i64) {
+        let Some(roi) = roi(entry_cost_sol, pnl_sol) else {
+            return;
+        };
+        if self.worst_fast_loss_roi.is_none_or(|worst| roi < worst) {
+            self.worst_fast_loss_entry_cost_sol = entry_cost_sol;
+            self.worst_fast_loss_pnl_sol = pnl_sol;
+            self.worst_fast_loss_roi = Some(roi);
+            self.worst_fast_loss_hold_seconds = hold_seconds;
+        }
+    }
+
+    pub fn record_stale_priced_loss(
+        &mut self,
+        entry_cost_sol: f64,
+        pnl_sol: f64,
+        hold_seconds: i64,
+    ) {
+        let Some(roi) = roi(entry_cost_sol, pnl_sol) else {
+            return;
+        };
+        if self
+            .worst_stale_priced_loss_roi
+            .is_none_or(|worst| roi < worst)
+        {
+            self.worst_stale_priced_loss_entry_cost_sol = entry_cost_sol;
+            self.worst_stale_priced_loss_pnl_sol = pnl_sol;
+            self.worst_stale_priced_loss_roi = Some(roi);
+            self.worst_stale_priced_loss_hold_seconds = hold_seconds;
+        }
+    }
+
+    fn record_worst_trade(&mut self, entry_cost_sol: f64, pnl_sol: f64) {
+        let Some(roi) = roi(entry_cost_sol, pnl_sol) else {
+            return;
+        };
+        if self.worst_trade_roi.is_none_or(|worst| roi < worst) {
+            self.worst_trade_entry_cost_sol = entry_cost_sol;
+            self.worst_trade_pnl_sol = pnl_sol;
+            self.worst_trade_roi = Some(roi);
+        }
+    }
+}
+
+fn roi(entry_cost_sol: f64, pnl_sol: f64) -> Option<f64> {
+    (entry_cost_sol > 0.0).then_some(pnl_sol / entry_cost_sol)
 }
 
 #[derive(Debug, Clone)]

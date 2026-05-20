@@ -138,6 +138,8 @@ fn metric(
         shadow_pnl_sol_24h: None,
         shadow_roi_24h: None,
         shadow_worst_trade_roi_24h: None,
+        shadow_fast_loss_roi_24h: None,
+        shadow_stale_copy_loss_roi_24h: None,
         eligible,
         reject_reasons,
         first_seen: now - Duration::hours(2),

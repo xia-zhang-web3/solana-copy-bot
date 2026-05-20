@@ -38,6 +38,10 @@ pub struct DiscoveryV2WalletMetric {
     pub shadow_roi_24h: Option<f64>,
     #[serde(default)]
     pub shadow_worst_trade_roi_24h: Option<f64>,
+    #[serde(default)]
+    pub shadow_fast_loss_roi_24h: Option<f64>,
+    #[serde(default)]
+    pub shadow_stale_copy_loss_roi_24h: Option<f64>,
     pub eligible: bool,
     pub reject_reasons: Vec<String>,
     pub first_seen: DateTime<Utc>,
@@ -141,6 +145,8 @@ pub(crate) fn wallet_metric_from_accumulator(
         shadow_pnl_sol_24h: None,
         shadow_roi_24h: None,
         shadow_worst_trade_roi_24h: None,
+        shadow_fast_loss_roi_24h: None,
+        shadow_stale_copy_loss_roi_24h: None,
         eligible: reject_reasons.is_empty(),
         reject_reasons,
         first_seen: acc.first_seen,

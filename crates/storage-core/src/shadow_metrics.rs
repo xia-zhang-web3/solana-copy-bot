@@ -105,6 +105,7 @@ impl SqliteDiscoveryStore {
     pub fn shadow_wallet_feedback_since(
         &self,
         since: DateTime<Utc>,
+        max_fast_loss_hold_seconds: i64,
     ) -> Result<HashMap<String, ShadowWalletFeedback>> {
         if !self.sqlite_table_exists("shadow_closed_trades")? {
             return Ok(HashMap::new());
@@ -112,7 +113,9 @@ impl SqliteDiscoveryStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT wallet_id, entry_cost_sol, entry_cost_lamports, pnl_sol, pnl_lamports
+                "SELECT wallet_id, signal_id, entry_cost_sol, entry_cost_lamports,
+                        pnl_sol, pnl_lamports, opened_ts, closed_ts,
+                        COALESCE(close_context, 'market')
                  FROM shadow_closed_trades
                  WHERE closed_ts >= ?1
                    AND COALESCE(close_context, 'market') NOT IN (?2, ?3)",
@@ -133,30 +136,48 @@ impl SqliteDiscoveryStore {
             let wallet_id: String = row
                 .get(0)
                 .context("failed reading shadow_closed_trades.wallet_id")?;
+            let signal_id: String = row
+                .get(1)
+                .context("failed reading shadow_closed_trades.signal_id")?;
             let entry_cost = lamports_to_sol(shadow_closed_trade_entry_cost_lamports(
-                row.get(1)
-                    .context("failed reading shadow_closed_trades.entry_cost_sol")?,
                 row.get(2)
+                    .context("failed reading shadow_closed_trades.entry_cost_sol")?,
+                row.get(3)
                     .context("failed reading shadow_closed_trades.entry_cost_lamports")?,
                 "shadow wallet feedback",
             )?);
             let pnl = signed_lamports_to_sol(shadow_closed_trade_pnl_lamports(
-                row.get(3)
-                    .context("failed reading shadow_closed_trades.pnl_sol")?,
                 row.get(4)
+                    .context("failed reading shadow_closed_trades.pnl_sol")?,
+                row.get(5)
                     .context("failed reading shadow_closed_trades.pnl_lamports")?,
                 "shadow wallet feedback",
             )?);
+            let opened_ts = parse_shadow_feedback_ts(
+                row.get(6)
+                    .context("failed reading shadow_closed_trades.opened_ts")?,
+                "opened_ts",
+            )?;
+            let closed_ts = parse_shadow_feedback_ts(
+                row.get(7)
+                    .context("failed reading shadow_closed_trades.closed_ts")?,
+                "closed_ts",
+            )?;
+            let close_context: String = row
+                .get(8)
+                .context("failed reading shadow_closed_trades.close_context")?;
+            if close_context == SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE {
+                continue;
+            }
             let entry = feedback.entry(wallet_id).or_default();
-            entry.closed_trades = entry.closed_trades.saturating_add(1);
-            entry.entry_cost_sol += entry_cost;
-            entry.pnl_sol += pnl;
-            if entry_cost > 0.0 {
-                let roi = pnl / entry_cost;
-                if entry.worst_trade_roi.is_none_or(|worst| roi < worst) {
-                    entry.worst_trade_entry_cost_sol = entry_cost;
-                    entry.worst_trade_pnl_sol = pnl;
-                    entry.worst_trade_roi = Some(roi);
+            entry.record_risk_trade(entry_cost, pnl);
+            let hold_seconds = (closed_ts - opened_ts).num_seconds();
+            if hold_seconds >= 0 {
+                if hold_seconds <= max_fast_loss_hold_seconds {
+                    entry.record_fast_loss(entry_cost, pnl, hold_seconds);
+                }
+                if signal_id.starts_with("stale-close-") {
+                    entry.record_stale_priced_loss(entry_cost, pnl, hold_seconds);
                 }
             }
         }
@@ -402,4 +423,10 @@ impl SqliteDiscoveryStore {
         }
         Ok((rug_count, total_count))
     }
+}
+
+fn parse_shadow_feedback_ts(raw: String, field: &str) -> Result<DateTime<Utc>> {
+    Ok(DateTime::parse_from_rfc3339(&raw)
+        .with_context(|| format!("invalid shadow_closed_trades.{field}: {raw}"))?
+        .with_timezone(&Utc))
 }

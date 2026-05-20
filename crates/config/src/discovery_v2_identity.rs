@@ -13,6 +13,11 @@ pub const DISCOVERY_V2_SHADOW_FEEDBACK_CATASTROPHE_MIN_ENTRY_SOL: f64 = 0.20;
 pub const DISCOVERY_V2_SHADOW_FEEDBACK_CATASTROPHE_MAX_ROI: f64 = -0.60;
 pub const DISCOVERY_V2_SHADOW_FEEDBACK_SINGLE_LOSS_MIN_ENTRY_SOL: f64 = 0.20;
 pub const DISCOVERY_V2_SHADOW_FEEDBACK_SINGLE_LOSS_MAX_ROI: f64 = -0.25;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_FAST_LOSS_MIN_ENTRY_SOL: f64 = 0.15;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_FAST_LOSS_MAX_ROI: f64 = -0.08;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_FAST_LOSS_MAX_HOLD_SECONDS: i64 = 60;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_STALE_COPY_MIN_ENTRY_SOL: f64 = 0.15;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_STALE_COPY_MAX_ROI: f64 = -0.10;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DiscoveryV2PolicyFingerprintInput {
@@ -48,7 +53,7 @@ pub fn discovery_v2_policy_fingerprint(
             "min_volume_5m_sol_bits={:016x};min_unique_traders_5m={};",
             "execution_enabled={};token_quality_ttl_seconds={};",
             "token_rolling_market_window_seconds={};",
-            "shadow_feedback_version=3;shadow_feedback_window_hours={};",
+            "shadow_feedback_version=4;shadow_feedback_window_hours={};",
             "shadow_feedback_min_closed_trades={};",
             "shadow_feedback_min_entry_sol_bits={:016x};",
             "shadow_feedback_max_pnl_sol_bits={:016x};",
@@ -57,7 +62,12 @@ pub fn discovery_v2_policy_fingerprint(
             "shadow_feedback_catastrophe_min_entry_sol_bits={:016x};",
             "shadow_feedback_catastrophe_max_roi_bits={:016x};",
             "shadow_feedback_single_loss_min_entry_sol_bits={:016x};",
-            "shadow_feedback_single_loss_max_roi_bits={:016x}"
+            "shadow_feedback_single_loss_max_roi_bits={:016x};",
+            "shadow_feedback_fast_loss_min_entry_sol_bits={:016x};",
+            "shadow_feedback_fast_loss_max_roi_bits={:016x};",
+            "shadow_feedback_fast_loss_max_hold_seconds={};",
+            "shadow_feedback_stale_copy_min_entry_sol_bits={:016x};",
+            "shadow_feedback_stale_copy_max_roi_bits={:016x}"
         ),
         DISCOVERY_V2_SCORING_SOURCE,
         input.window_minutes,
@@ -107,5 +117,10 @@ pub fn discovery_v2_policy_fingerprint(
         DISCOVERY_V2_SHADOW_FEEDBACK_CATASTROPHE_MAX_ROI.to_bits(),
         DISCOVERY_V2_SHADOW_FEEDBACK_SINGLE_LOSS_MIN_ENTRY_SOL.to_bits(),
         DISCOVERY_V2_SHADOW_FEEDBACK_SINGLE_LOSS_MAX_ROI.to_bits(),
+        DISCOVERY_V2_SHADOW_FEEDBACK_FAST_LOSS_MIN_ENTRY_SOL.to_bits(),
+        DISCOVERY_V2_SHADOW_FEEDBACK_FAST_LOSS_MAX_ROI.to_bits(),
+        DISCOVERY_V2_SHADOW_FEEDBACK_FAST_LOSS_MAX_HOLD_SECONDS,
+        DISCOVERY_V2_SHADOW_FEEDBACK_STALE_COPY_MIN_ENTRY_SOL.to_bits(),
+        DISCOVERY_V2_SHADOW_FEEDBACK_STALE_COPY_MAX_ROI.to_bits(),
     )
 }
