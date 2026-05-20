@@ -19,8 +19,8 @@ use std::time::{Duration as StdDuration, Instant};
 pub use crate::filters::DiscoveryV2FilterStatus;
 pub use crate::live_portfolio::DiscoveryV2LivePortfolioStatus;
 pub use status_types::{
-    DiscoveryV2CoverageSample, DiscoveryV2MaturityStatus, DiscoveryV2ScanStatus, DiscoveryV2Status,
-    DiscoveryV2TailStatus, OPERATOR_WALLET_METRIC_LIMIT,
+    DiscoveryV2BuildTiming, DiscoveryV2CoverageSample, DiscoveryV2MaturityStatus,
+    DiscoveryV2ScanStatus, DiscoveryV2Status, DiscoveryV2TailStatus, OPERATOR_WALLET_METRIC_LIMIT,
 };
 
 #[path = "status_blockers.rs"]
@@ -44,12 +44,17 @@ pub fn build_discovery_v2_status(
     let build_started = Instant::now();
     let window_start = options.window_start();
     let scan_deadline = Instant::now() + StdDuration::from_millis(options.time_budget_ms);
+    let tail_started = Instant::now();
     let tail = load_tail_status(store, options.now, options.max_tail_lag_seconds)?;
+    let tail_elapsed_ms = elapsed_ms_ceil(tail_started.elapsed());
     let scoring_data_now = tail
         .as_ref()
         .map(|status| status.cursor.ts_utc.min(options.now))
         .unwrap_or(options.now);
+    let coverage_started = Instant::now();
     let coverage_sample = load_coverage_sample(store, window_start)?;
+    let coverage_elapsed_ms = elapsed_ms_ceil(coverage_started.elapsed());
+    let scan_started = Instant::now();
     let window_scan = scan_window_metrics(
         store,
         discovery,
@@ -60,6 +65,7 @@ pub fn build_discovery_v2_status(
         options.max_rows,
         scan_deadline,
     )?;
+    let scan_elapsed_ms = elapsed_ms_ceil(scan_started.elapsed());
     let rows_seen = window_scan.rows_seen;
     let unique_wallets_seen = window_scan.unique_wallets_seen;
     let scan = scan_status(
@@ -79,9 +85,16 @@ pub fn build_discovery_v2_status(
             scan,
             unique_wallets_seen,
             &options,
-            elapsed_ms_ceil(build_started.elapsed()),
+            DiscoveryV2BuildTiming {
+                tail_elapsed_ms,
+                coverage_elapsed_ms,
+                scan_elapsed_ms,
+                total_elapsed_ms: elapsed_ms_ceil(build_started.elapsed()),
+                ..DiscoveryV2BuildTiming::default()
+            },
         ));
     }
+    let metric_started = Instant::now();
     let retained_metric_limit = retained_wallet_metric_limit(discovery);
     let mut wallet_metrics =
         Vec::with_capacity(retained_metric_limit.min(window_scan.wallets.len()));
@@ -128,6 +141,7 @@ pub fn build_discovery_v2_status(
             filters.observe_rejected_wallets(&reason, count.saturating_sub(sampled));
         }
     }
+    let metric_elapsed_ms = elapsed_ms_ceil(metric_started.elapsed());
     if metric_time_budget_exhausted {
         let scan = scan_status(
             options.max_rows,
@@ -145,9 +159,17 @@ pub fn build_discovery_v2_status(
             scan,
             unique_wallets_seen,
             &options,
-            elapsed_ms_ceil(build_started.elapsed()),
+            DiscoveryV2BuildTiming {
+                tail_elapsed_ms,
+                coverage_elapsed_ms,
+                scan_elapsed_ms,
+                metric_elapsed_ms,
+                total_elapsed_ms: elapsed_ms_ceil(build_started.elapsed()),
+                ..DiscoveryV2BuildTiming::default()
+            },
         ));
     }
+    let maturity_started = Instant::now();
     let maturity = apply_maturity_ranking(
         store,
         discovery,
@@ -155,9 +177,12 @@ pub fn build_discovery_v2_status(
         scan_deadline,
         &mut wallet_metrics,
     )?;
+    let maturity_elapsed_ms = elapsed_ms_ceil(maturity_started.elapsed());
     sort_wallet_metrics(&mut wallet_metrics, discovery);
+    let live_portfolio_started = Instant::now();
     let live_gate =
         apply_live_portfolio_gate(store, discovery, shadow, &options, &mut wallet_metrics)?;
+    let live_portfolio_elapsed_ms = elapsed_ms_ceil(live_portfolio_started.elapsed());
     for reason in &live_gate.live_reject_reasons {
         filters.observe_live_rejection(reason);
     }
@@ -192,10 +217,21 @@ pub fn build_discovery_v2_status(
         blockers.push("discovery_v2_maturity_budget_exhausted".to_string());
     }
     let production_green = blockers.is_empty();
+    let total_elapsed_ms = elapsed_ms_ceil(build_started.elapsed());
+    let build_timing = DiscoveryV2BuildTiming {
+        tail_elapsed_ms,
+        coverage_elapsed_ms,
+        scan_elapsed_ms,
+        metric_elapsed_ms,
+        maturity_elapsed_ms,
+        live_portfolio_elapsed_ms,
+        total_elapsed_ms,
+    };
     Ok(DiscoveryV2Status {
         source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
         now: options.now,
-        build_elapsed_ms: elapsed_ms_ceil(build_started.elapsed()),
+        build_elapsed_ms: total_elapsed_ms,
+        build_timing,
         window_start,
         window_minutes: options.window_minutes,
         max_tail_lag_seconds: options.max_tail_lag_seconds,
@@ -233,7 +269,7 @@ fn budget_exhausted_status(
     scan: DiscoveryV2ScanStatus,
     unique_wallets_seen: usize,
     options: &DiscoveryV2BuildOptions,
-    build_elapsed_ms: u64,
+    build_timing: DiscoveryV2BuildTiming,
 ) -> DiscoveryV2Status {
     let candidate_wallets = Vec::new();
     let filters = build_budget_exhausted_filter_status(unique_wallets_seen);
@@ -250,7 +286,8 @@ fn budget_exhausted_status(
     DiscoveryV2Status {
         source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
         now: options.now,
-        build_elapsed_ms,
+        build_elapsed_ms: build_timing.total_elapsed_ms,
+        build_timing,
         window_start,
         window_minutes: options.window_minutes,
         max_tail_lag_seconds: options.max_tail_lag_seconds,

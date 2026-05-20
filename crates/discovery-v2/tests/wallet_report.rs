@@ -52,6 +52,7 @@ fn status(now: DateTime<Utc>) -> DiscoveryV2Status {
         source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
         now,
         build_elapsed_ms: 12,
+        build_timing: Default::default(),
         window_start: now - Duration::hours(24),
         window_minutes: 24 * 60,
         max_tail_lag_seconds: 1_200,

@@ -12,6 +12,8 @@ pub struct DiscoveryV2Status {
     pub source: String,
     pub now: DateTime<Utc>,
     pub build_elapsed_ms: u64,
+    #[serde(default)]
+    pub build_timing: DiscoveryV2BuildTiming,
     pub window_start: DateTime<Utc>,
     pub window_minutes: u64,
     pub max_tail_lag_seconds: u64,
@@ -44,6 +46,17 @@ impl DiscoveryV2Status {
         self.wallet_metrics_truncated = self.wallet_metrics_returned < total;
         self
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryV2BuildTiming {
+    pub tail_elapsed_ms: u64,
+    pub coverage_elapsed_ms: u64,
+    pub scan_elapsed_ms: u64,
+    pub metric_elapsed_ms: u64,
+    pub maturity_elapsed_ms: u64,
+    pub live_portfolio_elapsed_ms: u64,
+    pub total_elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
