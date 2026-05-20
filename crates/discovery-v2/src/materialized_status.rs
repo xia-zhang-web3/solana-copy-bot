@@ -58,8 +58,9 @@ pub fn reusable_materialized_discovery_v2_status_for_prepare(
     if !status.production_green {
         return Ok(None);
     }
+    let reuse_before_age_seconds = materialized_status_reuse_before_age_seconds(discovery);
     if report.status_age_seconds < 0
-        || report.status_age_seconds > report.rebuild_after_age_seconds.min(i64::MAX as u64) as i64
+        || report.status_age_seconds >= reuse_before_age_seconds.min(i64::MAX as u64) as i64
     {
         return Ok(None);
     }
@@ -202,6 +203,12 @@ fn materialized_status_max_age_seconds(discovery: &DiscoveryConfig) -> u64 {
 
 fn materialized_status_rebuild_after_age_seconds(discovery: &DiscoveryConfig) -> u64 {
     materialized_status_max_age_seconds(discovery)
+}
+
+fn materialized_status_reuse_before_age_seconds(discovery: &DiscoveryConfig) -> u64 {
+    materialized_status_refresh_after_age_seconds(discovery)
+        .min(materialized_status_rebuild_after_age_seconds(discovery))
+        .max(1)
 }
 
 fn materialized_status_refresh_after_age_seconds(discovery: &DiscoveryConfig) -> u64 {
