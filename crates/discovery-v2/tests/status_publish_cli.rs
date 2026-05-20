@@ -174,6 +174,31 @@ fn prod_live_v2_configs_are_active_day_satisfiable() -> Result<()> {
 }
 
 #[test]
+fn scheduled_publish_unit_uses_materialized_status() -> Result<()> {
+    let unit = fs::read_to_string(repo_path(
+        "ops/server_templates/copybot-discovery-v2-publish.service",
+    ))?;
+    let exec_start = unit
+        .lines()
+        .find(|line| line.starts_with("ExecStart="))
+        .context("publish service missing ExecStart")?;
+
+    assert!(
+        exec_start.contains(" --materialized-status "),
+        "scheduled publish must commit materialized status, not rebuild full V2 status: {exec_start}"
+    );
+    assert!(
+        !exec_start.contains(" -n "),
+        "scheduled publish must wait for the shared discovery lock instead of skipping: {exec_start}"
+    );
+    assert!(
+        !unit.contains("SuccessExitStatus=75"),
+        "scheduled publish must fail visibly instead of marking lock skips as success"
+    );
+    Ok(())
+}
+
+#[test]
 fn publish_commit_on_old_schema_does_not_prepare_schema_before_rejection() -> Result<()> {
     let dir = tempdir()?;
     let db_path = dir.path().join("old-runtime.db");
