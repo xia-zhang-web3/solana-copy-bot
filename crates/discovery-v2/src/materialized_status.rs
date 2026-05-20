@@ -14,6 +14,7 @@ pub struct DiscoveryV2MaterializedStatusReport {
     pub status_now: DateTime<Utc>,
     pub status_age_seconds: i64,
     pub refresh_after_age_seconds: u64,
+    pub reuse_before_age_seconds: u64,
     pub rebuild_after_age_seconds: u64,
     pub max_status_age_seconds: u64,
     pub policy_fingerprint: String,
@@ -175,6 +176,7 @@ fn materialized_status_report(
         status_now: status.now,
         status_age_seconds: now.signed_duration_since(status.now).num_seconds(),
         refresh_after_age_seconds: materialized_status_refresh_after_age_seconds(discovery),
+        reuse_before_age_seconds: materialized_status_reuse_before_age_seconds(discovery),
         rebuild_after_age_seconds: materialized_status_rebuild_after_age_seconds(discovery),
         max_status_age_seconds: materialized_status_max_age_seconds(discovery),
         policy_fingerprint: status.policy_fingerprint.clone(),
@@ -206,9 +208,10 @@ fn materialized_status_rebuild_after_age_seconds(discovery: &DiscoveryConfig) ->
 }
 
 fn materialized_status_reuse_before_age_seconds(discovery: &DiscoveryConfig) -> u64 {
-    materialized_status_refresh_after_age_seconds(discovery)
-        .min(materialized_status_rebuild_after_age_seconds(discovery))
-        .max(1)
+    let max_age = materialized_status_rebuild_after_age_seconds(discovery).max(1);
+    let refresh_after = materialized_status_refresh_after_age_seconds(discovery).min(max_age);
+    let midpoint = max_age / 2;
+    midpoint.max(refresh_after).min(max_age).max(1)
 }
 
 fn materialized_status_refresh_after_age_seconds(discovery: &DiscoveryConfig) -> u64 {

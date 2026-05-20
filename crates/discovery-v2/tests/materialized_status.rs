@@ -187,13 +187,14 @@ fn prepare_can_reuse_green_materialized_status_before_refresh_age() -> Result<()
     assert_eq!(reused.status_age_seconds, 30);
     assert_eq!(reused.max_status_age_seconds, 180);
     assert_eq!(reused.refresh_after_age_seconds, 60);
+    assert_eq!(reused.reuse_before_age_seconds, 90);
     assert_eq!(reused.rebuild_after_age_seconds, 180);
     assert!(reused.production_green);
     Ok(())
 }
 
 #[test]
-fn prepare_reuse_window_tracks_metric_snapshot_interval() -> Result<()> {
+fn prepare_reuse_window_tracks_safe_midpoint_before_stale() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-13T12:00:00+00:00")?.with_timezone(&Utc);
     seed_green_status(&store, now)?;
@@ -206,21 +207,22 @@ fn prepare_reuse_window_tracks_metric_snapshot_interval() -> Result<()> {
         &store,
         &discovery,
         &shadow,
-        &options(now + Duration::seconds(1_799)),
+        &options(now + Duration::seconds(2_699)),
     )?
-    .expect("snapshot should be reusable until the metric snapshot interval");
+    .expect("snapshot should be reusable before the safe midpoint");
 
     assert_eq!(reused.refresh_after_age_seconds, 1_800);
+    assert_eq!(reused.reuse_before_age_seconds, 2_700);
     assert_eq!(reused.rebuild_after_age_seconds, 5_400);
     assert!(reused.reused_existing_snapshot);
 
-    let expired_after_refresh = reusable_materialized_discovery_v2_status_for_prepare(
+    let expired_after_reuse_window = reusable_materialized_discovery_v2_status_for_prepare(
         &store,
         &discovery,
         &shadow,
-        &options(now + Duration::seconds(1_801)),
+        &options(now + Duration::seconds(2_701)),
     )?;
-    assert!(expired_after_refresh.is_none());
+    assert!(expired_after_reuse_window.is_none());
 
     let expired = reusable_materialized_discovery_v2_status_for_prepare(
         &store,
@@ -233,7 +235,7 @@ fn prepare_reuse_window_tracks_metric_snapshot_interval() -> Result<()> {
 }
 
 #[test]
-fn prepare_rebuilds_materialized_status_at_refresh_age() -> Result<()> {
+fn prepare_rebuilds_materialized_status_at_reuse_threshold() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-13T12:00:00+00:00")?.with_timezone(&Utc);
     seed_green_status(&store, now)?;
@@ -244,16 +246,16 @@ fn prepare_rebuilds_materialized_status_at_refresh_age() -> Result<()> {
         &store,
         &discovery,
         &shadow,
-        &options(now + Duration::seconds(59)),
+        &options(now + Duration::seconds(89)),
     )?;
 
     assert!(reused.is_some());
-    let refresh_expired = reusable_materialized_discovery_v2_status_for_prepare(
+    let reuse_expired = reusable_materialized_discovery_v2_status_for_prepare(
         &store,
         &discovery,
         &shadow,
-        &options(now + Duration::seconds(60)),
+        &options(now + Duration::seconds(90)),
     )?;
-    assert!(refresh_expired.is_none());
+    assert!(reuse_expired.is_none());
     Ok(())
 }
