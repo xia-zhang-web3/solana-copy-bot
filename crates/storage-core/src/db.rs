@@ -4,6 +4,9 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+const OPERATOR_SCAN_CACHE_KIB: i64 = -524_288;
+const OPERATOR_SCAN_MMAP_BYTES: i64 = 2_147_483_648;
+
 pub struct SqliteDiscoveryStore {
     pub(crate) conn: Connection,
 }
@@ -55,10 +58,10 @@ impl SqliteDiscoveryStore {
             .pragma_update(None, "temp_store", "MEMORY")
             .context("failed setting sqlite temp_store=MEMORY for operator scan")?;
         self.conn
-            .pragma_update(None, "cache_size", -262_144_i64)
+            .pragma_update(None, "cache_size", OPERATOR_SCAN_CACHE_KIB)
             .context("failed setting sqlite cache_size for operator scan")?;
         self.conn
-            .pragma_update(None, "mmap_size", 1_073_741_824_i64)
+            .pragma_update(None, "mmap_size", OPERATOR_SCAN_MMAP_BYTES)
             .context("failed setting sqlite mmap_size for operator scan")?;
         Ok(())
     }
