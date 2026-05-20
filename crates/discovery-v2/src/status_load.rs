@@ -84,7 +84,7 @@ pub(super) fn scan_window_metrics(
     let mut accumulator = DiscoveryV2WindowAccumulator::default();
     let mut rows_seen = 0usize;
     let page = store
-        .for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget(
+        .for_each_sol_leg_swap_in_window_after_cursor_with_budget(
             window_start,
             now,
             None,

@@ -5,7 +5,7 @@ pub use types_history_retention::{
     ExecutionHistoryRetentionSummary, HistoryRetentionCutoffs, HistoryRetentionSummary,
 };
 pub use types_observed::{
-    ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary,
+    ObservedSolLegSwap, ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary,
     SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot, WalletActivityDayRow,
     WalletSolLegActivityWindow,
 };

@@ -2,7 +2,7 @@ use crate::token_market::{is_sol_buy, is_sol_sell};
 use crate::tradability::BuyTradability;
 use chrono::{DateTime, Utc};
 use copybot_config::DiscoveryConfig;
-use copybot_core_types::SwapEvent;
+use copybot_storage_core::ObservedSolLegSwap;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 pub(crate) const REJECT_SUSPICIOUS_ACTIVITY: &str = "suspicious_activity";
@@ -34,7 +34,7 @@ impl TerminalRejectedWallets {
     pub(crate) fn observe_sample_swap(
         &mut self,
         wallet_id: &str,
-        swap: &SwapEvent,
+        swap: &ObservedSolLegSwap,
         discovery: &DiscoveryConfig,
         tradability: Option<BuyTradability>,
     ) {
@@ -123,7 +123,7 @@ impl WalletAccumulator {
 
     pub fn observe_swap(
         &mut self,
-        swap: &SwapEvent,
+        swap: &ObservedSolLegSwap,
         discovery: &DiscoveryConfig,
         tradability: Option<BuyTradability>,
     ) {
@@ -139,17 +139,17 @@ impl WalletAccumulator {
         }
         if is_sol_buy(swap) {
             self.observe_buy(
-                swap.token_out.as_str(),
-                swap.amount_out,
-                swap.amount_in,
+                swap.token_mint.as_str(),
+                swap.token_qty,
+                swap.sol_notional,
                 swap.ts_utc,
                 tradability.unwrap_or(BuyTradability::Rejected),
             );
         } else if is_sol_sell(swap) {
             self.observe_sell(
-                swap.token_in.as_str(),
-                swap.amount_in,
-                swap.amount_out,
+                swap.token_mint.as_str(),
+                swap.token_qty,
+                swap.sol_notional,
                 swap.ts_utc,
             );
         }

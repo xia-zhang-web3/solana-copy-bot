@@ -5,9 +5,9 @@ use crate::quality_prepare::{
 use crate::token_market::{is_sol_buy, sol_leg_token_and_notional};
 use anyhow::{Context, Result};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
-use copybot_core_types::SwapEvent;
 use copybot_storage_core::{
-    DiscoveryRuntimeCursor, DiscoveryV2QualityPrepareUpsert, SqliteDiscoveryStore,
+    DiscoveryRuntimeCursor, DiscoveryV2QualityPrepareUpsert, ObservedSolLegSwap,
+    SqliteDiscoveryStore,
 };
 use std::time::{Duration as StdDuration, Instant};
 
@@ -38,7 +38,7 @@ pub(crate) fn prepare_discovery_v2_quality_incremental(
     let mut last_cursor = cursor.clone();
     let mut pending_evidence = Vec::new();
     let page = store
-        .for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget(
+        .for_each_sol_leg_swap_in_window_after_cursor_with_budget(
             window_start,
             options.now,
             cursor.as_ref(),
@@ -127,15 +127,17 @@ pub(crate) fn prepare_discovery_v2_quality_incremental(
     Ok(report)
 }
 
-fn quality_prepare_upsert_from_swap(swap: &SwapEvent) -> Option<DiscoveryV2QualityPrepareUpsert> {
-    let (mint, sol_notional) = sol_leg_token_and_notional(swap)?;
+fn quality_prepare_upsert_from_swap(
+    swap: &ObservedSolLegSwap,
+) -> Option<DiscoveryV2QualityPrepareUpsert> {
+    let (mint, sol_notional) = sol_leg_token_and_notional(swap);
     if !sol_notional.is_finite() || sol_notional <= 0.0 {
         return None;
     }
     Some(DiscoveryV2QualityPrepareUpsert {
         signature: swap.signature.clone(),
         mint: mint.to_string(),
-        wallet_id: swap.wallet.clone(),
+        wallet_id: swap.wallet_id.clone(),
         ts_utc: swap.ts_utc,
         slot: swap.slot,
         sol_notional,

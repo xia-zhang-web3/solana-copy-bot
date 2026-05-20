@@ -12,6 +12,7 @@ mod observed_activity;
 mod observed_budget;
 mod observed_row;
 mod observed_sol_leg_projection;
+mod observed_sol_leg_scan;
 mod observed_timestamp;
 mod observed_writer;
 mod publication;
@@ -63,10 +64,10 @@ pub use types::{
     DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
     DiscoveryV2QualityEvidenceAggregate, DiscoveryV2QualityPrepareState,
     DiscoveryV2QualityPrepareUpsert, ExecutionHistoryRetentionSummary, FollowlistUpdateResult,
-    HistoryRetentionCutoffs, HistoryRetentionSummary, ObservedSwapBatchWriteMetrics,
-    ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow,
-    RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome, ShadowLotRow,
-    ShadowTokenLossCooldown, ShadowWalletFeedback, ShadowWalletTokenFastLossCooldown,
+    HistoryRetentionCutoffs, HistoryRetentionSummary, ObservedSolLegSwap,
+    ObservedSwapBatchWriteMetrics, ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow,
+    RecentRawJournalStateRow, RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome,
+    ShadowLotRow, ShadowTokenLossCooldown, ShadowWalletFeedback, ShadowWalletTokenFastLossCooldown,
     SqliteBatchedDeleteSummary, SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
     SqliteSnapshotDeferredReason, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
     SqliteSnapshotRetryReason, SqliteSnapshotSourceMetrics, SqliteSnapshotSummary,

@@ -2,7 +2,8 @@ use crate::accumulator::{TerminalRejectedWallets, WalletAccumulator};
 use crate::token_market::{is_sol_buy, is_sol_sell, sol_leg_token_and_notional, SolLegTrade};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
-use copybot_core_types::{SwapEvent, TokenQualityCacheRow};
+use copybot_core_types::TokenQualityCacheRow;
+use copybot_storage_core::ObservedSolLegSwap;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 pub(crate) const TOKEN_ROLLING_MARKET_WINDOW_SECONDS: i64 =
@@ -52,17 +53,16 @@ pub(crate) struct DiscoveryV2WindowAccumulator {
 impl DiscoveryV2WindowAccumulator {
     pub(crate) fn observe_swap(
         &mut self,
-        swap: &SwapEvent,
+        swap: &ObservedSolLegSwap,
         discovery: &DiscoveryConfig,
         shadow: &ShadowConfig,
         token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
     ) {
         self.observed_rows = self.observed_rows.saturating_add(1);
-        let trader_id = self.trader_id_for_wallet(&swap.wallet);
-        let wallet_terminal_rejected = self.terminal_rejected_wallet_ids.contains(&swap.wallet);
-        if let Some((token, _)) = sol_leg_token_and_notional(swap) {
-            self.finalize_expired_rug_buys(token, swap.ts_utc, discovery);
-        }
+        let trader_id = self.trader_id_for_wallet(&swap.wallet_id);
+        let wallet_terminal_rejected = self.terminal_rejected_wallet_ids.contains(&swap.wallet_id);
+        let (token, sol_notional) = sol_leg_token_and_notional(swap);
+        self.finalize_expired_rug_buys(token, swap.ts_utc, discovery);
         self.prune_inactive_state_periodically(swap.ts_utc, discovery);
         let tradability = update_token_state_and_buy_tradability(
             &mut self.token_states,
@@ -72,14 +72,19 @@ impl DiscoveryV2WindowAccumulator {
             swap,
         );
         if wallet_terminal_rejected {
-            self.terminal_rejected
-                .observe_sample_swap(&swap.wallet, swap, discovery, tradability);
+            self.terminal_rejected.observe_sample_swap(
+                &swap.wallet_id,
+                swap,
+                discovery,
+                tradability,
+            );
         }
         let mut wallet_terminal_after_observe = wallet_terminal_rejected;
         if !wallet_terminal_rejected
-            && (is_sol_buy(swap) || (is_sol_sell(swap) && self.wallets.contains_key(&swap.wallet)))
+            && (is_sol_buy(swap)
+                || (is_sol_sell(swap) && self.wallets.contains_key(&swap.wallet_id)))
         {
-            let wallet_id = swap.wallet.clone();
+            let wallet_id = swap.wallet_id.clone();
             let entry = self
                 .wallets
                 .entry(wallet_id.clone())
@@ -92,21 +97,19 @@ impl DiscoveryV2WindowAccumulator {
                 }
             }
         }
-        if let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) {
-            if !wallet_terminal_after_observe
-                && is_sol_buy(swap)
-                && swap.amount_out > 0.0
-                && swap.amount_in > 0.0
-            {
-                self.observe_pending_rug_buy(
-                    token,
-                    &swap.wallet,
-                    swap.ts_utc,
-                    discovery.rug_lookahead_seconds,
-                );
-            }
-            self.observe_rug_trade(token, trader_id, sol_notional.max(0.0), discovery);
+        if !wallet_terminal_after_observe
+            && is_sol_buy(swap)
+            && swap.token_qty > 0.0
+            && swap.sol_notional > 0.0
+        {
+            self.observe_pending_rug_buy(
+                token,
+                &swap.wallet_id,
+                swap.ts_utc,
+                discovery.rug_lookahead_seconds,
+            );
         }
+        self.observe_rug_trade(token, trader_id, sol_notional.max(0.0), discovery);
     }
 
     pub(crate) fn wallet_count(&self) -> usize {
@@ -293,11 +296,9 @@ fn update_token_state_and_buy_tradability(
     token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
     shadow: &ShadowConfig,
     trader_id: u32,
-    swap: &SwapEvent,
+    swap: &ObservedSolLegSwap,
 ) -> Option<BuyTradability> {
-    let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) else {
-        return None;
-    };
+    let (token, sol_notional) = sol_leg_token_and_notional(swap);
     let state = token_states.entry(token.to_string()).or_default();
     evict_expired_token_trades(state, swap.ts_utc);
     let trade = SolLegTrade {

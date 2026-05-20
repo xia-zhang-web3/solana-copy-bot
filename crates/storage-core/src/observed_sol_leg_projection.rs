@@ -1,14 +1,14 @@
 use crate::observed_budget::{interrupted_after_deadline, sqlite_progress_deadline};
 use crate::observed_row::parse_sqlite_slot;
 use crate::observed_timestamp::parse_rfc3339_utc;
-use crate::{DiscoveryRuntimeCursor, ObservedSwapCursorPage, SqliteDiscoveryStore};
+use crate::{
+    DiscoveryRuntimeCursor, ObservedSolLegSwap, ObservedSwapCursorPage, SqliteDiscoveryStore,
+};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_core_types::SwapEvent;
 use rusqlite::{params, OptionalExtension};
 use std::time::Instant;
 
-const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const PROJECTION_INDEX: &str = "idx_observed_sol_leg_swaps_ts_slot_signature";
 
 pub(crate) fn ensure_observed_sol_leg_projection_schema(
@@ -139,7 +139,7 @@ impl SqliteDiscoveryStore {
         mut on_swap: F,
     ) -> Result<ObservedSwapCursorPage>
     where
-        F: FnMut(SwapEvent) -> Result<()>,
+        F: FnMut(ObservedSolLegSwap) -> Result<()>,
     {
         if limit == 0 || Instant::now() >= deadline {
             return Ok(ObservedSwapCursorPage {
@@ -234,7 +234,7 @@ impl SqliteDiscoveryStore {
             }) else {
                 break;
             };
-            on_swap(projection_row_to_swap_event(row)?)?;
+            on_swap(projection_row_to_sol_leg_swap(row)?)?;
             seen = seen.saturating_add(1);
         }
         Ok(ObservedSwapCursorPage {
@@ -244,31 +244,24 @@ impl SqliteDiscoveryStore {
     }
 }
 
-fn projection_row_to_swap_event(row: &rusqlite::Row<'_>) -> Result<SwapEvent> {
+fn projection_row_to_sol_leg_swap(row: &rusqlite::Row<'_>) -> Result<ObservedSolLegSwap> {
     let is_buy: i64 = row.get(2)?;
-    let token_mint: String = row.get(3)?;
-    let token_qty: f64 = row.get(4)?;
-    let sol_notional: f64 = row.get(5)?;
+    let is_buy = match is_buy {
+        1 => true,
+        0 => false,
+        _ => anyhow::bail!("observed_sol_leg_swaps.is_buy is invalid: {is_buy}"),
+    };
     let slot_raw: i64 = row.get(6)?;
     let ts_raw: String = row.get(7)?;
-    let (token_in, token_out, amount_in, amount_out) = if is_buy == 1 {
-        (SOL_MINT.to_string(), token_mint, sol_notional, token_qty)
-    } else if is_buy == 0 {
-        (token_mint, SOL_MINT.to_string(), token_qty, sol_notional)
-    } else {
-        anyhow::bail!("observed_sol_leg_swaps.is_buy is invalid: {is_buy}");
-    };
-    Ok(SwapEvent {
+    Ok(ObservedSolLegSwap {
         signature: row.get(0)?,
-        wallet: row.get(1)?,
-        dex: String::new(),
-        token_in,
-        token_out,
-        amount_in,
-        amount_out,
+        wallet_id: row.get(1)?,
+        is_buy,
+        token_mint: row.get(3)?,
+        token_qty: row.get(4)?,
+        sol_notional: row.get(5)?,
         slot: parse_sqlite_slot(slot_raw, "observed_sol_leg_swaps.slot")?,
         ts_utc: parse_rfc3339_utc(&ts_raw, "observed_sol_leg_swaps.ts")?,
-        exact_amounts: None,
     })
 }
 

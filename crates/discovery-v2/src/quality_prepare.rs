@@ -4,8 +4,9 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::DiscoveryConfig;
 use copybot_config::ShadowConfig;
-use copybot_core_types::SwapEvent;
-use copybot_storage_core::{DiscoveryV2QualityEvidenceAggregate, SqliteDiscoveryStore};
+use copybot_storage_core::{
+    DiscoveryV2QualityEvidenceAggregate, ObservedSolLegSwap, SqliteDiscoveryStore,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration as StdDuration, Instant};
@@ -162,7 +163,7 @@ pub fn prepare_discovery_v2_quality(
     let mut evidence = HashMap::<String, ObservedQualityEvidence>::new();
     let wallet_evidence_cap = wallet_evidence_cap(shadow);
     let page = store
-        .for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget(
+        .for_each_sol_leg_swap_in_window_after_cursor_with_budget(
             window_start,
             options.now,
             None,
@@ -463,12 +464,10 @@ fn quality_prepare_window_minutes(scoring_window_minutes: u64) -> u64 {
 
 fn observe_quality_evidence(
     evidence: &mut HashMap<String, ObservedQualityEvidence>,
-    swap: &SwapEvent,
+    swap: &ObservedSolLegSwap,
     wallet_evidence_cap: usize,
 ) {
-    let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) else {
-        return;
-    };
+    let (token, sol_notional) = sol_leg_token_and_notional(swap);
     if !sol_notional.is_finite() || sol_notional <= 0.0 {
         return;
     }
@@ -485,10 +484,10 @@ fn observe_quality_evidence(
     entry.first_seen = entry.first_seen.min(swap.ts_utc);
     entry.max_sol_notional = entry.max_sol_notional.max(sol_notional);
     entry.sol_trade_count = entry.sol_trade_count.saturating_add(1);
-    if !entry.wallets.iter().any(|wallet| wallet == &swap.wallet)
+    if !entry.wallets.iter().any(|wallet| wallet == &swap.wallet_id)
         && entry.wallets.len() < wallet_evidence_cap
     {
-        entry.wallets.push(swap.wallet.clone());
+        entry.wallets.push(swap.wallet_id.clone());
     }
     if is_sol_buy(swap) {
         entry.buy_count = entry.buy_count.saturating_add(1);
