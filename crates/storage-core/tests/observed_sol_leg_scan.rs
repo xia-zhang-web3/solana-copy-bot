@@ -214,3 +214,57 @@ fn sol_leg_projection_scan_reconstructs_buys_sells_and_respects_cursor() -> Resu
     );
     Ok(())
 }
+
+#[test]
+fn sol_leg_projection_covering_index_is_covering_for_scan_columns() -> Result<()> {
+    let dir = tempdir()?;
+    let db_path = dir.path().join("runtime.db");
+    let store = SqliteDiscoveryStore::open(&db_path)?;
+    ensure_discovery_v2_schema(&store)?;
+    store.ensure_observed_swap_writer_tables()?;
+    store.insert_observed_swap(&SwapEvent {
+        signature: "sig-covering".to_string(),
+        wallet: "wallet-a".to_string(),
+        dex: "raydium".to_string(),
+        token_in: SOL_MINT.to_string(),
+        token_out: "TOKEN-A".to_string(),
+        amount_in: 1.0,
+        amount_out: 10.0,
+        slot: 100,
+        ts_utc: ts("2026-05-05T10:00:00Z")?,
+        exact_amounts: None,
+    })?;
+    drop(store);
+
+    let conn = Connection::open(&db_path)?;
+    conn.execute_batch(
+        "CREATE INDEX idx_observed_sol_leg_swaps_scan_covering
+         ON observed_sol_leg_swaps(
+             ts, slot, signature, wallet_id, is_buy, token_mint, token_qty, sol_notional
+         );",
+    )?;
+    let plan = conn
+        .prepare(
+            "EXPLAIN QUERY PLAN
+             SELECT signature, wallet_id, is_buy, token_mint, token_qty, sol_notional, slot, ts
+             FROM observed_sol_leg_swaps INDEXED BY idx_observed_sol_leg_swaps_scan_covering
+             WHERE ts >= ?1 AND ts <= ?2
+             ORDER BY ts ASC, slot ASC, signature ASC
+             LIMIT ?3",
+        )?
+        .query_map(
+            rusqlite::params![
+                "2026-05-05T09:00:00+00:00",
+                "2026-05-05T11:00:00+00:00",
+                10i64
+            ],
+            |row| row.get::<_, String>(3),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .join("\n");
+    assert!(
+        plan.contains("USING COVERING INDEX idx_observed_sol_leg_swaps_scan_covering"),
+        "expected covering index plan, got: {plan}"
+    );
+    Ok(())
+}

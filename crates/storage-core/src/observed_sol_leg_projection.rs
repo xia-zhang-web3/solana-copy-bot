@@ -10,6 +10,7 @@ use rusqlite::{params, OptionalExtension};
 use std::time::Instant;
 
 const PROJECTION_INDEX: &str = "idx_observed_sol_leg_swaps_ts_slot_signature";
+pub(crate) const PROJECTION_COVERING_INDEX: &str = "idx_observed_sol_leg_swaps_scan_covering";
 
 pub(crate) fn ensure_observed_sol_leg_projection_schema(
     store: &SqliteDiscoveryStore,
@@ -153,20 +154,15 @@ impl SqliteDiscoveryStore {
         let cursor_ts = cursor.map(|value| value.ts_utc.to_rfc3339());
         let cursor_slot = cursor.map(|value| value.slot as i64);
         let cursor_signature = cursor.map(|value| value.signature.as_str());
-        let query = if cursor.is_some() {
-            "SELECT signature, wallet_id, is_buy, token_mint, token_qty, sol_notional, slot, ts
-             FROM observed_sol_leg_swaps INDEXED BY idx_observed_sol_leg_swaps_ts_slot_signature
-             WHERE ts >= ?1
-               AND ts <= ?2
-               AND (ts, slot, signature) > (?3, ?4, ?5)
-             ORDER BY ts ASC, slot ASC, signature ASC
-             LIMIT ?6"
+        let covering_index = observed_sol_leg_projection_covering_index_is_valid(self)?;
+        let query = if cursor.is_some() && covering_index {
+            SOL_LEG_PROJECTION_COVERING_QUERY_AFTER_CURSOR
+        } else if cursor.is_some() {
+            SOL_LEG_PROJECTION_QUERY_AFTER_CURSOR
+        } else if covering_index {
+            SOL_LEG_PROJECTION_COVERING_QUERY
         } else {
-            "SELECT signature, wallet_id, is_buy, token_mint, token_qty, sol_notional, slot, ts
-             FROM observed_sol_leg_swaps INDEXED BY idx_observed_sol_leg_swaps_ts_slot_signature
-             WHERE ts >= ?1 AND ts <= ?2
-             ORDER BY ts ASC, slot ASC, signature ASC
-             LIMIT ?3"
+            SOL_LEG_PROJECTION_QUERY
         };
 
         let _deadline_guard = sqlite_progress_deadline(&self.conn, deadline);
@@ -266,17 +262,50 @@ fn projection_row_to_sol_leg_swap(row: &rusqlite::Row<'_>) -> Result<ObservedSol
 }
 
 fn observed_sol_leg_projection_index_is_valid(store: &SqliteDiscoveryStore) -> Result<bool> {
+    observed_sol_leg_projection_index_columns_are_valid(
+        store,
+        PROJECTION_INDEX,
+        &["ts", "slot", "signature"],
+    )
+}
+
+pub(crate) fn observed_sol_leg_projection_covering_index_is_valid(
+    store: &SqliteDiscoveryStore,
+) -> Result<bool> {
+    observed_sol_leg_projection_index_columns_are_valid(
+        store,
+        PROJECTION_COVERING_INDEX,
+        &[
+            "ts",
+            "slot",
+            "signature",
+            "wallet_id",
+            "is_buy",
+            "token_mint",
+            "token_qty",
+            "sol_notional",
+        ],
+    )
+}
+
+fn observed_sol_leg_projection_index_columns_are_valid(
+    store: &SqliteDiscoveryStore,
+    index_name: &str,
+    expected: &[&str],
+) -> Result<bool> {
     let index_flags = store
         .conn
         .query_row(
             "SELECT [unique], partial
              FROM pragma_index_list('observed_sol_leg_swaps')
              WHERE name = ?1",
-            [PROJECTION_INDEX],
+            [index_name],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )
         .optional()
-        .context("failed checking observed SOL-leg projection index flags")?;
+        .with_context(|| {
+            format!("failed checking observed SOL-leg projection index flags for {index_name}")
+        })?;
     let Some((unique, partial)) = index_flags else {
         return Ok(false);
     };
@@ -288,10 +317,14 @@ fn observed_sol_leg_projection_index_is_valid(store: &SqliteDiscoveryStore) -> R
         .conn
         .prepare(&format!(
             "SELECT name, [desc], coll, key
-             FROM pragma_index_xinfo('{PROJECTION_INDEX}')
+             FROM pragma_index_xinfo('{index_name}')
              ORDER BY seqno"
         ))
-        .context("failed preparing observed SOL-leg projection index introspection")?;
+        .with_context(|| {
+            format!(
+                "failed preparing observed SOL-leg projection index introspection for {index_name}"
+            )
+        })?;
     let key_columns = stmt
         .query_map([], |row| {
             Ok((
@@ -301,18 +334,21 @@ fn observed_sol_leg_projection_index_is_valid(store: &SqliteDiscoveryStore) -> R
                 row.get::<_, i64>(3)?,
             ))
         })
-        .context("failed querying observed SOL-leg projection index columns")?
+        .with_context(|| {
+            format!("failed querying observed SOL-leg projection index columns for {index_name}")
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed collecting observed SOL-leg projection index columns")?
+        .with_context(|| {
+            format!("failed collecting observed SOL-leg projection index columns for {index_name}")
+        })?
         .into_iter()
         .filter(|(_, _, _, key)| *key != 0)
         .collect::<Vec<_>>();
-    let expected = ["ts", "slot", "signature"];
     if key_columns.len() != expected.len() {
         return Ok(false);
     }
     for ((name, desc, coll, _), expected_column) in key_columns.iter().zip(expected) {
-        if name.as_deref() != Some(expected_column) {
+        if name.as_deref() != Some(*expected_column) {
             return Ok(false);
         }
         if *desc != 0 || coll.as_deref() != Some("BINARY") {
@@ -321,6 +357,38 @@ fn observed_sol_leg_projection_index_is_valid(store: &SqliteDiscoveryStore) -> R
     }
     Ok(true)
 }
+
+const SOL_LEG_PROJECTION_COVERING_QUERY: &str = "
+SELECT signature, wallet_id, is_buy, token_mint, token_qty, sol_notional, slot, ts
+FROM observed_sol_leg_swaps INDEXED BY idx_observed_sol_leg_swaps_scan_covering
+WHERE ts >= ?1 AND ts <= ?2
+ORDER BY ts ASC, slot ASC, signature ASC
+LIMIT ?3";
+
+const SOL_LEG_PROJECTION_COVERING_QUERY_AFTER_CURSOR: &str = "
+SELECT signature, wallet_id, is_buy, token_mint, token_qty, sol_notional, slot, ts
+FROM observed_sol_leg_swaps INDEXED BY idx_observed_sol_leg_swaps_scan_covering
+WHERE ts >= ?1
+  AND ts <= ?2
+  AND (ts, slot, signature) > (?3, ?4, ?5)
+ORDER BY ts ASC, slot ASC, signature ASC
+LIMIT ?6";
+
+const SOL_LEG_PROJECTION_QUERY: &str = "
+SELECT signature, wallet_id, is_buy, token_mint, token_qty, sol_notional, slot, ts
+FROM observed_sol_leg_swaps INDEXED BY idx_observed_sol_leg_swaps_ts_slot_signature
+WHERE ts >= ?1 AND ts <= ?2
+ORDER BY ts ASC, slot ASC, signature ASC
+LIMIT ?3";
+
+const SOL_LEG_PROJECTION_QUERY_AFTER_CURSOR: &str = "
+SELECT signature, wallet_id, is_buy, token_mint, token_qty, sol_notional, slot, ts
+FROM observed_sol_leg_swaps INDEXED BY idx_observed_sol_leg_swaps_ts_slot_signature
+WHERE ts >= ?1
+  AND ts <= ?2
+  AND (ts, slot, signature) > (?3, ?4, ?5)
+ORDER BY ts ASC, slot ASC, signature ASC
+LIMIT ?6";
 
 const OBSERVED_SOL_LEG_PROJECTION_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS observed_sol_leg_swaps (

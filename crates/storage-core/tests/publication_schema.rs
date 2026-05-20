@@ -392,6 +392,59 @@ fn startup_defers_recorded_malformed_sol_leg_index() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn startup_defers_projection_covering_index_on_non_empty_projection() -> Result<()> {
+    let dir = tempdir()?;
+    let db_path = dir.path().join("runtime.db");
+    let migrations_dir = dir.path().join("migrations");
+    std::fs::create_dir(&migrations_dir)?;
+    std::fs::copy(
+        repo_root().join("migrations/0043_observed_sol_leg_projection_covering_index.sql"),
+        migrations_dir.join("0043_observed_sol_leg_projection_covering_index.sql"),
+    )?;
+
+    let store = SqliteDiscoveryStore::open(&db_path)?;
+    ensure_discovery_v2_schema(&store)?;
+    store.ensure_observed_swap_writer_tables()?;
+    store.insert_observed_swap(&copybot_core_types::SwapEvent {
+        signature: "sig-projection-covering".to_string(),
+        wallet: "wallet-a".to_string(),
+        dex: "raydium".to_string(),
+        token_in: "So11111111111111111111111111111111111111112".to_string(),
+        token_out: "TOKEN-A".to_string(),
+        amount_in: 1.0,
+        amount_out: 10.0,
+        slot: 1,
+        ts_utc: chrono::DateTime::parse_from_rfc3339("2026-05-05T10:00:00+00:00")?
+            .with_timezone(&chrono::Utc),
+        exact_amounts: None,
+    })?;
+    drop(store);
+
+    let bootstrap = SqliteDiscoveryStore::open_and_migrate_for_startup(
+        &db_path,
+        &migrations_dir,
+        &SqliteStartupPolicy::default(),
+        None,
+    )?;
+    assert_eq!(bootstrap.applied_migrations, 0);
+    assert_eq!(
+        bootstrap.deferred_migrations,
+        vec!["0043_observed_sol_leg_projection_covering_index.sql".to_string()]
+    );
+    drop(bootstrap.store);
+
+    let conn = rusqlite::Connection::open(&db_path)?;
+    let recorded: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM schema_migrations
+         WHERE version = '0043_observed_sol_leg_projection_covering_index.sql'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(recorded, 0);
+    Ok(())
+}
+
 fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

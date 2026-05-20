@@ -1,4 +1,7 @@
 use crate::{
+    observed_sol_leg_projection::{
+        observed_sol_leg_projection_covering_index_is_valid, PROJECTION_COVERING_INDEX,
+    },
     observed_timestamp::observed_swaps_non_utc_timestamp_index_is_valid,
     report_startup_step_progress, run_observed_startup_step,
     schema_indexes::{observed_swaps_read_index_is_valid, observed_swaps_sol_leg_index_is_valid},
@@ -16,6 +19,7 @@ const STARTUP_DEFERRED_MIGRATIONS: &[&str] = &[
     "0008_shadow_perf_indexes.sql",
     "0039_observed_swaps_sol_leg_ts_index.sql",
     "0040_observed_swaps_non_utc_ts_index.sql",
+    "0043_observed_sol_leg_projection_covering_index.sql",
 ];
 
 #[derive(Clone, Copy)]
@@ -162,6 +166,16 @@ impl SqliteDiscoveryStore {
                 } else if recorded || self.sqlite_table_has_rows("observed_swaps")? {
                     Ok(StartupMigrationDecision::Defer)
                 } else {
+                    Ok(StartupMigrationDecision::Apply)
+                }
+            }
+            "0043_observed_sol_leg_projection_covering_index.sql" => {
+                if observed_sol_leg_projection_covering_index_is_valid(self)? {
+                    Ok(satisfied_deferred_migration_decision(recorded))
+                } else if recorded || self.sqlite_table_has_rows("observed_sol_leg_swaps")? {
+                    Ok(StartupMigrationDecision::Defer)
+                } else {
+                    self.drop_sqlite_indexes(&[PROJECTION_COVERING_INDEX])?;
                     Ok(StartupMigrationDecision::Apply)
                 }
             }
