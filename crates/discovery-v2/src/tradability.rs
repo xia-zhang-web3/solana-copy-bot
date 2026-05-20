@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 pub(crate) const TOKEN_ROLLING_MARKET_WINDOW_SECONDS: i64 =
     copybot_config::DISCOVERY_V2_TOKEN_ROLLING_MARKET_WINDOW_SECONDS;
+const ACCUMULATOR_MAINTENANCE_INTERVAL_ROWS: u64 = 65_536;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum BuyTradability {
@@ -39,6 +40,7 @@ struct PendingRugBuy {
 
 #[derive(Debug, Default)]
 pub(crate) struct DiscoveryV2WindowAccumulator {
+    observed_rows: u64,
     wallets: HashMap<String, WalletAccumulator>,
     terminal_rejected_wallet_ids: HashSet<String>,
     terminal_rejected: TerminalRejectedWallets,
@@ -55,11 +57,13 @@ impl DiscoveryV2WindowAccumulator {
         shadow: &ShadowConfig,
         token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
     ) {
+        self.observed_rows = self.observed_rows.saturating_add(1);
         let trader_id = self.trader_id_for_wallet(&swap.wallet);
         let wallet_terminal_rejected = self.terminal_rejected_wallet_ids.contains(&swap.wallet);
         if let Some((token, _)) = sol_leg_token_and_notional(swap) {
             self.finalize_expired_rug_buys(token, swap.ts_utc, discovery);
         }
+        self.prune_inactive_state_periodically(swap.ts_utc, discovery);
         let tradability = update_token_state_and_buy_tradability(
             &mut self.token_states,
             token_quality_cache,
@@ -154,6 +158,27 @@ impl DiscoveryV2WindowAccumulator {
             return;
         }
         self.terminal_rejected.record(wallet_id, accumulator);
+    }
+
+    fn prune_inactive_state_periodically(
+        &mut self,
+        now: DateTime<Utc>,
+        discovery: &DiscoveryConfig,
+    ) {
+        if self.observed_rows % ACCUMULATOR_MAINTENANCE_INTERVAL_ROWS != 0 {
+            return;
+        }
+        self.token_states.retain(|_, state| {
+            evict_expired_token_trades(state, now);
+            token_state_is_active(state)
+        });
+
+        let tokens = self.rug_states.keys().cloned().collect::<Vec<_>>();
+        for token in &tokens {
+            self.finalize_due_rug_buys(token, now, discovery, false);
+        }
+        self.rug_states
+            .retain(|_, state| !state.pending_buys.is_empty());
     }
 
     fn observe_pending_rug_buy(
@@ -371,4 +396,8 @@ fn evict_expired_token_trades(state: &mut TokenRollingState, now: DateTime<Utc>)
             }
         }
     }
+}
+
+fn token_state_is_active(state: &TokenRollingState) -> bool {
+    !state.sol_trades_5m.is_empty()
 }
