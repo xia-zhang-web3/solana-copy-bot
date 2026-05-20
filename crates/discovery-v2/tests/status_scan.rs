@@ -181,6 +181,102 @@ fn status_scan_keeps_missing_quality_wallet_rejected_after_prior_profit() -> Res
     Ok(())
 }
 
+#[test]
+fn status_scan_keeps_suspicious_wallet_fail_closed_after_prior_profit() -> Result<()> {
+    let dir = tempdir()?;
+    let store = SqliteDiscoveryStore::open(dir.path().join("runtime.db"))?;
+    ensure_discovery_v2_schema(&store)?;
+    let now = ts("2026-05-16T12:00:00Z")?;
+    let good_token = "GoodToken333333333333333333333333333333";
+    let suspicious_token = "SuspiciousToken111111111111111111111";
+    let tail_token = "TailToken3333333333333333333333333333333";
+    store.insert_observed_swaps_batch(&[
+        buy(
+            "coverage_wallet",
+            tail_token,
+            "sig-suspicious-coverage",
+            1,
+            now - Duration::hours(25),
+        ),
+        buy(
+            "suspicious_wallet",
+            suspicious_token,
+            "sig-suspicious-buy-1",
+            10,
+            now - Duration::minutes(20),
+        ),
+        sell(
+            "suspicious_wallet",
+            suspicious_token,
+            "sig-suspicious-sell-1",
+            11,
+            now - Duration::minutes(20),
+        ),
+        buy(
+            "suspicious_wallet",
+            suspicious_token,
+            "sig-suspicious-open-buy",
+            12,
+            now - Duration::minutes(20),
+        ),
+        buy(
+            "candidate_wallet",
+            good_token,
+            "sig-safe-buy",
+            13,
+            now - Duration::minutes(12),
+        ),
+        sell(
+            "candidate_wallet",
+            good_token,
+            "sig-safe-sell",
+            14,
+            now - Duration::minutes(11),
+        ),
+        buy(
+            "candidate_wallet",
+            good_token,
+            "sig-safe-open-buy",
+            15,
+            now - Duration::minutes(10),
+        ),
+        buy(
+            "tail_wallet",
+            tail_token,
+            "sig-suspicious-tail",
+            16,
+            now - Duration::minutes(1),
+        ),
+    ])?;
+    store.upsert_token_quality_cache(good_token, Some(5), Some(1.0), Some(60), now)?;
+    store.upsert_token_quality_cache(suspicious_token, Some(5), Some(1.0), Some(60), now)?;
+    store.upsert_token_quality_cache(tail_token, Some(5), Some(1.0), Some(60), now)?;
+    let (mut discovery, shadow) = policy();
+    discovery.max_tx_per_minute = 1;
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    assert!(status.production_green, "{:?}", status.blockers);
+    assert_eq!(
+        status.candidate_wallets,
+        vec!["candidate_wallet".to_string()]
+    );
+    let rejected = status
+        .wallet_metrics
+        .iter()
+        .find(|metric| metric.wallet_id == "suspicious_wallet")
+        .expect("suspicious wallet metric retained for operator evidence");
+    assert!(!rejected.eligible);
+    assert!(rejected
+        .reject_reasons
+        .iter()
+        .any(|reason| reason == "suspicious_activity"));
+    assert!(rejected
+        .reject_reasons
+        .iter()
+        .any(|reason| reason == "open_position_required_missing"));
+    Ok(())
+}
+
 fn policy() -> (DiscoveryConfig, ShadowConfig) {
     let mut discovery = DiscoveryConfig::default();
     discovery.min_leader_notional_sol = 0.0;

@@ -79,6 +79,9 @@ impl WalletAccumulator {
         self.last_seen = self.last_seen.max(swap.ts_utc);
         if !self.terminal_rejected {
             self.mark_tx_minute(swap.ts_utc.timestamp() / 60, discovery.max_tx_per_minute);
+            if self.suspicious {
+                self.prune_terminal_rejected_state();
+            }
         }
         if is_sol_buy(swap) {
             self.observe_buy(
