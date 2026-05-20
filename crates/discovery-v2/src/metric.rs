@@ -1,4 +1,6 @@
-use crate::accumulator::WalletAccumulator;
+use crate::accumulator::{
+    WalletAccumulator, REJECT_SUSPICIOUS_ACTIVITY, REJECT_TOKEN_QUALITY_EVIDENCE_MISSING,
+};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::DiscoveryConfig;
 use serde::{Deserialize, Serialize};
@@ -211,7 +213,7 @@ fn pre_rug_reject_reasons(
         active_days < discovery.min_active_days,
         "insufficient_active_days",
     );
-    push_if(&mut reasons, acc.suspicious, "suspicious_activity");
+    push_if(&mut reasons, acc.suspicious, REJECT_SUSPICIOUS_ACTIVITY);
     push_if(
         &mut reasons,
         acc.max_buy_notional_sol < discovery.min_leader_notional_sol,
@@ -235,7 +237,7 @@ fn pre_rug_reject_reasons(
     push_if(
         &mut reasons,
         missing_quality_evidence_buys > 0,
-        "token_quality_evidence_missing",
+        REJECT_TOKEN_QUALITY_EVIDENCE_MISSING,
     );
     push_if(
         &mut reasons,

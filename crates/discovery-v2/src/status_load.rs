@@ -1,6 +1,6 @@
 use super::status_types::{DiscoveryV2CoverageSample, DiscoveryV2TailStatus};
 use super::TOKEN_QUALITY_TTL_SECONDS;
-use crate::accumulator::WalletAccumulator;
+use crate::accumulator::{TerminalRejectedWallets, WalletAccumulator};
 use crate::tradability::DiscoveryV2WindowAccumulator;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -58,6 +58,7 @@ pub(super) fn load_coverage_sample(
 
 pub(super) struct DiscoveryV2WindowScan {
     pub(super) wallets: HashMap<String, WalletAccumulator>,
+    pub(super) terminal_rejected: TerminalRejectedWallets,
     pub(super) rows_seen: usize,
     pub(super) unique_wallets_seen: usize,
     pub(super) time_budget_exhausted: bool,
@@ -103,16 +104,18 @@ pub(super) fn scan_window_metrics(
     if page.time_budget_exhausted || rows_seen > max_rows {
         return Ok(DiscoveryV2WindowScan {
             wallets: HashMap::new(),
+            terminal_rejected: TerminalRejectedWallets::default(),
             rows_seen,
             unique_wallets_seen,
             time_budget_exhausted: page.time_budget_exhausted,
         });
     }
     accumulator.finalize_rug_lookahead(evidence_through, discovery);
-    let (wallets, _trader_ids) = accumulator.into_parts();
-    let unique_wallets_seen = wallets.len();
+    let (wallets, terminal_rejected, _trader_ids) = accumulator.into_parts();
+    let unique_wallets_seen = wallets.len().saturating_add(terminal_rejected.total());
     Ok(DiscoveryV2WindowScan {
         wallets,
+        terminal_rejected,
         rows_seen,
         unique_wallets_seen,
         time_budget_exhausted: page.time_budget_exhausted,

@@ -33,6 +33,14 @@ impl DiscoveryV2FilterStatusBuilder {
         self.observe_reject_reason(reason);
     }
 
+    pub(crate) fn observe_rejected_wallets(&mut self, reason: &str, count: u64) {
+        if count == 0 {
+            return;
+        }
+        self.total_wallets = self.total_wallets.saturating_add(count as usize);
+        *self.reject_breakdown.entry(reason.to_string()).or_insert(0) += count;
+    }
+
     pub(crate) fn finish(self) -> DiscoveryV2FilterStatus {
         DiscoveryV2FilterStatus {
             total_wallets: self.total_wallets,

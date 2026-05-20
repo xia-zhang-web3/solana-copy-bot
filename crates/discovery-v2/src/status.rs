@@ -13,6 +13,7 @@ use crate::status::status_rank::{retain_top_wallet_metric, scan_status, sort_wal
 use anyhow::Result;
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_storage_core::SqliteDiscoveryStore;
+use std::collections::HashMap;
 use std::time::{Duration as StdDuration, Instant};
 
 pub use crate::filters::DiscoveryV2FilterStatus;
@@ -100,6 +101,32 @@ pub fn build_discovery_v2_status(
         wallet_metrics_total = wallet_metrics_total.saturating_add(1);
         filters.observe_metric(&metric);
         retain_top_wallet_metric(&mut wallet_metrics, metric, retained_metric_limit);
+    }
+    if !metric_time_budget_exhausted {
+        let terminal_total = window_scan.terminal_rejected.total();
+        let terminal_reject_counts = window_scan.terminal_rejected.reject_counts().clone();
+        let mut sampled_terminal_reject_counts = HashMap::<String, u64>::new();
+        wallet_metrics_total = wallet_metrics_total.saturating_add(terminal_total);
+        for (wallet_id, acc) in window_scan.terminal_rejected.samples() {
+            if Instant::now() >= scan_deadline {
+                metric_time_budget_exhausted = true;
+                break;
+            }
+            *sampled_terminal_reject_counts
+                .entry(acc.terminal_reject_reason().to_string())
+                .or_insert(0) += 1;
+            let metric =
+                wallet_metric_from_accumulator(wallet_id, acc, discovery, scoring_data_now);
+            filters.observe_metric(&metric);
+            retain_top_wallet_metric(&mut wallet_metrics, metric, retained_metric_limit);
+        }
+        for (reason, count) in terminal_reject_counts {
+            let sampled = sampled_terminal_reject_counts
+                .get(&reason)
+                .copied()
+                .unwrap_or(0);
+            filters.observe_rejected_wallets(&reason, count.saturating_sub(sampled));
+        }
     }
     if metric_time_budget_exhausted {
         let scan = scan_status(

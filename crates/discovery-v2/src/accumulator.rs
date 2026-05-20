@@ -5,6 +5,60 @@ use copybot_config::DiscoveryConfig;
 use copybot_core_types::SwapEvent;
 use std::collections::{HashMap, HashSet, VecDeque};
 
+pub(crate) const REJECT_SUSPICIOUS_ACTIVITY: &str = "suspicious_activity";
+pub(crate) const REJECT_TOKEN_QUALITY_EVIDENCE_MISSING: &str = "token_quality_evidence_missing";
+const TERMINAL_REJECTED_SAMPLE_LIMIT: usize = 64;
+
+#[derive(Debug, Default)]
+pub(crate) struct TerminalRejectedWallets {
+    total: usize,
+    reject_counts: HashMap<String, u64>,
+    sample_indices: HashMap<String, usize>,
+    samples: Vec<(String, WalletAccumulator)>,
+}
+
+impl TerminalRejectedWallets {
+    pub(crate) fn record(&mut self, wallet_id: String, accumulator: WalletAccumulator) {
+        self.total = self.total.saturating_add(1);
+        *self
+            .reject_counts
+            .entry(accumulator.terminal_reject_reason().to_string())
+            .or_insert(0) += 1;
+        if self.samples.len() < TERMINAL_REJECTED_SAMPLE_LIMIT {
+            self.sample_indices
+                .insert(wallet_id.clone(), self.samples.len());
+            self.samples.push((wallet_id, accumulator));
+        }
+    }
+
+    pub(crate) fn observe_sample_swap(
+        &mut self,
+        wallet_id: &str,
+        swap: &SwapEvent,
+        discovery: &DiscoveryConfig,
+        tradability: Option<BuyTradability>,
+    ) {
+        let Some(index) = self.sample_indices.get(wallet_id).copied() else {
+            return;
+        };
+        if let Some((_, accumulator)) = self.samples.get_mut(index) {
+            accumulator.observe_swap(swap, discovery, tradability);
+        }
+    }
+
+    pub(crate) fn total(&self) -> usize {
+        self.total
+    }
+
+    pub(crate) fn reject_counts(&self) -> &HashMap<String, u64> {
+        &self.reject_counts
+    }
+
+    pub(crate) fn samples(self) -> Vec<(String, WalletAccumulator)> {
+        self.samples
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct WalletAccumulator {
     pub trades: u32,
@@ -211,6 +265,18 @@ impl WalletAccumulator {
         self.realized_pnl_by_day.clear();
         self.tx_per_minute.clear();
         self.positions.clear();
+    }
+
+    pub(crate) fn is_terminal_rejected(&self) -> bool {
+        self.terminal_rejected
+    }
+
+    pub(crate) fn terminal_reject_reason(&self) -> &'static str {
+        if self.suspicious {
+            REJECT_SUSPICIOUS_ACTIVITY
+        } else {
+            REJECT_TOKEN_QUALITY_EVIDENCE_MISSING
+        }
     }
 
     fn mark_tx_minute(&mut self, minute_bucket: i64, max_tx_per_minute: u32) {

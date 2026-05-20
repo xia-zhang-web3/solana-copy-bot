@@ -1,9 +1,9 @@
-use crate::accumulator::WalletAccumulator;
+use crate::accumulator::{TerminalRejectedWallets, WalletAccumulator};
 use crate::token_market::{is_sol_buy, is_sol_sell, sol_leg_token_and_notional, SolLegTrade};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::{SwapEvent, TokenQualityCacheRow};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub(crate) const TOKEN_ROLLING_MARKET_WINDOW_SECONDS: i64 =
     copybot_config::DISCOVERY_V2_TOKEN_ROLLING_MARKET_WINDOW_SECONDS;
@@ -40,6 +40,8 @@ struct PendingRugBuy {
 #[derive(Debug, Default)]
 pub(crate) struct DiscoveryV2WindowAccumulator {
     wallets: HashMap<String, WalletAccumulator>,
+    terminal_rejected_wallet_ids: HashSet<String>,
+    terminal_rejected: TerminalRejectedWallets,
     trader_ids: HashMap<String, u32>,
     token_states: HashMap<String, TokenRollingState>,
     rug_states: HashMap<String, TokenRugState>,
@@ -54,6 +56,7 @@ impl DiscoveryV2WindowAccumulator {
         token_quality_cache: &HashMap<String, TokenQualityCacheRow>,
     ) {
         let trader_id = self.trader_id_for_wallet(&swap.wallet);
+        let wallet_terminal_rejected = self.terminal_rejected_wallet_ids.contains(&swap.wallet);
         if let Some((token, _)) = sol_leg_token_and_notional(swap) {
             self.finalize_expired_rug_buys(token, swap.ts_utc, discovery);
         }
@@ -64,15 +67,33 @@ impl DiscoveryV2WindowAccumulator {
             trader_id,
             swap,
         );
-        if is_sol_buy(swap) || (is_sol_sell(swap) && self.wallets.contains_key(&swap.wallet)) {
+        if wallet_terminal_rejected {
+            self.terminal_rejected
+                .observe_sample_swap(&swap.wallet, swap, discovery, tradability);
+        }
+        let mut wallet_terminal_after_observe = wallet_terminal_rejected;
+        if !wallet_terminal_rejected
+            && (is_sol_buy(swap) || (is_sol_sell(swap) && self.wallets.contains_key(&swap.wallet)))
+        {
+            let wallet_id = swap.wallet.clone();
             let entry = self
                 .wallets
-                .entry(swap.wallet.clone())
+                .entry(wallet_id.clone())
                 .or_insert_with(|| WalletAccumulator::new(swap.ts_utc));
             entry.observe_swap(swap, discovery, tradability);
+            wallet_terminal_after_observe = entry.is_terminal_rejected();
+            if wallet_terminal_after_observe {
+                if let Some(accumulator) = self.wallets.remove(&wallet_id) {
+                    self.observe_terminal_rejected_wallet(wallet_id, accumulator);
+                }
+            }
         }
         if let Some((token, sol_notional)) = sol_leg_token_and_notional(swap) {
-            if is_sol_buy(swap) && swap.amount_out > 0.0 && swap.amount_in > 0.0 {
+            if !wallet_terminal_after_observe
+                && is_sol_buy(swap)
+                && swap.amount_out > 0.0
+                && swap.amount_in > 0.0
+            {
                 self.observe_pending_rug_buy(
                     token,
                     &swap.wallet,
@@ -85,7 +106,9 @@ impl DiscoveryV2WindowAccumulator {
     }
 
     pub(crate) fn wallet_count(&self) -> usize {
-        self.wallets.len()
+        self.wallets
+            .len()
+            .saturating_add(self.terminal_rejected.total())
     }
 
     pub(crate) fn finalize_rug_lookahead(
@@ -99,8 +122,14 @@ impl DiscoveryV2WindowAccumulator {
         }
     }
 
-    pub(crate) fn into_parts(self) -> (HashMap<String, WalletAccumulator>, HashMap<String, u32>) {
-        (self.wallets, self.trader_ids)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        HashMap<String, WalletAccumulator>,
+        TerminalRejectedWallets,
+        HashMap<String, u32>,
+    ) {
+        (self.wallets, self.terminal_rejected, self.trader_ids)
     }
 
     fn trader_id_for_wallet(&mut self, wallet: &str) -> u32 {
@@ -114,6 +143,17 @@ impl DiscoveryV2WindowAccumulator {
             .min(u32::MAX as usize) as u32;
         self.trader_ids.insert(wallet.to_string(), next);
         next
+    }
+
+    fn observe_terminal_rejected_wallet(
+        &mut self,
+        wallet_id: String,
+        accumulator: WalletAccumulator,
+    ) {
+        if !self.terminal_rejected_wallet_ids.insert(wallet_id.clone()) {
+            return;
+        }
+        self.terminal_rejected.record(wallet_id, accumulator);
     }
 
     fn observe_pending_rug_buy(
