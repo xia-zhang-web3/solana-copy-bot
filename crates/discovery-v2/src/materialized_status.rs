@@ -210,10 +210,11 @@ fn materialized_status_rebuild_after_age_seconds(discovery: &DiscoveryConfig) ->
 fn materialized_status_reuse_before_age_seconds(discovery: &DiscoveryConfig) -> u64 {
     let max_age = materialized_status_rebuild_after_age_seconds(discovery).max(1);
     let refresh_after = materialized_status_refresh_after_age_seconds(discovery).min(max_age);
-    let rebuild_margin = discovery
-        .refresh_seconds
-        .max(1)
-        .min(max_age.saturating_sub(1));
+    let publish_cycle_margin = discovery
+        .metric_snapshot_interval_seconds
+        .max(discovery.refresh_seconds.max(1))
+        .saturating_mul(2);
+    let rebuild_margin = publish_cycle_margin.max(1).min(max_age.saturating_sub(1));
     max_age
         .saturating_sub(rebuild_margin)
         .max(refresh_after)
