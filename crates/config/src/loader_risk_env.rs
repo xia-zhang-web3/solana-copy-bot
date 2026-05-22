@@ -197,6 +197,33 @@ pub(super) fn apply_risk_env_overrides(config: &mut AppConfig) -> Result<()> {
         config.risk.shadow_token_loss_cooldown_catastrophe_max_roi =
             shadow_token_loss_cooldown_catastrophe_max_roi;
     }
+    if let Some(shadow_token_recent_close_cooldown_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_RISK_SHADOW_TOKEN_RECENT_CLOSE_COOLDOWN_ENABLED")?
+    {
+        config.risk.shadow_token_recent_close_cooldown_enabled =
+            shadow_token_recent_close_cooldown_enabled;
+    }
+    if let Some(shadow_token_recent_close_cooldown_minutes) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_TOKEN_RECENT_CLOSE_COOLDOWN_MINUTES",
+        "u64",
+    )? {
+        config.risk.shadow_token_recent_close_cooldown_minutes =
+            shadow_token_recent_close_cooldown_minutes;
+    }
+    if let Some(shadow_token_recent_loss_cooldown_minutes) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_TOKEN_RECENT_LOSS_COOLDOWN_MINUTES",
+        "u64",
+    )? {
+        config.risk.shadow_token_recent_loss_cooldown_minutes =
+            shadow_token_recent_loss_cooldown_minutes;
+    }
+    if let Some(shadow_token_recent_loss_cooldown_max_roi) = parse_env_number::<f64>(
+        "SOLANA_COPY_BOT_RISK_SHADOW_TOKEN_RECENT_LOSS_COOLDOWN_MAX_ROI",
+        "f64",
+    )? {
+        config.risk.shadow_token_recent_loss_cooldown_max_roi =
+            shadow_token_recent_loss_cooldown_max_roi;
+    }
     if let Some(shadow_wallet_loss_cooldown_enabled) =
         parse_env_bool("SOLANA_COPY_BOT_RISK_SHADOW_WALLET_LOSS_COOLDOWN_ENABLED")?
     {

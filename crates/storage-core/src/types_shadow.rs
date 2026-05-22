@@ -157,6 +157,15 @@ impl ShadowTokenLossCooldown {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ShadowTokenRecentClose {
+    pub token: String,
+    pub entry_cost_sol: f64,
+    pub pnl_sol: f64,
+    pub roi: Option<f64>,
+    pub closed_ts: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TokenMarketStats {
     pub first_seen: Option<DateTime<Utc>>,

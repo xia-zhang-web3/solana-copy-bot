@@ -29,6 +29,10 @@ pub(crate) fn validate_shadow_risk_float_gates(config: &AppConfig) -> Result<()>
             config.risk.shadow_token_loss_cooldown_catastrophe_max_roi,
         ),
         (
+            "risk.shadow_token_recent_loss_cooldown_max_roi",
+            config.risk.shadow_token_recent_loss_cooldown_max_roi,
+        ),
+        (
             "risk.shadow_wallet_loss_cooldown_max_pnl_sol",
             config.risk.shadow_wallet_loss_cooldown_max_pnl_sol,
         ),

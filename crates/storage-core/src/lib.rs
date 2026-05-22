@@ -27,6 +27,7 @@ mod shadow_feedback_runtime;
 mod shadow_lots;
 mod shadow_metrics;
 mod shadow_mutation;
+mod shadow_recent_close;
 mod shadow_token_exposure;
 mod snapshot;
 mod sqlite_retry;
@@ -67,8 +68,9 @@ pub use types::{
     HistoryRetentionCutoffs, HistoryRetentionSummary, ObservedSolLegSwap,
     ObservedSwapBatchWriteMetrics, ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow,
     RecentRawJournalStateRow, RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome,
-    ShadowLotRow, ShadowTokenLossCooldown, ShadowWalletFeedback, ShadowWalletTokenFastLossCooldown,
-    SqliteBatchedDeleteSummary, SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
+    ShadowLotRow, ShadowTokenLossCooldown, ShadowTokenRecentClose, ShadowWalletFeedback,
+    ShadowWalletTokenFastLossCooldown, SqliteBatchedDeleteSummary,
+    SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
     SqliteSnapshotDeferredReason, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
     SqliteSnapshotRetryReason, SqliteSnapshotSourceMetrics, SqliteSnapshotSummary,
     SqliteStartupLargeWalCheckpointSummary, SqliteStartupPolicy, StartupStepOutcome,

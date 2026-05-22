@@ -183,6 +183,99 @@
     }
 
     #[test]
+    fn risk_guard_token_recent_close_cooldown_blocks_churn() -> Result<()> {
+        let (store, db_path) = make_test_store("token-recent-close-cooldown")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        cfg.shadow_wallet_loss_cooldown_enabled = false;
+        cfg.shadow_token_loss_cooldown_enabled = false;
+        cfg.shadow_wallet_token_fast_loss_cooldown_enabled = false;
+        cfg.shadow_token_recent_close_cooldown_enabled = true;
+        cfg.shadow_token_recent_close_cooldown_minutes = 5;
+        cfg.shadow_token_recent_loss_cooldown_minutes = 60;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_closed_trade(
+            "sig-recent-close",
+            "wallet-a",
+            "churn-token",
+            1.0,
+            0.2,
+            0.202,
+            0.002,
+            now - chrono::Duration::minutes(2),
+            now - chrono::Duration::minutes(1),
+        )?;
+
+        match guard.can_open_buy_for_signal(&store, now, true, Some("wallet-b"), Some("churn-token")) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TokenRecentCloseCooldown,
+                detail,
+            } => {
+                assert!(detail.contains("churn-token"));
+                assert!(detail.contains("reason=recent_close"));
+                assert!(detail.contains("close_cooldown_minutes=5"));
+            }
+            other => panic!("expected recent close token cooldown block, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn risk_guard_token_recent_loss_cooldown_outlives_short_close_cooldown() -> Result<()> {
+        let (store, db_path) = make_test_store("token-recent-loss-cooldown")?;
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_drawdown_1h_stop_sol = -999.0;
+        cfg.shadow_drawdown_6h_stop_sol = -999.0;
+        cfg.shadow_drawdown_24h_stop_sol = -999.0;
+        cfg.shadow_rug_loss_count_threshold = u64::MAX;
+        cfg.shadow_rug_loss_rate_threshold = 1.0;
+        cfg.shadow_wallet_loss_cooldown_enabled = false;
+        cfg.shadow_token_loss_cooldown_enabled = false;
+        cfg.shadow_wallet_token_fast_loss_cooldown_enabled = false;
+        cfg.shadow_token_recent_close_cooldown_enabled = true;
+        cfg.shadow_token_recent_close_cooldown_minutes = 5;
+        cfg.shadow_token_recent_loss_cooldown_minutes = 60;
+        cfg.shadow_token_recent_loss_cooldown_max_roi = -0.05;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+
+        store.insert_shadow_closed_trade(
+            "sig-recent-loss",
+            "wallet-a",
+            "loss-token",
+            1.0,
+            0.2,
+            0.16,
+            -0.04,
+            now - chrono::Duration::minutes(20),
+            now - chrono::Duration::minutes(10),
+        )?;
+
+        match guard.can_open_buy_for_signal(&store, now, true, Some("wallet-b"), Some("loss-token")) {
+            BuyRiskDecision::Blocked {
+                reason: BuyRiskBlockReason::TokenRecentCloseCooldown,
+                detail,
+            } => {
+                assert!(detail.contains("loss-token"));
+                assert!(detail.contains("reason=recent_loss"));
+                assert!(detail.contains("loss_cooldown_minutes=60"));
+            }
+            other => panic!("expected recent loss token cooldown block, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
     fn risk_guard_wallet_token_fast_loss_blocks_rapid_reentry() -> Result<()> {
         let (store, db_path) = make_test_store("wallet-token-fast-loss")?;
         let mut cfg = RiskConfig::default();
@@ -193,6 +286,7 @@
         cfg.shadow_rug_loss_rate_threshold = 1.0;
         cfg.shadow_wallet_loss_cooldown_enabled = false;
         cfg.shadow_token_loss_cooldown_enabled = false;
+        cfg.shadow_token_recent_close_cooldown_enabled = false;
         cfg.shadow_wallet_token_fast_loss_cooldown_enabled = true;
         cfg.shadow_wallet_token_fast_loss_cooldown_window_minutes = 60;
         cfg.shadow_wallet_token_fast_loss_cooldown_max_hold_seconds = 60;
@@ -240,6 +334,7 @@
         cfg.shadow_rug_loss_rate_threshold = 1.0;
         cfg.shadow_wallet_loss_cooldown_enabled = false;
         cfg.shadow_token_loss_cooldown_enabled = false;
+        cfg.shadow_token_recent_close_cooldown_enabled = false;
         cfg.shadow_wallet_token_fast_loss_cooldown_enabled = true;
         cfg.shadow_wallet_token_fast_loss_cooldown_max_hold_seconds = 60;
         let mut guard = ShadowRiskGuard::new(cfg);

@@ -211,6 +211,22 @@ impl ShadowRiskGuard {
                     };
                 }
             }
+            match self.token_recent_close_cooldown(store, now, token) {
+                Ok(Some(detail)) => {
+                    return BuyRiskDecision::Blocked {
+                        reason: BuyRiskBlockReason::TokenRecentCloseCooldown,
+                        detail,
+                    };
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let detail = format!("token_recent_close_cooldown_error: {error}");
+                    return BuyRiskDecision::Blocked {
+                        reason: BuyRiskBlockReason::FailClosed,
+                        detail,
+                    };
+                }
+            }
         }
 
         if pause_new_trades_on_outage {
