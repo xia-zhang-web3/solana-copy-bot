@@ -49,8 +49,18 @@ fn log_startup_progress_event(event: &StartupStepProgress) {
                 "startup progress"
             );
         }
-        StartupStepOutcome::Waiting | StartupStepOutcome::Skipped => {
+        StartupStepOutcome::Waiting => {
             warn!(
+                startup_stage = event.stage,
+                startup_stage_outcome = event.outcome.as_str(),
+                startup_stage_elapsed_ms = event.elapsed_ms,
+                startup_stage_budget_ms = event.budget_ms,
+                detail = event.detail.as_deref(),
+                "startup progress"
+            );
+        }
+        StartupStepOutcome::Skipped => {
+            info!(
                 startup_stage = event.stage,
                 startup_stage_outcome = event.outcome.as_str(),
                 startup_stage_elapsed_ms = event.elapsed_ms,

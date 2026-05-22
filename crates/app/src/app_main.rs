@@ -59,7 +59,7 @@ pub(crate) async fn run() -> Result<()> {
     }
     match perform_startup_wal_checkpoint(&startup_reporter) {
         StartupWalCheckpointOutcome::Deferred => {
-            warn!(
+            info!(
                 reason = STARTUP_WAL_CHECKPOINT_DEFER_REASON,
                 "startup sqlite wal checkpoint deferred"
             );
