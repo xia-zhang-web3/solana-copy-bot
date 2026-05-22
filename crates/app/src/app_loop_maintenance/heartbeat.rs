@@ -64,7 +64,7 @@ pub(crate) async fn handle_app_heartbeat_tick(
         ) {
             let reason_key = sqlite_maintenance_block_reason_key(&reason);
             if *last_history_retention_skip_reason_key != Some(reason_key) {
-                warn!(
+                info!(
                     maintenance = SqliteMaintenanceTask::HistoryRetention.as_str(),
                     reason = %reason,
                     "sqlite maintenance blocked by runtime health gate"
@@ -151,7 +151,7 @@ pub(crate) async fn handle_app_heartbeat_tick(
         ) {
             let reason_key = sqlite_maintenance_block_reason_key(&reason);
             if *last_observed_swap_retention_skip_reason_key != Some(reason_key) {
-                warn!(
+                info!(
                     maintenance = SqliteMaintenanceTask::ObservedSwapRetention.as_str(),
                     reason = %reason,
                     "sqlite maintenance blocked by runtime health gate"

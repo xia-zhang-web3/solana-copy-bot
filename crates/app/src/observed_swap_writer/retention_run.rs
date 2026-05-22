@@ -60,7 +60,7 @@ pub(in crate::observed_swap_writer) fn run_observed_swap_retention_maintenance(
     }
 
     if let Some(reason) = stop_reason {
-        warn!(
+        info!(
             stop_reason = reason,
             retention_days = config.retention_days,
             nominal_observed_swap_cutoff = %nominal_cutoff,
