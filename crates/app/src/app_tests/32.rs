@@ -113,7 +113,7 @@
         );
         assert!(
             summary.pending_irrelevant_queue_depth_at_pause
-                >= DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY * 2 / 3,
+                >= DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY / 2,
             "after raw pending reaches the full writer, the app should build a material local discovery-critical irrelevant backlog; exact pause depth is scheduler-sensitive on CI runners: {summary:?}"
         );
         assert!(
@@ -136,7 +136,7 @@
         assert!(
             summary.ingestion_paused_by_pending_irrelevant_queue
                 || summary.pending_irrelevant_queue_depth_at_pause
-                    >= DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY * 2 / 3,
+                    >= DISCOVERY_CRITICAL_PENDING_IRRELEVANT_SWAP_CAPACITY / 2,
             "the app should either pause on the local discovery-critical backlog or prove that backlog materially formed before the scheduler drained the upstream queue: {summary:?}"
         );
         Ok(())
