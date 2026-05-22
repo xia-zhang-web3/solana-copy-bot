@@ -8,6 +8,7 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use super::SHADOW_MAX_CONCURRENT_WORKERS;
 use crate::shadow_runtime_helpers::{find_last_pending_buy_index, spawn_shadow_worker_task};
+use crate::swap_classification::classify_swap_side;
 use crate::telemetry::{record_shadow_queue_full_buy_drop, record_shadow_queue_full_sell_outcome};
 
 pub(crate) struct ShadowScheduler {
@@ -87,6 +88,19 @@ impl ShadowScheduler {
                 .pending_shadow_tasks
                 .get(key)
                 .is_some_and(|pending| !pending.is_empty())
+    }
+
+    pub(crate) fn token_has_pending_or_inflight_buy(&self, token: &str) -> bool {
+        self.inflight_shadow_keys
+            .iter()
+            .any(|key| key.token == token)
+            || self.pending_shadow_tasks.iter().any(|(key, pending)| {
+                key.token == token
+                    && pending.iter().any(|task| {
+                        classify_swap_side(&task.swap)
+                            .is_some_and(|side| matches!(side, ShadowSwapSide::Buy))
+                    })
+            })
     }
 }
 

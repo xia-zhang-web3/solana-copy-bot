@@ -369,48 +369,48 @@
         Ok(())
     }
 
+    fn make_shadow_buy_task(signature: &str, wallet: &str, token: &str) -> ShadowTaskInput {
+        ShadowTaskInput {
+            swap: SwapEvent {
+                wallet: wallet.to_string(),
+                dex: "pumpswap".to_string(),
+                token_in: "So11111111111111111111111111111111111111112".to_string(),
+                token_out: token.to_string(),
+                amount_in: 1.0,
+                amount_out: 1000.0,
+                signature: signature.to_string(),
+                slot: 1,
+                ts_utc: Utc::now(),
+                exact_amounts: None,
+            },
+            follow_snapshot: Arc::new(FollowSnapshot::default()),
+            key: ShadowTaskKey {
+                wallet: wallet.to_string(),
+                token: token.to_string(),
+            },
+        }
+    }
+
     #[test]
     fn scheduler_keeps_single_inflight_per_wallet_token_key() {
-        fn make_task(signature: &str, wallet: &str, token: &str) -> ShadowTaskInput {
-            ShadowTaskInput {
-                swap: SwapEvent {
-                    wallet: wallet.to_string(),
-                    dex: "pumpswap".to_string(),
-                    token_in: "So11111111111111111111111111111111111111112".to_string(),
-                    token_out: token.to_string(),
-                    amount_in: 1.0,
-                    amount_out: 1000.0,
-                    signature: signature.to_string(),
-                    slot: 1,
-                    ts_utc: Utc::now(),
-                    exact_amounts: None,
-                },
-                follow_snapshot: Arc::new(FollowSnapshot::default()),
-                key: ShadowTaskKey {
-                    wallet: wallet.to_string(),
-                    token: token.to_string(),
-                },
-            }
-        }
-
         let mut shadow_scheduler = ShadowScheduler::new();
 
         assert!(shadow_scheduler
             .enqueue_shadow_task(
                 SHADOW_PENDING_TASK_CAPACITY,
-                make_task("A1", "wallet-a", "token-x"),
+                make_shadow_buy_task("A1", "wallet-a", "token-x"),
             )
             .is_ok());
         assert!(shadow_scheduler
             .enqueue_shadow_task(
                 SHADOW_PENDING_TASK_CAPACITY,
-                make_task("A2", "wallet-a", "token-x"),
+                make_shadow_buy_task("A2", "wallet-a", "token-x"),
             )
             .is_ok());
         assert!(shadow_scheduler
             .enqueue_shadow_task(
                 SHADOW_PENDING_TASK_CAPACITY,
-                make_task("B1", "wallet-b", "token-y"),
+                make_shadow_buy_task("B1", "wallet-b", "token-y"),
             )
             .is_ok());
         assert_eq!(shadow_scheduler.pending_shadow_task_count, 3);
@@ -436,40 +436,40 @@
     }
 
     #[test]
-    fn enqueue_shadow_task_enforces_capacity() {
-        fn make_task(signature: &str, wallet: &str, token: &str) -> ShadowTaskInput {
-            ShadowTaskInput {
-                swap: SwapEvent {
-                    wallet: wallet.to_string(),
-                    dex: "pumpswap".to_string(),
-                    token_in: "So11111111111111111111111111111111111111112".to_string(),
-                    token_out: token.to_string(),
-                    amount_in: 1.0,
-                    amount_out: 1000.0,
-                    signature: signature.to_string(),
-                    slot: 1,
-                    ts_utc: Utc::now(),
-                    exact_amounts: None,
-                },
-                follow_snapshot: Arc::new(FollowSnapshot::default()),
-                key: ShadowTaskKey {
-                    wallet: wallet.to_string(),
-                    token: token.to_string(),
-                },
-            }
-        }
+    fn scheduler_reports_pending_or_inflight_buy_by_token() {
+        let mut shadow_scheduler = ShadowScheduler::new();
 
+        assert!(shadow_scheduler
+            .enqueue_shadow_task(
+                SHADOW_PENDING_TASK_CAPACITY,
+                make_shadow_buy_task("A1", "wallet-a", "token-x"),
+            )
+            .is_ok());
+        assert!(shadow_scheduler.token_has_pending_or_inflight_buy("token-x"));
+        assert!(!shadow_scheduler.token_has_pending_or_inflight_buy("token-y"));
+
+        let first = shadow_scheduler
+            .dequeue_next_shadow_task()
+            .expect("first task");
+        assert!(shadow_scheduler.token_has_pending_or_inflight_buy("token-x"));
+
+        shadow_scheduler.mark_task_complete(&first.key);
+        assert!(!shadow_scheduler.token_has_pending_or_inflight_buy("token-x"));
+    }
+
+    #[test]
+    fn enqueue_shadow_task_enforces_capacity() {
         let mut shadow_scheduler = ShadowScheduler::new();
         let cap = 2usize;
 
         assert!(shadow_scheduler
-            .enqueue_shadow_task(cap, make_task("A1", "wallet-a", "token-x"),)
+            .enqueue_shadow_task(cap, make_shadow_buy_task("A1", "wallet-a", "token-x"),)
             .is_ok());
         assert!(shadow_scheduler
-            .enqueue_shadow_task(cap, make_task("A2", "wallet-a", "token-x"),)
+            .enqueue_shadow_task(cap, make_shadow_buy_task("A2", "wallet-a", "token-x"),)
             .is_ok());
         assert!(shadow_scheduler
-            .enqueue_shadow_task(cap, make_task("B1", "wallet-b", "token-y"),)
+            .enqueue_shadow_task(cap, make_shadow_buy_task("B1", "wallet-b", "token-y"),)
             .is_err());
         assert_eq!(shadow_scheduler.pending_shadow_task_count, cap);
     }
