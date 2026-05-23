@@ -228,6 +228,53 @@
     }
 
     #[test]
+    fn risk_guard_infra_no_progress_uses_pre_window_baseline_after_sample_gap() {
+        let mut cfg = RiskConfig::default();
+        cfg.shadow_infra_window_minutes = 20;
+        let mut guard = ShadowRiskGuard::new(cfg);
+        let now = Utc::now();
+        guard.infra_samples = VecDeque::from([
+            IngestionRuntimeSnapshot {
+                ts_utc: now - chrono::Duration::minutes(30),
+                ws_notifications_enqueued: 10_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 900_000,
+                grpc_transaction_updates_total: 900_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 2048,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
+            },
+            IngestionRuntimeSnapshot {
+                ts_utc: now,
+                ws_notifications_enqueued: 50_000,
+                ws_notifications_replaced_oldest: 0,
+                grpc_message_total: 950_000,
+                grpc_transaction_updates_total: 940_000,
+                parse_rejected_total: 0,
+                grpc_decode_errors: 0,
+                rpc_429: 0,
+                rpc_5xx: 0,
+                ingestion_lag_ms_p95: 2_000,
+                yellowstone_output_queue_depth: 0,
+                yellowstone_output_queue_capacity: 2048,
+                yellowstone_output_queue_fill_ratio: 0.0,
+                yellowstone_output_oldest_age_ms: 0,
+            },
+        ]);
+
+        assert!(
+            guard.compute_infra_block_reason(now).is_none(),
+            "a fresh sample after a guard sampling gap must compare against the pre-window sample, not itself"
+        );
+    }
+
+    #[test]
     fn risk_guard_infra_no_progress_still_blocks_when_only_grpc_ping_total_advances() {
         let mut cfg = RiskConfig::default();
         cfg.shadow_infra_window_minutes = 20;

@@ -32,43 +32,52 @@ impl ShadowRiskGuard {
 
         let window_start =
             now - chrono::Duration::minutes(self.config.shadow_infra_window_minutes.max(1) as i64);
-        let has_complete_window_coverage = self
-            .infra_samples
-            .front()
-            .map(|sample| sample.ts_utc <= window_start)
-            .unwrap_or(false);
-        let baseline = self
+        let Some(progress_baseline) = self
             .infra_samples
             .iter()
             .copied()
-            .find(|sample| sample.ts_utc >= window_start)
-            .unwrap_or_else(|| self.infra_samples.front().copied().unwrap_or(latest));
+            .rev()
+            .find(|sample| sample.ts_utc <= window_start)
+        else {
+            return None;
+        };
+        let window_baseline = self
+            .infra_samples
+            .iter()
+            .copied()
+            .find(|sample| sample.ts_utc >= window_start && sample.ts_utc < latest.ts_utc)
+            .unwrap_or(progress_baseline);
 
         let delta_enqueued = latest
             .ws_notifications_enqueued
-            .saturating_sub(baseline.ws_notifications_enqueued);
+            .saturating_sub(window_baseline.ws_notifications_enqueued);
         let delta_replaced = latest
             .ws_notifications_replaced_oldest
-            .saturating_sub(baseline.ws_notifications_replaced_oldest);
-        let delta_grpc_transaction_updates_total = latest
+            .saturating_sub(window_baseline.ws_notifications_replaced_oldest);
+        let progress_delta_enqueued = latest
+            .ws_notifications_enqueued
+            .saturating_sub(progress_baseline.ws_notifications_enqueued);
+        let progress_delta_replaced = latest
+            .ws_notifications_replaced_oldest
+            .saturating_sub(progress_baseline.ws_notifications_replaced_oldest);
+        let progress_delta_grpc_transaction_updates_total = latest
             .grpc_transaction_updates_total
-            .saturating_sub(baseline.grpc_transaction_updates_total);
+            .saturating_sub(progress_baseline.grpc_transaction_updates_total);
         let delta_parse_rejected_total = latest
             .parse_rejected_total
-            .saturating_sub(baseline.parse_rejected_total);
+            .saturating_sub(progress_baseline.parse_rejected_total);
         let delta_grpc_decode_errors = latest
             .grpc_decode_errors
-            .saturating_sub(baseline.grpc_decode_errors);
-        let delta_rpc_429 = latest.rpc_429.saturating_sub(baseline.rpc_429);
-        let delta_rpc_5xx = latest.rpc_5xx.saturating_sub(baseline.rpc_5xx);
+            .saturating_sub(progress_baseline.grpc_decode_errors);
+        let delta_rpc_429 = latest.rpc_429.saturating_sub(window_baseline.rpc_429);
+        let delta_rpc_5xx = latest.rpc_5xx.saturating_sub(window_baseline.rpc_5xx);
 
         const INFRA_PARSER_STALL_MIN_TX_UPDATES: u64 = 25;
         const INFRA_PARSER_STALL_ERROR_RATIO_THRESHOLD: f64 = 0.95;
 
-        if has_complete_window_coverage
-            && delta_enqueued == 0
-            && delta_replaced == 0
-            && delta_grpc_transaction_updates_total == 0
+        if progress_delta_enqueued == 0
+            && progress_delta_replaced == 0
+            && progress_delta_grpc_transaction_updates_total == 0
             && delta_rpc_429 == 0
             && delta_rpc_5xx == 0
         {
@@ -84,15 +93,14 @@ impl ShadowRiskGuard {
             });
         }
 
-        if has_complete_window_coverage
-            && delta_enqueued == 0
-            && delta_grpc_transaction_updates_total >= INFRA_PARSER_STALL_MIN_TX_UPDATES
+        if progress_delta_enqueued == 0
+            && progress_delta_grpc_transaction_updates_total >= INFRA_PARSER_STALL_MIN_TX_UPDATES
         {
             let parser_errors_delta =
                 delta_parse_rejected_total.saturating_add(delta_grpc_decode_errors);
             if parser_errors_delta > 0 {
-                let parser_error_ratio =
-                    parser_errors_delta as f64 / delta_grpc_transaction_updates_total as f64;
+                let parser_error_ratio = parser_errors_delta as f64
+                    / progress_delta_grpc_transaction_updates_total as f64;
                 if parser_error_ratio >= INFRA_PARSER_STALL_ERROR_RATIO_THRESHOLD {
                     return Some(InfraBlockSignal {
                         key: InfraBlockKey::ParserStall,
@@ -101,7 +109,7 @@ impl ShadowRiskGuard {
                             format!(
                                 "parser_stall_for={}m tx_updates_delta={} parser_errors_delta={} error_ratio={:.4}",
                                 self.config.shadow_infra_window_minutes.max(1),
-                                delta_grpc_transaction_updates_total,
+                                progress_delta_grpc_transaction_updates_total,
                                 parser_errors_delta,
                                 parser_error_ratio
                             ),
