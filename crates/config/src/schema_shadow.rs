@@ -79,6 +79,8 @@ pub struct ShadowConfig {
     pub copy_notional_sol: f64,
     pub min_leader_notional_sol: f64,
     pub max_signal_lag_seconds: u64,
+    pub recent_sell_cooldown_enabled: bool,
+    pub recent_sell_cooldown_minutes: u64,
     pub quality_gates_enabled: bool,
     pub min_token_age_seconds: u64,
     pub min_holders: u64,
@@ -98,6 +100,8 @@ impl Default for ShadowConfig {
             copy_notional_sol: 0.25,
             min_leader_notional_sol: 0.5,
             max_signal_lag_seconds: 45,
+            recent_sell_cooldown_enabled: true,
+            recent_sell_cooldown_minutes: 120,
             quality_gates_enabled: true,
             min_token_age_seconds: 30,
             min_holders: 5,
@@ -122,6 +126,14 @@ impl fmt::Debug for ShadowConfig {
             .field("copy_notional_sol", &self.copy_notional_sol)
             .field("min_leader_notional_sol", &self.min_leader_notional_sol)
             .field("max_signal_lag_seconds", &self.max_signal_lag_seconds)
+            .field(
+                "recent_sell_cooldown_enabled",
+                &self.recent_sell_cooldown_enabled,
+            )
+            .field(
+                "recent_sell_cooldown_minutes",
+                &self.recent_sell_cooldown_minutes,
+            )
             .field("quality_gates_enabled", &self.quality_gates_enabled)
             .field("min_token_age_seconds", &self.min_token_age_seconds)
             .field("min_holders", &self.min_holders)
@@ -181,7 +193,7 @@ impl Default for RiskConfig {
             shadow_wallet_loss_cooldown_max_roi: -0.10,
             shadow_wallet_loss_cooldown_catastrophe_min_closed_trades: 1,
             shadow_wallet_loss_cooldown_catastrophe_min_entry_sol: 0.20,
-            shadow_wallet_loss_cooldown_catastrophe_max_roi: -0.60,
+            shadow_wallet_loss_cooldown_catastrophe_max_roi: -0.50,
             shadow_wallet_token_fast_loss_cooldown_enabled: true,
             shadow_wallet_token_fast_loss_cooldown_window_minutes: 60,
             shadow_wallet_token_fast_loss_cooldown_max_hold_seconds: 60,

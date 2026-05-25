@@ -5,7 +5,7 @@ use copybot_core_types::{
     CopySignalRow, Lamports, COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE,
     COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
 };
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 
 impl SqliteDiscoveryStore {
     pub fn insert_copy_signal(&self, signal: &CopySignalRow) -> Result<bool> {
@@ -145,6 +145,40 @@ impl SqliteDiscoveryStore {
             });
         }
         Ok(signals)
+    }
+
+    pub fn has_recent_copy_signal_for_wallet_token_side(
+        &self,
+        wallet_id: &str,
+        token: &str,
+        side: &str,
+        since: DateTime<Utc>,
+        before: DateTime<Utc>,
+    ) -> Result<bool> {
+        let found: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM copy_signals
+                 WHERE wallet_id = ?1
+                   AND token = ?2
+                   AND side = ?3
+                   AND status = 'shadow_recorded'
+                   AND ts >= ?4
+                   AND ts < ?5
+                 LIMIT 1",
+                params![
+                    wallet_id,
+                    token,
+                    side,
+                    since.to_rfc3339(),
+                    before.to_rfc3339(),
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed checking recent copy signal history")?;
+        Ok(found.is_some())
     }
 }
 

@@ -277,6 +277,110 @@ fn status_scan_keeps_suspicious_wallet_fail_closed_after_prior_profit() -> Resul
     Ok(())
 }
 
+#[test]
+fn status_scan_prefers_still_eligible_active_wallet_to_reduce_churn() -> Result<()> {
+    let dir = tempdir()?;
+    let store = SqliteDiscoveryStore::open(dir.path().join("runtime.db"))?;
+    ensure_discovery_v2_schema(&store)?;
+    let now = ts("2026-05-16T13:00:00Z")?;
+    let active_token = "ActiveToken11111111111111111111111111111";
+    let challenger_token = "ChallengerToken111111111111111111111";
+    let tail_token = "TailToken4444444444444444444444444444444";
+    store.activate_follow_wallet(
+        "active_wallet",
+        now - Duration::hours(2),
+        "test-active-wallet",
+    )?;
+    store.insert_observed_swaps_batch(&[
+        buy(
+            "coverage_wallet",
+            tail_token,
+            "sig-sticky-coverage",
+            1,
+            now - Duration::hours(25),
+        ),
+        buy(
+            "active_wallet",
+            active_token,
+            "sig-active-buy",
+            10,
+            now - Duration::minutes(15),
+        ),
+        swap(
+            "active_wallet",
+            active_token,
+            SOL_MINT,
+            10.0,
+            1.05,
+            "sig-active-sell",
+            11,
+            now - Duration::minutes(14),
+        ),
+        buy(
+            "active_wallet",
+            active_token,
+            "sig-active-open",
+            12,
+            now - Duration::minutes(13),
+        ),
+        buy(
+            "challenger_wallet",
+            challenger_token,
+            "sig-challenger-buy",
+            13,
+            now - Duration::minutes(12),
+        ),
+        swap(
+            "challenger_wallet",
+            challenger_token,
+            SOL_MINT,
+            10.0,
+            2.0,
+            "sig-challenger-sell",
+            14,
+            now - Duration::minutes(11),
+        ),
+        buy(
+            "challenger_wallet",
+            challenger_token,
+            "sig-challenger-open",
+            15,
+            now - Duration::minutes(10),
+        ),
+        buy(
+            "tail_wallet",
+            tail_token,
+            "sig-sticky-tail",
+            16,
+            now - Duration::minutes(1),
+        ),
+    ])?;
+    store.upsert_token_quality_cache(active_token, Some(5), Some(1.0), Some(60), now)?;
+    store.upsert_token_quality_cache(challenger_token, Some(5), Some(1.0), Some(60), now)?;
+    store.upsert_token_quality_cache(tail_token, Some(5), Some(1.0), Some(60), now)?;
+    let (mut discovery, shadow) = policy();
+    discovery.follow_top_n = 1;
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    assert!(status.production_green, "{:?}", status.blockers);
+    let challenger = status
+        .wallet_metrics
+        .iter()
+        .find(|metric| metric.wallet_id == "challenger_wallet")
+        .expect("challenger metric");
+    let active = status
+        .wallet_metrics
+        .iter()
+        .find(|metric| metric.wallet_id == "active_wallet")
+        .expect("active metric");
+    assert!(
+        challenger.selection_score > active.selection_score,
+        "test setup should make the inactive challenger rank higher"
+    );
+    assert_eq!(status.candidate_wallets, vec!["active_wallet".to_string()]);
+    Ok(())
+}
+
 fn policy() -> (DiscoveryConfig, ShadowConfig) {
     let mut discovery = DiscoveryConfig::default();
     discovery.min_leader_notional_sol = 0.0;

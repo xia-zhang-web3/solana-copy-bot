@@ -5,7 +5,7 @@ use copybot_config::{DiscoveryConfig, ShadowConfig, DISCOVERY_V2_TOKEN_QUALITY_T
 use copybot_core_types::TokenQualityCacheRow;
 use copybot_storage_core::SqliteDiscoveryStore;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::thread;
 
 const LIVE_PORTFOLIO_RPC_BATCH_SIZE: usize = 8;
@@ -56,9 +56,14 @@ pub(super) fn apply_live_portfolio_gate(
     options: &crate::policy::DiscoveryV2BuildOptions,
     metrics: &mut [DiscoveryV2WalletMetric],
 ) -> Result<LivePortfolioGateResult> {
+    let active_follow_wallets = store.list_active_follow_wallets()?;
     if !discovery.live_portfolio_gate_enabled {
         return Ok(LivePortfolioGateResult {
-            candidate_wallets: candidate_wallets_without_live_gate(discovery, metrics),
+            candidate_wallets: candidate_wallets_without_live_gate(
+                discovery,
+                metrics,
+                &active_follow_wallets,
+            ),
             status: None,
             live_reject_reasons: Vec::new(),
         });
@@ -107,13 +112,12 @@ pub(super) fn apply_live_portfolio_gate(
         });
     };
 
-    let eligible_wallets = metrics
-        .iter()
-        .enumerate()
-        .filter(|(_, metric)| metric.eligible && metric.score >= discovery.min_score)
-        .take(status.max_wallets)
-        .map(|(index, metric)| (index, metric.wallet_id.clone()))
-        .collect::<Vec<_>>();
+    let eligible_wallets = stable_eligible_wallets(
+        discovery,
+        metrics,
+        &active_follow_wallets,
+        status.max_wallets,
+    );
     for batch in eligible_wallets.chunks(LIVE_PORTFOLIO_RPC_BATCH_SIZE) {
         let snapshots = fetch_live_portfolio_batch(client, batch);
         for (index, snapshot) in snapshots {
@@ -320,13 +324,40 @@ fn reject_metric(metric: &mut DiscoveryV2WalletMetric, reason: &str) {
 fn candidate_wallets_without_live_gate(
     discovery: &DiscoveryConfig,
     metrics: &[DiscoveryV2WalletMetric],
+    active_follow_wallets: &HashSet<String>,
 ) -> Vec<String> {
-    metrics
-        .iter()
-        .filter(|metric| metric.eligible && metric.score >= discovery.min_score)
-        .take(discovery.follow_top_n.max(1) as usize)
-        .map(|metric| metric.wallet_id.clone())
-        .collect()
+    stable_eligible_wallets(
+        discovery,
+        metrics,
+        active_follow_wallets,
+        discovery.follow_top_n.max(1) as usize,
+    )
+    .into_iter()
+    .map(|(_, wallet_id)| wallet_id)
+    .collect()
+}
+
+fn stable_eligible_wallets(
+    discovery: &DiscoveryConfig,
+    metrics: &[DiscoveryV2WalletMetric],
+    active_follow_wallets: &HashSet<String>,
+    limit: usize,
+) -> Vec<(usize, String)> {
+    let mut ordered = Vec::new();
+    for prefer_active in [true, false] {
+        for (index, metric) in metrics.iter().enumerate() {
+            if active_follow_wallets.contains(&metric.wallet_id) != prefer_active {
+                continue;
+            }
+            if metric.eligible && metric.score >= discovery.min_score {
+                ordered.push((index, metric.wallet_id.clone()));
+                if ordered.len() >= limit {
+                    return ordered;
+                }
+            }
+        }
+    }
+    ordered
 }
 
 fn evaluation(

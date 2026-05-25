@@ -5,7 +5,7 @@ use super::types::{
 };
 use crate::{log_gate_drop, to_shadow_candidate};
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::CopySignalRow;
 use copybot_core_types::{
     SwapEvent, COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
@@ -119,6 +119,31 @@ impl ShadowService {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::LagExceeded));
         }
         if candidate.side == "buy" {
+            if self.config.recent_sell_cooldown_enabled
+                && self.config.recent_sell_cooldown_minutes > 0
+                && store.has_recent_copy_signal_for_wallet_token_side(
+                    &swap.wallet,
+                    &candidate.token,
+                    "sell",
+                    swap.ts_utc
+                        - Duration::minutes(self.config.recent_sell_cooldown_minutes as i64),
+                    swap.ts_utc,
+                )?
+            {
+                log_gate_drop(
+                    "cooldown",
+                    ShadowDropReason::RecentSellCooldown,
+                    swap,
+                    &candidate,
+                    latency_ms,
+                    runtime_followed,
+                    temporal_followed,
+                    is_unfollowed_sell_exit,
+                );
+                return Ok(ShadowProcessOutcome::Dropped(
+                    ShadowDropReason::RecentSellCooldown,
+                ));
+            }
             if let Some(reason) =
                 self.drop_reason_for_buy_quality_gate(store, &candidate.token, swap.ts_utc, now)?
             {

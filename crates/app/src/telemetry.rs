@@ -19,6 +19,7 @@ pub(crate) fn reason_to_stage(reason: ShadowDropReason) -> &'static str {
         | ShadowDropReason::LowLiquidity
         | ShadowDropReason::LowVolume
         | ShadowDropReason::ThinMarket => "quality",
+        ShadowDropReason::RecentSellCooldown => "cooldown",
         ShadowDropReason::InvalidSizing => "sizing",
         ShadowDropReason::DuplicateSignal => "dedupe",
         ShadowDropReason::UnsupportedSide => "side",
