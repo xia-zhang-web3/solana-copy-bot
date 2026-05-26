@@ -72,8 +72,8 @@ fn single_bad_shadow_loss_rejects_wallet_before_waiting_for_three_trades() -> Re
         token_a,
         1.0,
         0.20,
-        0.12,
-        -0.08,
+        0.158,
+        -0.042,
         now - Duration::hours(1),
         now - Duration::minutes(30),
     )?;
@@ -108,7 +108,7 @@ fn single_bad_shadow_loss_rejects_wallet_before_waiting_for_three_trades() -> Re
     assert_eq!(bad_metric.shadow_closed_trades_24h, Some(1));
     assert!(bad_metric
         .shadow_worst_trade_roi_24h
-        .is_some_and(|roi| roi <= -0.39 && roi >= -0.41));
+        .is_some_and(|roi| roi <= -0.209 && roi >= -0.211));
     Ok(())
 }
 
@@ -152,7 +152,7 @@ fn fast_shadow_loss_rejects_wallet_before_aggregate_sample() -> Result<()> {
         0.18,
         -0.02,
         opened,
-        opened + Duration::seconds(30),
+        opened + Duration::minutes(4),
     )?;
 
     let (mut discovery, shadow) = strict_policy();

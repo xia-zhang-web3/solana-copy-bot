@@ -10,12 +10,12 @@ pub const DISCOVERY_V2_SHADOW_FEEDBACK_MAX_PNL_SOL: f64 = -0.05;
 pub const DISCOVERY_V2_SHADOW_FEEDBACK_MAX_ROI: f64 = -0.10;
 pub const DISCOVERY_V2_SHADOW_FEEDBACK_CATASTROPHE_MIN_CLOSED_TRADES: u64 = 1;
 pub const DISCOVERY_V2_SHADOW_FEEDBACK_CATASTROPHE_MIN_ENTRY_SOL: f64 = 0.20;
-pub const DISCOVERY_V2_SHADOW_FEEDBACK_CATASTROPHE_MAX_ROI: f64 = -0.60;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_CATASTROPHE_MAX_ROI: f64 = -0.50;
 pub const DISCOVERY_V2_SHADOW_FEEDBACK_SINGLE_LOSS_MIN_ENTRY_SOL: f64 = 0.20;
-pub const DISCOVERY_V2_SHADOW_FEEDBACK_SINGLE_LOSS_MAX_ROI: f64 = -0.25;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_SINGLE_LOSS_MAX_ROI: f64 = -0.20;
 pub const DISCOVERY_V2_SHADOW_FEEDBACK_FAST_LOSS_MIN_ENTRY_SOL: f64 = 0.15;
 pub const DISCOVERY_V2_SHADOW_FEEDBACK_FAST_LOSS_MAX_ROI: f64 = -0.08;
-pub const DISCOVERY_V2_SHADOW_FEEDBACK_FAST_LOSS_MAX_HOLD_SECONDS: i64 = 60;
+pub const DISCOVERY_V2_SHADOW_FEEDBACK_FAST_LOSS_MAX_HOLD_SECONDS: i64 = 5 * 60;
 pub const DISCOVERY_V2_SHADOW_FEEDBACK_STALE_COPY_MIN_ENTRY_SOL: f64 = 0.15;
 pub const DISCOVERY_V2_SHADOW_FEEDBACK_STALE_COPY_MAX_ROI: f64 = -0.10;
 
@@ -53,7 +53,7 @@ pub fn discovery_v2_policy_fingerprint(
             "min_volume_5m_sol_bits={:016x};min_unique_traders_5m={};",
             "execution_enabled={};token_quality_ttl_seconds={};",
             "token_rolling_market_window_seconds={};",
-            "shadow_feedback_version=4;shadow_feedback_window_hours={};",
+            "shadow_feedback_version=5;shadow_feedback_window_hours={};",
             "shadow_feedback_min_closed_trades={};",
             "shadow_feedback_min_entry_sol_bits={:016x};",
             "shadow_feedback_max_pnl_sol_bits={:016x};",

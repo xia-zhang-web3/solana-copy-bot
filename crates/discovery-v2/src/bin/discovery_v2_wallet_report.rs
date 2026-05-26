@@ -3,9 +3,9 @@ use chrono::Utc;
 use copybot_config::load_from_path;
 use copybot_discovery_v2::{
     build_discovery_v2_status, build_discovery_v2_wallet_report,
-    live_portfolio_rpc_url_from_config, load_materialized_discovery_v2_status_for_publish,
-    DiscoveryV2BuildOptions, DiscoveryV2Status, DiscoveryV2WalletReport,
-    DiscoveryV2WalletReportOptions,
+    live_portfolio_rpc_url_from_config, load_discovery_v2_shadow_signal_status,
+    load_materialized_discovery_v2_status_for_publish, DiscoveryV2BuildOptions, DiscoveryV2Status,
+    DiscoveryV2WalletReport, DiscoveryV2WalletReportOptions,
 };
 use copybot_storage_core::{validate_discovery_v2_status_schema_read_only, SqliteDiscoveryStore};
 use std::env;
@@ -101,13 +101,14 @@ fn run(config: Config) -> Result<DiscoveryV2WalletReport> {
     let options =
         DiscoveryV2BuildOptions::from_config(&loaded.discovery, loaded.execution.enabled, now)
             .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded));
-    let status = load_status(
+    let mut status = load_status(
         &store,
         &loaded.discovery,
         &loaded.shadow,
         options,
         config.live_rebuild,
     )?;
+    status.shadow_signals_24h = Some(load_discovery_v2_shadow_signal_status(&store, now)?);
     build_discovery_v2_wallet_report(
         &store,
         &loaded.discovery,

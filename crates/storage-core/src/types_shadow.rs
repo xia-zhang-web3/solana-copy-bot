@@ -58,6 +58,32 @@ pub struct ShadowWalletFeedback {
     pub worst_stale_priced_loss_hold_seconds: i64,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ShadowSignalSummary {
+    pub buy_signals: u64,
+    pub sell_signals_total: u64,
+    pub sell_signals_matched: u64,
+    pub sell_signals_no_position: u64,
+    pub closed_trades: u64,
+    pub wins: u64,
+    pub losses: u64,
+    pub pnl_sol: f64,
+    pub entry_cost_sol: f64,
+    pub avg_hold_seconds: Option<f64>,
+    pub open_lots: u64,
+    pub open_notional_sol: f64,
+}
+
+impl ShadowSignalSummary {
+    pub fn roi(&self) -> Option<f64> {
+        if self.entry_cost_sol > 0.0 {
+            Some(self.pnl_sol / self.entry_cost_sol)
+        } else {
+            None
+        }
+    }
+}
+
 impl ShadowWalletFeedback {
     pub fn roi(&self) -> Option<f64> {
         if self.entry_cost_sol > 0.0 {

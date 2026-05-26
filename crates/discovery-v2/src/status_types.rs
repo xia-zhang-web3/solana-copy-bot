@@ -22,6 +22,8 @@ pub struct DiscoveryV2Status {
     pub scan: DiscoveryV2ScanStatus,
     pub maturity: DiscoveryV2MaturityStatus,
     pub live_portfolio: Option<DiscoveryV2LivePortfolioStatus>,
+    #[serde(default)]
+    pub shadow_signals_24h: Option<DiscoveryV2ShadowSignalStatus>,
     pub filters: DiscoveryV2FilterStatus,
     pub wallet_metrics_total: usize,
     pub wallet_metrics_returned: usize,
@@ -46,6 +48,24 @@ impl DiscoveryV2Status {
         self.wallet_metrics_truncated = self.wallet_metrics_returned < total;
         self
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveryV2ShadowSignalStatus {
+    pub since: DateTime<Utc>,
+    pub buy_signals: u64,
+    pub sell_signals_total: u64,
+    pub sell_signals_matched: u64,
+    pub sell_signals_no_position: u64,
+    pub closed_trades: u64,
+    pub wins: u64,
+    pub losses: u64,
+    pub pnl_sol: f64,
+    pub entry_cost_sol: f64,
+    pub roi: Option<f64>,
+    pub avg_hold_seconds: Option<f64>,
+    pub open_lots: u64,
+    pub open_notional_sol: f64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

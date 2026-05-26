@@ -3,7 +3,8 @@ use chrono::Utc;
 use copybot_config::load_from_path;
 use copybot_discovery_v2::{
     build_discovery_v2_status, live_portfolio_rpc_url_from_config,
-    load_materialized_discovery_v2_status_for_publish, DiscoveryV2BuildOptions, DiscoveryV2Status,
+    load_discovery_v2_shadow_signal_status, load_materialized_discovery_v2_status_for_publish,
+    DiscoveryV2BuildOptions, DiscoveryV2Status,
 };
 use copybot_storage_core::{validate_discovery_v2_status_schema_read_only, SqliteDiscoveryStore};
 use std::env;
@@ -96,16 +97,19 @@ fn run(config: Config) -> Result<DiscoveryV2Status> {
         Utc::now(),
     )
     .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded));
-    if config.live_rebuild {
-        return build_discovery_v2_status(&store, &loaded.discovery, &loaded.shadow, options);
-    }
-    load_materialized_discovery_v2_status_for_publish(
-        &store,
-        &loaded.discovery,
-        &loaded.shadow,
-        &options,
-    )
-    .map(|(status, _report)| status)
+    let mut status = if config.live_rebuild {
+        build_discovery_v2_status(&store, &loaded.discovery, &loaded.shadow, options)?
+    } else {
+        load_materialized_discovery_v2_status_for_publish(
+            &store,
+            &loaded.discovery,
+            &loaded.shadow,
+            &options,
+        )
+        .map(|(status, _report)| status)?
+    };
+    status.shadow_signals_24h = Some(load_discovery_v2_shadow_signal_status(&store, Utc::now())?);
+    Ok(status)
 }
 
 fn resolve_db_path(config_path: &Path, override_path: Option<&Path>, configured: &str) -> PathBuf {

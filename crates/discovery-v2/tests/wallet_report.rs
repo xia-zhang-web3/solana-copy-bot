@@ -3,8 +3,8 @@ use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig, DISCOVERY_V2_SCORING_SOURCE};
 use copybot_discovery_v2::{
     build_discovery_v2_wallet_report, DiscoveryV2FilterStatus, DiscoveryV2LivePortfolioStatus,
-    DiscoveryV2MaturityStatus, DiscoveryV2ScanStatus, DiscoveryV2Status, DiscoveryV2WalletMetric,
-    DiscoveryV2WalletReportOptions,
+    DiscoveryV2MaturityStatus, DiscoveryV2ScanStatus, DiscoveryV2ShadowSignalStatus,
+    DiscoveryV2Status, DiscoveryV2WalletMetric, DiscoveryV2WalletReportOptions,
 };
 use copybot_storage_core::{ensure_discovery_v2_schema, SqliteDiscoveryStore};
 use tempfile::tempdir;
@@ -88,6 +88,22 @@ fn status(now: DateTime<Utc>) -> DiscoveryV2Status {
             max_wallets: 10,
             rpc_missing: false,
         }),
+        shadow_signals_24h: Some(DiscoveryV2ShadowSignalStatus {
+            since: now - Duration::hours(24),
+            buy_signals: 3,
+            sell_signals_total: 10,
+            sell_signals_matched: 2,
+            sell_signals_no_position: 8,
+            closed_trades: 2,
+            wins: 1,
+            losses: 1,
+            pnl_sol: -0.01,
+            entry_cost_sol: 0.4,
+            roi: Some(-0.025),
+            avg_hold_seconds: Some(60.0),
+            open_lots: 1,
+            open_notional_sol: 0.2,
+        }),
         filters: DiscoveryV2FilterStatus {
             total_wallets: 2,
             eligible_wallets: 1,
@@ -135,11 +151,11 @@ fn metric(
         live_token_value_sol: Some(0.35),
         live_token_positions: Some(2),
         live_tradable_token_positions: Some(2),
-        shadow_closed_trades_24h: None,
-        shadow_pnl_sol_24h: None,
-        shadow_roi_24h: None,
-        shadow_worst_trade_roi_24h: None,
-        shadow_fast_loss_roi_24h: None,
+        shadow_closed_trades_24h: Some(1),
+        shadow_pnl_sol_24h: Some(-0.01),
+        shadow_roi_24h: Some(-0.05),
+        shadow_worst_trade_roi_24h: Some(-0.10),
+        shadow_fast_loss_roi_24h: Some(-0.08),
         shadow_stale_copy_loss_roi_24h: None,
         eligible,
         reject_reasons,
@@ -175,8 +191,16 @@ fn wallet_report_shows_active_follow_and_filter_evidence() -> Result<()> {
 
     assert!(report.production_green);
     assert_eq!(report.thresholds.min_tradable_ratio, 0.50);
+    assert_eq!(
+        report
+            .shadow_signals_24h
+            .as_ref()
+            .map(|summary| summary.sell_signals_no_position),
+        Some(8)
+    );
     assert_eq!(report.wallets.len(), 1);
     assert_eq!(report.wallets[0].wallet_id, "wallet-a");
+    assert_eq!(report.wallets[0].shadow_pnl_sol_24h, Some(-0.01));
     assert!(report.wallets[0].active_follow);
     assert!(report.wallets[0].filters.passed_all);
     assert!(report.wallets[0].filters.live_portfolio_pass);

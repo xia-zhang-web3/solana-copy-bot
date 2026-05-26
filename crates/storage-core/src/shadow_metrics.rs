@@ -3,7 +3,7 @@ use crate::{
         lamports_to_sol, shadow_closed_trade_entry_cost_lamports, shadow_closed_trade_pnl_lamports,
         shadow_lot_cost_lamports, signed_lamports_to_sol,
     },
-    ShadowTokenLossCooldown, ShadowWalletFeedback, SqliteDiscoveryStore,
+    ShadowSignalSummary, ShadowTokenLossCooldown, ShadowWalletFeedback, SqliteDiscoveryStore,
     SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY, SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
     SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE, SHADOW_LOT_OPEN_EPS,
     SHADOW_RISK_CONTEXT_MARKET,
@@ -100,6 +100,94 @@ impl SqliteDiscoveryStore {
         since: DateTime<Utc>,
     ) -> Result<(u64, SignedLamports)> {
         self.shadow_realized_pnl_lamports_since_internal(since, true)
+    }
+
+    pub fn shadow_signal_summary_since(&self, since: DateTime<Utc>) -> Result<ShadowSignalSummary> {
+        let mut summary = ShadowSignalSummary::default();
+        if self.sqlite_table_exists("shadow_lots")? {
+            summary.open_lots = self.shadow_open_lots_count()?;
+            summary.open_notional_sol = self.shadow_open_notional_sol()?;
+        }
+        if !self.sqlite_table_exists("copy_signals")? {
+            return Ok(summary);
+        }
+        let since = since.to_rfc3339();
+        let (buy_signals, sell_signals_total): (i64, i64) = self
+            .conn
+            .query_row(
+                "SELECT
+                    COALESCE(SUM(CASE WHEN side = 'buy' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN side = 'sell' THEN 1 ELSE 0 END), 0)
+                 FROM copy_signals
+                 WHERE status = 'shadow_recorded'
+                   AND ts >= ?1",
+                params![&since],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .context("failed querying shadow copy signal side summary")?;
+        summary.buy_signals = buy_signals.max(0) as u64;
+        summary.sell_signals_total = sell_signals_total.max(0) as u64;
+
+        if !self.sqlite_table_exists("shadow_closed_trades")? {
+            summary.sell_signals_no_position = summary.sell_signals_total;
+            return Ok(summary);
+        }
+
+        let sell_signals_matched: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(DISTINCT copy_signals.signal_id)
+                 FROM copy_signals
+                 INNER JOIN shadow_closed_trades
+                    ON shadow_closed_trades.signal_id = copy_signals.signal_id
+                 WHERE copy_signals.status = 'shadow_recorded'
+                   AND copy_signals.side = 'sell'
+                   AND copy_signals.ts >= ?1",
+                params![&since],
+                |row| row.get(0),
+            )
+            .context("failed querying shadow matched sell signal summary")?;
+        summary.sell_signals_matched = sell_signals_matched.max(0) as u64;
+        summary.sell_signals_no_position = summary
+            .sell_signals_total
+            .saturating_sub(summary.sell_signals_matched);
+
+        let closed: (i64, i64, i64, f64, f64, Option<f64>) = self
+            .conn
+            .query_row(
+                "SELECT
+                    COUNT(*),
+                    COALESCE(SUM(CASE
+                        WHEN COALESCE(pnl_lamports, ROUND(pnl_sol * 1000000000.0)) > 0
+                        THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE
+                        WHEN COALESCE(pnl_lamports, ROUND(pnl_sol * 1000000000.0)) < 0
+                        THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(pnl_sol), 0.0),
+                    COALESCE(SUM(entry_cost_sol), 0.0),
+                    AVG((julianday(closed_ts) - julianday(opened_ts)) * 86400.0)
+                 FROM shadow_closed_trades
+                 WHERE closed_ts >= ?1",
+                params![&since],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .context("failed querying shadow closed trade summary")?;
+        summary.closed_trades = closed.0.max(0) as u64;
+        summary.wins = closed.1.max(0) as u64;
+        summary.losses = closed.2.max(0) as u64;
+        summary.pnl_sol = closed.3;
+        summary.entry_cost_sol = closed.4;
+        summary.avg_hold_seconds = closed.5;
+        Ok(summary)
     }
 
     pub fn shadow_wallet_feedback_since(
