@@ -9,6 +9,7 @@ const OPERATOR_SCAN_MMAP_BYTES: i64 = 2_147_483_648;
 
 pub struct SqliteDiscoveryStore {
     pub(crate) conn: Connection,
+    read_only: bool,
 }
 
 impl SqliteDiscoveryStore {
@@ -25,7 +26,10 @@ impl SqliteDiscoveryStore {
             )
         })?;
         configure_connection(&conn, false)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            read_only: false,
+        })
     }
 
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
@@ -37,7 +41,14 @@ impl SqliteDiscoveryStore {
             )
         })?;
         configure_connection(&conn, true)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            read_only: true,
+        })
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 
     pub(crate) fn sqlite_table_exists(&self, table: &str) -> Result<bool> {

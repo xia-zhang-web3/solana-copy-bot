@@ -17,6 +17,7 @@ fn sol_leg_window_scan_omits_unused_exact_amount_payload() -> Result<()> {
     let dir = tempdir()?;
     let db_path = dir.path().join("runtime.db");
     let store = SqliteDiscoveryStore::open(&db_path)?;
+    assert!(!store.is_read_only());
     ensure_discovery_v2_schema(&store)?;
     store.ensure_observed_swap_writer_tables()?;
 
@@ -270,6 +271,26 @@ fn sol_leg_scan_reads_across_cursor_pages_from_projection() -> Result<()> {
         scanned.last().map(|swap| swap.signature.as_str()),
         Some("sig-page-2049")
     );
+
+    drop(store);
+    let read_only_store = SqliteDiscoveryStore::open_read_only(&db_path)?;
+    assert!(read_only_store.is_read_only());
+    let mut read_only_scanned = Vec::new();
+    let read_only_page = read_only_store
+        .for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget(
+            window_start,
+            window_end,
+            None,
+            2050,
+            Instant::now() + Duration::from_secs(5),
+            |swap| {
+                read_only_scanned.push(swap);
+                Ok(())
+            },
+        )?;
+    assert!(!read_only_page.time_budget_exhausted);
+    assert_eq!(read_only_page.rows_seen, 2050);
+    assert_eq!(read_only_scanned.len(), 2050);
     Ok(())
 }
 

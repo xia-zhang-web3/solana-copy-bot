@@ -10,9 +10,10 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_core_types::SwapEvent;
 use rusqlite::{params_from_iter, types::Value as SqlValue};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const OBSERVED_SOL_LEG_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
+const OBSERVED_SOL_LEG_CURSOR_PAGE_IDLE_MS: u64 = 10;
 
 impl SqliteDiscoveryStore {
     pub fn for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget<F>(
@@ -108,6 +109,7 @@ impl SqliteDiscoveryStore {
                 break;
             }
             page_cursor = next_cursor;
+            self.release_sol_leg_cursor_page_reader();
         }
 
         if Instant::now() >= deadline && total_rows_seen < limit {
@@ -198,6 +200,15 @@ impl SqliteDiscoveryStore {
             rows_seen: seen,
             time_budget_exhausted: false,
         })
+    }
+
+    fn release_sol_leg_cursor_page_reader(&self) {
+        if !self.is_read_only() {
+            let _ = self.checkpoint_wal_passive();
+        }
+        if OBSERVED_SOL_LEG_CURSOR_PAGE_IDLE_MS > 0 {
+            std::thread::sleep(Duration::from_millis(OBSERVED_SOL_LEG_CURSOR_PAGE_IDLE_MS));
+        }
     }
 }
 
