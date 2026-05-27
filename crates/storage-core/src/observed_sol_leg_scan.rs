@@ -13,7 +13,7 @@ use rusqlite::{params_from_iter, types::Value as SqlValue};
 use std::time::{Duration, Instant};
 
 const OBSERVED_SOL_LEG_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
-const OBSERVED_SOL_LEG_CURSOR_PAGE_IDLE_MS: u64 = 10;
+const OBSERVED_SOL_LEG_READ_ONLY_CURSOR_PAGE_IDLE_MS: u64 = 2;
 
 impl SqliteDiscoveryStore {
     pub fn for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget<F>(
@@ -205,9 +205,12 @@ impl SqliteDiscoveryStore {
     fn release_sol_leg_cursor_page_reader(&self) {
         if !self.is_read_only() {
             let _ = self.checkpoint_wal_passive();
+            return;
         }
-        if OBSERVED_SOL_LEG_CURSOR_PAGE_IDLE_MS > 0 {
-            std::thread::sleep(Duration::from_millis(OBSERVED_SOL_LEG_CURSOR_PAGE_IDLE_MS));
+        if OBSERVED_SOL_LEG_READ_ONLY_CURSOR_PAGE_IDLE_MS > 0 {
+            std::thread::sleep(Duration::from_millis(
+                OBSERVED_SOL_LEG_READ_ONLY_CURSOR_PAGE_IDLE_MS,
+            ));
         }
     }
 }
