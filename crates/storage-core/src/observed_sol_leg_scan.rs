@@ -12,6 +12,8 @@ use copybot_core_types::SwapEvent;
 use rusqlite::{params_from_iter, types::Value as SqlValue};
 use std::time::Instant;
 
+const OBSERVED_SOL_LEG_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
+
 impl SqliteDiscoveryStore {
     pub fn for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget<F>(
         &self,
@@ -42,19 +44,80 @@ impl SqliteDiscoveryStore {
         cursor: Option<&DiscoveryRuntimeCursor>,
         limit: usize,
         deadline: Instant,
-        on_swap: F,
+        mut on_swap: F,
     ) -> Result<ObservedSwapCursorPage>
     where
         F: FnMut(ObservedSolLegSwap) -> Result<()>,
     {
-        if self.observed_sol_leg_projection_covers_window(since, until)? {
-            return self.for_each_observed_sol_leg_projection_in_window_after_cursor_with_budget(
-                since, until, cursor, limit, deadline, on_swap,
-            );
+        if limit == 0 {
+            return Ok(ObservedSwapCursorPage::default());
         }
-        self.for_each_sol_leg_swap_from_observed_with_budget(
-            since, until, cursor, limit, deadline, on_swap,
-        )
+        if Instant::now() >= deadline {
+            return Ok(ObservedSwapCursorPage {
+                rows_seen: 0,
+                time_budget_exhausted: true,
+            });
+        }
+
+        let use_projection = self.observed_sol_leg_projection_covers_window(since, until)?;
+        let mut total_rows_seen = 0usize;
+        let mut time_budget_exhausted = false;
+        let mut page_cursor = cursor.cloned();
+
+        while total_rows_seen < limit && Instant::now() < deadline {
+            let page_limit = limit
+                .saturating_sub(total_rows_seen)
+                .min(OBSERVED_SOL_LEG_CURSOR_QUERY_PAGE_LIMIT);
+            let mut next_cursor = page_cursor.clone();
+            let page = if use_projection {
+                self.for_each_observed_sol_leg_projection_in_window_after_cursor_with_budget(
+                    since,
+                    until,
+                    page_cursor.as_ref(),
+                    page_limit,
+                    deadline,
+                    |swap| {
+                        next_cursor = Some(DiscoveryRuntimeCursor {
+                            ts_utc: swap.ts_utc,
+                            slot: swap.slot,
+                            signature: swap.signature.clone(),
+                        });
+                        on_swap(swap)
+                    },
+                )?
+            } else {
+                self.for_each_sol_leg_swap_from_observed_with_budget(
+                    since,
+                    until,
+                    page_cursor.as_ref(),
+                    page_limit,
+                    deadline,
+                    |swap| {
+                        next_cursor = Some(DiscoveryRuntimeCursor {
+                            ts_utc: swap.ts_utc,
+                            slot: swap.slot,
+                            signature: swap.signature.clone(),
+                        });
+                        on_swap(swap)
+                    },
+                )?
+            };
+            total_rows_seen = total_rows_seen.saturating_add(page.rows_seen);
+            time_budget_exhausted |= page.time_budget_exhausted;
+            if page.time_budget_exhausted || page.rows_seen < page_limit {
+                break;
+            }
+            page_cursor = next_cursor;
+        }
+
+        if Instant::now() >= deadline && total_rows_seen < limit {
+            time_budget_exhausted = true;
+        }
+
+        Ok(ObservedSwapCursorPage {
+            rows_seen: total_rows_seen,
+            time_budget_exhausted,
+        })
     }
 
     fn for_each_sol_leg_swap_from_observed_with_budget<F>(

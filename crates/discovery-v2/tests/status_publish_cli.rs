@@ -199,6 +199,27 @@ fn scheduled_publish_unit_uses_materialized_status() -> Result<()> {
 }
 
 #[test]
+fn scheduled_prepare_quality_unit_avoids_incremental_evidence_writer() -> Result<()> {
+    let unit = fs::read_to_string(repo_path(
+        "ops/server_templates/copybot-discovery-v2-prepare-quality.service",
+    ))?;
+    let exec_start = unit
+        .lines()
+        .find(|line| line.starts_with("ExecStart="))
+        .context("prepare quality service missing ExecStart")?;
+
+    assert!(
+        exec_start.contains(" --materialize-status"),
+        "scheduled prepare quality must keep materializing publish status: {exec_start}"
+    );
+    assert!(
+        !exec_start.contains(" --incremental"),
+        "scheduled prepare quality must not prune/write incremental evidence on the live DB: {exec_start}"
+    );
+    Ok(())
+}
+
+#[test]
 fn publish_commit_on_old_schema_does_not_prepare_schema_before_rejection() -> Result<()> {
     let dir = tempdir()?;
     let db_path = dir.path().join("old-runtime.db");

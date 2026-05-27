@@ -216,6 +216,64 @@ fn sol_leg_projection_scan_reconstructs_buys_sells_and_respects_cursor() -> Resu
 }
 
 #[test]
+fn sol_leg_scan_reads_across_cursor_pages_from_projection() -> Result<()> {
+    let dir = tempdir()?;
+    let db_path = dir.path().join("runtime.db");
+    let store = SqliteDiscoveryStore::open(&db_path)?;
+    ensure_discovery_v2_schema(&store)?;
+    store.ensure_observed_swap_writer_tables()?;
+
+    let window_start = ts("2026-05-05T09:00:00Z")?;
+    let window_end = ts("2026-05-05T11:00:00Z")?;
+    let mut swaps = Vec::new();
+    for idx in 0..2050u64 {
+        swaps.push(SwapEvent {
+            signature: format!("sig-page-{idx:04}"),
+            wallet: format!("wallet-{idx:04}"),
+            dex: "raydium".to_string(),
+            token_in: SOL_MINT.to_string(),
+            token_out: format!("TOKEN-{idx:04}"),
+            amount_in: 1.0,
+            amount_out: 10.0,
+            slot: 1_000 + idx,
+            ts_utc: ts("2026-05-05T10:00:00Z")?,
+            exact_amounts: None,
+        });
+    }
+    store.insert_observed_swaps_batch(&swaps)?;
+    assert_eq!(
+        store.rebuild_observed_sol_leg_projection_window(window_start, window_end)?,
+        2050
+    );
+
+    let mut scanned = Vec::new();
+    let page = store.for_each_sol_leg_observed_swap_in_window_after_cursor_with_budget(
+        window_start,
+        window_end,
+        None,
+        2050,
+        Instant::now() + Duration::from_secs(5),
+        |swap| {
+            scanned.push(swap);
+            Ok(())
+        },
+    )?;
+
+    assert!(!page.time_budget_exhausted);
+    assert_eq!(page.rows_seen, 2050);
+    assert_eq!(scanned.len(), 2050);
+    assert_eq!(
+        scanned.first().map(|swap| swap.signature.as_str()),
+        Some("sig-page-0000")
+    );
+    assert_eq!(
+        scanned.last().map(|swap| swap.signature.as_str()),
+        Some("sig-page-2049")
+    );
+    Ok(())
+}
+
+#[test]
 fn sol_leg_projection_covering_index_is_covering_for_scan_columns() -> Result<()> {
     let dir = tempdir()?;
     let db_path = dir.path().join("runtime.db");
