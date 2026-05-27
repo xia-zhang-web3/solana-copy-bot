@@ -249,6 +249,110 @@
     }
 
     #[test]
+    fn runtime_follow_reload_interval_caps_slow_discovery_refresh() {
+        assert_eq!(runtime_follow_reload_interval_seconds(0), 1);
+        assert_eq!(runtime_follow_reload_interval_seconds(5), 5);
+        assert_eq!(runtime_follow_reload_interval_seconds(600), 30);
+    }
+
+    #[test]
+    fn relevant_buy_rechecks_followlist_before_shadow_enqueue() -> Result<()> {
+        let (store, db_path) = make_test_store("relevant-buy-followlist-temporal-recheck")?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let swap = test_swap("sig-relevant-buy-stale-followlist");
+        store.activate_follow_wallet(
+            &swap.wallet,
+            swap.ts_utc - chrono::Duration::minutes(10),
+            "test-promote",
+        )?;
+        store.deactivate_follow_wallet(
+            &swap.wallet,
+            swap.ts_utc - chrono::Duration::minutes(1),
+            "test-demote",
+        )?;
+        assert!(
+            !store.was_wallet_followed_at(&swap.wallet, swap.ts_utc)?,
+            "test setup must make the DB followlist reject the buy timestamp"
+        );
+
+        runtime.block_on(async {
+            let writer = ObservedSwapWriter::start_for_test(db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?
+                    .to_string(), OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)?;
+            let mut follow_snapshot = FollowSnapshot::default();
+            follow_snapshot.active.insert(swap.wallet.clone());
+            let follow_snapshot = Arc::new(follow_snapshot);
+            let mut recent_signatures = HashSet::new();
+            let mut recent_signature_order = VecDeque::new();
+            assert!(note_recent_swap_signature(
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &swap.signature,
+            ));
+            let shadow = ShadowService::new(permissive_shadow_quality());
+            let mut shadow_risk_guard = ShadowRiskGuard::new(RiskConfig::default());
+            let operator_emergency_stop = OperatorEmergencyStop::from_env();
+            let mut shadow_scheduler = ShadowScheduler::new();
+            let mut shadow_drop_reason_counts = BTreeMap::new();
+            let mut shadow_drop_stage_counts = BTreeMap::new();
+            let mut shadow_queue_full_outcome_counts = BTreeMap::new();
+            let mut app_consumer_loop_telemetry = AppConsumerLoopTelemetry::default();
+            app_consumer_loop_telemetry.note_swap_seen();
+
+            handle_relevant_observed_swap(
+                &store,
+                &writer,
+                &shadow,
+                db_path
+                    .to_str()
+                    .context("sqlite path must be valid utf-8")?,
+                swap.clone(),
+                ShadowSwapSide::Buy,
+                swap.ts_utc + chrono::Duration::seconds(1),
+                &follow_snapshot,
+                &HashSet::new(),
+                false,
+                &mut shadow_risk_guard,
+                &operator_emergency_stop,
+                false,
+                &mut shadow_scheduler,
+                false,
+                false,
+                0,
+                &mut shadow_drop_reason_counts,
+                &mut shadow_drop_stage_counts,
+                &mut shadow_queue_full_outcome_counts,
+                &mut recent_signatures,
+                &mut recent_signature_order,
+                &mut app_consumer_loop_telemetry,
+                StdInstant::now(),
+            )
+            .await?;
+
+            assert_eq!(shadow_drop_reason_counts.get("not_followed"), Some(&1));
+            assert_eq!(shadow_drop_stage_counts.get("follow"), Some(&1));
+            assert_eq!(shadow_scheduler.pending_shadow_task_count, 0);
+            assert!(shadow_scheduler.pending_shadow_tasks.is_empty());
+            assert!(shadow_scheduler.shadow_workers.is_empty());
+            assert!(store
+                .list_copy_signals_by_status("shadow_recorded", 10)?
+                .is_empty());
+            let telemetry = app_consumer_loop_telemetry.snapshot_and_reset();
+            assert_eq!(telemetry.follow_rejected, 1);
+            writer.shutdown()?;
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+        Ok(())
+    }
+
+    #[test]
     fn startup_v2_publication_truth_tolerates_one_missed_publish_cycle() -> Result<()> {
         let (store, db_path) = make_test_store("startup-v2-one-missed-publish-cycle")?;
         let now = DateTime::parse_from_rfc3339("2026-03-17T12:10:00Z")

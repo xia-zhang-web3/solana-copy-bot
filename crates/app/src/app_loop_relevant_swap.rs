@@ -86,6 +86,34 @@ pub(super) async fn handle_relevant_observed_swap(
     let task_key = shadow_task_key_for_swap(&swap, side);
 
     if matches!(side, ShadowSwapSide::Buy) {
+        if !store
+            .was_wallet_followed_at(&swap.wallet, swap.ts_utc)
+            .with_context(|| {
+                format!(
+                    "failed checking temporal followlist membership for wallet {}",
+                    swap.wallet
+                )
+            })?
+        {
+            app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
+            app_consumer_loop_telemetry.note_follow_rejected();
+            let reason = "not_followed";
+            *shadow_drop_reason_counts.entry(reason).or_insert(0) += 1;
+            *shadow_drop_stage_counts.entry("follow").or_insert(0) += 1;
+            debug!(
+                stage = "follow",
+                reason,
+                detail = "followlist_temporal_miss_after_runtime_snapshot_hit",
+                side = "buy",
+                wallet = %task_key.wallet,
+                token = %task_key.token,
+                signature = %swap.signature,
+                swap_ts = %swap.ts_utc.to_rfc3339(),
+                "shadow gate dropped"
+            );
+            return Ok(());
+        }
+
         let key_tuple = (task_key.wallet.clone(), task_key.token.clone());
         if open_shadow_lots.contains(&key_tuple) {
             app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);

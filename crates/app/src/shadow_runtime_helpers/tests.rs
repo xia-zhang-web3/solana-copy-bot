@@ -1,10 +1,29 @@
 use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use anyhow::anyhow;
+use chrono::{DateTime, Utc};
+use copybot_config::ShadowConfig;
+use copybot_core_types::SwapEvent;
+use copybot_shadow::{FollowSnapshot, ShadowDropReason, ShadowService};
+use copybot_storage_core::SqliteStore;
 
 use super::*;
 use crate::shadow_scheduler::{ShadowTaskKey, ShadowTaskOutput};
+
+fn temp_shadow_helper_db_path(name: &str) -> PathBuf {
+    let unique = format!(
+        "{}-{}-{}",
+        name,
+        std::process::id(),
+        Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or(Utc::now().timestamp_micros() * 1000)
+    );
+    std::env::temp_dir().join(format!("copybot-app-shadow-helper-{unique}.db"))
+}
 
 fn test_task_output(error: anyhow::Error) -> ShadowTaskOutput {
     ShadowTaskOutput {
@@ -97,4 +116,72 @@ fn shadow_task_retry_does_not_retry_non_sqlite_errors() {
 
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
     assert!(error.to_string().contains("token quality rejected"));
+}
+
+#[test]
+fn shadow_task_rechecks_followlist_for_queued_buy() -> Result<()> {
+    let db_path = temp_shadow_helper_db_path("queued-buy-followlist-recheck");
+    let mut store = SqliteStore::open(Path::new(&db_path))?;
+    let migration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    store.run_migrations(&migration_dir)?;
+
+    let buy_ts = DateTime::parse_from_rfc3339("2026-05-26T12:51:08Z")
+        .expect("timestamp")
+        .with_timezone(&Utc);
+    store.activate_follow_wallet(
+        "wallet-test",
+        buy_ts - chrono::Duration::minutes(10),
+        "test-promote",
+    )?;
+    store.deactivate_follow_wallet(
+        "wallet-test",
+        buy_ts - chrono::Duration::minutes(1),
+        "test-demote",
+    )?;
+
+    let mut follow_snapshot = FollowSnapshot::default();
+    follow_snapshot.active.insert("wallet-test".to_string());
+    let swap = SwapEvent {
+        wallet: "wallet-test".to_string(),
+        dex: "pumpswap".to_string(),
+        token_in: "So11111111111111111111111111111111111111112".to_string(),
+        token_out: "token-test".to_string(),
+        amount_in: 1.0,
+        amount_out: 10.0,
+        signature: "sig-queued-buy-stale-followlist".to_string(),
+        slot: 42,
+        ts_utc: buy_ts,
+        exact_amounts: None,
+    };
+    let task_input = ShadowTaskInput {
+        key: ShadowTaskKey {
+            wallet: swap.wallet.clone(),
+            token: swap.token_out.clone(),
+        },
+        swap,
+        follow_snapshot: Arc::new(follow_snapshot),
+    };
+
+    let mut config = ShadowConfig::default();
+    config.quality_gates_enabled = false;
+    let output = shadow_task(
+        ShadowService::new(config),
+        db_path
+            .to_str()
+            .context("sqlite path must be valid utf-8")?,
+        task_input,
+    );
+
+    match output.outcome {
+        Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotFollowed)) => {}
+        other => panic!("queued stale buy must be dropped as not_followed, got {other:?}"),
+    }
+    assert!(store
+        .list_copy_signals_by_status("shadow_recorded", 10)?
+        .is_empty());
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+    Ok(())
 }

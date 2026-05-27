@@ -4,8 +4,14 @@ mod startup;
 
 use startup::{initialize_app_loop_startup, AppLoopStartup};
 
+const RUNTIME_FOLLOW_RELOAD_MAX_INTERVAL_SECS: u64 = 30;
+
+pub(crate) fn runtime_follow_reload_interval_seconds(seconds: u64) -> u64 {
+    seconds.max(1).min(RUNTIME_FOLLOW_RELOAD_MAX_INTERVAL_SECS)
+}
+
 fn runtime_follow_reload_interval(seconds: u64) -> time::Interval {
-    let interval = Duration::from_secs(seconds.max(1));
+    let interval = Duration::from_secs(runtime_follow_reload_interval_seconds(seconds));
     let start = time::Instant::now() + interval;
     let mut ticker = time::interval_at(start, interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);

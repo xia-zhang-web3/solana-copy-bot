@@ -7,6 +7,7 @@ use crate::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_core_types::{WalletMetricRow, WalletUpsertRow};
+use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 
 use publication_artifact::{
@@ -327,6 +328,28 @@ impl SqliteDiscoveryStore {
             wallets.insert(row.get::<_, String>(0)?);
         }
         Ok(wallets)
+    }
+
+    pub fn was_wallet_followed_at(&self, wallet_id: &str, ts: DateTime<Utc>) -> Result<bool> {
+        if !self.sqlite_table_exists("followlist")? {
+            return Ok(false);
+        }
+        let ts_raw = ts.to_rfc3339();
+        let exists: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM followlist
+                 WHERE wallet_id = ?1
+                   AND added_at <= ?2
+                   AND (removed_at IS NULL OR ?2 < removed_at)
+                 LIMIT 1",
+                params![wallet_id, ts_raw],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed checking temporal followlist membership")?;
+        Ok(exists.is_some())
     }
 
     pub fn active_follow_wallet_row_count(&self) -> Result<usize> {

@@ -11,7 +11,7 @@ use super::{ShadowService, SqliteStore};
 use crate::shadow_scheduler::{ShadowSwapSide, ShadowTaskInput, ShadowTaskOutput};
 use crate::swap_classification::classify_swap_side;
 use crate::telemetry::{reason_to_key, reason_to_stage};
-use copybot_shadow::ShadowProcessOutcome;
+use copybot_shadow::{ShadowDropReason, ShadowProcessOutcome};
 
 const SHADOW_TASK_SQLITE_BUSY_TIMEOUT_SECS: u64 = 15;
 const SHADOW_TASK_RETRY_BACKOFF_MS: [u64; 4] = [100, 250, 500, 1_000];
@@ -136,6 +136,18 @@ fn shadow_task(
             format!("failed to open sqlite db for shadow worker task: {sqlite_path}")
         })?;
         store.set_busy_timeout(StdDuration::from_secs(SHADOW_TASK_SQLITE_BUSY_TIMEOUT_SECS))?;
+        if classify_swap_side(&swap).is_some_and(|side| matches!(side, ShadowSwapSide::Buy))
+            && !store
+                .was_wallet_followed_at(&swap.wallet, swap.ts_utc)
+                .with_context(|| {
+                    format!(
+                        "failed checking queued buy temporal followlist membership for wallet {}",
+                        swap.wallet
+                    )
+                })?
+        {
+            return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotFollowed));
+        }
         shadow.process_swap(&store, &swap, follow_snapshot.as_ref(), processing_now)
     });
     ShadowTaskOutput {
