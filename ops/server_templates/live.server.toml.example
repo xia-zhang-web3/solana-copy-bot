@@ -14,7 +14,7 @@ path = "state/live_runtime.db"
 
 [recent_raw_journal]
 path = "state/discovery_recent_raw.db"
-retention_safety_buffer_days = 2
+retention_safety_buffer_days = 1
 writer_queue_capacity_batches = 64
 replay_batch_size = 1024
 
@@ -113,7 +113,7 @@ max_window_swaps_in_memory = 15000000
 max_fetch_swaps_per_cycle = 20000
 max_fetch_pages_per_cycle = 5
 fetch_time_budget_ms = 900000
-observed_swaps_retention_days = 7
+observed_swaps_retention_days = 3
 scoring_aggregates_write_enabled = false
 scoring_aggregates_enabled = false
 

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn recent_raw_journal_startup_prune_is_deferred_until_after_live_write_stage1() -> Result<()> {
+fn recent_raw_journal_startup_prune_waits_for_live_write_then_prunes_idle_stage1() -> Result<()> {
     let _phase_guard = super::recent_raw_journal_phase_test_guard();
     let unique = format!(
         "copybot-app-recent-raw-journal-deferred-startup-prune-{}-{}",
@@ -114,20 +114,20 @@ fn recent_raw_journal_startup_prune_is_deferred_until_after_live_write_stage1() 
         .load_observed_swaps_since(journal_now - ChronoDuration::days(30))?;
     assert_eq!(
         rows_after_write.len(),
-        2,
-        "hot recent_raw writer must defer retention prune when skip_prune_while_backlogged=true"
+        1,
+        "idle recent_raw writer should prune stale rows after the first live write"
     );
     assert!(rows_after_write
         .iter()
         .any(|row| row.signature == "sig-recent-raw-journal-startup-prune-fresh"));
     let journal_state = journal_store_after_write.recent_raw_journal_state()?;
     assert_eq!(
-            journal_state.row_count, 2,
-            "journal state must reflect committed hot writer rows plus retained rows when prune is deferred"
-        );
+        journal_state.row_count, 1,
+        "journal state must reflect committed hot writer rows after stale rows are pruned"
+    );
     assert!(
-        journal_state.last_pruned_at.is_none(),
-        "hot writer must not mark retention prune when prune is deferred"
+        journal_state.last_pruned_at.is_some(),
+        "hot writer should mark retention prune after pruning stale rows"
     );
 
     remove_sqlite_test_files(&journal_db_path);
@@ -159,7 +159,7 @@ fn recent_raw_journal_writer_phase_telemetry_orders_write_and_prune_stage1() -> 
             .to_str()
             .context("journal sqlite path must be valid utf-8")?
             .to_string(),
-        retention_days: 8,
+        retention_days: 365,
         writer_queue_capacity_batches: 8,
         write_coalesce_max_batches: 4,
         overflow_capacity_batches: 8,
@@ -211,8 +211,8 @@ fn recent_raw_journal_writer_phase_telemetry_orders_write_and_prune_stage1() -> 
 }
 
 #[test]
-fn recent_raw_journal_hot_writer_deferred_prune_emits_skipped_without_prune_start_stage1(
-) -> Result<()> {
+fn recent_raw_journal_hot_writer_prunes_when_idle_with_skip_backlogged_enabled_stage1() -> Result<()>
+{
     let _phase_guard = super::recent_raw_journal_phase_test_guard();
     super::clear_recent_raw_journal_phase_events_for_test();
     let unique = format!(
@@ -236,7 +236,7 @@ fn recent_raw_journal_hot_writer_deferred_prune_emits_skipped_without_prune_star
             .to_str()
             .context("journal sqlite path must be valid utf-8")?
             .to_string(),
-        retention_days: 8,
+        retention_days: 365,
         writer_queue_capacity_batches: 8,
         write_coalesce_max_batches: 4,
         overflow_capacity_batches: 8,
@@ -266,17 +266,16 @@ fn recent_raw_journal_hot_writer_deferred_prune_emits_skipped_without_prune_star
 
     let events = super::recent_raw_journal_phase_events_for_test();
     assert!(
-        events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED),
-        "hot writer should emit prune_skipped when prune is deferred: {events:?}"
+        events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_START),
+        "idle hot writer should enter prune_start when no backlog is present: {events:?}"
     );
     assert!(
-        !events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_START),
-        "hot writer must not enter prune_start when skip_prune_while_backlogged=true: {events:?}"
+        events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_END),
+        "idle hot writer should finish bounded prune when no backlog is present: {events:?}"
     );
     let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
     let journal_state = journal_store.recent_raw_journal_state()?;
     assert_eq!(journal_state.row_count, 3);
-    assert!(journal_state.last_pruned_at.is_none());
     remove_sqlite_test_files(&journal_db_path);
     Ok(())
 }

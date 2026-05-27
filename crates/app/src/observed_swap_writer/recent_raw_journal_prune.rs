@@ -7,8 +7,12 @@ pub(in crate::observed_swap_writer) fn prune_recent_raw_journal_with_budget(
 ) -> Result<SqliteBatchedDeleteSummary> {
     let cutoff = now - ChronoDuration::days(retention_days.max(1) as i64);
     let mut summary = SqliteBatchedDeleteSummary::default();
+    let started = Instant::now();
     loop {
         if summary.batches >= RECENT_RAW_JOURNAL_RETENTION_MAX_DELETE_BATCHES_PER_RUN {
+            break;
+        }
+        if started.elapsed() >= RECENT_RAW_JOURNAL_RETENTION_MAX_DURATION_PER_RUN {
             break;
         }
         let deleted = store.prune_recent_raw_journal_before_batch(

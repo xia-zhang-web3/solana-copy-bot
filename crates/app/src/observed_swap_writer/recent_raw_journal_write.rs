@@ -54,11 +54,8 @@ pub(in crate::observed_swap_writer) fn write_recent_raw_journal_batch_with_deadl
         0,
         telemetry,
     );
-    let prune_skip_reason = if config.skip_prune_while_backlogged {
-        Some(RECENT_RAW_JOURNAL_HOT_WRITER_PRUNE_DEFERRED)
-    } else {
-        recent_raw_journal_prune_backlog_skip_reason(config, telemetry)
-    };
+    let prune_skip_reason = recent_raw_journal_prune_backlog_skip_reason(config, telemetry)
+        .map(|_| RECENT_RAW_JOURNAL_HOT_WRITER_PRUNE_DEFERRED);
     let prune_due = if prune_skip_reason.is_some() {
         false
     } else {

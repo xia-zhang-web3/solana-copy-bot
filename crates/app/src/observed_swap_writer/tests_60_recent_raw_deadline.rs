@@ -181,15 +181,15 @@ fn recent_raw_journal_hot_writer_defers_rows_older_than_retention_horizon() -> R
         journal_store.load_observed_swaps_since(journal_now - ChronoDuration::days(30))?;
     assert_eq!(
         journal_rows.len(),
-        2,
-        "hot recent_raw writer must not run retention prune when skip_prune_while_backlogged=true"
+        1,
+        "idle recent_raw writer should run retention prune when no backlog is present"
     );
     assert!(journal_rows
         .iter()
         .any(|row| row.signature == "sig-recent-raw-journal-fresh"));
     let journal_state = journal_store.recent_raw_journal_state()?;
-    assert_eq!(journal_state.row_count, 2);
-    assert!(journal_state.last_pruned_at.is_none());
+    assert_eq!(journal_state.row_count, 1);
+    assert!(journal_state.last_pruned_at.is_some());
     let _ = std::fs::remove_file(runtime_db_path);
     let _ = std::fs::remove_file(journal_db_path);
     Ok(())
@@ -327,7 +327,7 @@ fn recent_raw_journal_full_overflow_coalesces_without_blocking_raw_persistence_s
                     .to_str()
                     .context("journal sqlite path must be valid utf-8")?
                     .to_string(),
-                retention_days: 8,
+                retention_days: 365,
                 writer_queue_capacity_batches: 1,
                 write_coalesce_max_batches: 32,
                 overflow_capacity_batches: 2,
