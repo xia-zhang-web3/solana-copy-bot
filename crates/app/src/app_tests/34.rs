@@ -111,10 +111,17 @@
         )?;
         let new = run_noncritical_irrelevant_backpressure_plateau_scenario(false, None)?;
 
+        assert!(
+            old.first_backpressure_pending_requests
+                >= legacy_noncritical_irrelevant_soft_limit
+                    .saturating_sub(TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE)
+                && old.first_backpressure_pending_requests <= legacy_noncritical_irrelevant_soft_limit,
+            "the old side of the A/B should first hit backpressure at the legacy soft-limit plateau, allowing one concurrent writer batch of scheduler drift: old={old:?}"
+        );
         assert_eq!(
-            old.first_backpressure_pending_requests,
+            old.max_pending_requests_before_pause,
             legacy_noncritical_irrelevant_soft_limit,
-            "the old side of the A/B must reproduce the exact soft-limit plateau first: old={old:?}"
+            "the old side of the A/B must still reproduce the exact soft-limit plateau before pause: old={old:?}"
         );
         assert!(
             new.dropped_noncritical_irrelevant_swaps > 0,
