@@ -4,7 +4,7 @@ pub(super) const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss62
 pub(super) const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 pub(super) const OBSERVED_SWAP_CURSOR_PROGRESS_OPS: i32 = 2_000;
 pub(super) const OBSERVED_SWAP_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
-pub(super) const OBSERVED_SOL_LEG_CURSOR_QUERY_PAGE_LIMIT: usize = 2_048;
+pub(super) const OBSERVED_SOL_LEG_CURSOR_QUERY_PAGE_LIMIT: usize = 512;
 pub(super) const OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_TABLE: &str =
     "temp_discovery_replay_target_buy_mints";
 pub(super) const OBSERVED_SOL_LEG_TARGET_BUY_MINT_TEMP_META_TABLE: &str =

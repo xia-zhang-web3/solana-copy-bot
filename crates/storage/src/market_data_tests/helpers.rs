@@ -295,6 +295,8 @@ pub(super) fn run_cursor_checkpoint_recurrence_scenario(
             writer_store.insert_observed_swaps_batch_with_activity_days(&[live_swap])?;
             writer_writes_completed.fetch_add(1, Ordering::Relaxed);
             counter = counter.saturating_add(1);
+            // Keep the recurrence comparison about reader transaction scope, not writer burst timing.
+            thread::sleep(StdDuration::from_millis(1));
         }
         Ok(())
     });

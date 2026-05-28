@@ -3,6 +3,7 @@ use super::{
     drain_recent_raw_journal_overflow_nonblocking, panic_payload_to_string,
     recent_raw_journal_overflow_row_debt, recent_raw_journal_phase_events_for_test,
     recent_raw_journal_prune_due, recent_raw_journal_writer_loop,
+    should_checkpoint_after_observed_swap_retention,
     write_recent_raw_journal_batch_with_deadline_attempts, ObservedSwapRecentRawJournalConfig,
     ObservedSwapWriter, ObservedSwapWriterConfig, ObservedSwapWriterTelemetry,
     RecentRawJournalWriteRequest, OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_WINDOW,
@@ -64,6 +65,8 @@ mod raw_basic_a;
 mod recent_raw_deadline;
 #[path = "tests_61_recent_raw_overflow_a.rs"]
 mod recent_raw_overflow_a;
+#[path = "tests_63_retention_run.rs"]
+mod retention_run;
 #[path = "tests_51_startup_recent_raw_b.rs"]
 mod startup_recent_raw_b;
 

@@ -122,13 +122,15 @@ fn observed_sol_leg_cursor_chunked_reader_prevents_post_checkpoint_recurrence_st
             "both SOL-leg scenarios should continue writing after the clean checkpoint baseline so the recurrence is exercised under active writer load: legacy={legacy:?} chunked={chunked:?}"
         );
     assert!(
+        legacy.max_backlog_frames >= chunked.max_backlog_frames,
+        "the legacy SOL-leg reader should strand at least as much absolute checkpoint debt as the chunked reader: legacy={legacy:?} chunked={chunked:?}"
+    );
+    assert!(
         legacy
             .max_backlog_frames
-            .saturating_mul(chunked.writes_during_reader as i64)
-            >= chunked
-                .max_backlog_frames
-                .saturating_mul(legacy.writes_during_reader as i64),
-        "the legacy SOL-leg reader should strand at least as much checkpoint debt per concurrent write as the chunked reader: legacy={legacy:?} chunked={chunked:?}"
+            .saturating_sub(chunked.max_backlog_frames)
+            >= 5_000,
+        "the legacy SOL-leg reader should strand materially more checkpoint debt even when scheduler jitter changes concurrent write counts: legacy={legacy:?} chunked={chunked:?}"
     );
     Ok(())
 }
