@@ -217,8 +217,8 @@ fn scheduled_prepare_quality_unit_avoids_incremental_evidence_writer() -> Result
         "scheduled prepare quality must not prune/write incremental evidence on the live DB: {exec_start}"
     );
     assert!(
-        unit.contains("TimeoutStartSec=1200"),
-        "scheduled prepare quality timeout must exceed the 900s live fetch budget"
+        unit.contains("TimeoutStartSec=2100"),
+        "scheduled prepare quality timeout must exceed the 1800s live fetch budget"
     );
     Ok(())
 }
