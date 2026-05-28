@@ -21,6 +21,8 @@ the active Discovery V2 / artifact-first workflow.
 11. `copybot-discovery-v2-publish.timer`
 12. `copybot-discovery-v2-watchdog.service`
 13. `copybot-discovery-v2-watchdog.timer`
+14. `copybot-runtime-sqlite-wal-maintenance.service`
+15. `copybot-runtime-sqlite-wal-maintenance.timer`
 
 ## Removed Files
 
@@ -72,6 +74,13 @@ publication/followlist guard. It exits non-zero on warning or critical states
 so systemd surfaces missed publish cycles, stale publication truth, identity
 mismatch, stale runtime cursor, or an empty/below-floor active followlist before
 the daemon loses its current V2 wallet universe.
+
+`copybot-runtime-sqlite-wal-maintenance.timer` reclaims runtime SQLite WAL disk
+space during development. The oneshot first runs the WAL maintenance operator in
+dry-run mode while the daemon is active; it only opens a stop/truncate/start
+window when the WAL is above the configured threshold. The SQLite operator still
+requires `solana-copy-bot.service` to be inactive before running
+`PRAGMA wal_checkpoint(TRUNCATE)`.
 
 These timers are maintenance surfaces, not production-green proof by
 themselves. Discovery V2 status / publish checks decide the current publication
