@@ -18,6 +18,8 @@ mod exact_and_gates;
 mod outcome_ext;
 #[path = "tests_parts/01_process.rs"]
 mod process;
+#[path = "restart_recovery_tests.rs"]
+mod restart_recovery;
 
 use outcome_ext::*;
 use process::*;

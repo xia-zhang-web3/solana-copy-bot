@@ -65,5 +65,7 @@ fn test_runtime_config(telemetry: Arc<IngestionTelemetry>) -> Arc<HeliusRuntimeC
 
 #[path = "../source_tests/01_helius_and_queue.rs"]
 mod helius_and_queue;
+#[path = "../source_tests/03_rpc_backfill.rs"]
+mod rpc_backfill_tests;
 #[path = "../source_tests/02_yellowstone_proto.rs"]
 mod yellowstone_proto_tests;
