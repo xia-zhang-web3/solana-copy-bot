@@ -73,7 +73,6 @@ pub(in crate::observed_swap_writer) fn run_observed_swap_retention_maintenance(
 
     let checkpoint = if should_checkpoint_after_observed_swap_retention(
         completed_full_sweep,
-        stop_reason,
         raw_delete_summary,
     ) {
         run_retention_wal_checkpoint(
@@ -105,9 +104,7 @@ pub(in crate::observed_swap_writer) fn run_observed_swap_retention_maintenance(
 
 pub(in crate::observed_swap_writer) fn should_checkpoint_after_observed_swap_retention(
     completed_full_sweep: bool,
-    stop_reason: Option<&'static str>,
     raw_delete_summary: SqliteBatchedDeleteSummary,
 ) -> bool {
-    completed_full_sweep
-        || (raw_delete_summary.deleted_rows > 0 && stop_reason != Some("runtime_pressure"))
+    completed_full_sweep || raw_delete_summary.deleted_rows > 0
 }
