@@ -71,7 +71,11 @@ pub(in crate::observed_swap_writer) fn run_observed_swap_retention_maintenance(
         );
     }
 
-    let checkpoint = if completed_full_sweep {
+    let checkpoint = if should_checkpoint_after_observed_swap_retention(
+        completed_full_sweep,
+        stop_reason,
+        raw_delete_summary,
+    ) {
         run_retention_wal_checkpoint(
             store,
             config,
@@ -97,4 +101,55 @@ pub(in crate::observed_swap_writer) fn run_observed_swap_retention_maintenance(
         checkpoint,
         duration_ms: elapsed_ms_ceil(maintenance_started.elapsed()),
     })
+}
+
+fn should_checkpoint_after_observed_swap_retention(
+    completed_full_sweep: bool,
+    stop_reason: Option<&'static str>,
+    raw_delete_summary: SqliteBatchedDeleteSummary,
+) -> bool {
+    completed_full_sweep
+        || (raw_delete_summary.deleted_rows > 0 && stop_reason != Some("runtime_pressure"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_duration_budget_delete_still_attempts_wal_checkpoint() {
+        let summary = SqliteBatchedDeleteSummary {
+            deleted_rows: 10_000,
+            batches: 1,
+        };
+
+        assert!(should_checkpoint_after_observed_swap_retention(
+            false,
+            Some("duration_budget"),
+            summary
+        ));
+    }
+
+    #[test]
+    fn runtime_pressure_partial_delete_skips_wal_checkpoint() {
+        let summary = SqliteBatchedDeleteSummary {
+            deleted_rows: 10_000,
+            batches: 1,
+        };
+
+        assert!(!should_checkpoint_after_observed_swap_retention(
+            false,
+            Some("runtime_pressure"),
+            summary
+        ));
+    }
+
+    #[test]
+    fn completed_sweep_keeps_periodic_wal_checkpoint_even_without_deletes() {
+        assert!(should_checkpoint_after_observed_swap_retention(
+            true,
+            None,
+            SqliteBatchedDeleteSummary::default()
+        ));
+    }
 }
