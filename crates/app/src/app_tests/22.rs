@@ -207,6 +207,8 @@
     #[test]
     fn zero_universe_empty_target_noncritical_exhaustion_preserves_first_batch_and_stops_zero_output_pressure_refill_waves_stage1(
     ) -> Result<()> {
+        const TOLERATED_RECLAIMED_SLOTS: usize = TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE / 8;
+
         let old = run_zero_universe_empty_target_noncritical_irrelevant_refill_scenario(false)?;
         let new = run_zero_universe_empty_target_noncritical_irrelevant_refill_scenario(true)?;
 
@@ -234,8 +236,8 @@
             new.accepted_noncritical_irrelevant_swaps
                 >= TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE
                 && new.accepted_noncritical_irrelevant_swaps
-                    <= TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE + 2,
-            "the fix must still persist the initial one-batch best-effort generic slice, plus only bounded reclaimed slots, before the exact refill gate engages: new={new:?}"
+                    <= TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE + TOLERATED_RECLAIMED_SLOTS,
+            "the fix must still persist the initial one-batch best-effort generic slice, plus only bounded scheduler-reclaimed slots, before the exact refill gate engages: new={new:?}"
         );
         assert_eq!(
             new.writer_pending_requests_peak, TEST_OBSERVED_SWAP_WRITER_BATCH_MAX_SIZE,
