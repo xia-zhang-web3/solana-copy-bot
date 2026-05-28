@@ -121,6 +121,9 @@ scoring_aggregates_enabled = false
 [shadow]
 enabled = true
 helius_http_url = ""
+restart_recovery_enabled = true
+restart_recovery_window_seconds = 180
+restart_recovery_signature_limit = 25
 causal_holdback_enabled = true
 causal_holdback_ms = 2500
 refresh_seconds = 60

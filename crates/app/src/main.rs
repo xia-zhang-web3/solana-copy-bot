@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_config::{load_from_env_or_default, RiskConfig};
 #[cfg(test)]
-use copybot_config::{ExecutionConfig, ShadowConfig};
+use copybot_config::ExecutionConfig;
+use copybot_config::{load_from_env_or_default, IngestionConfig, RiskConfig, ShadowConfig};
 #[cfg(test)]
 use copybot_core_types::TokenQuantity;
 use copybot_core_types::{Lamports, SignedLamports, SwapEvent};
@@ -48,6 +48,7 @@ mod irrelevant_persistence;
 mod json_sanitize;
 mod observed_swap_writer;
 mod runtime_follow_surface;
+mod shadow_restart_recovery;
 mod shadow_risk;
 mod shadow_runtime_helpers;
 mod shadow_scheduler;
@@ -90,8 +91,11 @@ use crate::observed_swap_writer::{
     OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL, OBSERVED_SWAP_WRITER_CHANNEL_CLOSED_CONTEXT,
     OBSERVED_SWAP_WRITER_REPLY_CLOSED_CONTEXT, OBSERVED_SWAP_WRITER_TERMINAL_FAILURE_CONTEXT,
 };
+use crate::shadow_restart_recovery::recover_shadow_restart_gap;
 use crate::shadow_runtime_helpers::{handle_shadow_task_output, spawn_shadow_worker_task};
-use crate::shadow_scheduler::{ShadowScheduler, ShadowSwapSide, ShadowTaskInput, ShadowTaskKey};
+use crate::shadow_scheduler::{
+    ShadowScheduler, ShadowSwapSide, ShadowTaskInput, ShadowTaskKey, ShadowTaskOutput,
+};
 use crate::shadow_state_events::*;
 use crate::stale_close::close_stale_shadow_lots;
 #[cfg(test)]

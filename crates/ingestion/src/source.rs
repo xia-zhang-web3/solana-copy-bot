@@ -24,6 +24,7 @@ mod helius_pipeline;
 mod queue;
 mod rate_limit;
 mod reorder;
+mod rpc_backfill;
 mod telemetry;
 mod yellowstone;
 mod yellowstone_pipeline;
@@ -61,6 +62,7 @@ use self::yellowstone_shell::{
     YellowstoneGrpcSource, YellowstoneParsedUpdate, YellowstonePipeline, YellowstoneRecvOutcome,
     YellowstoneRuntimeConfig,
 };
+pub(crate) use rpc_backfill::fetch_recent_raw_swaps_for_wallets;
 
 #[cfg(test)]
 #[path = "source/tests.rs"]

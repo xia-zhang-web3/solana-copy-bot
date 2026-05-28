@@ -319,4 +319,130 @@ impl ShadowService {
             has_open_lots_after_signal,
         }))
     }
+
+    pub fn process_restart_recovery_sell(
+        &self,
+        store: &SqliteStore,
+        swap: &SwapEvent,
+        now: DateTime<Utc>,
+    ) -> Result<ShadowProcessOutcome> {
+        if !self.config.enabled {
+            return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::Disabled));
+        }
+        let Some(candidate) = to_shadow_candidate(swap) else {
+            return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotSolLeg));
+        };
+        if candidate.side != "sell" {
+            return Ok(ShadowProcessOutcome::Dropped(
+                ShadowDropReason::UnsupportedSide,
+            ));
+        }
+        if !store.has_shadow_lots(&swap.wallet, &candidate.token)? {
+            return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotFollowed));
+        }
+
+        let latency_ms = (now - swap.ts_utc).num_milliseconds();
+        info!(
+            wallet = %swap.wallet,
+            token = %candidate.token,
+            leader_notional_sol = candidate.leader_notional_sol,
+            latency_ms,
+            "shadow restart recovery sell exit reached pipeline"
+        );
+
+        let copy_notional_lamports = match (
+            self.copy_notional_lamports,
+            candidate.exact_leader_notional_lamports,
+        ) {
+            (Some(config_copy_notional_lamports), Some(exact_leader_notional_lamports)) => {
+                Some(std::cmp::min(
+                    config_copy_notional_lamports,
+                    exact_leader_notional_lamports,
+                ))
+            }
+            _ => None,
+        };
+        let copy_notional_sol = copy_notional_lamports
+            .map(lamports_to_sol)
+            .unwrap_or_else(|| {
+                self.config
+                    .copy_notional_sol
+                    .min(candidate.leader_notional_sol)
+            });
+        if copy_notional_sol <= EPS || candidate.price_sol_per_token <= EPS {
+            return Ok(ShadowProcessOutcome::Dropped(
+                ShadowDropReason::InvalidSizing,
+            ));
+        }
+        let exact_qty = match scaled_exact_shadow_qty(
+            candidate.exact_token_qty,
+            candidate.exact_leader_notional_lamports,
+            copy_notional_lamports,
+            copy_notional_sol,
+        ) {
+            ScaledExactShadowQty::Exact(value) => Some(value),
+            ScaledExactShadowQty::Approximate => None,
+            ScaledExactShadowQty::InvalidZeroRaw => {
+                return Ok(ShadowProcessOutcome::Dropped(
+                    ShadowDropReason::InvalidSizing,
+                ));
+            }
+        };
+        let signal_id = format!(
+            "shadow:{}:{}:{}:{}",
+            swap.signature, swap.wallet, candidate.side, candidate.token
+        );
+        let (signal_notional_lamports, signal_notional_origin) =
+            if let Some(exact_notional) = copy_notional_lamports {
+                (
+                    Some(exact_notional),
+                    COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS.to_string(),
+                )
+            } else {
+                (
+                    sol_to_lamports_ceil(copy_notional_sol),
+                    COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
+                )
+            };
+        let signal = CopySignalRow {
+            signal_id: signal_id.clone(),
+            wallet_id: swap.wallet.clone(),
+            side: candidate.side.clone(),
+            token: candidate.token.clone(),
+            notional_sol: copy_notional_sol,
+            notional_lamports: signal_notional_lamports,
+            notional_origin: signal_notional_origin,
+            ts: swap.ts_utc,
+            status: "shadow_recorded".to_string(),
+        };
+        let inserted_signal = store.insert_copy_signal(&signal)?;
+        if !inserted_signal && !store.has_shadow_lots(&swap.wallet, &candidate.token)? {
+            return Ok(ShadowProcessOutcome::Dropped(
+                ShadowDropReason::DuplicateSignal,
+            ));
+        }
+
+        let qty = copy_notional_sol / candidate.price_sol_per_token;
+        let close = store.close_shadow_lots_fifo_atomic_exact(
+            &signal_id,
+            &swap.wallet,
+            &candidate.token,
+            qty,
+            exact_qty,
+            candidate.price_sol_per_token,
+            swap.ts_utc,
+        )?;
+
+        Ok(ShadowProcessOutcome::Recorded(ShadowSignalResult {
+            signal_id,
+            wallet_id: swap.wallet.clone(),
+            side: candidate.side,
+            token: candidate.token,
+            notional_sol: copy_notional_sol,
+            latency_ms,
+            closed_qty: close.closed_qty,
+            realized_pnl_sol: close.realized_pnl_sol,
+            has_open_lots_after_signal: Some(close.has_open_lots_after),
+        }))
+    }
 }

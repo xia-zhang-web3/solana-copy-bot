@@ -24,6 +24,8 @@ pub(super) async fn run_app_loop(
     discovery: DiscoveryService,
     shadow: ShadowService,
     risk_config: RiskConfig,
+    ingestion_config: IngestionConfig,
+    shadow_config: ShadowConfig,
     sqlite_path: String,
     heartbeat_seconds: u64,
     history_retention_config: copybot_config::HistoryRetentionConfig,
@@ -100,6 +102,52 @@ pub(super) async fn run_app_loop(
     )?;
     let mut runtime_follow_reload_interval =
         runtime_follow_reload_interval(discovery_fetch_refresh_seconds);
+
+    match recover_shadow_restart_gap(
+        &store,
+        &observed_swap_writer,
+        &shadow,
+        &ingestion_config,
+        &shadow_config,
+        &mut open_shadow_lots,
+        &mut recent_swap_signatures,
+        &mut recent_swap_signature_order,
+        &mut shadow_drop_reason_counts,
+        &mut shadow_drop_stage_counts,
+    )
+    .await
+    {
+        Ok(summary) => {
+            if summary.skipped_reason.is_some()
+                || summary.swaps_fetched > 0
+                || summary.rpc_errors > 0
+            {
+                info!(
+                    enabled = summary.enabled,
+                    skipped_reason = summary.skipped_reason.unwrap_or("none"),
+                    wallets_scanned = summary.wallets_scanned,
+                    signatures_seen = summary.signatures_seen,
+                    transactions_fetched = summary.transactions_fetched,
+                    rpc_errors = summary.rpc_errors,
+                    swaps_fetched = summary.swaps_fetched,
+                    sell_candidates = summary.sell_candidates,
+                    recovered_sells = summary.recovered_sells,
+                    skipped_without_open_lot = summary.skipped_without_open_lot,
+                    skipped_non_sell = summary.skipped_non_sell,
+                    duplicate_recent = summary.duplicate_recent,
+                    observed_persist_errors = summary.observed_persist_errors,
+                    realized_pnl_sol = summary.realized_pnl_sol,
+                    "shadow restart recovery completed"
+                );
+            }
+        }
+        Err(error) => {
+            warn!(
+                error = %error,
+                "shadow restart recovery failed; continuing live ingestion"
+            );
+        }
+    }
 
     loop {
         operator_emergency_stop.refresh(&store, Utc::now())?;

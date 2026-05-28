@@ -196,6 +196,8 @@ pub(crate) async fn run() -> Result<()> {
         discovery,
         shadow,
         config.risk.clone(),
+        config.ingestion.clone(),
+        config.shadow.clone(),
         config.sqlite.path.clone(),
         config.system.heartbeat_seconds,
         config.history_retention.clone(),

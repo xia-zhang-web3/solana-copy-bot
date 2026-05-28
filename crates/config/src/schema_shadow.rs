@@ -73,6 +73,9 @@ pub struct RiskConfig {
 pub struct ShadowConfig {
     pub enabled: bool,
     pub helius_http_url: String,
+    pub restart_recovery_enabled: bool,
+    pub restart_recovery_window_seconds: u64,
+    pub restart_recovery_signature_limit: usize,
     pub causal_holdback_enabled: bool,
     pub causal_holdback_ms: u64,
     pub refresh_seconds: u64,
@@ -94,6 +97,9 @@ impl Default for ShadowConfig {
         Self {
             enabled: true,
             helius_http_url: String::new(),
+            restart_recovery_enabled: true,
+            restart_recovery_window_seconds: 180,
+            restart_recovery_signature_limit: 25,
             causal_holdback_enabled: true,
             causal_holdback_ms: 2_500,
             refresh_seconds: 60,
@@ -119,6 +125,15 @@ impl fmt::Debug for ShadowConfig {
             .field(
                 "helius_http_url",
                 &redacted_url_debug_value(&self.helius_http_url),
+            )
+            .field("restart_recovery_enabled", &self.restart_recovery_enabled)
+            .field(
+                "restart_recovery_window_seconds",
+                &self.restart_recovery_window_seconds,
+            )
+            .field(
+                "restart_recovery_signature_limit",
+                &self.restart_recovery_signature_limit,
             )
             .field("causal_holdback_enabled", &self.causal_holdback_enabled)
             .field("causal_holdback_ms", &self.causal_holdback_ms)
