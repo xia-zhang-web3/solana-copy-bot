@@ -106,6 +106,7 @@ fn discovery_runtime_artifact_restore_rejects_fail_closed_artifact() -> Result<(
         .with_timezone(&Utc);
     let export_gate = DiscoveryPublicationFreshnessGate {
         scoring_window_days: 7,
+        window_minutes: None,
         metric_snapshot_interval_seconds: 1_800,
         refresh_seconds: 600,
         expected_scoring_source: Some("discovery_v2_operational_window".to_string()),
@@ -140,6 +141,7 @@ fn discovery_runtime_artifact_restore_rejects_missing_publication_identity() -> 
         .with_timezone(&Utc);
     let export_gate = DiscoveryPublicationFreshnessGate {
         scoring_window_days: 7,
+        window_minutes: None,
         metric_snapshot_interval_seconds: 1_800,
         refresh_seconds: 600,
         expected_scoring_source: Some("discovery_v2_operational_window".to_string()),
@@ -202,6 +204,7 @@ fn discovery_runtime_artifact_restore_rejects_existing_shadow_lots() -> Result<(
         .with_timezone(&Utc);
     let export_gate = DiscoveryPublicationFreshnessGate {
         scoring_window_days: 7,
+        window_minutes: None,
         metric_snapshot_interval_seconds: 1_800,
         refresh_seconds: 600,
         expected_scoring_source: Some("discovery_v2_operational_window".to_string()),
@@ -236,6 +239,7 @@ fn discovery_runtime_artifact_restore_rejects_existing_risk_events() -> Result<(
         .with_timezone(&Utc);
     let export_gate = DiscoveryPublicationFreshnessGate {
         scoring_window_days: 7,
+        window_minutes: None,
         metric_snapshot_interval_seconds: 1_800,
         refresh_seconds: 600,
         expected_scoring_source: Some("discovery_v2_operational_window".to_string()),

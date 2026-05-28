@@ -111,6 +111,7 @@ fn seed_runtime_artifact_source_store_with_cursor(
 fn v2_export_gate(policy_fingerprint: &str) -> DiscoveryPublicationFreshnessGate {
     DiscoveryPublicationFreshnessGate {
         scoring_window_days: 7,
+        window_minutes: None,
         metric_snapshot_interval_seconds: 1_800,
         refresh_seconds: 600,
         expected_scoring_source: Some("discovery_v2_operational_window".to_string()),
@@ -230,6 +231,7 @@ fn discovery_runtime_artifact_export_requires_explicit_expected_identity() -> Re
         let source_store = migrated_store(&source_db_path)?;
         let export_gate = DiscoveryPublicationFreshnessGate {
             scoring_window_days: 7,
+            window_minutes: None,
             metric_snapshot_interval_seconds: 1_800,
             refresh_seconds: 600,
             expected_scoring_source,

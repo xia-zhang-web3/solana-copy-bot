@@ -230,6 +230,7 @@
 
         let export_gate = DiscoveryPublicationFreshnessGate {
             scoring_window_days: config.scoring_window_days as i64,
+            window_minutes: Some(config.effective_status_scan_window_minutes()),
             metric_snapshot_interval_seconds: config.metric_snapshot_interval_seconds,
             refresh_seconds: config.refresh_seconds,
             expected_scoring_source: Some("discovery_v2_operational_window".to_string()),

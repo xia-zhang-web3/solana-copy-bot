@@ -76,6 +76,7 @@ mock_interval_ms = 2000
 
 [discovery]
 scoring_window_days = 1
+status_scan_window_minutes = 120
 decay_window_days = 1
 follow_top_n = 15
 min_leader_notional_sol = 0.5

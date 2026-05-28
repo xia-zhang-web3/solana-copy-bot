@@ -35,6 +35,7 @@ impl DiscoveryService {
     pub(crate) fn publication_freshness_gate(&self) -> DiscoveryPublicationFreshnessGate {
         DiscoveryPublicationFreshnessGate {
             scoring_window_days: self.config.scoring_window_days as i64,
+            window_minutes: Some(self.config.effective_status_scan_window_minutes()),
             metric_snapshot_interval_seconds: self.config.metric_snapshot_interval_seconds,
             refresh_seconds: self.config.refresh_seconds,
             expected_scoring_source: Some(DISCOVERY_V2_SCORING_SOURCE.to_string()),
@@ -49,8 +50,7 @@ impl DiscoveryService {
         execution_enabled: bool,
     ) -> String {
         let options = DiscoveryV2PolicyFingerprintInput {
-            window_minutes: u64::from(self.config.scoring_window_days.max(1))
-                .saturating_mul(24 * 60),
+            window_minutes: self.config.effective_status_scan_window_minutes(),
             max_tail_lag_seconds: self.config.refresh_seconds.max(1),
             max_rows: self
                 .config

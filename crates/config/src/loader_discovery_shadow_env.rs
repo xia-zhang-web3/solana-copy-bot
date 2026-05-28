@@ -18,6 +18,12 @@ pub(super) fn apply_discovery_shadow_execution_env_overrides(config: &mut AppCon
     {
         config.discovery.refresh_seconds = refresh_seconds;
     }
+    if let Some(status_scan_window_minutes) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_DISCOVERY_STATUS_SCAN_WINDOW_MINUTES",
+        "u64",
+    )? {
+        config.discovery.status_scan_window_minutes = status_scan_window_minutes;
+    }
     if let Some(rug_lookahead_seconds) =
         parse_env_number::<u64>("SOLANA_COPY_BOT_DISCOVERY_RUG_LOOKAHEAD_SECONDS", "u64")?
     {

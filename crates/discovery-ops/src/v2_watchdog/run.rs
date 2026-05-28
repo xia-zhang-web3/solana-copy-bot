@@ -58,6 +58,7 @@ fn freshness_gate(
     let options = DiscoveryV2BuildOptions::from_config(discovery, execution_enabled, now);
     DiscoveryPublicationFreshnessGate {
         scoring_window_days: discovery.scoring_window_days as i64,
+        window_minutes: Some(options.window_minutes),
         metric_snapshot_interval_seconds: discovery.metric_snapshot_interval_seconds,
         refresh_seconds: discovery.refresh_seconds,
         expected_scoring_source: Some(DISCOVERY_V2_SCORING_SOURCE.to_string()),

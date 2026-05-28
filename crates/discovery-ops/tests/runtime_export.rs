@@ -130,6 +130,7 @@ fn publication_gate(config: &AppConfig, now: DateTime<Utc>) -> DiscoveryPublicat
         DiscoveryV2BuildOptions::from_config(&config.discovery, config.execution.enabled, now);
     DiscoveryPublicationFreshnessGate {
         scoring_window_days: i64::from(config.discovery.scoring_window_days.max(1)),
+        window_minutes: Some(options.window_minutes),
         metric_snapshot_interval_seconds: config.discovery.metric_snapshot_interval_seconds.max(1),
         refresh_seconds: config.discovery.refresh_seconds.max(1),
         expected_scoring_source: Some(DISCOVERY_V2_SCORING_SOURCE.to_string()),

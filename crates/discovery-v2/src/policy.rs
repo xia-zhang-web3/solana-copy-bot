@@ -26,7 +26,7 @@ impl DiscoveryV2BuildOptions {
     ) -> Self {
         Self {
             now,
-            window_minutes: u64::from(discovery.scoring_window_days.max(1)).saturating_mul(24 * 60),
+            window_minutes: discovery.effective_status_scan_window_minutes(),
             max_tail_lag_seconds: discovery.refresh_seconds.max(1),
             max_rows: discovery
                 .max_window_swaps_in_memory

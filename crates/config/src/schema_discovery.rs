@@ -6,6 +6,7 @@ use std::fmt;
 #[serde(default)]
 pub struct DiscoveryConfig {
     pub scoring_window_days: u32,
+    pub status_scan_window_minutes: u64,
     pub decay_window_days: u32,
     pub follow_top_n: u32,
     pub min_leader_notional_sol: f64,
@@ -47,6 +48,7 @@ impl Default for DiscoveryConfig {
     fn default() -> Self {
         Self {
             scoring_window_days: 30,
+            status_scan_window_minutes: 0,
             decay_window_days: 7,
             follow_top_n: 20,
             min_leader_notional_sol: 0.5,
@@ -86,10 +88,28 @@ impl Default for DiscoveryConfig {
     }
 }
 
+impl DiscoveryConfig {
+    pub fn effective_status_scan_window_minutes(&self) -> u64 {
+        let scoring_window_minutes =
+            u64::from(self.scoring_window_days.max(1)).saturating_mul(24 * 60);
+        if self.status_scan_window_minutes == 0 {
+            scoring_window_minutes
+        } else {
+            self.status_scan_window_minutes
+                .max(1)
+                .min(scoring_window_minutes)
+        }
+    }
+}
+
 impl fmt::Debug for DiscoveryConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DiscoveryConfig")
             .field("scoring_window_days", &self.scoring_window_days)
+            .field(
+                "status_scan_window_minutes",
+                &self.status_scan_window_minutes,
+            )
             .field("decay_window_days", &self.decay_window_days)
             .field("follow_top_n", &self.follow_top_n)
             .field("min_leader_notional_sol", &self.min_leader_notional_sol)

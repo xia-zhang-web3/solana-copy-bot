@@ -190,6 +190,7 @@ fn materialized_status_report(
 fn materialized_status_max_age_seconds(discovery: &DiscoveryConfig) -> u64 {
     let gate = DiscoveryPublicationFreshnessGate {
         scoring_window_days: discovery.scoring_window_days as i64,
+        window_minutes: Some(discovery.effective_status_scan_window_minutes()),
         metric_snapshot_interval_seconds: discovery.metric_snapshot_interval_seconds,
         refresh_seconds: discovery.refresh_seconds,
         expected_scoring_source: None,

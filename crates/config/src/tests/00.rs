@@ -22,6 +22,7 @@ fn discovery_defaults_use_storage_mitigation_limits() {
     let discovery = DiscoveryConfig::default();
     assert_eq!(discovery.fetch_refresh_seconds, 60);
     assert_eq!(discovery.refresh_seconds, 600);
+    assert_eq!(discovery.status_scan_window_minutes, 0);
     assert_eq!(discovery.maturity_window_days, 0);
     assert_eq!(discovery.maturity_min_active_days, 0);
     assert_eq!(discovery.maturity_score_bonus, 0.0);

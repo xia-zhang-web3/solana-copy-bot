@@ -14,8 +14,11 @@ pub(super) fn blockers(
     window_minutes: u64,
 ) -> Vec<String> {
     let mut blockers = Vec::new();
-    let required_active_window_minutes =
-        u64::from(discovery.min_active_days.max(1)).saturating_mul(24 * 60);
+    let required_active_window_minutes = if discovery.min_active_days <= 1 {
+        0
+    } else {
+        u64::from(discovery.min_active_days).saturating_mul(24 * 60)
+    };
     push_if(
         &mut blockers,
         discovery_v2_float_gates_invalid(discovery, shadow),
@@ -23,7 +26,7 @@ pub(super) fn blockers(
     );
     push_if(
         &mut blockers,
-        window_minutes < required_active_window_minutes,
+        required_active_window_minutes > 0 && window_minutes < required_active_window_minutes,
         "discovery_v2_active_days_unsatisfiable",
     );
     push_if(

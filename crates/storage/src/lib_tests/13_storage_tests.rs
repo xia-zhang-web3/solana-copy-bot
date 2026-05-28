@@ -372,6 +372,7 @@ fn discovery_runtime_artifact_roundtrip_restores_consistent_snapshot() -> Result
     )?;
     let export_gate = DiscoveryPublicationFreshnessGate {
         scoring_window_days: 7,
+        window_minutes: None,
         metric_snapshot_interval_seconds: 1800,
         refresh_seconds: 600,
         expected_scoring_source: Some("discovery_v2_operational_window".to_string()),

@@ -75,6 +75,7 @@ fn publication_update(
 fn v2_gate() -> DiscoveryPublicationFreshnessGate {
     DiscoveryPublicationFreshnessGate {
         scoring_window_days: 1,
+        window_minutes: None,
         metric_snapshot_interval_seconds: 60,
         refresh_seconds: 60,
         expected_scoring_source: Some(V2_SOURCE.to_string()),

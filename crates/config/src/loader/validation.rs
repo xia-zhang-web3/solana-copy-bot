@@ -118,6 +118,15 @@ fn validate_finite_ratio(label: &str, value: f64) -> Result<()> {
 }
 
 fn validate_discovery_storage_mitigation_config(config: &AppConfig) -> Result<()> {
+    let scoring_window_minutes =
+        u64::from(config.discovery.scoring_window_days.max(1)).saturating_mul(24 * 60);
+    if config.discovery.status_scan_window_minutes > scoring_window_minutes {
+        return Err(anyhow!(
+            "discovery.status_scan_window_minutes ({}) must be <= discovery.scoring_window_days window minutes ({})",
+            config.discovery.status_scan_window_minutes,
+            scoring_window_minutes
+        ));
+    }
     if config.discovery.min_active_days > config.discovery.scoring_window_days {
         return Err(anyhow!(
             "discovery.min_active_days ({}) must be <= discovery.scoring_window_days ({})",

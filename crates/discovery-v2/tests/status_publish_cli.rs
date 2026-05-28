@@ -174,6 +174,28 @@ fn prod_live_v2_configs_are_active_day_satisfiable() -> Result<()> {
 }
 
 #[test]
+fn prod_live_v2_configs_use_bounded_status_scan_window() -> Result<()> {
+    for relative in [
+        "configs/prod.toml",
+        "configs/live.toml",
+        "ops/server_templates/live.server.toml.example",
+    ] {
+        let config = copybot_config::load_from_path(repo_path(relative))?;
+        assert_eq!(
+            config.discovery.status_scan_window_minutes, 120,
+            "{relative}"
+        );
+        let options = DiscoveryV2BuildOptions::from_config(
+            &config.discovery,
+            config.execution.enabled,
+            Utc::now(),
+        );
+        assert_eq!(options.window_minutes, 120, "{relative}");
+    }
+    Ok(())
+}
+
+#[test]
 fn scheduled_publish_unit_uses_materialized_status() -> Result<()> {
     let unit = fs::read_to_string(repo_path(
         "ops/server_templates/copybot-discovery-v2-publish.service",

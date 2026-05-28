@@ -36,6 +36,7 @@ impl DiscoveryPublicationStateRow {
         };
         let expected_metrics_window_start = DiscoveryPublicationFreshnessGate {
             scoring_window_days,
+            window_minutes: None,
             metric_snapshot_interval_seconds,
             refresh_seconds: metric_snapshot_interval_seconds,
             expected_scoring_source: None,
@@ -134,6 +135,8 @@ pub struct PersistedWalletMetricSnapshotRow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveryPublicationFreshnessGate {
     pub scoring_window_days: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_minutes: Option<u64>,
     pub metric_snapshot_interval_seconds: u64,
     pub refresh_seconds: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -168,7 +171,11 @@ impl DiscoveryPublicationFreshnessGate {
         let interval_seconds = self.metric_snapshot_interval_seconds.max(1) as i64;
         let bucketed_ts = now.timestamp().div_euclid(interval_seconds) * interval_seconds;
         let bucketed_now = DateTime::<Utc>::from_timestamp(bucketed_ts, 0).unwrap_or(now);
-        bucketed_now - Duration::days(self.scoring_window_days.max(1))
+        if let Some(window_minutes) = self.window_minutes {
+            bucketed_now - Duration::minutes(window_minutes.max(1).min(i64::MAX as u64) as i64)
+        } else {
+            bucketed_now - Duration::days(self.scoring_window_days.max(1))
+        }
     }
 }
 

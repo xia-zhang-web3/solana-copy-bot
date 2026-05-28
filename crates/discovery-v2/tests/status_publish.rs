@@ -222,6 +222,48 @@ fn status_ready_when_tail_sample_scan_and_candidates_are_valid() -> Result<()> {
 }
 
 #[test]
+fn status_allows_one_active_day_policy_on_bounded_scan_window() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
+    let token_a = "BoundedStatusToken11111111111111111111111111";
+    let token_b = "BoundedStatusToken22222222222222222222222222";
+    store.insert_observed_swaps_batch(&[
+        tail_coverage_swap("sig-bounded-coverage-floor", 9, now - Duration::hours(3)),
+        swap_with_token(
+            "wallet_a",
+            token_a,
+            "sig-bounded-a",
+            10,
+            now - Duration::minutes(10),
+        ),
+        swap_with_token(
+            "wallet_b",
+            token_b,
+            "sig-bounded-b",
+            11,
+            now - Duration::minutes(5),
+        ),
+        tail_coverage_swap("sig-bounded-tail", 12, now - Duration::minutes(2)),
+    ])?;
+    insert_quality_for_token(&store, token_a, now, Some(1.0))?;
+    insert_quality_for_token(&store, token_b, now, Some(1.0))?;
+    let (mut discovery, shadow) = strict_policy();
+    discovery.follow_top_n = 2;
+    let mut options = options(now);
+    options.window_minutes = 120;
+
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options)?;
+
+    assert!(status.production_green, "{:?}", status.blockers);
+    assert!(!status
+        .blockers
+        .contains(&"discovery_v2_active_days_unsatisfiable".to_string()));
+    assert_eq!(status.window_minutes, 120);
+    assert_eq!(status.candidate_wallets.len(), 2);
+    Ok(())
+}
+
+#[test]
 fn status_requires_refreshed_clock_when_live_tail_advances() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);

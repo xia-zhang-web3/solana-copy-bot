@@ -33,6 +33,7 @@ impl DiscoveryService {
     pub fn publication_freshness_gate(&self) -> DiscoveryPublicationFreshnessGate {
         DiscoveryPublicationFreshnessGate {
             scoring_window_days: self.runtime_scoring_window_days(),
+            window_minutes: Some(self.config.effective_status_scan_window_minutes()),
             metric_snapshot_interval_seconds: self.runtime_metric_snapshot_interval_seconds(),
             refresh_seconds: self.config.refresh_seconds,
             expected_scoring_source: Some("discovery_v2_operational_window".to_string()),
