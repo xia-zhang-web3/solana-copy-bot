@@ -30,14 +30,12 @@ impl SqliteDiscoveryStore {
                  FROM copy_signals
                  WHERE status = ?1
                    AND ts >= ?2
-                   AND lower(side) IN ('buy', 'sell')
+                   AND lower(side) = 'buy'
                    AND NOT EXISTS (
                         SELECT 1 FROM orders
                         WHERE orders.signal_id = copy_signals.signal_id
                    )
-                 ORDER BY
-                    CASE WHEN lower(side) = 'sell' THEN 0 ELSE 1 END,
-                    ts ASC
+                 ORDER BY ts ASC
                  LIMIT ?3",
             )
             .context("failed to prepare execution canary candidate query")?;

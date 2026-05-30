@@ -43,8 +43,8 @@ fn execution_canary_candidates_skip_signals_that_already_have_orders() -> Result
     let store = open_migrated_store("execution-canary-candidates")?;
     let now = ts("2026-05-30T08:00:00Z");
     store.insert_copy_signal(&signal("buy-old", "buy", now - Duration::seconds(20)))?;
-    store.insert_copy_signal(&signal("sell-new", "sell", now - Duration::seconds(10)))?;
-    store.record_execution_dry_run_order("sell-new", "dry_run", now)?;
+    store.insert_copy_signal(&signal("buy-new", "buy", now - Duration::seconds(10)))?;
+    store.record_execution_dry_run_order("buy-new", "dry_run", now)?;
 
     let candidates = store.list_execution_canary_candidates(
         "shadow_recorded",
@@ -54,6 +54,25 @@ fn execution_canary_candidates_skip_signals_that_already_have_orders() -> Result
 
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].signal_id, "buy-old");
+    Ok(())
+}
+
+#[test]
+fn execution_canary_candidates_are_entry_only_and_ignore_sells() -> Result<()> {
+    let store = open_migrated_store("execution-canary-entry-only")?;
+    let now = ts("2026-05-30T08:00:00Z");
+    store.insert_copy_signal(&signal("sell-fresh", "sell", now - Duration::seconds(5)))?;
+    store.insert_copy_signal(&signal("buy-fresh", "buy", now - Duration::seconds(20)))?;
+
+    let candidates = store.list_execution_canary_candidates(
+        "shadow_recorded",
+        now - Duration::minutes(1),
+        10,
+    )?;
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].signal_id, "buy-fresh");
+    assert_eq!(candidates[0].side, "buy");
     Ok(())
 }
 

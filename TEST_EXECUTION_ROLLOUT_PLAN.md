@@ -101,5 +101,8 @@ Start with Phase 1 and Phase 2:
 - Current canary mode is dry-run only: it records idempotent execution orders
   from existing shadow signals and does not submit transactions.
 - Canary candidates are limited to fresh shadow signals only.
+- The first dry-run canary is entry-only: it records `BUY` candidates only.
+  `SELL` canary coverage requires separate dry-run/real position state, so the
+  daemon must not record sell-only execution orders for positions it does not own.
 - Real tiny-mainnet execution remains blocked until submit/simulate/confirm
   code is implemented and reviewed.

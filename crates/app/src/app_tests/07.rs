@@ -151,6 +151,18 @@
             ts: now,
             status: "shadow_recorded".to_string(),
         })?;
+        store.insert_copy_signal(&copybot_core_types::CopySignalRow {
+            signal_id: "sig-canary-sell".to_string(),
+            wallet_id: "leader-wallet".to_string(),
+            side: "sell".to_string(),
+            token: "TokenMint".to_string(),
+            notional_sol: 0.2,
+            notional_lamports: Some(Lamports::new(200_000_000)),
+            notional_origin: copybot_core_types::COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS
+                .to_string(),
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        })?;
 
         let mut config = ExecutionConfig::default();
         config.canary_enabled = true;

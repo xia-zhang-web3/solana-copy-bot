@@ -49,6 +49,8 @@ Required invariants:
    directly. Test execution must use `execution.canary_enabled = true` with
    `execution.canary_dry_run = true` until the separate tiny-mainnet canary
    rollout is approved.
+   The dry-run canary is entry-only at this stage and records `BUY` candidates
+   only; `SELL` requires explicit position-state coverage before rollout.
 2. `SOLANA_COPY_BOT_CONFIG` points at `/etc/solana-copy-bot/live.server.toml`
 3. the service has an explicit restart policy (`Restart=always`,
    `RestartSec=2`) and restart counters must be checked after rollout
