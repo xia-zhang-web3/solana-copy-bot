@@ -2,6 +2,7 @@ mod connection_pragmas;
 mod copy_signals;
 mod db;
 mod discovery_rebuild_state;
+mod execution_orders;
 mod history_retention;
 mod market_context;
 mod migrations;
@@ -64,12 +65,13 @@ pub use types::{
     DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
     DiscoveryV2QualityEvidenceAggregate, DiscoveryV2QualityPrepareState,
-    DiscoveryV2QualityPrepareUpsert, ExecutionHistoryRetentionSummary, FollowlistUpdateResult,
-    HistoryRetentionCutoffs, HistoryRetentionSummary, ObservedSolLegSwap,
-    ObservedSwapBatchWriteMetrics, ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow,
-    RecentRawJournalStateRow, RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome,
-    ShadowLotRow, ShadowSignalSummary, ShadowTokenLossCooldown, ShadowTokenRecentClose,
-    ShadowWalletFeedback, ShadowWalletTokenFastLossCooldown, SqliteBatchedDeleteSummary,
+    DiscoveryV2QualityPrepareUpsert, ExecutionDryRunOrder, ExecutionDryRunRecordOutcome,
+    ExecutionHistoryRetentionSummary, FollowlistUpdateResult, HistoryRetentionCutoffs,
+    HistoryRetentionSummary, ObservedSolLegSwap, ObservedSwapBatchWriteMetrics,
+    ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow,
+    RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome, ShadowLotRow,
+    ShadowSignalSummary, ShadowTokenLossCooldown, ShadowTokenRecentClose, ShadowWalletFeedback,
+    ShadowWalletTokenFastLossCooldown, SqliteBatchedDeleteSummary,
     SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
     SqliteSnapshotDeferredReason, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
     SqliteSnapshotRetryReason, SqliteSnapshotSourceMetrics, SqliteSnapshotSummary,
@@ -78,6 +80,7 @@ pub use types::{
     StartupStepTimeoutBehavior, StartupTrustedSelectionGateStatus, TokenMarketStats,
     TrustedSelectionState, TrustedSnapshotSourceKind, WalletActivityDayRow,
     WalletSolLegActivityWindow, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
+    EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED, EXECUTION_STATUS_DRY_RUN_CONFIRMED,
     POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER, POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER,
     SHADOW_CLOSE_CONTEXT_MARKET, SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
     SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,

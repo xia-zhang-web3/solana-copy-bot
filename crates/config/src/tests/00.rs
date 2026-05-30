@@ -75,6 +75,26 @@ fn history_retention_defaults_are_explicit_and_safe() {
 }
 
 #[test]
+fn execution_defaults_are_fail_closed_and_canary_dry_run_only() {
+    let execution = ExecutionConfig::default();
+    assert!(!execution.enabled);
+    assert!(!execution.canary_enabled);
+    assert!(execution.canary_dry_run);
+    assert_eq!(execution.canary_route, "dry_run");
+    assert_eq!(execution.canary_interval_seconds, 15);
+    assert_eq!(execution.canary_batch_limit, 1);
+    assert_eq!(execution.canary_max_signal_age_seconds, 120);
+    assert_eq!(execution.canary_buy_size_sol, 0.01);
+    assert_eq!(execution.canary_max_open_positions, 1);
+    assert_eq!(execution.canary_max_daily_loss_sol, 0.02);
+    assert_eq!(
+        execution.canary_kill_switch_path,
+        "state/execution_canary.stop"
+    );
+    assert!(execution.canary_wallet_pubkey.is_empty());
+}
+
+#[test]
 fn parse_from_path_uses_disabled_history_retention_for_legacy_config_without_block() {
     with_temp_config_file("", |config_path| {
         let config = load_from_path(config_path).expect("legacy config without block must parse");

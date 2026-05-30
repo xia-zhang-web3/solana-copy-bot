@@ -4,8 +4,9 @@ pub(crate) use copybot_storage_core::ExecutionHistoryRetentionSummary;
 pub use copybot_storage_core::{HistoryRetentionCutoffs, HistoryRetentionSummary};
 pub(crate) use rusqlite::params;
 
-pub(crate) const TERMINAL_EXECUTION_STATUSES: [&str; 3] = [
+pub(crate) const TERMINAL_EXECUTION_STATUSES: [&str; 4] = [
     "execution_confirmed",
+    "execution_dry_run_confirmed",
     "execution_failed",
     "execution_dropped",
 ];

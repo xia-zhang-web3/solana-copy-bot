@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-#[cfg(test)]
-use copybot_config::ExecutionConfig;
-use copybot_config::{load_from_env_or_default, IngestionConfig, RiskConfig, ShadowConfig};
+use copybot_config::{
+    load_from_env_or_default, ExecutionConfig, IngestionConfig, RiskConfig, ShadowConfig,
+};
 #[cfg(test)]
 use copybot_core_types::TokenQuantity;
 use copybot_core_types::{Lamports, SignedLamports, SwapEvent};
@@ -42,6 +42,7 @@ mod app_loop_shadow;
 mod app_loop_shutdown;
 mod config_contract;
 mod discovery_runtime;
+mod execution_canary;
 mod history_retention;
 mod irrelevant_backpressure;
 mod irrelevant_persistence;
@@ -75,6 +76,7 @@ use crate::config_contract::{
     validate_execution_runtime_contract, validate_live_ingestion_source_contract,
 };
 use crate::discovery_runtime::{DiscoveryService, RuntimePublicationTruthResolution};
+use crate::execution_canary::ExecutionCanaryRunner;
 use crate::history_retention::HistoryRetentionRunner;
 use crate::irrelevant_backpressure::*;
 use crate::irrelevant_persistence::*;

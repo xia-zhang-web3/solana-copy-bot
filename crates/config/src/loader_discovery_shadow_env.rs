@@ -86,6 +86,54 @@ pub(super) fn apply_discovery_shadow_execution_env_overrides(config: &mut AppCon
     if let Some(enabled) = parse_env_bool("SOLANA_COPY_BOT_EXECUTION_ENABLED")? {
         config.execution.enabled = enabled;
     }
+    if let Some(canary_enabled) = parse_env_bool("SOLANA_COPY_BOT_EXECUTION_CANARY_ENABLED")? {
+        config.execution.canary_enabled = canary_enabled;
+    }
+    if let Some(canary_dry_run) = parse_env_bool("SOLANA_COPY_BOT_EXECUTION_CANARY_DRY_RUN")? {
+        config.execution.canary_dry_run = canary_dry_run;
+    }
+    if let Ok(canary_route) = env::var("SOLANA_COPY_BOT_EXECUTION_CANARY_ROUTE") {
+        config.execution.canary_route = canary_route;
+    }
+    if let Some(canary_interval_seconds) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_EXECUTION_CANARY_INTERVAL_SECONDS", "u64")?
+    {
+        config.execution.canary_interval_seconds = canary_interval_seconds;
+    }
+    if let Some(canary_batch_limit) =
+        parse_env_number::<u32>("SOLANA_COPY_BOT_EXECUTION_CANARY_BATCH_LIMIT", "u32")?
+    {
+        config.execution.canary_batch_limit = canary_batch_limit;
+    }
+    if let Some(canary_max_signal_age_seconds) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_EXECUTION_CANARY_MAX_SIGNAL_AGE_SECONDS",
+        "u64",
+    )? {
+        config.execution.canary_max_signal_age_seconds = canary_max_signal_age_seconds;
+    }
+    if let Some(canary_buy_size_sol) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_EXECUTION_CANARY_BUY_SIZE_SOL", "f64")?
+    {
+        config.execution.canary_buy_size_sol = canary_buy_size_sol;
+    }
+    if let Some(canary_max_open_positions) =
+        parse_env_number::<u32>("SOLANA_COPY_BOT_EXECUTION_CANARY_MAX_OPEN_POSITIONS", "u32")?
+    {
+        config.execution.canary_max_open_positions = canary_max_open_positions;
+    }
+    if let Some(canary_max_daily_loss_sol) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_EXECUTION_CANARY_MAX_DAILY_LOSS_SOL", "f64")?
+    {
+        config.execution.canary_max_daily_loss_sol = canary_max_daily_loss_sol;
+    }
+    if let Ok(canary_kill_switch_path) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_CANARY_KILL_SWITCH_PATH")
+    {
+        config.execution.canary_kill_switch_path = canary_kill_switch_path;
+    }
+    if let Ok(canary_wallet_pubkey) = env::var("SOLANA_COPY_BOT_EXECUTION_CANARY_WALLET_PUBKEY") {
+        config.execution.canary_wallet_pubkey = canary_wallet_pubkey;
+    }
     if let Some(holdback_enabled) =
         parse_env_bool("SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_ENABLED")?
     {

@@ -47,6 +47,5 @@ include!("app_tests/32.rs");
 include!("app_tests/33.rs");
 include!("app_tests/34.rs");
 include!("app_tests/35.rs");
-
 #[path = "app_tests/36_restart_recovery.rs"]
 mod restart_recovery;

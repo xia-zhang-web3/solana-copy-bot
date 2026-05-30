@@ -50,10 +50,40 @@ impl Default for SystemConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ExecutionConfig {
     pub enabled: bool,
+    pub canary_enabled: bool,
+    pub canary_dry_run: bool,
+    pub canary_route: String,
+    pub canary_interval_seconds: u64,
+    pub canary_batch_limit: u32,
+    pub canary_max_signal_age_seconds: u64,
+    pub canary_buy_size_sol: f64,
+    pub canary_max_open_positions: u32,
+    pub canary_max_daily_loss_sol: f64,
+    pub canary_kill_switch_path: String,
+    pub canary_wallet_pubkey: String,
+}
+
+impl Default for ExecutionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            canary_enabled: false,
+            canary_dry_run: true,
+            canary_route: "dry_run".to_string(),
+            canary_interval_seconds: 15,
+            canary_batch_limit: 1,
+            canary_max_signal_age_seconds: 120,
+            canary_buy_size_sol: 0.01,
+            canary_max_open_positions: 1,
+            canary_max_daily_loss_sol: 0.02,
+            canary_kill_switch_path: "state/execution_canary.stop".to_string(),
+            canary_wallet_pubkey: String::new(),
+        }
+    }
 }
 
 fn redacted_secret_debug_value(value: &str) -> String {

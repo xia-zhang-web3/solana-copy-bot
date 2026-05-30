@@ -133,6 +133,17 @@ min_unique_traders_5m = 1
 
 [execution]
 enabled = false
+canary_enabled = false
+canary_dry_run = true
+canary_route = "dry_run"
+canary_interval_seconds = 15
+canary_batch_limit = 1
+canary_max_signal_age_seconds = 120
+canary_buy_size_sol = 0.01
+canary_max_open_positions = 1
+canary_max_daily_loss_sol = 0.02
+canary_kill_switch_path = "state/execution_canary.stop"
+canary_wallet_pubkey = ""
 
 [risk]
 max_position_sol = 0.4

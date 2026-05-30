@@ -361,6 +361,63 @@ fn load_from_env_rejects_invalid_execution_enabled_override() {
 }
 
 #[test]
+fn load_from_env_rejects_invalid_execution_canary_bool_override() {
+    assert_bool_env_rejected(
+        "SOLANA_COPY_BOT_EXECUTION_CANARY_ENABLED",
+        "yesplease",
+        "invalid execution.canary_enabled env override must fail config load",
+    );
+}
+
+#[test]
+fn load_from_env_applies_execution_canary_overrides() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            for (key, value) in [
+                ("SOLANA_COPY_BOT_EXECUTION_CANARY_ENABLED", "true"),
+                ("SOLANA_COPY_BOT_EXECUTION_CANARY_DRY_RUN", "true"),
+                ("SOLANA_COPY_BOT_EXECUTION_CANARY_ROUTE", "metis-dry-run"),
+                ("SOLANA_COPY_BOT_EXECUTION_CANARY_INTERVAL_SECONDS", "7"),
+                ("SOLANA_COPY_BOT_EXECUTION_CANARY_BATCH_LIMIT", "3"),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_CANARY_MAX_SIGNAL_AGE_SECONDS",
+                    "45",
+                ),
+                ("SOLANA_COPY_BOT_EXECUTION_CANARY_BUY_SIZE_SOL", "0.02"),
+                ("SOLANA_COPY_BOT_EXECUTION_CANARY_MAX_OPEN_POSITIONS", "1"),
+                ("SOLANA_COPY_BOT_EXECUTION_CANARY_MAX_DAILY_LOSS_SOL", "0.03"),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_CANARY_KILL_SWITCH_PATH",
+                    "state/test-stop",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_CANARY_WALLET_PUBKEY",
+                    "wallet-pubkey",
+                ),
+            ] {
+                std::env::set_var(key, value);
+            }
+            let (config, _) = load_from_env_or_default(config_path)
+                .expect("execution canary env overrides must parse");
+            assert!(config.execution.canary_enabled);
+            assert!(config.execution.canary_dry_run);
+            assert_eq!(config.execution.canary_route, "metis-dry-run");
+            assert_eq!(config.execution.canary_interval_seconds, 7);
+            assert_eq!(config.execution.canary_batch_limit, 3);
+            assert_eq!(config.execution.canary_max_signal_age_seconds, 45);
+            assert_eq!(config.execution.canary_buy_size_sol, 0.02);
+            assert_eq!(config.execution.canary_max_open_positions, 1);
+            assert_eq!(config.execution.canary_max_daily_loss_sol, 0.03);
+            assert_eq!(
+                config.execution.canary_kill_switch_path,
+                "state/test-stop"
+            );
+            assert_eq!(config.execution.canary_wallet_pubkey, "wallet-pubkey");
+        });
+    });
+}
+
+#[test]
 fn load_from_env_rejects_invalid_shadow_quality_gates_enabled_override() {
     assert_bool_env_rejected(
         "SOLANA_COPY_BOT_SHADOW_QUALITY_GATES_ENABLED",

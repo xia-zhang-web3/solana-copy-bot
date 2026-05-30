@@ -23,6 +23,7 @@ pub(super) async fn run_app_loop(
     mut ingestion: IngestionService,
     discovery: DiscoveryService,
     shadow: ShadowService,
+    execution_config: ExecutionConfig,
     risk_config: RiskConfig,
     ingestion_config: IngestionConfig,
     shadow_config: ShadowConfig,
@@ -102,6 +103,12 @@ pub(super) async fn run_app_loop(
     )?;
     let mut runtime_follow_reload_interval =
         runtime_follow_reload_interval(discovery_fetch_refresh_seconds);
+    let execution_canary_runner = ExecutionCanaryRunner::new(execution_config);
+    execution_canary_runner.log_startup_status();
+    let mut execution_canary_interval = time::interval(Duration::from_secs(
+        execution_canary_runner.interval_seconds(),
+    ));
+    execution_canary_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     match recover_shadow_restart_gap(
         &store,
@@ -218,6 +225,29 @@ pub(super) async fn run_app_loop(
             }
             _ = risk_refresh_interval.tick() => {
                 handle_risk_refresh_tick(&store, &ingestion, &mut shadow_risk_guard)?;
+            }
+            _ = execution_canary_interval.tick(), if execution_canary_runner.is_enabled() => {
+                match execution_canary_runner.process_tick(&store, Utc::now()) {
+                    Ok(summary) if summary.has_status_change() => {
+                        info!(
+                            enabled = summary.enabled,
+                            dry_run = summary.dry_run,
+                            route = %summary.route,
+                            wallet_pubkey = %summary.wallet_pubkey,
+                            candidates = summary.candidates,
+                            inserted = summary.inserted,
+                            existing = summary.existing,
+                            skipped_reason = summary.skipped_reason.unwrap_or("none"),
+                            last_signal_id = summary.last_signal_id.as_deref().unwrap_or("none"),
+                            last_order_id = summary.last_order_id.as_deref().unwrap_or("none"),
+                            "execution canary dry-run tick"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(error = %error, "execution canary dry-run tick failed");
+                    }
+                }
             }
             _ = runtime_follow_reload_interval.tick() => {
                 let reload_now = Utc::now();

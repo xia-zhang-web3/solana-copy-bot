@@ -6,8 +6,9 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::params;
 
-const TERMINAL_EXECUTION_STATUSES: [&str; 3] = [
+const TERMINAL_EXECUTION_STATUSES: [&str; 4] = [
     "execution_confirmed",
+    "execution_dry_run_confirmed",
     "execution_failed",
     "execution_dropped",
 ];

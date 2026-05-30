@@ -46,6 +46,9 @@ exception.
 Required invariants:
 
 1. `execution.enabled = false`; this template never authorizes enabling it
+   directly. Test execution must use `execution.canary_enabled = true` with
+   `execution.canary_dry_run = true` until the separate tiny-mainnet canary
+   rollout is approved.
 2. `SOLANA_COPY_BOT_CONFIG` points at `/etc/solana-copy-bot/live.server.toml`
 3. the service has an explicit restart policy (`Restart=always`,
    `RestartSec=2`) and restart counters must be checked after rollout

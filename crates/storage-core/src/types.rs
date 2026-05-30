@@ -1,6 +1,10 @@
 pub use types_discovery_rebuild::{
     DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateRow,
 };
+pub use types_execution::{
+    ExecutionDryRunOrder, ExecutionDryRunRecordOutcome,
+    EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED, EXECUTION_STATUS_DRY_RUN_CONFIRMED,
+};
 pub use types_history_retention::{
     ExecutionHistoryRetentionSummary, HistoryRetentionCutoffs, HistoryRetentionSummary,
 };
@@ -55,6 +59,8 @@ pub use types_trusted_selection::{
 
 #[path = "types_discovery_rebuild.rs"]
 mod types_discovery_rebuild;
+#[path = "types_execution.rs"]
+mod types_execution;
 #[path = "types_history_retention.rs"]
 mod types_history_retention;
 #[path = "types_observed.rs"]

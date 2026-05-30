@@ -99,6 +99,115 @@
             .expect("disabled execution remains valid after quarantine");
     }
 
+    #[test]
+    fn validate_execution_runtime_contract_allows_canary_dry_run() {
+        let mut execution = ExecutionConfig::default();
+        execution.canary_enabled = true;
+        execution.canary_dry_run = true;
+        execution.canary_route = "metis-dry-run".to_string();
+        execution.canary_buy_size_sol = 0.01;
+        execution.canary_max_open_positions = 1;
+        execution.canary_max_daily_loss_sol = 0.02;
+        execution.canary_kill_switch_path = "state/test-stop".to_string();
+
+        validate_execution_runtime_contract(&execution, "prod-live")
+            .expect("dry-run canary must pass execution runtime contract");
+    }
+
+    #[test]
+    fn validate_execution_runtime_contract_rejects_non_dry_run_canary() {
+        let mut execution = ExecutionConfig::default();
+        execution.canary_enabled = true;
+        execution.canary_dry_run = false;
+        execution.canary_route = "metis".to_string();
+
+        let error = validate_execution_runtime_contract(&execution, "prod-live")
+            .expect_err("non-dry-run canary must remain blocked");
+        assert!(
+            error.to_string().contains("canary_dry_run=false"),
+            "unexpected error: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn execution_canary_dry_run_tick_records_shadow_signal_once() -> Result<()> {
+        let db_path = unique_execution_canary_test_path("dry-run");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations"
+        )))?;
+        let now = Utc::now();
+        store.insert_copy_signal(&copybot_core_types::CopySignalRow {
+            signal_id: "sig-canary-buy".to_string(),
+            wallet_id: "leader-wallet".to_string(),
+            side: "buy".to_string(),
+            token: "TokenMint".to_string(),
+            notional_sol: 0.2,
+            notional_lamports: Some(Lamports::new(200_000_000)),
+            notional_origin: copybot_core_types::COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS
+                .to_string(),
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        })?;
+
+        let mut config = ExecutionConfig::default();
+        config.canary_enabled = true;
+        config.canary_dry_run = true;
+        config.canary_route = "metis-dry-run".to_string();
+        config.canary_batch_limit = 5;
+        let runner = ExecutionCanaryRunner::new(config);
+
+        let first = runner.process_tick(&store, now)?;
+        let second = runner.process_tick(&store, now)?;
+
+        assert_eq!(first.candidates, 1);
+        assert_eq!(first.inserted, 1);
+        assert_eq!(first.existing, 0);
+        assert_eq!(first.last_signal_id.as_deref(), Some("sig-canary-buy"));
+        assert_eq!(second.candidates, 0);
+        assert_eq!(second.inserted, 0);
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn execution_canary_kill_switch_blocks_tick() -> Result<()> {
+        let db_path = unique_execution_canary_test_path("kill-switch");
+        let stop_path = unique_execution_canary_test_path("kill-switch-stop");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations"
+        )))?;
+        std::fs::write(&stop_path, "stop")?;
+
+        let mut config = ExecutionConfig::default();
+        config.canary_enabled = true;
+        config.canary_kill_switch_path = stop_path.display().to_string();
+        let runner = ExecutionCanaryRunner::new(config);
+
+        let summary = runner.process_tick(&store, Utc::now())?;
+
+        assert_eq!(summary.skipped_reason, Some("kill_switch_active"));
+        assert_eq!(summary.inserted, 0);
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_file(stop_path);
+        Ok(())
+    }
+
+    fn unique_execution_canary_test_path(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "copybot-app-execution-canary-{name}-{}-{nanos}.db",
+            std::process::id()
+        ))
+    }
+
     fn infra_snapshot(
         ts_utc: DateTime<Utc>,
         ws_notifications_enqueued: u64,

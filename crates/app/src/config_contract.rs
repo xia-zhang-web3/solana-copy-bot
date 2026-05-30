@@ -14,6 +14,66 @@ pub(crate) fn validate_execution_runtime_contract(
             "execution.enabled=true is not supported by copybot-app after execution runtime quarantine; keep execution.enabled=false"
         ));
     }
+    validate_execution_canary_contract(config)?;
+    Ok(())
+}
+
+pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Result<()> {
+    if !config.canary_enabled {
+        return Ok(());
+    }
+    if !config.canary_dry_run {
+        return Err(anyhow!(
+            "execution.canary_dry_run=false is not supported yet; canary execution is dry-run only"
+        ));
+    }
+    let route = config.canary_route.trim();
+    if route.is_empty() || contains_placeholder_value(route) {
+        return Err(anyhow!(
+            "execution.canary_route must be a non-placeholder route when execution canary is enabled"
+        ));
+    }
+    if config.canary_interval_seconds == 0 {
+        return Err(anyhow!(
+            "execution.canary_interval_seconds must be >= 1 when execution canary is enabled"
+        ));
+    }
+    if config.canary_batch_limit == 0 {
+        return Err(anyhow!(
+            "execution.canary_batch_limit must be >= 1 when execution canary is enabled"
+        ));
+    }
+    if config.canary_max_signal_age_seconds == 0 || config.canary_max_signal_age_seconds > 300 {
+        return Err(anyhow!(
+            "execution.canary_max_signal_age_seconds must be within 1..=300 for canary rollout"
+        ));
+    }
+    if !config.canary_buy_size_sol.is_finite()
+        || config.canary_buy_size_sol < 0.01
+        || config.canary_buy_size_sol > 0.02
+    {
+        return Err(anyhow!(
+            "execution.canary_buy_size_sol must be within 0.01..=0.02 SOL for canary rollout"
+        ));
+    }
+    if config.canary_max_open_positions != 1 {
+        return Err(anyhow!(
+            "execution.canary_max_open_positions must stay at 1 for canary rollout"
+        ));
+    }
+    if !config.canary_max_daily_loss_sol.is_finite()
+        || config.canary_max_daily_loss_sol < 0.0
+        || config.canary_max_daily_loss_sol > 0.05
+    {
+        return Err(anyhow!(
+            "execution.canary_max_daily_loss_sol must be finite and <= 0.05 SOL for canary rollout"
+        ));
+    }
+    if config.canary_kill_switch_path.trim().is_empty() {
+        return Err(anyhow!(
+            "execution.canary_kill_switch_path must be configured when execution canary is enabled"
+        ));
+    }
     Ok(())
 }
 
