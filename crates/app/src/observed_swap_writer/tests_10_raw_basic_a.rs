@@ -270,6 +270,52 @@ fn observed_swap_writer_retries_retryable_raw_lock_without_terminal_failure() ->
 }
 
 #[test]
+fn observed_swap_writer_try_enqueue_yields_under_recent_raw_journal_pressure() -> Result<()> {
+    let unique = format!(
+        "copybot-app-observed-swap-journal-pressure-{}-{}",
+        std::process::id(),
+        Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or(Utc::now().timestamp_micros() * 1000)
+    );
+    let db_path = std::env::temp_dir().join(format!("{unique}.db"));
+    let _seed_store = prepare_observed_writer_store_for_test(Path::new(&db_path))?;
+    let ts = DateTime::parse_from_rfc3339("2026-05-30T12:00:00Z")
+        .expect("timestamp")
+        .with_timezone(&Utc);
+
+    let writer = ObservedSwapWriter::start_with_config(
+        db_path
+            .to_str()
+            .context("sqlite path must be valid utf-8")?
+            .to_string(),
+        ObservedSwapWriterConfig::for_test(4, 1, None),
+    )?;
+    writer.telemetry.note_journal_queue_enqueued(1);
+
+    let normal_swap = recent_raw_journal_backpressure_swap(0, ts);
+    assert!(
+        !writer.try_enqueue(&normal_swap)?,
+        "normal best-effort enqueue should yield while recent_raw journal has backlog"
+    );
+
+    let discovery_critical_swap = recent_raw_journal_backpressure_swap(1, ts);
+    assert!(
+        writer.try_enqueue_discovery_critical(&discovery_critical_swap)?,
+        "discovery-critical enqueue should bypass journal-pressure shedding"
+    );
+    writer.shutdown()?;
+
+    let verify_store = SqliteStore::open(Path::new(&db_path))?;
+    let swaps = verify_store.load_observed_swaps_since(ts - ChronoDuration::minutes(1))?;
+    assert_eq!(swaps.len(), 1);
+    assert_eq!(swaps[0].signature, discovery_critical_swap.signature);
+
+    remove_sqlite_test_files(Path::new(&db_path));
+    Ok(())
+}
+
+#[test]
 fn observed_swap_writer_try_enqueue_returns_false_when_channel_is_full() -> Result<()> {
     let _contention_guard = sqlite_contention_delta_test_guard();
     let unique = format!(

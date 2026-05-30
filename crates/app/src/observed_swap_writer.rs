@@ -28,6 +28,7 @@ mod types_config;
 mod writer_api;
 
 use capacity::{
+    observed_swap_writer_normal_try_enqueue_pressure_active,
     observed_swap_writer_normal_try_enqueue_soft_limit,
     recent_raw_journal_adaptive_coalesce_pressure,
     recent_raw_journal_adaptive_write_coalesce_max_batches,
@@ -58,7 +59,7 @@ pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_COALESCE_MAX_BATCHES: us
 pub(crate) const OBSERVED_SWAP_RECENT_RAW_JOURNAL_OVERFLOW_CAPACITY_MULTIPLIER: usize = 4;
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_MULTIPLIER: usize = 8;
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_BATCHES_CAP: usize = 512;
-const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_ROWS_CAP: usize = 16_384;
+const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_MAX_ROWS_CAP: usize = 4_096;
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_WINDOW: StdDuration =
     StdDuration::from_millis(10);
 const OBSERVED_SWAP_RECENT_RAW_JOURNAL_ADAPTIVE_COALESCE_POLL: StdDuration =

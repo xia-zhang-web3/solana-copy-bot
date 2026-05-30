@@ -70,6 +70,24 @@ pub(in crate::observed_swap_writer) fn recent_raw_journal_adaptive_coalesce_pres
         || telemetry.journal_overflow_row_debt.load(Ordering::Relaxed) > 0
 }
 
+pub(in crate::observed_swap_writer) fn observed_swap_writer_normal_try_enqueue_pressure_active(
+    telemetry: &ObservedSwapWriterTelemetry,
+    normal_try_enqueue_soft_limit: usize,
+) -> bool {
+    telemetry.pending_requests.load(Ordering::Relaxed) >= normal_try_enqueue_soft_limit.max(1)
+        || telemetry.journal_queue_depth_batches() > 0
+        || telemetry.journal_queue_row_debt() > 0
+        || telemetry
+            .journal_overflow_depth_batches
+            .load(Ordering::Relaxed)
+            > 0
+        || telemetry.journal_overflow_row_debt.load(Ordering::Relaxed) > 0
+        || telemetry
+            .journal_writer_inflight_rows
+            .load(Ordering::Relaxed)
+            > 0
+}
+
 pub(in crate::observed_swap_writer) fn recent_raw_journal_overflow_row_capacity(
     batch_max_size: usize,
     journal_config: &ObservedSwapRecentRawJournalConfig,

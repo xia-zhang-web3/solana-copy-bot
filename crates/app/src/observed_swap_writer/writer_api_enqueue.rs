@@ -39,9 +39,10 @@ impl ObservedSwapWriter {
 
     #[allow(dead_code)]
     pub(crate) fn try_enqueue(&self, swap: &SwapEvent) -> Result<bool> {
-        if self.telemetry.pending_requests.load(Ordering::Relaxed)
-            >= self.normal_try_enqueue_soft_limit
-        {
+        if observed_swap_writer_normal_try_enqueue_pressure_active(
+            &self.telemetry,
+            self.normal_try_enqueue_soft_limit,
+        ) {
             return Ok(false);
         }
         self.try_enqueue_without_soft_limit(swap)
