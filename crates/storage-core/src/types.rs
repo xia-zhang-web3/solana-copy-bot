@@ -2,8 +2,10 @@ pub use types_discovery_rebuild::{
     DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateRow,
 };
 pub use types_execution::{
-    ExecutionDryRunOrder, ExecutionDryRunRecordOutcome,
-    EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED, EXECUTION_STATUS_DRY_RUN_CONFIRMED,
+    ExecutionCanaryCloseCandidate, ExecutionCanaryObservedLeg, ExecutionDryRunOrder,
+    ExecutionDryRunRecordOutcome, ExecutionQuoteCanaryEventInsert,
+    ExecutionQuoteCanaryRecordOutcome, EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED,
+    EXECUTION_STATUS_DRY_RUN_CONFIRMED,
 };
 pub use types_history_retention::{
     ExecutionHistoryRetentionSummary, HistoryRetentionCutoffs, HistoryRetentionSummary,

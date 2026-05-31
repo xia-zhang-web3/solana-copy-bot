@@ -3,6 +3,7 @@ mod copy_signals;
 mod db;
 mod discovery_rebuild_state;
 mod execution_orders;
+mod execution_quote_canary;
 mod history_retention;
 mod market_context;
 mod migrations;
@@ -65,13 +66,14 @@ pub use types::{
     DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
     DiscoveryV2QualityEvidenceAggregate, DiscoveryV2QualityPrepareState,
-    DiscoveryV2QualityPrepareUpsert, ExecutionDryRunOrder, ExecutionDryRunRecordOutcome,
-    ExecutionHistoryRetentionSummary, FollowlistUpdateResult, HistoryRetentionCutoffs,
-    HistoryRetentionSummary, ObservedSolLegSwap, ObservedSwapBatchWriteMetrics,
-    ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow,
-    RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome, ShadowLotRow,
-    ShadowSignalSummary, ShadowTokenLossCooldown, ShadowTokenRecentClose, ShadowWalletFeedback,
-    ShadowWalletTokenFastLossCooldown, SqliteBatchedDeleteSummary,
+    DiscoveryV2QualityPrepareUpsert, ExecutionCanaryCloseCandidate, ExecutionCanaryObservedLeg,
+    ExecutionDryRunOrder, ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
+    ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryRecordOutcome, FollowlistUpdateResult,
+    HistoryRetentionCutoffs, HistoryRetentionSummary, ObservedSolLegSwap,
+    ObservedSwapBatchWriteMetrics, ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow,
+    RecentRawJournalStateRow, RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome,
+    ShadowLotRow, ShadowSignalSummary, ShadowTokenLossCooldown, ShadowTokenRecentClose,
+    ShadowWalletFeedback, ShadowWalletTokenFastLossCooldown, SqliteBatchedDeleteSummary,
     SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
     SqliteSnapshotDeferredReason, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
     SqliteSnapshotRetryReason, SqliteSnapshotSourceMetrics, SqliteSnapshotSummary,

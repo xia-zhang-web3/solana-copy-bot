@@ -134,6 +134,59 @@ pub(super) fn apply_discovery_shadow_execution_env_overrides(config: &mut AppCon
     if let Ok(canary_wallet_pubkey) = env::var("SOLANA_COPY_BOT_EXECUTION_CANARY_WALLET_PUBKEY") {
         config.execution.canary_wallet_pubkey = canary_wallet_pubkey;
     }
+    if let Some(quote_canary_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_ENABLED")?
+    {
+        config.execution.quote_canary_enabled = quote_canary_enabled;
+    }
+    if let Ok(quote_canary_base_url) = env::var("SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_BASE_URL") {
+        config.execution.quote_canary_base_url = quote_canary_base_url;
+    }
+    if let Ok(quote_canary_api_key) = env::var("SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_API_KEY") {
+        config.execution.quote_canary_api_key = quote_canary_api_key;
+    }
+    if let Some(quote_canary_timeout_ms) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_TIMEOUT_MS", "u64")?
+    {
+        config.execution.quote_canary_timeout_ms = quote_canary_timeout_ms;
+    }
+    if let Some(quote_canary_buy_size_sol) =
+        parse_env_number::<f64>("SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_BUY_SIZE_SOL", "f64")?
+    {
+        config.execution.quote_canary_buy_size_sol = quote_canary_buy_size_sol;
+    }
+    if let Some(quote_canary_slippage_bps) =
+        parse_env_number::<u64>("SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_SLIPPAGE_BPS", "u64")?
+    {
+        config.execution.quote_canary_slippage_bps = quote_canary_slippage_bps;
+    }
+    if let Some(priority_fee_canary_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_ENABLED")?
+    {
+        config.execution.priority_fee_canary_enabled = priority_fee_canary_enabled;
+    }
+    if let Ok(priority_fee_canary_rpc_url) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_RPC_URL")
+    {
+        config.execution.priority_fee_canary_rpc_url = priority_fee_canary_rpc_url;
+    }
+    if let Some(priority_fee_canary_timeout_ms) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_TIMEOUT_MS",
+        "u64",
+    )? {
+        config.execution.priority_fee_canary_timeout_ms = priority_fee_canary_timeout_ms;
+    }
+    if let Ok(priority_fee_canary_account) =
+        env::var("SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_ACCOUNT")
+    {
+        config.execution.priority_fee_canary_account = priority_fee_canary_account;
+    }
+    if let Some(priority_fee_canary_last_n_blocks) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_LAST_N_BLOCKS",
+        "u64",
+    )? {
+        config.execution.priority_fee_canary_last_n_blocks = priority_fee_canary_last_n_blocks;
+    }
     if let Some(holdback_enabled) =
         parse_env_bool("SOLANA_COPY_BOT_SHADOW_CAUSAL_HOLDBACK_ENABLED")?
     {

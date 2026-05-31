@@ -1,6 +1,6 @@
 use crate::{
-    ExecutionHistoryRetentionSummary, HistoryRetentionCutoffs, HistoryRetentionSummary,
-    SqliteDiscoveryStore,
+    execution_quote_canary::ensure_execution_quote_canary_tables, ExecutionHistoryRetentionSummary,
+    HistoryRetentionCutoffs, HistoryRetentionSummary, SqliteDiscoveryStore,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -86,6 +86,7 @@ impl SqliteDiscoveryStore {
             )
         })
         .context("failed ensuring history retention tables exist")?;
+        ensure_execution_quote_canary_tables(self)?;
         Ok(())
     }
 

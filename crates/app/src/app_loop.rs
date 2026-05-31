@@ -227,7 +227,7 @@ pub(super) async fn run_app_loop(
                 handle_risk_refresh_tick(&store, &ingestion, &mut shadow_risk_guard)?;
             }
             _ = execution_canary_interval.tick(), if execution_canary_runner.is_enabled() => {
-                match execution_canary_runner.process_tick(&store, Utc::now()) {
+                match execution_canary_runner.process_tick(&store, Utc::now()).await {
                     Ok(summary) if summary.has_status_change() => {
                         info!(
                             enabled = summary.enabled,
@@ -240,6 +240,15 @@ pub(super) async fn run_app_loop(
                             skipped_reason = summary.skipped_reason.unwrap_or("none"),
                             last_signal_id = summary.last_signal_id.as_deref().unwrap_or("none"),
                             last_order_id = summary.last_order_id.as_deref().unwrap_or("none"),
+                            quote_entry_candidates = summary.quote_entry_candidates,
+                            quote_entry_inserted = summary.quote_entry_inserted,
+                            quote_entry_existing = summary.quote_entry_existing,
+                            quote_entry_errors = summary.quote_entry_errors,
+                            quote_close_candidates = summary.quote_close_candidates,
+                            quote_close_inserted = summary.quote_close_inserted,
+                            quote_close_existing = summary.quote_close_existing,
+                            quote_close_errors = summary.quote_close_errors,
+                            last_quote_event_id = summary.last_quote_event_id.as_deref().unwrap_or("none"),
                             "execution canary dry-run tick"
                         );
                     }

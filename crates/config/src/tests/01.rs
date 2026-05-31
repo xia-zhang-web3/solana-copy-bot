@@ -394,6 +394,47 @@ fn load_from_env_applies_execution_canary_overrides() {
                     "SOLANA_COPY_BOT_EXECUTION_CANARY_WALLET_PUBKEY",
                     "wallet-pubkey",
                 ),
+                ("SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_ENABLED", "true"),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_BASE_URL",
+                    "https://example.com/swap/v1",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_API_KEY",
+                    "quote-key",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_TIMEOUT_MS",
+                    "900",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_BUY_SIZE_SOL",
+                    "0.2",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_SLIPPAGE_BPS",
+                    "120",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_ENABLED",
+                    "true",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_RPC_URL",
+                    "https://example.com/rpc",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_TIMEOUT_MS",
+                    "800",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_ACCOUNT",
+                    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_LAST_N_BLOCKS",
+                    "80",
+                ),
             ] {
                 std::env::set_var(key, value);
             }
@@ -413,6 +454,26 @@ fn load_from_env_applies_execution_canary_overrides() {
                 "state/test-stop"
             );
             assert_eq!(config.execution.canary_wallet_pubkey, "wallet-pubkey");
+            assert!(config.execution.quote_canary_enabled);
+            assert_eq!(
+                config.execution.quote_canary_base_url,
+                "https://example.com/swap/v1"
+            );
+            assert_eq!(config.execution.quote_canary_api_key, "quote-key");
+            assert_eq!(config.execution.quote_canary_timeout_ms, 900);
+            assert_eq!(config.execution.quote_canary_buy_size_sol, 0.2);
+            assert_eq!(config.execution.quote_canary_slippage_bps, 120);
+            assert!(config.execution.priority_fee_canary_enabled);
+            assert_eq!(
+                config.execution.priority_fee_canary_rpc_url,
+                "https://example.com/rpc"
+            );
+            assert_eq!(config.execution.priority_fee_canary_timeout_ms, 800);
+            assert_eq!(
+                config.execution.priority_fee_canary_account,
+                "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+            );
+            assert_eq!(config.execution.priority_fee_canary_last_n_blocks, 80);
         });
     });
 }

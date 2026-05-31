@@ -130,8 +130,8 @@
         );
     }
 
-    #[test]
-    fn execution_canary_dry_run_tick_records_shadow_signal_once() -> Result<()> {
+    #[tokio::test]
+    async fn execution_canary_dry_run_tick_records_shadow_signal_once() -> Result<()> {
         let db_path = unique_execution_canary_test_path("dry-run");
         let mut store = SqliteStore::open(&db_path)?;
         store.run_migrations(Path::new(concat!(
@@ -171,8 +171,8 @@
         config.canary_batch_limit = 5;
         let runner = ExecutionCanaryRunner::new(config);
 
-        let first = runner.process_tick(&store, now)?;
-        let second = runner.process_tick(&store, now)?;
+        let first = runner.process_tick(&store, now).await?;
+        let second = runner.process_tick(&store, now).await?;
 
         assert_eq!(first.candidates, 1);
         assert_eq!(first.inserted, 1);
@@ -184,8 +184,8 @@
         Ok(())
     }
 
-    #[test]
-    fn execution_canary_kill_switch_blocks_tick() -> Result<()> {
+    #[tokio::test]
+    async fn execution_canary_kill_switch_blocks_tick() -> Result<()> {
         let db_path = unique_execution_canary_test_path("kill-switch");
         let stop_path = unique_execution_canary_test_path("kill-switch-stop");
         let mut store = SqliteStore::open(&db_path)?;
@@ -200,7 +200,7 @@
         config.canary_kill_switch_path = stop_path.display().to_string();
         let runner = ExecutionCanaryRunner::new(config);
 
-        let summary = runner.process_tick(&store, Utc::now())?;
+        let summary = runner.process_tick(&store, Utc::now()).await?;
 
         assert_eq!(summary.skipped_reason, Some("kill_switch_active"));
         assert_eq!(summary.inserted, 0);

@@ -92,6 +92,20 @@ fn execution_defaults_are_fail_closed_and_canary_dry_run_only() {
         "state/execution_canary.stop"
     );
     assert!(execution.canary_wallet_pubkey.is_empty());
+    assert!(!execution.quote_canary_enabled);
+    assert_eq!(execution.quote_canary_base_url, "https://api.jup.ag/swap/v1");
+    assert!(execution.quote_canary_api_key.is_empty());
+    assert_eq!(execution.quote_canary_timeout_ms, 1_500);
+    assert_eq!(execution.quote_canary_buy_size_sol, 0.2);
+    assert_eq!(execution.quote_canary_slippage_bps, 100);
+    assert!(!execution.priority_fee_canary_enabled);
+    assert!(execution.priority_fee_canary_rpc_url.is_empty());
+    assert_eq!(execution.priority_fee_canary_timeout_ms, 1_500);
+    assert_eq!(
+        execution.priority_fee_canary_account,
+        "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+    );
+    assert_eq!(execution.priority_fee_canary_last_n_blocks, 100);
 }
 
 #[test]

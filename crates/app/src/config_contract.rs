@@ -74,6 +74,63 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
             "execution.canary_kill_switch_path must be configured when execution canary is enabled"
         ));
     }
+    if config.quote_canary_enabled {
+        if config.quote_canary_base_url.trim().is_empty()
+            || contains_placeholder_value(&config.quote_canary_base_url)
+        {
+            return Err(anyhow!(
+                "execution.quote_canary_base_url must be configured when quote canary is enabled"
+            ));
+        }
+        if config.quote_canary_timeout_ms < 100 || config.quote_canary_timeout_ms > 10_000 {
+            return Err(anyhow!(
+                "execution.quote_canary_timeout_ms must be within 100..=10000"
+            ));
+        }
+        if !config.quote_canary_buy_size_sol.is_finite()
+            || config.quote_canary_buy_size_sol <= 0.0
+            || config.quote_canary_buy_size_sol > 1.0
+        {
+            return Err(anyhow!(
+                "execution.quote_canary_buy_size_sol must be finite and within (0, 1] SOL"
+            ));
+        }
+        if config.quote_canary_slippage_bps > 5_000 {
+            return Err(anyhow!(
+                "execution.quote_canary_slippage_bps must be <= 5000"
+            ));
+        }
+    }
+    if config.priority_fee_canary_enabled {
+        if config.priority_fee_canary_rpc_url.trim().is_empty()
+            || contains_placeholder_value(&config.priority_fee_canary_rpc_url)
+        {
+            return Err(anyhow!(
+                "execution.priority_fee_canary_rpc_url must be configured when priority fee canary is enabled"
+            ));
+        }
+        if config.priority_fee_canary_timeout_ms < 100
+            || config.priority_fee_canary_timeout_ms > 10_000
+        {
+            return Err(anyhow!(
+                "execution.priority_fee_canary_timeout_ms must be within 100..=10000"
+            ));
+        }
+        if config.priority_fee_canary_account.trim().is_empty()
+            || contains_placeholder_value(&config.priority_fee_canary_account)
+        {
+            return Err(anyhow!(
+                "execution.priority_fee_canary_account must be configured when priority fee canary is enabled"
+            ));
+        }
+        if config.priority_fee_canary_last_n_blocks == 0
+            || config.priority_fee_canary_last_n_blocks > 1_000
+        {
+            return Err(anyhow!(
+                "execution.priority_fee_canary_last_n_blocks must be within 1..=1000"
+            ));
+        }
+    }
     Ok(())
 }
 

@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::fmt;
 
 #[path = "schema_discovery.rs"]
 mod discovery;
@@ -50,7 +51,7 @@ impl Default for SystemConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default)]
 pub struct ExecutionConfig {
     pub enabled: bool,
@@ -65,6 +66,17 @@ pub struct ExecutionConfig {
     pub canary_max_daily_loss_sol: f64,
     pub canary_kill_switch_path: String,
     pub canary_wallet_pubkey: String,
+    pub quote_canary_enabled: bool,
+    pub quote_canary_base_url: String,
+    pub quote_canary_api_key: String,
+    pub quote_canary_timeout_ms: u64,
+    pub quote_canary_buy_size_sol: f64,
+    pub quote_canary_slippage_bps: u64,
+    pub priority_fee_canary_enabled: bool,
+    pub priority_fee_canary_rpc_url: String,
+    pub priority_fee_canary_timeout_ms: u64,
+    pub priority_fee_canary_account: String,
+    pub priority_fee_canary_last_n_blocks: u64,
 }
 
 impl Default for ExecutionConfig {
@@ -82,7 +94,72 @@ impl Default for ExecutionConfig {
             canary_max_daily_loss_sol: 0.02,
             canary_kill_switch_path: "state/execution_canary.stop".to_string(),
             canary_wallet_pubkey: String::new(),
+            quote_canary_enabled: false,
+            quote_canary_base_url: "https://api.jup.ag/swap/v1".to_string(),
+            quote_canary_api_key: String::new(),
+            quote_canary_timeout_ms: 1_500,
+            quote_canary_buy_size_sol: 0.2,
+            quote_canary_slippage_bps: 100,
+            priority_fee_canary_enabled: false,
+            priority_fee_canary_rpc_url: String::new(),
+            priority_fee_canary_timeout_ms: 1_500,
+            priority_fee_canary_account: "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4".to_string(),
+            priority_fee_canary_last_n_blocks: 100,
         }
+    }
+}
+
+impl fmt::Debug for ExecutionConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutionConfig")
+            .field("enabled", &self.enabled)
+            .field("canary_enabled", &self.canary_enabled)
+            .field("canary_dry_run", &self.canary_dry_run)
+            .field("canary_route", &self.canary_route)
+            .field("canary_interval_seconds", &self.canary_interval_seconds)
+            .field("canary_batch_limit", &self.canary_batch_limit)
+            .field(
+                "canary_max_signal_age_seconds",
+                &self.canary_max_signal_age_seconds,
+            )
+            .field("canary_buy_size_sol", &self.canary_buy_size_sol)
+            .field("canary_max_open_positions", &self.canary_max_open_positions)
+            .field("canary_max_daily_loss_sol", &self.canary_max_daily_loss_sol)
+            .field("canary_kill_switch_path", &self.canary_kill_switch_path)
+            .field("canary_wallet_pubkey", &self.canary_wallet_pubkey)
+            .field("quote_canary_enabled", &self.quote_canary_enabled)
+            .field(
+                "quote_canary_base_url",
+                &redacted_url_debug_value(&self.quote_canary_base_url),
+            )
+            .field(
+                "quote_canary_api_key",
+                &redacted_secret_debug_value(&self.quote_canary_api_key),
+            )
+            .field("quote_canary_timeout_ms", &self.quote_canary_timeout_ms)
+            .field("quote_canary_buy_size_sol", &self.quote_canary_buy_size_sol)
+            .field("quote_canary_slippage_bps", &self.quote_canary_slippage_bps)
+            .field(
+                "priority_fee_canary_enabled",
+                &self.priority_fee_canary_enabled,
+            )
+            .field(
+                "priority_fee_canary_rpc_url",
+                &redacted_url_debug_value(&self.priority_fee_canary_rpc_url),
+            )
+            .field(
+                "priority_fee_canary_timeout_ms",
+                &self.priority_fee_canary_timeout_ms,
+            )
+            .field(
+                "priority_fee_canary_account",
+                &self.priority_fee_canary_account,
+            )
+            .field(
+                "priority_fee_canary_last_n_blocks",
+                &self.priority_fee_canary_last_n_blocks,
+            )
+            .finish()
     }
 }
 
