@@ -43,6 +43,8 @@ mod app_loop_shutdown;
 mod config_contract;
 mod discovery_runtime;
 mod execution_canary;
+mod execution_quote_canary;
+mod execution_quote_canary_helpers;
 mod history_retention;
 mod irrelevant_backpressure;
 mod irrelevant_persistence;
