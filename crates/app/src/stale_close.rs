@@ -1,8 +1,11 @@
+use crate::stale_close_quote::{
+    StaleCloseQuoteAttempt, StaleCloseQuotePrice, StaleCloseQuotePricer,
+};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_storage_core::{
-    is_fatal_sqlite_anyhow_error, SqliteStore, SHADOW_CLOSE_CONTEXT_MARKET,
-    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
+    is_fatal_sqlite_anyhow_error, ShadowLotRow, SqliteStore, SHADOW_CLOSE_CONTEXT_MARKET,
+    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
     SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE, STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES,
     STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES, STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
     STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
@@ -15,17 +18,19 @@ use super::{sanitize_json_value, STALE_LOT_CLEANUP_BATCH_LIMIT};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct StaleLotCleanupStats {
     pub closed_priced: u64,
+    pub quote_closed: u64,
     pub recovery_zero_closed: u64,
     pub terminal_zero_closed: u64,
     pub skipped_unpriced: u64,
 }
 
-pub(crate) fn close_stale_shadow_lots(
+pub(crate) async fn close_stale_shadow_lots(
     store: &SqliteStore,
     open_shadow_lots: &mut HashSet<(String, String)>,
     max_hold_hours: u32,
     terminal_zero_price_hours: u32,
     recovery_zero_price_enabled: bool,
+    quote_pricer: Option<&StaleCloseQuotePricer>,
     now: DateTime<Utc>,
 ) -> Result<StaleLotCleanupStats> {
     const EPS: f64 = 1e-12;
@@ -59,15 +64,25 @@ pub(crate) fn close_stale_shadow_lots(
         {
             Some(price) if price > EPS => (price, SHADOW_CLOSE_CONTEXT_MARKET),
             _ => {
-                let terminal_zero_reason_code = if terminal_zero_cutoff.is_none() {
-                    "guard_disabled"
-                } else if lot.opened_ts > terminal_zero_cutoff.expect("checked above") {
-                    "below_terminal_age_threshold"
-                } else {
-                    "eligible_for_terminal_zero_price"
+                let quote_attempt = match quote_pricer {
+                    Some(pricer) => pricer.quote_exit_price(&lot).await,
+                    None => StaleCloseQuoteAttempt::Disabled,
                 };
-                let details_json = format!(
-                    "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"window_minutes\":{},\"min_notional_sol\":{},\"min_samples\":{},\"max_samples\":{},\"terminal_zero_price_hours\":{},\"terminal_zero_reason_code\":\"{}\"}}",
+                match quote_attempt {
+                    StaleCloseQuoteAttempt::Priced(quote) => {
+                        record_stale_quote_price_event(store, now, &lot, &quote)?;
+                        (quote.exit_price_sol, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE)
+                    }
+                    quote_attempt => {
+                        let terminal_zero_reason_code = if terminal_zero_cutoff.is_none() {
+                            "guard_disabled"
+                        } else if lot.opened_ts > terminal_zero_cutoff.expect("checked above") {
+                            "below_terminal_age_threshold"
+                        } else {
+                            "eligible_for_terminal_zero_price"
+                        };
+                        let details_json = format!(
+                    "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"window_minutes\":{},\"min_notional_sol\":{},\"min_samples\":{},\"max_samples\":{},\"terminal_zero_price_hours\":{},\"terminal_zero_reason_code\":\"{}\",\"quote_status\":\"{}\",\"quote_error\":{}}}",
                     sanitize_json_value(&lot.wallet_id),
                     sanitize_json_value(&lot.token),
                     lot.id,
@@ -77,22 +92,24 @@ pub(crate) fn close_stale_shadow_lots(
                     STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES,
                     STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES,
                     terminal_zero_price_hours,
-                    terminal_zero_reason_code
+                    terminal_zero_reason_code,
+                    quote_attempt.unavailable_reason_code(),
+                    optional_json_string(quote_attempt.unavailable_error())
                 );
-                record_stale_close_risk_event_or_warn(
-                    store,
-                    "shadow_stale_close_price_unavailable",
-                    now,
-                    &details_json,
-                    &lot.wallet_id,
-                    &lot.token,
-                    lot.id,
-                    "failed to record stale-close price unavailable risk event",
-                )?;
-                if recovery_zero_price_enabled {
-                    if let Some(terminal_zero_cutoff) = terminal_zero_cutoff {
-                        if lot.opened_ts > terminal_zero_cutoff {
-                            let recovery_details_json = format!(
+                        record_stale_close_risk_event_or_warn(
+                            store,
+                            "shadow_stale_close_price_unavailable",
+                            now,
+                            &details_json,
+                            &lot.wallet_id,
+                            &lot.token,
+                            lot.id,
+                            "failed to record stale-close price unavailable risk event",
+                        )?;
+                        if recovery_zero_price_enabled {
+                            if let Some(terminal_zero_cutoff) = terminal_zero_cutoff {
+                                if lot.opened_ts > terminal_zero_cutoff {
+                                    let recovery_details_json = format!(
                                 "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"close_strategy\":\"recovery_zero_price\",\"exit_price_sol\":0.0,\"max_hold_hours\":{},\"terminal_zero_price_hours\":{},\"opened_ts\":\"{}\"}}",
                                 sanitize_json_value(&lot.wallet_id),
                                 sanitize_json_value(&lot.token),
@@ -102,7 +119,7 @@ pub(crate) fn close_stale_shadow_lots(
                                 terminal_zero_price_hours,
                                 sanitize_json_value(&lot.opened_ts.to_rfc3339())
                             );
-                            record_stale_close_risk_event_or_warn(
+                                    record_stale_close_risk_event_or_warn(
                                 store,
                                 "shadow_stale_close_recovery_zero_price",
                                 now,
@@ -112,9 +129,9 @@ pub(crate) fn close_stale_shadow_lots(
                                 lot.id,
                                 "failed to record stale-close recovery zero-price risk event",
                             )?;
-                            (0.0, SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE)
-                        } else {
-                            let terminal_details_json = format!(
+                                    (0.0, SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE)
+                                } else {
+                                    let terminal_details_json = format!(
                                 "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"close_strategy\":\"zero_price_terminal\",\"exit_price_sol\":0.0,\"terminal_zero_price_hours\":{},\"opened_ts\":\"{}\"}}",
                                 sanitize_json_value(&lot.wallet_id),
                                 sanitize_json_value(&lot.token),
@@ -123,6 +140,40 @@ pub(crate) fn close_stale_shadow_lots(
                                 terminal_zero_price_hours,
                                 sanitize_json_value(&lot.opened_ts.to_rfc3339())
                             );
+                                    record_stale_close_risk_event_or_warn(
+                                store,
+                                "shadow_stale_close_terminal_zero_price",
+                                now,
+                                &terminal_details_json,
+                                &lot.wallet_id,
+                                &lot.token,
+                                lot.id,
+                                "failed to record stale-close terminal zero-price risk event",
+                            )?;
+                                    (0.0, SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE)
+                                }
+                            } else {
+                                stats.skipped_unpriced = stats.skipped_unpriced.saturating_add(1);
+                                continue;
+                            }
+                        } else {
+                            let Some(terminal_zero_cutoff) = terminal_zero_cutoff else {
+                                stats.skipped_unpriced = stats.skipped_unpriced.saturating_add(1);
+                                continue;
+                            };
+                            if lot.opened_ts > terminal_zero_cutoff {
+                                stats.skipped_unpriced = stats.skipped_unpriced.saturating_add(1);
+                                continue;
+                            }
+                            let terminal_details_json = format!(
+                        "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"close_strategy\":\"zero_price_terminal\",\"exit_price_sol\":0.0,\"terminal_zero_price_hours\":{},\"opened_ts\":\"{}\"}}",
+                        sanitize_json_value(&lot.wallet_id),
+                        sanitize_json_value(&lot.token),
+                        lot.id,
+                        sanitize_json_value(&now.to_rfc3339()),
+                        terminal_zero_price_hours,
+                        sanitize_json_value(&lot.opened_ts.to_rfc3339())
+                    );
                             record_stale_close_risk_event_or_warn(
                                 store,
                                 "shadow_stale_close_terminal_zero_price",
@@ -135,39 +186,7 @@ pub(crate) fn close_stale_shadow_lots(
                             )?;
                             (0.0, SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE)
                         }
-                    } else {
-                        stats.skipped_unpriced = stats.skipped_unpriced.saturating_add(1);
-                        continue;
                     }
-                } else {
-                    let Some(terminal_zero_cutoff) = terminal_zero_cutoff else {
-                        stats.skipped_unpriced = stats.skipped_unpriced.saturating_add(1);
-                        continue;
-                    };
-                    if lot.opened_ts > terminal_zero_cutoff {
-                        stats.skipped_unpriced = stats.skipped_unpriced.saturating_add(1);
-                        continue;
-                    }
-                    let terminal_details_json = format!(
-                        "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"close_strategy\":\"zero_price_terminal\",\"exit_price_sol\":0.0,\"terminal_zero_price_hours\":{},\"opened_ts\":\"{}\"}}",
-                        sanitize_json_value(&lot.wallet_id),
-                        sanitize_json_value(&lot.token),
-                        lot.id,
-                        sanitize_json_value(&now.to_rfc3339()),
-                        terminal_zero_price_hours,
-                        sanitize_json_value(&lot.opened_ts.to_rfc3339())
-                    );
-                    record_stale_close_risk_event_or_warn(
-                        store,
-                        "shadow_stale_close_terminal_zero_price",
-                        now,
-                        &terminal_details_json,
-                        &lot.wallet_id,
-                        &lot.token,
-                        lot.id,
-                        "failed to record stale-close terminal zero-price risk event",
-                    )?;
-                    (0.0, SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE)
                 }
             }
         };
@@ -196,6 +215,8 @@ pub(crate) fn close_stale_shadow_lots(
                 stats.recovery_zero_closed = stats.recovery_zero_closed.saturating_add(1);
             } else if close_context == SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE {
                 stats.terminal_zero_closed = stats.terminal_zero_closed.saturating_add(1);
+            } else if close_context == SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE {
+                stats.quote_closed = stats.quote_closed.saturating_add(1);
             } else {
                 stats.closed_priced = stats.closed_priced.saturating_add(1);
             }
@@ -210,6 +231,38 @@ pub(crate) fn close_stale_shadow_lots(
     }
 
     Ok(stats)
+}
+
+fn record_stale_quote_price_event(
+    store: &SqliteStore,
+    now: DateTime<Utc>,
+    lot: &ShadowLotRow,
+    quote: &StaleCloseQuotePrice,
+) -> Result<()> {
+    let details_json = format!(
+        "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"close_strategy\":\"quote_price\",\"exit_price_sol\":{},\"quote_in_amount_raw\":\"{}\",\"quote_out_amount_raw\":\"{}\",\"quote_in_tokens\":{},\"quote_out_sol\":{},\"quote_latency_ms\":{},\"price_impact_pct\":{}}}",
+        sanitize_json_value(&lot.wallet_id),
+        sanitize_json_value(&lot.token),
+        lot.id,
+        sanitize_json_value(&now.to_rfc3339()),
+        quote.exit_price_sol,
+        sanitize_json_value(&quote.quote_in_amount_raw),
+        sanitize_json_value(&quote.quote_out_amount_raw),
+        quote.quote_in_tokens,
+        quote.quote_out_sol,
+        quote.quote_latency_ms,
+        option_f64_json(quote.price_impact_pct)
+    );
+    record_stale_close_risk_event_or_warn(
+        store,
+        "shadow_stale_close_quote_price",
+        now,
+        &details_json,
+        &lot.wallet_id,
+        &lot.token,
+        lot.id,
+        "failed to record stale-close quote-price risk event",
+    )
 }
 
 fn record_stale_close_risk_event_or_warn(
@@ -239,4 +292,17 @@ fn record_stale_close_risk_event_or_warn(
 
 fn stale_close_risk_event_error_requires_abort(error: &anyhow::Error) -> bool {
     is_fatal_sqlite_anyhow_error(error)
+}
+
+fn optional_json_string(value: Option<&str>) -> String {
+    value
+        .map(|raw| format!("\"{}\"", sanitize_json_value(raw)))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn option_f64_json(value: Option<f64>) -> String {
+    value
+        .filter(|raw| raw.is_finite())
+        .map(|raw| raw.to_string())
+        .unwrap_or_else(|| "null".to_string())
 }

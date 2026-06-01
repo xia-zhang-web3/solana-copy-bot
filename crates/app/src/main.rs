@@ -47,6 +47,7 @@ mod execution_quote_canary;
 mod execution_quote_canary_helpers;
 mod execution_quote_canary_priority_fee;
 mod execution_quote_canary_rpc;
+mod execution_quote_http;
 mod history_retention;
 mod irrelevant_backpressure;
 mod irrelevant_persistence;
@@ -59,6 +60,7 @@ mod shadow_runtime_helpers;
 mod shadow_scheduler;
 mod shadow_state_events;
 mod stale_close;
+mod stale_close_quote;
 mod startup;
 mod swap_classification;
 mod task_spawns;
@@ -104,6 +106,7 @@ use crate::shadow_scheduler::{
 };
 use crate::shadow_state_events::*;
 use crate::stale_close::close_stale_shadow_lots;
+use crate::stale_close_quote::StaleCloseQuotePricer;
 #[cfg(test)]
 use crate::startup::STARTUP_LARGE_WAL_CHECKPOINT_TIMEOUT;
 use crate::startup::{

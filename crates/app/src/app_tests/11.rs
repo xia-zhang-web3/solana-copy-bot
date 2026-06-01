@@ -1,5 +1,5 @@
-    #[test]
-    fn stale_lot_cleanup_ignores_micro_swap_outlier_price() -> Result<()> {
+    #[tokio::test]
+    async fn stale_lot_cleanup_ignores_micro_swap_outlier_price() -> Result<()> {
         let (store, db_path) = make_test_store("stale-lot-cleanup")?;
         let now = Utc::now();
         let opened_ts = now - chrono::Duration::hours(10);
@@ -55,7 +55,8 @@
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, now)?;
+        let stats =
+            close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, None, now).await?;
 
         assert_eq!(stats.closed_priced, 1);
         assert_eq!(stats.terminal_zero_closed, 0);
@@ -76,8 +77,9 @@
         Ok(())
     }
 
-    #[test]
-    fn stale_lot_cleanup_skips_and_records_risk_event_when_reliable_price_missing() -> Result<()> {
+    #[tokio::test]
+    async fn stale_lot_cleanup_skips_and_records_risk_event_when_reliable_price_missing(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("stale-lot-unpriced")?;
         let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
             .expect("timestamp")
@@ -99,7 +101,8 @@
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, now)?;
+        let stats =
+            close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, None, now).await?;
 
         assert_eq!(stats.closed_priced, 0);
         assert_eq!(stats.terminal_zero_closed, 0);
@@ -121,8 +124,93 @@
         Ok(())
     }
 
-    #[test]
-    fn stale_lot_cleanup_returns_error_on_fatal_price_unavailable_risk_event_write() -> Result<()> {
+    #[tokio::test]
+    async fn stale_lot_cleanup_uses_quote_price_when_observed_price_missing() -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (store, db_path) = make_test_store("stale-lot-quote-price")?;
+        let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let opened_ts = now - chrono::Duration::hours(14);
+        let lot_id = store.insert_shadow_lot_exact(
+            "wallet-a",
+            "token-a",
+            0.5,
+            Some(TokenQuantity::new(500_000, 6)),
+            0.25,
+            opened_ts,
+        )?;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let quote_base_url = format!("http://{}", listener.local_addr()?);
+        let quote_server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("quote request");
+            let mut buffer = [0_u8; 2048];
+            let _ = socket.read(&mut buffer).await.expect("read quote request");
+            let body = r#"{"inAmount":"500000","outAmount":"300000000","priceImpactPct":"0.01","routePlan":[]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write quote response");
+        });
+
+        let mut execution = ExecutionConfig::default();
+        execution.quote_canary_enabled = true;
+        execution.quote_canary_base_url = quote_base_url;
+        execution.quote_canary_sell_slippage_bps = 500;
+        execution.quote_canary_timeout_ms = 1_000;
+        let quote_pricer = StaleCloseQuotePricer::new(execution);
+
+        let mut open_pairs = store.list_shadow_open_pairs()?;
+        let stats = close_stale_shadow_lots(
+            &store,
+            &mut open_pairs,
+            6,
+            12,
+            false,
+            Some(&quote_pricer),
+            now,
+        )
+        .await?;
+        quote_server.await?;
+
+        assert_eq!(stats.closed_priced, 0);
+        assert_eq!(stats.quote_closed, 1);
+        assert_eq!(stats.terminal_zero_closed, 0);
+        assert_eq!(stats.skipped_unpriced, 0);
+        assert!(!store.has_shadow_lots("wallet-a", "token-a")?);
+        assert!(!open_pairs.contains(&("wallet-a".to_string(), "token-a".to_string())));
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_quote_price")?,
+            1
+        );
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_terminal_zero_price")?,
+            0
+        );
+
+        let signal_id = format!("stale-close-{}-{}", lot_id, now.timestamp_millis());
+        assert_eq!(
+            store.shadow_closed_trade_close_context(&signal_id)?,
+            Some(copybot_storage_core::SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE.to_string())
+        );
+        let (trades, pnl) = store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;
+        assert_eq!(trades, 1);
+        assert!(pnl > 0.04 && pnl < 0.06, "unexpected quote pnl: {pnl}");
+
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_lot_cleanup_returns_error_on_fatal_price_unavailable_risk_event_write(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("stale-lot-unpriced-risk-event-fatal")?;
         let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
             .expect("timestamp")
@@ -153,7 +241,8 @@
         )?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let error = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, now)
+        let error = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, None, now)
+            .await
             .expect_err("fatal stale-close risk event write must abort cleanup");
         let error_text = format!("{error:#}");
         assert!(
@@ -177,8 +266,9 @@
         Ok(())
     }
 
-    #[test]
-    fn stale_lot_cleanup_recovery_zero_price_closes_unpriced_lot_only_when_enabled() -> Result<()> {
+    #[tokio::test]
+    async fn stale_lot_cleanup_recovery_zero_price_closes_unpriced_lot_only_when_enabled(
+    ) -> Result<()> {
         let (store, db_path) = make_test_store("stale-lot-recovery-unpriced")?;
         let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
             .expect("timestamp")
@@ -200,7 +290,8 @@
         let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, true, now)?;
+        let stats =
+            close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, true, None, now).await?;
 
         assert_eq!(stats.closed_priced, 0);
         assert_eq!(stats.recovery_zero_closed, 1);
@@ -232,8 +323,8 @@
         Ok(())
     }
 
-    #[test]
-    fn stale_lot_cleanup_terminal_closes_and_records_risk_events_when_reliable_price_missing_after_terminal_threshold(
+    #[tokio::test]
+    async fn stale_lot_cleanup_terminal_closes_and_records_risk_events_when_reliable_price_missing_after_terminal_threshold(
     ) -> Result<()> {
         let (store, db_path) = make_test_store("stale-lot-terminal-unpriced")?;
         let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
@@ -256,7 +347,8 @@
         store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, false, now)?;
+        let stats =
+            close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, false, None, now).await?;
 
         assert_eq!(stats.closed_priced, 0);
         assert_eq!(stats.terminal_zero_closed, 1);

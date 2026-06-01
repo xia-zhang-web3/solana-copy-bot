@@ -160,7 +160,7 @@ pub(super) fn handle_shadow_snapshot_join(
     Ok(())
 }
 
-pub(super) fn handle_shadow_interval_tick(
+pub(super) async fn handle_shadow_interval_tick(
     store: &SqliteStore,
     sqlite_path: &str,
     shadow: &ShadowService,
@@ -170,6 +170,7 @@ pub(super) fn handle_shadow_interval_tick(
     stale_lot_max_hold_hours: u32,
     stale_lot_terminal_zero_price_hours: u32,
     stale_lot_recovery_zero_price_enabled: bool,
+    stale_close_quote_pricer: &StaleCloseQuotePricer,
 ) -> Result<()> {
     if shadow_strategy_fail_closed {
         return Ok(());
@@ -181,16 +182,21 @@ pub(super) fn handle_shadow_interval_tick(
         stale_lot_max_hold_hours,
         stale_lot_terminal_zero_price_hours,
         stale_lot_recovery_zero_price_enabled,
+        Some(stale_close_quote_pricer),
         cleanup_now,
-    ) {
+    )
+    .await
+    {
         Ok(stats)
             if stats.closed_priced > 0
+                || stats.quote_closed > 0
                 || stats.recovery_zero_closed > 0
                 || stats.terminal_zero_closed > 0
                 || stats.skipped_unpriced > 0 =>
         {
             info!(
                 closed_priced = stats.closed_priced,
+                quote_closed = stats.quote_closed,
                 recovery_zero_closed = stats.recovery_zero_closed,
                 terminal_zero_closed = stats.terminal_zero_closed,
                 skipped_unpriced = stats.skipped_unpriced,

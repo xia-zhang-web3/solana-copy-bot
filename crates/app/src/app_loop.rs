@@ -103,6 +103,7 @@ pub(super) async fn run_app_loop(
     )?;
     let mut runtime_follow_reload_interval =
         runtime_follow_reload_interval(discovery_fetch_refresh_seconds);
+    let stale_close_quote_pricer = StaleCloseQuotePricer::new(execution_config.clone());
     let execution_canary_runner = ExecutionCanaryRunner::new(execution_config);
     execution_canary_runner.log_startup_status();
     let mut execution_canary_interval = time::interval(Duration::from_secs(
@@ -384,7 +385,8 @@ pub(super) async fn run_app_loop(
                     stale_lot_max_hold_hours,
                     stale_lot_terminal_zero_price_hours,
                     stale_lot_recovery_zero_price_enabled,
-                )?;
+                    &stale_close_quote_pricer,
+                ).await?;
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("shutdown signal received");
