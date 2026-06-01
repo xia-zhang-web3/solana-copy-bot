@@ -1,4 +1,5 @@
 use crate::execution_quote_canary_helpers::*;
+use crate::execution_quote_canary_priority_fee::PriorityFeeSampler;
 use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
@@ -9,7 +10,7 @@ use copybot_storage_core::{
     ExecutionCanaryCloseCandidate, ExecutionQuoteCanaryEventInsert,
     ExecutionQuoteCanaryRecordOutcome, SqliteStore,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::time::{Duration as StdDuration, Instant};
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -32,13 +33,16 @@ pub(crate) struct ExecutionQuoteCanaryTickSummary {
 pub(crate) struct ExecutionQuoteCanaryRunner {
     config: ExecutionConfig,
     http: reqwest::Client,
+    priority_fee: PriorityFeeSampler,
 }
 
 impl ExecutionQuoteCanaryRunner {
     pub(crate) fn new(config: ExecutionConfig) -> Self {
+        let http = reqwest::Client::new();
         Self {
-            config,
-            http: reqwest::Client::new(),
+            config: config.clone(),
+            http: http.clone(),
+            priority_fee: PriorityFeeSampler::new(config, http),
         }
     }
 
@@ -219,11 +223,8 @@ impl ExecutionQuoteCanaryRunner {
         &self,
         sample: &'a mut Option<PriorityFeeSample>,
     ) -> Option<&'a PriorityFeeSample> {
-        if !self.config.priority_fee_canary_enabled {
-            return None;
-        }
         if sample.is_none() {
-            *sample = Some(self.fetch_priority_fee_sample().await);
+            *sample = self.priority_fee.sample_if_enabled().await;
         }
         sample.as_ref()
     }
@@ -463,67 +464,6 @@ impl ExecutionQuoteCanaryRunner {
                 .context("quote canary response JSON decode failed")?,
             started,
         )
-    }
-
-    async fn fetch_priority_fee_sample(&self) -> PriorityFeeSample {
-        match self.fetch_priority_fee_sample_inner().await {
-            Ok(sample) => sample,
-            Err(error) => PriorityFeeSample {
-                status: QUOTE_STATUS_ERROR.to_string(),
-                lamports: None,
-                json: None,
-                error: Some(short_error(&error)),
-            },
-        }
-    }
-
-    async fn fetch_priority_fee_sample_inner(&self) -> Result<PriorityFeeSample> {
-        let rpc_url = self.config.priority_fee_canary_rpc_url.trim();
-        if rpc_url.is_empty() {
-            return Err(anyhow!("priority fee canary RPC URL is empty"));
-        }
-        let body = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "qn_estimatePriorityFees",
-            "params": {
-                "last_n_blocks": self.config.priority_fee_canary_last_n_blocks,
-                "account": self.config.priority_fee_canary_account.trim(),
-                "api_version": 2
-            }
-        });
-        let response = self
-            .http
-            .post(rpc_url)
-            .json(&body)
-            .timeout(StdDuration::from_millis(
-                self.config.priority_fee_canary_timeout_ms.max(1),
-            ))
-            .send()
-            .await
-            .context("priority fee canary request failed")?;
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "priority fee canary returned HTTP {status}: {}",
-                truncate_for_log(&body, 240)
-            ));
-        }
-        let value: Value = response
-            .json()
-            .await
-            .context("priority fee canary response JSON decode failed")?;
-        if let Some(error) = value.get("error") {
-            return Err(anyhow!("priority fee canary RPC error: {error}"));
-        }
-        let result = value.get("result").unwrap_or(&value);
-        Ok(PriorityFeeSample {
-            status: QUOTE_STATUS_OK.to_string(),
-            lamports: priority_fee_lamports(result),
-            json: Some(result.to_string()),
-            error: None,
-        })
     }
 }
 

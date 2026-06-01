@@ -283,6 +283,19 @@
             event.decision_status.as_deref(),
             Some(crate::execution_quote_canary_helpers::DECISION_WOULD_EXECUTE)
         );
+        event.priority_fee_status =
+            Some(crate::execution_quote_canary_helpers::QUOTE_STATUS_SKIPPED.to_string());
+        crate::execution_quote_canary_helpers::finalize_quote_decision(&mut event, 50);
+        assert_eq!(
+            event.decision_status.as_deref(),
+            Some(crate::execution_quote_canary_helpers::DECISION_WOULD_EXECUTE)
+        );
+        let rate_limit = anyhow::anyhow!(
+            "priority fee canary returned HTTP 429 Too Many Requests: request limit reached"
+        );
+        assert!(crate::execution_quote_canary_priority_fee::is_priority_fee_rate_limit_error(
+            &rate_limit
+        ));
 
         let mut config = copybot_config::ExecutionConfig::default();
         assert_eq!(

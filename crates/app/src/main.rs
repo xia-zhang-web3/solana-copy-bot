@@ -45,6 +45,7 @@ mod discovery_runtime;
 mod execution_canary;
 mod execution_quote_canary;
 mod execution_quote_canary_helpers;
+mod execution_quote_canary_priority_fee;
 mod execution_quote_canary_rpc;
 mod history_retention;
 mod irrelevant_backpressure;
