@@ -24,6 +24,7 @@ pub(crate) struct ExecutionQuoteCanaryTickSummary {
     pub close_existing: usize,
     pub close_errors: usize,
     pub would_execute: usize,
+    pub would_force_exit: usize,
     pub would_skip: usize,
     pub decision_unknown: usize,
     pub last_event_id: Option<String>,
@@ -506,6 +507,7 @@ fn apply_decision_summary(
 ) {
     match event.decision_status.as_deref() {
         Some(DECISION_WOULD_EXECUTE) => summary.would_execute += 1,
+        Some(DECISION_WOULD_FORCE_EXIT) => summary.would_force_exit += 1,
         Some(DECISION_WOULD_SKIP) => summary.would_skip += 1,
         Some(DECISION_UNKNOWN) | None => summary.decision_unknown += 1,
         Some(_) => summary.decision_unknown += 1,

@@ -31,6 +31,7 @@ pub(crate) struct ExecutionCanaryTickSummary {
     pub quote_close_existing: usize,
     pub quote_close_errors: usize,
     pub quote_would_execute: usize,
+    pub quote_would_force_exit: usize,
     pub quote_would_skip: usize,
     pub quote_decision_unknown: usize,
     pub last_quote_event_id: Option<String>,
@@ -48,6 +49,7 @@ impl ExecutionCanaryTickSummary {
             || self.quote_close_existing > 0
             || self.quote_close_errors > 0
             || self.quote_would_execute > 0
+            || self.quote_would_force_exit > 0
             || self.quote_would_skip > 0
             || self.quote_decision_unknown > 0
     }
@@ -244,6 +246,7 @@ fn apply_quote_summary(
     summary.quote_close_existing = quote.close_existing;
     summary.quote_close_errors = quote.close_errors;
     summary.quote_would_execute = quote.would_execute;
+    summary.quote_would_force_exit = quote.would_force_exit;
     summary.quote_would_skip = quote.would_skip;
     summary.quote_decision_unknown = quote.decision_unknown;
     summary.last_quote_event_id = quote.last_event_id;

@@ -283,6 +283,25 @@
             event.decision_status.as_deref(),
             Some(crate::execution_quote_canary_helpers::DECISION_WOULD_EXECUTE)
         );
+        let mut sell_event = event.clone();
+        sell_event.side = "sell".to_string();
+        sell_event.slippage_bps = Some(751.0);
+        crate::execution_quote_canary_helpers::finalize_quote_decision(&mut sell_event, 500);
+        assert_eq!(
+            sell_event.decision_status.as_deref(),
+            Some(crate::execution_quote_canary_helpers::DECISION_WOULD_FORCE_EXIT)
+        );
+        assert_eq!(
+            sell_event.decision_reason.as_deref(),
+            Some("exit_slippage_above_soft_limit")
+        );
+        let mut buy_event = event.clone();
+        buy_event.slippage_bps = Some(151.0);
+        crate::execution_quote_canary_helpers::finalize_quote_decision(&mut buy_event, 150);
+        assert_eq!(
+            buy_event.decision_status.as_deref(),
+            Some(crate::execution_quote_canary_helpers::DECISION_WOULD_SKIP)
+        );
         event.priority_fee_status =
             Some(crate::execution_quote_canary_helpers::QUOTE_STATUS_SKIPPED.to_string());
         crate::execution_quote_canary_helpers::finalize_quote_decision(&mut event, 50);

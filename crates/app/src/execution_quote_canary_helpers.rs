@@ -16,6 +16,7 @@ pub(crate) const QUOTE_STATUS_SKIPPED: &str = "skipped";
 pub(crate) const SIDE_BUY: &str = "buy";
 pub(crate) const SIDE_SELL: &str = "sell";
 pub(crate) const DECISION_WOULD_EXECUTE: &str = "would_execute";
+pub(crate) const DECISION_WOULD_FORCE_EXIT: &str = "would_force_exit";
 pub(crate) const DECISION_WOULD_SKIP: &str = "would_skip";
 pub(crate) const DECISION_UNKNOWN: &str = "unknown";
 
@@ -87,10 +88,16 @@ pub(crate) fn finalize_quote_decision(
         set_decision(event, DECISION_UNKNOWN, "invalid_slippage_bps");
         return;
     }
-    if slippage_bps > max_slippage_bps as f64 {
-        set_decision(event, DECISION_WOULD_SKIP, "slippage_above_limit");
-    } else {
+    if slippage_bps <= max_slippage_bps as f64 {
         set_decision(event, DECISION_WOULD_EXECUTE, "within_slippage_limit");
+    } else if event.side.eq_ignore_ascii_case(SIDE_SELL) {
+        set_decision(
+            event,
+            DECISION_WOULD_FORCE_EXIT,
+            "exit_slippage_above_soft_limit",
+        );
+    } else {
+        set_decision(event, DECISION_WOULD_SKIP, "slippage_above_limit");
     }
 }
 
