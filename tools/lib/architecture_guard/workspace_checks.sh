@@ -357,7 +357,9 @@ for name, paths in sorted(entries.items()):
 check_forbidden_dependency_graph() {
   local package deps forbidden
   local packages=()
-  mapfile -t packages < <(operator_guard_packages)
+  while IFS= read -r package; do
+    packages+=("$package")
+  done < <(operator_guard_packages)
   if ((${#packages[@]} == 0)); then
     fail "failed to discover operator/storage-core packages for dependency guard"
     return 0

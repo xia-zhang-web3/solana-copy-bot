@@ -185,6 +185,107 @@
     }
 
     #[tokio::test]
+    async fn execution_canary_hot_path_records_shadow_buy_without_timer() -> Result<()> {
+        let db_path = unique_execution_canary_test_path("hot-path");
+        let mut store = SqliteStore::open(&db_path)?;
+        store.run_migrations(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../migrations"
+        )))?;
+        let now = Utc::now();
+        store.insert_copy_signal(&copybot_core_types::CopySignalRow {
+            signal_id: "shadow:sig-hot:leader-wallet:buy:TokenMint".to_string(),
+            wallet_id: "leader-wallet".to_string(),
+            side: "buy".to_string(),
+            token: "TokenMint".to_string(),
+            notional_sol: 0.2,
+            notional_lamports: Some(Lamports::new(200_000_000)),
+            notional_origin: copybot_core_types::COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS
+                .to_string(),
+            ts: now,
+            status: "shadow_recorded".to_string(),
+        })?;
+
+        let mut config = ExecutionConfig::default();
+        config.canary_enabled = true;
+        config.canary_dry_run = true;
+        config.canary_route = "metis-dry-run".to_string();
+        let runner = ExecutionCanaryRunner::new(config);
+        let signal = copybot_shadow::ShadowSignalResult {
+            signal_id: "shadow:sig-hot:leader-wallet:buy:TokenMint".to_string(),
+            wallet_id: "leader-wallet".to_string(),
+            side: "buy".to_string(),
+            token: "TokenMint".to_string(),
+            notional_sol: 0.2,
+            latency_ms: 10,
+            closed_qty: 0.0,
+            realized_pnl_sol: 0.0,
+            has_open_lots_after_signal: Some(true),
+        };
+
+        let first = runner
+            .process_recorded_shadow_signal(&store, &signal, now)
+            .await?;
+        let second = runner
+            .process_recorded_shadow_signal(&store, &signal, now)
+            .await?;
+
+        assert_eq!(first.candidates, 1);
+        assert_eq!(first.inserted, 1);
+        assert_eq!(first.existing, 0);
+        assert_eq!(first.last_signal_id.as_deref(), Some(signal.signal_id.as_str()));
+        assert_eq!(second.inserted, 0);
+        assert_eq!(second.existing, 1);
+        let _ = std::fs::remove_file(db_path);
+        Ok(())
+    }
+
+    #[test]
+    fn quote_canary_helpers_infer_decimals_and_decision() {
+        assert_eq!(
+            crate::execution_quote_canary_helpers::infer_decimals_from_raw_and_ui("1234000", 1.234),
+            Some(6)
+        );
+        assert_eq!(
+            crate::execution_quote_canary_helpers::ui_amount_to_raw_string(1.234, 6).as_deref(),
+            Some("1234000")
+        );
+        let now = Utc::now();
+        let mut event = copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            event_id: "quote:test".to_string(),
+            signal_id: Some("sig".to_string()),
+            shadow_closed_trade_id: None,
+            wallet_id: "leader-wallet".to_string(),
+            token: "TokenMint".to_string(),
+            side: "buy".to_string(),
+            quote_status: crate::execution_quote_canary_helpers::QUOTE_STATUS_OK.to_string(),
+            request_ts: now,
+            signal_ts: Some(now),
+            decision_delay_ms: Some(0),
+            quote_latency_ms: Some(12),
+            leader_notional_sol: Some(0.2),
+            quote_in_amount_raw: Some("200000000".to_string()),
+            quote_out_amount_raw: Some("1234000".to_string()),
+            quote_price_sol: Some(0.1),
+            shadow_price_sol: Some(0.1),
+            slippage_bps: Some(25.0),
+            price_impact_pct: Some(0.01),
+            route_plan_json: Some("[]".to_string()),
+            priority_fee_status: Some(crate::execution_quote_canary_helpers::QUOTE_STATUS_OK.to_string()),
+            priority_fee_lamports: Some(1),
+            priority_fee_json: Some("{}".to_string()),
+            decision_status: None,
+            decision_reason: None,
+            error: None,
+        };
+        crate::execution_quote_canary_helpers::finalize_quote_decision(&mut event, 50);
+        assert_eq!(
+            event.decision_status.as_deref(),
+            Some(crate::execution_quote_canary_helpers::DECISION_WOULD_EXECUTE)
+        );
+    }
+
+    #[tokio::test]
     async fn execution_canary_kill_switch_blocks_tick() -> Result<()> {
         let db_path = unique_execution_canary_test_path("kill-switch");
         let stop_path = unique_execution_canary_test_path("kill-switch-stop");

@@ -14,6 +14,9 @@ pub(crate) const QUOTE_STATUS_ERROR: &str = "error";
 pub(crate) const QUOTE_STATUS_SKIPPED: &str = "skipped";
 pub(crate) const SIDE_BUY: &str = "buy";
 pub(crate) const SIDE_SELL: &str = "sell";
+pub(crate) const DECISION_WOULD_EXECUTE: &str = "would_execute";
+pub(crate) const DECISION_WOULD_SKIP: &str = "would_skip";
+pub(crate) const DECISION_UNKNOWN: &str = "unknown";
 
 #[derive(Debug, Clone)]
 pub(crate) struct QuoteSample {
@@ -59,15 +62,58 @@ pub(crate) fn attach_priority_fee(
     }
 }
 
+pub(crate) fn finalize_quote_decision(
+    event: &mut ExecutionQuoteCanaryEventInsert,
+    max_slippage_bps: u64,
+) {
+    if event.quote_status == QUOTE_STATUS_ERROR {
+        set_decision(event, DECISION_UNKNOWN, "quote_error");
+        return;
+    }
+    if event.quote_status == QUOTE_STATUS_SKIPPED {
+        set_decision(event, DECISION_UNKNOWN, "quote_skipped");
+        return;
+    }
+    if event.priority_fee_status.as_deref() == Some(QUOTE_STATUS_ERROR) {
+        set_decision(event, DECISION_UNKNOWN, "priority_fee_error");
+        return;
+    }
+    let Some(slippage_bps) = event.slippage_bps else {
+        set_decision(event, DECISION_UNKNOWN, "missing_slippage_bps");
+        return;
+    };
+    if !slippage_bps.is_finite() {
+        set_decision(event, DECISION_UNKNOWN, "invalid_slippage_bps");
+        return;
+    }
+    if slippage_bps > max_slippage_bps as f64 {
+        set_decision(event, DECISION_WOULD_SKIP, "slippage_above_limit");
+    } else {
+        set_decision(event, DECISION_WOULD_EXECUTE, "within_slippage_limit");
+    }
+}
+
 pub(crate) fn load_matching_observed_entry_leg(
     store: &SqliteStore,
     signal: &CopySignalRow,
 ) -> Result<Option<ExecutionCanaryObservedLeg>> {
-    let Some(signature) = signal_signature(&signal.signal_id) else {
+    let Some(signature) = signal_signature_for_canary(&signal.signal_id) else {
         return Ok(None);
     };
     let observed = store.load_execution_canary_observed_leg_by_signature(signature)?;
     Ok(observed.filter(|leg| leg.is_buy && leg.token_mint == signal.token))
+}
+
+pub(crate) fn load_matching_observed_leg_for_signal(
+    store: &SqliteStore,
+    signal_id: &str,
+    token: &str,
+) -> Result<Option<ExecutionCanaryObservedLeg>> {
+    let Some(signature) = signal_signature_for_canary(signal_id) else {
+        return Ok(None);
+    };
+    let observed = store.load_execution_canary_observed_leg_by_signature(signature)?;
+    Ok(observed.filter(|leg| leg.token_mint == token))
 }
 
 pub(crate) fn entry_quote_event_id(signal_id: &str) -> String {
@@ -106,6 +152,8 @@ pub(crate) fn entry_error_event(
         priority_fee_status: None,
         priority_fee_lamports: None,
         priority_fee_json: None,
+        decision_status: Some(DECISION_UNKNOWN.to_string()),
+        decision_reason: Some("quote_error".to_string()),
         error: Some(short_error(error)),
     }
 }
@@ -138,6 +186,8 @@ pub(crate) fn close_error_event(
         priority_fee_status: None,
         priority_fee_lamports: None,
         priority_fee_json: None,
+        decision_status: Some(DECISION_UNKNOWN.to_string()),
+        decision_reason: Some("quote_error".to_string()),
         error: Some(short_error(error)),
     }
 }
@@ -202,6 +252,43 @@ pub(crate) fn raw_amount_to_ui(raw: Option<&str>, decimals: u8) -> Option<f64> {
     (value.is_finite() && divisor.is_finite() && divisor > 0.0).then_some(value / divisor)
 }
 
+pub(crate) fn ui_amount_to_raw_string(ui_amount: f64, decimals: u8) -> Option<String> {
+    if !ui_amount.is_finite() || ui_amount <= 0.0 {
+        return None;
+    }
+    let multiplier = 10f64.powi(i32::from(decimals));
+    let raw = (ui_amount * multiplier).round();
+    if !raw.is_finite() || raw < 1.0 || raw > u64::MAX as f64 {
+        return None;
+    }
+    Some(format!("{raw:.0}"))
+}
+
+pub(crate) fn observed_token_decimals(observed: &ExecutionCanaryObservedLeg) -> Option<u8> {
+    observed.token_decimals.or_else(|| {
+        let raw = observed.token_raw_amount.as_deref()?;
+        infer_decimals_from_raw_and_ui(raw, observed.token_qty)
+    })
+}
+
+pub(crate) fn infer_decimals_from_raw_and_ui(raw: &str, ui_amount: f64) -> Option<u8> {
+    if !ui_amount.is_finite() || ui_amount <= 0.0 {
+        return None;
+    }
+    let raw_value = raw.parse::<f64>().ok()?;
+    if !raw_value.is_finite() || raw_value <= 0.0 {
+        return None;
+    }
+    for decimals in 0..=18u8 {
+        let scaled = ui_amount * 10f64.powi(i32::from(decimals));
+        let tolerance = 1.0_f64.max(raw_value.abs() * 1e-9);
+        if (scaled.round() - raw_value).abs() <= tolerance {
+            return Some(decimals);
+        }
+    }
+    None
+}
+
 pub(crate) fn duration_ms_between(from: DateTime<Utc>, to: DateTime<Utc>) -> Option<u64> {
     let millis = to.signed_duration_since(from).num_milliseconds();
     u64::try_from(millis).ok()
@@ -246,7 +333,7 @@ pub(crate) fn truncate_for_log(value: &str, max_chars: usize) -> String {
     out
 }
 
-fn signal_signature(signal_id: &str) -> Option<&str> {
+pub(crate) fn signal_signature_for_canary(signal_id: &str) -> Option<&str> {
     if signal_id.trim().is_empty() {
         return None;
     }
@@ -275,4 +362,9 @@ fn append_event_error(event: &mut ExecutionQuoteCanaryEventInsert, message: Stri
         Some(current) if !current.is_empty() => format!("{current}; {message}"),
         _ => message,
     });
+}
+
+fn set_decision(event: &mut ExecutionQuoteCanaryEventInsert, status: &str, reason: &str) {
+    event.decision_status = Some(status.to_string());
+    event.decision_reason = Some(reason.to_string());
 }

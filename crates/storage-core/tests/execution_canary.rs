@@ -192,6 +192,45 @@ fn execution_quote_close_candidates_skip_recorded_quote_events() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn execution_quote_close_candidates_can_filter_by_signal() -> Result<()> {
+    let store = open_migrated_store("execution-quote-close-by-signal")?;
+    let now = ts("2026-05-30T08:00:00Z");
+    store.insert_shadow_closed_trade_exact(
+        "close-target",
+        "leader-wallet",
+        "TokenMint",
+        12.34,
+        Some(TokenQuantity::new(1_234, 2)),
+        0.2,
+        0.24,
+        0.04,
+        now - Duration::minutes(2),
+        now - Duration::seconds(20),
+    )?;
+    store.insert_shadow_closed_trade_exact(
+        "close-other",
+        "leader-wallet",
+        "TokenMint",
+        10.0,
+        Some(TokenQuantity::new(1_000, 2)),
+        0.2,
+        0.18,
+        -0.02,
+        now - Duration::minutes(1),
+        now - Duration::seconds(10),
+    )?;
+
+    let candidates =
+        store.list_execution_quote_canary_close_candidates_for_signal("close-target", 10)?;
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].signal_id, "close-target");
+    assert_eq!(candidates[0].qty_raw.as_deref(), Some("1234"));
+    assert_eq!(candidates[0].qty_decimals, Some(2));
+    Ok(())
+}
+
 fn quote_event(
     event_id: &str,
     signal_id: Option<&str>,
@@ -222,6 +261,8 @@ fn quote_event(
         priority_fee_status: Some("ok".to_string()),
         priority_fee_lamports: Some(10),
         priority_fee_json: Some("{}".to_string()),
+        decision_status: Some("would_execute".to_string()),
+        decision_reason: Some("within_slippage_limit".to_string()),
         error: None,
     }
 }

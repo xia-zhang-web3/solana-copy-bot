@@ -11,7 +11,7 @@ use super::{ShadowService, SqliteStore};
 use crate::shadow_scheduler::{ShadowSwapSide, ShadowTaskInput, ShadowTaskOutput};
 use crate::swap_classification::classify_swap_side;
 use crate::telemetry::{reason_to_key, reason_to_stage};
-use copybot_shadow::{ShadowDropReason, ShadowProcessOutcome};
+use copybot_shadow::{ShadowDropReason, ShadowProcessOutcome, ShadowSignalResult};
 
 const SHADOW_TASK_SQLITE_BUSY_TIMEOUT_SECS: u64 = 15;
 const SHADOW_TASK_RETRY_BACKOFF_MS: [u64; 4] = [100, 250, 500, 1_000];
@@ -58,7 +58,7 @@ pub(crate) fn handle_shadow_task_output(
     open_shadow_lots: &mut HashSet<(String, String)>,
     shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
     shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
-) -> Result<()> {
+) -> Result<Option<ShadowSignalResult>> {
     match task_output.outcome {
         Ok(ShadowProcessOutcome::Recorded(result)) => {
             info!(
@@ -72,7 +72,7 @@ pub(crate) fn handle_shadow_task_output(
                 realized_pnl_sol = result.realized_pnl_sol,
                 "shadow signal recorded"
             );
-            let key = (result.wallet_id, result.token);
+            let key = (result.wallet_id.clone(), result.token.clone());
             if result.side == "buy" {
                 open_shadow_lots.insert(key);
             } else if result.side == "sell" {
@@ -82,14 +82,14 @@ pub(crate) fn handle_shadow_task_output(
                     open_shadow_lots.remove(&key);
                 }
             }
-            Ok(())
+            Ok(Some(result))
         }
         Ok(ShadowProcessOutcome::Dropped(reason)) => {
             let reason_key = reason_to_key(reason);
             let stage_key = reason_to_stage(reason);
             *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
             *shadow_drop_stage_counts.entry(stage_key).or_insert(0) += 1;
-            Ok(())
+            Ok(None)
         }
         Err(error) => {
             if shadow_task_error_requires_restart(&error) {
@@ -100,7 +100,7 @@ pub(crate) fn handle_shadow_task_output(
                 signature = %task_output.signature,
                 "shadow processing failed"
             );
-            Ok(())
+            Ok(None)
         }
     }
 }

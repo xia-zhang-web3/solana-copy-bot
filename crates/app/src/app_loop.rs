@@ -172,13 +172,20 @@ pub(super) async fn run_app_loop(
 
         tokio::select! {
             shadow_result = shadow_scheduler.shadow_workers.join_next(), if !shadow_scheduler.shadow_workers.is_empty() => {
-                handle_shadow_worker_join(
+                if let Some(signal) = handle_shadow_worker_join(
                     shadow_result,
                     &mut shadow_scheduler,
                     &mut open_shadow_lots,
                     &mut shadow_drop_reason_counts,
                     &mut shadow_drop_stage_counts,
-                )?;
+                )? {
+                    handle_execution_canary_for_shadow_signal(
+                        &execution_canary_runner,
+                        &store,
+                        signal,
+                    )
+                    .await;
+                }
             }
             snapshot_result = async {
                 if let Some(handle) = &mut shadow_scheduler.shadow_snapshot_handle {
@@ -248,6 +255,9 @@ pub(super) async fn run_app_loop(
                             quote_close_inserted = summary.quote_close_inserted,
                             quote_close_existing = summary.quote_close_existing,
                             quote_close_errors = summary.quote_close_errors,
+                            quote_would_execute = summary.quote_would_execute,
+                            quote_would_skip = summary.quote_would_skip,
+                            quote_decision_unknown = summary.quote_decision_unknown,
                             last_quote_event_id = summary.last_quote_event_id.as_deref().unwrap_or("none"),
                             "execution canary dry-run tick"
                         );
@@ -388,4 +398,44 @@ pub(super) async fn run_app_loop(
         observed_swap_writer,
         &system_event_store,
     )
+}
+
+async fn handle_execution_canary_for_shadow_signal(
+    execution_canary_runner: &ExecutionCanaryRunner,
+    store: &SqliteStore,
+    signal: copybot_shadow::ShadowSignalResult,
+) {
+    match execution_canary_runner
+        .process_recorded_shadow_signal(store, &signal, Utc::now())
+        .await
+    {
+        Ok(summary) if summary.has_status_change() => {
+            info!(
+                signal_id = %signal.signal_id,
+                side = %signal.side,
+                token = %signal.token,
+                inserted = summary.inserted,
+                existing = summary.existing,
+                quote_entry_inserted = summary.quote_entry_inserted,
+                quote_entry_existing = summary.quote_entry_existing,
+                quote_entry_errors = summary.quote_entry_errors,
+                quote_close_inserted = summary.quote_close_inserted,
+                quote_close_existing = summary.quote_close_existing,
+                quote_close_errors = summary.quote_close_errors,
+                quote_would_execute = summary.quote_would_execute,
+                quote_would_skip = summary.quote_would_skip,
+                quote_decision_unknown = summary.quote_decision_unknown,
+                last_quote_event_id = summary.last_quote_event_id.as_deref().unwrap_or("none"),
+                "execution canary shadow-signal task"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            warn!(
+                error = %error,
+                signal_id = %signal.signal_id,
+                "execution canary shadow-signal task failed"
+            );
+        }
+    }
 }

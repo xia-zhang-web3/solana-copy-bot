@@ -76,11 +76,12 @@ pub(super) fn handle_shadow_worker_join(
     open_shadow_lots: &mut HashSet<(String, String)>,
     shadow_drop_reason_counts: &mut BTreeMap<&'static str, u64>,
     shadow_drop_stage_counts: &mut BTreeMap<&'static str, u64>,
-) -> Result<()> {
+) -> Result<Option<copybot_shadow::ShadowSignalResult>> {
+    let mut recorded_signal = None;
     match shadow_result {
         Some(Ok(task_output)) => {
             shadow_scheduler.mark_task_complete(&task_output.key);
-            handle_shadow_task_output(
+            recorded_signal = handle_shadow_task_output(
                 task_output,
                 open_shadow_lots,
                 shadow_drop_reason_counts,
@@ -93,7 +94,7 @@ pub(super) fn handle_shadow_worker_join(
         }
         None => {}
     }
-    Ok(())
+    Ok(recorded_signal)
 }
 
 pub(super) fn handle_shadow_snapshot_join(

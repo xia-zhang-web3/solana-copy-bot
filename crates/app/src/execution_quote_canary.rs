@@ -3,6 +3,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
 use copybot_core_types::CopySignalRow;
+use copybot_shadow::ShadowSignalResult;
 use copybot_storage_core::{
     ExecutionCanaryCloseCandidate, ExecutionQuoteCanaryEventInsert,
     ExecutionQuoteCanaryRecordOutcome, SqliteStore,
@@ -20,6 +21,9 @@ pub(crate) struct ExecutionQuoteCanaryTickSummary {
     pub close_inserted: usize,
     pub close_existing: usize,
     pub close_errors: usize,
+    pub would_execute: usize,
+    pub would_skip: usize,
+    pub decision_unknown: usize,
     pub last_event_id: Option<String>,
 }
 
@@ -49,11 +53,7 @@ impl ExecutionQuoteCanaryRunner {
         since: DateTime<Utc>,
         batch_limit: u32,
     ) -> Result<ExecutionQuoteCanaryTickSummary> {
-        let priority_fee_sample = if self.config.priority_fee_canary_enabled {
-            Some(self.fetch_priority_fee_sample().await)
-        } else {
-            None
-        };
+        let mut priority_fee_sample = None;
         let mut summary = ExecutionQuoteCanaryTickSummary::default();
         self.process_entry_candidates(
             store,
@@ -61,7 +61,7 @@ impl ExecutionQuoteCanaryRunner {
             now,
             since,
             batch_limit,
-            priority_fee_sample.as_ref(),
+            &mut priority_fee_sample,
             &mut summary,
         )
         .await?;
@@ -70,10 +70,82 @@ impl ExecutionQuoteCanaryRunner {
             now,
             since,
             batch_limit,
-            priority_fee_sample.as_ref(),
+            &mut priority_fee_sample,
             &mut summary,
         )
         .await?;
+        Ok(summary)
+    }
+
+    pub(crate) async fn process_recorded_shadow_signal(
+        &self,
+        store: &SqliteStore,
+        signal: &ShadowSignalResult,
+        now: DateTime<Utc>,
+    ) -> Result<ExecutionQuoteCanaryTickSummary> {
+        let mut summary = ExecutionQuoteCanaryTickSummary::default();
+        if !self.is_enabled() {
+            return Ok(summary);
+        }
+        let mut priority_fee_sample = None;
+        match signal.side.as_str() {
+            SIDE_BUY => {
+                let Some(copy_signal) = store
+                    .load_copy_signal_by_signal_id(&signal.signal_id)
+                    .with_context(|| {
+                        format!(
+                            "failed loading copy signal {} for quote canary",
+                            signal.signal_id
+                        )
+                    })?
+                else {
+                    return Ok(summary);
+                };
+                summary.entry_candidates = 1;
+                let priority = self
+                    .priority_fee_sample_if_needed(&mut priority_fee_sample)
+                    .await;
+                let event = match self
+                    .build_entry_quote_event(store, &copy_signal, now, priority)
+                    .await
+                {
+                    Ok(event) => event,
+                    Err(error) => entry_error_event(&copy_signal, now, &error),
+                };
+                self.record_entry_event(store, event, &mut summary)?;
+            }
+            SIDE_SELL => {
+                let closes = store
+                    .list_execution_quote_canary_close_candidates_for_signal(
+                        &signal.signal_id,
+                        self.config.canary_batch_limit.max(1),
+                    )
+                    .with_context(|| {
+                        format!(
+                            "failed loading quote canary close candidates for signal {}",
+                            signal.signal_id
+                        )
+                    })?;
+                summary.close_candidates = closes.len();
+                if closes.is_empty() {
+                    return Ok(summary);
+                }
+                let priority = self
+                    .priority_fee_sample_if_needed(&mut priority_fee_sample)
+                    .await;
+                for close in closes {
+                    let event = match self
+                        .build_close_quote_event(store, &close, now, priority)
+                        .await
+                    {
+                        Ok(event) => event,
+                        Err(error) => close_error_event(&close, now, &error),
+                    };
+                    self.record_close_event(store, event, &mut summary)?;
+                }
+            }
+            _ => {}
+        }
         Ok(summary)
     }
 
@@ -84,36 +156,28 @@ impl ExecutionQuoteCanaryRunner {
         now: DateTime<Utc>,
         since: DateTime<Utc>,
         batch_limit: u32,
-        priority_fee_sample: Option<&PriorityFeeSample>,
+        priority_fee_sample: &mut Option<PriorityFeeSample>,
         summary: &mut ExecutionQuoteCanaryTickSummary,
     ) -> Result<()> {
         let signals = store
             .list_execution_quote_canary_entry_candidates(copy_signal_status, since, batch_limit)
             .context("failed loading execution quote canary entry candidates")?;
         summary.entry_candidates = signals.len();
+        if signals.is_empty() {
+            return Ok(());
+        }
+        let priority = self
+            .priority_fee_sample_if_needed(priority_fee_sample)
+            .await;
         for signal in signals {
             let event = match self
-                .build_entry_quote_event(store, &signal, now, priority_fee_sample)
+                .build_entry_quote_event(store, &signal, now, priority)
                 .await
             {
                 Ok(event) => event,
                 Err(error) => entry_error_event(&signal, now, &error),
             };
-            if event.quote_status == QUOTE_STATUS_ERROR {
-                summary.entry_errors += 1;
-            }
-            summary.last_event_id = Some(event.event_id.clone());
-            match store
-                .record_execution_quote_canary_event(&event)
-                .with_context(|| {
-                    format!(
-                        "failed recording execution entry quote canary event {}",
-                        event.event_id
-                    )
-                })? {
-                ExecutionQuoteCanaryRecordOutcome::Inserted => summary.entry_inserted += 1,
-                ExecutionQuoteCanaryRecordOutcome::Existing => summary.entry_existing += 1,
-            }
+            self.record_entry_event(store, event, summary)?;
         }
         Ok(())
     }
@@ -124,36 +188,93 @@ impl ExecutionQuoteCanaryRunner {
         now: DateTime<Utc>,
         since: DateTime<Utc>,
         batch_limit: u32,
-        priority_fee_sample: Option<&PriorityFeeSample>,
+        priority_fee_sample: &mut Option<PriorityFeeSample>,
         summary: &mut ExecutionQuoteCanaryTickSummary,
     ) -> Result<()> {
         let closes = store
             .list_execution_quote_canary_close_candidates(since, batch_limit)
             .context("failed loading execution quote canary close candidates")?;
         summary.close_candidates = closes.len();
+        if closes.is_empty() {
+            return Ok(());
+        }
+        let priority = self
+            .priority_fee_sample_if_needed(priority_fee_sample)
+            .await;
         for close in closes {
             let event = match self
-                .build_close_quote_event(&close, now, priority_fee_sample)
+                .build_close_quote_event(store, &close, now, priority)
                 .await
             {
                 Ok(event) => event,
                 Err(error) => close_error_event(&close, now, &error),
             };
-            if event.quote_status == QUOTE_STATUS_ERROR {
-                summary.close_errors += 1;
-            }
-            summary.last_event_id = Some(event.event_id.clone());
-            match store
-                .record_execution_quote_canary_event(&event)
-                .with_context(|| {
-                    format!(
-                        "failed recording execution close quote canary event {}",
-                        event.event_id
-                    )
-                })? {
-                ExecutionQuoteCanaryRecordOutcome::Inserted => summary.close_inserted += 1,
-                ExecutionQuoteCanaryRecordOutcome::Existing => summary.close_existing += 1,
-            }
+            self.record_close_event(store, event, summary)?;
+        }
+        Ok(())
+    }
+
+    async fn priority_fee_sample_if_needed<'a>(
+        &self,
+        sample: &'a mut Option<PriorityFeeSample>,
+    ) -> Option<&'a PriorityFeeSample> {
+        if !self.config.priority_fee_canary_enabled {
+            return None;
+        }
+        if sample.is_none() {
+            *sample = Some(self.fetch_priority_fee_sample().await);
+        }
+        sample.as_ref()
+    }
+
+    fn record_entry_event(
+        &self,
+        store: &SqliteStore,
+        mut event: ExecutionQuoteCanaryEventInsert,
+        summary: &mut ExecutionQuoteCanaryTickSummary,
+    ) -> Result<()> {
+        finalize_quote_decision(&mut event, self.config.quote_canary_slippage_bps);
+        if event.quote_status == QUOTE_STATUS_ERROR {
+            summary.entry_errors += 1;
+        }
+        apply_decision_summary(&event, summary);
+        summary.last_event_id = Some(event.event_id.clone());
+        match store
+            .record_execution_quote_canary_event(&event)
+            .with_context(|| {
+                format!(
+                    "failed recording execution entry quote canary event {}",
+                    event.event_id
+                )
+            })? {
+            ExecutionQuoteCanaryRecordOutcome::Inserted => summary.entry_inserted += 1,
+            ExecutionQuoteCanaryRecordOutcome::Existing => summary.entry_existing += 1,
+        }
+        Ok(())
+    }
+
+    fn record_close_event(
+        &self,
+        store: &SqliteStore,
+        mut event: ExecutionQuoteCanaryEventInsert,
+        summary: &mut ExecutionQuoteCanaryTickSummary,
+    ) -> Result<()> {
+        finalize_quote_decision(&mut event, self.config.quote_canary_slippage_bps);
+        if event.quote_status == QUOTE_STATUS_ERROR {
+            summary.close_errors += 1;
+        }
+        apply_decision_summary(&event, summary);
+        summary.last_event_id = Some(event.event_id.clone());
+        match store
+            .record_execution_quote_canary_event(&event)
+            .with_context(|| {
+                format!(
+                    "failed recording execution close quote canary event {}",
+                    event.event_id
+                )
+            })? {
+            ExecutionQuoteCanaryRecordOutcome::Inserted => summary.close_inserted += 1,
+            ExecutionQuoteCanaryRecordOutcome::Existing => summary.close_existing += 1,
         }
         Ok(())
     }
@@ -194,6 +315,8 @@ impl ExecutionQuoteCanaryRunner {
             priority_fee_status: None,
             priority_fee_lamports: None,
             priority_fee_json: None,
+            decision_status: None,
+            decision_reason: None,
             error: None,
         };
         attach_priority_fee(&mut event, priority_fee_sample);
@@ -209,7 +332,7 @@ impl ExecutionQuoteCanaryRunner {
         match self.fetch_quote(SOL_MINT, &signal.token, &amount).await {
             Ok(quote) => {
                 apply_quote_sample_to_event(&mut event, quote);
-                if let Some(decimals) = observed.as_ref().and_then(|value| value.token_decimals) {
+                if let Some(decimals) = observed.as_ref().and_then(observed_token_decimals) {
                     let quote_in_sol = raw_amount_to_ui(event.quote_in_amount_raw.as_deref(), 9);
                     let quote_out_tokens =
                         raw_amount_to_ui(event.quote_out_amount_raw.as_deref(), decimals);
@@ -230,35 +353,42 @@ impl ExecutionQuoteCanaryRunner {
 
     async fn build_close_quote_event(
         &self,
+        store: &SqliteStore,
         close: &ExecutionCanaryCloseCandidate,
         now: DateTime<Utc>,
         priority_fee_sample: Option<&PriorityFeeSample>,
     ) -> Result<ExecutionQuoteCanaryEventInsert> {
         let mut event = close_quote_event(close, now);
         attach_priority_fee(&mut event, priority_fee_sample);
-        let Some(amount) = close
+        let observed =
+            load_matching_observed_leg_for_signal(store, &close.signal_id, &close.token)?;
+        let decimals = close
+            .qty_decimals
+            .or_else(|| observed.as_ref().and_then(observed_token_decimals));
+        let amount = close
             .qty_raw
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-        else {
-            event.error = Some("missing exact close qty_raw".to_string());
+            .map(ToString::to_string)
+            .or_else(|| decimals.and_then(|value| ui_amount_to_raw_string(close.qty, value)));
+        let Some(amount) = amount else {
+            event.error = Some("missing exact close qty_raw and inferred decimals".to_string());
             return Ok(event);
         };
-        let Some(decimals) = close.qty_decimals else {
-            event.error = Some("missing exact close qty_decimals".to_string());
-            return Ok(event);
-        };
-        match self.fetch_quote(&close.token, SOL_MINT, amount).await {
+        event.quote_in_amount_raw = Some(amount.clone());
+        match self.fetch_quote(&close.token, SOL_MINT, &amount).await {
             Ok(quote) => {
                 apply_quote_sample_to_event(&mut event, quote);
-                let quote_out_sol = raw_amount_to_ui(event.quote_out_amount_raw.as_deref(), 9);
-                let quote_in_tokens =
-                    raw_amount_to_ui(event.quote_in_amount_raw.as_deref(), decimals);
-                event.quote_price_sol = quote_out_sol.and_then(|out| {
-                    quote_in_tokens.and_then(|input| price_sol_per_token(out, input))
-                });
-                event.slippage_bps =
-                    quote_slippage_bps_for_sell(event.quote_price_sol, event.shadow_price_sol);
+                if let Some(decimals) = decimals {
+                    let quote_out_sol = raw_amount_to_ui(event.quote_out_amount_raw.as_deref(), 9);
+                    let quote_in_tokens =
+                        raw_amount_to_ui(event.quote_in_amount_raw.as_deref(), decimals);
+                    event.quote_price_sol = quote_out_sol.and_then(|out| {
+                        quote_in_tokens.and_then(|input| price_sol_per_token(out, input))
+                    });
+                    event.slippage_bps =
+                        quote_slippage_bps_for_sell(event.quote_price_sol, event.shadow_price_sol);
+                }
             }
             Err(error) => {
                 event.quote_status = QUOTE_STATUS_ERROR.to_string();
@@ -403,7 +533,21 @@ fn close_quote_event(
         priority_fee_status: None,
         priority_fee_lamports: None,
         priority_fee_json: None,
+        decision_status: None,
+        decision_reason: None,
         error: None,
+    }
+}
+
+fn apply_decision_summary(
+    event: &ExecutionQuoteCanaryEventInsert,
+    summary: &mut ExecutionQuoteCanaryTickSummary,
+) {
+    match event.decision_status.as_deref() {
+        Some(DECISION_WOULD_EXECUTE) => summary.would_execute += 1,
+        Some(DECISION_WOULD_SKIP) => summary.would_skip += 1,
+        Some(DECISION_UNKNOWN) | None => summary.decision_unknown += 1,
+        Some(_) => summary.decision_unknown += 1,
     }
 }
 

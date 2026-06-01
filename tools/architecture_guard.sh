@@ -33,9 +33,22 @@ if ((failures > 0)); then
 fi
 
 if [[ "$mode" == "--changed" ]]; then
-  mapfile -t files < <(changed_files)
+  files=()
+  while IFS= read -r path; do
+    files+=("$path")
+  done < <(changed_files)
 else
-  mapfile -t files < <(all_files)
+  files=()
+  while IFS= read -r path; do
+    files+=("$path")
+  done < <(all_files)
+fi
+file_count=0
+for path in ${files[@]+"${files[@]}"}; do
+  file_count=$((file_count + 1))
+done
+if ((file_count == 0)); then
+  files=("__architecture_guard_no_changed_files__")
 fi
 
 for path in "${files[@]}"; do
@@ -60,5 +73,5 @@ if ((failures > 0)); then
   exit 1
 fi
 
-echo "[architecture:guard] changed files: ${#files[@]}"
+echo "[architecture:guard] changed files: $file_count"
 echo "[architecture:guard] PASS"

@@ -70,6 +70,8 @@ pub struct ExecutionQuoteCanaryEventInsert {
     pub priority_fee_status: Option<String>,
     pub priority_fee_lamports: Option<u64>,
     pub priority_fee_json: Option<String>,
+    pub decision_status: Option<String>,
+    pub decision_reason: Option<String>,
     pub error: Option<String>,
 }
 

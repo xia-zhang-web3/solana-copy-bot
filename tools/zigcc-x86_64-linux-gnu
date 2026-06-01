@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+args=()
+while (($# > 0)); do
+  case "$1" in
+    --target=x86_64-unknown-linux-gnu | --target=x86_64_unknown_linux_gnu)
+      shift
+      ;;
+    --target)
+      shift
+      if (($# > 0)); then
+        shift
+      fi
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+exec zig cc -target x86_64-linux-gnu "${args[@]}"

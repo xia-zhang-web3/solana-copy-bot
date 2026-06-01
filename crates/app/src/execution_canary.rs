@@ -2,6 +2,7 @@ use crate::execution_quote_canary::ExecutionQuoteCanaryRunner;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::ExecutionConfig;
+use copybot_shadow::ShadowSignalResult;
 use copybot_storage_core::{ExecutionDryRunRecordOutcome, SqliteStore};
 use std::path::Path;
 use tracing::info;
@@ -29,6 +30,9 @@ pub(crate) struct ExecutionCanaryTickSummary {
     pub quote_close_inserted: usize,
     pub quote_close_existing: usize,
     pub quote_close_errors: usize,
+    pub quote_would_execute: usize,
+    pub quote_would_skip: usize,
+    pub quote_decision_unknown: usize,
     pub last_quote_event_id: Option<String>,
 }
 
@@ -43,6 +47,9 @@ impl ExecutionCanaryTickSummary {
             || self.quote_close_inserted > 0
             || self.quote_close_existing > 0
             || self.quote_close_errors > 0
+            || self.quote_would_execute > 0
+            || self.quote_would_skip > 0
+            || self.quote_decision_unknown > 0
     }
 }
 
@@ -135,6 +142,59 @@ impl ExecutionCanaryRunner {
         Ok(summary)
     }
 
+    pub(crate) async fn process_recorded_shadow_signal(
+        &self,
+        store: &SqliteStore,
+        signal: &ShadowSignalResult,
+        now: DateTime<Utc>,
+    ) -> Result<ExecutionCanaryTickSummary> {
+        let mut summary = ExecutionCanaryTickSummary {
+            enabled: self.config.canary_enabled,
+            dry_run: self.config.canary_dry_run,
+            route: self.config.canary_route.clone(),
+            wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
+            ..ExecutionCanaryTickSummary::default()
+        };
+        if !self.config.canary_enabled {
+            summary.skipped_reason = Some("disabled");
+            return Ok(summary);
+        }
+        if Path::new(&self.config.canary_kill_switch_path).exists() {
+            summary.skipped_reason = Some("kill_switch_active");
+            return Ok(summary);
+        }
+        if signal.side == "buy" {
+            summary.candidates = 1;
+            let outcome = store
+                .record_execution_dry_run_order(&signal.signal_id, &self.config.canary_route, now)
+                .with_context(|| {
+                    format!(
+                        "failed recording execution dry-run order for hot shadow signal {}",
+                        signal.signal_id
+                    )
+                })?;
+            summary.last_signal_id = Some(signal.signal_id.clone());
+            match outcome {
+                ExecutionDryRunRecordOutcome::Inserted => summary.inserted += 1,
+                ExecutionDryRunRecordOutcome::Existing => summary.existing += 1,
+            }
+        }
+        if self.quote_canary.is_enabled() {
+            let quote_summary = self
+                .quote_canary
+                .process_recorded_shadow_signal(store, signal, now)
+                .await?;
+            apply_quote_summary(&mut summary, quote_summary);
+        }
+        if let Some(order) = store
+            .latest_execution_dry_run_order()
+            .context("failed loading latest execution dry-run order")?
+        {
+            summary.last_order_id = Some(order.order_id);
+        }
+        Ok(summary)
+    }
+
     fn process_dry_run_orders(
         &self,
         store: &SqliteStore,
@@ -181,5 +241,8 @@ fn apply_quote_summary(
     summary.quote_close_inserted = quote.close_inserted;
     summary.quote_close_existing = quote.close_existing;
     summary.quote_close_errors = quote.close_errors;
+    summary.quote_would_execute = quote.would_execute;
+    summary.quote_would_skip = quote.would_skip;
+    summary.quote_decision_unknown = quote.decision_unknown;
     summary.last_quote_event_id = quote.last_event_id;
 }
