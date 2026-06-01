@@ -416,6 +416,14 @@ fn load_from_env_applies_execution_canary_overrides() {
                     "120",
                 ),
                 (
+                    "SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_BUY_SLIPPAGE_BPS",
+                    "150",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_SELL_SLIPPAGE_BPS",
+                    "500",
+                ),
+                (
                     "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_ENABLED",
                     "true",
                 ),
@@ -463,6 +471,8 @@ fn load_from_env_applies_execution_canary_overrides() {
             assert_eq!(config.execution.quote_canary_timeout_ms, 900);
             assert_eq!(config.execution.quote_canary_buy_size_sol, 0.2);
             assert_eq!(config.execution.quote_canary_slippage_bps, 120);
+            assert_eq!(config.execution.quote_canary_buy_slippage_bps, 150);
+            assert_eq!(config.execution.quote_canary_sell_slippage_bps, 500);
             assert!(config.execution.priority_fee_canary_enabled);
             assert_eq!(
                 config.execution.priority_fee_canary_rpc_url,

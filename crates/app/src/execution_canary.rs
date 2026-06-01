@@ -89,6 +89,8 @@ impl ExecutionCanaryRunner {
             quote_canary_enabled = self.config.quote_canary_enabled,
             quote_buy_size_sol = self.config.quote_canary_buy_size_sol,
             quote_slippage_bps = self.config.quote_canary_slippage_bps,
+            quote_buy_slippage_bps = self.config.quote_canary_buy_slippage_bps,
+            quote_sell_slippage_bps = self.config.quote_canary_sell_slippage_bps,
             quote_base_url_configured = !self.config.quote_canary_base_url.trim().is_empty(),
             quote_api_key_configured = !self.config.quote_canary_api_key.trim().is_empty(),
             priority_fee_canary_enabled = self.config.priority_fee_canary_enabled,

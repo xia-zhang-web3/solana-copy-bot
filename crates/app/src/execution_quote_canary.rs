@@ -234,7 +234,8 @@ impl ExecutionQuoteCanaryRunner {
         mut event: ExecutionQuoteCanaryEventInsert,
         summary: &mut ExecutionQuoteCanaryTickSummary,
     ) -> Result<()> {
-        finalize_quote_decision(&mut event, self.config.quote_canary_slippage_bps);
+        let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_BUY);
+        finalize_quote_decision(&mut event, limit_bps);
         if event.quote_status == QUOTE_STATUS_ERROR {
             summary.entry_errors += 1;
         }
@@ -260,7 +261,8 @@ impl ExecutionQuoteCanaryRunner {
         mut event: ExecutionQuoteCanaryEventInsert,
         summary: &mut ExecutionQuoteCanaryTickSummary,
     ) -> Result<()> {
-        finalize_quote_decision(&mut event, self.config.quote_canary_slippage_bps);
+        let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_SELL);
+        finalize_quote_decision(&mut event, limit_bps);
         if event.quote_status == QUOTE_STATUS_ERROR {
             summary.close_errors += 1;
         }
@@ -330,7 +332,11 @@ impl ExecutionQuoteCanaryRunner {
                 return Ok(event);
             }
         };
-        match self.fetch_quote(SOL_MINT, &signal.token, &amount).await {
+        let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_BUY);
+        match self
+            .fetch_quote(SOL_MINT, &signal.token, &amount, limit_bps)
+            .await
+        {
             Ok(quote) => {
                 apply_quote_sample_to_event(&mut event, quote);
                 let decimals = resolve_spl_token_decimals(
@@ -386,7 +392,11 @@ impl ExecutionQuoteCanaryRunner {
             return Ok(event);
         };
         event.quote_in_amount_raw = Some(amount.clone());
-        match self.fetch_quote(&close.token, SOL_MINT, &amount).await {
+        let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_SELL);
+        match self
+            .fetch_quote(&close.token, SOL_MINT, &amount, limit_bps)
+            .await
+        {
             Ok(quote) => {
                 apply_quote_sample_to_event(&mut event, quote);
                 if let Some(decimals) = decimals {
@@ -413,10 +423,11 @@ impl ExecutionQuoteCanaryRunner {
         input_mint: &str,
         output_mint: &str,
         amount_raw: &str,
+        slippage_bps: u64,
     ) -> Result<QuoteSample> {
         let url = quote_url(&self.config.quote_canary_base_url)?;
         let timeout = StdDuration::from_millis(self.config.quote_canary_timeout_ms.max(1));
-        let slippage_bps = self.config.quote_canary_slippage_bps.to_string();
+        let slippage_bps = slippage_bps.to_string();
         let started = Instant::now();
         let mut request = self
             .http

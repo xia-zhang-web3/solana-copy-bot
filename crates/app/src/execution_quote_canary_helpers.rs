@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
+use copybot_config::ExecutionConfig;
 use copybot_core_types::CopySignalRow;
 use copybot_storage_core::{
     ExecutionCanaryCloseCandidate, ExecutionCanaryObservedLeg, ExecutionQuoteCanaryEventInsert,
@@ -90,6 +91,19 @@ pub(crate) fn finalize_quote_decision(
         set_decision(event, DECISION_WOULD_SKIP, "slippage_above_limit");
     } else {
         set_decision(event, DECISION_WOULD_EXECUTE, "within_slippage_limit");
+    }
+}
+
+pub(crate) fn quote_canary_slippage_limit_bps(config: &ExecutionConfig, side: &str) -> u64 {
+    let directional = match side {
+        SIDE_BUY => config.quote_canary_buy_slippage_bps,
+        SIDE_SELL => config.quote_canary_sell_slippage_bps,
+        _ => 0,
+    };
+    if directional > 0 {
+        directional
+    } else {
+        config.quote_canary_slippage_bps
     }
 }
 

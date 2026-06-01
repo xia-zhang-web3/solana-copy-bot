@@ -100,6 +100,16 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
                 "execution.quote_canary_slippage_bps must be <= 5000"
             ));
         }
+        if config.quote_canary_buy_slippage_bps > 5_000 {
+            return Err(anyhow!(
+                "execution.quote_canary_buy_slippage_bps must be <= 5000"
+            ));
+        }
+        if config.quote_canary_sell_slippage_bps > 5_000 {
+            return Err(anyhow!(
+                "execution.quote_canary_sell_slippage_bps must be <= 5000"
+            ));
+        }
     }
     if config.priority_fee_canary_enabled {
         if config.priority_fee_canary_rpc_url.trim().is_empty()

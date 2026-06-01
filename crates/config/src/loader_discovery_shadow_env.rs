@@ -160,6 +160,18 @@ pub(super) fn apply_discovery_shadow_execution_env_overrides(config: &mut AppCon
     {
         config.execution.quote_canary_slippage_bps = quote_canary_slippage_bps;
     }
+    if let Some(quote_canary_buy_slippage_bps) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_BUY_SLIPPAGE_BPS",
+        "u64",
+    )? {
+        config.execution.quote_canary_buy_slippage_bps = quote_canary_buy_slippage_bps;
+    }
+    if let Some(quote_canary_sell_slippage_bps) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_SELL_SLIPPAGE_BPS",
+        "u64",
+    )? {
+        config.execution.quote_canary_sell_slippage_bps = quote_canary_sell_slippage_bps;
+    }
     if let Some(priority_fee_canary_enabled) =
         parse_env_bool("SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_ENABLED")?
     {

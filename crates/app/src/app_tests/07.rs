@@ -283,6 +283,22 @@
             event.decision_status.as_deref(),
             Some(crate::execution_quote_canary_helpers::DECISION_WOULD_EXECUTE)
         );
+
+        let mut config = copybot_config::ExecutionConfig::default();
+        assert_eq!(
+            crate::execution_quote_canary_helpers::quote_canary_slippage_limit_bps(&config, "buy"),
+            100
+        );
+        config.quote_canary_buy_slippage_bps = 150;
+        config.quote_canary_sell_slippage_bps = 500;
+        assert_eq!(
+            crate::execution_quote_canary_helpers::quote_canary_slippage_limit_bps(&config, "buy"),
+            150
+        );
+        assert_eq!(
+            crate::execution_quote_canary_helpers::quote_canary_slippage_limit_bps(&config, "sell"),
+            500
+        );
     }
 
     #[test]

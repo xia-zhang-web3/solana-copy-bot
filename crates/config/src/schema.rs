@@ -72,6 +72,8 @@ pub struct ExecutionConfig {
     pub quote_canary_timeout_ms: u64,
     pub quote_canary_buy_size_sol: f64,
     pub quote_canary_slippage_bps: u64,
+    pub quote_canary_buy_slippage_bps: u64,
+    pub quote_canary_sell_slippage_bps: u64,
     pub priority_fee_canary_enabled: bool,
     pub priority_fee_canary_rpc_url: String,
     pub priority_fee_canary_timeout_ms: u64,
@@ -100,6 +102,8 @@ impl Default for ExecutionConfig {
             quote_canary_timeout_ms: 1_500,
             quote_canary_buy_size_sol: 0.2,
             quote_canary_slippage_bps: 100,
+            quote_canary_buy_slippage_bps: 0,
+            quote_canary_sell_slippage_bps: 0,
             priority_fee_canary_enabled: false,
             priority_fee_canary_rpc_url: String::new(),
             priority_fee_canary_timeout_ms: 1_500,
@@ -139,6 +143,14 @@ impl fmt::Debug for ExecutionConfig {
             .field("quote_canary_timeout_ms", &self.quote_canary_timeout_ms)
             .field("quote_canary_buy_size_sol", &self.quote_canary_buy_size_sol)
             .field("quote_canary_slippage_bps", &self.quote_canary_slippage_bps)
+            .field(
+                "quote_canary_buy_slippage_bps",
+                &self.quote_canary_buy_slippage_bps,
+            )
+            .field(
+                "quote_canary_sell_slippage_bps",
+                &self.quote_canary_sell_slippage_bps,
+            )
             .field(
                 "priority_fee_canary_enabled",
                 &self.priority_fee_canary_enabled,
