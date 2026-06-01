@@ -1,4 +1,5 @@
 use crate::execution_quote_canary_helpers::*;
+use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
@@ -332,7 +333,14 @@ impl ExecutionQuoteCanaryRunner {
         match self.fetch_quote(SOL_MINT, &signal.token, &amount).await {
             Ok(quote) => {
                 apply_quote_sample_to_event(&mut event, quote);
-                if let Some(decimals) = observed.as_ref().and_then(observed_token_decimals) {
+                let decimals = resolve_spl_token_decimals(
+                    &self.http,
+                    &self.config,
+                    &signal.token,
+                    observed.as_ref().and_then(observed_token_decimals),
+                )
+                .await;
+                if let Some(decimals) = decimals {
                     let quote_in_sol = raw_amount_to_ui(event.quote_in_amount_raw.as_deref(), 9);
                     let quote_out_tokens =
                         raw_amount_to_ui(event.quote_out_amount_raw.as_deref(), decimals);
@@ -365,6 +373,8 @@ impl ExecutionQuoteCanaryRunner {
         let decimals = close
             .qty_decimals
             .or_else(|| observed.as_ref().and_then(observed_token_decimals));
+        let decimals =
+            resolve_spl_token_decimals(&self.http, &self.config, &close.token, decimals).await;
         let amount = close
             .qty_raw
             .as_deref()

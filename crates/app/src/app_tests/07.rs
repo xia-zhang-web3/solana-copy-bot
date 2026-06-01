@@ -285,6 +285,27 @@
         );
     }
 
+    #[test]
+    fn quote_canary_rpc_extracts_token_decimals() -> Result<()> {
+        let value = serde_json::json!({
+            "jsonrpc": "2.0",
+            "result": {
+                "value": {
+                    "amount": "1000000",
+                    "decimals": 6,
+                    "uiAmount": 1.0,
+                    "uiAmountString": "1"
+                }
+            },
+            "id": "test"
+        });
+        assert_eq!(
+            crate::execution_quote_canary_rpc::token_decimals_from_rpc_json(value)?,
+            Some(6)
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn execution_canary_kill_switch_blocks_tick() -> Result<()> {
         let db_path = unique_execution_canary_test_path("kill-switch");
