@@ -57,5 +57,7 @@ mod execution_state_machine_safety;
 mod execution_state_machine_sell;
 #[path = "app_tests/39.rs"]
 mod execution_state_machine_timeout;
+#[path = "app_tests/42.rs"]
+mod priority_fee_canary_transient;
 #[path = "app_tests/36_restart_recovery.rs"]
 mod restart_recovery;

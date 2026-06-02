@@ -53,7 +53,13 @@ impl PriorityFeeSampler {
         }
         let sample = match self.fetch_sample_inner().await {
             Ok(sample) => sample,
-            Err(error) if is_priority_fee_rate_limit_error(&error) => skipped_sample(),
+            Err(error) if is_priority_fee_rate_limit_error(&error) => {
+                skipped_sample("priority_fee_throttled", None)
+            }
+            Err(error) if is_priority_fee_transient_error(&error) => skipped_sample(
+                "priority_fee_transient_unavailable",
+                Some(short_error(&error)),
+            ),
             Err(error) => PriorityFeeSample {
                 status: QUOTE_STATUS_ERROR.to_string(),
                 lamports: None,
@@ -86,7 +92,7 @@ impl PriorityFeeSampler {
                         .cached
                         .as_ref()
                         .map(|cached| cached.sample.clone())
-                        .unwrap_or_else(skipped_sample),
+                        .unwrap_or_else(|| skipped_sample("priority_fee_throttled", None)),
                 );
             }
         }
@@ -151,11 +157,25 @@ pub(crate) fn is_priority_fee_rate_limit_error(error: &anyhow::Error) -> bool {
         || message.contains("request limit reached")
 }
 
-fn skipped_sample() -> PriorityFeeSample {
+pub(crate) fn is_priority_fee_transient_error(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    message.contains("operation timed out")
+        || message.contains("request timed out")
+        || message.contains("deadline has elapsed")
+        || message.contains("http 500")
+        || message.contains("http 502")
+        || message.contains("http 503")
+        || message.contains("http 504")
+}
+
+fn skipped_sample(reason: &str, error: Option<String>) -> PriorityFeeSample {
     PriorityFeeSample {
         status: QUOTE_STATUS_SKIPPED.to_string(),
         lamports: None,
-        json: Some("{\"reason\":\"priority_fee_throttled\"}".to_string()),
-        error: None,
+        json: Some(format!(
+            "{{\"reason\":\"{}\"}}",
+            truncate_for_log(reason, 120)
+        )),
+        error,
     }
 }
