@@ -30,6 +30,7 @@ pub use types_execution::{
 };
 pub use types_execution_quote_pnl::{
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlTrade,
+    ExecutionCanaryShadowCloseBreakdown, ExecutionCanaryShadowCloseContextSummary,
     EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED, EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
     EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,
 };

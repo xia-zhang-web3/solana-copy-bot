@@ -1,6 +1,7 @@
 use crate::{
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlTrade,
-    EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED, EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
+    ExecutionCanaryShadowCloseBreakdown, EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED,
+    EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
 };
 use chrono::{DateTime, Utc};
 
@@ -9,8 +10,9 @@ pub(crate) fn summarize_quote_pnl(
     since: DateTime<Utc>,
     limit: u32,
     trades: Vec<ExecutionCanaryQuotePnlTrade>,
+    shadow_close_breakdown: ExecutionCanaryShadowCloseBreakdown,
 ) -> ExecutionCanaryQuotePnlSummary {
-    let mut summary = empty_summary(as_of, since, limit);
+    let mut summary = empty_summary(as_of, since, limit, shadow_close_breakdown);
     for trade in trades {
         record_trade(&mut summary, trade);
     }
@@ -21,11 +23,13 @@ fn empty_summary(
     as_of: DateTime<Utc>,
     since: DateTime<Utc>,
     limit: u32,
+    shadow_close_breakdown: ExecutionCanaryShadowCloseBreakdown,
 ) -> ExecutionCanaryQuotePnlSummary {
     ExecutionCanaryQuotePnlSummary {
         as_of,
         since,
         limit,
+        shadow_close_breakdown,
         total_closed_trades: 0,
         matched_quote_trades: 0,
         pnl_counted_trades: 0,

@@ -7,6 +7,7 @@ mod execution_canary_position_close;
 mod execution_canary_positions;
 mod execution_canary_quote_pnl;
 mod execution_canary_quote_pnl_accumulator;
+mod execution_canary_quote_pnl_breakdown;
 mod execution_canary_readiness;
 mod execution_canary_report;
 mod execution_canary_retry;
@@ -85,8 +86,9 @@ pub use types::{
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlTrade, ExecutionCanaryReadinessCount,
     ExecutionCanaryReadinessLatestOrder, ExecutionCanaryReadinessSummary,
     ExecutionCanaryReadinessWindowSummary, ExecutionCanaryRecordOutcome,
-    ExecutionCanaryReserveResult, ExecutionCanarySellDecision, ExecutionCanaryStatusReport,
-    ExecutionDryRunOrder, ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
+    ExecutionCanaryReserveResult, ExecutionCanarySellDecision, ExecutionCanaryShadowCloseBreakdown,
+    ExecutionCanaryShadowCloseContextSummary, ExecutionCanaryStatusReport, ExecutionDryRunOrder,
+    ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryRecordOutcome, FollowlistUpdateResult,
     HistoryRetentionCutoffs, HistoryRetentionSummary, ObservedSolLegSwap,
     ObservedSwapBatchWriteMetrics, ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow,

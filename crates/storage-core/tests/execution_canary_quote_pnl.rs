@@ -1,7 +1,9 @@
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::TokenQuantity;
-use copybot_storage_core::{ExecutionQuoteCanaryEventInsert, SqliteStore};
+use copybot_storage_core::{
+    ExecutionQuoteCanaryEventInsert, SqliteStore, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
+};
 use tempfile::tempdir;
 
 fn ts(raw: &str) -> DateTime<Utc> {
@@ -60,6 +62,9 @@ fn quote_pnl_summary_counts_executable_quote_adjusted_pnl() -> Result<()> {
     let trade = summary.trades.first().expect("trade should be reported");
 
     assert_eq!(summary.total_closed_trades, 1);
+    assert_eq!(summary.shadow_close_breakdown.total_closed_trades, 1);
+    assert_eq!(summary.shadow_close_breakdown.market_closed_trades, 1);
+    assert_eq!(summary.shadow_close_breakdown.stale_closed_trades, 0);
     assert_eq!(summary.matched_quote_trades, 1);
     assert_eq!(summary.pnl_counted_trades, 1);
     assert_eq!(summary.skipped_trades, 0);
@@ -71,6 +76,77 @@ fn quote_pnl_summary_counts_executable_quote_adjusted_pnl() -> Result<()> {
     assert_eq!(summary.priority_fee_lamports_sum, 20_000);
     assert_eq!(trade.status, "pnl_counted");
     assert_close(trade.closed_qty_ratio.expect("ratio"), 0.5);
+    Ok(())
+}
+
+#[test]
+fn quote_pnl_summary_breaks_out_stale_shadow_closes() -> Result<()> {
+    let store = open_migrated_store("execution-canary-quote-pnl-stale-breakdown")?;
+    let opened = ts("2026-06-02T12:05:00Z");
+    let closed = opened + Duration::seconds(30);
+    store.insert_shadow_closed_trade_exact(
+        "sell-market",
+        "leader-wallet",
+        "MarketToken",
+        50.0,
+        Some(TokenQuantity::new(50, 0)),
+        0.10,
+        0.13,
+        0.03,
+        opened,
+        closed,
+    )?;
+    store.insert_shadow_closed_trade_exact_with_context(
+        "sell-stale",
+        "leader-wallet",
+        "StaleToken",
+        100.0,
+        Some(TokenQuantity::new(100, 0)),
+        0.20,
+        0.0,
+        -0.20,
+        SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
+        opened,
+        closed + Duration::seconds(1),
+    )?;
+    let close_id = close_id_for_signal(&store, "sell-market")?;
+    store.record_execution_quote_canary_event(&buy_quote(
+        "quote:buy:market",
+        "buy-market",
+        "MarketToken",
+        opened,
+        "would_execute",
+    ))?;
+    store.record_execution_quote_canary_event(&sell_quote(
+        "quote:sell:market",
+        close_id,
+        "MarketToken",
+        opened,
+        "50",
+        "125000000",
+    ))?;
+
+    let summary =
+        store.execution_canary_quote_pnl_summary(closed, opened - Duration::seconds(1), 10)?;
+    let breakdown = &summary.shadow_close_breakdown;
+    let stale_context = breakdown
+        .contexts
+        .iter()
+        .find(|context| context.close_context == SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE)
+        .expect("stale context should be reported");
+
+    assert_eq!(summary.total_closed_trades, 1);
+    assert_close(summary.shadow_pnl_sol, 0.03);
+    assert_eq!(breakdown.total_closed_trades, 2);
+    assert_eq!(breakdown.market_closed_trades, 1);
+    assert_eq!(breakdown.stale_closed_trades, 1);
+    assert_eq!(breakdown.non_market_closed_trades, 1);
+    assert_close(breakdown.total_pnl_sol, -0.17);
+    assert_close(breakdown.market_pnl_sol, 0.03);
+    assert_close(breakdown.stale_pnl_sol, -0.20);
+    assert_close(breakdown.non_market_pnl_sol, -0.20);
+    assert_eq!(stale_context.closed_trades, 1);
+    assert_close(stale_context.pnl_sol, -0.20);
     Ok(())
 }
 

@@ -23,12 +23,19 @@ impl SqliteDiscoveryStore {
         limit: u32,
     ) -> Result<ExecutionCanaryQuotePnlSummary> {
         ensure_execution_quote_canary_tables(self)?;
+        let shadow_close_breakdown = self.execution_canary_shadow_close_breakdown(since)?;
         let rows = self.execution_canary_quote_pnl_rows(since, limit)?;
         let trades = rows
             .into_iter()
             .map(classify_trade)
             .collect::<Result<Vec<_>>>()?;
-        Ok(summarize_quote_pnl(as_of, since, limit, trades))
+        Ok(summarize_quote_pnl(
+            as_of,
+            since,
+            limit,
+            trades,
+            shadow_close_breakdown,
+        ))
     }
 
     fn execution_canary_quote_pnl_rows(

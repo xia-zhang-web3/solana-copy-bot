@@ -64,6 +64,8 @@ fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
 
     assert_eq!(report.reason_class, "execution_canary_quote_pnl_loaded");
     assert!(report.db_opened);
+    assert_eq!(summary.shadow_close_breakdown.market_closed_trades, 1);
+    assert_eq!(summary.shadow_close_breakdown.stale_closed_trades, 0);
     assert_eq!(summary.pnl_counted_trades, 1);
     assert_close(summary.quote_adjusted_pnl_sol, 0.025);
     assert_close(summary.quote_vs_shadow_delta_sol, -0.005);

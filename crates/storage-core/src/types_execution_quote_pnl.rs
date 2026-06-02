@@ -6,6 +6,7 @@ pub struct ExecutionCanaryQuotePnlSummary {
     pub as_of: DateTime<Utc>,
     pub since: DateTime<Utc>,
     pub limit: u32,
+    pub shadow_close_breakdown: ExecutionCanaryShadowCloseBreakdown,
     pub total_closed_trades: u64,
     pub matched_quote_trades: u64,
     pub pnl_counted_trades: u64,
@@ -24,6 +25,30 @@ pub struct ExecutionCanaryQuotePnlSummary {
     pub quote_vs_shadow_delta_sol: f64,
     pub priority_fee_lamports_sum: u64,
     pub trades: Vec<ExecutionCanaryQuotePnlTrade>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryShadowCloseBreakdown {
+    pub total_closed_trades: u64,
+    pub total_win_count: u64,
+    pub total_loss_count: u64,
+    pub total_pnl_sol: f64,
+    pub market_closed_trades: u64,
+    pub market_pnl_sol: f64,
+    pub stale_closed_trades: u64,
+    pub stale_pnl_sol: f64,
+    pub non_market_closed_trades: u64,
+    pub non_market_pnl_sol: f64,
+    pub contexts: Vec<ExecutionCanaryShadowCloseContextSummary>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryShadowCloseContextSummary {
+    pub close_context: String,
+    pub closed_trades: u64,
+    pub win_count: u64,
+    pub loss_count: u64,
+    pub pnl_sol: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
