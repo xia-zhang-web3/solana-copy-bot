@@ -102,7 +102,7 @@ jobs:
           - label: Source operators
             package: copybot-operators
             profile: operator-release
-            wanted_bins: copybot_yellowstone_source_probe
+            wanted_bins: copybot_execution_canary_quote_pnl copybot_execution_canary_readiness copybot_yellowstone_source_probe
             artifact_name: source-operators
           - label: Live operators
             package: copybot-live-ops

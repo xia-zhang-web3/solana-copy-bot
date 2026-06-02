@@ -177,9 +177,14 @@
         assert_eq!(first.candidates, 1);
         assert_eq!(first.inserted, 1);
         assert_eq!(first.existing, 0);
+        assert_eq!(first.state_machine_reserved, 1);
+        assert_eq!(first.state_machine_built, 1);
+        assert_eq!(first.state_machine_simulated, 1);
+        assert_eq!(first.state_machine_submit_disabled, 1);
         assert_eq!(first.last_signal_id.as_deref(), Some("sig-canary-buy"));
         assert_eq!(second.candidates, 0);
         assert_eq!(second.inserted, 0);
+        assert_eq!(second.state_machine_reserved, 0);
         let _ = std::fs::remove_file(db_path);
         Ok(())
     }
@@ -233,9 +238,13 @@
         assert_eq!(first.candidates, 1);
         assert_eq!(first.inserted, 1);
         assert_eq!(first.existing, 0);
+        assert_eq!(first.state_machine_reserved, 1);
+        assert_eq!(first.state_machine_submit_disabled, 1);
         assert_eq!(first.last_signal_id.as_deref(), Some(signal.signal_id.as_str()));
         assert_eq!(second.inserted, 0);
         assert_eq!(second.existing, 1);
+        assert_eq!(second.state_machine_reserved, 0);
+        assert_eq!(second.state_machine_existing, 1);
         let _ = std::fs::remove_file(db_path);
         Ok(())
     }

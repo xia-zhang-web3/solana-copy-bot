@@ -261,6 +261,14 @@ pub(super) async fn run_app_loop(
                             quote_would_skip = summary.quote_would_skip,
                             quote_decision_unknown = summary.quote_decision_unknown,
                             last_quote_event_id = summary.last_quote_event_id.as_deref().unwrap_or("none"),
+                            state_machine_reserved = summary.state_machine_reserved,
+                            state_machine_existing = summary.state_machine_existing,
+                            state_machine_built = summary.state_machine_built,
+                            state_machine_simulated = summary.state_machine_simulated,
+                            state_machine_submit_disabled = summary.state_machine_submit_disabled,
+                            state_machine_failed = summary.state_machine_failed,
+                            state_machine_safety_blocked = summary.state_machine_safety_blocked,
+                            last_state_machine_order_id = summary.last_state_machine_order_id.as_deref().unwrap_or("none"),
                             "execution canary dry-run tick"
                         );
                     }
@@ -430,6 +438,14 @@ async fn handle_execution_canary_for_shadow_signal(
                 quote_would_skip = summary.quote_would_skip,
                 quote_decision_unknown = summary.quote_decision_unknown,
                 last_quote_event_id = summary.last_quote_event_id.as_deref().unwrap_or("none"),
+                state_machine_reserved = summary.state_machine_reserved,
+                state_machine_existing = summary.state_machine_existing,
+                state_machine_built = summary.state_machine_built,
+                state_machine_simulated = summary.state_machine_simulated,
+                state_machine_submit_disabled = summary.state_machine_submit_disabled,
+                state_machine_failed = summary.state_machine_failed,
+                state_machine_safety_blocked = summary.state_machine_safety_blocked,
+                last_state_machine_order_id = summary.last_state_machine_order_id.as_deref().unwrap_or("none"),
                 "execution canary shadow-signal task"
             );
         }

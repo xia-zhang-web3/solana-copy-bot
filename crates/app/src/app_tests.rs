@@ -47,5 +47,15 @@ include!("app_tests/32.rs");
 include!("app_tests/33.rs");
 include!("app_tests/34.rs");
 include!("app_tests/35.rs");
+#[path = "app_tests/37.rs"]
+mod execution_state_machine;
+#[path = "app_tests/41.rs"]
+mod execution_state_machine_build_metadata;
+#[path = "app_tests/40.rs"]
+mod execution_state_machine_safety;
+#[path = "app_tests/38.rs"]
+mod execution_state_machine_sell;
+#[path = "app_tests/39.rs"]
+mod execution_state_machine_timeout;
 #[path = "app_tests/36_restart_recovery.rs"]
 mod restart_recovery;

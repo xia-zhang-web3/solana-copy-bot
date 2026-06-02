@@ -297,10 +297,13 @@ name = "copybot-operators"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "copybot-config",
+ "copybot-storage-core",
  "futures-util",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tonic",
  "url",

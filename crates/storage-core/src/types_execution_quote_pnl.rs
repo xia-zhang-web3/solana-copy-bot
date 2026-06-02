@@ -1,0 +1,61 @@
+use chrono::{DateTime, Utc};
+use serde::Serialize;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuotePnlSummary {
+    pub as_of: DateTime<Utc>,
+    pub since: DateTime<Utc>,
+    pub limit: u32,
+    pub total_closed_trades: u64,
+    pub matched_quote_trades: u64,
+    pub pnl_counted_trades: u64,
+    pub skipped_trades: u64,
+    pub unknown_trades: u64,
+    pub missing_entry_quote_trades: u64,
+    pub missing_exit_quote_trades: u64,
+    pub invalid_quote_amount_trades: u64,
+    pub shadow_win_count: u64,
+    pub shadow_loss_count: u64,
+    pub quote_win_count: u64,
+    pub quote_loss_count: u64,
+    pub shadow_pnl_sol: f64,
+    pub quote_adjusted_pnl_sol: f64,
+    pub quote_adjusted_pnl_after_priority_fee_sol: f64,
+    pub quote_vs_shadow_delta_sol: f64,
+    pub priority_fee_lamports_sum: u64,
+    pub trades: Vec<ExecutionCanaryQuotePnlTrade>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuotePnlTrade {
+    pub shadow_closed_trade_id: i64,
+    pub signal_id: String,
+    pub wallet_id: String,
+    pub token: String,
+    pub opened_ts: DateTime<Utc>,
+    pub closed_ts: DateTime<Utc>,
+    pub status: String,
+    pub reason: String,
+    pub shadow_pnl_sol: f64,
+    pub quote_adjusted_pnl_sol: Option<f64>,
+    pub quote_adjusted_pnl_after_priority_fee_sol: Option<f64>,
+    pub quote_vs_shadow_delta_sol: Option<f64>,
+    pub entry_quote_event_id: Option<String>,
+    pub exit_quote_event_id: Option<String>,
+    pub entry_decision_status: Option<String>,
+    pub exit_decision_status: Option<String>,
+    pub entry_quote_status: Option<String>,
+    pub exit_quote_status: Option<String>,
+    pub entry_cost_sol: Option<f64>,
+    pub exit_quote_sol: Option<f64>,
+    pub closed_qty_ratio: Option<f64>,
+    pub buy_slippage_bps: Option<f64>,
+    pub sell_slippage_bps: Option<f64>,
+    pub buy_price_impact_pct: Option<f64>,
+    pub sell_price_impact_pct: Option<f64>,
+    pub priority_fee_lamports_total: Option<u64>,
+}
+
+pub const EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED: &str = "pnl_counted";
+pub const EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED: &str = "would_skip";
+pub const EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN: &str = "unknown";

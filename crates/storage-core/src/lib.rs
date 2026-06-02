@@ -2,8 +2,19 @@ mod connection_pragmas;
 mod copy_signals;
 mod db;
 mod discovery_rebuild_state;
+mod execution_canary_build_plan_metadata;
+mod execution_canary_position_close;
+mod execution_canary_positions;
+mod execution_canary_quote_pnl;
+mod execution_canary_quote_pnl_accumulator;
+mod execution_canary_readiness;
+mod execution_canary_report;
+mod execution_canary_retry;
+mod execution_canary_rows;
+mod execution_canary_state;
 mod execution_orders;
 mod execution_quote_canary;
+mod execution_quote_canary_lookup;
 mod history_retention;
 mod market_context;
 mod migrations;
@@ -66,7 +77,15 @@ pub use types::{
     DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
     DiscoveryV2QualityEvidenceAggregate, DiscoveryV2QualityPrepareState,
-    DiscoveryV2QualityPrepareUpsert, ExecutionCanaryCloseCandidate, ExecutionCanaryObservedLeg,
+    DiscoveryV2QualityPrepareUpsert, ExecutionCanaryBuildPlanMetadata,
+    ExecutionCanaryBuildPlanMetadataRecordOutcome, ExecutionCanaryCloseCandidate,
+    ExecutionCanaryConfirmTimeoutDecision, ExecutionCanaryObservedLeg, ExecutionCanaryOrder,
+    ExecutionCanaryOwnedPosition, ExecutionCanaryOwnedPositionRecordResult,
+    ExecutionCanaryPositionCloseResult, ExecutionCanaryPositionRecordOutcome,
+    ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlTrade, ExecutionCanaryReadinessCount,
+    ExecutionCanaryReadinessLatestOrder, ExecutionCanaryReadinessSummary,
+    ExecutionCanaryReadinessWindowSummary, ExecutionCanaryRecordOutcome,
+    ExecutionCanaryReserveResult, ExecutionCanarySellDecision, ExecutionCanaryStatusReport,
     ExecutionDryRunOrder, ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryRecordOutcome, FollowlistUpdateResult,
     HistoryRetentionCutoffs, HistoryRetentionSummary, ObservedSolLegSwap,
@@ -82,12 +101,28 @@ pub use types::{
     StartupStepTimeoutBehavior, StartupTrustedSelectionGateStatus, TokenMarketStats,
     TrustedSelectionState, TrustedSnapshotSourceKind, WalletActivityDayRow,
     WalletSolLegActivityWindow, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
-    EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED, EXECUTION_STATUS_DRY_RUN_CONFIRMED,
-    POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER, POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER,
-    SHADOW_CLOSE_CONTEXT_MARKET, SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
-    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
-    SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE, SHADOW_LOT_OPEN_EPS,
-    SHADOW_RISK_CONTEXT_MARKET, SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY,
+    EXECUTION_CANARY_CONFIRM_DECISION_EXPIRE_UNSAFE,
+    EXECUTION_CANARY_CONFIRM_DECISION_NOT_SUBMITTED, EXECUTION_CANARY_CONFIRM_DECISION_RETRY,
+    EXECUTION_CANARY_CONFIRM_DECISION_WAIT, EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+    EXECUTION_CANARY_POSITION_CLOSE_CLOSED, EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED,
+    EXECUTION_CANARY_POSITION_CLOSE_NO_POSITION, EXECUTION_CANARY_POSITION_CLOSE_PARTIAL,
+    EXECUTION_CANARY_POSITION_STATE_CLOSED, EXECUTION_CANARY_POSITION_STATE_OPEN,
+    EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED, EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
+    EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN, EXECUTION_CANARY_SELL_DECISION_EXECUTE,
+    EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT, EXECUTION_CANARY_SELL_DECISION_NO_POSITION,
+    EXECUTION_ERROR_BUILD_FAILED, EXECUTION_ERROR_EXPIRED, EXECUTION_ERROR_SIMULATION_FAILED,
+    EXECUTION_ERROR_SUBMIT_DISABLED, EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED,
+    EXECUTION_SIMULATION_STATUS_FAILED, EXECUTION_SIMULATION_STATUS_NOT_RUN,
+    EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT,
+    EXECUTION_STATUS_CANARY_BUILT, EXECUTION_STATUS_CANARY_CANDIDATE,
+    EXECUTION_STATUS_CANARY_CONFIRMED, EXECUTION_STATUS_CANARY_EXPIRED,
+    EXECUTION_STATUS_CANARY_FAILED, EXECUTION_STATUS_CANARY_SIMULATED,
+    EXECUTION_STATUS_CANARY_SUBMITTED, EXECUTION_STATUS_CANARY_SUBMIT_DISABLED,
+    EXECUTION_STATUS_DRY_RUN_CONFIRMED, POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER,
+    POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER, SHADOW_CLOSE_CONTEXT_MARKET,
+    SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY, SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
+    SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE, SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+    SHADOW_LOT_OPEN_EPS, SHADOW_RISK_CONTEXT_MARKET, SHADOW_RISK_CONTEXT_QUARANTINED_LEGACY,
     SQLITE_DEFAULT_WAL_AUTOCHECKPOINT_PAGES, SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_THRESHOLD_BYTES,
     SQLITE_STARTUP_LARGE_WAL_CHECKPOINT_TRUNCATE_STAGE, STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES,
     STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES, STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,

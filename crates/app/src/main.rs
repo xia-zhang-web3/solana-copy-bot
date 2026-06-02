@@ -42,12 +42,18 @@ mod app_loop_shadow;
 mod app_loop_shutdown;
 mod config_contract;
 mod discovery_runtime;
+mod execution_build_plan_metadata;
 mod execution_canary;
+mod execution_canary_safety;
+#[allow(dead_code)]
+mod execution_canary_state_machine;
 mod execution_quote_canary;
 mod execution_quote_canary_helpers;
 mod execution_quote_canary_priority_fee;
 mod execution_quote_canary_rpc;
 mod execution_quote_http;
+#[allow(dead_code)]
+mod execution_submit_adapter;
 mod history_retention;
 mod irrelevant_backpressure;
 mod irrelevant_persistence;

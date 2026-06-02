@@ -4,8 +4,13 @@ use copybot_core_types::{
     CopySignalRow, Lamports, TokenQuantity, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
 };
 use copybot_storage_core::{
-    ExecutionDryRunRecordOutcome, ExecutionQuoteCanaryEventInsert,
-    ExecutionQuoteCanaryRecordOutcome, SqliteStore, EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED,
+    ExecutionCanaryRecordOutcome, ExecutionDryRunRecordOutcome, ExecutionQuoteCanaryEventInsert,
+    ExecutionQuoteCanaryRecordOutcome, SqliteStore, EXECUTION_ERROR_SUBMIT_DISABLED,
+    EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED, EXECUTION_SIMULATION_STATUS_NOT_RUN,
+    EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT,
+    EXECUTION_STATUS_CANARY_BUILT, EXECUTION_STATUS_CANARY_CANDIDATE,
+    EXECUTION_STATUS_CANARY_CONFIRMED, EXECUTION_STATUS_CANARY_SIMULATED,
+    EXECUTION_STATUS_CANARY_SUBMITTED, EXECUTION_STATUS_CANARY_SUBMIT_DISABLED,
     EXECUTION_STATUS_DRY_RUN_CONFIRMED,
 };
 use tempfile::tempdir;
@@ -119,6 +124,211 @@ fn execution_dry_run_order_recording_is_idempotent_per_signal() -> Result<()> {
         EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED
     );
     assert_eq!(latest.attempt, 1);
+    Ok(())
+}
+
+#[test]
+fn execution_canary_order_reservation_is_idempotent_per_signal() -> Result<()> {
+    let store = open_migrated_store("execution-canary-state-idempotency")?;
+    let now = ts("2026-05-30T08:00:00Z");
+    store.insert_copy_signal(&signal("buy-1", "buy", now))?;
+
+    let first = store.reserve_execution_canary_order("buy-1", "metis-canary", now)?;
+    let second = store.reserve_execution_canary_order("buy-1", "metis-canary", now)?;
+
+    assert_eq!(first.outcome, ExecutionCanaryRecordOutcome::Inserted);
+    assert_eq!(second.outcome, ExecutionCanaryRecordOutcome::Existing);
+    assert_eq!(first.order.order_id, second.order.order_id);
+    assert_eq!(first.order.status, EXECUTION_STATUS_CANARY_CANDIDATE);
+    assert_eq!(
+        first.order.simulation_status.as_deref(),
+        Some(EXECUTION_SIMULATION_STATUS_NOT_RUN)
+    );
+    assert!(first.order.tx_signature.is_none());
+    Ok(())
+}
+
+#[test]
+fn execution_canary_order_reservation_ignores_existing_dry_run_order() -> Result<()> {
+    let store = open_migrated_store("execution-canary-state-after-dry-run")?;
+    let now = ts("2026-05-30T08:00:00Z");
+    store.insert_copy_signal(&signal("buy-1", "buy", now))?;
+    let dry_run = store.record_execution_dry_run_order("buy-1", "dry-run", now)?;
+
+    let reserve = store.reserve_execution_canary_order(
+        "buy-1",
+        "metis-canary",
+        now + Duration::seconds(1),
+    )?;
+
+    assert_eq!(dry_run, ExecutionDryRunRecordOutcome::Inserted);
+    assert_eq!(reserve.outcome, ExecutionCanaryRecordOutcome::Inserted);
+    assert!(reserve.order.order_id.starts_with("exec-canary:"));
+    assert_eq!(
+        store
+            .load_execution_canary_order_by_signal("buy-1")?
+            .expect("canary order should exist")
+            .order_id,
+        reserve.order.order_id
+    );
+    Ok(())
+}
+
+#[test]
+fn execution_canary_order_transitions_follow_expected_lifecycle() -> Result<()> {
+    let store = open_migrated_store("execution-canary-state-transitions")?;
+    let now = ts("2026-05-30T08:00:00Z");
+    store.insert_copy_signal(&signal("buy-1", "buy", now))?;
+    let reserve = store.reserve_execution_canary_order("buy-1", "metis-canary", now)?;
+
+    let built =
+        store.mark_execution_canary_built(&reserve.order.order_id, now + Duration::seconds(1))?;
+    assert_eq!(built.status, EXECUTION_STATUS_CANARY_BUILT);
+    let simulated = store.mark_execution_canary_simulated(
+        &reserve.order.order_id,
+        now + Duration::seconds(2),
+        EXECUTION_SIMULATION_STATUS_PASSED,
+        None,
+    )?;
+    assert_eq!(simulated.status, EXECUTION_STATUS_CANARY_SIMULATED);
+    assert_eq!(
+        simulated.simulation_status.as_deref(),
+        Some(EXECUTION_SIMULATION_STATUS_PASSED)
+    );
+    let submitted = store.mark_execution_canary_submitted(
+        &reserve.order.order_id,
+        now + Duration::seconds(3),
+        "tx-signature",
+    )?;
+    assert_eq!(submitted.status, EXECUTION_STATUS_CANARY_SUBMITTED);
+    assert_eq!(submitted.tx_signature.as_deref(), Some("tx-signature"));
+    let confirmed = store
+        .mark_execution_canary_confirmed(&reserve.order.order_id, now + Duration::seconds(4))?;
+    assert_eq!(confirmed.status, EXECUTION_STATUS_CANARY_CONFIRMED);
+    assert!(confirmed.confirm_ts.is_some());
+    Ok(())
+}
+
+#[test]
+fn execution_canary_order_submit_disabled_after_simulation_preserves_simulation_result(
+) -> Result<()> {
+    let store = open_migrated_store("execution-canary-state-submit-disabled-after-sim")?;
+    let now = ts("2026-05-30T08:00:00Z");
+    store.insert_copy_signal(&signal("buy-1", "buy", now))?;
+    let reserve = store.reserve_execution_canary_order("buy-1", "metis-canary", now)?;
+    store.mark_execution_canary_built(&reserve.order.order_id, now + Duration::seconds(1))?;
+    store.mark_execution_canary_simulated(
+        &reserve.order.order_id,
+        now + Duration::seconds(2),
+        EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT,
+        Some("simulation_skipped"),
+    )?;
+
+    let disabled = store.mark_execution_canary_submit_disabled(
+        &reserve.order.order_id,
+        now + Duration::seconds(3),
+        "submit_disabled_after_simulation",
+    )?;
+
+    assert_eq!(disabled.status, EXECUTION_STATUS_CANARY_SUBMIT_DISABLED);
+    assert_eq!(
+        disabled.err_code.as_deref(),
+        Some(EXECUTION_ERROR_SUBMIT_DISABLED)
+    );
+    assert_eq!(
+        disabled.simulation_status.as_deref(),
+        Some(EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT)
+    );
+    assert_eq!(
+        disabled.simulation_error.as_deref(),
+        Some("simulation_skipped")
+    );
+    Ok(())
+}
+
+#[test]
+fn execution_canary_order_rejects_unsafe_transition_after_terminal_state() -> Result<()> {
+    let store = open_migrated_store("execution-canary-state-terminal")?;
+    let now = ts("2026-05-30T08:00:00Z");
+    store.insert_copy_signal(&signal("buy-1", "buy", now))?;
+    let reserve = store.reserve_execution_canary_order("buy-1", "metis-canary", now)?;
+    let disabled = store.mark_execution_canary_submit_disabled(
+        &reserve.order.order_id,
+        now + Duration::seconds(1),
+        "no_submit_adapter",
+    )?;
+
+    assert_eq!(disabled.status, EXECUTION_STATUS_CANARY_SUBMIT_DISABLED);
+    assert_eq!(
+        disabled.err_code.as_deref(),
+        Some(EXECUTION_ERROR_SUBMIT_DISABLED)
+    );
+    assert_eq!(
+        disabled.simulation_status.as_deref(),
+        Some(EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT)
+    );
+    assert!(disabled.confirm_ts.is_some());
+    let error = store
+        .mark_execution_canary_built(&reserve.order.order_id, now + Duration::seconds(2))
+        .expect_err("terminal submit-disabled order must not transition back to built");
+    let error_chain = format!("{error:#}");
+    assert!(
+        error_chain.contains("invalid execution canary transition"),
+        "unexpected error: {error_chain}"
+    );
+    Ok(())
+}
+
+#[test]
+fn execution_canary_status_report_counts_statuses_and_latest_error() -> Result<()> {
+    let store = open_migrated_store("execution-canary-status-report")?;
+    let now = ts("2026-05-30T08:00:00Z");
+    store.insert_copy_signal(&signal("buy-candidate", "buy", now))?;
+    store.insert_copy_signal(&signal("buy-built", "buy", now + Duration::seconds(1)))?;
+    store.insert_copy_signal(&signal("buy-disabled", "buy", now + Duration::seconds(2)))?;
+
+    let candidate = store.reserve_execution_canary_order("buy-candidate", "metis-canary", now)?;
+    let built = store.reserve_execution_canary_order(
+        "buy-built",
+        "metis-canary",
+        now + Duration::seconds(1),
+    )?;
+    store.mark_execution_canary_built(&built.order.order_id, now + Duration::seconds(2))?;
+    let disabled = store.reserve_execution_canary_order(
+        "buy-disabled",
+        "metis-canary",
+        now + Duration::seconds(3),
+    )?;
+    store.mark_execution_canary_submit_disabled(
+        &disabled.order.order_id,
+        now + Duration::seconds(4),
+        "no_submit_adapter",
+    )?;
+
+    let report = store.execution_canary_status_report(now + Duration::seconds(5))?;
+
+    assert_eq!(candidate.order.status, EXECUTION_STATUS_CANARY_CANDIDATE);
+    assert_eq!(report.total, 3);
+    assert_eq!(report.candidate, 1);
+    assert_eq!(report.built, 1);
+    assert_eq!(report.submit_disabled, 1);
+    assert_eq!(report.active_count(), 2);
+    assert_eq!(
+        report
+            .latest_order
+            .as_ref()
+            .expect("latest order should exist")
+            .signal_id,
+        "buy-disabled"
+    );
+    assert_eq!(
+        report
+            .latest_error_order
+            .as_ref()
+            .expect("latest error order should exist")
+            .signal_id,
+        "buy-disabled"
+    );
     Ok(())
 }
 

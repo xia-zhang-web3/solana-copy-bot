@@ -27,7 +27,11 @@ EXPECTED_PACKAGE_BINARIES = {
         "copybot_live_service_control_wrapper",
         "copybot_operator_emergency_stop",
     },
-    "copybot-operators": {"copybot_yellowstone_source_probe"},
+    "copybot-operators": {
+        "copybot_execution_canary_quote_pnl",
+        "copybot_execution_canary_readiness",
+        "copybot_yellowstone_source_probe",
+    },
     "copybot-storage-ops": {
         "copybot_runtime_sqlite_wal_maintenance",
         "copybot_runtime_sqlite_wal_pressure_report",

@@ -1,0 +1,145 @@
+use anyhow::Result;
+use chrono::{DateTime, Duration, Utc};
+use copybot_operators::execution_canary_quote_pnl::{build_report_from_db_path, parse_args_from};
+use copybot_storage_core::{ExecutionQuoteCanaryEventInsert, SqliteStore};
+use tempfile::tempdir;
+
+fn ts(raw: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(raw)
+        .expect("timestamp")
+        .with_timezone(&Utc)
+}
+
+#[test]
+fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
+    let dir = tempdir()?;
+    let db_path = dir.path().join("runtime.db");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let opened = ts("2026-06-02T12:00:00Z");
+    let closed = opened + Duration::seconds(30);
+    store.insert_shadow_closed_trade_exact(
+        "sell-operator",
+        "leader-wallet",
+        "TokenMint",
+        50.0,
+        None,
+        0.10,
+        0.13,
+        0.03,
+        opened,
+        closed,
+    )?;
+    let close_id = store
+        .list_execution_quote_canary_close_candidates_for_signal("sell-operator", 10)?
+        .into_iter()
+        .next()
+        .expect("close candidate")
+        .id;
+    store.record_execution_quote_canary_event(&quote_event(
+        "quote:buy:operator",
+        Some("buy-operator"),
+        None,
+        "buy",
+        opened,
+        "200000000",
+        "100",
+    ))?;
+    store.record_execution_quote_canary_event(&quote_event(
+        "quote:sell:operator",
+        Some("sell-operator"),
+        Some(close_id),
+        "sell",
+        opened + Duration::seconds(30),
+        "50",
+        "125000000",
+    ))?;
+    drop(store);
+
+    let report = build_report_from_db_path(&db_path, closed + Duration::seconds(1));
+    let summary = report.summary.expect("operator summary should exist");
+
+    assert_eq!(report.reason_class, "execution_canary_quote_pnl_loaded");
+    assert!(report.db_opened);
+    assert_eq!(summary.pnl_counted_trades, 1);
+    assert_close(summary.quote_adjusted_pnl_sol, 0.025);
+    assert_close(summary.quote_vs_shadow_delta_sol, -0.005);
+    Ok(())
+}
+
+#[test]
+fn execution_canary_quote_pnl_cli_accepts_window_flags() -> Result<()> {
+    let cli = parse_args_from([
+        "--db-path",
+        "state/live_runtime.db",
+        "--json",
+        "--limit",
+        "25",
+        "--since-hours",
+        "6",
+    ])?;
+    let by_since = parse_args_from([
+        "--config",
+        "/etc/solana-copy-bot/live.toml",
+        "--json",
+        "--since",
+        "2026-06-02T12:00:00+00:00",
+    ])?;
+
+    assert!(cli.db_path.is_some());
+    assert_eq!(cli.limit, 25);
+    assert_eq!(cli.since_hours, 6);
+    assert!(by_since.config_path.is_some());
+    assert!(by_since.since.is_some());
+    assert!(parse_args_from(["--json"]).is_err());
+    assert!(parse_args_from(["--db-path", "db.sqlite", "--json", "--limit", "0"]).is_err());
+    Ok(())
+}
+
+fn quote_event(
+    event_id: &str,
+    signal_id: Option<&str>,
+    close_id: Option<i64>,
+    side: &str,
+    signal_ts: DateTime<Utc>,
+    in_raw: &str,
+    out_raw: &str,
+) -> ExecutionQuoteCanaryEventInsert {
+    ExecutionQuoteCanaryEventInsert {
+        event_id: event_id.to_string(),
+        signal_id: signal_id.map(ToString::to_string),
+        shadow_closed_trade_id: close_id,
+        wallet_id: "leader-wallet".to_string(),
+        token: "TokenMint".to_string(),
+        side: side.to_string(),
+        quote_status: "ok".to_string(),
+        request_ts: signal_ts + Duration::milliseconds(10),
+        signal_ts: Some(signal_ts),
+        decision_delay_ms: Some(10),
+        quote_latency_ms: Some(20),
+        leader_notional_sol: Some(0.2),
+        quote_in_amount_raw: Some(in_raw.to_string()),
+        quote_out_amount_raw: Some(out_raw.to_string()),
+        quote_price_sol: Some(0.002),
+        shadow_price_sol: Some(0.002),
+        slippage_bps: Some(15.0),
+        price_impact_pct: Some(0.02),
+        route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
+        priority_fee_status: Some("ok".to_string()),
+        priority_fee_lamports: Some(10_000),
+        priority_fee_json: Some("{\"recommended\":10000}".to_string()),
+        decision_status: Some("would_execute".to_string()),
+        decision_reason: Some("inside_limits".to_string()),
+        error: None,
+    }
+}
+
+fn assert_close(actual: f64, expected: f64) {
+    assert!(
+        (actual - expected).abs() < 0.000_000_001,
+        "actual={actual} expected={expected}"
+    );
+}

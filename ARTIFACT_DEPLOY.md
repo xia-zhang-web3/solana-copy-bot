@@ -53,7 +53,7 @@ Source operators:
 
 ```bash
 PACKAGE=copybot-operators \
-WANTED_BINS=copybot_yellowstone_source_probe \
+WANTED_BINS="copybot_execution_canary_quote_pnl copybot_execution_canary_readiness copybot_yellowstone_source_probe" \
 tools/build_operator_artifacts.sh
 ```
 
@@ -343,7 +343,7 @@ Source operator emergency build:
 ```bash
 CARGO_BUILD_JOBS=1 cargo build --profile operator-release \
   -p copybot-operators \
-  --bin copybot_yellowstone_source_probe
+  --bin copybot_execution_canary_quote_pnl
 ```
 
 Live operator emergency build:

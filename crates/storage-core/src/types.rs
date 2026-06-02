@@ -2,10 +2,36 @@ pub use types_discovery_rebuild::{
     DiscoveryPersistedRebuildPhase, DiscoveryPersistedRebuildStateRow,
 };
 pub use types_execution::{
-    ExecutionCanaryCloseCandidate, ExecutionCanaryObservedLeg, ExecutionDryRunOrder,
-    ExecutionDryRunRecordOutcome, ExecutionQuoteCanaryEventInsert,
-    ExecutionQuoteCanaryRecordOutcome, EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED,
-    EXECUTION_STATUS_DRY_RUN_CONFIRMED,
+    ExecutionCanaryBuildPlanMetadata, ExecutionCanaryBuildPlanMetadataRecordOutcome,
+    ExecutionCanaryCloseCandidate, ExecutionCanaryConfirmTimeoutDecision,
+    ExecutionCanaryObservedLeg, ExecutionCanaryOrder, ExecutionCanaryOwnedPosition,
+    ExecutionCanaryOwnedPositionRecordResult, ExecutionCanaryPositionCloseResult,
+    ExecutionCanaryPositionRecordOutcome, ExecutionCanaryReadinessCount,
+    ExecutionCanaryReadinessLatestOrder, ExecutionCanaryReadinessSummary,
+    ExecutionCanaryReadinessWindowSummary, ExecutionCanaryRecordOutcome,
+    ExecutionCanaryReserveResult, ExecutionCanarySellDecision, ExecutionCanaryStatusReport,
+    ExecutionDryRunOrder, ExecutionDryRunRecordOutcome, ExecutionQuoteCanaryEventInsert,
+    ExecutionQuoteCanaryRecordOutcome, EXECUTION_CANARY_CONFIRM_DECISION_EXPIRE_UNSAFE,
+    EXECUTION_CANARY_CONFIRM_DECISION_NOT_SUBMITTED, EXECUTION_CANARY_CONFIRM_DECISION_RETRY,
+    EXECUTION_CANARY_CONFIRM_DECISION_WAIT, EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+    EXECUTION_CANARY_POSITION_CLOSE_CLOSED, EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED,
+    EXECUTION_CANARY_POSITION_CLOSE_NO_POSITION, EXECUTION_CANARY_POSITION_CLOSE_PARTIAL,
+    EXECUTION_CANARY_POSITION_STATE_CLOSED, EXECUTION_CANARY_POSITION_STATE_OPEN,
+    EXECUTION_CANARY_SELL_DECISION_EXECUTE, EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT,
+    EXECUTION_CANARY_SELL_DECISION_NO_POSITION, EXECUTION_ERROR_BUILD_FAILED,
+    EXECUTION_ERROR_EXPIRED, EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_ERROR_SUBMIT_DISABLED,
+    EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED, EXECUTION_SIMULATION_STATUS_FAILED,
+    EXECUTION_SIMULATION_STATUS_NOT_RUN, EXECUTION_SIMULATION_STATUS_PASSED,
+    EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT, EXECUTION_STATUS_CANARY_BUILT,
+    EXECUTION_STATUS_CANARY_CANDIDATE, EXECUTION_STATUS_CANARY_CONFIRMED,
+    EXECUTION_STATUS_CANARY_EXPIRED, EXECUTION_STATUS_CANARY_FAILED,
+    EXECUTION_STATUS_CANARY_SIMULATED, EXECUTION_STATUS_CANARY_SUBMITTED,
+    EXECUTION_STATUS_CANARY_SUBMIT_DISABLED, EXECUTION_STATUS_DRY_RUN_CONFIRMED,
+};
+pub use types_execution_quote_pnl::{
+    ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlTrade,
+    EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED, EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
+    EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,
 };
 pub use types_history_retention::{
     ExecutionHistoryRetentionSummary, HistoryRetentionCutoffs, HistoryRetentionSummary,
@@ -63,6 +89,8 @@ pub use types_trusted_selection::{
 mod types_discovery_rebuild;
 #[path = "types_execution.rs"]
 mod types_execution;
+#[path = "types_execution_quote_pnl.rs"]
+mod types_execution_quote_pnl;
 #[path = "types_history_retention.rs"]
 mod types_history_retention;
 #[path = "types_observed.rs"]
