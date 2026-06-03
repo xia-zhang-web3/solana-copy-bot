@@ -576,3 +576,27 @@ shadow_universe_min_active_follow_wallets = 15
         },
     );
 }
+
+#[test]
+fn load_from_env_rejects_publish_min_candidate_wallets_above_follow_top_n() {
+    with_temp_config_file(
+        r#"
+[discovery]
+follow_top_n = 15
+publish_min_candidate_wallets = 16
+"#,
+        |config_path| {
+            with_clean_copybot_env(|| {
+                let err = load_from_env_or_default(config_path)
+                    .expect_err("publish floor above follow max must fail")
+                    .to_string();
+                assert!(
+                    err.contains(
+                        "discovery.publish_min_candidate_wallets (16) must be <= discovery.follow_top_n (15)"
+                    ),
+                    "unexpected error: {err}"
+                );
+            });
+        },
+    );
+}

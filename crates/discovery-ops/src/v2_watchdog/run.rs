@@ -35,7 +35,7 @@ pub fn run_watchdog(config: WatchdogConfig) -> Result<WatchdogOutput> {
     );
     let min_active_wallets = config
         .min_active_wallets
-        .unwrap_or_else(|| loaded.discovery.follow_top_n.max(1) as usize);
+        .unwrap_or_else(|| loaded.discovery.effective_publish_min_candidate_wallets());
     let publication = store.discovery_publication_state_read_only()?;
     let active_follow_wallet_count = store.active_follow_wallet_row_count()?;
 

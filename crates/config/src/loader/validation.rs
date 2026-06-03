@@ -134,6 +134,13 @@ fn validate_discovery_storage_mitigation_config(config: &AppConfig) -> Result<()
             config.discovery.scoring_window_days
         ));
     }
+    if config.discovery.publish_min_candidate_wallets > config.discovery.follow_top_n {
+        return Err(anyhow!(
+            "discovery.publish_min_candidate_wallets ({}) must be <= discovery.follow_top_n ({})",
+            config.discovery.publish_min_candidate_wallets,
+            config.discovery.follow_top_n
+        ));
+    }
     if config.discovery.maturity_min_active_days > 0 {
         if config.discovery.maturity_window_days == 0 {
             return Err(anyhow!(

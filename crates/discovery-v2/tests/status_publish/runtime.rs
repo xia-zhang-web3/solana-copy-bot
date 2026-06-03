@@ -60,6 +60,7 @@ fn status_blocks_when_candidate_floor_is_not_met() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
     store.insert_observed_swaps_batch(&[
+        tail_coverage_swap("sig-coverage-floor", 9, now - Duration::hours(25)),
         swap("wallet_a", "sig-a", 10, now - Duration::minutes(10)),
         tail_coverage_swap("sig-tail", 11, now - Duration::minutes(8)),
     ])?;
@@ -72,6 +73,30 @@ fn status_blocks_when_candidate_floor_is_not_met() -> Result<()> {
     assert!(!status.production_green);
     assert_eq!(status.candidate_wallets, vec!["wallet_a".to_string()]);
     assert!(status
+        .blockers
+        .contains(&"discovery_v2_candidate_wallets_below_publish_floor".to_string()));
+    Ok(())
+}
+
+#[test]
+fn status_allows_candidate_count_below_follow_top_n_when_publish_floor_is_met() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
+    store.insert_observed_swaps_batch(&[
+        tail_coverage_swap("sig-floor-coverage", 9, now - Duration::hours(25)),
+        swap("wallet_a", "sig-a", 10, now - Duration::minutes(10)),
+        tail_coverage_swap("sig-tail", 11, now - Duration::minutes(8)),
+    ])?;
+    insert_quality(&store, now, Some(1.0))?;
+    let (mut discovery, shadow) = strict_policy();
+    discovery.follow_top_n = 2;
+    discovery.publish_min_candidate_wallets = 1;
+
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    assert!(status.production_green, "{:?}", status.blockers);
+    assert_eq!(status.candidate_wallets, vec!["wallet_a".to_string()]);
+    assert!(!status
         .blockers
         .contains(&"discovery_v2_candidate_wallets_below_publish_floor".to_string()));
     Ok(())

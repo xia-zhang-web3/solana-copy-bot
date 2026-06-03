@@ -9,6 +9,7 @@ pub struct DiscoveryConfig {
     pub status_scan_window_minutes: u64,
     pub decay_window_days: u32,
     pub follow_top_n: u32,
+    pub publish_min_candidate_wallets: u32,
     pub min_leader_notional_sol: f64,
     pub helius_http_url: String,
     pub fetch_refresh_seconds: u64,
@@ -51,6 +52,7 @@ impl Default for DiscoveryConfig {
             status_scan_window_minutes: 0,
             decay_window_days: 7,
             follow_top_n: 20,
+            publish_min_candidate_wallets: 0,
             min_leader_notional_sol: 0.5,
             helius_http_url: String::new(),
             fetch_refresh_seconds: 60,
@@ -100,6 +102,15 @@ impl DiscoveryConfig {
                 .min(scoring_window_minutes)
         }
     }
+
+    pub fn effective_publish_min_candidate_wallets(&self) -> usize {
+        let floor = if self.publish_min_candidate_wallets == 0 {
+            self.follow_top_n
+        } else {
+            self.publish_min_candidate_wallets
+        };
+        floor.max(1) as usize
+    }
 }
 
 impl fmt::Debug for DiscoveryConfig {
@@ -112,6 +123,10 @@ impl fmt::Debug for DiscoveryConfig {
             )
             .field("decay_window_days", &self.decay_window_days)
             .field("follow_top_n", &self.follow_top_n)
+            .field(
+                "publish_min_candidate_wallets",
+                &self.publish_min_candidate_wallets,
+            )
             .field("min_leader_notional_sol", &self.min_leader_notional_sol)
             .field(
                 "helius_http_url",

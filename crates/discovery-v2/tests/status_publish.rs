@@ -156,9 +156,17 @@ fn policy_fingerprint_changes_when_shadow_or_execution_identity_changes() -> Res
     let rug_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
     assert_ne!(shadow_changed, rug_changed);
 
+    discovery.follow_top_n = 2;
+    let follow_max_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
+    assert_ne!(rug_changed, follow_max_changed);
+
+    discovery.publish_min_candidate_wallets = 1;
+    let publish_floor_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
+    assert_ne!(follow_max_changed, publish_floor_changed);
+
     discovery.decay_window_days += 1;
     let decay_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
-    assert_ne!(rug_changed, decay_changed);
+    assert_ne!(publish_floor_changed, decay_changed);
 
     discovery.metric_snapshot_interval_seconds += 1;
     let metric_snapshot_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);

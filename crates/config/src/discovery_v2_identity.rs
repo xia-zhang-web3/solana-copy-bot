@@ -37,6 +37,7 @@ pub fn discovery_v2_policy_fingerprint(
         concat!(
             "scoring_source={};window_minutes={};max_tail_lag_seconds={};",
             "max_rows={};time_budget_ms={};follow_top_n={};",
+            "publish_min_candidate_wallets={};",
             "decay_window_days={};rug_lookahead_seconds={};",
             "metric_snapshot_interval_seconds={};",
             "min_leader_notional_sol_bits={:016x};min_trades={};min_active_days={};",
@@ -75,6 +76,7 @@ pub fn discovery_v2_policy_fingerprint(
         input.max_rows,
         input.time_budget_ms,
         discovery.follow_top_n,
+        discovery.effective_publish_min_candidate_wallets(),
         discovery.decay_window_days,
         discovery.rug_lookahead_seconds,
         discovery.metric_snapshot_interval_seconds,

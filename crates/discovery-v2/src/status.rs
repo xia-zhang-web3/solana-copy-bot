@@ -211,7 +211,7 @@ pub fn build_discovery_v2_status(
     }
     if live_portfolio.as_ref().is_some_and(|status| {
         status.checked_wallets >= status.max_wallets
-            && candidate_wallets.len() < discovery.follow_top_n.max(1) as usize
+            && candidate_wallets.len() < discovery.effective_publish_min_candidate_wallets()
     }) {
         blockers.push("discovery_v2_live_portfolio_candidate_budget_exhausted".to_string());
     }

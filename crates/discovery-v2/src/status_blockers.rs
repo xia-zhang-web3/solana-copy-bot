@@ -113,7 +113,7 @@ pub(super) fn blockers(
     );
     push_if(
         &mut blockers,
-        candidates.len() < discovery.follow_top_n.max(1) as usize,
+        candidates.len() < discovery.effective_publish_min_candidate_wallets(),
         "discovery_v2_candidate_wallets_below_publish_floor",
     );
     push_if(&mut blockers, execution_enabled, "execution_enabled");
