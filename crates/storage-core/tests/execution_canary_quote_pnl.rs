@@ -78,8 +78,16 @@ fn quote_pnl_summary_counts_executable_quote_adjusted_pnl() -> Result<()> {
     assert_eq!(summary.priority_fee_lamports_sum, 20_000);
     assert_eq!(summary.force_exit_counted_trades, 1);
     assert_eq!(summary.force_exit_skipped_entry_trades, 0);
+    assert_eq!(summary.quote_diagnostics.entry_all.events, 1);
+    assert_eq!(summary.quote_diagnostics.entry_counted.events, 1);
+    assert_eq!(summary.quote_diagnostics.entry_skipped.events, 0);
+    assert_close(summary.quote_diagnostics.entry_all.slippage_bps_avg, 15.0);
+    assert_close(summary.quote_diagnostics.exit_all.slippage_bps_avg, 20.0);
     assert_eq!(trade.status, "pnl_counted");
     assert_close(trade.closed_qty_ratio.expect("ratio"), 0.5);
+    assert_eq!(trade.entry_decision_delay_ms, Some(10));
+    assert_eq!(trade.entry_quote_latency_ms, Some(20));
+    assert_eq!(trade.entry_route_labels, vec!["Metis".to_string()]);
     Ok(())
 }
 
@@ -211,8 +219,16 @@ fn quote_pnl_summary_excludes_entry_would_skip_from_quote_pnl() -> Result<()> {
     );
     assert_eq!(summary.force_exit_counted_trades, 0);
     assert_eq!(summary.force_exit_skipped_entry_trades, 1);
+    assert_eq!(summary.quote_diagnostics.entry_skipped.events, 1);
+    assert_eq!(summary.quote_diagnostics.exit_skipped_entry.events, 1);
+    assert_close(
+        summary.quote_diagnostics.entry_skipped.slippage_bps_avg,
+        15.0,
+    );
     assert_eq!(trade.status, "would_skip");
     assert_eq!(trade.reason, "inside_test_skip_limit");
+    assert_eq!(trade.exit_decision_delay_ms, Some(10));
+    assert_eq!(trade.exit_route_labels, vec!["Metis".to_string()]);
     assert_close(trade.skipped_counterfactual_pnl_sol.expect("pnl"), 0.025);
     assert_close(
         trade

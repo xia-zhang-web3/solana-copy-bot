@@ -30,6 +30,7 @@ pub struct ExecutionCanaryQuotePnlSummary {
     pub skipped_counterfactual_after_fee_vs_shadow_delta_sol: f64,
     pub force_exit_counted_trades: u64,
     pub force_exit_skipped_entry_trades: u64,
+    pub quote_diagnostics: ExecutionCanaryQuoteDiagnosticsSummary,
     pub priority_fee_lamports_sum: u64,
     pub trades: Vec<ExecutionCanaryQuotePnlTrade>,
 }
@@ -56,6 +57,33 @@ pub struct ExecutionCanaryShadowCloseContextSummary {
     pub win_count: u64,
     pub loss_count: u64,
     pub pnl_sol: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuoteDiagnosticsSummary {
+    pub entry_all: ExecutionCanaryQuoteSideDiagnostics,
+    pub entry_counted: ExecutionCanaryQuoteSideDiagnostics,
+    pub entry_skipped: ExecutionCanaryQuoteSideDiagnostics,
+    pub exit_all: ExecutionCanaryQuoteSideDiagnostics,
+    pub exit_counted: ExecutionCanaryQuoteSideDiagnostics,
+    pub exit_skipped_entry: ExecutionCanaryQuoteSideDiagnostics,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuoteSideDiagnostics {
+    pub events: u64,
+    pub decision_delay_ms_samples: u64,
+    pub decision_delay_ms_avg: f64,
+    pub decision_delay_ms_max: u64,
+    pub quote_latency_ms_samples: u64,
+    pub quote_latency_ms_avg: f64,
+    pub quote_latency_ms_max: u64,
+    pub slippage_bps_samples: u64,
+    pub slippage_bps_avg: f64,
+    pub slippage_bps_max: f64,
+    pub price_impact_pct_samples: u64,
+    pub price_impact_pct_avg: f64,
+    pub price_impact_pct_max: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -89,6 +117,16 @@ pub struct ExecutionCanaryQuotePnlTrade {
     pub sell_slippage_bps: Option<f64>,
     pub buy_price_impact_pct: Option<f64>,
     pub sell_price_impact_pct: Option<f64>,
+    pub entry_decision_delay_ms: Option<u64>,
+    pub exit_decision_delay_ms: Option<u64>,
+    pub entry_quote_latency_ms: Option<u64>,
+    pub exit_quote_latency_ms: Option<u64>,
+    pub entry_quote_price_sol: Option<f64>,
+    pub exit_quote_price_sol: Option<f64>,
+    pub entry_shadow_price_sol: Option<f64>,
+    pub exit_shadow_price_sol: Option<f64>,
+    pub entry_route_labels: Vec<String>,
+    pub exit_route_labels: Vec<String>,
     pub priority_fee_lamports_total: Option<u64>,
 }
 

@@ -1,4 +1,5 @@
 use crate::{
+    execution_canary_quote_pnl_diagnostics::{empty_quote_diagnostics, record_quote_diagnostics},
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlTrade,
     ExecutionCanaryShadowCloseBreakdown, EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED,
     EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
@@ -55,6 +56,7 @@ fn empty_summary(
         skipped_counterfactual_after_fee_vs_shadow_delta_sol: 0.0,
         force_exit_counted_trades: 0,
         force_exit_skipped_entry_trades: 0,
+        quote_diagnostics: empty_quote_diagnostics(),
         priority_fee_lamports_sum: 0,
         trades: Vec::new(),
     }
@@ -76,6 +78,7 @@ fn record_trade(summary: &mut ExecutionCanaryQuotePnlSummary, trade: ExecutionCa
         EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED => record_skipped(summary, &trade),
         _ => record_unknown(summary, &trade),
     }
+    record_quote_diagnostics(summary, &trade);
     summary.trades.push(trade);
 }
 

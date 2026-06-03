@@ -71,6 +71,11 @@ fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
     assert_close(summary.quote_adjusted_pnl_after_priority_fee_sol, 0.02498);
     assert_close(summary.quote_vs_shadow_delta_sol, -0.005);
     assert_close(summary.quote_after_fee_vs_shadow_delta_sol, -0.00502);
+    assert_eq!(summary.quote_diagnostics.entry_counted.events, 1);
+    assert_close(
+        summary.quote_diagnostics.entry_all.quote_latency_ms_avg,
+        20.0,
+    );
     assert_eq!(summary.force_exit_counted_trades, 0);
     assert_eq!(summary.force_exit_skipped_entry_trades, 0);
     Ok(())

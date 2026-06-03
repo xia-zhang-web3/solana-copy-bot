@@ -1,15 +1,17 @@
 use crate::{
     execution_canary_quote_pnl_accumulator::summarize_quote_pnl,
+    execution_canary_quote_pnl_compute::compute_quote_pnl,
+    execution_canary_quote_pnl_diagnostics::route_labels,
+    execution_canary_quote_pnl_rows::{read_quote_pnl_row, QuotePnlRow},
     execution_quote_canary::ensure_execution_quote_canary_tables,
-    observed_timestamp::parse_rfc3339_utc, ExecutionCanaryQuotePnlSummary,
-    ExecutionCanaryQuotePnlTrade, SqliteDiscoveryStore, EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED,
-    EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED, EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,
+    ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlTrade, SqliteDiscoveryStore,
+    EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED, EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
+    EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::params;
 
-const SOL_LAMPORTS: f64 = 1_000_000_000.0;
 const QUOTE_STATUS_OK: &str = "ok";
 const DECISION_WOULD_EXECUTE: &str = "would_execute";
 const DECISION_WOULD_SKIP: &str = "would_skip";
@@ -61,11 +63,15 @@ impl SqliteDiscoveryStore {
                     buy.quote_status,
                     buy.request_ts,
                     buy.signal_ts,
+                    buy.decision_delay_ms,
+                    buy.quote_latency_ms,
                     buy.quote_in_amount_raw,
                     buy.quote_out_amount_raw,
                     buy.quote_price_sol,
+                    buy.shadow_price_sol,
                     buy.slippage_bps,
                     buy.price_impact_pct,
+                    buy.route_plan_json,
                     buy.priority_fee_status,
                     buy.priority_fee_lamports,
                     buy.decision_status,
@@ -74,11 +80,15 @@ impl SqliteDiscoveryStore {
                     sell.quote_status,
                     sell.request_ts,
                     sell.signal_ts,
+                    sell.decision_delay_ms,
+                    sell.quote_latency_ms,
                     sell.quote_in_amount_raw,
                     sell.quote_out_amount_raw,
                     sell.quote_price_sol,
+                    sell.shadow_price_sol,
                     sell.slippage_bps,
                     sell.price_impact_pct,
+                    sell.route_plan_json,
                     sell.priority_fee_status,
                     sell.priority_fee_lamports,
                     sell.decision_status,
@@ -127,6 +137,16 @@ fn classify_trade(row: QuotePnlRow) -> Result<ExecutionCanaryQuotePnlTrade> {
     trade.sell_slippage_bps = row.sell.slippage_bps;
     trade.buy_price_impact_pct = row.buy.price_impact_pct;
     trade.sell_price_impact_pct = row.sell.price_impact_pct;
+    trade.entry_decision_delay_ms = row.buy.decision_delay_ms;
+    trade.exit_decision_delay_ms = row.sell.decision_delay_ms;
+    trade.entry_quote_latency_ms = row.buy.quote_latency_ms;
+    trade.exit_quote_latency_ms = row.sell.quote_latency_ms;
+    trade.entry_quote_price_sol = row.buy.quote_price_sol;
+    trade.exit_quote_price_sol = row.sell.quote_price_sol;
+    trade.entry_shadow_price_sol = row.buy.shadow_price_sol;
+    trade.exit_shadow_price_sol = row.sell.shadow_price_sol;
+    trade.entry_route_labels = route_labels(row.buy.route_plan_json.as_deref());
+    trade.exit_route_labels = route_labels(row.sell.route_plan_json.as_deref());
 
     let Some(buy_status) = row.buy.quote_status.as_deref() else {
         return Ok(mark_unknown(trade, "missing_entry_quote"));
@@ -150,7 +170,7 @@ fn classify_trade(row: QuotePnlRow) -> Result<ExecutionCanaryQuotePnlTrade> {
     match row.buy.decision_status.as_deref() {
         Some(DECISION_WOULD_EXECUTE) => {}
         Some(DECISION_WOULD_SKIP) => {
-            if let Some(pnl) = compute_quote_pnl(&row)? {
+            if let Some(pnl) = compute_quote_pnl(row.amounts())? {
                 trade.skipped_counterfactual_pnl_sol = Some(pnl.quote_adjusted_pnl_sol);
                 trade.skipped_counterfactual_pnl_after_priority_fee_sol =
                     Some(pnl.quote_adjusted_pnl_after_priority_fee_sol);
@@ -168,7 +188,7 @@ fn classify_trade(row: QuotePnlRow) -> Result<ExecutionCanaryQuotePnlTrade> {
         None => return Ok(mark_unknown(trade, "exit_decision_missing")),
     }
 
-    let Some(pnl) = compute_quote_pnl(&row)? else {
+    let Some(pnl) = compute_quote_pnl(row.amounts())? else {
         return Ok(mark_unknown(trade, "invalid_quote_amount"));
     };
     trade.status = EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED.to_string();
@@ -188,44 +208,6 @@ fn classify_trade(row: QuotePnlRow) -> Result<ExecutionCanaryQuotePnlTrade> {
     trade.closed_qty_ratio = Some(pnl.closed_qty_ratio);
     trade.priority_fee_lamports_total = Some(pnl.priority_fee_lamports_total);
     Ok(trade)
-}
-
-fn compute_quote_pnl(row: &QuotePnlRow) -> Result<Option<ComputedPnl>> {
-    let Some(entry_in_raw) = parse_raw_amount(row.buy.quote_in_amount_raw.as_deref())? else {
-        return Ok(None);
-    };
-    let Some(entry_out_raw) = parse_raw_amount(row.buy.quote_out_amount_raw.as_deref())? else {
-        return Ok(None);
-    };
-    let Some(exit_in_raw) = parse_raw_amount(row.sell.quote_in_amount_raw.as_deref())? else {
-        return Ok(None);
-    };
-    let Some(exit_out_raw) = parse_raw_amount(row.sell.quote_out_amount_raw.as_deref())? else {
-        return Ok(None);
-    };
-    if entry_in_raw == 0 || entry_out_raw == 0 || exit_in_raw == 0 {
-        return Ok(None);
-    }
-
-    let exit_qty_for_pnl = exit_in_raw.min(entry_out_raw);
-    let closed_qty_ratio = exit_qty_for_pnl as f64 / entry_out_raw as f64;
-    let entry_cost_sol = (entry_in_raw as f64 / SOL_LAMPORTS) * closed_qty_ratio;
-    let exit_quote_sol =
-        (exit_out_raw as f64 / SOL_LAMPORTS) * (exit_qty_for_pnl as f64 / exit_in_raw as f64);
-    let priority_fee_lamports_total =
-        row.buy.priority_fee_lamports.unwrap_or(0) + row.sell.priority_fee_lamports.unwrap_or(0);
-    let quote_adjusted_pnl_sol = exit_quote_sol - entry_cost_sol;
-    let quote_adjusted_pnl_after_priority_fee_sol =
-        quote_adjusted_pnl_sol - priority_fee_lamports_total as f64 / SOL_LAMPORTS;
-    Ok(Some(ComputedPnl {
-        entry_cost_sol,
-        exit_quote_sol,
-        closed_qty_ratio,
-        quote_adjusted_pnl_sol,
-        quote_adjusted_pnl_after_priority_fee_sol,
-        priority_fee_lamports_total,
-        scaled_exit_to_entry_qty: exit_in_raw > entry_out_raw,
-    }))
 }
 
 fn base_trade(row: &QuotePnlRow) -> ExecutionCanaryQuotePnlTrade {
@@ -259,6 +241,16 @@ fn base_trade(row: &QuotePnlRow) -> ExecutionCanaryQuotePnlTrade {
         sell_slippage_bps: None,
         buy_price_impact_pct: None,
         sell_price_impact_pct: None,
+        entry_decision_delay_ms: None,
+        exit_decision_delay_ms: None,
+        entry_quote_latency_ms: None,
+        exit_quote_latency_ms: None,
+        entry_quote_price_sol: None,
+        exit_quote_price_sol: None,
+        entry_shadow_price_sol: None,
+        exit_shadow_price_sol: None,
+        entry_route_labels: Vec::new(),
+        exit_route_labels: Vec::new(),
         priority_fee_lamports_total: None,
     }
 }
@@ -288,112 +280,4 @@ fn mark_skipped(
     trade.status = EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED.to_string();
     trade.reason = reason;
     trade
-}
-
-fn parse_raw_amount(raw: Option<&str>) -> Result<Option<u128>> {
-    raw.map(|value| {
-        value
-            .parse::<u128>()
-            .with_context(|| format!("invalid quote raw amount: {value}"))
-    })
-    .transpose()
-}
-
-fn read_quote_pnl_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<QuotePnlRow> {
-    read_quote_pnl_row_result(row).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                error.to_string(),
-            )),
-        )
-    })
-}
-
-fn read_quote_pnl_row_result(row: &rusqlite::Row<'_>) -> Result<QuotePnlRow> {
-    let opened_ts_raw: String = row.get(8).context("failed reading opened_ts")?;
-    let closed_ts_raw: String = row.get(9).context("failed reading closed_ts")?;
-    Ok(QuotePnlRow {
-        id: row.get(0).context("failed reading closed id")?,
-        signal_id: row.get(1).context("failed reading signal_id")?,
-        wallet_id: row.get(2).context("failed reading wallet_id")?,
-        token: row.get(3).context("failed reading token")?,
-        shadow_pnl_sol: row.get(7).context("failed reading pnl_sol")?,
-        opened_ts: parse_rfc3339_utc(&opened_ts_raw, "shadow_closed_trades.opened_ts")?,
-        closed_ts: parse_rfc3339_utc(&closed_ts_raw, "shadow_closed_trades.closed_ts")?,
-        buy: QuoteEvent::read(row, 10)?,
-        sell: QuoteEvent::read(row, 23)?,
-    })
-}
-
-#[derive(Debug, Clone)]
-struct QuotePnlRow {
-    id: i64,
-    signal_id: String,
-    wallet_id: String,
-    token: String,
-    shadow_pnl_sol: f64,
-    opened_ts: DateTime<Utc>,
-    closed_ts: DateTime<Utc>,
-    buy: QuoteEvent,
-    sell: QuoteEvent,
-}
-
-#[derive(Debug, Clone)]
-struct QuoteEvent {
-    event_id: Option<String>,
-    quote_status: Option<String>,
-    quote_in_amount_raw: Option<String>,
-    quote_out_amount_raw: Option<String>,
-    slippage_bps: Option<f64>,
-    price_impact_pct: Option<f64>,
-    priority_fee_lamports: Option<u64>,
-    decision_status: Option<String>,
-    decision_reason: Option<String>,
-}
-
-impl QuoteEvent {
-    fn read(row: &rusqlite::Row<'_>, offset: usize) -> Result<Self> {
-        let priority_fee_raw: Option<i64> = row
-            .get(offset + 10)
-            .context("failed reading priority_fee_lamports")?;
-        Ok(Self {
-            event_id: row.get(offset).context("failed reading event_id")?,
-            quote_status: row.get(offset + 1).context("failed reading quote_status")?,
-            quote_in_amount_raw: row
-                .get(offset + 4)
-                .context("failed reading quote_in_amount_raw")?,
-            quote_out_amount_raw: row
-                .get(offset + 5)
-                .context("failed reading quote_out_amount_raw")?,
-            slippage_bps: row.get(offset + 7).context("failed reading slippage_bps")?,
-            price_impact_pct: row
-                .get(offset + 8)
-                .context("failed reading price_impact_pct")?,
-            priority_fee_lamports: priority_fee_raw
-                .map(|raw| {
-                    u64::try_from(raw)
-                        .with_context(|| format!("invalid priority_fee_lamports: {raw}"))
-                })
-                .transpose()?,
-            decision_status: row
-                .get(offset + 11)
-                .context("failed reading decision_status")?,
-            decision_reason: row
-                .get(offset + 12)
-                .context("failed reading decision_reason")?,
-        })
-    }
-}
-
-struct ComputedPnl {
-    entry_cost_sol: f64,
-    exit_quote_sol: f64,
-    closed_qty_ratio: f64,
-    quote_adjusted_pnl_sol: f64,
-    quote_adjusted_pnl_after_priority_fee_sol: f64,
-    priority_fee_lamports_total: u64,
-    scaled_exit_to_entry_qty: bool,
 }

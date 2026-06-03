@@ -8,6 +8,9 @@ mod execution_canary_positions;
 mod execution_canary_quote_pnl;
 mod execution_canary_quote_pnl_accumulator;
 mod execution_canary_quote_pnl_breakdown;
+mod execution_canary_quote_pnl_compute;
+mod execution_canary_quote_pnl_diagnostics;
+mod execution_canary_quote_pnl_rows;
 mod execution_canary_readiness;
 mod execution_canary_report;
 mod execution_canary_retry;
@@ -83,18 +86,20 @@ pub use types::{
     ExecutionCanaryConfirmTimeoutDecision, ExecutionCanaryObservedLeg, ExecutionCanaryOrder,
     ExecutionCanaryOwnedPosition, ExecutionCanaryOwnedPositionRecordResult,
     ExecutionCanaryPositionCloseResult, ExecutionCanaryPositionRecordOutcome,
-    ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlTrade, ExecutionCanaryReadinessCount,
-    ExecutionCanaryReadinessLatestOrder, ExecutionCanaryReadinessSummary,
-    ExecutionCanaryReadinessWindowSummary, ExecutionCanaryRecordOutcome,
-    ExecutionCanaryReserveResult, ExecutionCanarySellDecision, ExecutionCanaryShadowCloseBreakdown,
-    ExecutionCanaryShadowCloseContextSummary, ExecutionCanaryStatusReport, ExecutionDryRunOrder,
-    ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
-    ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryRecordOutcome, FollowlistUpdateResult,
-    HistoryRetentionCutoffs, HistoryRetentionSummary, ObservedSolLegSwap,
-    ObservedSwapBatchWriteMetrics, ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow,
-    RecentRawJournalStateRow, RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome,
-    ShadowLotRow, ShadowSignalSummary, ShadowTokenLossCooldown, ShadowTokenRecentClose,
-    ShadowWalletFeedback, ShadowWalletTokenFastLossCooldown, SqliteBatchedDeleteSummary,
+    ExecutionCanaryQuoteDiagnosticsSummary, ExecutionCanaryQuotePnlSummary,
+    ExecutionCanaryQuotePnlTrade, ExecutionCanaryQuoteSideDiagnostics,
+    ExecutionCanaryReadinessCount, ExecutionCanaryReadinessLatestOrder,
+    ExecutionCanaryReadinessSummary, ExecutionCanaryReadinessWindowSummary,
+    ExecutionCanaryRecordOutcome, ExecutionCanaryReserveResult, ExecutionCanarySellDecision,
+    ExecutionCanaryShadowCloseBreakdown, ExecutionCanaryShadowCloseContextSummary,
+    ExecutionCanaryStatusReport, ExecutionDryRunOrder, ExecutionDryRunRecordOutcome,
+    ExecutionHistoryRetentionSummary, ExecutionQuoteCanaryEventInsert,
+    ExecutionQuoteCanaryRecordOutcome, FollowlistUpdateResult, HistoryRetentionCutoffs,
+    HistoryRetentionSummary, ObservedSolLegSwap, ObservedSwapBatchWriteMetrics,
+    ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow,
+    RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome, ShadowLotRow,
+    ShadowSignalSummary, ShadowTokenLossCooldown, ShadowTokenRecentClose, ShadowWalletFeedback,
+    ShadowWalletTokenFastLossCooldown, SqliteBatchedDeleteSummary,
     SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
     SqliteSnapshotDeferredReason, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
     SqliteSnapshotRetryReason, SqliteSnapshotSourceMetrics, SqliteSnapshotSummary,
