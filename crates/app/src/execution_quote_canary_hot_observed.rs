@@ -23,17 +23,18 @@ impl ExecutionQuoteCanaryRunner {
         if self.record_existing_entry_event_if_present(store, &signal_id, &mut summary)? {
             return Ok(summary);
         }
-        let mut priority_fee_sample = None;
-        let priority = self
-            .priority_fee_sample_if_needed(&mut priority_fee_sample)
-            .await;
-        let event = match self
-            .build_hot_observed_buy_quote_event(&signal_id, swap, now, priority)
+        let mut event = match self
+            .build_hot_observed_buy_quote_event(&signal_id, swap, now, None)
             .await
         {
             Ok(event) => event,
             Err(error) => hot_observed_buy_error_event(&signal_id, swap, now, &error),
         };
+        let mut priority_fee_sample = None;
+        let priority = self
+            .priority_fee_sample_if_needed(&mut priority_fee_sample)
+            .await;
+        attach_priority_fee(&mut event, priority);
         self.record_entry_event(store, event, &mut summary)?;
         Ok(summary)
     }
