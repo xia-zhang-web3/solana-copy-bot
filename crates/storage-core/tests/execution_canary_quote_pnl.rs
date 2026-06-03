@@ -48,13 +48,14 @@ fn quote_pnl_summary_counts_executable_quote_adjusted_pnl() -> Result<()> {
         opened,
         "would_execute",
     ))?;
-    store.record_execution_quote_canary_event(&sell_quote(
+    store.record_execution_quote_canary_event(&sell_quote_with_decision(
         "quote:sell:counted",
         close_id,
         "TokenMint",
         opened,
         "50",
         "125000000",
+        "would_force_exit",
     ))?;
 
     let summary =
@@ -73,7 +74,10 @@ fn quote_pnl_summary_counts_executable_quote_adjusted_pnl() -> Result<()> {
     assert_close(summary.quote_adjusted_pnl_sol, 0.025);
     assert_close(summary.quote_adjusted_pnl_after_priority_fee_sol, 0.02498);
     assert_close(summary.quote_vs_shadow_delta_sol, -0.005);
+    assert_close(summary.quote_after_fee_vs_shadow_delta_sol, -0.00502);
     assert_eq!(summary.priority_fee_lamports_sum, 20_000);
+    assert_eq!(summary.force_exit_counted_trades, 1);
+    assert_eq!(summary.force_exit_skipped_entry_trades, 0);
     assert_eq!(trade.status, "pnl_counted");
     assert_close(trade.closed_qty_ratio.expect("ratio"), 0.5);
     Ok(())
@@ -175,13 +179,14 @@ fn quote_pnl_summary_excludes_entry_would_skip_from_quote_pnl() -> Result<()> {
         opened,
         "would_skip",
     ))?;
-    store.record_execution_quote_canary_event(&sell_quote(
+    store.record_execution_quote_canary_event(&sell_quote_with_decision(
         "quote:sell:skipped",
         close_id,
         "SkipToken",
         opened,
         "50",
         "125000000",
+        "would_force_exit",
     ))?;
 
     let summary =
@@ -194,8 +199,27 @@ fn quote_pnl_summary_excludes_entry_would_skip_from_quote_pnl() -> Result<()> {
     assert_eq!(summary.skipped_trades, 1);
     assert_eq!(summary.unknown_trades, 0);
     assert_close(summary.quote_adjusted_pnl_sol, 0.0);
+    assert_close(summary.skipped_shadow_pnl_sol, 0.01);
+    assert_close(summary.skipped_counterfactual_pnl_sol, 0.025);
+    assert_close(
+        summary.skipped_counterfactual_pnl_after_priority_fee_sol,
+        0.02498,
+    );
+    assert_close(
+        summary.skipped_counterfactual_after_fee_vs_shadow_delta_sol,
+        0.01498,
+    );
+    assert_eq!(summary.force_exit_counted_trades, 0);
+    assert_eq!(summary.force_exit_skipped_entry_trades, 1);
     assert_eq!(trade.status, "would_skip");
     assert_eq!(trade.reason, "inside_test_skip_limit");
+    assert_close(trade.skipped_counterfactual_pnl_sol.expect("pnl"), 0.025);
+    assert_close(
+        trade
+            .skipped_counterfactual_pnl_after_priority_fee_sol
+            .expect("pnl after fee"),
+        0.02498,
+    );
     Ok(())
 }
 
@@ -299,6 +323,26 @@ fn sell_quote(
     in_raw: &str,
     out_raw: &str,
 ) -> ExecutionQuoteCanaryEventInsert {
+    sell_quote_with_decision(
+        event_id,
+        close_id,
+        token,
+        opened,
+        in_raw,
+        out_raw,
+        "would_execute",
+    )
+}
+
+fn sell_quote_with_decision(
+    event_id: &str,
+    close_id: i64,
+    token: &str,
+    opened: DateTime<Utc>,
+    in_raw: &str,
+    out_raw: &str,
+    decision_status: &str,
+) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
         event_id: event_id.to_string(),
         signal_id: Some(format!("sell:{close_id}")),
@@ -322,7 +366,7 @@ fn sell_quote(
         priority_fee_status: Some("ok".to_string()),
         priority_fee_lamports: Some(10_000),
         priority_fee_json: Some("{\"recommended\":10000}".to_string()),
-        decision_status: Some("would_execute".to_string()),
+        decision_status: Some(decision_status.to_string()),
         decision_reason: Some("inside_sell_limit".to_string()),
         error: None,
     }

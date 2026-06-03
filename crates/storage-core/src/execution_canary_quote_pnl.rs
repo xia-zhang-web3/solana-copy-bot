@@ -149,7 +149,16 @@ fn classify_trade(row: QuotePnlRow) -> Result<ExecutionCanaryQuotePnlTrade> {
 
     match row.buy.decision_status.as_deref() {
         Some(DECISION_WOULD_EXECUTE) => {}
-        Some(DECISION_WOULD_SKIP) => return Ok(mark_skipped(trade, entry_reason(&row))),
+        Some(DECISION_WOULD_SKIP) => {
+            if let Some(pnl) = compute_quote_pnl(&row)? {
+                trade.skipped_counterfactual_pnl_sol = Some(pnl.quote_adjusted_pnl_sol);
+                trade.skipped_counterfactual_pnl_after_priority_fee_sol =
+                    Some(pnl.quote_adjusted_pnl_after_priority_fee_sol);
+                trade.skipped_counterfactual_after_fee_vs_shadow_delta_sol =
+                    Some(pnl.quote_adjusted_pnl_after_priority_fee_sol - row.shadow_pnl_sol);
+            }
+            return Ok(mark_skipped(trade, entry_reason(&row)));
+        }
         Some(status) => return Ok(mark_unknown(trade, &format!("entry_decision:{status}"))),
         None => return Ok(mark_unknown(trade, "entry_decision_missing")),
     }
@@ -172,6 +181,8 @@ fn classify_trade(row: QuotePnlRow) -> Result<ExecutionCanaryQuotePnlTrade> {
     trade.quote_adjusted_pnl_after_priority_fee_sol =
         Some(pnl.quote_adjusted_pnl_after_priority_fee_sol);
     trade.quote_vs_shadow_delta_sol = Some(pnl.quote_adjusted_pnl_sol - row.shadow_pnl_sol);
+    trade.quote_after_fee_vs_shadow_delta_sol =
+        Some(pnl.quote_adjusted_pnl_after_priority_fee_sol - row.shadow_pnl_sol);
     trade.entry_cost_sol = Some(pnl.entry_cost_sol);
     trade.exit_quote_sol = Some(pnl.exit_quote_sol);
     trade.closed_qty_ratio = Some(pnl.closed_qty_ratio);
@@ -231,6 +242,10 @@ fn base_trade(row: &QuotePnlRow) -> ExecutionCanaryQuotePnlTrade {
         quote_adjusted_pnl_sol: None,
         quote_adjusted_pnl_after_priority_fee_sol: None,
         quote_vs_shadow_delta_sol: None,
+        quote_after_fee_vs_shadow_delta_sol: None,
+        skipped_counterfactual_pnl_sol: None,
+        skipped_counterfactual_pnl_after_priority_fee_sol: None,
+        skipped_counterfactual_after_fee_vs_shadow_delta_sol: None,
         entry_quote_event_id: None,
         exit_quote_event_id: None,
         entry_decision_status: None,

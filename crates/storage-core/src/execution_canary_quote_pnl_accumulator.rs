@@ -5,6 +5,8 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 
+const DECISION_WOULD_FORCE_EXIT: &str = "would_force_exit";
+
 pub(crate) fn summarize_quote_pnl(
     as_of: DateTime<Utc>,
     since: DateTime<Utc>,
@@ -46,6 +48,13 @@ fn empty_summary(
         quote_adjusted_pnl_sol: 0.0,
         quote_adjusted_pnl_after_priority_fee_sol: 0.0,
         quote_vs_shadow_delta_sol: 0.0,
+        quote_after_fee_vs_shadow_delta_sol: 0.0,
+        skipped_shadow_pnl_sol: 0.0,
+        skipped_counterfactual_pnl_sol: 0.0,
+        skipped_counterfactual_pnl_after_priority_fee_sol: 0.0,
+        skipped_counterfactual_after_fee_vs_shadow_delta_sol: 0.0,
+        force_exit_counted_trades: 0,
+        force_exit_skipped_entry_trades: 0,
         priority_fee_lamports_sum: 0,
         trades: Vec::new(),
     }
@@ -64,7 +73,7 @@ fn record_trade(summary: &mut ExecutionCanaryQuotePnlSummary, trade: ExecutionCa
     }
     match trade.status.as_str() {
         EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED => record_counted(summary, &trade),
-        EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED => summary.skipped_trades += 1,
+        EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED => record_skipped(summary, &trade),
         _ => record_unknown(summary, &trade),
     }
     summary.trades.push(trade);
@@ -84,11 +93,35 @@ fn record_counted(
     summary.quote_vs_shadow_delta_sol += trade
         .quote_vs_shadow_delta_sol
         .unwrap_or(quote_pnl - trade.shadow_pnl_sol);
+    summary.quote_after_fee_vs_shadow_delta_sol += trade
+        .quote_after_fee_vs_shadow_delta_sol
+        .unwrap_or(quote_pnl_after_fee - trade.shadow_pnl_sol);
     summary.priority_fee_lamports_sum += trade.priority_fee_lamports_total.unwrap_or(0);
+    if is_force_exit(trade) {
+        summary.force_exit_counted_trades += 1;
+    }
     if quote_pnl > 0.0 {
         summary.quote_win_count += 1;
     } else if quote_pnl < 0.0 {
         summary.quote_loss_count += 1;
+    }
+}
+
+fn record_skipped(
+    summary: &mut ExecutionCanaryQuotePnlSummary,
+    trade: &ExecutionCanaryQuotePnlTrade,
+) {
+    summary.skipped_trades += 1;
+    summary.skipped_shadow_pnl_sol += trade.shadow_pnl_sol;
+    summary.skipped_counterfactual_pnl_sol += trade.skipped_counterfactual_pnl_sol.unwrap_or(0.0);
+    summary.skipped_counterfactual_pnl_after_priority_fee_sol += trade
+        .skipped_counterfactual_pnl_after_priority_fee_sol
+        .unwrap_or(0.0);
+    summary.skipped_counterfactual_after_fee_vs_shadow_delta_sol += trade
+        .skipped_counterfactual_after_fee_vs_shadow_delta_sol
+        .unwrap_or(0.0);
+    if is_force_exit(trade) {
+        summary.force_exit_skipped_entry_trades += 1;
     }
 }
 
@@ -105,4 +138,8 @@ fn record_unknown(
         }
         _ => {}
     }
+}
+
+fn is_force_exit(trade: &ExecutionCanaryQuotePnlTrade) -> bool {
+    trade.exit_decision_status.as_deref() == Some(DECISION_WOULD_FORCE_EXIT)
 }
