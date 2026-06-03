@@ -1,8 +1,8 @@
 use crate::{
     ExecutionCanaryShadowCloseBreakdown, ExecutionCanaryShadowCloseContextSummary,
     SqliteDiscoveryStore, SHADOW_CLOSE_CONTEXT_MARKET,
-    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
-    SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE, SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE,
+    SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE, SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -20,26 +20,40 @@ impl SqliteDiscoveryStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT
-                    COALESCE(close_context, 'market') AS close_context,
+                "WITH close_rows AS (
+                    SELECT
+                        CASE
+                            WHEN signal_id LIKE 'stale-close-%'
+                             AND COALESCE(close_context, 'market') = 'market'
+                                THEN ?2
+                            ELSE COALESCE(close_context, 'market')
+                        END AS close_context,
+                        pnl_sol
+                    FROM shadow_closed_trades
+                    WHERE closed_ts >= ?1
+                 )
+                 SELECT
+                    close_context,
                     COUNT(*) AS closed_trades,
                     COALESCE(SUM(CASE WHEN pnl_sol > 0 THEN 1 ELSE 0 END), 0) AS win_count,
                     COALESCE(SUM(CASE WHEN pnl_sol < 0 THEN 1 ELSE 0 END), 0) AS loss_count,
                     COALESCE(SUM(pnl_sol), 0.0) AS pnl_sol
-                 FROM shadow_closed_trades
-                 WHERE closed_ts >= ?1
-                 GROUP BY COALESCE(close_context, 'market')
+                 FROM close_rows
+                 GROUP BY close_context
                  ORDER BY
                     CASE
-                        WHEN COALESCE(close_context, 'market') = 'market' THEN 0
-                        WHEN COALESCE(close_context, 'market') LIKE 'stale_%' THEN 1
+                        WHEN close_context = 'market' THEN 0
+                        WHEN close_context LIKE 'stale_%' THEN 1
                         ELSE 2
                     END,
-                    COALESCE(close_context, 'market')",
+                    close_context",
             )
             .context("failed to prepare shadow close context breakdown query")?;
         let rows = stmt
-            .query_map(params![since.to_rfc3339()], read_context_summary)
+            .query_map(
+                params![since.to_rfc3339(), SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE],
+                read_context_summary,
+            )
             .context("failed querying shadow close context breakdown")?;
 
         let mut breakdown = ExecutionCanaryShadowCloseBreakdown::default();
@@ -101,7 +115,8 @@ fn record_context_summary(
 fn is_stale_context(close_context: &str) -> bool {
     matches!(
         close_context,
-        SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE
+        SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE
+            | SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE
             | SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE
             | SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE
     )

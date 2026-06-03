@@ -110,6 +110,7 @@ impl SqliteDiscoveryStore {
                     )
                  WHERE closed.closed_ts >= ?1
                    AND COALESCE(closed.close_context, 'market') = 'market'
+                   AND closed.signal_id NOT LIKE 'stale-close-%'
                  ORDER BY closed.closed_ts DESC, closed.id DESC
                  LIMIT ?2",
             )

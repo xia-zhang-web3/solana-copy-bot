@@ -156,7 +156,8 @@ select count(*) closed,
        round(coalesce(sum(pnl_sol),0),6) pnl_sol
 from shadow_closed_trades
 where closed_ts >= datetime('now','-24 hours')
-  and coalesce(close_context,'market')='market';"
+  and coalesce(close_context,'market')='market'
+  and signal_id not like 'stale-close-%';"
 
 echo "MARKET_SINCE"
 sudo -u copybot sqlite3 -header -column -readonly "$DB" "
@@ -168,18 +169,24 @@ select count(*) closed,
        max(closed_ts) last_close
 from shadow_closed_trades
 where closed_ts >= '$SINCE'
-  and coalesce(close_context,'market')='market';"
+  and coalesce(close_context,'market')='market'
+  and signal_id not like 'stale-close-%';"
 
 echo "CLOSE_CONTEXT_24H"
 sudo -u copybot sqlite3 -header -column -readonly "$DB" "
-select coalesce(close_context,'market') close_context,
+select case
+         when signal_id like 'stale-close-%'
+          and coalesce(close_context,'market')='market'
+           then 'stale_market_price'
+         else coalesce(close_context,'market')
+       end close_context,
        count(*) closed,
        sum(case when pnl_sol > 0 then 1 else 0 end) wins,
        sum(case when pnl_sol < 0 then 1 else 0 end) losses,
        round(coalesce(sum(pnl_sol),0),6) pnl_sol
 from shadow_closed_trades
 where closed_ts >= datetime('now','-24 hours')
-group by coalesce(close_context,'market')
+group by 1
 order by close_context;"
 
 echo "OPEN_LOTS"
@@ -290,6 +297,7 @@ joined as (
     )
   where closed.closed_ts >= '$SINCE'
     and coalesce(closed.close_context,'market')='market'
+    and closed.signal_id not like 'stale-close-%'
 ),
 calc as (
   select *,
@@ -379,14 +387,19 @@ SINCE="${SINCE:-2026-06-03T13:02:37Z}"
 
 echo "STALE_SINCE"
 sudo -u copybot sqlite3 -header -column -readonly "$DB" "
-select coalesce(close_context,'market') close_context,
+select case
+         when signal_id like 'stale-close-%'
+          and coalesce(close_context,'market')='market'
+           then 'stale_market_price'
+         else coalesce(close_context,'market')
+       end close_context,
        count(*) closed,
        round(coalesce(sum(pnl_sol),0),6) pnl_sol,
        min(closed_ts) first_close,
        max(closed_ts) last_close
 from shadow_closed_trades
 where closed_ts >= '$SINCE'
-group by coalesce(close_context,'market')
+group by 1
 order by close_context;"
 
 echo "STALE_ROWS_RECENT"
@@ -435,6 +448,7 @@ select substr(wallet_id,1,12)||'...' wallet,
 from shadow_closed_trades
 where closed_ts >= '$SINCE'
   and coalesce(close_context,'market')='market'
+  and signal_id not like 'stale-close-%'
 group by wallet_id
 order by pnl asc
 limit 20;"
@@ -449,6 +463,7 @@ select substr(token,1,12)||'...' token,
 from shadow_closed_trades
 where closed_ts >= '$SINCE'
   and coalesce(close_context,'market')='market'
+  and signal_id not like 'stale-close-%'
 group by token
 order by pnl asc
 limit 20;"

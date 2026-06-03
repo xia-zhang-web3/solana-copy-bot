@@ -2,7 +2,8 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::TokenQuantity;
 use copybot_storage_core::{
-    ExecutionQuoteCanaryEventInsert, SqliteStore, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
+    ExecutionQuoteCanaryEventInsert, SqliteStore, SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE,
+    SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
 };
 use tempfile::tempdir;
 
@@ -121,6 +122,18 @@ fn quote_pnl_summary_breaks_out_stale_shadow_closes() -> Result<()> {
         opened,
         closed + Duration::seconds(1),
     )?;
+    store.insert_shadow_closed_trade_exact(
+        "stale-close-legacy-market",
+        "leader-wallet",
+        "StaleMarketToken",
+        100.0,
+        Some(TokenQuantity::new(100, 0)),
+        0.20,
+        6.20,
+        6.00,
+        opened,
+        closed + Duration::seconds(2),
+    )?;
     let close_id = close_id_for_signal(&store, "sell-market")?;
     store.record_execution_quote_canary_event(&buy_quote(
         "quote:buy:market",
@@ -146,19 +159,26 @@ fn quote_pnl_summary_breaks_out_stale_shadow_closes() -> Result<()> {
         .iter()
         .find(|context| context.close_context == SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE)
         .expect("stale context should be reported");
+    let stale_market_context = breakdown
+        .contexts
+        .iter()
+        .find(|context| context.close_context == SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE)
+        .expect("stale market context should be reported");
 
     assert_eq!(summary.total_closed_trades, 1);
     assert_close(summary.shadow_pnl_sol, 0.03);
-    assert_eq!(breakdown.total_closed_trades, 2);
+    assert_eq!(breakdown.total_closed_trades, 3);
     assert_eq!(breakdown.market_closed_trades, 1);
-    assert_eq!(breakdown.stale_closed_trades, 1);
-    assert_eq!(breakdown.non_market_closed_trades, 1);
-    assert_close(breakdown.total_pnl_sol, -0.17);
+    assert_eq!(breakdown.stale_closed_trades, 2);
+    assert_eq!(breakdown.non_market_closed_trades, 2);
+    assert_close(breakdown.total_pnl_sol, 5.83);
     assert_close(breakdown.market_pnl_sol, 0.03);
-    assert_close(breakdown.stale_pnl_sol, -0.20);
-    assert_close(breakdown.non_market_pnl_sol, -0.20);
+    assert_close(breakdown.stale_pnl_sol, 5.80);
+    assert_close(breakdown.non_market_pnl_sol, 5.80);
     assert_eq!(stale_context.closed_trades, 1);
     assert_close(stale_context.pnl_sol, -0.20);
+    assert_eq!(stale_market_context.closed_trades, 1);
+    assert_close(stale_market_context.pnl_sol, 6.00);
     Ok(())
 }
 

@@ -389,16 +389,31 @@ fn execution_quote_close_candidates_skip_recorded_quote_events() -> Result<()> {
         now - Duration::minutes(1),
         now - Duration::seconds(10),
     )?;
+    store.insert_shadow_closed_trade_exact(
+        "stale-close-legacy-market",
+        "leader-wallet",
+        "TokenMint",
+        10.0,
+        Some(TokenQuantity::new(1_000, 2)),
+        0.2,
+        0.6,
+        0.4,
+        now - Duration::minutes(1),
+        now - Duration::seconds(5),
+    )?;
 
     let event = quote_event("quote:close:1", Some("close-quoted"), Some(1), "sell", now);
     store.record_execution_quote_canary_event(&event)?;
     let candidates =
         store.list_execution_quote_canary_close_candidates(now - Duration::minutes(1), 10)?;
+    let stale_candidates = store
+        .list_execution_quote_canary_close_candidates_for_signal("stale-close-legacy-market", 10)?;
 
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].signal_id, "close-open");
     assert_eq!(candidates[0].qty_raw.as_deref(), Some("1000"));
     assert_eq!(candidates[0].qty_decimals, Some(2));
+    assert!(stale_candidates.is_empty());
     Ok(())
 }
 
