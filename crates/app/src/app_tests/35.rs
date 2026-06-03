@@ -293,6 +293,7 @@
                 &swap.signature,
             ));
             let shadow = ShadowService::new(permissive_shadow_quality());
+            let execution_canary_runner = ExecutionCanaryRunner::new(ExecutionConfig::default());
             let mut shadow_risk_guard = ShadowRiskGuard::new(RiskConfig::default());
             let operator_emergency_stop = OperatorEmergencyStop::from_env();
             let mut shadow_scheduler = ShadowScheduler::new();
@@ -305,6 +306,7 @@
             handle_relevant_observed_swap(
                 &store,
                 &writer,
+                &execution_canary_runner,
                 &shadow,
                 db_path
                     .to_str()

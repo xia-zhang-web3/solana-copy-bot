@@ -7,6 +7,7 @@ use super::*;
 pub(super) async fn handle_relevant_observed_swap(
     store: &SqliteStore,
     observed_swap_writer: &ObservedSwapWriter,
+    execution_canary_runner: &ExecutionCanaryRunner,
     shadow: &ShadowService,
     sqlite_path: &str,
     swap: SwapEvent,
@@ -227,6 +228,7 @@ pub(super) async fn handle_relevant_observed_swap(
         }
     }
 
+    let hot_quote_swap = matches!(side, ShadowSwapSide::Buy).then(|| swap.clone());
     let task_input = ShadowTaskInput {
         swap,
         follow_snapshot: Arc::clone(&follow_snapshot),
@@ -259,6 +261,7 @@ pub(super) async fn handle_relevant_observed_swap(
         app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
         return Ok(());
     }
+    let mut shadow_task_accepted = true;
     if shadow_scheduler.should_process_shadow_inline(
         shadow_queue_full,
         shadow_scheduler.shadow_scheduler_needs_reset,
@@ -278,6 +281,7 @@ pub(super) async fn handle_relevant_observed_swap(
         } else if let Err(dropped_task) =
             shadow_scheduler.enqueue_shadow_task(SHADOW_PENDING_TASK_CAPACITY, task_input)
         {
+            shadow_task_accepted = false;
             shadow_scheduler.handle_shadow_enqueue_overflow(
                 side,
                 dropped_task,
@@ -290,6 +294,7 @@ pub(super) async fn handle_relevant_observed_swap(
     } else if let Err(dropped_task) =
         shadow_scheduler.enqueue_shadow_task(SHADOW_PENDING_TASK_CAPACITY, task_input)
     {
+        shadow_task_accepted = false;
         shadow_scheduler.handle_shadow_enqueue_overflow(
             side,
             dropped_task,
@@ -299,6 +304,55 @@ pub(super) async fn handle_relevant_observed_swap(
             shadow_queue_full_outcome_counts,
         );
     }
+    if shadow_task_accepted {
+        if let Some(hot_quote_swap) = hot_quote_swap.as_ref() {
+            run_hot_observed_buy_quote_canary(
+                execution_canary_runner,
+                store,
+                hot_quote_swap,
+                Utc::now(),
+            )
+            .await;
+        }
+    }
     app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
     Ok(())
+}
+
+async fn run_hot_observed_buy_quote_canary(
+    execution_canary_runner: &ExecutionCanaryRunner,
+    store: &SqliteStore,
+    swap: &SwapEvent,
+    now: DateTime<Utc>,
+) {
+    match execution_canary_runner
+        .process_hot_observed_buy_quote(store, swap, now)
+        .await
+    {
+        Ok(summary) if summary.has_status_change() => {
+            info!(
+                signature = %swap.signature,
+                wallet = %swap.wallet,
+                token = %swap.token_out,
+                quote_entry_inserted = summary.quote_entry_inserted,
+                quote_entry_existing = summary.quote_entry_existing,
+                quote_entry_errors = summary.quote_entry_errors,
+                quote_would_execute = summary.quote_would_execute,
+                quote_would_skip = summary.quote_would_skip,
+                quote_decision_unknown = summary.quote_decision_unknown,
+                last_quote_event_id = summary.last_quote_event_id.as_deref().unwrap_or("none"),
+                "execution canary hot observed buy quote processed"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            warn!(
+                error = %error,
+                signature = %swap.signature,
+                wallet = %swap.wallet,
+                token = %swap.token_out,
+                "execution canary hot observed buy quote failed"
+            );
+        }
+    }
 }

@@ -353,6 +353,7 @@ pub(super) async fn run_app_loop(
                 handle_ingestion_swap_poll(
                     &store,
                     &observed_swap_writer,
+                    &execution_canary_runner,
                     &shadow,
                     &sqlite_path,
                     maybe_swap,

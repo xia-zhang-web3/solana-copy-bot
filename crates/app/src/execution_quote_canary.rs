@@ -12,6 +12,9 @@ use copybot_storage_core::{
     ExecutionQuoteCanaryRecordOutcome, SqliteStore,
 };
 
+#[path = "execution_quote_canary_hot_observed.rs"]
+mod hot_observed;
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionQuoteCanaryTickSummary {
     pub entry_candidates: usize,
@@ -107,6 +110,13 @@ impl ExecutionQuoteCanaryRunner {
                     return Ok(summary);
                 };
                 summary.entry_candidates = 1;
+                if self.record_existing_entry_event_if_present(
+                    store,
+                    &copy_signal.signal_id,
+                    &mut summary,
+                )? {
+                    return Ok(summary);
+                }
                 let priority = self
                     .priority_fee_sample_if_needed(&mut priority_fee_sample)
                     .await;
@@ -254,6 +264,29 @@ impl ExecutionQuoteCanaryRunner {
             ExecutionQuoteCanaryRecordOutcome::Existing => summary.entry_existing += 1,
         }
         Ok(())
+    }
+
+    pub(super) fn record_existing_entry_event_if_present(
+        &self,
+        store: &SqliteStore,
+        signal_id: &str,
+        summary: &mut ExecutionQuoteCanaryTickSummary,
+    ) -> Result<bool> {
+        let Some(event) = store
+            .load_latest_execution_quote_canary_entry_event(signal_id)
+            .with_context(|| {
+                format!("failed loading existing execution entry quote event for {signal_id}")
+            })?
+        else {
+            return Ok(false);
+        };
+        if event.quote_status == QUOTE_STATUS_ERROR {
+            summary.entry_errors += 1;
+        }
+        apply_decision_summary(&event, summary);
+        summary.entry_existing += 1;
+        summary.last_event_id = Some(event.event_id);
+        Ok(true)
     }
 
     fn record_close_event(

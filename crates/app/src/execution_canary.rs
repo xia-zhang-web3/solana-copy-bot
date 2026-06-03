@@ -6,7 +6,7 @@ use crate::execution_submit_adapter::NoSubmitExecutionAdapter;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::ExecutionConfig;
-use copybot_core_types::{CopySignalRow, COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE};
+use copybot_core_types::{CopySignalRow, SwapEvent, COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE};
 use copybot_shadow::ShadowSignalResult;
 use copybot_storage_core::{ExecutionDryRunRecordOutcome, SqliteStore};
 use std::path::Path;
@@ -224,6 +224,37 @@ impl ExecutionCanaryRunner {
             .context("failed loading latest execution dry-run order")?
         {
             summary.last_order_id = Some(order.order_id);
+        }
+        Ok(summary)
+    }
+
+    pub(crate) async fn process_hot_observed_buy_quote(
+        &self,
+        store: &SqliteStore,
+        swap: &SwapEvent,
+        now: DateTime<Utc>,
+    ) -> Result<ExecutionCanaryTickSummary> {
+        let mut summary = ExecutionCanaryTickSummary {
+            enabled: self.config.canary_enabled,
+            dry_run: self.config.canary_dry_run,
+            route: self.config.canary_route.clone(),
+            wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
+            ..ExecutionCanaryTickSummary::default()
+        };
+        if !self.config.canary_enabled {
+            summary.skipped_reason = Some("disabled");
+            return Ok(summary);
+        }
+        if Path::new(&self.config.canary_kill_switch_path).exists() {
+            summary.skipped_reason = Some("kill_switch_active");
+            return Ok(summary);
+        }
+        if self.quote_canary.is_enabled() {
+            let quote_summary = self
+                .quote_canary
+                .process_hot_observed_buy_swap(store, swap, now)
+                .await?;
+            apply_quote_summary(&mut summary, quote_summary);
         }
         Ok(summary)
     }

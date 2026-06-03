@@ -11,6 +11,7 @@ use crate::app_loop_relevant_swap::handle_relevant_observed_swap;
 pub(super) async fn handle_ingestion_swap_poll(
     store: &SqliteStore,
     observed_swap_writer: &ObservedSwapWriter,
+    execution_canary_runner: &ExecutionCanaryRunner,
     shadow: &ShadowService,
     sqlite_path: &str,
     maybe_swap: Result<Option<SwapEvent>>,
@@ -171,6 +172,7 @@ pub(super) async fn handle_ingestion_swap_poll(
     handle_relevant_observed_swap(
         store,
         observed_swap_writer,
+        execution_canary_runner,
         shadow,
         sqlite_path,
         swap,
