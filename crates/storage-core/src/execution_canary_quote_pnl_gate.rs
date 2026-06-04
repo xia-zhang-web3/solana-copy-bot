@@ -277,6 +277,7 @@ fn priority_fee_sample_count(summary: &ExecutionCanaryQuotePnlSummary) -> u64 {
     summary
         .priority_fee_status_counts
         .iter()
+        .filter(|count| count.status != "skipped")
         .map(|count| count.events)
         .sum()
 }
@@ -286,7 +287,7 @@ fn non_ok_priority_fee_rate_pct(summary: &ExecutionCanaryQuotePnlSummary) -> f64
     let non_ok = summary
         .priority_fee_status_counts
         .iter()
-        .filter(|count| count.status != "ok")
+        .filter(|count| count.status != "ok" && count.status != "skipped")
         .map(|count| count.events)
         .sum();
     percent(non_ok, total)
