@@ -59,7 +59,7 @@ pub(crate) fn validate_execution_canary_entry_metadata(
     if !slippage_bps.is_finite() || slippage_bps > max_slippage_bps {
         return Some(ENTRY_GATE_SLIPPAGE_ABOVE_LIMIT);
     }
-    if metadata.priority_fee_status.is_none() {
+    if metadata.priority_fee_status.is_none() || metadata.priority_fee_lamports.is_none() {
         return Some(ENTRY_GATE_MISSING_PRIORITY_FEE);
     }
     if metadata.priority_fee_status.as_deref() != Some(QUOTE_STATUS_OK) {

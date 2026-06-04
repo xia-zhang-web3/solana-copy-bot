@@ -59,6 +59,8 @@ mod execution_state_machine_entry_gate;
 mod execution_state_machine_safety;
 #[path = "app_tests/38.rs"]
 mod execution_state_machine_sell;
+#[path = "app_tests/45.rs"]
+mod execution_state_machine_swap_blueprint;
 #[path = "app_tests/39.rs"]
 mod execution_state_machine_timeout;
 #[path = "app_tests/42.rs"]

@@ -1,5 +1,11 @@
+use crate::execution_swap_blueprint::{
+    build_execution_swap_blueprint, validate_execution_swap_blueprint_for_simulation,
+    ExecutionSwapBlueprint,
+};
 use anyhow::Result;
-use copybot_storage_core::EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT;
+use copybot_storage_core::{
+    EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ExecutionBuildPlanMetadata {
@@ -68,6 +74,7 @@ pub(crate) struct ExecutionTransactionPlan {
     pub(crate) buy_size_sol: f64,
     pub(crate) wallet_pubkey: String,
     pub(crate) metadata: ExecutionBuildPlanMetadata,
+    pub(crate) swap_blueprint: Option<ExecutionSwapBlueprint>,
     pub(crate) submit_enabled: bool,
 }
 
@@ -115,6 +122,7 @@ impl ExecutionSubmitAdapter for NoSubmitExecutionAdapter {
             buy_size_sol: request.buy_size_sol,
             wallet_pubkey: request.wallet_pubkey.clone(),
             metadata: request.metadata.clone(),
+            swap_blueprint: None,
             submit_enabled: false,
         })
     }
@@ -133,6 +141,55 @@ impl ExecutionSubmitAdapter for NoSubmitExecutionAdapter {
         Ok(ExecutionSubmitPlan::SubmitDisabled {
             reason: format!(
                 "no_submit_adapter:{}:{}:{}",
+                request.route, request.side, request.token
+            ),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct JupiterMetisDryRunExecutionAdapter;
+
+impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
+    fn build_transaction_plan(
+        &self,
+        request: &ExecutionSubmitRequest,
+    ) -> Result<ExecutionTransactionPlan> {
+        let swap_blueprint = build_execution_swap_blueprint(request)?;
+        Ok(ExecutionTransactionPlan {
+            plan_id: format!("canary-swap-blueprint:{}", request.order_id),
+            order_id: request.order_id.clone(),
+            signal_id: request.signal_id.clone(),
+            client_order_id: request.client_order_id.clone(),
+            route: request.route.clone(),
+            token: request.token.clone(),
+            side: request.side.clone(),
+            buy_size_sol: request.buy_size_sol,
+            wallet_pubkey: request.wallet_pubkey.clone(),
+            metadata: request.metadata.clone(),
+            swap_blueprint: Some(swap_blueprint),
+            submit_enabled: false,
+        })
+    }
+
+    fn simulate_transaction_plan(
+        &self,
+        plan: &ExecutionTransactionPlan,
+    ) -> Result<ExecutionSimulationResult> {
+        let Some(blueprint) = plan.swap_blueprint.as_ref() else {
+            anyhow::bail!("missing swap blueprint for dry-run simulation");
+        };
+        validate_execution_swap_blueprint_for_simulation(blueprint)?;
+        Ok(ExecutionSimulationResult {
+            status: EXECUTION_SIMULATION_STATUS_PASSED.to_string(),
+            error: None,
+        })
+    }
+
+    fn plan_submit(&self, request: &ExecutionSubmitRequest) -> Result<ExecutionSubmitPlan> {
+        Ok(ExecutionSubmitPlan::SubmitDisabled {
+            reason: format!(
+                "jupiter_metis_dry_run:no_submit:{}:{}:{}",
                 request.route, request.side, request.token
             ),
         })

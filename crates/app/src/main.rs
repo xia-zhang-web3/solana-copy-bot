@@ -55,6 +55,7 @@ mod execution_quote_canary_rpc;
 mod execution_quote_http;
 #[allow(dead_code)]
 mod execution_submit_adapter;
+mod execution_swap_blueprint;
 mod history_retention;
 mod irrelevant_backpressure;
 mod irrelevant_persistence;

@@ -36,7 +36,7 @@ async fn execution_canary_entry_gate_blocks_would_skip_quote_before_reserve() ->
     let now = Utc::now();
     let signal = entry_gate_signal("buy-would-skip", now);
     store.insert_copy_signal(&signal)?;
-    record_entry_gate_quote(&store, &signal, now, "would_skip", "ok")?;
+    record_entry_gate_quote(&store, &signal, now, "would_skip", Some("ok"), Some(12_345))?;
     let state_machine = entry_gate_state_machine();
 
     let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
@@ -62,13 +62,47 @@ async fn execution_canary_entry_gate_blocks_priority_fee_error_before_reserve() 
     let now = Utc::now();
     let signal = entry_gate_signal("buy-priority-error", now);
     store.insert_copy_signal(&signal)?;
-    record_entry_gate_quote(&store, &signal, now, "would_execute", "error")?;
+    record_entry_gate_quote(
+        &store,
+        &signal,
+        now,
+        "would_execute",
+        Some("error"),
+        Some(12_345),
+    )?;
     let state_machine = entry_gate_state_machine();
 
     let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
 
     assert_eq!(summary.entry_gate_blocked, 1);
     assert_eq!(summary.skipped_reason, Some("priority_fee_not_ok"));
+    assert!(store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .is_none());
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
+async fn execution_canary_entry_gate_blocks_missing_priority_fee_lamports_before_reserve(
+) -> Result<()> {
+    let db_path = unique_entry_gate_test_path("priority-missing-lamports");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let signal = entry_gate_signal("buy-priority-missing-lamports", now);
+    store.insert_copy_signal(&signal)?;
+    record_entry_gate_quote(&store, &signal, now, "would_execute", Some("ok"), None)?;
+    let state_machine = entry_gate_state_machine();
+
+    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+
+    assert_eq!(summary.entry_gate_blocked, 1);
+    assert_eq!(summary.skipped_reason, Some("missing_priority_fee"));
     assert!(store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .is_none());
@@ -118,7 +152,8 @@ fn record_entry_gate_quote(
     signal: &copybot_core_types::CopySignalRow,
     now: chrono::DateTime<Utc>,
     decision_status: &str,
-    priority_fee_status: &str,
+    priority_fee_status: Option<&str>,
+    priority_fee_lamports: Option<u64>,
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
@@ -141,8 +176,8 @@ fn record_entry_gate_quote(
             slippage_bps: Some(125.0),
             price_impact_pct: Some(0.01),
             route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
-            priority_fee_status: Some(priority_fee_status.to_string()),
-            priority_fee_lamports: Some(12_345),
+            priority_fee_status: priority_fee_status.map(str::to_string),
+            priority_fee_lamports,
             priority_fee_json: Some("{\"recommended\":12345}".to_string()),
             decision_status: Some(decision_status.to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
