@@ -170,15 +170,21 @@ fn quote_pnl_summary_breaks_out_stale_shadow_closes() -> Result<()> {
     assert_eq!(breakdown.total_closed_trades, 3);
     assert_eq!(breakdown.market_closed_trades, 1);
     assert_eq!(breakdown.stale_closed_trades, 2);
+    assert_eq!(breakdown.stale_rug_like_closed_trades, 1);
     assert_eq!(breakdown.non_market_closed_trades, 2);
     assert_close(breakdown.total_pnl_sol, 5.83);
     assert_close(breakdown.market_pnl_sol, 0.03);
     assert_close(breakdown.stale_pnl_sol, 5.80);
+    assert_close(breakdown.stale_rug_like_pnl_sol, -0.20);
     assert_close(breakdown.non_market_pnl_sol, 5.80);
     assert_eq!(stale_context.closed_trades, 1);
     assert_close(stale_context.pnl_sol, -0.20);
+    assert_eq!(stale_context.rug_like_closed_trades, 1);
+    assert_close(stale_context.rug_like_pnl_sol, -0.20);
     assert_eq!(stale_market_context.closed_trades, 1);
     assert_close(stale_market_context.pnl_sol, 6.00);
+    assert_eq!(stale_market_context.rug_like_closed_trades, 0);
+    assert_close(stale_market_context.rug_like_pnl_sol, 0.0);
     Ok(())
 }
 

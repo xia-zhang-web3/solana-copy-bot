@@ -51,6 +51,8 @@ pub struct ExecutionCanaryShadowCloseBreakdown {
     pub market_pnl_sol: f64,
     pub stale_closed_trades: u64,
     pub stale_pnl_sol: f64,
+    pub stale_rug_like_closed_trades: u64,
+    pub stale_rug_like_pnl_sol: f64,
     pub non_market_closed_trades: u64,
     pub non_market_pnl_sol: f64,
     pub contexts: Vec<ExecutionCanaryShadowCloseContextSummary>,
@@ -63,6 +65,8 @@ pub struct ExecutionCanaryShadowCloseContextSummary {
     pub win_count: u64,
     pub loss_count: u64,
     pub pnl_sol: f64,
+    pub rug_like_closed_trades: u64,
+    pub rug_like_pnl_sol: f64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
