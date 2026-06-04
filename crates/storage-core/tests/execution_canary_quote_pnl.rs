@@ -82,6 +82,12 @@ fn quote_pnl_summary_counts_executable_quote_adjusted_pnl() -> Result<()> {
     assert_eq!(summary.quote_diagnostics.entry_all.events, 1);
     assert_eq!(summary.quote_diagnostics.entry_counted.events, 1);
     assert_eq!(summary.quote_diagnostics.entry_skipped.events, 0);
+    assert_eq!(summary.readiness_gate.status, "blocked");
+    assert!(!summary.readiness_gate.can_start_tiny_execution);
+    assert_eq!(
+        readiness_check_status(&summary.readiness_gate, "market_closed_trades"),
+        Some("block")
+    );
     assert_close(summary.quote_diagnostics.entry_all.slippage_bps_avg, 15.0);
     assert_close(summary.quote_diagnostics.exit_all.slippage_bps_avg, 20.0);
     assert_eq!(trade.status, "pnl_counted");
@@ -89,6 +95,65 @@ fn quote_pnl_summary_counts_executable_quote_adjusted_pnl() -> Result<()> {
     assert_eq!(trade.entry_decision_delay_ms, Some(10));
     assert_eq!(trade.entry_quote_latency_ms, Some(20));
     assert_eq!(trade.entry_route_labels, vec!["Metis".to_string()]);
+    Ok(())
+}
+
+#[test]
+fn quote_pnl_readiness_gate_allows_clean_tiny_execution_window() -> Result<()> {
+    let store = open_migrated_store("execution-canary-quote-pnl-readiness-ready")?;
+    let opened = ts("2026-06-02T13:00:00Z");
+    for index in 0..30 {
+        let token = format!("ReadyToken{index}");
+        let signal_id = format!("sell-ready-{index}");
+        let trade_opened = opened + Duration::seconds(index);
+        let closed = trade_opened + Duration::seconds(30);
+        store.insert_shadow_closed_trade_exact(
+            &signal_id,
+            "leader-wallet",
+            &token,
+            50.0,
+            Some(TokenQuantity::new(50, 0)),
+            0.10,
+            0.13,
+            0.03,
+            trade_opened,
+            closed,
+        )?;
+        let close_id = close_id_for_signal(&store, &signal_id)?;
+        store.record_execution_quote_canary_event(&buy_quote(
+            &format!("quote:buy:ready:{index}"),
+            &format!("buy-ready-{index}"),
+            &token,
+            trade_opened,
+            "would_execute",
+        ))?;
+        store.record_execution_quote_canary_event(&sell_quote(
+            &format!("quote:sell:ready:{index}"),
+            close_id,
+            &token,
+            trade_opened,
+            "50",
+            "125000000",
+        ))?;
+    }
+
+    let summary = store.execution_canary_quote_pnl_summary(
+        opened + Duration::seconds(90),
+        opened - Duration::seconds(1),
+        100,
+    )?;
+
+    assert_eq!(summary.total_closed_trades, 30);
+    assert_eq!(summary.shadow_close_breakdown.market_closed_trades, 30);
+    assert_eq!(summary.pnl_counted_trades, 30);
+    assert_eq!(summary.skipped_trades, 0);
+    assert_eq!(summary.unknown_trades, 0);
+    assert_eq!(summary.readiness_gate.status, "ready");
+    assert!(summary.readiness_gate.can_start_tiny_execution);
+    assert_eq!(summary.readiness_gate.blocker_count, 0);
+    assert_eq!(summary.readiness_gate.warning_count, 0);
+    assert_close(summary.readiness_gate.skip_rate_pct, 0.0);
+    assert_close(summary.readiness_gate.non_ok_priority_fee_rate_pct, 0.0);
     Ok(())
 }
 
@@ -419,4 +484,14 @@ fn assert_close(actual: f64, expected: f64) {
         (actual - expected).abs() < 0.000_000_001,
         "actual={actual} expected={expected}"
     );
+}
+
+fn readiness_check_status<'a>(
+    gate: &'a copybot_storage_core::ExecutionCanaryQuoteReadinessGate,
+    name: &str,
+) -> Option<&'a str> {
+    gate.checks
+        .iter()
+        .find(|check| check.name == name)
+        .map(|check| check.status.as_str())
 }

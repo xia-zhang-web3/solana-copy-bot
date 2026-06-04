@@ -11,6 +11,7 @@ mod execution_canary_quote_pnl_breakdown;
 mod execution_canary_quote_pnl_buckets;
 mod execution_canary_quote_pnl_compute;
 mod execution_canary_quote_pnl_diagnostics;
+mod execution_canary_quote_pnl_gate;
 mod execution_canary_quote_pnl_rows;
 mod execution_canary_readiness;
 mod execution_canary_report;
@@ -89,7 +90,8 @@ pub use types::{
     ExecutionCanaryPositionCloseResult, ExecutionCanaryPositionRecordOutcome,
     ExecutionCanaryQuoteBucketSummary, ExecutionCanaryQuoteDiagnosticsSummary,
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlThresholdSummary,
-    ExecutionCanaryQuotePnlTrade, ExecutionCanaryQuoteRouteCount,
+    ExecutionCanaryQuotePnlTrade, ExecutionCanaryQuoteReadinessCheck,
+    ExecutionCanaryQuoteReadinessGate, ExecutionCanaryQuoteRouteCount,
     ExecutionCanaryQuoteSideDiagnostics, ExecutionCanaryQuoteStatusCount,
     ExecutionCanaryReadinessCount, ExecutionCanaryReadinessLatestOrder,
     ExecutionCanaryReadinessSummary, ExecutionCanaryReadinessWindowSummary,

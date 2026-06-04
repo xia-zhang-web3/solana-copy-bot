@@ -38,6 +38,7 @@ pub struct ExecutionCanaryQuotePnlSummary {
     pub route_counts: Vec<ExecutionCanaryQuoteRouteCount>,
     pub priority_fee_status_counts: Vec<ExecutionCanaryQuoteStatusCount>,
     pub priority_fee_lamports_sum: u64,
+    pub readiness_gate: ExecutionCanaryQuoteReadinessGate,
     pub trades: Vec<ExecutionCanaryQuotePnlTrade>,
 }
 
@@ -139,6 +140,35 @@ pub struct ExecutionCanaryQuoteStatusCount {
     pub side: String,
     pub status: String,
     pub events: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuoteReadinessGate {
+    pub status: String,
+    pub can_start_tiny_execution: bool,
+    pub blocker_count: u64,
+    pub warning_count: u64,
+    pub min_market_closed_trades: u64,
+    pub market_closed_trades: u64,
+    pub sampled_market_trades: u64,
+    pub open_position_count: u64,
+    pub quote_after_fee_pnl_sol: f64,
+    pub quote_win_rate_pct: f64,
+    pub skip_rate_pct: f64,
+    pub unknown_rate_pct: f64,
+    pub non_ok_priority_fee_rate_pct: f64,
+    pub avg_entry_quote_latency_ms: f64,
+    pub avg_entry_decision_delay_ms: f64,
+    pub checks: Vec<ExecutionCanaryQuoteReadinessCheck>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuoteReadinessCheck {
+    pub name: String,
+    pub status: String,
+    pub value: String,
+    pub threshold: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

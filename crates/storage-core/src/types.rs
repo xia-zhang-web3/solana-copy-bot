@@ -31,7 +31,8 @@ pub use types_execution::{
 pub use types_execution_quote_pnl::{
     ExecutionCanaryQuoteBucketSummary, ExecutionCanaryQuoteDiagnosticsSummary,
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlThresholdSummary,
-    ExecutionCanaryQuotePnlTrade, ExecutionCanaryQuoteRouteCount,
+    ExecutionCanaryQuotePnlTrade, ExecutionCanaryQuoteReadinessCheck,
+    ExecutionCanaryQuoteReadinessGate, ExecutionCanaryQuoteRouteCount,
     ExecutionCanaryQuoteSideDiagnostics, ExecutionCanaryQuoteStatusCount,
     ExecutionCanaryShadowCloseBreakdown, ExecutionCanaryShadowCloseContextSummary,
     EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED, EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,

@@ -1,6 +1,7 @@
 use crate::{
     execution_canary_quote_pnl_buckets::record_quote_pnl_buckets,
     execution_canary_quote_pnl_diagnostics::{empty_quote_diagnostics, record_quote_diagnostics},
+    execution_canary_quote_pnl_gate::build_quote_readiness_gate,
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlTrade,
     ExecutionCanaryShadowCloseBreakdown, EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED,
     EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
@@ -15,12 +16,14 @@ pub(crate) fn summarize_quote_pnl(
     limit: u32,
     trades: Vec<ExecutionCanaryQuotePnlTrade>,
     shadow_close_breakdown: ExecutionCanaryShadowCloseBreakdown,
+    open_position_count: u64,
 ) -> ExecutionCanaryQuotePnlSummary {
     let mut summary = empty_summary(as_of, since, limit, shadow_close_breakdown);
     for trade in trades {
         record_trade(&mut summary, trade);
     }
     record_quote_pnl_buckets(&mut summary);
+    summary.readiness_gate = build_quote_readiness_gate(&summary, open_position_count);
     summary
 }
 
@@ -66,6 +69,7 @@ fn empty_summary(
         route_counts: Vec::new(),
         priority_fee_status_counts: Vec::new(),
         priority_fee_lamports_sum: 0,
+        readiness_gate: Default::default(),
         trades: Vec::new(),
     }
 }

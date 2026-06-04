@@ -26,6 +26,7 @@ impl SqliteDiscoveryStore {
     ) -> Result<ExecutionCanaryQuotePnlSummary> {
         ensure_execution_quote_canary_tables(self)?;
         let shadow_close_breakdown = self.execution_canary_shadow_close_breakdown(since)?;
+        let open_position_count = self.execution_canary_open_position_count()?;
         let rows = self.execution_canary_quote_pnl_rows(since, limit)?;
         let trades = rows
             .into_iter()
@@ -37,6 +38,7 @@ impl SqliteDiscoveryStore {
             limit,
             trades,
             shadow_close_breakdown,
+            open_position_count,
         ))
     }
 
