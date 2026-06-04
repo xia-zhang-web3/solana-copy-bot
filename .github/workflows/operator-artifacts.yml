@@ -209,7 +209,7 @@ jobs:
             printf '%s\n' "$changed_files" | grep -E '^(configs/|ops/server_templates/(copybot-discovery-|live\.server\.toml\.example)|crates/(discovery-ops|discovery-v2|config|core-types|runtime-artifacts|storage-core)/)' >/dev/null; then
             build_selected=1
           elif [ "${{ matrix.package }}" = "copybot-operators" ] && \
-            printf '%s\n' "$changed_files" | grep -E '^(configs/|crates/(operators|config|core-types)/)' >/dev/null; then
+            printf '%s\n' "$changed_files" | grep -E '^(configs/|crates/(operators|config|core-types|storage-core)/)' >/dev/null; then
             build_selected=1
           elif [ "${{ matrix.package }}" = "copybot-live-ops" ] && \
             printf '%s\n' "$changed_files" | grep -E '^(ops/ingestion_failover_policy\.toml|crates/(live-ops|config|core-types)/)' >/dev/null; then
