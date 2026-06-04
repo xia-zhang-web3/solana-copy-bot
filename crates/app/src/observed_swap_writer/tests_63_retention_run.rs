@@ -32,3 +32,14 @@ fn completed_sweep_keeps_periodic_wal_checkpoint_even_without_deletes() {
         SqliteBatchedDeleteSummary::default()
     ));
 }
+
+#[test]
+fn retention_delete_budgets_are_large_enough_for_backlog_catchup() {
+    let observed_swap_rows_per_run = OBSERVED_SWAP_RETENTION_DELETE_BATCH_SIZE
+        .saturating_mul(OBSERVED_SWAP_RETENTION_MAX_RAW_DELETE_BATCHES_PER_RUN);
+    let recent_raw_rows_per_run = RECENT_RAW_JOURNAL_RETENTION_DELETE_BATCH_SIZE
+        .saturating_mul(RECENT_RAW_JOURNAL_RETENTION_MAX_DELETE_BATCHES_PER_RUN);
+
+    assert!(observed_swap_rows_per_run >= 100_000);
+    assert!(recent_raw_rows_per_run >= 200_000);
+}
