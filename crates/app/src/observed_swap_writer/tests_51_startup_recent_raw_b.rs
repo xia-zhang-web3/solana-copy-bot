@@ -138,7 +138,7 @@ fn recent_raw_journal_startup_prune_stays_out_of_hot_writer_stage1() -> Result<(
 }
 
 #[test]
-fn recent_raw_journal_writer_phase_telemetry_orders_write_and_prune_stage1() -> Result<()> {
+fn recent_raw_journal_writer_phase_telemetry_stays_write_only_stage1() -> Result<()> {
     let _phase_guard = super::recent_raw_journal_phase_test_guard();
     super::clear_recent_raw_journal_phase_events_for_test();
     let unique = format!(
@@ -193,14 +193,11 @@ fn recent_raw_journal_writer_phase_telemetry_orders_write_and_prune_stage1() -> 
         super::RECENT_RAW_JOURNAL_PHASE_BATCH_COLLECTED,
         super::RECENT_RAW_JOURNAL_PHASE_WRITE_START,
         super::RECENT_RAW_JOURNAL_PHASE_WRITE_END,
-        super::RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_START,
-        super::RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_END,
-        super::RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED,
         super::RECENT_RAW_JOURNAL_PHASE_BATCH_DONE,
     ];
     assert_eq!(
         events, expected,
-        "recent_raw journal phase telemetry must expose exact write/prune order"
+        "recent_raw journal phase telemetry must stay write-only in the hot path"
     );
     let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
     let journal_state = journal_store.recent_raw_journal_state()?;
@@ -267,16 +264,8 @@ fn recent_raw_journal_hot_writer_skips_prune_when_idle_stage1() -> Result<()> {
 
     let events = super::recent_raw_journal_phase_events_for_test();
     assert!(
-        events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED),
-        "idle hot writer should skip recent_raw prune in the hot path: {events:?}"
-    );
-    assert!(
-        !events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_START),
-        "idle hot writer must not enter recent_raw prune_start: {events:?}"
-    );
-    assert!(
-        !events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_END),
-        "idle hot writer must not enter recent_raw prune_end: {events:?}"
+        !events.iter().any(|event| event.contains("prune")),
+        "idle hot writer must not emit recent_raw prune telemetry in the hot path: {events:?}"
     );
     let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
     let journal_state = journal_store.recent_raw_journal_state()?;

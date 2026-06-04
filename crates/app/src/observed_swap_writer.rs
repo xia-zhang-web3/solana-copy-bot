@@ -73,14 +73,7 @@ const OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE_EXHAUSTED: &str =
 const RECENT_RAW_JOURNAL_PHASE_BATCH_COLLECTED: &str = "batch_collected";
 const RECENT_RAW_JOURNAL_PHASE_WRITE_START: &str = "write_start";
 const RECENT_RAW_JOURNAL_PHASE_WRITE_END: &str = "write_end";
-const RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_START: &str = "prune_check_start";
-const RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_END: &str = "prune_check_end";
-const RECENT_RAW_JOURNAL_PHASE_PRUNE_START: &str = "prune_start";
-const RECENT_RAW_JOURNAL_PHASE_PRUNE_END: &str = "prune_end";
-const RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED: &str = "prune_skipped";
 const RECENT_RAW_JOURNAL_PHASE_BATCH_DONE: &str = "batch_done";
-const RECENT_RAW_JOURNAL_HOT_WRITER_PRUNE_DISABLED: &str =
-    "recent_raw_journal_hot_writer_prune_disabled";
 pub(crate) const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration =
     StdDuration::from_secs(15 * 60);
 pub(crate) const OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL: StdDuration =
