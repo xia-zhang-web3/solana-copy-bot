@@ -33,10 +33,10 @@ pub(crate) fn build_execution_swap_blueprint(
         metadata.quote_out_amount_raw.as_deref(),
         "quote_out_amount_raw",
     )?;
-    let slippage_bps = metadata
-        .slippage_bps
-        .filter(|value| value.is_finite() && *value >= 0.0 && *value <= 5_000.0)
-        .ok_or_else(|| anyhow!("invalid slippage_bps for swap blueprint"))?;
+    if request.slippage_tolerance_bps > 5_000 {
+        return Err(anyhow!("invalid slippage_tolerance_bps for swap blueprint"));
+    }
+    let slippage_bps = request.slippage_tolerance_bps as f64;
     let priority_fee_lamports = metadata
         .priority_fee_lamports
         .ok_or_else(|| anyhow!("missing priority_fee_lamports for swap blueprint"))?;

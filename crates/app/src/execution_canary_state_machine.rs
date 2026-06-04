@@ -151,6 +151,10 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
             token: signal.token.clone(),
             side: signal.side.clone(),
             buy_size_sol: self.config.canary_buy_size_sol,
+            slippage_tolerance_bps: quote_canary_slippage_limit_bps(
+                &self.config,
+                signal.side.as_str(),
+            ),
             wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
             metadata,
         };

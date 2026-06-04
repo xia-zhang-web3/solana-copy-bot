@@ -105,6 +105,18 @@ fn execution_swap_blueprint_requires_priority_fee_lamports() {
     assert!(error.to_string().contains("missing priority_fee_lamports"));
 }
 
+#[test]
+fn execution_swap_blueprint_uses_tolerance_not_quote_delta() -> Result<()> {
+    let mut request = swap_blueprint_request(Some(22_000));
+    request.slippage_tolerance_bps = 500;
+    request.metadata.slippage_bps = Some(-4710.0);
+
+    let blueprint = crate::execution_swap_blueprint::build_execution_swap_blueprint(&request)?;
+
+    assert_eq!(blueprint.slippage_bps, 500.0);
+    Ok(())
+}
+
 fn swap_blueprint_config() -> ExecutionConfig {
     let mut config = ExecutionConfig::default();
     config.canary_enabled = true;
@@ -145,6 +157,7 @@ fn swap_blueprint_request(
         token: "TokenMint".to_string(),
         side: "buy".to_string(),
         buy_size_sol: 0.01,
+        slippage_tolerance_bps: 500,
         wallet_pubkey: "DryRunWallet11111111111111111111111111111111".to_string(),
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_source: Some("execution_quote_canary_event".to_string()),
