@@ -53,6 +53,8 @@ mod execution_quote_canary_hot_observed;
 mod execution_state_machine;
 #[path = "app_tests/41.rs"]
 mod execution_state_machine_build_metadata;
+#[path = "app_tests/44.rs"]
+mod execution_state_machine_entry_gate;
 #[path = "app_tests/40.rs"]
 mod execution_state_machine_safety;
 #[path = "app_tests/38.rs"]

@@ -47,6 +47,7 @@ pub(crate) struct ExecutionCanaryTickSummary {
     pub state_machine_submit_disabled: usize,
     pub state_machine_failed: usize,
     pub state_machine_safety_blocked: usize,
+    pub state_machine_entry_gate_blocked: usize,
     pub last_state_machine_order_id: Option<String>,
 }
 
@@ -72,6 +73,7 @@ impl ExecutionCanaryTickSummary {
             || self.state_machine_submit_disabled > 0
             || self.state_machine_failed > 0
             || self.state_machine_safety_blocked > 0
+            || self.state_machine_entry_gate_blocked > 0
     }
 }
 
@@ -351,6 +353,7 @@ fn apply_state_machine_summary(
     summary.state_machine_submit_disabled += state.submit_disabled;
     summary.state_machine_failed += state.failed;
     summary.state_machine_safety_blocked += state.safety_blocked;
+    summary.state_machine_entry_gate_blocked += state.entry_gate_blocked;
     if state.last_order_id.is_some() {
         summary.last_state_machine_order_id = state.last_order_id;
     }

@@ -268,6 +268,7 @@ pub(super) async fn run_app_loop(
                             state_machine_submit_disabled = summary.state_machine_submit_disabled,
                             state_machine_failed = summary.state_machine_failed,
                             state_machine_safety_blocked = summary.state_machine_safety_blocked,
+                            state_machine_entry_gate_blocked = summary.state_machine_entry_gate_blocked,
                             last_state_machine_order_id = summary.last_state_machine_order_id.as_deref().unwrap_or("none"),
                             "execution canary dry-run tick"
                         );
@@ -446,6 +447,7 @@ async fn handle_execution_canary_for_shadow_signal(
                 state_machine_submit_disabled = summary.state_machine_submit_disabled,
                 state_machine_failed = summary.state_machine_failed,
                 state_machine_safety_blocked = summary.state_machine_safety_blocked,
+                state_machine_entry_gate_blocked = summary.state_machine_entry_gate_blocked,
                 last_state_machine_order_id = summary.last_state_machine_order_id.as_deref().unwrap_or("none"),
                 "execution canary shadow-signal task"
             );

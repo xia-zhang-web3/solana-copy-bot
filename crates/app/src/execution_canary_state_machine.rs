@@ -1,6 +1,7 @@
 use crate::execution_build_plan_metadata::{
     load_execution_build_plan_metadata, record_execution_build_plan_metadata,
 };
+use crate::execution_canary_entry_gate::validate_execution_canary_entry_metadata;
 use crate::execution_canary_safety::pre_submit_safety_snapshot;
 use crate::execution_quote_canary_helpers::{quote_canary_slippage_limit_bps, SIDE_SELL};
 use crate::execution_submit_adapter::{
@@ -33,6 +34,7 @@ pub(crate) struct ExecutionCanaryStateMachineSummary {
     pub(crate) failed: usize,
     pub(crate) submit_disabled: usize,
     pub(crate) safety_blocked: usize,
+    pub(crate) entry_gate_blocked: usize,
     pub(crate) open_positions: u64,
     pub(crate) daily_loss_sol: f64,
     pub(crate) expired: usize,
@@ -111,6 +113,18 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
             summary.skipped_reason = Some(reason);
             return Ok(summary);
         }
+        if let Some(existing) = store.load_execution_canary_order_by_signal(&signal.signal_id)? {
+            summary.existing = 1;
+            summary.last_order_id = Some(existing.order_id);
+            return Ok(summary);
+        }
+
+        let metadata = load_execution_build_plan_metadata(store, &signal.signal_id)?;
+        if let Some(reason) = validate_execution_canary_entry_metadata(&self.config, &metadata) {
+            summary.entry_gate_blocked = 1;
+            summary.skipped_reason = Some(reason);
+            return Ok(summary);
+        }
 
         let reserve = store.reserve_execution_canary_order(
             &signal.signal_id,
@@ -138,7 +152,7 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
             side: signal.side.clone(),
             buy_size_sol: self.config.canary_buy_size_sol,
             wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
-            metadata: load_execution_build_plan_metadata(store, &signal.signal_id)?,
+            metadata,
         };
         let plan = match self.adapter.build_transaction_plan(&request) {
             Ok(plan) => plan,

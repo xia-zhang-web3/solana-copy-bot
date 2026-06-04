@@ -139,7 +139,7 @@
             "/../../migrations"
         )))?;
         let now = Utc::now();
-        store.insert_copy_signal(&copybot_core_types::CopySignalRow {
+        let buy_signal = copybot_core_types::CopySignalRow {
             signal_id: "sig-canary-buy".to_string(),
             wallet_id: "leader-wallet".to_string(),
             side: "buy".to_string(),
@@ -150,7 +150,9 @@
                 .to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
-        })?;
+        };
+        store.insert_copy_signal(&buy_signal)?;
+        record_execution_canary_test_quote(&store, &buy_signal, now)?;
         store.insert_copy_signal(&copybot_core_types::CopySignalRow {
             signal_id: "sig-canary-sell".to_string(),
             wallet_id: "leader-wallet".to_string(),
@@ -169,6 +171,7 @@
         config.canary_dry_run = true;
         config.canary_route = "metis-dry-run".to_string();
         config.canary_batch_limit = 5;
+        config.quote_canary_buy_slippage_bps = 500;
         let runner = ExecutionCanaryRunner::new(config);
 
         let first = runner.process_tick(&store, now).await?;
@@ -198,7 +201,7 @@
             "/../../migrations"
         )))?;
         let now = Utc::now();
-        store.insert_copy_signal(&copybot_core_types::CopySignalRow {
+        let buy_signal = copybot_core_types::CopySignalRow {
             signal_id: "shadow:sig-hot:leader-wallet:buy:TokenMint".to_string(),
             wallet_id: "leader-wallet".to_string(),
             side: "buy".to_string(),
@@ -209,12 +212,15 @@
                 .to_string(),
             ts: now,
             status: "shadow_recorded".to_string(),
-        })?;
+        };
+        store.insert_copy_signal(&buy_signal)?;
+        record_execution_canary_test_quote(&store, &buy_signal, now)?;
 
         let mut config = ExecutionConfig::default();
         config.canary_enabled = true;
         config.canary_dry_run = true;
         config.canary_route = "metis-dry-run".to_string();
+        config.quote_canary_buy_slippage_bps = 500;
         let runner = ExecutionCanaryRunner::new(config);
         let signal = copybot_shadow::ShadowSignalResult {
             signal_id: "shadow:sig-hot:leader-wallet:buy:TokenMint".to_string(),
@@ -397,6 +403,43 @@
             "copybot-app-execution-canary-{name}-{}-{nanos}.db",
             std::process::id()
         ))
+    }
+
+    fn record_execution_canary_test_quote(
+        store: &SqliteStore,
+        signal: &copybot_core_types::CopySignalRow,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<()> {
+        store.record_execution_quote_canary_event(
+            &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+                event_id: format!("quote:entry:{}", signal.signal_id),
+                signal_id: Some(signal.signal_id.clone()),
+                shadow_closed_trade_id: None,
+                wallet_id: signal.wallet_id.clone(),
+                token: signal.token.clone(),
+                side: "buy".to_string(),
+                quote_status: "ok".to_string(),
+                request_ts: now,
+                signal_ts: Some(signal.ts),
+                decision_delay_ms: Some(7),
+                quote_latency_ms: Some(11),
+                leader_notional_sol: Some(signal.notional_sol),
+                quote_in_amount_raw: Some("10000000".to_string()),
+                quote_out_amount_raw: Some("123456".to_string()),
+                quote_price_sol: Some(0.081),
+                shadow_price_sol: Some(0.08),
+                slippage_bps: Some(125.0),
+                price_impact_pct: Some(0.01),
+                route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
+                priority_fee_status: Some("ok".to_string()),
+                priority_fee_lamports: Some(12_345),
+                priority_fee_json: Some("{\"recommended\":12345}".to_string()),
+                decision_status: Some("would_execute".to_string()),
+                decision_reason: Some("within_slippage_limit".to_string()),
+                error: None,
+            },
+        )?;
+        Ok(())
     }
 
     fn infra_snapshot(

@@ -21,12 +21,14 @@ async fn execution_canary_state_machine_no_submit_reserves_and_disables_order() 
         status: "shadow_recorded".to_string(),
     };
     store.insert_copy_signal(&signal)?;
+    record_state_machine_entry_quote(&store, &signal, now, "would_execute", "ok")?;
 
     let mut config = ExecutionConfig::default();
     config.canary_enabled = true;
     config.canary_dry_run = true;
     config.canary_route = "metis-canary".to_string();
     config.canary_buy_size_sol = 0.01;
+    config.quote_canary_buy_slippage_bps = 500;
     let state_machine = crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(
         config,
         crate::execution_submit_adapter::NoSubmitExecutionAdapter,
@@ -128,6 +130,7 @@ async fn execution_canary_state_machine_records_build_failure() -> Result<()> {
     let now = Utc::now();
     let signal = state_machine_signal("buy-build-failure", "buy", now);
     store.insert_copy_signal(&signal)?;
+    record_state_machine_entry_quote(&store, &signal, now, "would_execute", "ok")?;
     let state_machine = crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(
         canary_config(),
         BuildFailureAdapter,
@@ -169,6 +172,7 @@ async fn execution_canary_state_machine_records_simulation_failure() -> Result<(
     let now = Utc::now();
     let signal = state_machine_signal("buy-simulation-failure", "buy", now);
     store.insert_copy_signal(&signal)?;
+    record_state_machine_entry_quote(&store, &signal, now, "would_execute", "ok")?;
     let state_machine = crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(
         canary_config(),
         SimulationFailureAdapter,
@@ -323,7 +327,47 @@ fn canary_config() -> ExecutionConfig {
     config.canary_dry_run = true;
     config.canary_route = "metis-canary".to_string();
     config.canary_buy_size_sol = 0.01;
+    config.quote_canary_buy_slippage_bps = 500;
     config
+}
+
+fn record_state_machine_entry_quote(
+    store: &SqliteStore,
+    signal: &copybot_core_types::CopySignalRow,
+    now: chrono::DateTime<Utc>,
+    decision_status: &str,
+    priority_fee_status: &str,
+) -> Result<()> {
+    store.record_execution_quote_canary_event(
+        &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            event_id: format!("quote:entry:{}", signal.signal_id),
+            signal_id: Some(signal.signal_id.clone()),
+            shadow_closed_trade_id: None,
+            wallet_id: signal.wallet_id.clone(),
+            token: signal.token.clone(),
+            side: "buy".to_string(),
+            quote_status: "ok".to_string(),
+            request_ts: now,
+            signal_ts: Some(signal.ts),
+            decision_delay_ms: Some(7),
+            quote_latency_ms: Some(11),
+            leader_notional_sol: Some(signal.notional_sol),
+            quote_in_amount_raw: Some("10000000".to_string()),
+            quote_out_amount_raw: Some("123456".to_string()),
+            quote_price_sol: Some(0.081),
+            shadow_price_sol: Some(0.08),
+            slippage_bps: Some(125.0),
+            price_impact_pct: Some(0.01),
+            route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
+            priority_fee_status: Some(priority_fee_status.to_string()),
+            priority_fee_lamports: Some(12_345),
+            priority_fee_json: Some("{\"recommended\":12345}".to_string()),
+            decision_status: Some(decision_status.to_string()),
+            decision_reason: Some("within_slippage_limit".to_string()),
+            error: None,
+        },
+    )?;
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
