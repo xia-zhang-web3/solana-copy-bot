@@ -1,34 +1,5 @@
 use super::*;
 
-pub(in crate::observed_swap_writer) fn prune_recent_raw_journal_with_budget(
-    store: &SqliteStore,
-    retention_days: u32,
-    now: DateTime<Utc>,
-) -> Result<SqliteBatchedDeleteSummary> {
-    let cutoff = now - ChronoDuration::days(retention_days.max(1) as i64);
-    let mut summary = SqliteBatchedDeleteSummary::default();
-    let started = Instant::now();
-    loop {
-        if summary.batches >= RECENT_RAW_JOURNAL_RETENTION_MAX_DELETE_BATCHES_PER_RUN {
-            break;
-        }
-        if started.elapsed() >= RECENT_RAW_JOURNAL_RETENTION_MAX_DURATION_PER_RUN {
-            break;
-        }
-        let deleted = store.prune_recent_raw_journal_before_batch(
-            cutoff,
-            RECENT_RAW_JOURNAL_RETENTION_DELETE_BATCH_SIZE,
-            now,
-        )?;
-        if deleted == 0 {
-            break;
-        }
-        summary.deleted_rows = summary.deleted_rows.saturating_add(deleted);
-        summary.batches = summary.batches.saturating_add(1);
-    }
-    Ok(summary)
-}
-
 pub(in crate::observed_swap_writer) fn recent_raw_journal_prune_backlog_skip_reason(
     config: &ObservedSwapRecentRawJournalConfig,
     telemetry: &ObservedSwapWriterTelemetry,

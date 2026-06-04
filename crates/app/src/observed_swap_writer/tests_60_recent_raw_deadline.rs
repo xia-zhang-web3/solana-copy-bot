@@ -181,15 +181,18 @@ fn recent_raw_journal_hot_writer_defers_rows_older_than_retention_horizon() -> R
         journal_store.load_observed_swaps_since(journal_now - ChronoDuration::days(30))?;
     assert_eq!(
         journal_rows.len(),
-        1,
-        "idle recent_raw writer should run retention prune when no backlog is present"
+        2,
+        "hot writer should not prune stale recent_raw rows from the live write path"
     );
+    assert!(journal_rows
+        .iter()
+        .any(|row| row.signature == "sig-recent-raw-journal-old"));
     assert!(journal_rows
         .iter()
         .any(|row| row.signature == "sig-recent-raw-journal-fresh"));
     let journal_state = journal_store.recent_raw_journal_state()?;
-    assert_eq!(journal_state.row_count, 1);
-    assert!(journal_state.last_pruned_at.is_some());
+    assert_eq!(journal_state.row_count, 2);
+    assert!(journal_state.last_pruned_at.is_none());
     let _ = std::fs::remove_file(runtime_db_path);
     let _ = std::fs::remove_file(journal_db_path);
     Ok(())

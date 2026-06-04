@@ -2,7 +2,7 @@ use super::*;
 
 pub(in crate::observed_swap_writer) fn write_recent_raw_journal_batch_with_deadline(
     store: &SqliteStore,
-    config: &ObservedSwapRecentRawJournalConfig,
+    _config: &ObservedSwapRecentRawJournalConfig,
     telemetry: &ObservedSwapWriterTelemetry,
     inserted_swaps: &[SwapEvent],
     request_batches: usize,
@@ -54,13 +54,7 @@ pub(in crate::observed_swap_writer) fn write_recent_raw_journal_batch_with_deadl
         0,
         telemetry,
     );
-    let prune_skip_reason = recent_raw_journal_prune_backlog_skip_reason(config, telemetry)
-        .map(|_| RECENT_RAW_JOURNAL_HOT_WRITER_PRUNE_DEFERRED);
-    let prune_due = if prune_skip_reason.is_some() {
-        false
-    } else {
-        recent_raw_journal_prune_due(store, config, telemetry, completed_at)?
-    };
+    let prune_skip_reason = Some(RECENT_RAW_JOURNAL_HOT_WRITER_PRUNE_DISABLED);
     log_recent_raw_journal_phase(
         RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_END,
         prune_skip_reason,
@@ -71,42 +65,16 @@ pub(in crate::observed_swap_writer) fn write_recent_raw_journal_batch_with_deadl
         elapsed_ms_ceil(prune_check_started.elapsed()),
         telemetry,
     );
-    if prune_due {
-        let prune_started = Instant::now();
-        log_recent_raw_journal_phase(
-            RECENT_RAW_JOURNAL_PHASE_PRUNE_START,
-            None,
-            batch_rows,
-            request_batches,
-            coalesce_elapsed_ms,
-            coalesce_limit_rows,
-            0,
-            telemetry,
-        );
-        let _summary =
-            prune_recent_raw_journal_with_budget(store, config.retention_days, completed_at)?;
-        log_recent_raw_journal_phase(
-            RECENT_RAW_JOURNAL_PHASE_PRUNE_END,
-            None,
-            batch_rows,
-            request_batches,
-            coalesce_elapsed_ms,
-            coalesce_limit_rows,
-            elapsed_ms_ceil(prune_started.elapsed()),
-            telemetry,
-        );
-    } else {
-        log_recent_raw_journal_phase(
-            RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED,
-            prune_skip_reason,
-            batch_rows,
-            request_batches,
-            coalesce_elapsed_ms,
-            coalesce_limit_rows,
-            elapsed_ms_ceil(prune_check_started.elapsed()),
-            telemetry,
-        );
-    }
+    log_recent_raw_journal_phase(
+        RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED,
+        prune_skip_reason,
+        batch_rows,
+        request_batches,
+        coalesce_elapsed_ms,
+        coalesce_limit_rows,
+        elapsed_ms_ceil(prune_check_started.elapsed()),
+        telemetry,
+    );
     log_recent_raw_journal_phase(
         RECENT_RAW_JOURNAL_PHASE_BATCH_DONE,
         None,

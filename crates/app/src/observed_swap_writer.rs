@@ -79,8 +79,8 @@ const RECENT_RAW_JOURNAL_PHASE_PRUNE_START: &str = "prune_start";
 const RECENT_RAW_JOURNAL_PHASE_PRUNE_END: &str = "prune_end";
 const RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED: &str = "prune_skipped";
 const RECENT_RAW_JOURNAL_PHASE_BATCH_DONE: &str = "batch_done";
-const RECENT_RAW_JOURNAL_HOT_WRITER_PRUNE_DEFERRED: &str =
-    "recent_raw_journal_hot_writer_prune_deferred";
+const RECENT_RAW_JOURNAL_HOT_WRITER_PRUNE_DISABLED: &str =
+    "recent_raw_journal_hot_writer_prune_disabled";
 pub(crate) const OBSERVED_SWAP_RETENTION_SWEEP_INTERVAL: StdDuration =
     StdDuration::from_secs(15 * 60);
 pub(crate) const OBSERVED_SWAP_RETENTION_STARTUP_GRACE_INTERVAL: StdDuration =
@@ -92,9 +92,6 @@ const OBSERVED_SWAP_RETENTION_DELETE_BATCH_SIZE: usize = 10_000;
 const OBSERVED_SWAP_RETENTION_MAX_RAW_DELETE_BATCHES_PER_RUN: usize = 10;
 const OBSERVED_SWAP_RETENTION_MAX_DURATION_PER_RUN: StdDuration = StdDuration::from_secs(15);
 const OBSERVED_SWAP_RETENTION_INTER_BATCH_PAUSE: StdDuration = StdDuration::from_millis(25);
-const RECENT_RAW_JOURNAL_RETENTION_DELETE_BATCH_SIZE: usize = 10_000;
-const RECENT_RAW_JOURNAL_RETENTION_MAX_DELETE_BATCHES_PER_RUN: usize = 10;
-const RECENT_RAW_JOURNAL_RETENTION_MAX_DURATION_PER_RUN: StdDuration = StdDuration::from_secs(5);
 const OBSERVED_SWAP_WRITER_RETRYABLE_LOCK_BACKOFF: StdDuration = StdDuration::from_millis(250);
 const OBSERVED_SWAP_WRITER_RETRYABLE_LOCK_LOG_INTERVAL: StdDuration = StdDuration::from_secs(5);
 

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn recent_raw_journal_startup_prune_waits_for_live_write_then_prunes_idle_stage1() -> Result<()> {
+fn recent_raw_journal_startup_prune_stays_out_of_hot_writer_stage1() -> Result<()> {
     let _phase_guard = super::recent_raw_journal_phase_test_guard();
     let unique = format!(
         "copybot-app-recent-raw-journal-deferred-startup-prune-{}-{}",
@@ -114,20 +114,23 @@ fn recent_raw_journal_startup_prune_waits_for_live_write_then_prunes_idle_stage1
         .load_observed_swaps_since(journal_now - ChronoDuration::days(30))?;
     assert_eq!(
         rows_after_write.len(),
-        1,
-        "idle recent_raw writer should prune stale rows after the first live write"
+        2,
+        "hot writer must persist live rows without pruning stale recent_raw rows"
     );
+    assert!(rows_after_write
+        .iter()
+        .any(|row| row.signature == "sig-recent-raw-journal-startup-prune-stale"));
     assert!(rows_after_write
         .iter()
         .any(|row| row.signature == "sig-recent-raw-journal-startup-prune-fresh"));
     let journal_state = journal_store_after_write.recent_raw_journal_state()?;
     assert_eq!(
-        journal_state.row_count, 1,
-        "journal state must reflect committed hot writer rows after stale rows are pruned"
+        journal_state.row_count, 2,
+        "journal state must reflect committed rows without hot-path pruning"
     );
     assert!(
-        journal_state.last_pruned_at.is_some(),
-        "hot writer should mark retention prune after pruning stale rows"
+        journal_state.last_pruned_at.is_none(),
+        "hot writer must leave recent_raw retention state untouched"
     );
 
     remove_sqlite_test_files(&journal_db_path);
@@ -192,8 +195,7 @@ fn recent_raw_journal_writer_phase_telemetry_orders_write_and_prune_stage1() -> 
         super::RECENT_RAW_JOURNAL_PHASE_WRITE_END,
         super::RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_START,
         super::RECENT_RAW_JOURNAL_PHASE_PRUNE_CHECK_END,
-        super::RECENT_RAW_JOURNAL_PHASE_PRUNE_START,
-        super::RECENT_RAW_JOURNAL_PHASE_PRUNE_END,
+        super::RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED,
         super::RECENT_RAW_JOURNAL_PHASE_BATCH_DONE,
     ];
     assert_eq!(
@@ -211,8 +213,7 @@ fn recent_raw_journal_writer_phase_telemetry_orders_write_and_prune_stage1() -> 
 }
 
 #[test]
-fn recent_raw_journal_hot_writer_prunes_when_idle_with_skip_backlogged_enabled_stage1() -> Result<()>
-{
+fn recent_raw_journal_hot_writer_skips_prune_when_idle_stage1() -> Result<()> {
     let _phase_guard = super::recent_raw_journal_phase_test_guard();
     super::clear_recent_raw_journal_phase_events_for_test();
     let unique = format!(
@@ -266,12 +267,16 @@ fn recent_raw_journal_hot_writer_prunes_when_idle_with_skip_backlogged_enabled_s
 
     let events = super::recent_raw_journal_phase_events_for_test();
     assert!(
-        events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_START),
-        "idle hot writer should enter prune_start when no backlog is present: {events:?}"
+        events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_SKIPPED),
+        "idle hot writer should skip recent_raw prune in the hot path: {events:?}"
     );
     assert!(
-        events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_END),
-        "idle hot writer should finish bounded prune when no backlog is present: {events:?}"
+        !events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_START),
+        "idle hot writer must not enter recent_raw prune_start: {events:?}"
+    );
+    assert!(
+        !events.contains(&super::RECENT_RAW_JOURNAL_PHASE_PRUNE_END),
+        "idle hot writer must not enter recent_raw prune_end: {events:?}"
     );
     let journal_store = SqliteStore::open(Path::new(&journal_db_path))?;
     let journal_state = journal_store.recent_raw_journal_state()?;
