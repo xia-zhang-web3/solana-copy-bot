@@ -45,6 +45,7 @@ mod discovery_runtime;
 mod execution_build_plan_metadata;
 mod execution_canary;
 mod execution_canary_entry_gate;
+mod execution_canary_route;
 mod execution_canary_safety;
 #[allow(dead_code)]
 mod execution_canary_state_machine;

@@ -61,6 +61,8 @@ mod execution_state_machine_safety;
 mod execution_state_machine_sell;
 #[path = "app_tests/45.rs"]
 mod execution_state_machine_swap_blueprint;
+#[path = "app_tests/46.rs"]
+mod execution_state_machine_swap_blueprint_runner;
 #[path = "app_tests/39.rs"]
 mod execution_state_machine_timeout;
 #[path = "app_tests/42.rs"]

@@ -7,6 +7,15 @@ use copybot_storage_core::{
     EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT,
 };
 
+pub(crate) const CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN: &str =
+    "metis-swap-instructions-dry-run";
+
+pub(crate) fn uses_jupiter_metis_dry_run_adapter(route: &str) -> bool {
+    route
+        .trim()
+        .eq_ignore_ascii_case(CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ExecutionBuildPlanMetadata {
     pub(crate) quote_source: Option<String>,

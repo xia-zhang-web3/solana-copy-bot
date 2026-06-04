@@ -1,8 +1,9 @@
-use crate::execution_canary_state_machine::{
-    ExecutionCanaryStateMachine, ExecutionCanaryStateMachineSummary,
+use crate::execution_canary_route::{
+    list_swap_blueprint_state_machine_candidates, process_canary_state_machine_for_route,
+    uses_swap_blueprint_state_machine,
 };
+use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_quote_canary::ExecutionQuoteCanaryRunner;
-use crate::execution_submit_adapter::NoSubmitExecutionAdapter;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::ExecutionConfig;
@@ -145,20 +146,48 @@ impl ExecutionCanaryRunner {
         }
 
         let since = now - Duration::seconds(self.config.canary_max_signal_age_seconds as i64);
-        let signals = self.process_dry_run_orders(store, now, since, &mut summary)?;
-        if self.quote_canary.is_enabled() {
-            let quote_summary = self
-                .quote_canary
-                .process_tick(
-                    store,
-                    CANARY_COPY_SIGNAL_STATUS,
-                    now,
-                    since,
-                    self.config.canary_batch_limit.max(1),
-                )
-                .await?;
-            apply_quote_summary(&mut summary, quote_summary);
-        }
+        let signals = if uses_swap_blueprint_state_machine(&self.config) {
+            if self.quote_canary.is_enabled() {
+                let quote_summary = self
+                    .quote_canary
+                    .process_tick(
+                        store,
+                        CANARY_COPY_SIGNAL_STATUS,
+                        now,
+                        since,
+                        self.config.canary_batch_limit.max(1),
+                    )
+                    .await?;
+                apply_quote_summary(&mut summary, quote_summary);
+            }
+            let signals = list_swap_blueprint_state_machine_candidates(
+                store,
+                &self.config,
+                CANARY_COPY_SIGNAL_STATUS,
+                since,
+            )?;
+            summary.candidates = signals.len();
+            if let Some(signal) = signals.last() {
+                summary.last_signal_id = Some(signal.signal_id.clone());
+            }
+            signals
+        } else {
+            let signals = self.process_dry_run_orders(store, now, since, &mut summary)?;
+            if self.quote_canary.is_enabled() {
+                let quote_summary = self
+                    .quote_canary
+                    .process_tick(
+                        store,
+                        CANARY_COPY_SIGNAL_STATUS,
+                        now,
+                        since,
+                        self.config.canary_batch_limit.max(1),
+                    )
+                    .await?;
+                apply_quote_summary(&mut summary, quote_summary);
+            }
+            signals
+        };
         for signal in &signals {
             let state_summary = self.process_no_submit_state_machine(store, signal, now)?;
             apply_state_machine_summary(&mut summary, state_summary);
@@ -195,18 +224,24 @@ impl ExecutionCanaryRunner {
         }
         if signal.side == "buy" {
             summary.candidates = 1;
-            let outcome = store
-                .record_execution_dry_run_order(&signal.signal_id, &self.config.canary_route, now)
-                .with_context(|| {
-                    format!(
-                        "failed recording execution dry-run order for hot shadow signal {}",
-                        signal.signal_id
-                    )
-                })?;
             summary.last_signal_id = Some(signal.signal_id.clone());
-            match outcome {
-                ExecutionDryRunRecordOutcome::Inserted => summary.inserted += 1,
-                ExecutionDryRunRecordOutcome::Existing => summary.existing += 1,
+            if !uses_swap_blueprint_state_machine(&self.config) {
+                let outcome = store
+                    .record_execution_dry_run_order(
+                        &signal.signal_id,
+                        &self.config.canary_route,
+                        now,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "failed recording execution dry-run order for hot shadow signal {}",
+                            signal.signal_id
+                        )
+                    })?;
+                match outcome {
+                    ExecutionDryRunRecordOutcome::Inserted => summary.inserted += 1,
+                    ExecutionDryRunRecordOutcome::Existing => summary.existing += 1,
+                }
             }
         }
         if self.quote_canary.is_enabled() {
@@ -300,9 +335,7 @@ impl ExecutionCanaryRunner {
         signal: &CopySignalRow,
         now: DateTime<Utc>,
     ) -> Result<ExecutionCanaryStateMachineSummary> {
-        let state_machine =
-            ExecutionCanaryStateMachine::new(self.config.clone(), NoSubmitExecutionAdapter);
-        state_machine.process_buy_candidate(store, signal, now)
+        process_canary_state_machine_for_route(&self.config, store, signal, now)
     }
 }
 
