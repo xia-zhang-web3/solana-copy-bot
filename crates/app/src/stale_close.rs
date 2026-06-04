@@ -15,10 +15,13 @@ use tracing::warn;
 
 use super::{sanitize_json_value, STALE_LOT_CLEANUP_BATCH_LIMIT};
 
+const STALE_CLOSE_EPS: f64 = 1e-12;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct StaleLotCleanupStats {
     pub closed_priced: u64,
     pub quote_closed: u64,
+    pub quote_loss_deferred: u64,
     pub recovery_zero_closed: u64,
     pub terminal_zero_closed: u64,
     pub skipped_unpriced: u64,
@@ -33,8 +36,6 @@ pub(crate) async fn close_stale_shadow_lots(
     quote_pricer: Option<&StaleCloseQuotePricer>,
     now: DateTime<Utc>,
 ) -> Result<StaleLotCleanupStats> {
-    const EPS: f64 = 1e-12;
-
     if max_hold_hours == 0 {
         return Ok(StaleLotCleanupStats::default());
     }
@@ -55,14 +56,14 @@ pub(crate) async fn close_stale_shadow_lots(
     };
 
     for lot in stale_lots {
-        if lot.qty <= EPS {
+        if lot.qty <= STALE_CLOSE_EPS {
             continue;
         }
 
         let (exit_price_sol, close_context) = match store
             .reliable_token_sol_price_for_stale_close(&lot.token, now)?
         {
-            Some(price) if price > EPS => (price, SHADOW_CLOSE_CONTEXT_MARKET),
+            Some(price) if price > STALE_CLOSE_EPS => (price, SHADOW_CLOSE_CONTEXT_MARKET),
             _ => {
                 let quote_attempt = match quote_pricer {
                     Some(pricer) => pricer.quote_exit_price(&lot).await,
@@ -70,6 +71,22 @@ pub(crate) async fn close_stale_shadow_lots(
                 };
                 match quote_attempt {
                     StaleCloseQuoteAttempt::Priced(quote) => {
+                        if should_defer_stale_quote_loss(
+                            &lot,
+                            &quote,
+                            terminal_zero_cutoff.as_ref(),
+                        ) {
+                            record_stale_quote_loss_deferred_event(
+                                store,
+                                now,
+                                &lot,
+                                &quote,
+                                max_hold_hours,
+                                terminal_zero_price_hours,
+                            )?;
+                            stats.quote_loss_deferred = stats.quote_loss_deferred.saturating_add(1);
+                            continue;
+                        }
                         record_stale_quote_price_event(store, now, &lot, &quote)?;
                         (quote.exit_price_sol, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE)
                     }
@@ -210,7 +227,7 @@ pub(crate) async fn close_stale_shadow_lots(
                 )
             })?;
 
-        if close.closed_qty > EPS {
+        if close.closed_qty > STALE_CLOSE_EPS {
             if close_context == SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE {
                 stats.recovery_zero_closed = stats.recovery_zero_closed.saturating_add(1);
             } else if close_context == SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE {
@@ -231,6 +248,52 @@ pub(crate) async fn close_stale_shadow_lots(
     }
 
     Ok(stats)
+}
+
+fn should_defer_stale_quote_loss(
+    lot: &ShadowLotRow,
+    quote: &StaleCloseQuotePrice,
+    terminal_zero_cutoff: Option<&DateTime<Utc>>,
+) -> bool {
+    let before_terminal_window = terminal_zero_cutoff
+        .map(|cutoff| lot.opened_ts > *cutoff)
+        .unwrap_or(true);
+    before_terminal_window && quote.quote_out_sol + STALE_CLOSE_EPS < lot.cost_sol
+}
+
+fn record_stale_quote_loss_deferred_event(
+    store: &SqliteStore,
+    now: DateTime<Utc>,
+    lot: &ShadowLotRow,
+    quote: &StaleCloseQuotePrice,
+    max_hold_hours: u32,
+    terminal_zero_price_hours: u32,
+) -> Result<()> {
+    let details_json = format!(
+        "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"close_strategy\":\"quote_loss_deferred\",\"entry_cost_sol\":{},\"quote_out_sol\":{},\"quote_pnl_sol\":{},\"quote_latency_ms\":{},\"price_impact_pct\":{},\"max_hold_hours\":{},\"terminal_zero_price_hours\":{},\"opened_ts\":\"{}\"}}",
+        sanitize_json_value(&lot.wallet_id),
+        sanitize_json_value(&lot.token),
+        lot.id,
+        sanitize_json_value(&now.to_rfc3339()),
+        lot.cost_sol,
+        quote.quote_out_sol,
+        quote.quote_out_sol - lot.cost_sol,
+        quote.quote_latency_ms,
+        option_f64_json(quote.price_impact_pct),
+        max_hold_hours,
+        terminal_zero_price_hours,
+        sanitize_json_value(&lot.opened_ts.to_rfc3339())
+    );
+    record_stale_close_risk_event_or_warn(
+        store,
+        "shadow_stale_close_quote_loss_deferred",
+        now,
+        &details_json,
+        &lot.wallet_id,
+        &lot.token,
+        lot.id,
+        "failed to record stale-close quote-loss deferred risk event",
+    )
 }
 
 fn record_stale_quote_price_event(

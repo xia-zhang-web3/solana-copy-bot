@@ -1,4 +1,5 @@
 use crate::{
+    execution_canary_quote_pnl_buckets::record_quote_pnl_buckets,
     execution_canary_quote_pnl_diagnostics::{empty_quote_diagnostics, record_quote_diagnostics},
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlTrade,
     ExecutionCanaryShadowCloseBreakdown, EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED,
@@ -19,6 +20,7 @@ pub(crate) fn summarize_quote_pnl(
     for trade in trades {
         record_trade(&mut summary, trade);
     }
+    record_quote_pnl_buckets(&mut summary);
     summary
 }
 
@@ -57,6 +59,12 @@ fn empty_summary(
         force_exit_counted_trades: 0,
         force_exit_skipped_entry_trades: 0,
         quote_diagnostics: empty_quote_diagnostics(),
+        threshold_summaries: Vec::new(),
+        buy_slippage_buckets: Vec::new(),
+        entry_decision_delay_buckets: Vec::new(),
+        buy_leader_notional_buckets: Vec::new(),
+        route_counts: Vec::new(),
+        priority_fee_status_counts: Vec::new(),
         priority_fee_lamports_sum: 0,
         trades: Vec::new(),
     }

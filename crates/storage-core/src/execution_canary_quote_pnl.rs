@@ -76,6 +76,7 @@ impl SqliteDiscoveryStore {
                     buy.priority_fee_lamports,
                     buy.decision_status,
                     buy.decision_reason,
+                    buy.leader_notional_sol,
                     sell.event_id,
                     sell.quote_status,
                     sell.request_ts,
@@ -92,7 +93,8 @@ impl SqliteDiscoveryStore {
                     sell.priority_fee_status,
                     sell.priority_fee_lamports,
                     sell.decision_status,
-                    sell.decision_reason
+                    sell.decision_reason,
+                    sell.leader_notional_sol
                  FROM shadow_closed_trades AS closed
                  LEFT JOIN execution_quote_canary_events AS sell
                     ON sell.shadow_closed_trade_id = closed.id
@@ -132,8 +134,12 @@ fn classify_trade(row: QuotePnlRow) -> Result<ExecutionCanaryQuotePnlTrade> {
     trade.exit_quote_event_id = row.sell.event_id.clone();
     trade.entry_quote_status = row.buy.quote_status.clone();
     trade.exit_quote_status = row.sell.quote_status.clone();
+    trade.entry_priority_fee_status = row.buy.priority_fee_status.clone();
+    trade.exit_priority_fee_status = row.sell.priority_fee_status.clone();
     trade.entry_decision_status = row.buy.decision_status.clone();
     trade.exit_decision_status = row.sell.decision_status.clone();
+    trade.buy_leader_notional_sol = row.buy.leader_notional_sol;
+    trade.sell_leader_notional_sol = row.sell.leader_notional_sol;
     trade.buy_slippage_bps = row.buy.slippage_bps;
     trade.sell_slippage_bps = row.sell.slippage_bps;
     trade.buy_price_impact_pct = row.buy.price_impact_pct;
@@ -235,9 +241,13 @@ fn base_trade(row: &QuotePnlRow) -> ExecutionCanaryQuotePnlTrade {
         exit_decision_status: None,
         entry_quote_status: None,
         exit_quote_status: None,
+        entry_priority_fee_status: None,
+        exit_priority_fee_status: None,
         entry_cost_sol: None,
         exit_quote_sol: None,
         closed_qty_ratio: None,
+        buy_leader_notional_sol: None,
+        sell_leader_notional_sol: None,
         buy_slippage_bps: None,
         sell_slippage_bps: None,
         buy_price_impact_pct: None,

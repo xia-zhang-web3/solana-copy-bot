@@ -8,6 +8,7 @@ mod execution_canary_positions;
 mod execution_canary_quote_pnl;
 mod execution_canary_quote_pnl_accumulator;
 mod execution_canary_quote_pnl_breakdown;
+mod execution_canary_quote_pnl_buckets;
 mod execution_canary_quote_pnl_compute;
 mod execution_canary_quote_pnl_diagnostics;
 mod execution_canary_quote_pnl_rows;
@@ -86,8 +87,10 @@ pub use types::{
     ExecutionCanaryConfirmTimeoutDecision, ExecutionCanaryObservedLeg, ExecutionCanaryOrder,
     ExecutionCanaryOwnedPosition, ExecutionCanaryOwnedPositionRecordResult,
     ExecutionCanaryPositionCloseResult, ExecutionCanaryPositionRecordOutcome,
-    ExecutionCanaryQuoteDiagnosticsSummary, ExecutionCanaryQuotePnlSummary,
-    ExecutionCanaryQuotePnlTrade, ExecutionCanaryQuoteSideDiagnostics,
+    ExecutionCanaryQuoteBucketSummary, ExecutionCanaryQuoteDiagnosticsSummary,
+    ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlThresholdSummary,
+    ExecutionCanaryQuotePnlTrade, ExecutionCanaryQuoteRouteCount,
+    ExecutionCanaryQuoteSideDiagnostics, ExecutionCanaryQuoteStatusCount,
     ExecutionCanaryReadinessCount, ExecutionCanaryReadinessLatestOrder,
     ExecutionCanaryReadinessSummary, ExecutionCanaryReadinessWindowSummary,
     ExecutionCanaryRecordOutcome, ExecutionCanaryReserveResult, ExecutionCanarySellDecision,

@@ -76,6 +76,15 @@ fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
         summary.quote_diagnostics.entry_all.quote_latency_ms_avg,
         20.0,
     );
+    assert_eq!(summary.threshold_summaries.len(), 4);
+    assert_eq!(summary.threshold_summaries[0].threshold_bps, 150);
+    assert_eq!(summary.threshold_summaries[0].counted_trades, 1);
+    assert_eq!(summary.buy_slippage_buckets[0].bucket, "<=150");
+    assert_eq!(summary.buy_slippage_buckets[0].trades, 1);
+    assert_eq!(summary.entry_decision_delay_buckets[0].bucket, "<2s");
+    assert_eq!(summary.buy_leader_notional_buckets[0].bucket, "<0.5");
+    assert_eq!(summary.route_counts[0].label, "Metis");
+    assert_eq!(summary.priority_fee_status_counts[0].status, "ok");
     assert_eq!(summary.force_exit_counted_trades, 0);
     assert_eq!(summary.force_exit_skipped_entry_trades, 0);
     Ok(())

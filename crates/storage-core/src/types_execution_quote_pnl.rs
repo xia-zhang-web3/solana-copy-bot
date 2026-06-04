@@ -31,6 +31,12 @@ pub struct ExecutionCanaryQuotePnlSummary {
     pub force_exit_counted_trades: u64,
     pub force_exit_skipped_entry_trades: u64,
     pub quote_diagnostics: ExecutionCanaryQuoteDiagnosticsSummary,
+    pub threshold_summaries: Vec<ExecutionCanaryQuotePnlThresholdSummary>,
+    pub buy_slippage_buckets: Vec<ExecutionCanaryQuoteBucketSummary>,
+    pub entry_decision_delay_buckets: Vec<ExecutionCanaryQuoteBucketSummary>,
+    pub buy_leader_notional_buckets: Vec<ExecutionCanaryQuoteBucketSummary>,
+    pub route_counts: Vec<ExecutionCanaryQuoteRouteCount>,
+    pub priority_fee_status_counts: Vec<ExecutionCanaryQuoteStatusCount>,
     pub priority_fee_lamports_sum: u64,
     pub trades: Vec<ExecutionCanaryQuotePnlTrade>,
 }
@@ -86,6 +92,51 @@ pub struct ExecutionCanaryQuoteSideDiagnostics {
     pub price_impact_pct_max: f64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuotePnlThresholdSummary {
+    pub threshold_bps: u64,
+    pub total_closed_trades: u64,
+    pub counted_trades: u64,
+    pub skipped_trades: u64,
+    pub unknown_trades: u64,
+    pub quote_win_count: u64,
+    pub quote_loss_count: u64,
+    pub shadow_pnl_sol: f64,
+    pub quote_adjusted_pnl_after_priority_fee_sol: f64,
+    pub skipped_shadow_pnl_sol: f64,
+    pub skipped_counterfactual_pnl_after_priority_fee_sol: f64,
+    pub force_exit_counted_trades: u64,
+    pub force_exit_skipped_entry_trades: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuoteBucketSummary {
+    pub bucket: String,
+    pub trades: u64,
+    pub shadow_pnl_sol: f64,
+    pub quote_adjusted_pnl_after_priority_fee_sol: f64,
+    pub buy_slippage_bps_avg: f64,
+    pub sell_slippage_bps_avg: f64,
+    pub entry_decision_delay_ms_avg: f64,
+    pub exit_decision_delay_ms_avg: f64,
+    pub buy_leader_notional_sol_avg: f64,
+    pub top_routes: Vec<ExecutionCanaryQuoteRouteCount>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuoteRouteCount {
+    pub side: String,
+    pub label: String,
+    pub events: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuoteStatusCount {
+    pub side: String,
+    pub status: String,
+    pub events: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExecutionCanaryQuotePnlTrade {
     pub shadow_closed_trade_id: i64,
@@ -110,9 +161,13 @@ pub struct ExecutionCanaryQuotePnlTrade {
     pub exit_decision_status: Option<String>,
     pub entry_quote_status: Option<String>,
     pub exit_quote_status: Option<String>,
+    pub entry_priority_fee_status: Option<String>,
+    pub exit_priority_fee_status: Option<String>,
     pub entry_cost_sol: Option<f64>,
     pub exit_quote_sol: Option<f64>,
     pub closed_qty_ratio: Option<f64>,
+    pub buy_leader_notional_sol: Option<f64>,
+    pub sell_leader_notional_sol: Option<f64>,
     pub buy_slippage_bps: Option<f64>,
     pub sell_slippage_bps: Option<f64>,
     pub buy_price_impact_pct: Option<f64>,

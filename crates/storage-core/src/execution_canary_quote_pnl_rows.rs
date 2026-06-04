@@ -41,7 +41,9 @@ pub(crate) struct QuoteEvent {
     pub(crate) slippage_bps: Option<f64>,
     pub(crate) price_impact_pct: Option<f64>,
     pub(crate) route_plan_json: Option<String>,
+    pub(crate) priority_fee_status: Option<String>,
     pub(crate) priority_fee_lamports: Option<u64>,
+    pub(crate) leader_notional_sol: Option<f64>,
     pub(crate) decision_status: Option<String>,
     pub(crate) decision_reason: Option<String>,
     quote_in_amount_raw: Option<String>,
@@ -73,7 +75,7 @@ fn read_quote_pnl_row_result(row: &rusqlite::Row<'_>) -> Result<QuotePnlRow> {
         opened_ts: parse_rfc3339_utc(&opened_ts_raw, "shadow_closed_trades.opened_ts")?,
         closed_ts: parse_rfc3339_utc(&closed_ts_raw, "shadow_closed_trades.closed_ts")?,
         buy: QuoteEvent::read(row, 10)?,
-        sell: QuoteEvent::read(row, 27)?,
+        sell: QuoteEvent::read(row, 28)?,
     })
 }
 
@@ -116,6 +118,9 @@ impl QuoteEvent {
             route_plan_json: row
                 .get(offset + 12)
                 .context("failed reading route_plan_json")?,
+            priority_fee_status: row
+                .get(offset + 13)
+                .context("failed reading priority_fee_status")?,
             priority_fee_lamports: priority_fee_raw
                 .map(|raw| {
                     u64::try_from(raw)
@@ -128,6 +133,9 @@ impl QuoteEvent {
             decision_reason: row
                 .get(offset + 16)
                 .context("failed reading decision_reason")?,
+            leader_notional_sol: row
+                .get(offset + 17)
+                .context("failed reading leader_notional_sol")?,
         })
     }
 }

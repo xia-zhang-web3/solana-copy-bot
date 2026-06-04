@@ -29,8 +29,10 @@ pub use types_execution::{
     EXECUTION_STATUS_CANARY_SUBMIT_DISABLED, EXECUTION_STATUS_DRY_RUN_CONFIRMED,
 };
 pub use types_execution_quote_pnl::{
-    ExecutionCanaryQuoteDiagnosticsSummary, ExecutionCanaryQuotePnlSummary,
-    ExecutionCanaryQuotePnlTrade, ExecutionCanaryQuoteSideDiagnostics,
+    ExecutionCanaryQuoteBucketSummary, ExecutionCanaryQuoteDiagnosticsSummary,
+    ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlThresholdSummary,
+    ExecutionCanaryQuotePnlTrade, ExecutionCanaryQuoteRouteCount,
+    ExecutionCanaryQuoteSideDiagnostics, ExecutionCanaryQuoteStatusCount,
     ExecutionCanaryShadowCloseBreakdown, ExecutionCanaryShadowCloseContextSummary,
     EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED, EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
     EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,

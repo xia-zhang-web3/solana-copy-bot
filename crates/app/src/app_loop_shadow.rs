@@ -190,6 +190,7 @@ pub(super) async fn handle_shadow_interval_tick(
         Ok(stats)
             if stats.closed_priced > 0
                 || stats.quote_closed > 0
+                || stats.quote_loss_deferred > 0
                 || stats.recovery_zero_closed > 0
                 || stats.terminal_zero_closed > 0
                 || stats.skipped_unpriced > 0 =>
@@ -197,6 +198,7 @@ pub(super) async fn handle_shadow_interval_tick(
             info!(
                 closed_priced = stats.closed_priced,
                 quote_closed = stats.quote_closed,
+                quote_loss_deferred = stats.quote_loss_deferred,
                 recovery_zero_closed = stats.recovery_zero_closed,
                 terminal_zero_closed = stats.terminal_zero_closed,
                 skipped_unpriced = stats.skipped_unpriced,
