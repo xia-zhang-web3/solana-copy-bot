@@ -13,7 +13,9 @@ async fn execution_canary_entry_gate_blocks_missing_quote_before_reserve() -> Re
     store.insert_copy_signal(&signal)?;
     let state_machine = entry_gate_state_machine();
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
 
     assert_eq!(summary.entry_gate_blocked, 1);
     assert_eq!(summary.skipped_reason, Some("missing_quote_metadata"));
@@ -39,7 +41,9 @@ async fn execution_canary_entry_gate_blocks_would_skip_quote_before_reserve() ->
     record_entry_gate_quote(&store, &signal, now, "would_skip", Some("ok"), Some(12_345))?;
     let state_machine = entry_gate_state_machine();
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
 
     assert_eq!(summary.entry_gate_blocked, 1);
     assert_eq!(summary.skipped_reason, Some("entry_decision_not_execute"));
@@ -72,7 +76,9 @@ async fn execution_canary_entry_gate_blocks_priority_fee_error_before_reserve() 
     )?;
     let state_machine = entry_gate_state_machine();
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
 
     assert_eq!(summary.entry_gate_blocked, 1);
     assert_eq!(summary.skipped_reason, Some("priority_fee_not_ok"));
@@ -99,7 +105,9 @@ async fn execution_canary_entry_gate_blocks_missing_priority_fee_lamports_before
     record_entry_gate_quote(&store, &signal, now, "would_execute", Some("ok"), None)?;
     let state_machine = entry_gate_state_machine();
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
 
     assert_eq!(summary.entry_gate_blocked, 1);
     assert_eq!(summary.skipped_reason, Some("missing_priority_fee"));

@@ -2,10 +2,14 @@ use crate::execution_swap_blueprint::{
     build_execution_swap_blueprint, validate_execution_swap_blueprint_for_simulation,
     ExecutionSwapBlueprint,
 };
+use crate::execution_swap_instructions_http::fetch_swap_instructions_dry_run;
 use anyhow::Result;
+use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
     EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT,
 };
+use std::future::Future;
+use std::pin::Pin;
 
 pub(crate) const CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN: &str =
     "metis-swap-instructions-dry-run";
@@ -100,16 +104,19 @@ pub(crate) enum ExecutionSubmitPlan {
     SubmitDisabled { reason: String },
 }
 
+pub(crate) type ExecutionSimulationFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<ExecutionSimulationResult>> + Send + 'a>>;
+
 pub(crate) trait ExecutionSubmitAdapter {
     fn build_transaction_plan(
         &self,
         request: &ExecutionSubmitRequest,
     ) -> Result<ExecutionTransactionPlan>;
 
-    fn simulate_transaction_plan(
-        &self,
-        plan: &ExecutionTransactionPlan,
-    ) -> Result<ExecutionSimulationResult>;
+    fn simulate_transaction_plan<'a>(
+        &'a self,
+        plan: &'a ExecutionTransactionPlan,
+    ) -> ExecutionSimulationFuture<'a>;
 
     fn plan_submit(&self, request: &ExecutionSubmitRequest) -> Result<ExecutionSubmitPlan>;
 }
@@ -139,13 +146,15 @@ impl ExecutionSubmitAdapter for NoSubmitExecutionAdapter {
         })
     }
 
-    fn simulate_transaction_plan(
-        &self,
-        _plan: &ExecutionTransactionPlan,
-    ) -> Result<ExecutionSimulationResult> {
-        Ok(ExecutionSimulationResult {
-            status: EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT.to_string(),
-            error: Some("no_submit_adapter_simulation_skipped".to_string()),
+    fn simulate_transaction_plan<'a>(
+        &'a self,
+        _plan: &'a ExecutionTransactionPlan,
+    ) -> ExecutionSimulationFuture<'a> {
+        Box::pin(async {
+            Ok(ExecutionSimulationResult {
+                status: EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT.to_string(),
+                error: Some("no_submit_adapter_simulation_skipped".to_string()),
+            })
         })
     }
 
@@ -159,8 +168,20 @@ impl ExecutionSubmitAdapter for NoSubmitExecutionAdapter {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct JupiterMetisDryRunExecutionAdapter;
+#[derive(Debug, Clone)]
+pub(crate) struct JupiterMetisDryRunExecutionAdapter {
+    config: ExecutionConfig,
+    http: reqwest::Client,
+}
+
+impl JupiterMetisDryRunExecutionAdapter {
+    pub(crate) fn new(config: ExecutionConfig) -> Self {
+        Self {
+            config,
+            http: reqwest::Client::new(),
+        }
+    }
+}
 
 impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
     fn build_transaction_plan(
@@ -185,17 +206,20 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
         })
     }
 
-    fn simulate_transaction_plan(
-        &self,
-        plan: &ExecutionTransactionPlan,
-    ) -> Result<ExecutionSimulationResult> {
-        let Some(blueprint) = plan.swap_blueprint.as_ref() else {
-            anyhow::bail!("missing swap blueprint for dry-run simulation");
-        };
-        validate_execution_swap_blueprint_for_simulation(blueprint)?;
-        Ok(ExecutionSimulationResult {
-            status: EXECUTION_SIMULATION_STATUS_PASSED.to_string(),
-            error: None,
+    fn simulate_transaction_plan<'a>(
+        &'a self,
+        plan: &'a ExecutionTransactionPlan,
+    ) -> ExecutionSimulationFuture<'a> {
+        Box::pin(async move {
+            let Some(blueprint) = plan.swap_blueprint.as_ref() else {
+                anyhow::bail!("missing swap blueprint for dry-run simulation");
+            };
+            validate_execution_swap_blueprint_for_simulation(blueprint)?;
+            let proof = fetch_swap_instructions_dry_run(&self.http, &self.config, plan).await?;
+            Ok(ExecutionSimulationResult {
+                status: EXECUTION_SIMULATION_STATUS_PASSED.to_string(),
+                error: proof,
+            })
         })
     }
 

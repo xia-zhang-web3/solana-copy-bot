@@ -1,6 +1,6 @@
 # Test Execution Rollout Plan
 
-Updated: 2026-06-02
+Updated: 2026-06-05
 
 This document tracks the remaining engineering work before tiny real execution
 tests. It is not an approval to enable live trading.
@@ -27,12 +27,14 @@ Done:
 - Stale shadow closes now try quote price before terminal zero.
 - PnL, win/loss, stale-close, skip, quote, and priority-fee data can be queried
   from SQLite.
+- Metis swap-instructions dry-run HTTP proof is implemented behind an explicit
+  config flag.
 - Production artifact rollout for live no-submit canary is complete:
   - `copybot-app` artifact installed from an off-production Linux build
   - `execution.enabled = false`
   - `canary_enabled = true`
   - `canary_dry_run = true`
-  - `canary_route = "dry_run"`
+  - `canary_route = "metis-swap-instructions-dry-run"`
   - real submit remains disabled
 - Live proof after rollout:
   - service active/running
@@ -74,7 +76,8 @@ Still blocked:
 
 ## QuickNode Add-On Decision
 
-Current decision: do not upgrade paid add-ons yet.
+Current decision: paid add-ons are upgraded only where they are already measured
+or needed for the next tiny execution gate.
 
 Current account state:
 
@@ -85,21 +88,18 @@ Current account state:
 
 Current add-ons:
 
-- Solana Priority Fee API: free plan active.
-- Metis Jupiter Swap API: free plan active.
+- Solana Priority Fee API: Base plan active.
+- Metis Jupiter Swap API: Launch plan active.
 - Lil' Jit / Jito Bundles & Transactions: not active.
 
 When to buy:
 
-- Priority Fee API Base (`19 USD/month`):
-  - buy only if canary data shows repeated priority-fee timeout/error, 429, or
-    missing fee data after a larger sample, roughly `30-50` BUY canary orders
-  - current sample has `6 ok / 2 timeout`, which is too small to justify upgrade
-- Metis Launch (`249 USD/month`):
-  - buy before tiny real execution if we need private Metis reliability,
-    swap transaction/instruction construction, Pump.fun APIs, or better quote
-    latency
-  - current quote canary is `8/8 ok`, so free plan is enough for observation
+- Priority Fee API Advanced/Premium:
+  - buy only if Base still shows repeated 429/timeout or missing fee data after
+    larger live samples
+- Metis higher plans:
+  - buy only if Launch still shows quote/instruction latency or reliability as
+    the actual blocker
 - Lil' Jit Freshman (`89 USD/month`):
   - buy only after Jito submit/bundle route is implemented in code
   - current runtime does not use Jito/Lil' Jit, so buying it now changes nothing
@@ -293,6 +293,13 @@ Implemented locally:
   - quote route and expected raw amounts are stored per canary order
   - selected priority fee source/status/value is stored per canary order
   - latest build metadata is exposed through canary status/report coverage
+- Metis `/swap-instructions` HTTP dry-run is implemented without submitting
+  transactions:
+  - enabled by `swap_instructions_dry_run_enabled`
+  - posts a Jupiter-compatible `quoteResponse` from canary quote metadata
+  - requires `swapInstruction` in the HTTP response before simulation passes
+  - stores a short proof summary in `simulation_error` for passed orders
+  - does not sign or submit anything
 - Canary execution-readiness summary is available without submitting
   transactions:
   - latest canary order is joined with stored quote and priority-fee metadata
@@ -325,24 +332,14 @@ Continue toward tiny real execution without submitting transactions.
 
 Scope:
 
-- Keep collecting live canary data until at least `20-30` BUY canary orders.
-- Add a compact operator summary for:
-  - BUY/SELL canary counts
-  - `would_enter`, `would_skip`, and `unknown`
-  - skip reasons
-  - priority-fee timeout/error rate
-  - quote latency and decision delay
-  - latest route and price impact
-- Investigate and reduce priority-fee timeout noise:
-  - review timeout setting
-  - add bounded retry/backoff if needed
-  - keep provider errors from marking the whole order unusable when quote data
-    is otherwise valid and execution route can fall back safely
-- Implement real transaction build/simulate path behind the no-submit adapter:
-  - build request from stored quote/build metadata
-  - simulate-only first
-  - persist route, expected raw amounts, compute budget, and priority fee
-  - no submit yet
+- Roll out the HTTP swap-instructions artifact with
+  `swap_instructions_dry_run_enabled = true`.
+- Collect the first fresh eligible BUY and verify:
+  - quote event exists
+  - execution canary order reaches `execution_canary_submit_disabled`
+  - simulation proof summary contains `metis_swap_instructions_ok`
+  - no HTTP timeout/rate-limit pattern appears
+- Then continue toward tiny execution gate.
 
 Build target: `copybot-app` only if live daemon behavior changes; otherwise
 operator-only batches should build the narrow operator artifact.

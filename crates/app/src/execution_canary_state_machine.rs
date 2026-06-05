@@ -83,7 +83,7 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
         Self { config, adapter }
     }
 
-    pub(crate) fn process_buy_candidate(
+    pub(crate) async fn process_buy_candidate(
         &self,
         store: &SqliteStore,
         signal: &CopySignalRow,
@@ -179,7 +179,7 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
         store.mark_execution_canary_built(&request.order_id, now)?;
         summary.built = 1;
 
-        let simulation = match self.adapter.simulate_transaction_plan(&plan) {
+        let simulation = match self.adapter.simulate_transaction_plan(&plan).await {
             Ok(simulation) => simulation,
             Err(error) => {
                 let error = error.to_string();

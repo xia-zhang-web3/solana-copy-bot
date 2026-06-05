@@ -15,7 +15,9 @@ async fn execution_canary_state_machine_kill_switch_blocks_buy_before_reserve() 
     std::fs::write(&kill_switch_path, b"stop")?;
     let state_machine = safety_state_machine_with_kill_switch(kill_switch_path.clone());
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
 
     assert_eq!(summary.candidates, 1);
     assert_eq!(summary.safety_blocked, 1);
@@ -52,7 +54,9 @@ async fn execution_canary_state_machine_max_open_positions_blocks_buy_before_res
     )?;
     let state_machine = safety_state_machine();
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
 
     assert_eq!(summary.safety_blocked, 1);
     assert_eq!(summary.open_positions, 1);
@@ -80,7 +84,9 @@ async fn execution_canary_state_machine_daily_loss_blocks_buy_before_reserve() -
     record_closed_canary_loss(&store, now)?;
     let state_machine = safety_state_machine();
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
 
     assert_eq!(summary.safety_blocked, 1);
     assert_eq!(summary.open_positions, 0);

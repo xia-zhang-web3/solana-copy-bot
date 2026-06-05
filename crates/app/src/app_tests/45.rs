@@ -18,12 +18,15 @@ async fn execution_canary_swap_blueprint_adapter_passes_simulation_without_submi
         "[{\"swapInfo\":{\"label\":\"Pump.fun Amm\"}}]",
         Some(22_000),
     )?;
-    let state_machine = crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(
-        swap_blueprint_config(),
-        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter,
-    );
+    let config = swap_blueprint_config();
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let state_machine =
+        crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(config, adapter);
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
     let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .expect("canary order should exist");
@@ -63,12 +66,15 @@ async fn execution_canary_swap_blueprint_adapter_fails_build_on_bad_route_json()
     let signal = swap_blueprint_signal("buy-bad-route-json", now);
     store.insert_copy_signal(&signal)?;
     record_swap_blueprint_quote(&store, &signal, now, "not-json", Some(22_000))?;
-    let state_machine = crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(
-        swap_blueprint_config(),
-        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter,
-    );
+    let config = swap_blueprint_config();
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let state_machine =
+        crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(config, adapter);
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
     let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .expect("canary order should exist");

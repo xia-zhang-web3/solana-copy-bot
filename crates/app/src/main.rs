@@ -57,6 +57,7 @@ mod execution_quote_http;
 #[allow(dead_code)]
 mod execution_submit_adapter;
 mod execution_swap_blueprint;
+mod execution_swap_instructions_http;
 mod history_retention;
 mod irrelevant_backpressure;
 mod irrelevant_persistence;

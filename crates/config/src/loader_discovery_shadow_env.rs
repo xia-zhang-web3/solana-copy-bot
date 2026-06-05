@@ -150,6 +150,11 @@ pub(super) fn apply_discovery_shadow_execution_env_overrides(config: &mut AppCon
     {
         config.execution.quote_canary_timeout_ms = quote_canary_timeout_ms;
     }
+    if let Some(swap_instructions_dry_run_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_SWAP_INSTRUCTIONS_DRY_RUN_ENABLED")?
+    {
+        config.execution.swap_instructions_dry_run_enabled = swap_instructions_dry_run_enabled;
+    }
     if let Some(quote_canary_buy_size_sol) =
         parse_env_number::<f64>("SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_BUY_SIZE_SOL", "f64")?
     {

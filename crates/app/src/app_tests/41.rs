@@ -61,7 +61,9 @@ async fn execution_canary_state_machine_persists_build_plan_metadata() -> Result
         crate::execution_submit_adapter::NoSubmitExecutionAdapter,
     );
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
     let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .expect("canary order should exist");

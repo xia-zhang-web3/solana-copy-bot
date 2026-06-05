@@ -118,6 +118,7 @@ impl ExecutionCanaryRunner {
             quote_sell_slippage_bps = self.config.quote_canary_sell_slippage_bps,
             quote_base_url_configured = !self.config.quote_canary_base_url.trim().is_empty(),
             quote_api_key_configured = !self.config.quote_canary_api_key.trim().is_empty(),
+            swap_instructions_dry_run_enabled = self.config.swap_instructions_dry_run_enabled,
             priority_fee_canary_enabled = self.config.priority_fee_canary_enabled,
             priority_fee_rpc_url_configured = !self.config.priority_fee_canary_rpc_url.trim().is_empty(),
             priority_fee_min_request_interval_ms = self.config.priority_fee_canary_min_request_interval_ms,
@@ -191,7 +192,9 @@ impl ExecutionCanaryRunner {
             signals
         };
         for signal in &signals {
-            let state_summary = self.process_no_submit_state_machine(store, signal, now)?;
+            let state_summary = self
+                .process_no_submit_state_machine(store, signal, now)
+                .await?;
             apply_state_machine_summary(&mut summary, state_summary);
         }
         if let Some(order) = store
@@ -255,7 +258,9 @@ impl ExecutionCanaryRunner {
         }
         if signal.side == "buy" {
             let state_signal = copy_signal_from_shadow_signal(signal, now);
-            let state_summary = self.process_no_submit_state_machine(store, &state_signal, now)?;
+            let state_summary = self
+                .process_no_submit_state_machine(store, &state_signal, now)
+                .await?;
             apply_state_machine_summary(&mut summary, state_summary);
         }
         if let Some(order) = store
@@ -331,13 +336,13 @@ impl ExecutionCanaryRunner {
         Ok(signals)
     }
 
-    fn process_no_submit_state_machine(
+    async fn process_no_submit_state_machine(
         &self,
         store: &SqliteStore,
         signal: &CopySignalRow,
         now: DateTime<Utc>,
     ) -> Result<ExecutionCanaryStateMachineSummary> {
-        process_canary_state_machine_for_route(&self.config, store, signal, now)
+        process_canary_state_machine_for_route(&self.config, store, signal, now).await
     }
 }
 

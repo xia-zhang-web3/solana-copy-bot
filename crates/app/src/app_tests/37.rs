@@ -34,8 +34,12 @@ async fn execution_canary_state_machine_no_submit_reserves_and_disables_order() 
         crate::execution_submit_adapter::NoSubmitExecutionAdapter,
     );
 
-    let first = state_machine.process_buy_candidate(&store, &signal, now)?;
-    let second = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let first = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+    let second = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
     let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .expect("canary order should exist");
@@ -107,7 +111,9 @@ async fn execution_canary_state_machine_skips_non_buy_signal() -> Result<()> {
         crate::execution_submit_adapter::NoSubmitExecutionAdapter,
     );
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
 
     assert_eq!(summary.skipped_reason, Some("not_buy"));
     assert_eq!(summary.reserved, 0);
@@ -136,7 +142,9 @@ async fn execution_canary_state_machine_records_build_failure() -> Result<()> {
         BuildFailureAdapter,
     );
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
     let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .expect("canary order should exist");
@@ -178,7 +186,9 @@ async fn execution_canary_state_machine_records_simulation_failure() -> Result<(
         SimulationFailureAdapter,
     );
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
     let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .expect("canary order should exist");
@@ -225,7 +235,9 @@ async fn execution_canary_state_machine_restart_after_built_does_not_rebuild() -
         crate::execution_submit_adapter::NoSubmitExecutionAdapter,
     );
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
     let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .expect("canary order should exist");
@@ -292,7 +304,9 @@ async fn execution_canary_state_machine_build_request_carries_quote_priority_met
         },
     );
 
-    let summary = state_machine.process_buy_candidate(&store, &signal, now)?;
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
 
     assert_eq!(summary.reserved, 1);
     assert_eq!(summary.built, 1);
@@ -381,11 +395,11 @@ impl crate::execution_submit_adapter::ExecutionSubmitAdapter for BuildFailureAda
         Err(anyhow::anyhow!("build failed"))
     }
 
-    fn simulate_transaction_plan(
-        &self,
-        _plan: &crate::execution_submit_adapter::ExecutionTransactionPlan,
-    ) -> Result<crate::execution_submit_adapter::ExecutionSimulationResult> {
-        unreachable!("build failure should stop before simulation")
+    fn simulate_transaction_plan<'a>(
+        &'a self,
+        _plan: &'a crate::execution_submit_adapter::ExecutionTransactionPlan,
+    ) -> crate::execution_submit_adapter::ExecutionSimulationFuture<'a> {
+        Box::pin(async { unreachable!("build failure should stop before simulation") })
     }
 
     fn plan_submit(
@@ -407,13 +421,15 @@ impl crate::execution_submit_adapter::ExecutionSubmitAdapter for SimulationFailu
         crate::execution_submit_adapter::NoSubmitExecutionAdapter.build_transaction_plan(request)
     }
 
-    fn simulate_transaction_plan(
-        &self,
-        _plan: &crate::execution_submit_adapter::ExecutionTransactionPlan,
-    ) -> Result<crate::execution_submit_adapter::ExecutionSimulationResult> {
-        Ok(crate::execution_submit_adapter::ExecutionSimulationResult {
-            status: copybot_storage_core::EXECUTION_SIMULATION_STATUS_FAILED.to_string(),
-            error: Some("simulation failed".to_string()),
+    fn simulate_transaction_plan<'a>(
+        &'a self,
+        _plan: &'a crate::execution_submit_adapter::ExecutionTransactionPlan,
+    ) -> crate::execution_submit_adapter::ExecutionSimulationFuture<'a> {
+        Box::pin(async {
+            Ok(crate::execution_submit_adapter::ExecutionSimulationResult {
+                status: copybot_storage_core::EXECUTION_SIMULATION_STATUS_FAILED.to_string(),
+                error: Some("simulation failed".to_string()),
+            })
         })
     }
 
@@ -460,16 +476,20 @@ impl crate::execution_submit_adapter::ExecutionSubmitAdapter for MetadataAssertA
         crate::execution_submit_adapter::NoSubmitExecutionAdapter.build_transaction_plan(request)
     }
 
-    fn simulate_transaction_plan(
-        &self,
-        plan: &crate::execution_submit_adapter::ExecutionTransactionPlan,
-    ) -> Result<crate::execution_submit_adapter::ExecutionSimulationResult> {
-        assert_eq!(plan.client_order_id, self.expected_client_order_id);
-        assert_eq!(
-            plan.metadata.route_plan_json.as_deref(),
-            Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]")
-        );
-        crate::execution_submit_adapter::NoSubmitExecutionAdapter.simulate_transaction_plan(plan)
+    fn simulate_transaction_plan<'a>(
+        &'a self,
+        plan: &'a crate::execution_submit_adapter::ExecutionTransactionPlan,
+    ) -> crate::execution_submit_adapter::ExecutionSimulationFuture<'a> {
+        Box::pin(async move {
+            assert_eq!(plan.client_order_id, self.expected_client_order_id);
+            assert_eq!(
+                plan.metadata.route_plan_json.as_deref(),
+                Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]")
+            );
+            crate::execution_submit_adapter::NoSubmitExecutionAdapter
+                .simulate_transaction_plan(plan)
+                .await
+        })
     }
 
     fn plan_submit(

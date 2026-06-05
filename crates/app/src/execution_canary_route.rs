@@ -42,17 +42,21 @@ pub(crate) fn list_swap_blueprint_state_machine_candidates(
     Ok(executable)
 }
 
-pub(crate) fn process_canary_state_machine_for_route(
+pub(crate) async fn process_canary_state_machine_for_route(
     config: &ExecutionConfig,
     store: &SqliteStore,
     signal: &CopySignalRow,
     now: DateTime<Utc>,
 ) -> Result<ExecutionCanaryStateMachineSummary> {
     if uses_swap_blueprint_state_machine(config) {
-        let state_machine =
-            ExecutionCanaryStateMachine::new(config.clone(), JupiterMetisDryRunExecutionAdapter);
-        return state_machine.process_buy_candidate(store, signal, now);
+        let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
+        let state_machine = ExecutionCanaryStateMachine::new(config.clone(), adapter);
+        return state_machine
+            .process_buy_candidate(store, signal, now)
+            .await;
     }
     let state_machine = ExecutionCanaryStateMachine::new(config.clone(), NoSubmitExecutionAdapter);
-    state_machine.process_buy_candidate(store, signal, now)
+    state_machine
+        .process_buy_candidate(store, signal, now)
+        .await
 }
