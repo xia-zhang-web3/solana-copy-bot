@@ -94,6 +94,88 @@ fn quote_readiness_gate_ignores_skipped_priority_fee_statuses() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn quote_readiness_gate_reports_candidate_threshold_without_unblocking() -> Result<()> {
+    let store = open_migrated_store("execution-canary-quote-pnl-gate-candidate")?;
+    let opened = ts("2026-06-02T14:00:00Z");
+
+    for index in 0..38 {
+        let token = format!("CandidateToken{index}");
+        let signal_id = format!("sell-candidate-{index}");
+        let skipped = index < 8;
+        let trade_opened = opened + Duration::seconds(index);
+        let closed = trade_opened + Duration::seconds(30);
+
+        store.insert_shadow_closed_trade_exact(
+            &signal_id,
+            "leader-wallet",
+            &token,
+            50.0,
+            Some(TokenQuantity::new(50, 0)),
+            0.10,
+            0.13,
+            0.03,
+            trade_opened,
+            closed,
+        )?;
+        let close_id = store
+            .list_execution_quote_canary_close_candidates_for_signal(&signal_id, 10)?
+            .into_iter()
+            .next()
+            .expect("close candidate")
+            .id;
+        store.record_execution_quote_canary_event(&quote_event_with_slippage(
+            format!("quote:buy:candidate:{index}"),
+            Some(format!("buy-candidate-{index}")),
+            None,
+            &token,
+            "buy",
+            trade_opened,
+            if skipped {
+                "would_skip"
+            } else {
+                "would_execute"
+            },
+            "ok",
+            if skipped { 700.0 } else { 15.0 },
+        ))?;
+        store.record_execution_quote_canary_event(&quote_event(
+            format!("quote:sell:candidate:{index}"),
+            Some(format!("sell:{close_id}")),
+            Some(close_id),
+            &token,
+            "sell",
+            trade_opened + Duration::seconds(30),
+            "would_execute",
+            "ok",
+        ))?;
+    }
+
+    let summary = store.execution_canary_quote_pnl_summary(
+        opened + Duration::seconds(120),
+        opened - Duration::seconds(1),
+        100,
+    )?;
+
+    assert_eq!(summary.readiness_gate.status, "blocked");
+    assert!(!summary.readiness_gate.can_start_tiny_execution);
+    let candidate = summary
+        .readiness_gate
+        .threshold_candidate
+        .expect("threshold candidate");
+    assert_eq!(candidate.threshold_bps, 1000);
+    assert_eq!(candidate.counted_trades, 38);
+    assert_eq!(candidate.skipped_trades, 0);
+    assert!(candidate.clears_skip_rate_blocker);
+    assert!(candidate.pnl_positive);
+    assert!(summary
+        .readiness_gate
+        .checks
+        .iter()
+        .any(|check| check.name == "candidate_1000_bps" && check.status == "warn"));
+    Ok(())
+}
+
 fn quote_event(
     event_id: String,
     signal_id: Option<String>,
@@ -103,6 +185,30 @@ fn quote_event(
     signal_ts: DateTime<Utc>,
     decision_status: &str,
     priority_fee_status: &str,
+) -> ExecutionQuoteCanaryEventInsert {
+    quote_event_with_slippage(
+        event_id,
+        signal_id,
+        shadow_closed_trade_id,
+        token,
+        side,
+        signal_ts,
+        decision_status,
+        priority_fee_status,
+        15.0,
+    )
+}
+
+fn quote_event_with_slippage(
+    event_id: String,
+    signal_id: Option<String>,
+    shadow_closed_trade_id: Option<i64>,
+    token: &str,
+    side: &str,
+    signal_ts: DateTime<Utc>,
+    decision_status: &str,
+    priority_fee_status: &str,
+    slippage_bps: f64,
 ) -> ExecutionQuoteCanaryEventInsert {
     let (quote_in_amount_raw, quote_out_amount_raw, leader_notional_sol) = if side == "sell" {
         ("50", "125000000", 0.125)
@@ -127,7 +233,7 @@ fn quote_event(
         quote_out_amount_raw: Some(quote_out_amount_raw.to_string()),
         quote_price_sol: Some(0.002),
         shadow_price_sol: Some(0.002),
-        slippage_bps: Some(15.0),
+        slippage_bps: Some(slippage_bps),
         price_impact_pct: Some(0.02),
         route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
         priority_fee_status: Some(priority_fee_status.to_string()),

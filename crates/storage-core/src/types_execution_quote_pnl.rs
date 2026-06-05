@@ -115,6 +115,19 @@ pub struct ExecutionCanaryQuotePnlThresholdSummary {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuoteThresholdCandidate {
+    pub threshold_bps: u64,
+    pub counted_trades: u64,
+    pub skipped_trades: u64,
+    pub unknown_trades: u64,
+    pub skip_rate_pct: f64,
+    pub quote_win_rate_pct: f64,
+    pub quote_adjusted_pnl_after_priority_fee_sol: f64,
+    pub clears_skip_rate_blocker: bool,
+    pub pnl_positive: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ExecutionCanaryQuoteBucketSummary {
     pub bucket: String,
     pub trades: u64,
@@ -159,6 +172,7 @@ pub struct ExecutionCanaryQuoteReadinessGate {
     pub non_ok_priority_fee_rate_pct: f64,
     pub avg_entry_quote_latency_ms: f64,
     pub avg_entry_decision_delay_ms: f64,
+    pub threshold_candidate: Option<ExecutionCanaryQuoteThresholdCandidate>,
     pub checks: Vec<ExecutionCanaryQuoteReadinessCheck>,
 }
 

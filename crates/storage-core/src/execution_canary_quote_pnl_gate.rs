@@ -1,11 +1,12 @@
 use crate::{
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuoteReadinessCheck,
-    ExecutionCanaryQuoteReadinessGate,
+    ExecutionCanaryQuoteReadinessGate, ExecutionCanaryQuoteThresholdCandidate,
 };
 
 const MIN_MARKET_CLOSED_TRADES: u64 = 30;
 const MAX_SKIP_RATE_PCT: f64 = 20.0;
 const WARN_SKIP_RATE_PCT: f64 = 15.0;
+const CANDIDATE_THRESHOLD_BPS: u64 = 1000;
 const MAX_NON_OK_PRIORITY_FEE_RATE_PCT: f64 = 10.0;
 const WARN_NON_OK_PRIORITY_FEE_RATE_PCT: f64 = 0.0;
 const MAX_ENTRY_QUOTE_LATENCY_MS: f64 = 500.0;
@@ -35,6 +36,7 @@ pub(crate) fn build_quote_readiness_gate(
     let non_ok_priority_fee_rate_pct = non_ok_priority_fee_rate_pct(summary);
     let avg_entry_quote_latency_ms = summary.quote_diagnostics.entry_all.quote_latency_ms_avg;
     let avg_entry_decision_delay_ms = summary.quote_diagnostics.entry_all.decision_delay_ms_avg;
+    let threshold_candidate = threshold_candidate(summary);
 
     let mut checks = Vec::new();
     checks.push(min_market_trades_check(market_closed_trades));
@@ -45,6 +47,11 @@ pub(crate) fn build_quote_readiness_gate(
         summary.quote_adjusted_pnl_after_priority_fee_sol,
     ));
     checks.push(skip_rate_check(skip_rate_pct));
+    if skip_rate_pct > MAX_SKIP_RATE_PCT {
+        if let Some(candidate) = &threshold_candidate {
+            checks.push(candidate_threshold_check(candidate));
+        }
+    }
     checks.push(priority_fee_check(
         priority_fee_sample_count(summary),
         non_ok_priority_fee_rate_pct,
@@ -53,6 +60,7 @@ pub(crate) fn build_quote_readiness_gate(
     checks.push(entry_decision_delay_check(avg_entry_decision_delay_ms));
     checks.push(stale_rug_like_check(
         summary.shadow_close_breakdown.stale_rug_like_closed_trades,
+        summary.shadow_close_breakdown.stale_rug_like_pnl_sol,
     ));
     checks.push(force_exit_check(
         summary.force_exit_counted_trades + summary.force_exit_skipped_entry_trades,
@@ -90,6 +98,7 @@ pub(crate) fn build_quote_readiness_gate(
         non_ok_priority_fee_rate_pct,
         avg_entry_quote_latency_ms,
         avg_entry_decision_delay_ms,
+        threshold_candidate,
         checks,
     }
 }
@@ -181,6 +190,54 @@ fn skip_rate_check(skip_rate_pct: f64) -> ExecutionCanaryQuoteReadinessCheck {
     )
 }
 
+fn threshold_candidate(
+    summary: &ExecutionCanaryQuotePnlSummary,
+) -> Option<ExecutionCanaryQuoteThresholdCandidate> {
+    let threshold = summary
+        .threshold_summaries
+        .iter()
+        .find(|summary| summary.threshold_bps == CANDIDATE_THRESHOLD_BPS)?;
+    let sampled_trades =
+        threshold.counted_trades + threshold.skipped_trades + threshold.unknown_trades;
+    let quote_win_trades = threshold.quote_win_count + threshold.quote_loss_count;
+    let skip_rate_pct = percent(threshold.skipped_trades, sampled_trades);
+    Some(ExecutionCanaryQuoteThresholdCandidate {
+        threshold_bps: threshold.threshold_bps,
+        counted_trades: threshold.counted_trades,
+        skipped_trades: threshold.skipped_trades,
+        unknown_trades: threshold.unknown_trades,
+        skip_rate_pct,
+        quote_win_rate_pct: percent(threshold.quote_win_count, quote_win_trades),
+        quote_adjusted_pnl_after_priority_fee_sol: threshold
+            .quote_adjusted_pnl_after_priority_fee_sol,
+        clears_skip_rate_blocker: skip_rate_pct <= MAX_SKIP_RATE_PCT,
+        pnl_positive: threshold.quote_adjusted_pnl_after_priority_fee_sol > 0.0,
+    })
+}
+
+fn candidate_threshold_check(
+    candidate: &ExecutionCanaryQuoteThresholdCandidate,
+) -> ExecutionCanaryQuoteReadinessCheck {
+    let reason = if candidate.clears_skip_rate_blocker && candidate.pnl_positive {
+        "candidate threshold would reduce active skips, but runtime threshold is unchanged"
+    } else {
+        "candidate threshold is tracked only; do not widen the active gate yet"
+    };
+    check(
+        "candidate_1000_bps",
+        CHECK_WARN,
+        format!(
+            "counted={} skipped={} skip={} pnl={}",
+            candidate.counted_trades,
+            candidate.skipped_trades,
+            pct_value(candidate.skip_rate_pct),
+            sol_value(candidate.quote_adjusted_pnl_after_priority_fee_sol)
+        ),
+        "candidate only; active gate unchanged",
+        reason,
+    )
+}
+
 fn priority_fee_check(
     priority_fee_samples: u64,
     non_ok_priority_fee_rate_pct: f64,
@@ -245,7 +302,10 @@ fn entry_decision_delay_check(
     )
 }
 
-fn stale_rug_like_check(stale_rug_like_closed_trades: u64) -> ExecutionCanaryQuoteReadinessCheck {
+fn stale_rug_like_check(
+    stale_rug_like_closed_trades: u64,
+    stale_rug_like_pnl_sol: f64,
+) -> ExecutionCanaryQuoteReadinessCheck {
     check(
         "stale_rug_like_closes",
         if stale_rug_like_closed_trades == 0 {
@@ -253,7 +313,11 @@ fn stale_rug_like_check(stale_rug_like_closed_trades: u64) -> ExecutionCanaryQuo
         } else {
             CHECK_WARN
         },
-        stale_rug_like_closed_trades.to_string(),
+        format!(
+            "{} / {}",
+            stale_rug_like_closed_trades,
+            sol_value(stale_rug_like_pnl_sol)
+        ),
         "0 preferred",
         "rug-like stale closes are token risk, not quote path failure",
     )
