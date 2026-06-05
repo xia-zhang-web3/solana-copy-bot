@@ -50,3 +50,32 @@ fn priority_fee_timeout_is_non_blocking_canary_metadata() {
         Some("within_slippage_limit")
     );
 }
+
+#[test]
+fn priority_fee_base_rate_contract_accepts_250ms_interval() {
+    let mut config = copybot_config::ExecutionConfig::default();
+    config.canary_enabled = true;
+    config.priority_fee_canary_enabled = true;
+    config.priority_fee_canary_rpc_url = "https://example.com/rpc".to_string();
+    config.priority_fee_canary_min_request_interval_ms = 250;
+    config.priority_fee_canary_cache_ttl_ms = 1_000;
+
+    crate::config_contract::validate_execution_canary_contract(&config)
+        .expect("Base priority fee rate settings should be accepted");
+}
+
+#[test]
+fn priority_fee_rate_contract_rejects_too_aggressive_interval() {
+    let mut config = copybot_config::ExecutionConfig::default();
+    config.canary_enabled = true;
+    config.priority_fee_canary_enabled = true;
+    config.priority_fee_canary_rpc_url = "https://example.com/rpc".to_string();
+    config.priority_fee_canary_min_request_interval_ms = 50;
+
+    let error = crate::config_contract::validate_execution_canary_contract(&config)
+        .expect_err("too aggressive priority fee interval should be rejected");
+
+    assert!(error
+        .to_string()
+        .contains("priority_fee_canary_min_request_interval_ms"));
+}

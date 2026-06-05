@@ -120,6 +120,8 @@ impl ExecutionCanaryRunner {
             quote_api_key_configured = !self.config.quote_canary_api_key.trim().is_empty(),
             priority_fee_canary_enabled = self.config.priority_fee_canary_enabled,
             priority_fee_rpc_url_configured = !self.config.priority_fee_canary_rpc_url.trim().is_empty(),
+            priority_fee_min_request_interval_ms = self.config.priority_fee_canary_min_request_interval_ms,
+            priority_fee_cache_ttl_ms = self.config.priority_fee_canary_cache_ttl_ms,
             "execution canary status"
         );
     }

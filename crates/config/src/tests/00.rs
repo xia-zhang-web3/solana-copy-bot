@@ -104,6 +104,11 @@ fn execution_defaults_are_fail_closed_and_canary_dry_run_only() {
     assert!(execution.priority_fee_canary_rpc_url.is_empty());
     assert_eq!(execution.priority_fee_canary_timeout_ms, 1_500);
     assert_eq!(
+        execution.priority_fee_canary_min_request_interval_ms,
+        1_100
+    );
+    assert_eq!(execution.priority_fee_canary_cache_ttl_ms, 5_000);
+    assert_eq!(
         execution.priority_fee_canary_account,
         "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
     );

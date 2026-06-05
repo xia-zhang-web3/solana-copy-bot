@@ -9,9 +9,6 @@ use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::Mutex;
 
-const PRIORITY_FEE_MIN_REQUEST_INTERVAL: StdDuration = StdDuration::from_millis(1_100);
-const PRIORITY_FEE_CACHE_TTL: StdDuration = StdDuration::from_secs(5);
-
 #[derive(Debug, Clone)]
 pub(crate) struct PriorityFeeSampler {
     config: ExecutionConfig,
@@ -81,12 +78,12 @@ impl PriorityFeeSampler {
         let now = Instant::now();
         let mut state = self.state.lock().await;
         if let Some(cached) = state.cached.as_ref() {
-            if now.duration_since(cached.cached_at) <= PRIORITY_FEE_CACHE_TTL {
+            if now.duration_since(cached.cached_at) <= self.cache_ttl() {
                 return Some(cached.sample.clone());
             }
         }
         if let Some(last_request_at) = state.last_request_at {
-            if now.duration_since(last_request_at) < PRIORITY_FEE_MIN_REQUEST_INTERVAL {
+            if now.duration_since(last_request_at) < self.min_request_interval() {
                 return Some(
                     state
                         .cached
@@ -98,6 +95,18 @@ impl PriorityFeeSampler {
         }
         state.last_request_at = Some(now);
         None
+    }
+
+    fn min_request_interval(&self) -> StdDuration {
+        StdDuration::from_millis(
+            self.config
+                .priority_fee_canary_min_request_interval_ms
+                .max(1),
+        )
+    }
+
+    fn cache_ttl(&self) -> StdDuration {
+        StdDuration::from_millis(self.config.priority_fee_canary_cache_ttl_ms.max(1))
     }
 
     async fn fetch_sample_inner(&self) -> Result<PriorityFeeSample> {

@@ -126,6 +126,20 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
                 "execution.priority_fee_canary_timeout_ms must be within 100..=10000"
             ));
         }
+        if config.priority_fee_canary_min_request_interval_ms < 100
+            || config.priority_fee_canary_min_request_interval_ms > 10_000
+        {
+            return Err(anyhow!(
+                "execution.priority_fee_canary_min_request_interval_ms must be within 100..=10000"
+            ));
+        }
+        if config.priority_fee_canary_cache_ttl_ms < 250
+            || config.priority_fee_canary_cache_ttl_ms > 60_000
+        {
+            return Err(anyhow!(
+                "execution.priority_fee_canary_cache_ttl_ms must be within 250..=60000"
+            ));
+        }
         if config.priority_fee_canary_account.trim().is_empty()
             || contains_placeholder_value(&config.priority_fee_canary_account)
         {

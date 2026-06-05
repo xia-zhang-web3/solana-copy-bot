@@ -77,3 +77,34 @@ fn config_debug_redacts_secret_values() {
         );
     }
 }
+
+#[test]
+fn execution_priority_fee_canary_rate_env_overrides_parse() {
+    with_temp_config_file("", |config_path| {
+        with_clean_copybot_env(|| {
+            for (key, value) in [
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_MIN_REQUEST_INTERVAL_MS",
+                    "250",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_CACHE_TTL_MS",
+                    "1000",
+                ),
+            ] {
+                std::env::set_var(key, value);
+            }
+
+            let (config, _) = load_from_env_or_default(config_path)
+                .expect("priority fee canary rate env overrides must parse");
+
+            assert_eq!(
+                config
+                    .execution
+                    .priority_fee_canary_min_request_interval_ms,
+                250
+            );
+            assert_eq!(config.execution.priority_fee_canary_cache_ttl_ms, 1000);
+        });
+    });
+}

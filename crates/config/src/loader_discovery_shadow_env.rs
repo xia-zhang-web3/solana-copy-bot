@@ -188,6 +188,19 @@ pub(super) fn apply_discovery_shadow_execution_env_overrides(config: &mut AppCon
     )? {
         config.execution.priority_fee_canary_timeout_ms = priority_fee_canary_timeout_ms;
     }
+    if let Some(priority_fee_canary_min_request_interval_ms) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_MIN_REQUEST_INTERVAL_MS",
+        "u64",
+    )? {
+        config.execution.priority_fee_canary_min_request_interval_ms =
+            priority_fee_canary_min_request_interval_ms;
+    }
+    if let Some(priority_fee_canary_cache_ttl_ms) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_CACHE_TTL_MS",
+        "u64",
+    )? {
+        config.execution.priority_fee_canary_cache_ttl_ms = priority_fee_canary_cache_ttl_ms;
+    }
     if let Ok(priority_fee_canary_account) =
         env::var("SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_ACCOUNT")
     {

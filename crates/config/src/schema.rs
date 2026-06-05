@@ -77,6 +77,8 @@ pub struct ExecutionConfig {
     pub priority_fee_canary_enabled: bool,
     pub priority_fee_canary_rpc_url: String,
     pub priority_fee_canary_timeout_ms: u64,
+    pub priority_fee_canary_min_request_interval_ms: u64,
+    pub priority_fee_canary_cache_ttl_ms: u64,
     pub priority_fee_canary_account: String,
     pub priority_fee_canary_last_n_blocks: u64,
 }
@@ -107,6 +109,8 @@ impl Default for ExecutionConfig {
             priority_fee_canary_enabled: false,
             priority_fee_canary_rpc_url: String::new(),
             priority_fee_canary_timeout_ms: 1_500,
+            priority_fee_canary_min_request_interval_ms: 1_100,
+            priority_fee_canary_cache_ttl_ms: 5_000,
             priority_fee_canary_account: "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4".to_string(),
             priority_fee_canary_last_n_blocks: 100,
         }
@@ -162,6 +166,14 @@ impl fmt::Debug for ExecutionConfig {
             .field(
                 "priority_fee_canary_timeout_ms",
                 &self.priority_fee_canary_timeout_ms,
+            )
+            .field(
+                "priority_fee_canary_min_request_interval_ms",
+                &self.priority_fee_canary_min_request_interval_ms,
+            )
+            .field(
+                "priority_fee_canary_cache_ttl_ms",
+                &self.priority_fee_canary_cache_ttl_ms,
             )
             .field(
                 "priority_fee_canary_account",
