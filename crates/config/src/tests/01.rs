@@ -412,6 +412,10 @@ fn load_from_env_applies_execution_canary_overrides() {
                     "true",
                 ),
                 (
+                    "SOLANA_COPY_BOT_EXECUTION_SWAP_TRANSACTION_DRY_RUN_ENABLED",
+                    "true",
+                ),
+                (
                     "SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_BUY_SIZE_SOL",
                     "0.2",
                 ),
@@ -474,6 +478,7 @@ fn load_from_env_applies_execution_canary_overrides() {
             assert_eq!(config.execution.quote_canary_api_key, "quote-key");
             assert_eq!(config.execution.quote_canary_timeout_ms, 900);
             assert!(config.execution.swap_instructions_dry_run_enabled);
+            assert!(config.execution.swap_transaction_dry_run_enabled);
             assert_eq!(config.execution.quote_canary_buy_size_sol, 0.2);
             assert_eq!(config.execution.quote_canary_slippage_bps, 120);
             assert_eq!(config.execution.quote_canary_buy_slippage_bps, 150);

@@ -3,6 +3,7 @@ use crate::execution_swap_blueprint::{
     ExecutionSwapBlueprint,
 };
 use crate::execution_swap_instructions_http::fetch_swap_instructions_dry_run;
+use crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run;
 use anyhow::Result;
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
@@ -215,10 +216,13 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 anyhow::bail!("missing swap blueprint for dry-run simulation");
             };
             validate_execution_swap_blueprint_for_simulation(blueprint)?;
-            let proof = fetch_swap_instructions_dry_run(&self.http, &self.config, plan).await?;
+            let instructions_proof =
+                fetch_swap_instructions_dry_run(&self.http, &self.config, plan).await?;
+            let transaction_proof =
+                fetch_swap_transaction_dry_run(&self.http, &self.config, plan).await?;
             Ok(ExecutionSimulationResult {
                 status: EXECUTION_SIMULATION_STATUS_PASSED.to_string(),
-                error: proof,
+                error: combined_simulation_proof(instructions_proof, transaction_proof),
             })
         })
     }
@@ -230,5 +234,17 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 request.route, request.side, request.token
             ),
         })
+    }
+}
+
+fn combined_simulation_proof(
+    instructions_proof: Option<String>,
+    transaction_proof: Option<String>,
+) -> Option<String> {
+    match (instructions_proof, transaction_proof) {
+        (Some(instructions), Some(transaction)) => Some(format!("{instructions}; {transaction}")),
+        (Some(instructions), None) => Some(instructions),
+        (None, Some(transaction)) => Some(transaction),
+        (None, None) => None,
     }
 }

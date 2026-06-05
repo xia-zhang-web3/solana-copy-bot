@@ -29,6 +29,8 @@ Done:
   from SQLite.
 - Metis swap-instructions dry-run HTTP proof is implemented behind an explicit
   config flag.
+- Metis swap transaction dry-run HTTP proof is implemented locally behind an
+  explicit config flag; rollout still needs artifact deploy and live proof.
 - Production artifact rollout for live no-submit canary is complete:
   - `copybot-app` artifact installed from an off-production Linux build
   - `execution.enabled = false`
@@ -56,7 +58,8 @@ Latest live canary sample:
 
 Still blocked:
 
-- Real transaction build/simulate/submit/confirm path is not implemented.
+- Transaction build proof exists in dry-run; signing, submit, confirm, and
+  recovery are not implemented.
 - Real position state is not implemented.
 - Real SELL handling for owned positions is not implemented.
 - Safe retry/recovery after submit or confirm uncertainty is not implemented.
@@ -300,6 +303,13 @@ Implemented locally:
   - requires `swapInstruction` in the HTTP response before simulation passes
   - stores a short proof summary in `simulation_error` for passed orders
   - does not sign or submit anything
+- Metis `/swap` transaction HTTP dry-run is implemented without submitting
+  transactions:
+  - enabled by `swap_transaction_dry_run_enabled`
+  - posts the same Jupiter-compatible `quoteResponse` from canary quote metadata
+  - requires `swapTransaction` in the HTTP response before simulation passes
+  - stores a short `metis_swap_transaction_ok` proof summary for passed orders
+  - does not sign or submit anything
 - Canary execution-readiness summary is available without submitting
   transactions:
   - latest canary order is joined with stored quote and priority-fee metadata
@@ -332,14 +342,15 @@ Continue toward tiny real execution without submitting transactions.
 
 Scope:
 
-- Roll out the HTTP swap-instructions artifact with
-  `swap_instructions_dry_run_enabled = true`.
+- Roll out the HTTP swap transaction artifact with
+  `swap_transaction_dry_run_enabled = true` after review.
 - Collect the first fresh eligible BUY and verify:
   - quote event exists
   - execution canary order reaches `execution_canary_submit_disabled`
-  - simulation proof summary contains `metis_swap_instructions_ok`
+  - simulation proof summary contains `metis_swap_transaction_ok`
   - no HTTP timeout/rate-limit pattern appears
-- Then continue toward tiny execution gate.
+- Then build the signing/submit/confirm canary path behind the existing tiny
+  gate, still default-disabled.
 
 Build target: `copybot-app` only if live daemon behavior changes; otherwise
 operator-only batches should build the narrow operator artifact.

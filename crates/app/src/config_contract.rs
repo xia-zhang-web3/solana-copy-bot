@@ -116,6 +116,11 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
             "execution.swap_instructions_dry_run_enabled requires quote canary metadata"
         ));
     }
+    if config.swap_transaction_dry_run_enabled && !config.quote_canary_enabled {
+        return Err(anyhow!(
+            "execution.swap_transaction_dry_run_enabled requires quote canary metadata"
+        ));
+    }
     if config.priority_fee_canary_enabled {
         if config.priority_fee_canary_rpc_url.trim().is_empty()
             || contains_placeholder_value(&config.priority_fee_canary_rpc_url)

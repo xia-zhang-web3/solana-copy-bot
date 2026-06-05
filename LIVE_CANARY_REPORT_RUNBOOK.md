@@ -1,0 +1,366 @@
+# Live Canary Report Runbook
+
+Updated: `2026-06-05`
+
+This is the current production report runbook for shadow trading, quote canary,
+Metis swap dry-run proof, tiny execution readiness, and stale-close triage. It
+is not an approval to change production state.
+
+## Source Commits
+
+This runbook consolidates the report work from git history:
+
+- `3586c688` - `copybot_execution_canary_quote_pnl` and readiness operators.
+- `35efc3e0` - stale/rug-like breakdown, buckets, and improved canary report.
+- `a994c6a8` - tiny execution gate inside quote-PnL output.
+- `4157eadc` - Metis `/swap-instructions` dry-run proof.
+- Current batch - Metis `/swap` transaction dry-run proof.
+- `910ae413` - previous operations report runbook.
+
+## Current Stage
+
+- Shadow trading uses fixed `0.2 SOL` accounting.
+- Quote canary is the main measurement path for entry/exit quality.
+- BUY slippage threshold is currently evaluated around `500 bps`.
+- Metis swap-instructions dry-run is measured through the canary route.
+- Metis swap transaction dry-run may also be measured when
+  `swap_transaction_dry_run_enabled=true`.
+- Priority Fee API is measured and included in quote PnL after fee.
+- Tiny execution gate is report-only until a separate explicit rollout.
+
+Use the newest relevant rollout/config timestamp as `SINCE`. Do not use a
+rolling 24h window as the main answer unless the user asks for it.
+
+## Rules
+
+- Do not enable `execution.enabled`.
+- Do not submit trades.
+- Do not restart the daemon for read-only reports.
+- Do not run release builds on production for reports.
+- Do not mix stale/rug-like closes into normal market PnL.
+- Do not call BUY quote events "trades"; closed BUY-to-SELL pairs are trades.
+- Do not hand-build a new SQLite report unless the operator is missing or
+  failed, and say that it is fallback.
+- `copybot_execution_canary_quote_pnl --limit` max is `200`.
+- `copybot_execution_canary_readiness` does not support `--since`; use `--limit`.
+
+## Environment
+
+```bash
+KEY=/Users/tigranambarcumyan/Documents/keys/solana-copy-bot.pem
+HOST=ubuntu@52.28.0.218
+DB=/var/www/solana-copy-bot/state/live_runtime.db
+CONFIG=/etc/solana-copy-bot/live.server.toml
+QUOTE_BIN=/var/www/solana-copy-bot/bin/copybot_execution_canary_quote_pnl
+READY_BIN=/var/www/solana-copy-bot/bin/copybot_execution_canary_readiness
+
+# Set this explicitly for every report.
+SINCE=2026-06-05T10:00:00Z
+LIMIT=200
+```
+
+## Health First
+
+Run this before any trading report.
+
+```bash
+ssh -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" 'bash -s' <<'REMOTE'
+set -euo pipefail
+DB=/var/www/solana-copy-bot/state/live_runtime.db
+
+echo "TIME"
+date -u +"%Y-%m-%dT%H:%M:%SZ"
+
+echo "SERVICE"
+systemctl show solana-copy-bot.service \
+  -p ActiveState -p SubState -p MainPID -p NRestarts --no-pager
+
+echo "ARTIFACT"
+readlink -f /var/www/solana-copy-bot/bin/copybot-app || true
+
+echo "BUILDS_ON_PROD"
+ps -eo pid,comm,args | awk '/[c]argo|[r]ustc/ {print}' || true
+
+echo "DISK_MEMORY"
+df -h / /var/www/solana-copy-bot/state
+free -h
+
+echo "CONFIG_EXECUTION"
+sudo awk '$0 ~ /^\[/ {section=$0}
+  section=="[execution]" && (
+    $1=="enabled" ||
+    $1=="canary_enabled" ||
+    $1=="canary_dry_run" ||
+    $1=="canary_route" ||
+    $1=="quote_canary_enabled" ||
+    $1=="quote_canary_buy_slippage_bps" ||
+    $1=="quote_canary_sell_slippage_bps" ||
+    $1=="swap_instructions_dry_run_enabled" ||
+    $1=="swap_transaction_dry_run_enabled"
+  ) {print}' /etc/solana-copy-bot/live.server.toml
+
+echo "WARN_ERROR_LAST_30M"
+journalctl -u solana-copy-bot.service --since "30 minutes ago" --no-pager \
+  | grep -E " WARN | ERROR | panic | panicked" || true
+
+echo "INGESTION_LAST"
+journalctl -u solana-copy-bot.service --since "20 minutes ago" --no-pager \
+  | grep "ingestion pipeline metrics" | tail -1 || true
+
+echo "SQLITE_LAST"
+journalctl -u solana-copy-bot.service --since "20 minutes ago" --no-pager \
+  | grep "sqlite contention counters" | tail -1 || true
+
+echo "OPEN_LOTS"
+sudo -u copybot sqlite3 -readonly -header -column "$DB" "
+select count(*) open_lots,
+       round(coalesce(sum(cost_sol),0),6) open_cost_sol,
+       min(opened_ts) oldest_open,
+       max(opened_ts) newest_open
+from shadow_lots;"
+REMOTE
+```
+
+Normal health:
+
+- service `ActiveState=active`, `SubState=running`
+- `NRestarts=0` unless a rollout just happened
+- no `cargo` or `rustc` on production
+- ingestion has `stream_gap_detected=0`, `ws_notifications_dropped=0`,
+  `rpc_429=0`, `rpc_5xx=0`
+- SQLite `busy` and `write_retry` are not increasing
+
+## Main Canary PnL Report
+
+This is the primary report for the current development stage.
+
+```bash
+ssh -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" \
+  "SINCE='$SINCE' LIMIT='$LIMIT' bash -s" <<'REMOTE'
+set -euo pipefail
+DB=/var/www/solana-copy-bot/state/live_runtime.db
+BIN=/var/www/solana-copy-bot/bin/copybot_execution_canary_quote_pnl
+
+REPORT="$(sudo -u copybot "$BIN" --db-path "$DB" --since "$SINCE" --limit "$LIMIT" --json)"
+printf '%s\n' "$REPORT" | jq -r '
+if .reason_class != "execution_canary_quote_pnl_loaded" then
+  "QUOTE_PNL_ERROR reason=\(.reason_class) error=\(.error)"
+else
+  .summary as $s |
+  .tiny_execution_gate as $g |
+  "WINDOW since=\(.since) as_of=\(.as_of) limit=\($s.limit)",
+  "SHADOW_TOTAL closed=\($s.shadow_close_breakdown.total_closed_trades) win_loss=\($s.shadow_close_breakdown.total_win_count)/\($s.shadow_close_breakdown.total_loss_count) pnl=\($s.shadow_close_breakdown.total_pnl_sol)",
+  "SHADOW_MARKET closed=\($s.shadow_close_breakdown.market_closed_trades) pnl=\($s.shadow_close_breakdown.market_pnl_sol)",
+  "SHADOW_STALE closed=\($s.shadow_close_breakdown.stale_closed_trades) rug_like=\($s.shadow_close_breakdown.stale_rug_like_closed_trades) pnl=\($s.shadow_close_breakdown.stale_pnl_sol)",
+  "CANARY_MARKET closed=\($s.total_closed_trades) counted=\($s.pnl_counted_trades) skipped=\($s.skipped_trades) unknown=\($s.unknown_trades)",
+  "CANARY_PNL quote_win_loss=\($s.quote_win_count)/\($s.quote_loss_count) shadow_pnl=\($s.shadow_pnl_sol) quote_after_fee=\($s.quote_adjusted_pnl_after_priority_fee_sol) delta_after_fee=\($s.quote_after_fee_vs_shadow_delta_sol)",
+  "SKIPS skipped_shadow_pnl=\($s.skipped_shadow_pnl_sol) skipped_counterfactual_after_fee=\($s.skipped_counterfactual_pnl_after_priority_fee_sol)",
+  "FORCE_EXIT counted=\($s.force_exit_counted_trades) skipped_entry=\($s.force_exit_skipped_entry_trades)",
+  "ENTRY_DIAG counted_events=\($s.quote_diagnostics.entry_counted.events) avg_delay_ms=\($s.quote_diagnostics.entry_counted.decision_delay_ms_avg) avg_quote_ms=\($s.quote_diagnostics.entry_counted.quote_latency_ms_avg) avg_slippage_bps=\($s.quote_diagnostics.entry_counted.slippage_bps_avg)",
+  "THRESHOLDS " + (
+    $s.threshold_summaries
+    | map("\(.threshold_bps)bps counted=\(.counted_trades) skipped=\(.skipped_trades) unknown=\(.unknown_trades) pnl_fee=\(.quote_adjusted_pnl_after_priority_fee_sol)")
+    | join(" | ")
+  ),
+  "BUY_SLIPPAGE_BUCKETS " + (
+    $s.buy_slippage_buckets
+    | map("\(.bucket):n=\(.trades),shadow=\(.shadow_pnl_sol),quote_fee=\(.quote_adjusted_pnl_after_priority_fee_sol)")
+    | join(" | ")
+  ),
+  "DELAY_BUCKETS " + (
+    $s.entry_decision_delay_buckets
+    | map("\(.bucket):n=\(.trades),quote_fee=\(.quote_adjusted_pnl_after_priority_fee_sol)")
+    | join(" | ")
+  ),
+  "LEADER_NOTIONAL_BUCKETS " + (
+    $s.buy_leader_notional_buckets
+    | map("\(.bucket):n=\(.trades),quote_fee=\(.quote_adjusted_pnl_after_priority_fee_sol)")
+    | join(" | ")
+  ),
+  "ROUTES " + (
+    $s.route_counts
+    | map("\(.side):\(.label)=\(.events)")
+    | join(" | ")
+  ),
+  "PRIORITY_FEE " + (
+    $s.priority_fee_status_counts
+    | map("\(.side):\(.status)=\(.events)")
+    | join(" | ")
+  ),
+  "QUOTE_GATE status=\($s.readiness_gate.status) can_start=\($s.readiness_gate.can_start_tiny_execution) blockers=\($s.readiness_gate.blocker_count) warnings=\($s.readiness_gate.warning_count) min_market=\($s.readiness_gate.min_market_closed_trades) market=\($s.readiness_gate.market_closed_trades) skip_rate=\($s.readiness_gate.skip_rate_pct) unknown_rate=\($s.readiness_gate.unknown_rate_pct)",
+  "TINY_GATE status=\($g.status) can_start=\($g.can_start_tiny_execution) blockers=\($g.blocker_count) warnings=\($g.warning_count) latest_status=\($g.latest_order_status) latest_simulation=\($g.latest_simulation_status) latest_age_s=\($g.latest_metadata_age_seconds)",
+  "TINY_CHECKS " + (
+    $g.checks
+    | map("\(.name)=\(.status)(value=\(.value),threshold=\(.threshold))")
+    | join(" | ")
+  )
+end'
+REMOTE
+```
+
+This report answers:
+
+- how many closed market pairs are in the current sample
+- Shadow PnL vs canary quote-adjusted PnL after priority fee
+- skipped/unknown count and how much Shadow PnL was skipped
+- threshold candidates for `150/300/500/1000 bps`
+- slippage, delay, leader-notional, route, and priority-fee buckets
+- Metis dry-run status through `latest_simulation=passed`
+- If transaction dry-run is enabled, the latest proof should include
+  `metis_swap_transaction_ok`
+- tiny execution gate blockers and warnings
+
+If `reason` is not `execution_canary_quote_pnl_loaded`, do not invent a manual
+replacement. Report the operator error first.
+
+## Latest Entry Readiness Report
+
+Use this to inspect the latest canary BUY path and recent canary-order window.
+
+```bash
+ssh -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" \
+  "LIMIT='$LIMIT' bash -s" <<'REMOTE'
+set -euo pipefail
+DB=/var/www/solana-copy-bot/state/live_runtime.db
+BIN=/var/www/solana-copy-bot/bin/copybot_execution_canary_readiness
+
+REPORT="$(sudo -u copybot "$BIN" --db-path "$DB" --limit "$LIMIT" --json)"
+printf '%s\n' "$REPORT" | jq -r '
+if .reason_class != "execution_canary_readiness_loaded" then
+  "READINESS_ERROR reason=\(.reason_class) error=\(.error)"
+else
+  .summary as $s |
+  .window as $w |
+  "LATEST status=\($s.readiness_status) reason=\($s.readiness_reason) orders=\($s.total_orders) submit_disabled=\($s.submit_disabled_orders) failed=\($s.failed_orders)",
+  "LATEST_META order_status=\($s.latest.order_status) route=\($s.latest.route) quote_status=\($s.latest.quote_status) decision=\($s.latest.decision_status) slippage_bps=\($s.latest.slippage_bps) price_impact=\($s.latest.price_impact_pct) priority_fee=\($s.latest.priority_fee_status):\($s.latest.priority_fee_lamports)",
+  "WINDOW limit=\($w.limit) total=\($w.total_orders) metadata=\($w.metadata_orders) missing=\($w.missing_metadata_orders) would_enter=\($w.would_enter_orders) would_skip=\($w.would_skip_orders) unknown=\($w.unknown_orders) latest_age_s=\($w.latest_metadata_age_seconds)",
+  "WINDOW_REASONS " + ($w.decision_reasons | map("\(.key)=\(.count)") | join(" | ")),
+  "WINDOW_PROVIDER_ERRORS " + ($w.provider_errors | map("\(.key)=\(.count)") | join(" | ")),
+  "WINDOW_ROUTES " + ($w.routes | map("\(.key)=\(.count)") | join(" | "))
+end'
+REMOTE
+```
+
+Use this report to answer whether canary BUY candidates are reaching
+`would_enter`, `would_skip`, or `unknown`. It is not a PnL report.
+
+## Stale And Rug-Like Triage
+
+Use only when stale appears in the main report.
+
+```bash
+ssh -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" \
+  "SINCE='$SINCE' bash -s" <<'REMOTE'
+set -euo pipefail
+DB=/var/www/solana-copy-bot/state/live_runtime.db
+
+sudo -u copybot sqlite3 -readonly -header -column "$DB" "
+select close_context,
+       count(*) closed,
+       round(coalesce(sum(pnl_sol),0),6) pnl_sol,
+       min(closed_ts) first_close,
+       max(closed_ts) last_close
+from shadow_closed_trades
+where closed_ts >= '$SINCE'
+group by close_context
+order by close_context;"
+
+sudo -u copybot sqlite3 -readonly -header -column "$DB" "
+select id,
+       substr(wallet_id,1,10)||'...' wallet,
+       token,
+       round(entry_cost_sol,6) entry_sol,
+       round(exit_value_sol,6) exit_sol,
+       round(pnl_sol,6) pnl_sol,
+       opened_ts,
+       closed_ts,
+       close_context
+from shadow_closed_trades
+where closed_ts >= '$SINCE'
+  and coalesce(close_context,'market')!='market'
+order by closed_ts desc
+limit 20;"
+REMOTE
+```
+
+Interpretation:
+
+- `market` is normal Shadow close accounting.
+- `stale_quote_price` or terminal stale is defensive accounting.
+- Rug-like stale usually means the token became unsafe to price or liquidity was
+  removed; do not hide it inside market PnL.
+- `SELL would_force_exit` is not stale; it means canary would close an owned
+  position even when SELL slippage is above the soft threshold.
+
+## Event Counters Only
+
+Run this only to explain noisy event counts. These are quote events, not trades.
+
+```bash
+ssh -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" \
+  "SINCE='$SINCE' bash -s" <<'REMOTE'
+set -euo pipefail
+DB=/var/www/solana-copy-bot/state/live_runtime.db
+
+sudo -u copybot sqlite3 -readonly -header -column "$DB" "
+select side,
+       decision_status,
+       quote_status,
+       coalesce(priority_fee_status,'') priority_fee_status,
+       count(*) events,
+       round(avg(decision_delay_ms),1) avg_delay_ms,
+       round(avg(quote_latency_ms),1) avg_quote_ms,
+       round(avg(case when abs(slippage_bps)<10000 then slippage_bps end),1)
+         avg_slippage_bps,
+       round(max(slippage_bps),1) max_slippage_bps
+from execution_quote_canary_events
+where request_ts >= '$SINCE'
+group by side, decision_status, quote_status, priority_fee_status
+order by side, decision_status, priority_fee_status;"
+REMOTE
+```
+
+If this number is large, say `BUY quote events`, not `deals`.
+
+## User Report Template
+
+Keep the user report short and current-window based.
+
+```text
+Window: <SINCE> -> <as_of>, sample <market_closed>/<min_required> market closes
+Service: active, restarts <n>, warnings/errors <none/count>
+Ingestion/SQLite: gaps/drops/429/5xx <values>, sqlite busy/retry <values>
+Shadow market: <closed>, win/loss <w>/<l>, PnL <x> SOL
+Shadow stale/rug-like: <count>, PnL <x> SOL
+Canary quote PnL: counted <n>, skipped <n>, unknown <n>,
+  win/loss <w>/<l>, PnL after fee <x> SOL, delta vs shadow <x> SOL
+Thresholds: 150=<pnl/count>, 300=<pnl/count>, 500=<pnl/count>, 1000=<pnl/count>
+Metis dry-run: latest_simulation <passed/failed/missing>, proof <instructions/transaction/missing>, gate <ready/blocked>
+Latency/routes/fees: entry delay <ms>, quote <ms>, route <top>, priority <ok/errors>
+Open: <n> lots, exposure <x> SOL
+Decision: observe / investigate stale / investigate skips / move to next dev batch
+```
+
+Do not include old 24h numbers as the main answer after a fresh fix. If a 24h
+context is useful, label it explicitly as context.
+
+## When To Move Forward
+
+Do not call the canary sample ready from BUY event count alone.
+
+Minimum report checks:
+
+- at least `30` current-window market closes
+- quote-PnL operator status is loaded
+- stale/rug-like is separated and understood
+- skipped and unknown rates are acceptable for the current threshold
+- Metis dry-run latest simulation is `passed` or failure reason is understood
+- If `swap_transaction_dry_run_enabled=true`, latest simulation proof contains
+  `metis_swap_transaction_ok`
+- priority fee errors are low or safely ignored
+- ingestion gaps/drops/429/5xx are zero
+- SQLite busy/retry is not rising
+- no hidden production build or unexpected restart
+
+Next engineering step must be chosen from report data, not from a one-off manual
+query.

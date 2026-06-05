@@ -79,3 +79,17 @@ fn priority_fee_rate_contract_rejects_too_aggressive_interval() {
         .to_string()
         .contains("priority_fee_canary_min_request_interval_ms"));
 }
+
+#[test]
+fn swap_transaction_dry_run_requires_quote_canary_metadata() {
+    let mut config = copybot_config::ExecutionConfig::default();
+    config.canary_enabled = true;
+    config.swap_transaction_dry_run_enabled = true;
+
+    let error = crate::config_contract::validate_execution_canary_contract(&config)
+        .expect_err("swap transaction dry-run needs quote canary metadata");
+
+    assert!(error
+        .to_string()
+        .contains("swap_transaction_dry_run_enabled"));
+}

@@ -71,6 +71,7 @@ pub struct ExecutionConfig {
     pub quote_canary_api_key: String,
     pub quote_canary_timeout_ms: u64,
     pub swap_instructions_dry_run_enabled: bool,
+    pub swap_transaction_dry_run_enabled: bool,
     pub quote_canary_buy_size_sol: f64,
     pub quote_canary_slippage_bps: u64,
     pub quote_canary_buy_slippage_bps: u64,
@@ -104,6 +105,7 @@ impl Default for ExecutionConfig {
             quote_canary_api_key: String::new(),
             quote_canary_timeout_ms: 1_500,
             swap_instructions_dry_run_enabled: false,
+            swap_transaction_dry_run_enabled: false,
             quote_canary_buy_size_sol: 0.2,
             quote_canary_slippage_bps: 100,
             quote_canary_buy_slippage_bps: 0,
@@ -150,6 +152,10 @@ impl fmt::Debug for ExecutionConfig {
             .field(
                 "swap_instructions_dry_run_enabled",
                 &self.swap_instructions_dry_run_enabled,
+            )
+            .field(
+                "swap_transaction_dry_run_enabled",
+                &self.swap_transaction_dry_run_enabled,
             )
             .field("quote_canary_buy_size_sol", &self.quote_canary_buy_size_sol)
             .field("quote_canary_slippage_bps", &self.quote_canary_slippage_bps)

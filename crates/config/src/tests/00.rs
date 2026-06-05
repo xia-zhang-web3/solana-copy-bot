@@ -97,6 +97,7 @@ fn execution_defaults_are_fail_closed_and_canary_dry_run_only() {
     assert!(execution.quote_canary_api_key.is_empty());
     assert_eq!(execution.quote_canary_timeout_ms, 1_500);
     assert!(!execution.swap_instructions_dry_run_enabled);
+    assert!(!execution.swap_transaction_dry_run_enabled);
     assert_eq!(execution.quote_canary_buy_size_sol, 0.2);
     assert_eq!(execution.quote_canary_slippage_bps, 100);
     assert_eq!(execution.quote_canary_buy_slippage_bps, 0);
