@@ -34,14 +34,19 @@ fn completed_sweep_keeps_periodic_wal_checkpoint_even_without_deletes() {
 }
 
 #[test]
-fn retention_delete_budget_boosts_observed_swaps_only() {
+fn retention_delete_budget_keeps_live_cleanup_bounded() {
     let observed_swap_rows_per_run = OBSERVED_SWAP_RETENTION_DELETE_BATCH_SIZE
         .saturating_mul(OBSERVED_SWAP_RETENTION_MAX_RAW_DELETE_BATCHES_PER_RUN);
 
-    assert!(observed_swap_rows_per_run >= 100_000);
+    assert!(observed_swap_rows_per_run <= 2_000);
 }
 
 #[test]
-fn retention_duration_budget_allows_backlog_catchup_batches() {
-    assert!(OBSERVED_SWAP_RETENTION_MAX_DURATION_PER_RUN >= StdDuration::from_secs(60));
+fn retention_duration_budget_caps_live_cleanup_window() {
+    assert!(OBSERVED_SWAP_RETENTION_MAX_DURATION_PER_RUN <= StdDuration::from_secs(10));
+}
+
+#[test]
+fn retention_partial_retry_avoids_minute_level_churn() {
+    assert!(OBSERVED_SWAP_RETENTION_PARTIAL_RETRY_INTERVAL >= StdDuration::from_secs(5 * 60));
 }
