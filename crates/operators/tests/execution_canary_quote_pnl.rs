@@ -60,10 +60,17 @@ fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
     drop(store);
 
     let report = build_report_from_db_path(&db_path, closed + Duration::seconds(1));
+    let gate = report
+        .tiny_execution_gate
+        .as_ref()
+        .expect("tiny execution gate should exist");
     let summary = report.summary.expect("operator summary should exist");
 
     assert_eq!(report.reason_class, "execution_canary_quote_pnl_loaded");
     assert!(report.db_opened);
+    assert_eq!(gate.status, "blocked");
+    assert_gate_check(gate, "quote_readiness_gate", "block");
+    assert_gate_check(gate, "latest_canary_order", "block");
     assert_eq!(summary.shadow_close_breakdown.market_closed_trades, 1);
     assert_eq!(summary.shadow_close_breakdown.stale_closed_trades, 0);
     assert_eq!(summary.pnl_counted_trades, 1);
@@ -161,5 +168,19 @@ fn assert_close(actual: f64, expected: f64) {
     assert!(
         (actual - expected).abs() < 0.000_000_001,
         "actual={actual} expected={expected}"
+    );
+}
+
+fn assert_gate_check(
+    gate: &copybot_operators::execution_canary_quote_pnl::TinyExecutionGate,
+    name: &str,
+    status: &str,
+) {
+    assert!(
+        gate.checks
+            .iter()
+            .any(|check| check.name == name && check.status == status),
+        "missing gate check {name} with status {status}: {:?}",
+        gate.checks
     );
 }

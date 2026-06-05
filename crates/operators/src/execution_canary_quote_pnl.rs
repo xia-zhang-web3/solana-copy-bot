@@ -6,6 +6,9 @@ use serde::Serialize;
 use std::env;
 use std::path::{Path, PathBuf};
 
+use crate::execution_canary_quote_pnl_gate::build_tiny_execution_gate;
+pub use crate::execution_canary_quote_pnl_gate::{TinyExecutionGate, TinyExecutionGateCheck};
+
 const REASON_OK: &str = "execution_canary_quote_pnl_loaded";
 const REASON_CLI_ERROR: &str = "execution_canary_quote_pnl_cli_error";
 const REASON_CONFIG_UNREADABLE: &str = "execution_canary_quote_pnl_config_unreadable";
@@ -35,6 +38,7 @@ pub struct CanaryQuotePnlOperatorReport {
     pub reason_class: String,
     pub error: Option<String>,
     pub summary: Option<ExecutionCanaryQuotePnlSummary>,
+    pub tiny_execution_gate: Option<TinyExecutionGate>,
 }
 
 impl CanaryQuotePnlOperatorReport {
@@ -47,6 +51,7 @@ impl CanaryQuotePnlOperatorReport {
             reason_class: reason_class.to_string(),
             error,
             summary: None,
+            tiny_execution_gate: None,
         }
     }
 
@@ -162,21 +167,64 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
             );
         }
     };
-    match store.execution_canary_quote_pnl_summary(as_of, since, cli.limit) {
-        Ok(summary) => CanaryQuotePnlOperatorReport {
-            config_loaded: cli.config_path.is_some(),
-            db_opened: true,
-            as_of,
-            since,
-            reason_class: REASON_OK.to_string(),
-            error: None,
-            summary: Some(summary),
-        },
-        Err(error) => CanaryQuotePnlOperatorReport::failed(
-            REASON_DB_UNREADABLE,
-            Some(error.to_string()),
-            as_of,
-        ),
+    let summary = match store.execution_canary_quote_pnl_summary(as_of, since, cli.limit) {
+        Ok(summary) => summary,
+        Err(error) => {
+            return CanaryQuotePnlOperatorReport::failed(
+                REASON_DB_UNREADABLE,
+                Some(error.to_string()),
+                as_of,
+            );
+        }
+    };
+    let canary_status = match store.execution_canary_status_report(as_of) {
+        Ok(report) => report,
+        Err(error) => {
+            return CanaryQuotePnlOperatorReport::failed(
+                REASON_DB_UNREADABLE,
+                Some(error.to_string()),
+                as_of,
+            );
+        }
+    };
+    let canary_readiness = match store.execution_canary_readiness_summary(as_of) {
+        Ok(report) => report,
+        Err(error) => {
+            return CanaryQuotePnlOperatorReport::failed(
+                REASON_DB_UNREADABLE,
+                Some(error.to_string()),
+                as_of,
+            );
+        }
+    };
+    let recent_loss =
+        match store.execution_canary_realized_loss_sol_since(as_of - Duration::hours(24)) {
+            Ok(loss) => loss,
+            Err(error) => {
+                return CanaryQuotePnlOperatorReport::failed(
+                    REASON_DB_UNREADABLE,
+                    Some(error.to_string()),
+                    as_of,
+                );
+            }
+        };
+    let tiny_execution_gate = build_tiny_execution_gate(
+        &summary,
+        &canary_status,
+        &canary_readiness,
+        recent_loss,
+        as_of,
+    );
+
+    CanaryQuotePnlOperatorReport {
+        config_loaded: cli.config_path.is_some(),
+        db_opened: true,
+        as_of,
+        since,
+        reason_class: REASON_OK.to_string(),
+        error: None,
+        summary: Some(summary),
+        tiny_execution_gate: Some(tiny_execution_gate),
     }
 }
 
