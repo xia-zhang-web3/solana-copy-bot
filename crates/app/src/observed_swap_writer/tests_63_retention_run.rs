@@ -40,3 +40,8 @@ fn retention_delete_budget_boosts_observed_swaps_only() {
 
     assert!(observed_swap_rows_per_run >= 100_000);
 }
+
+#[test]
+fn retention_duration_budget_allows_backlog_catchup_batches() {
+    assert!(OBSERVED_SWAP_RETENTION_MAX_DURATION_PER_RUN >= StdDuration::from_secs(60));
+}
