@@ -1,5 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
+use copybot_config::{load_from_path, AppConfig};
 use copybot_storage_core::{
     ExecutionCanaryQuotePnlSummary, ExecutionQuoteCanaryProviderComparisonSummary,
     ExecutionQuoteCanaryProviderSelectionSummary, ExecutionQuoteCanaryPublicPaidComparisonSummary,
@@ -14,7 +15,7 @@ pub use crate::execution_canary_quote_pnl_gate::{TinyExecutionGate, TinyExecutio
 
 #[path = "execution_canary_quote_pnl_cli.rs"]
 mod quote_pnl_cli;
-use quote_pnl_cli::{next_value, parse_limit, parse_since, parse_since_hours, resolve_db_path};
+use quote_pnl_cli::{next_value, parse_limit, parse_since, parse_since_hours};
 
 const REASON_OK: &str = "execution_canary_quote_pnl_loaded";
 const REASON_CLI_ERROR: &str = "execution_canary_quote_pnl_cli_error";
@@ -155,12 +156,29 @@ pub fn build_report_from_db_path(
     )
 }
 
+pub fn build_report_from_config_path(
+    config_path: &Path,
+    as_of: DateTime<Utc>,
+) -> CanaryQuotePnlOperatorReport {
+    build_report(
+        Cli {
+            config_path: Some(config_path.to_path_buf()),
+            db_path: None,
+            json: true,
+            limit: DEFAULT_LIMIT,
+            since: None,
+            since_hours: DEFAULT_SINCE_HOURS,
+        },
+        as_of,
+    )
+}
+
 fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport {
     let since = cli
         .since
         .unwrap_or(as_of - Duration::hours(cli.since_hours));
-    let db_path = match resolve_db_path(&cli) {
-        Ok(path) => path,
+    let context = match resolve_report_context(&cli) {
+        Ok(context) => context,
         Err(error) => {
             return CanaryQuotePnlOperatorReport::failed(
                 REASON_CONFIG_UNREADABLE,
@@ -170,7 +188,7 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         }
     };
 
-    let store = match SqliteStore::open_read_only(&db_path) {
+    let store = match SqliteStore::open_read_only(&context.db_path) {
         Ok(store) => store,
         Err(error) => {
             return CanaryQuotePnlOperatorReport::failed(
@@ -255,12 +273,15 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
                 );
             }
         };
+    let runtime_root = runtime_root_from_db_path(&context.db_path);
     let tiny_execution_gate = build_tiny_execution_gate(
         &summary,
         &canary_status,
         &canary_readiness,
         recent_loss,
         as_of,
+        context.config.as_ref().map(|config| &config.execution),
+        runtime_root.as_deref(),
     );
 
     CanaryQuotePnlOperatorReport {
@@ -276,4 +297,41 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         provider_selection: Some(provider_selection),
         tiny_execution_gate: Some(tiny_execution_gate),
     }
+}
+
+struct ReportContext {
+    config: Option<AppConfig>,
+    db_path: PathBuf,
+}
+
+fn resolve_report_context(cli: &Cli) -> Result<ReportContext> {
+    if let Some(config_path) = &cli.config_path {
+        let config = load_from_path(config_path)
+            .with_context(|| format!("failed to load config: {}", config_path.display()))?;
+        let db_path = cli
+            .db_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(config.sqlite.path.clone()));
+        return Ok(ReportContext {
+            config: Some(config),
+            db_path,
+        });
+    }
+
+    let db_path = cli
+        .db_path
+        .clone()
+        .ok_or_else(|| anyhow!("either --config or --db-path is required"))?;
+    Ok(ReportContext {
+        config: None,
+        db_path,
+    })
+}
+
+fn runtime_root_from_db_path(db_path: &Path) -> Option<PathBuf> {
+    let parent = db_path.parent()?;
+    if parent.file_name().and_then(|name| name.to_str()) == Some("state") {
+        return parent.parent().map(Path::to_path_buf);
+    }
+    Some(parent.to_path_buf())
 }

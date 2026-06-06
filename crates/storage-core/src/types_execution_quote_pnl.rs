@@ -170,6 +170,7 @@ pub struct ExecutionCanaryQuoteShadowGateSummary {
     pub quote_would_execute_shadow_dropped_events: u64,
     pub quote_would_execute_shadow_pending_events: u64,
     pub drop_reason_counts: Vec<ExecutionCanaryQuoteShadowGateReasonCount>,
+    pub quote_would_execute_drop_reason_counts: Vec<ExecutionCanaryQuoteShadowGateReasonCount>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]

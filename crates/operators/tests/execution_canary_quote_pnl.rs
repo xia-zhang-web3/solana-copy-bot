@@ -1,7 +1,10 @@
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
-use copybot_operators::execution_canary_quote_pnl::{build_report_from_db_path, parse_args_from};
+use copybot_operators::execution_canary_quote_pnl::{
+    build_report_from_config_path, build_report_from_db_path, parse_args_from,
+};
 use copybot_storage_core::{ExecutionQuoteCanaryEventInsert, SqliteStore};
+use std::fs;
 use tempfile::tempdir;
 
 fn ts(raw: &str) -> DateTime<Utc> {
@@ -104,6 +107,54 @@ fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
 }
 
 #[test]
+fn execution_canary_quote_pnl_gate_checks_tiny_config_preflight() -> Result<()> {
+    let dir = tempdir()?;
+    let state_dir = dir.path().join("state");
+    fs::create_dir(&state_dir)?;
+    let db_path = state_dir.join("runtime.db");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    store.record_execution_quote_canary_event(&quote_event(
+        "quote:buy:schema-prime",
+        Some("buy-schema-prime"),
+        None,
+        "buy",
+        ts("2026-05-01T00:00:00Z"),
+        "200000000",
+        "100",
+    ))?;
+    drop(store);
+
+    let config_path = dir.path().join("live.toml");
+    fs::write(&config_path, tiny_config(&db_path))?;
+    let report = build_report_from_config_path(&config_path, ts("2026-06-02T13:00:00Z"));
+    let gate = report
+        .tiny_execution_gate
+        .as_ref()
+        .unwrap_or_else(|| panic!("tiny execution gate should exist: {:?}", report.error));
+
+    assert_eq!(report.reason_class, "execution_canary_quote_pnl_loaded");
+    assert!(report.config_loaded);
+    assert!(report.db_opened);
+    assert_gate_check(gate, "execution_disabled", "pass");
+    assert_gate_check(gate, "canary_enabled", "pass");
+    assert_gate_check(gate, "canary_dry_run", "pass");
+    assert_gate_check(gate, "canary_wallet_pubkey", "pass");
+    assert_gate_check(gate, "canary_buy_size", "pass");
+    assert_gate_check(gate, "canary_max_open_positions", "pass");
+    assert_gate_check(gate, "canary_daily_loss_cap", "pass");
+    assert_gate_check(gate, "canary_kill_switch_inactive", "pass");
+    assert_gate_check(gate, "quote_canary_enabled", "pass");
+    assert_gate_check(gate, "swap_instructions_dry_run_enabled", "pass");
+    assert_gate_check(gate, "swap_transaction_dry_run_enabled", "pass");
+    assert_gate_check(gate, "priority_fee_canary_enabled", "pass");
+    Ok(())
+}
+
+#[test]
 fn execution_canary_quote_pnl_cli_accepts_window_flags() -> Result<()> {
     let cli = parse_args_from([
         "--db-path",
@@ -130,6 +181,34 @@ fn execution_canary_quote_pnl_cli_accepts_window_flags() -> Result<()> {
     assert!(parse_args_from(["--json"]).is_err());
     assert!(parse_args_from(["--db-path", "db.sqlite", "--json", "--limit", "0"]).is_err());
     Ok(())
+}
+
+fn tiny_config(db_path: &std::path::Path) -> String {
+    format!(
+        r#"
+[sqlite]
+path = "{}"
+
+[execution]
+enabled = false
+canary_enabled = true
+canary_dry_run = true
+canary_route = "metis-swap-instructions-dry-run"
+canary_buy_size_sol = 0.01
+canary_max_open_positions = 1
+canary_max_daily_loss_sol = 0.02
+canary_kill_switch_path = "state/execution_canary.stop"
+canary_wallet_pubkey = "J9Kf6Q2cMXx9HsLyzP8SzUrQyiPGXd9yEfqUPDKtn2AU"
+quote_canary_enabled = true
+quote_canary_base_url = "https://jupiter-swap-api.quiknode.pro/test/"
+swap_instructions_dry_run_enabled = true
+swap_transaction_dry_run_enabled = true
+priority_fee_canary_enabled = true
+priority_fee_canary_rpc_url = "https://example.com/rpc"
+priority_fee_canary_account = "J9Kf6Q2cMXx9HsLyzP8SzUrQyiPGXd9yEfqUPDKtn2AU"
+"#,
+        db_path.display()
+    )
 }
 
 fn quote_event(

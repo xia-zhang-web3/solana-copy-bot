@@ -2,6 +2,15 @@ use crate::{ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuoteReadinessCheck};
 
 const MAX_ENTRY_SHADOW_GATE_DROP_RATE_PCT: f64 = 20.0;
 const WARN_ENTRY_SHADOW_GATE_DROP_RATE_PCT: f64 = 0.0;
+const EXPECTED_STRATEGY_DROP_REASONS: &[&str] = &[
+    "below_notional",
+    "low_holders",
+    "low_liquidity",
+    "low_volume",
+    "not_followed",
+    "thin_market",
+    "too_new",
+];
 
 const CHECK_PASS: &str = "pass";
 const CHECK_WARN: &str = "warn";
@@ -25,9 +34,14 @@ pub(crate) fn entry_shadow_gate_check(
         );
     }
 
-    let status = if drop_rate_pct > MAX_ENTRY_SHADOW_GATE_DROP_RATE_PCT {
+    let (strategy_filtered, unexpected_dropped) = split_drop_reasons(gate);
+    let unexpected_drop_rate_pct = percent(unexpected_dropped, gate.quote_would_execute_events);
+    let status = if unexpected_drop_rate_pct > MAX_ENTRY_SHADOW_GATE_DROP_RATE_PCT {
         CHECK_BLOCK
-    } else if drop_rate_pct > WARN_ENTRY_SHADOW_GATE_DROP_RATE_PCT {
+    } else if unexpected_drop_rate_pct > WARN_ENTRY_SHADOW_GATE_DROP_RATE_PCT
+        || strategy_filtered > 0
+        || drop_rate_pct > WARN_ENTRY_SHADOW_GATE_DROP_RATE_PCT
+    {
         CHECK_WARN
     } else {
         CHECK_PASS
@@ -36,16 +50,40 @@ pub(crate) fn entry_shadow_gate_check(
         "entry_shadow_gate",
         status,
         format!(
-            "quote_would_execute={} recorded={} dropped={} pending={} drop={}",
+            "quote_would_execute={} recorded={} dropped={} strategy_filtered={} unexpected_dropped={} pending={} drop={} unexpected_drop={}",
             gate.quote_would_execute_events,
             gate.quote_would_execute_shadow_recorded_events,
             gate.quote_would_execute_shadow_dropped_events,
+            strategy_filtered,
+            unexpected_dropped,
             gate.quote_would_execute_shadow_pending_events,
-            pct_value(drop_rate_pct)
+            pct_value(drop_rate_pct),
+            pct_value(unexpected_drop_rate_pct)
         ),
-        format!("drop <= {MAX_ENTRY_SHADOW_GATE_DROP_RATE_PCT:.1}%"),
-        "quote-approved BUYs must also pass shadow gates and become recorded shadow entries",
+        format!("unexpected_drop <= {MAX_ENTRY_SHADOW_GATE_DROP_RATE_PCT:.1}%"),
+        "strategy filters are not execution blockers; unexpected shadow drops must stay low",
     )
+}
+
+fn split_drop_reasons(summary: &crate::ExecutionCanaryQuoteShadowGateSummary) -> (u64, u64) {
+    let mut strategy_filtered = 0;
+    let mut unexpected_dropped = 0;
+    for count in &summary.quote_would_execute_drop_reason_counts {
+        if EXPECTED_STRATEGY_DROP_REASONS.contains(&count.reason.as_str()) {
+            strategy_filtered += count.events;
+        } else {
+            unexpected_dropped += count.events;
+        }
+    }
+    (strategy_filtered, unexpected_dropped)
+}
+
+fn percent(numerator: u64, denominator: u64) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 * 100.0 / denominator as f64
+    }
 }
 
 fn check(

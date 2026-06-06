@@ -80,11 +80,60 @@ fn quote_pnl_summary_reports_buy_shadow_gate_outcomes() -> Result<()> {
     assert_eq!(gate.quote_would_execute_shadow_pending_events, 0);
     assert_eq!(gate.drop_reason_counts[0].reason, "recent_sell_cooldown");
     assert_eq!(gate.drop_reason_counts[0].events, 1);
+    assert_eq!(
+        gate.quote_would_execute_drop_reason_counts[0].reason,
+        "recent_sell_cooldown"
+    );
+    assert_eq!(gate.quote_would_execute_drop_reason_counts[0].events, 1);
     assert_close(summary.readiness_gate.entry_shadow_gate_drop_rate_pct, 50.0);
     assert_eq!(
         readiness_check_status(&summary, "entry_shadow_gate"),
         Some("block")
     );
+    Ok(())
+}
+
+#[test]
+fn quote_pnl_gate_treats_strategy_shadow_drops_as_warnings() -> Result<()> {
+    let store = open_migrated_store("execution-canary-quote-pnl-strategy-shadow-drops")?;
+    let opened = ts("2026-06-02T13:30:00Z");
+
+    for (suffix, token, reason, offset) in [
+        ("below-notional", "BelowNotionalToken", "below_notional", 0),
+        ("low-holders", "LowHoldersToken", "low_holders", 1),
+    ] {
+        record_buy(
+            &store,
+            suffix,
+            token,
+            "would_execute",
+            opened + Duration::seconds(offset),
+        )?;
+        store.record_execution_quote_canary_shadow_gate_event(
+            &format!("buy-shadow-{suffix}"),
+            "leader-wallet",
+            token,
+            "buy",
+            "shadow_dropped",
+            Some(reason),
+            opened + Duration::seconds(offset),
+        )?;
+    }
+
+    let summary = store.execution_canary_quote_pnl_summary(
+        opened + Duration::seconds(3),
+        opened - Duration::seconds(1),
+        10,
+    )?;
+    let gate = &summary.buy_shadow_gate;
+    let entry_shadow_gate = readiness_check(&summary, "entry_shadow_gate").expect("check");
+
+    assert_eq!(gate.quote_would_execute_events, 2);
+    assert_eq!(gate.quote_would_execute_shadow_dropped_events, 2);
+    assert_eq!(gate.quote_would_execute_drop_reason_counts.len(), 2);
+    assert_eq!(entry_shadow_gate.status, "warn");
+    assert!(entry_shadow_gate.value.contains("strategy_filtered=2"));
+    assert!(entry_shadow_gate.value.contains("unexpected_dropped=0"));
     Ok(())
 }
 
@@ -147,10 +196,16 @@ fn readiness_check_status<'a>(
     summary: &'a copybot_storage_core::ExecutionCanaryQuotePnlSummary,
     name: &str,
 ) -> Option<&'a str> {
+    readiness_check(summary, name).map(|check| check.status.as_str())
+}
+
+fn readiness_check<'a>(
+    summary: &'a copybot_storage_core::ExecutionCanaryQuotePnlSummary,
+    name: &str,
+) -> Option<&'a copybot_storage_core::ExecutionCanaryQuoteReadinessCheck> {
     summary
         .readiness_gate
         .checks
         .iter()
         .find(|check| check.name == name)
-        .map(|check| check.status.as_str())
 }

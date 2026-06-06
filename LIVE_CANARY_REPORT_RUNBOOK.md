@@ -36,9 +36,14 @@ is not an approval to change production state.
   proof. This fallback is dry-run only.
 - Priority Fee API is measured and included in quote PnL after fee.
 - Tiny execution gate is report-only until a separate explicit rollout.
+- Tiny execution gate now loads the live execution config when the report is
+  run with `--config`; use that mode for readiness/preflight checks.
 - Main quote PnL now includes `buy_shadow_gate`: quote-approved BUYs are split
   into `shadow_recorded`, `shadow_dropped`, and `shadow_pending`. This is the
   source of truth for whether a good quote would actually become a shadow entry.
+  Strategy filters such as `below_notional` and `low_holders` are warnings, not
+  execution blockers; unexpected drops such as `recent_sell_cooldown` remain
+  blockers.
 
 Use the newest relevant rollout/config timestamp as `SINCE`. Do not use a
 rolling 24h window as the main answer unless the user asks for it.
@@ -151,10 +156,10 @@ This is the primary report for the current development stage.
 ssh -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" \
   "SINCE='$SINCE' LIMIT='$LIMIT' bash -s" <<'REMOTE'
 set -euo pipefail
-DB=/var/www/solana-copy-bot/state/live_runtime.db
+CONFIG=/etc/solana-copy-bot/live.server.toml
 BIN=/var/www/solana-copy-bot/bin/copybot_execution_canary_quote_pnl
 
-REPORT="$(sudo -u copybot "$BIN" --db-path "$DB" --since "$SINCE" --limit "$LIMIT" --json)"
+REPORT="$(sudo -u copybot "$BIN" --config "$CONFIG" --since "$SINCE" --limit "$LIMIT" --json)"
 printf '%s\n' "$REPORT" | jq -r '
 if .reason_class != "execution_canary_quote_pnl_loaded" then
   "QUOTE_PNL_ERROR reason=\(.reason_class) error=\(.error)"
@@ -174,6 +179,11 @@ else
   "BUY_SHADOW_GATE quote_buy=\($s.buy_shadow_gate.total_buy_quote_events) quote_would_execute=\($s.buy_shadow_gate.quote_would_execute_events) recorded=\($s.buy_shadow_gate.shadow_recorded_events) dropped=\($s.buy_shadow_gate.shadow_dropped_events) pending=\($s.buy_shadow_gate.shadow_pending_events) execute_recorded=\($s.buy_shadow_gate.quote_would_execute_shadow_recorded_events) execute_dropped=\($s.buy_shadow_gate.quote_would_execute_shadow_dropped_events) execute_pending=\($s.buy_shadow_gate.quote_would_execute_shadow_pending_events)",
   "BUY_SHADOW_GATE_REASONS " + (
     $s.buy_shadow_gate.drop_reason_counts
+    | map("\(.reason)=\(.events)")
+    | join(" | ")
+  ),
+  "BUY_SHADOW_GATE_EXECUTE_REASONS " + (
+    $s.buy_shadow_gate.quote_would_execute_drop_reason_counts
     | map("\(.reason)=\(.events)")
     | join(" | ")
   ),
@@ -238,46 +248,14 @@ end'
 REMOTE
 ```
 
-This report answers:
-
-- how many closed market pairs are in the current sample
-- Shadow PnL vs canary quote-adjusted PnL after priority fee
-- skipped/unknown count and how much Shadow PnL was skipped
-- BUY shadow gate outcome:
-  - `quote_would_execute` means quote/slippage accepted the BUY
-  - `execute_recorded` means that BUY also became a shadow entry
-  - `execute_dropped` means shadow gate rejected it; reasons are in
-    `BUY_SHADOW_GATE_REASONS`
-  - `pending` means outcome is not yet written, usually an in-flight or
-    pre-rollout sample
-- threshold candidates for `150/300/500/1000 bps`
-- slippage, delay, leader-notional, route, and priority-fee buckets
-- Metis dry-run status through `latest_simulation=passed`
-- If transaction dry-run is enabled, the latest proof should include
-  `metis_swap_transaction_ok`
-- Provider comparison status:
-  - `PUBLIC_PAID paid_better` means paid/private generic Metis had lower
-    slippage than public generic quote on the same event.
-  - `PUBLIC_PAID public_better` means the public generic quote was better.
-  - `avg_paid_minus_public_bps < 0` means paid/private Metis is improving
-    slippage on average.
-  - `pump_fun_better` means paid `/pump-fun/quote` had lower slippage on the
-    same event.
-  - `generic_better` means old generic Metis/Jupiter `/quote` was better.
-  - `pump_fun_only_ok` means generic quote failed while paid Pump.fun worked.
-  - `generic_only_ok` means paid Pump.fun did not support/price that event.
-- selected-provider status:
-  - `SELECTED_PROVIDERS pump_fun_paid` means the execution dry-run should use
-    paid `/pump-fun/swap-instructions`
-  - `SELECTED_PROVIDERS generic_metis` means the execution dry-run should use
-    paid generic Metis `/swap-instructions` and `/swap`
-  - `generic_public` is fallback only, not the preferred paid route
-  - `pump_error=Bonding curve for mint not found` with selected
-    `generic_metis` is expected for migrated Pump.fun AMM tokens
-- tiny execution gate blockers and warnings
-
-If `reason` is not `execution_canary_quote_pnl_loaded`, do not invent a manual
-replacement. Report the operator error first.
+This report covers current sample size, Shadow vs canary PnL after priority
+fee, skipped/unknown trades, threshold candidates, slippage/latency buckets,
+provider comparison, selected provider, Metis dry-run, and tiny gate checks.
+`execute_dropped` reasons come from `BUY_SHADOW_GATE_EXECUTE_REASONS`.
+`generic_public` is fallback only. `Bonding curve for mint not found` with
+selected `generic_metis` is expected for migrated Pump.fun AMM tokens.
+If `reason` is not `execution_canary_quote_pnl_loaded`, report the operator
+error first.
 
 ## Latest Entry Readiness Report
 

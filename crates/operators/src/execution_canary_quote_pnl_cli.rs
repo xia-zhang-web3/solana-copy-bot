@@ -1,22 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_config::load_from_path;
-use std::path::PathBuf;
 
-use super::{Cli, MAX_LIMIT, MAX_SINCE_HOURS};
-
-pub(super) fn resolve_db_path(cli: &Cli) -> Result<PathBuf> {
-    if let Some(path) = &cli.db_path {
-        return Ok(path.clone());
-    }
-    let config_path = cli
-        .config_path
-        .as_ref()
-        .ok_or_else(|| anyhow!("--config is required when --db-path is omitted"))?;
-    let loaded = load_from_path(config_path)
-        .with_context(|| format!("failed to load config: {}", config_path.display()))?;
-    Ok(PathBuf::from(loaded.sqlite.path))
-}
+use super::{MAX_LIMIT, MAX_SINCE_HOURS};
 
 pub(super) fn next_value(iter: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {
     iter.next()

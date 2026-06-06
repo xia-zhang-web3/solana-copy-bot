@@ -142,13 +142,23 @@ struct ShadowGateRow {
 fn summarize_shadow_gate_rows(rows: Vec<ShadowGateRow>) -> ExecutionCanaryQuoteShadowGateSummary {
     let mut summary = ExecutionCanaryQuoteShadowGateSummary::default();
     let mut reason_counts = std::collections::BTreeMap::<String, u64>::new();
+    let mut execute_reason_counts = std::collections::BTreeMap::<String, u64>::new();
 
     for row in rows {
         record_quote_decision(&mut summary, row.decision_status.as_deref());
-        record_gate_status(&mut summary, &mut reason_counts, &row);
+        record_gate_status(
+            &mut summary,
+            &mut reason_counts,
+            &mut execute_reason_counts,
+            &row,
+        );
     }
 
     summary.drop_reason_counts = reason_counts
+        .into_iter()
+        .map(|(reason, events)| ExecutionCanaryQuoteShadowGateReasonCount { reason, events })
+        .collect();
+    summary.quote_would_execute_drop_reason_counts = execute_reason_counts
         .into_iter()
         .map(|(reason, events)| ExecutionCanaryQuoteShadowGateReasonCount { reason, events })
         .collect();
@@ -170,6 +180,7 @@ fn record_quote_decision(
 fn record_gate_status(
     summary: &mut ExecutionCanaryQuoteShadowGateSummary,
     reason_counts: &mut std::collections::BTreeMap<String, u64>,
+    execute_reason_counts: &mut std::collections::BTreeMap<String, u64>,
     row: &ShadowGateRow,
 ) {
     match row.gate_status.as_deref() {
@@ -183,7 +194,8 @@ fn record_gate_status(
         Some(EXECUTION_QUOTE_CANARY_SHADOW_GATE_DROPPED) => {
             summary.shadow_gate_sampled_events += 1;
             summary.shadow_dropped_events += 1;
-            if row.decision_status.as_deref() == Some(DECISION_WOULD_EXECUTE) {
+            let would_execute = row.decision_status.as_deref() == Some(DECISION_WOULD_EXECUTE);
+            if would_execute {
                 summary.quote_would_execute_shadow_dropped_events += 1;
             }
             let reason = row
@@ -191,6 +203,13 @@ fn record_gate_status(
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string());
             *reason_counts.entry(reason).or_insert(0) += 1;
+            if would_execute {
+                let reason = row
+                    .gate_reason
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string());
+                *execute_reason_counts.entry(reason).or_insert(0) += 1;
+            }
         }
         _ => {
             summary.shadow_pending_events += 1;
