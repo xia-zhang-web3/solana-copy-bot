@@ -5,6 +5,13 @@ Updated: 2026-06-05
 This document tracks the remaining engineering work before tiny real execution
 tests. It is not an approval to enable live trading.
 
+Short decision ledger:
+
+- `REAL_EXECUTION_DECISION_LEDGER.md`
+
+Use that file as the current source of truth for active blockers, deferred
+theories, and the next real-execution step.
+
 ## Goal
 
 Move from shadow-only to controlled test execution without risking uncontrolled live trades.
@@ -31,6 +38,17 @@ Done:
   config flag.
 - Metis swap transaction dry-run HTTP proof is implemented locally behind an
   explicit config flag; rollout still needs artifact deploy and live proof.
+- Paid Metis provider selection is implemented locally:
+  - paid generic Metis remains the primary route for normal AMM/Raydium/Orca
+    and migrated Pump.fun AMM tokens
+  - paid `/pump-fun/quote` is selected only when it returns a bonding-curve
+    quote with `meta.isCompleted=false`
+  - `Bonding curve for mint not found` falls back to paid generic Metis and is
+    treated as route mismatch, not a system error
+- Pump.fun bonding-curve selections now have paid
+  `/pump-fun/swap-instructions` dry-run proof locally.
+- Operator report now exposes selected provider counts and latest selection
+  reasons.
 - Production artifact rollout for live no-submit canary is complete:
   - `copybot-app` artifact installed from an off-production Linux build
   - `execution.enabled = false`
@@ -87,7 +105,8 @@ Current account state:
 - Scale plan is active and includes Solana gRPC.
 - The separate paid Solana gRPC add-on was canceled after Scale upgrade.
 - QuickNode issued a `499 USD` credit note for the old gRPC add-on.
-- Keep the credit as reserve for execution add-ons instead of spending it now.
+- Credit is kept/used as execution add-on buffer; do not buy more add-ons
+  without a concrete canary blocker.
 
 Current add-ons:
 
@@ -325,6 +344,13 @@ Implemented locally:
   - skip reasons, provider errors, and routes are grouped for operator output
   - latest route, price impact, priority fee, and metadata age are exposed
   - operator remains read-only and `production_green` remains false
+- Paid Metis provider selector is available locally without submitting
+  transactions:
+  - selected provider is explicit per event
+  - paid `/pump-fun/swap-instructions` dry-run is used only for bonding-curve
+    Pump.fun quotes
+  - paid generic Metis remains the normal AMM fallback
+  - public generic is fallback/comparison only
 
 Wired into live runtime and deployed to production as no-submit/dry-run only.
 
@@ -342,12 +368,13 @@ Continue toward tiny real execution without submitting transactions.
 
 Scope:
 
-- Roll out the HTTP swap transaction artifact with
-  `swap_transaction_dry_run_enabled = true` after review.
-- Collect the first fresh eligible BUY and verify:
-  - quote event exists
-  - execution canary order reaches `execution_canary_submit_disabled`
-  - simulation proof summary contains `metis_swap_transaction_ok`
+- Review and roll out the selected-provider artifact.
+- Collect fresh BUY/SELL samples and verify:
+  - `provider_selection` shows paid generic Metis for migrated AMM tokens
+  - any bonding-curve Pump.fun token selects `pump_fun_paid`
+  - Pump.fun selected dry-run proof contains `pump_fun_swap_instructions_ok`
+  - paid generic selected dry-run proof contains `metis_swap_instructions_ok`
+    and, when enabled, `metis_swap_transaction_ok`
   - no HTTP timeout/rate-limit pattern appears
 - Then build the signing/submit/confirm canary path behind the existing tiny
   gate, still default-disabled.

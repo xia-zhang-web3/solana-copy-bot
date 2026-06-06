@@ -6,21 +6,6 @@ This is the current production report runbook for shadow trading, quote canary,
 Metis swap dry-run proof, tiny execution readiness, and stale-close triage. It
 is not an approval to change production state.
 
-## Source Commits
-
-This runbook consolidates the report work from git history:
-
-- `3586c688` - `copybot_execution_canary_quote_pnl` and readiness operators.
-- `35efc3e0` - stale/rug-like breakdown, buckets, and improved canary report.
-- `a994c6a8` - tiny execution gate inside quote-PnL output.
-- `4157eadc` - Metis `/swap-instructions` dry-run proof.
-- Current batch - Metis `/swap` transaction dry-run proof.
-- Current batch - public-vs-paid generic route comparison:
-  `generic_public` vs `generic_metis`.
-- Current batch - paid Pump.fun route comparison:
-  `generic_metis` vs `pump_fun_paid`.
-- `910ae413` - previous operations report runbook.
-
 ## Current Stage
 
 - Shadow trading uses fixed `0.2 SOL` accounting.
@@ -38,6 +23,13 @@ This runbook consolidates the report work from git history:
   event. `Bonding curve for mint not found` usually means the token is already
   migrated to Pump.fun AMM, so the public-vs-paid generic comparison is the
   relevant paid-route signal for that event.
+- Selected provider is now explicit:
+  - `pump_fun_paid` only when paid `/pump-fun/quote` is OK and
+    `quote.meta.isCompleted=false`
+  - `generic_metis` for paid generic Metis quotes, including migrated
+    Pump.fun AMM/Raydium/Orca routes
+  - `generic_public` only as fallback/comparison
+  - `Bonding curve for mint not found` is a route mismatch, not a system error
 - Priority Fee API is measured and included in quote PnL after fee.
 - Tiny execution gate is report-only until a separate explicit rollout.
 
@@ -164,6 +156,7 @@ else
   .tiny_execution_gate as $g |
   (.provider_comparison // {}) as $pc |
   (.public_paid_comparison // {}) as $ppc |
+  (.provider_selection // {}) as $sel |
   "WINDOW since=\(.since) as_of=\(.as_of) limit=\($s.limit)",
   "SHADOW_TOTAL closed=\($s.shadow_close_breakdown.total_closed_trades) win_loss=\($s.shadow_close_breakdown.total_win_count)/\($s.shadow_close_breakdown.total_loss_count) pnl=\($s.shadow_close_breakdown.total_pnl_sol)",
   "SHADOW_MARKET closed=\($s.shadow_close_breakdown.market_closed_trades) pnl=\($s.shadow_close_breakdown.market_pnl_sol)",
@@ -215,6 +208,12 @@ else
     | map("\(.side):\(.better_provider // \"n/a\") delta_bps=\(.slippage_delta_bps // \"n/a\") generic=\(.generic_status // \"n/a\")/\(.generic_slippage_bps // \"n/a\") pump=\(.pump_fun_status // \"n/a\")/\(.pump_fun_slippage_bps // \"n/a\")")
     | join(" | ")
   ),
+  "SELECTED_PROVIDERS total=\($sel.total_events // 0) generic_metis=\($sel.selected_generic_metis_events // 0) pump_fun_paid=\($sel.selected_pump_fun_paid_events // 0) generic_public=\($sel.selected_generic_public_events // 0) unresolved=\($sel.unresolved_events // 0)",
+  "SELECTED_LATEST " + (
+    ($sel.latest // [])[:5]
+    | map("\(.side):\(.selected_provider) reason=\(.selected_reason) generic=\(.generic_metis_status // \"n/a\") public=\(.generic_public_status // \"n/a\") pump=\(.pump_fun_paid_status // \"n/a\") pump_completed=\(.pump_fun_paid_is_completed // \"n/a\") pump_error=\(.pump_fun_paid_error // \"\")")
+    | join(" | ")
+  ),
   "QUOTE_GATE status=\($s.readiness_gate.status) can_start=\($s.readiness_gate.can_start_tiny_execution) blockers=\($s.readiness_gate.blocker_count) warnings=\($s.readiness_gate.warning_count) min_market=\($s.readiness_gate.min_market_closed_trades) market=\($s.readiness_gate.market_closed_trades) skip_rate=\($s.readiness_gate.skip_rate_pct) unknown_rate=\($s.readiness_gate.unknown_rate_pct)",
   "TINY_GATE status=\($g.status) can_start=\($g.can_start_tiny_execution) blockers=\($g.blocker_count) warnings=\($g.warning_count) latest_status=\($g.latest_order_status) latest_simulation=\($g.latest_simulation_status) latest_age_s=\($g.latest_metadata_age_seconds)",
   "TINY_CHECKS " + (
@@ -247,6 +246,14 @@ This report answers:
   - `generic_better` means old generic Metis/Jupiter `/quote` was better.
   - `pump_fun_only_ok` means generic quote failed while paid Pump.fun worked.
   - `generic_only_ok` means paid Pump.fun did not support/price that event.
+- selected-provider status:
+  - `SELECTED_PROVIDERS pump_fun_paid` means the execution dry-run should use
+    paid `/pump-fun/swap-instructions`
+  - `SELECTED_PROVIDERS generic_metis` means the execution dry-run should use
+    paid generic Metis `/swap-instructions` and `/swap`
+  - `generic_public` is fallback only, not the preferred paid route
+  - `pump_error=Bonding curve for mint not found` with selected
+    `generic_metis` is expected for migrated Pump.fun AMM tokens
 - tiny execution gate blockers and warnings
 
 If `reason` is not `execution_canary_quote_pnl_loaded`, do not invent a manual
@@ -331,36 +338,6 @@ Interpretation:
 - `SELL would_force_exit` is not stale; it means canary would close an owned
   position even when SELL slippage is above the soft threshold.
 
-## Event Counters Only
-
-Run this only to explain noisy event counts. These are quote events, not trades.
-
-```bash
-ssh -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$HOST" \
-  "SINCE='$SINCE' bash -s" <<'REMOTE'
-set -euo pipefail
-DB=/var/www/solana-copy-bot/state/live_runtime.db
-
-sudo -u copybot sqlite3 -readonly -header -column "$DB" "
-select side,
-       decision_status,
-       quote_status,
-       coalesce(priority_fee_status,'') priority_fee_status,
-       count(*) events,
-       round(avg(decision_delay_ms),1) avg_delay_ms,
-       round(avg(quote_latency_ms),1) avg_quote_ms,
-       round(avg(case when abs(slippage_bps)<10000 then slippage_bps end),1)
-         avg_slippage_bps,
-       round(max(slippage_bps),1) max_slippage_bps
-from execution_quote_canary_events
-where request_ts >= '$SINCE'
-group by side, decision_status, quote_status, priority_fee_status
-order by side, decision_status, priority_fee_status;"
-REMOTE
-```
-
-If this number is large, say `BUY quote events`, not `deals`.
-
 ## User Report Template
 
 Keep the user report short and current-window based.
@@ -378,6 +355,8 @@ Public vs paid: paired <n>, paid_better <n>, public_better <n>,
   avg_paid_minus_public_bps <x>, latest <provider/delta>
 Providers: paired <n>, pump_fun_better <n>, generic_better <n>,
   avg_paid_minus_generic_bps <x>, latest <provider/delta>
+Selected provider: generic_metis <n>, pump_fun_paid <n>, public_fallback <n>,
+  unresolved <n>, latest <provider/reason>
 Metis dry-run: latest_simulation <passed/failed/missing>, proof <instructions/transaction/missing>, gate <ready/blocked>
 Latency/routes/fees: entry delay <ms>, quote <ms>, route <top>, priority <ok/errors>
 Open: <n> lots, exposure <x> SOL

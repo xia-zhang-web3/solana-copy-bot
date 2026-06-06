@@ -22,6 +22,8 @@ mod execution_orders;
 mod execution_quote_canary;
 mod execution_quote_canary_lookup;
 mod execution_quote_canary_route_samples;
+mod execution_quote_provider_lookup;
+mod execution_quote_provider_selection_report;
 mod history_retention;
 mod market_context;
 mod migrations;
@@ -105,6 +107,7 @@ pub use types::{
     ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderComparisonEvent,
     ExecutionQuoteCanaryProviderComparisonSummary, ExecutionQuoteCanaryProviderSampleInsert,
+    ExecutionQuoteCanaryProviderSelectionEvent, ExecutionQuoteCanaryProviderSelectionSummary,
     ExecutionQuoteCanaryPublicPaidComparisonEvent, ExecutionQuoteCanaryPublicPaidComparisonSummary,
     ExecutionQuoteCanaryRecordOutcome, FollowlistUpdateResult, HistoryRetentionCutoffs,
     HistoryRetentionSummary, ObservedSolLegSwap, ObservedSwapBatchWriteMetrics,

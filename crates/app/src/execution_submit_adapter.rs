@@ -1,3 +1,5 @@
+use crate::execution_pump_fun_swap_instructions_http::fetch_pump_fun_swap_instructions_dry_run;
+use crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID;
 use crate::execution_swap_blueprint::{
     build_execution_swap_blueprint, validate_execution_swap_blueprint_for_simulation,
     ExecutionSwapBlueprint,
@@ -218,6 +220,15 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 anyhow::bail!("missing swap blueprint for dry-run simulation");
             };
             validate_execution_swap_blueprint_for_simulation(blueprint)?;
+            if plan.metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_PUMP_FUN_PAID) {
+                let instructions_proof =
+                    fetch_pump_fun_swap_instructions_dry_run(&self.http, &self.config, plan)
+                        .await?;
+                return Ok(ExecutionSimulationResult {
+                    status: EXECUTION_SIMULATION_STATUS_PASSED.to_string(),
+                    error: instructions_proof,
+                });
+            }
             let instructions_proof =
                 fetch_swap_instructions_dry_run(&self.http, &self.config, plan).await?;
             let transaction_proof =

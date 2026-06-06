@@ -64,6 +64,10 @@ fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
         .tiny_execution_gate
         .as_ref()
         .expect("tiny execution gate should exist");
+    let provider_selection = report
+        .provider_selection
+        .as_ref()
+        .expect("provider selection should exist");
     let summary = report.summary.expect("operator summary should exist");
 
     assert_eq!(report.reason_class, "execution_canary_quote_pnl_loaded");
@@ -94,6 +98,8 @@ fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
     assert_eq!(summary.priority_fee_status_counts[0].status, "ok");
     assert_eq!(summary.force_exit_counted_trades, 0);
     assert_eq!(summary.force_exit_skipped_entry_trades, 0);
+    assert_eq!(provider_selection.selected_generic_metis_events, 2);
+    assert_eq!(provider_selection.selected_pump_fun_paid_events, 0);
     Ok(())
 }
 

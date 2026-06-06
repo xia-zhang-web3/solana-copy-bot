@@ -49,11 +49,13 @@ mod execution_canary_route;
 mod execution_canary_safety;
 #[allow(dead_code)]
 mod execution_canary_state_machine;
+mod execution_pump_fun_swap_instructions_http;
 mod execution_quote_canary;
 mod execution_quote_canary_helpers;
 mod execution_quote_canary_priority_fee;
 mod execution_quote_canary_rpc;
 mod execution_quote_http;
+mod execution_quote_provider_selection;
 #[allow(dead_code)]
 mod execution_submit_adapter;
 mod execution_swap_blueprint;

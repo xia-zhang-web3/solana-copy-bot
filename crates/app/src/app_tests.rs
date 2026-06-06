@@ -55,6 +55,8 @@ mod execution_state_machine;
 mod execution_state_machine_build_metadata;
 #[path = "app_tests/44.rs"]
 mod execution_state_machine_entry_gate;
+#[path = "app_tests/49.rs"]
+mod execution_state_machine_provider_selector;
 #[path = "app_tests/40.rs"]
 mod execution_state_machine_safety;
 #[path = "app_tests/38.rs"]

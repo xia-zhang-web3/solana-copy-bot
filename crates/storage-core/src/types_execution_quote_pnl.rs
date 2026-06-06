@@ -243,6 +243,36 @@ pub struct ExecutionQuoteCanaryPublicPaidComparisonEvent {
     pub paid_error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExecutionQuoteCanaryProviderSelectionSummary {
+    pub as_of: DateTime<Utc>,
+    pub since: DateTime<Utc>,
+    pub limit: u32,
+    pub total_events: u64,
+    pub selected_generic_metis_events: u64,
+    pub selected_generic_public_events: u64,
+    pub selected_pump_fun_paid_events: u64,
+    pub unresolved_events: u64,
+    pub latest: Vec<ExecutionQuoteCanaryProviderSelectionEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExecutionQuoteCanaryProviderSelectionEvent {
+    pub event_id: String,
+    pub side: String,
+    pub token: String,
+    pub request_ts: DateTime<Utc>,
+    pub selected_provider: String,
+    pub selected_reason: String,
+    pub generic_metis_status: Option<String>,
+    pub generic_public_status: Option<String>,
+    pub pump_fun_paid_status: Option<String>,
+    pub pump_fun_paid_is_completed: Option<bool>,
+    pub generic_metis_error: Option<String>,
+    pub generic_public_error: Option<String>,
+    pub pump_fun_paid_error: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ExecutionCanaryQuoteReadinessGate {
     pub status: String,

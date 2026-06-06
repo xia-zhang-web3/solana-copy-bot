@@ -37,7 +37,8 @@ pub use types_execution_quote_pnl::{
     ExecutionCanaryQuoteSideDiagnostics, ExecutionCanaryQuoteStatusCount,
     ExecutionCanaryQuoteThresholdCandidate, ExecutionCanaryShadowCloseBreakdown,
     ExecutionCanaryShadowCloseContextSummary, ExecutionQuoteCanaryProviderComparisonEvent,
-    ExecutionQuoteCanaryProviderComparisonSummary, ExecutionQuoteCanaryPublicPaidComparisonEvent,
+    ExecutionQuoteCanaryProviderComparisonSummary, ExecutionQuoteCanaryProviderSelectionEvent,
+    ExecutionQuoteCanaryProviderSelectionSummary, ExecutionQuoteCanaryPublicPaidComparisonEvent,
     ExecutionQuoteCanaryPublicPaidComparisonSummary, EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED,
     EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED, EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,
 };

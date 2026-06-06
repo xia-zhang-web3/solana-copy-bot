@@ -120,6 +120,89 @@ fn public_paid_comparison_reports_paid_generic_delta() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn provider_selection_prefers_pump_fun_bonding_curve_quote() -> Result<()> {
+    let store = open_migrated_store("execution-quote-provider-selection-pump")?;
+    let now = ts("2026-06-06T08:20:00Z");
+    let event = quote_event(now);
+    store.record_execution_quote_canary_event(&event)?;
+    store.record_execution_quote_canary_provider_sample(&provider_sample(
+        &event,
+        PROVIDER_GENERIC_METIS,
+        90,
+        400.0,
+        0.104,
+        None,
+    ))?;
+    store.record_execution_quote_canary_provider_sample(&provider_sample_with_response(
+        &event,
+        PROVIDER_PUMP_FUN_PAID,
+        70,
+        150.0,
+        0.1015,
+        Some(pump_quote_json(false)),
+        None,
+    ))?;
+
+    let summary = store.execution_quote_canary_provider_selection_summary(
+        now,
+        now - chrono::Duration::seconds(1),
+        10,
+    )?;
+    let latest = summary.latest.first().expect("provider selection event");
+
+    assert_eq!(summary.total_events, 1);
+    assert_eq!(summary.selected_pump_fun_paid_events, 1);
+    assert_eq!(summary.selected_generic_metis_events, 0);
+    assert_eq!(latest.selected_provider, PROVIDER_PUMP_FUN_PAID);
+    assert_eq!(latest.selected_reason, "pump_fun_bonding_curve_quote_ok");
+    assert_eq!(latest.pump_fun_paid_is_completed, Some(false));
+    Ok(())
+}
+
+#[test]
+fn provider_selection_treats_pump_fun_not_found_as_generic_path() -> Result<()> {
+    let store = open_migrated_store("execution-quote-provider-selection-generic")?;
+    let now = ts("2026-06-06T08:30:00Z");
+    let event = quote_event(now);
+    store.record_execution_quote_canary_event(&event)?;
+    store.record_execution_quote_canary_provider_sample(&provider_sample(
+        &event,
+        PROVIDER_GENERIC_METIS,
+        90,
+        300.0,
+        0.103,
+        None,
+    ))?;
+    store.record_execution_quote_canary_provider_sample(&provider_sample_with_response(
+        &event,
+        PROVIDER_PUMP_FUN_PAID,
+        80,
+        0.0,
+        0.0,
+        None,
+        Some("Bonding curve for mint not found".to_string()),
+    ))?;
+
+    let summary = store.execution_quote_canary_provider_selection_summary(
+        now,
+        now - chrono::Duration::seconds(1),
+        10,
+    )?;
+    let latest = summary.latest.first().expect("provider selection event");
+
+    assert_eq!(summary.total_events, 1);
+    assert_eq!(summary.selected_generic_metis_events, 1);
+    assert_eq!(summary.selected_pump_fun_paid_events, 0);
+    assert_eq!(latest.selected_provider, PROVIDER_GENERIC_METIS);
+    assert_eq!(latest.selected_reason, "paid_generic_quote_ok");
+    assert_eq!(
+        latest.pump_fun_paid_error.as_deref(),
+        Some("Bonding curve for mint not found")
+    );
+    Ok(())
+}
+
 fn quote_event(request_ts: DateTime<Utc>) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
         event_id: "quote:entry:provider-compare".to_string(),
@@ -159,6 +242,26 @@ fn provider_sample(
     quote_price_sol: f64,
     error: Option<String>,
 ) -> ExecutionQuoteCanaryProviderSampleInsert {
+    provider_sample_with_response(
+        event,
+        provider,
+        latency_ms,
+        slippage_bps,
+        quote_price_sol,
+        None,
+        error,
+    )
+}
+
+fn provider_sample_with_response(
+    event: &ExecutionQuoteCanaryEventInsert,
+    provider: &str,
+    latency_ms: u64,
+    slippage_bps: f64,
+    quote_price_sol: f64,
+    quote_response_json: Option<String>,
+    error: Option<String>,
+) -> ExecutionQuoteCanaryProviderSampleInsert {
     ExecutionQuoteCanaryProviderSampleInsert {
         event_id: event.event_id.clone(),
         provider: provider.to_string(),
@@ -168,7 +271,7 @@ fn provider_sample(
         quote_latency_ms: Some(latency_ms),
         quote_in_amount_raw: event.quote_in_amount_raw.clone(),
         quote_out_amount_raw: event.quote_out_amount_raw.clone(),
-        quote_response_json: event.quote_response_json.clone(),
+        quote_response_json: quote_response_json.or_else(|| event.quote_response_json.clone()),
         quote_price_sol: Some(quote_price_sol),
         shadow_price_sol: event.shadow_price_sol,
         slippage_bps: Some(slippage_bps),
@@ -178,4 +281,10 @@ fn provider_sample(
         decision_reason: Some("within_slippage_limit".to_string()),
         error,
     }
+}
+
+fn pump_quote_json(is_completed: bool) -> String {
+    format!(
+        r#"{{"quote":{{"mint":"TokenMint","bondingCurve":"BondingCurve","type":"BUY","inAmount":"200000000","outAmount":"2000000","meta":{{"isCompleted":{is_completed},"outDecimals":6,"inDecimals":9}}}}}}"#
+    )
 }

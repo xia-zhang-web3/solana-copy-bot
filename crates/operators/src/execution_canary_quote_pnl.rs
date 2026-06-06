@@ -2,7 +2,8 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_storage_core::{
     ExecutionCanaryQuotePnlSummary, ExecutionQuoteCanaryProviderComparisonSummary,
-    ExecutionQuoteCanaryPublicPaidComparisonSummary, SqliteStore,
+    ExecutionQuoteCanaryProviderSelectionSummary, ExecutionQuoteCanaryPublicPaidComparisonSummary,
+    SqliteStore,
 };
 use serde::Serialize;
 use std::env;
@@ -46,6 +47,7 @@ pub struct CanaryQuotePnlOperatorReport {
     pub summary: Option<ExecutionCanaryQuotePnlSummary>,
     pub provider_comparison: Option<ExecutionQuoteCanaryProviderComparisonSummary>,
     pub public_paid_comparison: Option<ExecutionQuoteCanaryPublicPaidComparisonSummary>,
+    pub provider_selection: Option<ExecutionQuoteCanaryProviderSelectionSummary>,
     pub tiny_execution_gate: Option<TinyExecutionGate>,
 }
 
@@ -61,6 +63,7 @@ impl CanaryQuotePnlOperatorReport {
             summary: None,
             provider_comparison: None,
             public_paid_comparison: None,
+            provider_selection: None,
             tiny_execution_gate: None,
         }
     }
@@ -230,6 +233,17 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
             );
         }
     };
+    let provider_selection =
+        match store.execution_quote_canary_provider_selection_summary(as_of, since, cli.limit) {
+            Ok(summary) => summary,
+            Err(error) => {
+                return CanaryQuotePnlOperatorReport::failed(
+                    REASON_DB_UNREADABLE,
+                    Some(error.to_string()),
+                    as_of,
+                );
+            }
+        };
     let recent_loss =
         match store.execution_canary_realized_loss_sol_since(as_of - Duration::hours(24)) {
             Ok(loss) => loss,
@@ -259,6 +273,7 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         summary: Some(summary),
         provider_comparison: Some(provider_comparison),
         public_paid_comparison: Some(public_paid_comparison),
+        provider_selection: Some(provider_selection),
         tiny_execution_gate: Some(tiny_execution_gate),
     }
 }

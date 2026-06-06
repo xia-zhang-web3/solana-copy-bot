@@ -456,7 +456,7 @@ impl crate::execution_submit_adapter::ExecutionSubmitAdapter for MetadataAssertA
         assert_eq!(request.client_order_id, self.expected_client_order_id);
         assert_eq!(
             request.metadata.quote_source.as_deref(),
-            Some("execution_quote_canary_event")
+            Some(crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS)
         );
         assert_eq!(
             request.metadata.quote_event_id.as_deref(),

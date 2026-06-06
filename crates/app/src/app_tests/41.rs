@@ -77,7 +77,7 @@ async fn execution_canary_state_machine_persists_build_plan_metadata() -> Result
     assert_eq!(metadata.client_order_id, order.client_order_id);
     assert_eq!(
         metadata.quote_source.as_deref(),
-        Some("execution_quote_canary_event")
+        Some(crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS)
     );
     assert_eq!(
         metadata.quote_event_id.as_deref(),
