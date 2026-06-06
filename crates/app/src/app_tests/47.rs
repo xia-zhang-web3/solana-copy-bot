@@ -109,9 +109,118 @@ async fn swap_instructions_dry_run_missing_swap_instruction_fails_simulation() -
     Ok(())
 }
 
+#[tokio::test]
+async fn swap_instructions_dry_run_retries_missing_token_program() -> Result<()> {
+    let db_path = unique_swap_instructions_test_path("http-retry-token-program");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (mut first, _) = listener.accept().await.expect("first swap request");
+        let mut buffer = [0_u8; 4096];
+        let read = first.read(&mut buffer).await.expect("read first request");
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        assert!(request.starts_with("POST /swap-instructions "));
+        write_http_status(
+            &mut first,
+            500,
+            r#"{"error":"Missing token program for TokenMint"}"#,
+        )
+        .await;
+        drop(first);
+
+        let (mut second, _) = listener.accept().await.expect("retry swap request");
+        let read = second.read(&mut buffer).await.expect("read retry request");
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        assert!(request.starts_with("POST /swap-instructions "));
+        write_http_json(
+            &mut second,
+            r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":null}"#,
+        )
+        .await;
+    });
+    let now = Utc::now();
+    let signal = swap_instructions_signal("http-retry-token-program", now);
+    store.insert_copy_signal(&signal)?;
+    record_swap_instructions_quote(&store, &signal, now)?;
+    let config = swap_instructions_config(base_url, true);
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let state_machine =
+        crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(config, adapter);
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+    server.await?;
+    let order = store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .expect("order should exist");
+
+    assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.submit_disabled, 1);
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("attempts=2"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
+async fn metis_dry_run_does_not_fallback_to_leader_wallet() -> Result<()> {
+    let db_path = unique_swap_instructions_test_path("missing-canary-wallet");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let signal = swap_instructions_signal("missing-canary-wallet", now);
+    store.insert_copy_signal(&signal)?;
+    record_swap_instructions_quote(&store, &signal, now)?;
+    let mut config = swap_instructions_config("http://127.0.0.1:1".to_string(), true);
+    config.canary_wallet_pubkey.clear();
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let state_machine =
+        crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(config, adapter);
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+    let order = store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .expect("order should exist");
+
+    assert_eq!(summary.failed, 1);
+    assert_eq!(
+        order.simulation_status.as_deref(),
+        Some(copybot_storage_core::EXECUTION_SIMULATION_STATUS_FAILED)
+    );
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("missing user public key"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
 async fn write_http_json(socket: &mut tokio::net::TcpStream, body: &str) {
+    write_http_status(socket, 200, body).await;
+}
+
+async fn write_http_status(socket: &mut tokio::net::TcpStream, status: u16, body: &str) {
     let response = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+        "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{}",
         body.len(),
         body
     );

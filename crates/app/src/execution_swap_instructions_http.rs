@@ -1,10 +1,11 @@
-use crate::execution_quote_canary_helpers::{elapsed_ms, truncate_for_log};
+use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_submit_adapter::ExecutionTransactionPlan;
 use crate::execution_swap_http_request::{swap_endpoint_url, swap_request_body};
-use anyhow::{anyhow, Context, Result};
+use crate::execution_swap_http_retry::post_swap_json_with_retry;
+use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
 use serde_json::Value;
-use std::time::{Duration as StdDuration, Instant};
+use std::time::Duration as StdDuration;
 
 pub(crate) async fn fetch_swap_instructions_dry_run(
     http: &reqwest::Client,
@@ -32,32 +33,28 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
         "swap-instructions",
     )?;
     let timeout = StdDuration::from_millis(config.quote_canary_timeout_ms.max(1));
-    let started = Instant::now();
-    let mut request = http.post(url).json(&body).timeout(timeout);
     let api_key = config.quote_canary_api_key.trim();
-    if !api_key.is_empty() {
-        request = request.header("x-api-key", api_key);
-    }
-    let response = request
-        .send()
-        .await
-        .context("swap-instructions dry-run request failed")?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!(
-            "swap-instructions dry-run returned HTTP {status}: {}",
-            truncate_for_log(&body, 240)
-        ));
-    }
-    let value: Value = response
-        .json()
-        .await
-        .context("swap-instructions dry-run response JSON decode failed")?;
-    Ok(Some(swap_instructions_response_summary(value, started)?))
+    let response = post_swap_json_with_retry(
+        http,
+        url,
+        api_key,
+        &body,
+        timeout,
+        "swap-instructions dry-run",
+    )
+    .await?;
+    Ok(Some(swap_instructions_response_summary(
+        response.value,
+        response.elapsed_ms,
+        response.attempts,
+    )?))
 }
 
-fn swap_instructions_response_summary(value: Value, started: Instant) -> Result<String> {
+fn swap_instructions_response_summary(
+    value: Value,
+    elapsed_ms: u64,
+    attempts: usize,
+) -> Result<String> {
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
         return Err(anyhow!(
             "swap-instructions dry-run error: {}",
@@ -76,7 +73,7 @@ fn swap_instructions_response_summary(value: Value, started: Instant) -> Result<
         .filter(|item| !item.is_null())
         .map(|item| truncate_for_log(&item.to_string(), 180));
     let summary = format!(
-        "metis_swap_instructions_ok compute={} setup={} other={} alt={} cleanup={} latency_ms={} simulation_error={}",
+        "metis_swap_instructions_ok compute={} setup={} other={} alt={} cleanup={} latency_ms={} attempts={} simulation_error={}",
         array_len(value.get("computeBudgetInstructions")),
         array_len(value.get("setupInstructions")),
         array_len(value.get("otherInstructions")),
@@ -84,7 +81,8 @@ fn swap_instructions_response_summary(value: Value, started: Instant) -> Result<
         value.get("cleanupInstruction")
             .filter(|item| !item.is_null())
             .is_some(),
-        elapsed_ms(started),
+        elapsed_ms,
+        attempts,
         simulation_error.unwrap_or_else(|| "none".to_string())
     );
     Ok(truncate_for_log(&summary, 500))

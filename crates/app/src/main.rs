@@ -58,6 +58,7 @@ mod execution_quote_http;
 mod execution_submit_adapter;
 mod execution_swap_blueprint;
 mod execution_swap_http_request;
+mod execution_swap_http_retry;
 mod execution_swap_instructions_http;
 mod execution_swap_transaction_http;
 mod history_retention;

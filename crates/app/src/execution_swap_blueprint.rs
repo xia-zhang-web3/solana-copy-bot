@@ -49,8 +49,7 @@ pub(crate) fn build_execution_swap_blueprint(
         "sell" => (token, WSOL_MINT.to_string()),
         side => return Err(anyhow!("unsupported swap blueprint side {side}")),
     };
-    let wallet_pubkey = non_empty_string(request.wallet_pubkey.as_str())
-        .or_else(|| non_empty_string(&request.wallet_id));
+    let wallet_pubkey = non_empty_string(request.wallet_pubkey.as_str());
 
     Ok(ExecutionSwapBlueprint {
         request_kind: REQUEST_KIND_SWAP_INSTRUCTIONS.to_string(),
