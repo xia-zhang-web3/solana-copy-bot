@@ -47,6 +47,7 @@ pub(crate) async fn build_pump_fun_provider_sample(
     };
     let mut sample_event = event.clone();
     apply_quote_sample_to_event(&mut sample_event, quote);
+    sample_event.error = None;
     if let Some(decimals) = decimals {
         let (price, slippage) = match event.side.as_str() {
             SIDE_BUY => buy_quote_price_and_slippage(&sample_event, decimals),
