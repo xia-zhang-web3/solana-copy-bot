@@ -57,7 +57,9 @@ pub(super) fn provider_sample_from_event(
         route_plan_json: event.route_plan_json.clone(),
         decision_status: Some(decision_status),
         decision_reason: Some(decision_reason),
-        error: event.error.clone(),
+        error: (event.quote_status == QUOTE_STATUS_ERROR)
+            .then(|| event.error.clone())
+            .flatten(),
     }
 }
 
