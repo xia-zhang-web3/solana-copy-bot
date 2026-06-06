@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use copybot_storage_core::{
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderSampleInsert, SqliteStore,
-    PROVIDER_GENERIC_METIS, PROVIDER_PUMP_FUN_PAID,
+    PROVIDER_GENERIC_METIS, PROVIDER_GENERIC_PUBLIC, PROVIDER_PUMP_FUN_PAID,
 };
 use tempfile::tempdir;
 
@@ -67,6 +67,56 @@ fn provider_comparison_reports_paid_vs_generic_delta() -> Result<()> {
     );
     assert_eq!(latest.slippage_delta_bps, Some(-350.0));
     assert_eq!(latest.latency_delta_ms, Some(-40));
+    Ok(())
+}
+
+#[test]
+fn public_paid_comparison_reports_paid_generic_delta() -> Result<()> {
+    let store = open_migrated_store("execution-quote-public-paid-compare")?;
+    let now = ts("2026-06-06T08:10:00Z");
+    let event = quote_event(now);
+    store.record_execution_quote_canary_event(&event)?;
+    store.record_execution_quote_canary_provider_sample(&provider_sample(
+        &event,
+        PROVIDER_GENERIC_PUBLIC,
+        210,
+        900.0,
+        0.109,
+        None,
+    ))?;
+    store.record_execution_quote_canary_provider_sample(&provider_sample(
+        &event,
+        PROVIDER_GENERIC_METIS,
+        90,
+        300.0,
+        0.103,
+        None,
+    ))?;
+
+    let summary = store.execution_quote_canary_public_paid_comparison_summary(
+        now,
+        now - chrono::Duration::seconds(1),
+        10,
+    )?;
+    let latest = summary
+        .latest
+        .first()
+        .expect("public/paid comparison event");
+
+    assert_eq!(summary.total_events, 1);
+    assert_eq!(summary.paired_events, 1);
+    assert_eq!(summary.both_ok_events, 1);
+    assert_eq!(summary.paid_better_slippage_events, 1);
+    assert_eq!(summary.public_better_slippage_events, 0);
+    assert_eq!(summary.avg_public_latency_ms, 210.0);
+    assert_eq!(summary.avg_paid_latency_ms, 90.0);
+    assert_eq!(summary.avg_paid_minus_public_slippage_bps, -600.0);
+    assert_eq!(
+        latest.better_provider.as_deref(),
+        Some(PROVIDER_GENERIC_METIS)
+    );
+    assert_eq!(latest.slippage_delta_bps, Some(-600.0));
+    assert_eq!(latest.latency_delta_ms, Some(-120));
     Ok(())
 }
 

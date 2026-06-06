@@ -1,5 +1,5 @@
 use super::{
-    build_pump_fun_provider_sample, buy_quote_price_and_slippage, ExecutionQuoteCanaryRunner,
+    append_parallel_provider_samples, buy_quote_price_and_slippage, ExecutionQuoteCanaryRunner,
     ExecutionQuoteCanaryTickSummary, QuoteEventBundle,
 };
 use crate::execution_quote_canary_helpers::*;
@@ -95,18 +95,17 @@ impl ExecutionQuoteCanaryRunner {
             }
         }
         let mut bundle = QuoteEventBundle::event_only(event);
-        if let Some(sample) = build_pump_fun_provider_sample(
+        append_parallel_provider_samples(
+            &mut bundle,
             &self.http,
             &self.config,
-            &bundle.event,
+            SOL_MINT,
+            &swap.token_out,
             &amount,
             token_decimals,
             limit_bps,
         )
-        .await
-        {
-            bundle.provider_samples.push(sample);
-        }
+        .await;
         Ok(bundle)
     }
 }

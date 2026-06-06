@@ -1,3 +1,6 @@
+use crate::types::{
+    ExecutionQuoteCanaryPublicPaidComparisonEvent, ExecutionQuoteCanaryPublicPaidComparisonSummary,
+};
 use crate::{
     observed_timestamp::parse_rfc3339_utc, ExecutionQuoteCanaryProviderComparisonEvent,
     ExecutionQuoteCanaryProviderComparisonSummary, ExecutionQuoteCanaryProviderSampleInsert,
@@ -8,6 +11,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::params;
 
 pub const PROVIDER_GENERIC_METIS: &str = "generic_metis";
+pub const PROVIDER_GENERIC_PUBLIC: &str = "generic_public";
 pub const PROVIDER_PUMP_FUN_PAID: &str = "pump_fun_paid";
 
 pub(crate) fn ensure_execution_quote_canary_provider_samples_table(
@@ -94,6 +98,19 @@ impl SqliteDiscoveryStore {
         Ok(summarize_provider_comparison(as_of, since, limit, events))
     }
 
+    pub fn execution_quote_canary_public_paid_comparison_summary(
+        &self,
+        as_of: DateTime<Utc>,
+        since: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<ExecutionQuoteCanaryPublicPaidComparisonSummary> {
+        ensure_execution_quote_canary_provider_samples_table(self)?;
+        let events = self.execution_quote_canary_public_paid_comparison_events(since, limit)?;
+        Ok(summarize_public_paid_comparison(
+            as_of, since, limit, events,
+        ))
+    }
+
     fn execution_quote_canary_provider_comparison_events(
         &self,
         since: DateTime<Utc>,
@@ -144,6 +161,58 @@ impl SqliteDiscoveryStore {
             .context("failed querying provider comparison rows")?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("failed reading provider comparison rows")
+    }
+
+    fn execution_quote_canary_public_paid_comparison_events(
+        &self,
+        since: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<ExecutionQuoteCanaryPublicPaidComparisonEvent>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    event.event_id,
+                    event.side,
+                    event.token,
+                    event.request_ts,
+                    public.quote_status,
+                    paid.quote_status,
+                    public.quote_latency_ms,
+                    paid.quote_latency_ms,
+                    public.slippage_bps,
+                    paid.slippage_bps,
+                    public.quote_price_sol,
+                    paid.quote_price_sol,
+                    COALESCE(paid.shadow_price_sol, public.shadow_price_sol, event.shadow_price_sol),
+                    public.error,
+                    paid.error
+                 FROM execution_quote_canary_events AS event
+                 LEFT JOIN execution_quote_canary_provider_samples AS public
+                    ON public.event_id = event.event_id
+                   AND public.provider = ?2
+                 LEFT JOIN execution_quote_canary_provider_samples AS paid
+                    ON paid.event_id = event.event_id
+                   AND paid.provider = ?3
+                 WHERE event.request_ts >= ?1
+                   AND (public.event_id IS NOT NULL OR paid.event_id IS NOT NULL)
+                 ORDER BY event.request_ts DESC, event.event_id DESC
+                 LIMIT ?4",
+            )
+            .context("failed to prepare public/paid generic comparison query")?;
+        let rows = stmt
+            .query_map(
+                params![
+                    since.to_rfc3339(),
+                    PROVIDER_GENERIC_PUBLIC,
+                    PROVIDER_GENERIC_METIS,
+                    i64::from(limit.max(1)),
+                ],
+                read_public_paid_comparison_event,
+            )
+            .context("failed querying public/paid generic comparison rows")?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed reading public/paid generic comparison rows")
     }
 }
 
@@ -213,6 +282,72 @@ fn summarize_provider_comparison(
     summary
 }
 
+fn summarize_public_paid_comparison(
+    as_of: DateTime<Utc>,
+    since: DateTime<Utc>,
+    limit: u32,
+    latest: Vec<ExecutionQuoteCanaryPublicPaidComparisonEvent>,
+) -> ExecutionQuoteCanaryPublicPaidComparisonSummary {
+    let mut summary = ExecutionQuoteCanaryPublicPaidComparisonSummary {
+        as_of,
+        since,
+        limit,
+        total_events: latest.len() as u64,
+        paired_events: 0,
+        both_ok_events: 0,
+        public_only_ok_events: 0,
+        paid_only_ok_events: 0,
+        both_error_events: 0,
+        paid_better_slippage_events: 0,
+        public_better_slippage_events: 0,
+        equal_slippage_events: 0,
+        avg_public_latency_ms: 0.0,
+        avg_paid_latency_ms: 0.0,
+        avg_public_slippage_bps: 0.0,
+        avg_paid_slippage_bps: 0.0,
+        avg_paid_minus_public_slippage_bps: 0.0,
+        latest,
+    };
+    let mut public_latency = Avg::default();
+    let mut paid_latency = Avg::default();
+    let mut public_slippage = Avg::default();
+    let mut paid_slippage = Avg::default();
+    let mut slippage_delta = Avg::default();
+    for event in &summary.latest {
+        if event.public_status.is_some() && event.paid_status.is_some() {
+            summary.paired_events += 1;
+        }
+        let public_ok = event.public_status.as_deref() == Some("ok");
+        let paid_ok = event.paid_status.as_deref() == Some("ok");
+        match (public_ok, paid_ok) {
+            (true, true) => summary.both_ok_events += 1,
+            (true, false) => summary.public_only_ok_events += 1,
+            (false, true) => summary.paid_only_ok_events += 1,
+            (false, false) => summary.both_error_events += 1,
+        }
+        public_latency.record(event.public_latency_ms.map(|value| value as f64));
+        paid_latency.record(event.paid_latency_ms.map(|value| value as f64));
+        public_slippage.record(event.public_slippage_bps);
+        paid_slippage.record(event.paid_slippage_bps);
+        if let Some(delta) = event.slippage_delta_bps {
+            slippage_delta.record(Some(delta));
+            if delta < 0.0 {
+                summary.paid_better_slippage_events += 1;
+            } else if delta > 0.0 {
+                summary.public_better_slippage_events += 1;
+            } else {
+                summary.equal_slippage_events += 1;
+            }
+        }
+    }
+    summary.avg_public_latency_ms = public_latency.avg;
+    summary.avg_paid_latency_ms = paid_latency.avg;
+    summary.avg_public_slippage_bps = public_slippage.avg;
+    summary.avg_paid_slippage_bps = paid_slippage.avg;
+    summary.avg_paid_minus_public_slippage_bps = slippage_delta.avg;
+    summary
+}
+
 fn read_provider_comparison_event(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<ExecutionQuoteCanaryProviderComparisonEvent> {
@@ -271,12 +406,79 @@ fn read_provider_comparison_event_result(
     })
 }
 
+fn read_public_paid_comparison_event(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ExecutionQuoteCanaryPublicPaidComparisonEvent> {
+    read_public_paid_comparison_event_result(row).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                error.to_string(),
+            )),
+        )
+    })
+}
+
+fn read_public_paid_comparison_event_result(
+    row: &rusqlite::Row<'_>,
+) -> Result<ExecutionQuoteCanaryPublicPaidComparisonEvent> {
+    let request_ts_raw: String = row.get(3).context("failed reading request_ts")?;
+    let public_latency = optional_i64_to_u64("public.quote_latency_ms", row.get(6)?)?;
+    let paid_latency = optional_i64_to_u64("paid.quote_latency_ms", row.get(7)?)?;
+    let public_slippage: Option<f64> = row.get(8)?;
+    let paid_slippage: Option<f64> = row.get(9)?;
+    let slippage_delta_bps = match (public_slippage, paid_slippage) {
+        (Some(public), Some(paid)) if public.is_finite() && paid.is_finite() => Some(paid - public),
+        _ => None,
+    };
+    let latency_delta_ms = match (public_latency, paid_latency) {
+        (Some(public), Some(paid)) => i64::try_from(paid)
+            .ok()
+            .zip(i64::try_from(public).ok())
+            .map(|(paid, public)| paid - public),
+        _ => None,
+    };
+    Ok(ExecutionQuoteCanaryPublicPaidComparisonEvent {
+        event_id: row.get(0).context("failed reading event_id")?,
+        side: row.get(1).context("failed reading side")?,
+        token: row.get(2).context("failed reading token")?,
+        request_ts: parse_rfc3339_utc(&request_ts_raw, "provider.request_ts")?,
+        public_status: row.get(4).context("failed reading public quote_status")?,
+        paid_status: row.get(5).context("failed reading paid quote_status")?,
+        public_latency_ms: public_latency,
+        paid_latency_ms: paid_latency,
+        public_slippage_bps: public_slippage,
+        paid_slippage_bps: paid_slippage,
+        slippage_delta_bps,
+        latency_delta_ms,
+        public_quote_price_sol: row.get(10).context("failed reading public quote price")?,
+        paid_quote_price_sol: row.get(11).context("failed reading paid quote price")?,
+        shadow_price_sol: row.get(12).context("failed reading shadow price")?,
+        better_provider: better_generic_provider(slippage_delta_bps),
+        public_error: row.get(13).context("failed reading public error")?,
+        paid_error: row.get(14).context("failed reading paid error")?,
+    })
+}
+
 fn better_provider(slippage_delta_bps: Option<f64>) -> Option<String> {
     let delta = slippage_delta_bps?;
     if delta < 0.0 {
         Some(PROVIDER_PUMP_FUN_PAID.to_string())
     } else if delta > 0.0 {
         Some(PROVIDER_GENERIC_METIS.to_string())
+    } else {
+        Some("equal".to_string())
+    }
+}
+
+fn better_generic_provider(slippage_delta_bps: Option<f64>) -> Option<String> {
+    let delta = slippage_delta_bps?;
+    if delta < 0.0 {
+        Some(PROVIDER_GENERIC_METIS.to_string())
+    } else if delta > 0.0 {
+        Some(PROVIDER_GENERIC_PUBLIC.to_string())
     } else {
         Some("equal".to_string())
     }

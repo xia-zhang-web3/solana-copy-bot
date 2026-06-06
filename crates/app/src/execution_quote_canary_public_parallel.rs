@@ -2,31 +2,36 @@ use super::provider_compare::{
     buy_quote_price_and_slippage, provider_error_sample, provider_sample_from_event,
     sell_quote_price_and_slippage,
 };
-use super::pump_fun_quote_http::fetch_pump_fun_quote_sample;
 use crate::execution_quote_canary_helpers::{apply_quote_sample_to_event, SIDE_BUY, SIDE_SELL};
+use crate::execution_quote_http::fetch_quote_sample_from_base_url;
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderSampleInsert,
-    PROVIDER_PUMP_FUN_PAID,
+    PROVIDER_GENERIC_PUBLIC,
 };
 
-pub(crate) async fn build_pump_fun_provider_sample(
+pub(crate) async fn build_public_generic_provider_sample(
     http: &reqwest::Client,
     config: &ExecutionConfig,
     event: &ExecutionQuoteCanaryEventInsert,
+    input_mint: &str,
+    output_mint: &str,
     amount_raw: &str,
     token_decimals: Option<u8>,
     max_slippage_bps: u64,
 ) -> Option<ExecutionQuoteCanaryProviderSampleInsert> {
-    if !config.quote_canary_pump_fun_parallel_enabled {
+    if !config.quote_canary_public_parallel_enabled {
         return None;
     }
-    let quote = match fetch_pump_fun_quote_sample(
+    let quote = match fetch_quote_sample_from_base_url(
         http,
-        config,
-        &event.side,
-        &event.token,
+        &config.quote_canary_public_base_url,
+        "",
+        config.quote_canary_timeout_ms,
+        input_mint,
+        output_mint,
         amount_raw,
+        max_slippage_bps,
     )
     .await
     {
@@ -34,20 +39,15 @@ pub(crate) async fn build_pump_fun_provider_sample(
         Err(error) => {
             return Some(provider_error_sample(
                 event,
-                PROVIDER_PUMP_FUN_PAID,
+                PROVIDER_GENERIC_PUBLIC,
                 &error,
                 max_slippage_bps,
             ));
         }
     };
-    let decimals = match event.side.as_str() {
-        SIDE_BUY => quote.out_decimals.or(token_decimals),
-        SIDE_SELL => quote.in_decimals.or(token_decimals),
-        _ => token_decimals,
-    };
     let mut sample_event = event.clone();
     apply_quote_sample_to_event(&mut sample_event, quote);
-    if let Some(decimals) = decimals {
+    if let Some(decimals) = token_decimals {
         let (price, slippage) = match event.side.as_str() {
             SIDE_BUY => buy_quote_price_and_slippage(&sample_event, decimals),
             SIDE_SELL => sell_quote_price_and_slippage(&sample_event, decimals),
@@ -58,7 +58,7 @@ pub(crate) async fn build_pump_fun_provider_sample(
     }
     Some(provider_sample_from_event(
         &sample_event,
-        PROVIDER_PUMP_FUN_PAID,
+        PROVIDER_GENERIC_PUBLIC,
         max_slippage_bps,
     ))
 }

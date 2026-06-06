@@ -150,6 +150,15 @@ pub(super) fn apply_discovery_shadow_execution_env_overrides(config: &mut AppCon
     {
         config.execution.quote_canary_timeout_ms = quote_canary_timeout_ms;
     }
+    if let Some(public_parallel_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_PUBLIC_PARALLEL_ENABLED")?
+    {
+        config.execution.quote_canary_public_parallel_enabled = public_parallel_enabled;
+    }
+    if let Ok(public_base_url) = env::var("SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_PUBLIC_BASE_URL")
+    {
+        config.execution.quote_canary_public_base_url = public_base_url;
+    }
     if let Some(pump_fun_parallel_enabled) =
         parse_env_bool("SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_PUMP_FUN_PARALLEL_ENABLED")?
     {

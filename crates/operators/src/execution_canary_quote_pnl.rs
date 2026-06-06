@@ -1,8 +1,8 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
-use copybot_config::load_from_path;
 use copybot_storage_core::{
-    ExecutionCanaryQuotePnlSummary, ExecutionQuoteCanaryProviderComparisonSummary, SqliteStore,
+    ExecutionCanaryQuotePnlSummary, ExecutionQuoteCanaryProviderComparisonSummary,
+    ExecutionQuoteCanaryPublicPaidComparisonSummary, SqliteStore,
 };
 use serde::Serialize;
 use std::env;
@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 
 use crate::execution_canary_quote_pnl_gate::build_tiny_execution_gate;
 pub use crate::execution_canary_quote_pnl_gate::{TinyExecutionGate, TinyExecutionGateCheck};
+
+#[path = "execution_canary_quote_pnl_cli.rs"]
+mod quote_pnl_cli;
+use quote_pnl_cli::{next_value, parse_limit, parse_since, parse_since_hours, resolve_db_path};
 
 const REASON_OK: &str = "execution_canary_quote_pnl_loaded";
 const REASON_CLI_ERROR: &str = "execution_canary_quote_pnl_cli_error";
@@ -41,6 +45,7 @@ pub struct CanaryQuotePnlOperatorReport {
     pub error: Option<String>,
     pub summary: Option<ExecutionCanaryQuotePnlSummary>,
     pub provider_comparison: Option<ExecutionQuoteCanaryProviderComparisonSummary>,
+    pub public_paid_comparison: Option<ExecutionQuoteCanaryPublicPaidComparisonSummary>,
     pub tiny_execution_gate: Option<TinyExecutionGate>,
 }
 
@@ -55,6 +60,7 @@ impl CanaryQuotePnlOperatorReport {
             error,
             summary: None,
             provider_comparison: None,
+            public_paid_comparison: None,
             tiny_execution_gate: None,
         }
     }
@@ -212,6 +218,18 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
                 );
             }
         };
+    let public_paid_comparison = match store
+        .execution_quote_canary_public_paid_comparison_summary(as_of, since, cli.limit)
+    {
+        Ok(summary) => summary,
+        Err(error) => {
+            return CanaryQuotePnlOperatorReport::failed(
+                REASON_DB_UNREADABLE,
+                Some(error.to_string()),
+                as_of,
+            );
+        }
+    };
     let recent_loss =
         match store.execution_canary_realized_loss_sol_since(as_of - Duration::hours(24)) {
             Ok(loss) => loss,
@@ -240,54 +258,7 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         error: None,
         summary: Some(summary),
         provider_comparison: Some(provider_comparison),
+        public_paid_comparison: Some(public_paid_comparison),
         tiny_execution_gate: Some(tiny_execution_gate),
     }
-}
-
-fn resolve_db_path(cli: &Cli) -> Result<PathBuf> {
-    if let Some(path) = &cli.db_path {
-        return Ok(path.clone());
-    }
-    let config_path = cli
-        .config_path
-        .as_ref()
-        .ok_or_else(|| anyhow!("--config is required when --db-path is omitted"))?;
-    let loaded = load_from_path(config_path)
-        .with_context(|| format!("failed to load config: {}", config_path.display()))?;
-    Ok(PathBuf::from(loaded.sqlite.path))
-}
-
-fn next_value(iter: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {
-    iter.next()
-        .ok_or_else(|| anyhow!("{flag} requires a value"))
-}
-
-fn parse_limit(raw: &str) -> Result<u32> {
-    let limit = raw
-        .parse::<u32>()
-        .with_context(|| format!("invalid --limit value: {raw}"))?;
-    if limit == 0 || limit > MAX_LIMIT {
-        return Err(anyhow!(
-            "--limit must be between 1 and {MAX_LIMIT}, got {limit}"
-        ));
-    }
-    Ok(limit)
-}
-
-fn parse_since(raw: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(raw)
-        .with_context(|| format!("invalid --since rfc3339 value: {raw}"))
-        .map(|value| value.with_timezone(&Utc))
-}
-
-fn parse_since_hours(raw: &str) -> Result<i64> {
-    let hours = raw
-        .parse::<i64>()
-        .with_context(|| format!("invalid --since-hours value: {raw}"))?;
-    if hours <= 0 || hours > MAX_SINCE_HOURS {
-        return Err(anyhow!(
-            "--since-hours must be between 1 and {MAX_SINCE_HOURS}, got {hours}"
-        ));
-    }
-    Ok(hours)
 }

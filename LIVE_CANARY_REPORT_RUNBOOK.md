@@ -15,6 +15,8 @@ This runbook consolidates the report work from git history:
 - `a994c6a8` - tiny execution gate inside quote-PnL output.
 - `4157eadc` - Metis `/swap-instructions` dry-run proof.
 - Current batch - Metis `/swap` transaction dry-run proof.
+- Current batch - public-vs-paid generic route comparison:
+  `generic_public` vs `generic_metis`.
 - Current batch - paid Pump.fun route comparison:
   `generic_metis` vs `pump_fun_paid`.
 - `910ae413` - previous operations report runbook.
@@ -27,10 +29,15 @@ This runbook consolidates the report work from git history:
 - Metis swap-instructions dry-run is measured through the canary route.
 - Metis swap transaction dry-run may also be measured when
   `swap_transaction_dry_run_enabled=true`.
+- Public-vs-paid generic quote comparison is measured when
+  `quote_canary_public_parallel_enabled=true`; it compares public Jupiter/Metis
+  `/quote` against paid/private Metis `/quote` on the same event.
 - Paid Metis Pump.fun quote comparison is measured when
   `quote_canary_pump_fun_parallel_enabled=true`; it compares the old generic
   Metis/Jupiter `/quote` result against paid `/pump-fun/quote` on the same
-  event.
+  event. `Bonding curve for mint not found` usually means the token is already
+  migrated to Pump.fun AMM, so the public-vs-paid generic comparison is the
+  relevant paid-route signal for that event.
 - Priority Fee API is measured and included in quote PnL after fee.
 - Tiny execution gate is report-only until a separate explicit rollout.
 
@@ -156,6 +163,7 @@ else
   .summary as $s |
   .tiny_execution_gate as $g |
   (.provider_comparison // {}) as $pc |
+  (.public_paid_comparison // {}) as $ppc |
   "WINDOW since=\(.since) as_of=\(.as_of) limit=\($s.limit)",
   "SHADOW_TOTAL closed=\($s.shadow_close_breakdown.total_closed_trades) win_loss=\($s.shadow_close_breakdown.total_win_count)/\($s.shadow_close_breakdown.total_loss_count) pnl=\($s.shadow_close_breakdown.total_pnl_sol)",
   "SHADOW_MARKET closed=\($s.shadow_close_breakdown.market_closed_trades) pnl=\($s.shadow_close_breakdown.market_pnl_sol)",
@@ -195,6 +203,12 @@ else
     | map("\(.side):\(.status)=\(.events)")
     | join(" | ")
   ),
+  "PUBLIC_PAID paired=\($ppc.paired_events // 0) both_ok=\($ppc.both_ok_events // 0) public_only_ok=\($ppc.public_only_ok_events // 0) paid_only_ok=\($ppc.paid_only_ok_events // 0) paid_better=\($ppc.paid_better_slippage_events // 0) public_better=\($ppc.public_better_slippage_events // 0) avg_public_ms=\($ppc.avg_public_latency_ms // 0) avg_paid_ms=\($ppc.avg_paid_latency_ms // 0) avg_paid_minus_public_bps=\($ppc.avg_paid_minus_public_slippage_bps // 0)",
+  "PUBLIC_PAID_LATEST " + (
+    ($ppc.latest // [])[:5]
+    | map("\(.side):\(.better_provider // \"n/a\") delta_bps=\(.slippage_delta_bps // \"n/a\") public=\(.public_status // \"n/a\")/\(.public_slippage_bps // \"n/a\") paid=\(.paid_status // \"n/a\")/\(.paid_slippage_bps // \"n/a\")")
+    | join(" | ")
+  ),
   "PROVIDERS paired=\($pc.paired_events // 0) both_ok=\($pc.both_ok_events // 0) generic_only_ok=\($pc.generic_only_ok_events // 0) pump_fun_only_ok=\($pc.pump_fun_only_ok_events // 0) pump_fun_better=\($pc.pump_fun_better_slippage_events // 0) generic_better=\($pc.generic_better_slippage_events // 0) avg_generic_ms=\($pc.avg_generic_latency_ms // 0) avg_pump_fun_ms=\($pc.avg_pump_fun_latency_ms // 0) avg_pump_fun_minus_generic_bps=\($pc.avg_pump_fun_minus_generic_slippage_bps // 0)",
   "PROVIDER_LATEST " + (
     ($pc.latest // [])[:5]
@@ -223,6 +237,11 @@ This report answers:
 - If transaction dry-run is enabled, the latest proof should include
   `metis_swap_transaction_ok`
 - Provider comparison status:
+  - `PUBLIC_PAID paid_better` means paid/private generic Metis had lower
+    slippage than public generic quote on the same event.
+  - `PUBLIC_PAID public_better` means the public generic quote was better.
+  - `avg_paid_minus_public_bps < 0` means paid/private Metis is improving
+    slippage on average.
   - `pump_fun_better` means paid `/pump-fun/quote` had lower slippage on the
     same event.
   - `generic_better` means old generic Metis/Jupiter `/quote` was better.
@@ -355,6 +374,8 @@ Shadow stale/rug-like: <count>, PnL <x> SOL
 Canary quote PnL: counted <n>, skipped <n>, unknown <n>,
   win/loss <w>/<l>, PnL after fee <x> SOL, delta vs shadow <x> SOL
 Thresholds: 150=<pnl/count>, 300=<pnl/count>, 500=<pnl/count>, 1000=<pnl/count>
+Public vs paid: paired <n>, paid_better <n>, public_better <n>,
+  avg_paid_minus_public_bps <x>, latest <provider/delta>
 Providers: paired <n>, pump_fun_better <n>, generic_better <n>,
   avg_paid_minus_generic_bps <x>, latest <provider/delta>
 Metis dry-run: latest_simulation <passed/failed/missing>, proof <instructions/transaction/missing>, gate <ready/blocked>
@@ -379,8 +400,10 @@ Minimum report checks:
 - Metis dry-run latest simulation is `passed` or failure reason is understood
 - If `swap_transaction_dry_run_enabled=true`, latest simulation proof contains
   `metis_swap_transaction_ok`
-- paid provider comparison has enough paired events to judge if paid Pump.fun
-  improves slippage/latency versus generic Metis on the same events
+- public-vs-paid generic comparison has enough paired events to judge if
+  paid/private Metis improves slippage/latency versus public routes
+- paid Pump.fun comparison has enough paired events where `/pump-fun/quote`
+  supports the token
 - priority fee errors are low or safely ignored
 - ingestion gaps/drops/429/5xx are zero
 - SQLite busy/retry is not rising

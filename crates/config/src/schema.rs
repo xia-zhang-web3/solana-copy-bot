@@ -70,6 +70,8 @@ pub struct ExecutionConfig {
     pub quote_canary_base_url: String,
     pub quote_canary_api_key: String,
     pub quote_canary_timeout_ms: u64,
+    pub quote_canary_public_parallel_enabled: bool,
+    pub quote_canary_public_base_url: String,
     pub quote_canary_pump_fun_parallel_enabled: bool,
     pub swap_instructions_dry_run_enabled: bool,
     pub swap_transaction_dry_run_enabled: bool,
@@ -105,6 +107,8 @@ impl Default for ExecutionConfig {
             quote_canary_base_url: "https://api.jup.ag/swap/v1".to_string(),
             quote_canary_api_key: String::new(),
             quote_canary_timeout_ms: 1_500,
+            quote_canary_public_parallel_enabled: false,
+            quote_canary_public_base_url: "https://public.jupiterapi.com".to_string(),
             quote_canary_pump_fun_parallel_enabled: false,
             swap_instructions_dry_run_enabled: false,
             swap_transaction_dry_run_enabled: false,
@@ -151,6 +155,14 @@ impl fmt::Debug for ExecutionConfig {
                 &redacted_secret_debug_value(&self.quote_canary_api_key),
             )
             .field("quote_canary_timeout_ms", &self.quote_canary_timeout_ms)
+            .field(
+                "quote_canary_public_parallel_enabled",
+                &self.quote_canary_public_parallel_enabled,
+            )
+            .field(
+                "quote_canary_public_base_url",
+                &redacted_url_debug_value(&self.quote_canary_public_base_url),
+            )
             .field(
                 "quote_canary_pump_fun_parallel_enabled",
                 &self.quote_canary_pump_fun_parallel_enabled,

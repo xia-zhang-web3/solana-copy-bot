@@ -8,9 +8,9 @@ use copybot_storage_core::{
     PROVIDER_GENERIC_METIS,
 };
 
-pub(super) struct QuoteEventBundle {
-    pub(super) event: ExecutionQuoteCanaryEventInsert,
-    pub(super) provider_samples: Vec<ExecutionQuoteCanaryProviderSampleInsert>,
+pub(crate) struct QuoteEventBundle {
+    pub(crate) event: ExecutionQuoteCanaryEventInsert,
+    pub(crate) provider_samples: Vec<ExecutionQuoteCanaryProviderSampleInsert>,
 }
 
 impl QuoteEventBundle {

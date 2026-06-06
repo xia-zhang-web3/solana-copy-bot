@@ -199,6 +199,50 @@ pub struct ExecutionQuoteCanaryProviderComparisonEvent {
     pub pump_fun_error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExecutionQuoteCanaryPublicPaidComparisonSummary {
+    pub as_of: DateTime<Utc>,
+    pub since: DateTime<Utc>,
+    pub limit: u32,
+    pub total_events: u64,
+    pub paired_events: u64,
+    pub both_ok_events: u64,
+    pub public_only_ok_events: u64,
+    pub paid_only_ok_events: u64,
+    pub both_error_events: u64,
+    pub paid_better_slippage_events: u64,
+    pub public_better_slippage_events: u64,
+    pub equal_slippage_events: u64,
+    pub avg_public_latency_ms: f64,
+    pub avg_paid_latency_ms: f64,
+    pub avg_public_slippage_bps: f64,
+    pub avg_paid_slippage_bps: f64,
+    pub avg_paid_minus_public_slippage_bps: f64,
+    pub latest: Vec<ExecutionQuoteCanaryPublicPaidComparisonEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExecutionQuoteCanaryPublicPaidComparisonEvent {
+    pub event_id: String,
+    pub side: String,
+    pub token: String,
+    pub request_ts: DateTime<Utc>,
+    pub public_status: Option<String>,
+    pub paid_status: Option<String>,
+    pub public_latency_ms: Option<u64>,
+    pub paid_latency_ms: Option<u64>,
+    pub public_slippage_bps: Option<f64>,
+    pub paid_slippage_bps: Option<f64>,
+    pub slippage_delta_bps: Option<f64>,
+    pub latency_delta_ms: Option<i64>,
+    pub public_quote_price_sol: Option<f64>,
+    pub paid_quote_price_sol: Option<f64>,
+    pub shadow_price_sol: Option<f64>,
+    pub better_provider: Option<String>,
+    pub public_error: Option<String>,
+    pub paid_error: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ExecutionCanaryQuoteReadinessGate {
     pub status: String,

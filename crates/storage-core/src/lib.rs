@@ -74,7 +74,9 @@ pub use crate::startup_progress::{
     run_observed_startup_step_with_completion_detail,
 };
 pub use crate::status_snapshot::DiscoveryV2StatusSnapshotRow;
-pub use execution_quote_canary_route_samples::{PROVIDER_GENERIC_METIS, PROVIDER_PUMP_FUN_PAID};
+pub use execution_quote_canary_route_samples::{
+    PROVIDER_GENERIC_METIS, PROVIDER_GENERIC_PUBLIC, PROVIDER_PUMP_FUN_PAID,
+};
 pub use migrations::SqliteStartupBootstrapResult;
 pub use money::{lamports_to_sol, signed_lamports_to_sol};
 pub use types::{
@@ -103,6 +105,7 @@ pub use types::{
     ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderComparisonEvent,
     ExecutionQuoteCanaryProviderComparisonSummary, ExecutionQuoteCanaryProviderSampleInsert,
+    ExecutionQuoteCanaryPublicPaidComparisonEvent, ExecutionQuoteCanaryPublicPaidComparisonSummary,
     ExecutionQuoteCanaryRecordOutcome, FollowlistUpdateResult, HistoryRetentionCutoffs,
     HistoryRetentionSummary, ObservedSolLegSwap, ObservedSwapBatchWriteMetrics,
     ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow,

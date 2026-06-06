@@ -14,8 +14,31 @@ pub(crate) async fn fetch_quote_sample(
     amount_raw: &str,
     slippage_bps: u64,
 ) -> Result<QuoteSample> {
-    let url = quote_url(&config.quote_canary_base_url)?;
-    let timeout = StdDuration::from_millis(config.quote_canary_timeout_ms.max(1));
+    fetch_quote_sample_from_base_url(
+        http,
+        &config.quote_canary_base_url,
+        &config.quote_canary_api_key,
+        config.quote_canary_timeout_ms,
+        input_mint,
+        output_mint,
+        amount_raw,
+        slippage_bps,
+    )
+    .await
+}
+
+pub(crate) async fn fetch_quote_sample_from_base_url(
+    http: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    timeout_ms: u64,
+    input_mint: &str,
+    output_mint: &str,
+    amount_raw: &str,
+    slippage_bps: u64,
+) -> Result<QuoteSample> {
+    let url = quote_url(base_url)?;
+    let timeout = StdDuration::from_millis(timeout_ms.max(1));
     let slippage_bps = slippage_bps.to_string();
     let started = Instant::now();
     let mut request = http
@@ -28,7 +51,7 @@ pub(crate) async fn fetch_quote_sample(
             ("swapMode", "ExactIn"),
         ])
         .timeout(timeout);
-    let api_key = config.quote_canary_api_key.trim();
+    let api_key = api_key.trim();
     if !api_key.is_empty() {
         request = request.header("x-api-key", api_key);
     }

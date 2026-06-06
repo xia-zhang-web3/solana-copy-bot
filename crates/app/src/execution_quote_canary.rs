@@ -14,18 +14,22 @@ use copybot_storage_core::{
 
 #[path = "execution_quote_canary_hot_observed.rs"]
 mod hot_observed;
+#[path = "execution_quote_canary_parallel_samples.rs"]
+mod parallel_samples;
 #[path = "execution_quote_canary_provider_compare.rs"]
 mod provider_compare;
+#[path = "execution_quote_canary_public_parallel.rs"]
+mod public_parallel;
 #[path = "execution_quote_canary_pump_fun_parallel.rs"]
 mod pump_fun_parallel;
 #[path = "execution_pump_fun_quote_http.rs"]
 mod pump_fun_quote_http;
 
+pub(crate) use parallel_samples::append_parallel_provider_samples;
 use provider_compare::{
     buy_quote_price_and_slippage, generic_provider_sample, sell_quote_price_and_slippage,
     QuoteEventBundle,
 };
-use pump_fun_parallel::build_pump_fun_provider_sample;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionQuoteCanaryTickSummary {
@@ -435,18 +439,17 @@ impl ExecutionQuoteCanaryRunner {
             }
         }
         let mut bundle = QuoteEventBundle::event_only(event);
-        if let Some(sample) = build_pump_fun_provider_sample(
+        append_parallel_provider_samples(
+            &mut bundle,
             &self.http,
             &self.config,
-            &bundle.event,
+            SOL_MINT,
+            &signal.token,
             &amount,
             token_decimals,
             limit_bps,
         )
-        .await
-        {
-            bundle.provider_samples.push(sample);
-        }
+        .await;
         Ok(bundle)
     }
 
@@ -502,18 +505,17 @@ impl ExecutionQuoteCanaryRunner {
             }
         }
         let mut bundle = QuoteEventBundle::event_only(event);
-        if let Some(sample) = build_pump_fun_provider_sample(
+        append_parallel_provider_samples(
+            &mut bundle,
             &self.http,
             &self.config,
-            &bundle.event,
+            &close.token,
+            SOL_MINT,
             &amount,
             decimals,
             limit_bps,
         )
-        .await
-        {
-            bundle.provider_samples.push(sample);
-        }
+        .await;
         Ok(bundle)
     }
 }
