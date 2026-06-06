@@ -1,5 +1,5 @@
 use crate::{
-    observed_row::parse_sqlite_slot, observed_timestamp::parse_rfc3339_utc,
+    observed_row::parse_sqlite_slot, observed_timestamp::parse_rfc3339_utc, schema::ensure_column,
     ExecutionCanaryCloseCandidate, ExecutionCanaryObservedLeg, ExecutionQuoteCanaryEventInsert,
     ExecutionQuoteCanaryRecordOutcome, SqliteDiscoveryStore,
 };
@@ -14,7 +14,13 @@ pub(crate) fn ensure_execution_quote_canary_tables(store: &SqliteDiscoveryStore)
     store
         .conn
         .execute_batch(EXECUTION_QUOTE_CANARY_SCHEMA)
-        .context("failed ensuring execution quote canary schema")
+        .context("failed ensuring execution quote canary schema")?;
+    ensure_column(
+        store,
+        "execution_quote_canary_events",
+        "quote_response_json",
+        "TEXT",
+    )
 }
 
 impl SqliteDiscoveryStore {
@@ -307,6 +313,7 @@ impl SqliteDiscoveryStore {
                         leader_notional_sol,
                         quote_in_amount_raw,
                         quote_out_amount_raw,
+                        quote_response_json,
                         quote_price_sol,
                         shadow_price_sol,
                         slippage_bps,
@@ -321,7 +328,7 @@ impl SqliteDiscoveryStore {
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                         ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
-                        ?24, ?25
+                        ?24, ?25, ?26
                     )",
                     params![
                         &event.event_id,
@@ -338,6 +345,7 @@ impl SqliteDiscoveryStore {
                         event.leader_notional_sol,
                         event.quote_in_amount_raw.as_deref(),
                         event.quote_out_amount_raw.as_deref(),
+                        event.quote_response_json.as_deref(),
                         event.quote_price_sol,
                         event.shadow_price_sol,
                         event.slippage_bps,
@@ -456,6 +464,7 @@ CREATE TABLE IF NOT EXISTS execution_quote_canary_events (
     leader_notional_sol REAL,
     quote_in_amount_raw TEXT,
     quote_out_amount_raw TEXT,
+    quote_response_json TEXT,
     quote_price_sol REAL,
     shadow_price_sol REAL,
     slippage_bps REAL,

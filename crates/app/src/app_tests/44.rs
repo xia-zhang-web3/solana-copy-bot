@@ -179,6 +179,7 @@ fn record_entry_gate_quote(
             leader_notional_sol: Some(signal.notional_sol),
             quote_in_amount_raw: Some("10000000".to_string()),
             quote_out_amount_raw: Some("123456".to_string()),
+            quote_response_json: None,
             quote_price_sol: Some(0.081),
             shadow_price_sol: Some(0.08),
             slippage_bps: Some(125.0),

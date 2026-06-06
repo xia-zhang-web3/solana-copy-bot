@@ -231,6 +231,7 @@ fn quote_event_with_slippage(
         leader_notional_sol: Some(leader_notional_sol),
         quote_in_amount_raw: Some(quote_in_amount_raw.to_string()),
         quote_out_amount_raw: Some(quote_out_amount_raw.to_string()),
+        quote_response_json: None,
         quote_price_sol: Some(0.002),
         shadow_price_sol: Some(0.002),
         slippage_bps: Some(slippage_bps),

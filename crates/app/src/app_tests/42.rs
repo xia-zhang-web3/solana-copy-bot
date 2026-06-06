@@ -24,6 +24,7 @@ fn priority_fee_timeout_is_non_blocking_canary_metadata() {
         leader_notional_sol: Some(0.2),
         quote_in_amount_raw: Some("200000000".to_string()),
         quote_out_amount_raw: Some("1234000".to_string()),
+        quote_response_json: None,
         quote_price_sol: Some(0.1),
         shadow_price_sol: Some(0.1),
         slippage_bps: Some(25.0),

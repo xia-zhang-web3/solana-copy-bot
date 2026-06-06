@@ -342,6 +342,7 @@ impl ExecutionQuoteCanaryRunner {
                 .or(Some(signal.notional_sol)),
             quote_in_amount_raw: None,
             quote_out_amount_raw: None,
+            quote_response_json: None,
             quote_price_sol: None,
             shadow_price_sol: observed
                 .as_ref()
@@ -484,6 +485,7 @@ fn close_quote_event(
         leader_notional_sol: Some(close.exit_value_sol),
         quote_in_amount_raw: close.qty_raw.clone(),
         quote_out_amount_raw: None,
+        quote_response_json: None,
         quote_price_sol: None,
         shadow_price_sol: price_sol_per_token(close.exit_value_sol, close.qty),
         slippage_bps: None,

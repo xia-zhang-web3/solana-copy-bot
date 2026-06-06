@@ -11,6 +11,40 @@ pub(crate) fn swap_request_body(
         .swap_blueprint
         .as_ref()
         .ok_or_else(|| anyhow!("missing swap blueprint for {context} body"))?;
+    let quote_response = quote_response_body(plan, blueprint.slippage_bps, context)?;
+    Ok(json!({
+        "userPublicKey": user_pubkey,
+        "quoteResponse": quote_response,
+        "dynamicComputeUnitLimit": true,
+        "prioritizationFeeLamports": blueprint.priority_fee_lamports,
+    }))
+}
+
+fn quote_response_body(
+    plan: &ExecutionTransactionPlan,
+    slippage_bps: f64,
+    context: &str,
+) -> Result<Value> {
+    if let Some(raw) = plan
+        .metadata
+        .quote_response_json
+        .as_deref()
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+    {
+        let value: Value = serde_json::from_str(raw)
+            .map_err(|error| anyhow!("invalid quote_response_json for {context} body: {error}"))?;
+        if !value.is_object() {
+            return Err(anyhow!(
+                "quote_response_json must be an object for {context} body"
+            ));
+        }
+        return Ok(value);
+    }
+    let blueprint = plan
+        .swap_blueprint
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing swap blueprint for {context} quote response"))?;
     let route_plan_json = plan
         .metadata
         .route_plan_json
@@ -23,8 +57,8 @@ pub(crate) fn swap_request_body(
             "route_plan_json must be an array for {context} body"
         ));
     }
-    let slippage_bps = blueprint.slippage_bps.round() as u64;
-    let quote_response = json!({
+    let slippage_bps = slippage_bps.round() as u64;
+    Ok(json!({
         "inputMint": blueprint.input_mint,
         "inAmount": blueprint.input_amount_raw,
         "outputMint": blueprint.output_mint,
@@ -39,12 +73,6 @@ pub(crate) fn swap_request_body(
         "platformFee": null,
         "priceImpactPct": price_impact_pct_string(plan.metadata.price_impact_pct),
         "routePlan": route_plan,
-    });
-    Ok(json!({
-        "userPublicKey": user_pubkey,
-        "quoteResponse": quote_response,
-        "dynamicComputeUnitLimit": true,
-        "prioritizationFeeLamports": blueprint.priority_fee_lamports,
     }))
 }
 

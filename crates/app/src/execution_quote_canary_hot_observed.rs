@@ -131,6 +131,7 @@ fn hot_observed_buy_base_event(
         leader_notional_sol: Some(swap.amount_in),
         quote_in_amount_raw: None,
         quote_out_amount_raw: None,
+        quote_response_json: None,
         quote_price_sol: None,
         shadow_price_sol: price_sol_per_token(swap.amount_in, swap.amount_out),
         slippage_bps: None,

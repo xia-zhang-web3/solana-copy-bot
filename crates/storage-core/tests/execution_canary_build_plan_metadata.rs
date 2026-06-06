@@ -89,6 +89,10 @@ fn execution_canary_build_plan_metadata_records_and_reports_latest() -> Result<(
     assert_eq!(loaded.quote_event_id.as_deref(), Some("quote:buy-new"));
     assert_eq!(loaded.quote_in_amount_raw.as_deref(), Some("10000000"));
     assert_eq!(loaded.quote_out_amount_raw.as_deref(), Some("123456"));
+    assert_eq!(
+        loaded.quote_response_json.as_deref(),
+        Some("{\"loadedLongtailToken\":true}")
+    );
     assert_eq!(loaded.priority_fee_lamports, Some(12_345));
     assert_eq!(loaded.slippage_bps, Some(12.5));
     assert_eq!(loaded.decision_status.as_deref(), Some("would_execute"));
@@ -201,6 +205,7 @@ fn metadata_for_order(
         quote_status: Some("ok".to_string()),
         quote_in_amount_raw: Some("10000000".to_string()),
         quote_out_amount_raw: Some("123456".to_string()),
+        quote_response_json: Some("{\"loadedLongtailToken\":true}".to_string()),
         quote_price_sol: Some(0.000081),
         price_impact_pct: Some(0.05),
         route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),

@@ -46,6 +46,10 @@ fn latest_execution_quote_canary_entry_event_loads_metadata_for_signal() -> Resu
 
     assert_eq!(loaded.event_id, "quote:entry:new");
     assert_eq!(loaded.quote_out_amount_raw.as_deref(), Some("222"));
+    assert_eq!(
+        loaded.quote_response_json.as_deref(),
+        Some("{\"loadedLongtailToken\":true}")
+    );
     assert_eq!(loaded.priority_fee_lamports, Some(12_345));
     assert_eq!(
         loaded.route_plan_json.as_deref(),
@@ -89,6 +93,7 @@ fn quote_event(
         leader_notional_sol: Some(signal.notional_sol),
         quote_in_amount_raw: Some("10000000".to_string()),
         quote_out_amount_raw: Some(out_amount.to_string()),
+        quote_response_json: Some("{\"loadedLongtailToken\":true}".to_string()),
         quote_price_sol: Some(0.081),
         shadow_price_sol: Some(0.08),
         slippage_bps: Some(125.0),

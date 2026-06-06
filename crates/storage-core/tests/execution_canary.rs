@@ -478,6 +478,7 @@ fn quote_event(
         leader_notional_sol: Some(0.2),
         quote_in_amount_raw: Some("200000000".to_string()),
         quote_out_amount_raw: Some("1000".to_string()),
+        quote_response_json: None,
         quote_price_sol: Some(0.02),
         shadow_price_sol: Some(0.02),
         slippage_bps: Some(0.0),

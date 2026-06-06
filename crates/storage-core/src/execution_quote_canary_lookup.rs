@@ -1,6 +1,7 @@
 use crate::{
     execution_quote_canary::ensure_execution_quote_canary_tables,
-    observed_timestamp::parse_rfc3339_utc, ExecutionQuoteCanaryEventInsert, SqliteDiscoveryStore,
+    observed_timestamp::parse_rfc3339_utc, schema::column_exists, ExecutionQuoteCanaryEventInsert,
+    SqliteDiscoveryStore,
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension};
@@ -13,7 +14,8 @@ impl SqliteDiscoveryStore {
         ensure_execution_quote_canary_tables(self)?;
         self.conn
             .query_row(
-                "SELECT
+                &format!(
+                    "SELECT
                     event_id,
                     signal_id,
                     shadow_closed_trade_id,
@@ -28,6 +30,7 @@ impl SqliteDiscoveryStore {
                     leader_notional_sol,
                     quote_in_amount_raw,
                     quote_out_amount_raw,
+                    {},
                     quote_price_sol,
                     shadow_price_sol,
                     slippage_bps,
@@ -44,6 +47,8 @@ impl SqliteDiscoveryStore {
                    AND lower(side) = 'buy'
                  ORDER BY request_ts DESC, event_id DESC
                  LIMIT 1",
+                    quote_response_json_expr(self)?
+                ),
                 params![signal_id],
                 quote_canary_event_from_row,
             )
@@ -72,7 +77,7 @@ fn read_quote_canary_event_row(row: &rusqlite::Row<'_>) -> Result<ExecutionQuote
     let signal_ts_raw: Option<String> = row.get(8).context("failed reading signal_ts")?;
     let priority_fee_lamports = optional_i64_to_u64(
         "execution_quote_canary_events.priority_fee_lamports",
-        row.get(20)
+        row.get(21)
             .context("failed reading priority_fee_lamports")?,
     )?;
     Ok(ExecutionQuoteCanaryEventInsert {
@@ -101,18 +106,31 @@ fn read_quote_canary_event_row(row: &rusqlite::Row<'_>) -> Result<ExecutionQuote
         leader_notional_sol: row.get(11).context("failed reading leader_notional_sol")?,
         quote_in_amount_raw: row.get(12).context("failed reading quote_in_amount_raw")?,
         quote_out_amount_raw: row.get(13).context("failed reading quote_out_amount_raw")?,
-        quote_price_sol: row.get(14).context("failed reading quote_price_sol")?,
-        shadow_price_sol: row.get(15).context("failed reading shadow_price_sol")?,
-        slippage_bps: row.get(16).context("failed reading slippage_bps")?,
-        price_impact_pct: row.get(17).context("failed reading price_impact_pct")?,
-        route_plan_json: row.get(18).context("failed reading route_plan_json")?,
-        priority_fee_status: row.get(19).context("failed reading priority_fee_status")?,
+        quote_response_json: row.get(14).context("failed reading quote_response_json")?,
+        quote_price_sol: row.get(15).context("failed reading quote_price_sol")?,
+        shadow_price_sol: row.get(16).context("failed reading shadow_price_sol")?,
+        slippage_bps: row.get(17).context("failed reading slippage_bps")?,
+        price_impact_pct: row.get(18).context("failed reading price_impact_pct")?,
+        route_plan_json: row.get(19).context("failed reading route_plan_json")?,
+        priority_fee_status: row.get(20).context("failed reading priority_fee_status")?,
         priority_fee_lamports,
-        priority_fee_json: row.get(21).context("failed reading priority_fee_json")?,
-        decision_status: row.get(22).context("failed reading decision_status")?,
-        decision_reason: row.get(23).context("failed reading decision_reason")?,
-        error: row.get(24).context("failed reading error")?,
+        priority_fee_json: row.get(22).context("failed reading priority_fee_json")?,
+        decision_status: row.get(23).context("failed reading decision_status")?,
+        decision_reason: row.get(24).context("failed reading decision_reason")?,
+        error: row.get(25).context("failed reading error")?,
     })
+}
+
+fn quote_response_json_expr(store: &SqliteDiscoveryStore) -> Result<String> {
+    if column_exists(
+        store,
+        "execution_quote_canary_events",
+        "quote_response_json",
+    )? {
+        Ok("quote_response_json".to_string())
+    } else {
+        Ok("NULL AS quote_response_json".to_string())
+    }
 }
 
 fn optional_i64_to_u64(field: &str, value: Option<i64>) -> Result<Option<u64>> {

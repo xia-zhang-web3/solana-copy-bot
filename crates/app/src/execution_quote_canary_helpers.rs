@@ -24,6 +24,7 @@ pub(crate) const DECISION_UNKNOWN: &str = "unknown";
 pub(crate) struct QuoteSample {
     pub(crate) in_amount: String,
     pub(crate) out_amount: String,
+    pub(crate) response_json: String,
     pub(crate) price_impact_pct: Option<f64>,
     pub(crate) route_plan_json: Option<String>,
     pub(crate) latency_ms: u64,
@@ -44,6 +45,7 @@ pub(crate) fn apply_quote_sample_to_event(
     event.quote_status = QUOTE_STATUS_OK.to_string();
     event.quote_in_amount_raw = Some(quote.in_amount);
     event.quote_out_amount_raw = Some(quote.out_amount);
+    event.quote_response_json = Some(quote.response_json);
     event.price_impact_pct = quote.price_impact_pct;
     event.route_plan_json = quote.route_plan_json;
     event.quote_latency_ms = Some(quote.latency_ms);
@@ -165,6 +167,7 @@ pub(crate) fn entry_error_event(
         leader_notional_sol: Some(signal.notional_sol),
         quote_in_amount_raw: None,
         quote_out_amount_raw: None,
+        quote_response_json: None,
         quote_price_sol: None,
         shadow_price_sol: None,
         slippage_bps: None,
@@ -199,6 +202,7 @@ pub(crate) fn close_error_event(
         leader_notional_sol: Some(close.exit_value_sol),
         quote_in_amount_raw: close.qty_raw.clone(),
         quote_out_amount_raw: None,
+        quote_response_json: None,
         quote_price_sol: None,
         shadow_price_sol: price_sol_per_token(close.exit_value_sol, close.qty),
         slippage_bps: None,

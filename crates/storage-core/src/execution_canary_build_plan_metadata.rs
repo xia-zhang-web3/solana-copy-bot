@@ -41,6 +41,7 @@ impl SqliteDiscoveryStore {
                         quote_status,
                         quote_in_amount_raw,
                         quote_out_amount_raw,
+                        quote_response_json,
                         quote_price_sol,
                         price_impact_pct,
                         route_plan_json,
@@ -54,7 +55,7 @@ impl SqliteDiscoveryStore {
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
                         ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                        ?17, ?18, ?19
+                        ?17, ?18, ?19, ?20
                     )",
                     params![
                         &metadata.order_id,
@@ -66,6 +67,7 @@ impl SqliteDiscoveryStore {
                         metadata.quote_status.as_deref(),
                         metadata.quote_in_amount_raw.as_deref(),
                         metadata.quote_out_amount_raw.as_deref(),
+                        metadata.quote_response_json.as_deref(),
                         metadata.quote_price_sol,
                         metadata.price_impact_pct,
                         metadata.route_plan_json.as_deref(),
@@ -140,6 +142,12 @@ fn ensure_execution_canary_build_plan_metadata_table(store: &SqliteDiscoveryStor
     ensure_column(
         store,
         "execution_canary_build_plan_metadata",
+        "quote_response_json",
+        "TEXT",
+    )?;
+    ensure_column(
+        store,
+        "execution_canary_build_plan_metadata",
         "slippage_bps",
         "REAL",
     )?;
@@ -160,10 +168,13 @@ fn ensure_execution_canary_build_plan_metadata_table(store: &SqliteDiscoveryStor
 
 fn build_plan_metadata_columns(store: &SqliteDiscoveryStore) -> Result<String> {
     Ok(format!(
-        "{BUILD_PLAN_METADATA_BASE_COLUMNS},
+        "{BUILD_PLAN_METADATA_PREFIX_COLUMNS},
+         {},
+         {BUILD_PLAN_METADATA_SUFFIX_COLUMNS},
          {},
          {},
          {}",
+        optional_column_expr(store, "quote_response_json")?,
         optional_column_expr(store, "slippage_bps")?,
         optional_column_expr(store, "decision_status")?,
         optional_column_expr(store, "decision_reason")?,
@@ -178,7 +189,7 @@ fn optional_column_expr(store: &SqliteDiscoveryStore, column: &str) -> Result<St
     }
 }
 
-const BUILD_PLAN_METADATA_BASE_COLUMNS: &str = "
+const BUILD_PLAN_METADATA_PREFIX_COLUMNS: &str = "
     order_id,
     signal_id,
     client_order_id,
@@ -187,7 +198,9 @@ const BUILD_PLAN_METADATA_BASE_COLUMNS: &str = "
     quote_event_id,
     quote_status,
     quote_in_amount_raw,
-    quote_out_amount_raw,
+    quote_out_amount_raw";
+
+const BUILD_PLAN_METADATA_SUFFIX_COLUMNS: &str = "
     quote_price_sol,
     price_impact_pct,
     route_plan_json,
@@ -217,7 +230,7 @@ fn read_execution_canary_build_plan_metadata_row(
     let recorded_ts_raw: String = row.get(3).context("failed reading recorded_ts")?;
     let priority_fee_lamports = optional_i64_to_u64(
         "execution_canary_build_plan_metadata.priority_fee_lamports",
-        row.get(14)
+        row.get(15)
             .context("failed reading priority_fee_lamports")?,
     )?;
     Ok(ExecutionCanaryBuildPlanMetadata {
@@ -233,16 +246,17 @@ fn read_execution_canary_build_plan_metadata_row(
         quote_status: row.get(6).context("failed reading quote_status")?,
         quote_in_amount_raw: row.get(7).context("failed reading quote_in_amount_raw")?,
         quote_out_amount_raw: row.get(8).context("failed reading quote_out_amount_raw")?,
-        quote_price_sol: row.get(9).context("failed reading quote_price_sol")?,
-        price_impact_pct: row.get(10).context("failed reading price_impact_pct")?,
-        route_plan_json: row.get(11).context("failed reading route_plan_json")?,
-        priority_fee_source: row.get(12).context("failed reading priority_fee_source")?,
-        priority_fee_status: row.get(13).context("failed reading priority_fee_status")?,
+        quote_response_json: row.get(9).context("failed reading quote_response_json")?,
+        quote_price_sol: row.get(10).context("failed reading quote_price_sol")?,
+        price_impact_pct: row.get(11).context("failed reading price_impact_pct")?,
+        route_plan_json: row.get(12).context("failed reading route_plan_json")?,
+        priority_fee_source: row.get(13).context("failed reading priority_fee_source")?,
+        priority_fee_status: row.get(14).context("failed reading priority_fee_status")?,
         priority_fee_lamports,
-        priority_fee_json: row.get(15).context("failed reading priority_fee_json")?,
-        slippage_bps: row.get(16).context("failed reading slippage_bps")?,
-        decision_status: row.get(17).context("failed reading decision_status")?,
-        decision_reason: row.get(18).context("failed reading decision_reason")?,
+        priority_fee_json: row.get(16).context("failed reading priority_fee_json")?,
+        slippage_bps: row.get(17).context("failed reading slippage_bps")?,
+        decision_status: row.get(18).context("failed reading decision_status")?,
+        decision_reason: row.get(19).context("failed reading decision_reason")?,
     })
 }
 
@@ -278,6 +292,7 @@ CREATE TABLE IF NOT EXISTS execution_canary_build_plan_metadata (
     quote_status TEXT,
     quote_in_amount_raw TEXT,
     quote_out_amount_raw TEXT,
+    quote_response_json TEXT,
     quote_price_sol REAL,
     price_impact_pct REAL,
     route_plan_json TEXT,

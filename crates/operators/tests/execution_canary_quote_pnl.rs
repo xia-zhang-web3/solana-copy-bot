@@ -150,6 +150,7 @@ fn quote_event(
         leader_notional_sol: Some(0.2),
         quote_in_amount_raw: Some(in_raw.to_string()),
         quote_out_amount_raw: Some(out_raw.to_string()),
+        quote_response_json: None,
         quote_price_sol: Some(0.002),
         shadow_price_sol: Some(0.002),
         slippage_bps: Some(15.0),

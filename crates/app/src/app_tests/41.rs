@@ -37,6 +37,7 @@ async fn execution_canary_state_machine_persists_build_plan_metadata() -> Result
             leader_notional_sol: Some(0.2),
             quote_in_amount_raw: Some("10000000".to_string()),
             quote_out_amount_raw: Some("123456".to_string()),
+            quote_response_json: None,
             quote_price_sol: Some(0.000081),
             shadow_price_sol: Some(0.00008),
             slippage_bps: Some(12.5),

@@ -44,13 +44,11 @@ pub(crate) async fn fetch_quote_sample(
             truncate_for_log(&body, 240)
         ));
     }
-    quote_sample_from_json(
-        response
-            .json()
-            .await
-            .context("quote canary response JSON decode failed")?,
-        started,
-    )
+    let value = response
+        .json()
+        .await
+        .context("quote canary response JSON decode failed")?;
+    quote_sample_from_json(value, started)
 }
 
 fn quote_sample_from_json(value: Value, started: Instant) -> Result<QuoteSample> {
@@ -61,6 +59,7 @@ fn quote_sample_from_json(value: Value, started: Instant) -> Result<QuoteSample>
     Ok(QuoteSample {
         in_amount,
         out_amount,
+        response_json: value.to_string(),
         price_impact_pct: numeric_field(&value, "priceImpactPct"),
         route_plan_json: value
             .get("routePlan")

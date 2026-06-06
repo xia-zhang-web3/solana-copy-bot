@@ -19,6 +19,7 @@ async fn swap_instructions_dry_run_posts_http_before_submit_disabled() -> Result
         assert!(request.starts_with("POST /swap-instructions "));
         assert!(request.contains("\"userPublicKey\":\"11111111111111111111111111111111\""));
         assert!(request.contains("\"quoteResponse\""));
+        assert!(request.contains("\"loadedLongtailToken\":true"));
         assert!(request.contains("\"prioritizationFeeLamports\":22000"));
         let body = r#"{"computeBudgetInstructions":[{}],"setupInstructions":[{}],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":["alt"],"simulationError":null}"#;
         write_http_json(&mut socket, body).await;
@@ -173,6 +174,9 @@ fn record_swap_instructions_quote(
             leader_notional_sol: Some(signal.notional_sol),
             quote_in_amount_raw: Some("10000000".to_string()),
             quote_out_amount_raw: Some("123456".to_string()),
+            quote_response_json: Some(
+                r#"{"inputMint":"So11111111111111111111111111111111111111112","inAmount":"10000000","outputMint":"TokenMint","outAmount":"123456","otherAmountThreshold":"117283","swapMode":"ExactIn","slippageBps":500,"platformFee":null,"priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}],"loadedLongtailToken":true}"#.to_string(),
+            ),
             quote_price_sol: Some(0.081),
             shadow_price_sol: Some(0.08),
             slippage_bps: Some(125.0),
