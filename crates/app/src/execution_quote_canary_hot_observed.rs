@@ -1,4 +1,7 @@
-use super::{ExecutionQuoteCanaryRunner, ExecutionQuoteCanaryTickSummary};
+use super::{
+    build_pump_fun_provider_sample, buy_quote_price_and_slippage, ExecutionQuoteCanaryRunner,
+    ExecutionQuoteCanaryTickSummary, QuoteEventBundle,
+};
 use crate::execution_quote_canary_helpers::*;
 use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
 use crate::execution_quote_http::fetch_quote_sample;
@@ -23,19 +26,21 @@ impl ExecutionQuoteCanaryRunner {
         if self.record_existing_entry_event_if_present(store, &signal_id, &mut summary)? {
             return Ok(summary);
         }
-        let mut event = match self
+        let mut bundle = match self
             .build_hot_observed_buy_quote_event(&signal_id, swap, now, None)
             .await
         {
-            Ok(event) => event,
-            Err(error) => hot_observed_buy_error_event(&signal_id, swap, now, &error),
+            Ok(bundle) => bundle,
+            Err(error) => QuoteEventBundle::event_only(hot_observed_buy_error_event(
+                &signal_id, swap, now, &error,
+            )),
         };
         let mut priority_fee_sample = None;
         let priority = self
             .priority_fee_sample_if_needed(&mut priority_fee_sample)
             .await;
-        attach_priority_fee(&mut event, priority);
-        self.record_entry_event(store, event, &mut summary)?;
+        attach_priority_fee(&mut bundle.event, priority);
+        self.record_entry_event(store, bundle, &mut summary)?;
         Ok(summary)
     }
 
@@ -45,7 +50,7 @@ impl ExecutionQuoteCanaryRunner {
         swap: &SwapEvent,
         now: DateTime<Utc>,
         priority_fee_sample: Option<&PriorityFeeSample>,
-    ) -> Result<ExecutionQuoteCanaryEventInsert> {
+    ) -> Result<QuoteEventBundle> {
         let mut event = hot_observed_buy_base_event(signal_id, swap, now);
         attach_priority_fee(&mut event, priority_fee_sample);
 
@@ -54,10 +59,11 @@ impl ExecutionQuoteCanaryRunner {
             Err(error) => {
                 event.quote_status = QUOTE_STATUS_ERROR.to_string();
                 event.error = Some(short_error(&error));
-                return Ok(event);
+                return Ok(QuoteEventBundle::event_only(event));
             }
         };
         let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_BUY);
+        let mut token_decimals = observed_buy_token_decimals(swap);
         match fetch_quote_sample(
             &self.http,
             &self.config,
@@ -70,22 +76,17 @@ impl ExecutionQuoteCanaryRunner {
         {
             Ok(quote) => {
                 apply_quote_sample_to_event(&mut event, quote);
-                let decimals = resolve_spl_token_decimals(
+                token_decimals = resolve_spl_token_decimals(
                     &self.http,
                     &self.config,
                     &swap.token_out,
-                    observed_buy_token_decimals(swap),
+                    token_decimals,
                 )
                 .await;
-                if let Some(decimals) = decimals {
-                    let quote_in_sol = raw_amount_to_ui(event.quote_in_amount_raw.as_deref(), 9);
-                    let quote_out_tokens =
-                        raw_amount_to_ui(event.quote_out_amount_raw.as_deref(), decimals);
-                    event.quote_price_sol = quote_in_sol.and_then(|input| {
-                        quote_out_tokens.and_then(|out| price_sol_per_token(input, out))
-                    });
-                    event.slippage_bps =
-                        quote_slippage_bps_for_buy(event.quote_price_sol, event.shadow_price_sol);
+                if let Some(decimals) = token_decimals {
+                    let (price, slippage) = buy_quote_price_and_slippage(&event, decimals);
+                    event.quote_price_sol = price;
+                    event.slippage_bps = slippage;
                 }
             }
             Err(error) => {
@@ -93,7 +94,20 @@ impl ExecutionQuoteCanaryRunner {
                 event.error = Some(short_error(&error));
             }
         }
-        Ok(event)
+        let mut bundle = QuoteEventBundle::event_only(event);
+        if let Some(sample) = build_pump_fun_provider_sample(
+            &self.http,
+            &self.config,
+            &bundle.event,
+            &amount,
+            token_decimals,
+            limit_bps,
+        )
+        .await
+        {
+            bundle.provider_samples.push(sample);
+        }
+        Ok(bundle)
     }
 }
 

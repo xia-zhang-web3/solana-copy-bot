@@ -9,11 +9,23 @@ use copybot_core_types::CopySignalRow;
 use copybot_shadow::ShadowSignalResult;
 use copybot_storage_core::{
     ExecutionCanaryCloseCandidate, ExecutionQuoteCanaryEventInsert,
-    ExecutionQuoteCanaryRecordOutcome, SqliteStore,
+    ExecutionQuoteCanaryProviderSampleInsert, ExecutionQuoteCanaryRecordOutcome, SqliteStore,
 };
 
 #[path = "execution_quote_canary_hot_observed.rs"]
 mod hot_observed;
+#[path = "execution_quote_canary_provider_compare.rs"]
+mod provider_compare;
+#[path = "execution_quote_canary_pump_fun_parallel.rs"]
+mod pump_fun_parallel;
+#[path = "execution_pump_fun_quote_http.rs"]
+mod pump_fun_quote_http;
+
+use provider_compare::{
+    buy_quote_price_and_slippage, generic_provider_sample, sell_quote_price_and_slippage,
+    QuoteEventBundle,
+};
+use pump_fun_parallel::build_pump_fun_provider_sample;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionQuoteCanaryTickSummary {
@@ -120,14 +132,16 @@ impl ExecutionQuoteCanaryRunner {
                 let priority = self
                     .priority_fee_sample_if_needed(&mut priority_fee_sample)
                     .await;
-                let event = match self
+                let bundle = match self
                     .build_entry_quote_event(store, &copy_signal, now, priority)
                     .await
                 {
-                    Ok(event) => event,
-                    Err(error) => entry_error_event(&copy_signal, now, &error),
+                    Ok(bundle) => bundle,
+                    Err(error) => {
+                        QuoteEventBundle::event_only(entry_error_event(&copy_signal, now, &error))
+                    }
                 };
-                self.record_entry_event(store, event, &mut summary)?;
+                self.record_entry_event(store, bundle, &mut summary)?;
             }
             SIDE_SELL => {
                 let closes = store
@@ -149,14 +163,16 @@ impl ExecutionQuoteCanaryRunner {
                     .priority_fee_sample_if_needed(&mut priority_fee_sample)
                     .await;
                 for close in closes {
-                    let event = match self
+                    let bundle = match self
                         .build_close_quote_event(store, &close, now, priority)
                         .await
                     {
-                        Ok(event) => event,
-                        Err(error) => close_error_event(&close, now, &error),
+                        Ok(bundle) => bundle,
+                        Err(error) => {
+                            QuoteEventBundle::event_only(close_error_event(&close, now, &error))
+                        }
                     };
-                    self.record_close_event(store, event, &mut summary)?;
+                    self.record_close_event(store, bundle, &mut summary)?;
                 }
             }
             _ => {}
@@ -185,14 +201,14 @@ impl ExecutionQuoteCanaryRunner {
             .priority_fee_sample_if_needed(priority_fee_sample)
             .await;
         for signal in signals {
-            let event = match self
+            let bundle = match self
                 .build_entry_quote_event(store, &signal, now, priority)
                 .await
             {
-                Ok(event) => event,
-                Err(error) => entry_error_event(&signal, now, &error),
+                Ok(bundle) => bundle,
+                Err(error) => QuoteEventBundle::event_only(entry_error_event(&signal, now, &error)),
             };
-            self.record_entry_event(store, event, summary)?;
+            self.record_entry_event(store, bundle, summary)?;
         }
         Ok(())
     }
@@ -217,14 +233,14 @@ impl ExecutionQuoteCanaryRunner {
             .priority_fee_sample_if_needed(priority_fee_sample)
             .await;
         for close in closes {
-            let event = match self
+            let bundle = match self
                 .build_close_quote_event(store, &close, now, priority)
                 .await
             {
-                Ok(event) => event,
-                Err(error) => close_error_event(&close, now, &error),
+                Ok(bundle) => bundle,
+                Err(error) => QuoteEventBundle::event_only(close_error_event(&close, now, &error)),
             };
-            self.record_close_event(store, event, summary)?;
+            self.record_close_event(store, bundle, summary)?;
         }
         Ok(())
     }
@@ -242,18 +258,19 @@ impl ExecutionQuoteCanaryRunner {
     fn record_entry_event(
         &self,
         store: &SqliteStore,
-        mut event: ExecutionQuoteCanaryEventInsert,
+        mut bundle: QuoteEventBundle,
         summary: &mut ExecutionQuoteCanaryTickSummary,
     ) -> Result<()> {
         let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_BUY);
-        finalize_quote_decision(&mut event, limit_bps);
+        let event = &mut bundle.event;
+        finalize_quote_decision(event, limit_bps);
         if event.quote_status == QUOTE_STATUS_ERROR {
             summary.entry_errors += 1;
         }
         apply_decision_summary(&event, summary);
         summary.last_event_id = Some(event.event_id.clone());
         match store
-            .record_execution_quote_canary_event(&event)
+            .record_execution_quote_canary_event(event)
             .with_context(|| {
                 format!(
                     "failed recording execution entry quote canary event {}",
@@ -263,6 +280,7 @@ impl ExecutionQuoteCanaryRunner {
             ExecutionQuoteCanaryRecordOutcome::Inserted => summary.entry_inserted += 1,
             ExecutionQuoteCanaryRecordOutcome::Existing => summary.entry_existing += 1,
         }
+        self.record_provider_samples(store, &event, bundle.provider_samples, limit_bps)?;
         Ok(())
     }
 
@@ -292,18 +310,19 @@ impl ExecutionQuoteCanaryRunner {
     fn record_close_event(
         &self,
         store: &SqliteStore,
-        mut event: ExecutionQuoteCanaryEventInsert,
+        mut bundle: QuoteEventBundle,
         summary: &mut ExecutionQuoteCanaryTickSummary,
     ) -> Result<()> {
         let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_SELL);
-        finalize_quote_decision(&mut event, limit_bps);
+        let event = &mut bundle.event;
+        finalize_quote_decision(event, limit_bps);
         if event.quote_status == QUOTE_STATUS_ERROR {
             summary.close_errors += 1;
         }
         apply_decision_summary(&event, summary);
         summary.last_event_id = Some(event.event_id.clone());
         match store
-            .record_execution_quote_canary_event(&event)
+            .record_execution_quote_canary_event(event)
             .with_context(|| {
                 format!(
                     "failed recording execution close quote canary event {}",
@@ -312,6 +331,22 @@ impl ExecutionQuoteCanaryRunner {
             })? {
             ExecutionQuoteCanaryRecordOutcome::Inserted => summary.close_inserted += 1,
             ExecutionQuoteCanaryRecordOutcome::Existing => summary.close_existing += 1,
+        }
+        self.record_provider_samples(store, &event, bundle.provider_samples, limit_bps)?;
+        Ok(())
+    }
+
+    fn record_provider_samples(
+        &self,
+        store: &SqliteStore,
+        event: &ExecutionQuoteCanaryEventInsert,
+        provider_samples: Vec<ExecutionQuoteCanaryProviderSampleInsert>,
+        limit_bps: u64,
+    ) -> Result<()> {
+        let generic = generic_provider_sample(event, limit_bps);
+        store.record_execution_quote_canary_provider_sample(&generic)?;
+        for sample in provider_samples {
+            store.record_execution_quote_canary_provider_sample(&sample)?;
         }
         Ok(())
     }
@@ -322,7 +357,7 @@ impl ExecutionQuoteCanaryRunner {
         signal: &CopySignalRow,
         now: DateTime<Utc>,
         priority_fee_sample: Option<&PriorityFeeSample>,
-    ) -> Result<ExecutionQuoteCanaryEventInsert> {
+    ) -> Result<QuoteEventBundle> {
         let observed = load_matching_observed_entry_leg(store, signal)?;
         let mut event = ExecutionQuoteCanaryEventInsert {
             event_id: entry_quote_event_id(&signal.signal_id),
@@ -364,10 +399,11 @@ impl ExecutionQuoteCanaryRunner {
             Err(error) => {
                 event.quote_status = QUOTE_STATUS_ERROR.to_string();
                 event.error = Some(short_error(&error));
-                return Ok(event);
+                return Ok(QuoteEventBundle::event_only(event));
             }
         };
         let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_BUY);
+        let mut token_decimals = observed.as_ref().and_then(observed_token_decimals);
         match fetch_quote_sample(
             &self.http,
             &self.config,
@@ -380,22 +416,17 @@ impl ExecutionQuoteCanaryRunner {
         {
             Ok(quote) => {
                 apply_quote_sample_to_event(&mut event, quote);
-                let decimals = resolve_spl_token_decimals(
+                token_decimals = resolve_spl_token_decimals(
                     &self.http,
                     &self.config,
                     &signal.token,
-                    observed.as_ref().and_then(observed_token_decimals),
+                    token_decimals,
                 )
                 .await;
-                if let Some(decimals) = decimals {
-                    let quote_in_sol = raw_amount_to_ui(event.quote_in_amount_raw.as_deref(), 9);
-                    let quote_out_tokens =
-                        raw_amount_to_ui(event.quote_out_amount_raw.as_deref(), decimals);
-                    event.quote_price_sol = quote_in_sol.and_then(|input| {
-                        quote_out_tokens.and_then(|out| price_sol_per_token(input, out))
-                    });
-                    event.slippage_bps =
-                        quote_slippage_bps_for_buy(event.quote_price_sol, event.shadow_price_sol);
+                if let Some(decimals) = token_decimals {
+                    let (price, slippage) = buy_quote_price_and_slippage(&event, decimals);
+                    event.quote_price_sol = price;
+                    event.slippage_bps = slippage;
                 }
             }
             Err(error) => {
@@ -403,7 +434,20 @@ impl ExecutionQuoteCanaryRunner {
                 event.error = Some(short_error(&error));
             }
         }
-        Ok(event)
+        let mut bundle = QuoteEventBundle::event_only(event);
+        if let Some(sample) = build_pump_fun_provider_sample(
+            &self.http,
+            &self.config,
+            &bundle.event,
+            &amount,
+            token_decimals,
+            limit_bps,
+        )
+        .await
+        {
+            bundle.provider_samples.push(sample);
+        }
+        Ok(bundle)
     }
 
     async fn build_close_quote_event(
@@ -412,7 +456,7 @@ impl ExecutionQuoteCanaryRunner {
         close: &ExecutionCanaryCloseCandidate,
         now: DateTime<Utc>,
         priority_fee_sample: Option<&PriorityFeeSample>,
-    ) -> Result<ExecutionQuoteCanaryEventInsert> {
+    ) -> Result<QuoteEventBundle> {
         let mut event = close_quote_event(close, now);
         attach_priority_fee(&mut event, priority_fee_sample);
         let observed =
@@ -430,7 +474,7 @@ impl ExecutionQuoteCanaryRunner {
             .or_else(|| decimals.and_then(|value| ui_amount_to_raw_string(close.qty, value)));
         let Some(amount) = amount else {
             event.error = Some("missing exact close qty_raw and inferred decimals".to_string());
-            return Ok(event);
+            return Ok(QuoteEventBundle::event_only(event));
         };
         event.quote_in_amount_raw = Some(amount.clone());
         let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_SELL);
@@ -447,14 +491,9 @@ impl ExecutionQuoteCanaryRunner {
             Ok(quote) => {
                 apply_quote_sample_to_event(&mut event, quote);
                 if let Some(decimals) = decimals {
-                    let quote_out_sol = raw_amount_to_ui(event.quote_out_amount_raw.as_deref(), 9);
-                    let quote_in_tokens =
-                        raw_amount_to_ui(event.quote_in_amount_raw.as_deref(), decimals);
-                    event.quote_price_sol = quote_out_sol.and_then(|out| {
-                        quote_in_tokens.and_then(|input| price_sol_per_token(out, input))
-                    });
-                    event.slippage_bps =
-                        quote_slippage_bps_for_sell(event.quote_price_sol, event.shadow_price_sol);
+                    let (price, slippage) = sell_quote_price_and_slippage(&event, decimals);
+                    event.quote_price_sol = price;
+                    event.slippage_bps = slippage;
                 }
             }
             Err(error) => {
@@ -462,7 +501,20 @@ impl ExecutionQuoteCanaryRunner {
                 event.error = Some(short_error(&error));
             }
         }
-        Ok(event)
+        let mut bundle = QuoteEventBundle::event_only(event);
+        if let Some(sample) = build_pump_fun_provider_sample(
+            &self.http,
+            &self.config,
+            &bundle.event,
+            &amount,
+            decimals,
+            limit_bps,
+        )
+        .await
+        {
+            bundle.provider_samples.push(sample);
+        }
+        Ok(bundle)
     }
 }
 

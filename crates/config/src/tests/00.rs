@@ -96,6 +96,7 @@ fn execution_defaults_are_fail_closed_and_canary_dry_run_only() {
     assert_eq!(execution.quote_canary_base_url, "https://api.jup.ag/swap/v1");
     assert!(execution.quote_canary_api_key.is_empty());
     assert_eq!(execution.quote_canary_timeout_ms, 1_500);
+    assert!(!execution.quote_canary_pump_fun_parallel_enabled);
     assert!(!execution.swap_instructions_dry_run_enabled);
     assert!(!execution.swap_transaction_dry_run_enabled);
     assert_eq!(execution.quote_canary_buy_size_sol, 0.2);

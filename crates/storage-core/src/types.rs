@@ -11,7 +11,8 @@ pub use types_execution::{
     ExecutionCanaryReadinessWindowSummary, ExecutionCanaryRecordOutcome,
     ExecutionCanaryReserveResult, ExecutionCanarySellDecision, ExecutionCanaryStatusReport,
     ExecutionDryRunOrder, ExecutionDryRunRecordOutcome, ExecutionQuoteCanaryEventInsert,
-    ExecutionQuoteCanaryRecordOutcome, EXECUTION_CANARY_CONFIRM_DECISION_EXPIRE_UNSAFE,
+    ExecutionQuoteCanaryProviderSampleInsert, ExecutionQuoteCanaryRecordOutcome,
+    EXECUTION_CANARY_CONFIRM_DECISION_EXPIRE_UNSAFE,
     EXECUTION_CANARY_CONFIRM_DECISION_NOT_SUBMITTED, EXECUTION_CANARY_CONFIRM_DECISION_RETRY,
     EXECUTION_CANARY_CONFIRM_DECISION_WAIT, EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
     EXECUTION_CANARY_POSITION_CLOSE_CLOSED, EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED,
@@ -35,7 +36,8 @@ pub use types_execution_quote_pnl::{
     ExecutionCanaryQuoteReadinessGate, ExecutionCanaryQuoteRouteCount,
     ExecutionCanaryQuoteSideDiagnostics, ExecutionCanaryQuoteStatusCount,
     ExecutionCanaryQuoteThresholdCandidate, ExecutionCanaryShadowCloseBreakdown,
-    ExecutionCanaryShadowCloseContextSummary, EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED,
+    ExecutionCanaryShadowCloseContextSummary, ExecutionQuoteCanaryProviderComparisonEvent,
+    ExecutionQuoteCanaryProviderComparisonSummary, EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED,
     EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED, EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,
 };
 pub use types_history_retention::{

@@ -65,6 +65,8 @@ fn quote_sample_from_json(value: Value, started: Instant) -> Result<QuoteSample>
             .get("routePlan")
             .map(|route| route.to_string())
             .filter(|raw| !raw.is_empty()),
+        in_decimals: None,
+        out_decimals: None,
         latency_ms: elapsed_ms(started),
     })
 }

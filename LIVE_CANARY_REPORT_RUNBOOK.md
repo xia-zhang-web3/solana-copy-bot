@@ -1,6 +1,6 @@
 # Live Canary Report Runbook
 
-Updated: `2026-06-05`
+Updated: `2026-06-06`
 
 This is the current production report runbook for shadow trading, quote canary,
 Metis swap dry-run proof, tiny execution readiness, and stale-close triage. It
@@ -15,6 +15,8 @@ This runbook consolidates the report work from git history:
 - `a994c6a8` - tiny execution gate inside quote-PnL output.
 - `4157eadc` - Metis `/swap-instructions` dry-run proof.
 - Current batch - Metis `/swap` transaction dry-run proof.
+- Current batch - paid Pump.fun route comparison:
+  `generic_metis` vs `pump_fun_paid`.
 - `910ae413` - previous operations report runbook.
 
 ## Current Stage
@@ -25,6 +27,10 @@ This runbook consolidates the report work from git history:
 - Metis swap-instructions dry-run is measured through the canary route.
 - Metis swap transaction dry-run may also be measured when
   `swap_transaction_dry_run_enabled=true`.
+- Paid Metis Pump.fun quote comparison is measured when
+  `quote_canary_pump_fun_parallel_enabled=true`; it compares the old generic
+  Metis/Jupiter `/quote` result against paid `/pump-fun/quote` on the same
+  event.
 - Priority Fee API is measured and included in quote PnL after fee.
 - Tiny execution gate is report-only until a separate explicit rollout.
 
@@ -93,6 +99,7 @@ sudo awk '$0 ~ /^\[/ {section=$0}
     $1=="canary_dry_run" ||
     $1=="canary_route" ||
     $1=="quote_canary_enabled" ||
+    $1=="quote_canary_pump_fun_parallel_enabled" ||
     $1=="quote_canary_buy_slippage_bps" ||
     $1=="quote_canary_sell_slippage_bps" ||
     $1=="swap_instructions_dry_run_enabled" ||
@@ -148,6 +155,7 @@ if .reason_class != "execution_canary_quote_pnl_loaded" then
 else
   .summary as $s |
   .tiny_execution_gate as $g |
+  (.provider_comparison // {}) as $pc |
   "WINDOW since=\(.since) as_of=\(.as_of) limit=\($s.limit)",
   "SHADOW_TOTAL closed=\($s.shadow_close_breakdown.total_closed_trades) win_loss=\($s.shadow_close_breakdown.total_win_count)/\($s.shadow_close_breakdown.total_loss_count) pnl=\($s.shadow_close_breakdown.total_pnl_sol)",
   "SHADOW_MARKET closed=\($s.shadow_close_breakdown.market_closed_trades) pnl=\($s.shadow_close_breakdown.market_pnl_sol)",
@@ -187,6 +195,12 @@ else
     | map("\(.side):\(.status)=\(.events)")
     | join(" | ")
   ),
+  "PROVIDERS paired=\($pc.paired_events // 0) both_ok=\($pc.both_ok_events // 0) generic_only_ok=\($pc.generic_only_ok_events // 0) pump_fun_only_ok=\($pc.pump_fun_only_ok_events // 0) pump_fun_better=\($pc.pump_fun_better_slippage_events // 0) generic_better=\($pc.generic_better_slippage_events // 0) avg_generic_ms=\($pc.avg_generic_latency_ms // 0) avg_pump_fun_ms=\($pc.avg_pump_fun_latency_ms // 0) avg_pump_fun_minus_generic_bps=\($pc.avg_pump_fun_minus_generic_slippage_bps // 0)",
+  "PROVIDER_LATEST " + (
+    ($pc.latest // [])[:5]
+    | map("\(.side):\(.better_provider // \"n/a\") delta_bps=\(.slippage_delta_bps // \"n/a\") generic=\(.generic_status // \"n/a\")/\(.generic_slippage_bps // \"n/a\") pump=\(.pump_fun_status // \"n/a\")/\(.pump_fun_slippage_bps // \"n/a\")")
+    | join(" | ")
+  ),
   "QUOTE_GATE status=\($s.readiness_gate.status) can_start=\($s.readiness_gate.can_start_tiny_execution) blockers=\($s.readiness_gate.blocker_count) warnings=\($s.readiness_gate.warning_count) min_market=\($s.readiness_gate.min_market_closed_trades) market=\($s.readiness_gate.market_closed_trades) skip_rate=\($s.readiness_gate.skip_rate_pct) unknown_rate=\($s.readiness_gate.unknown_rate_pct)",
   "TINY_GATE status=\($g.status) can_start=\($g.can_start_tiny_execution) blockers=\($g.blocker_count) warnings=\($g.warning_count) latest_status=\($g.latest_order_status) latest_simulation=\($g.latest_simulation_status) latest_age_s=\($g.latest_metadata_age_seconds)",
   "TINY_CHECKS " + (
@@ -208,6 +222,12 @@ This report answers:
 - Metis dry-run status through `latest_simulation=passed`
 - If transaction dry-run is enabled, the latest proof should include
   `metis_swap_transaction_ok`
+- Provider comparison status:
+  - `pump_fun_better` means paid `/pump-fun/quote` had lower slippage on the
+    same event.
+  - `generic_better` means old generic Metis/Jupiter `/quote` was better.
+  - `pump_fun_only_ok` means generic quote failed while paid Pump.fun worked.
+  - `generic_only_ok` means paid Pump.fun did not support/price that event.
 - tiny execution gate blockers and warnings
 
 If `reason` is not `execution_canary_quote_pnl_loaded`, do not invent a manual
@@ -335,6 +355,8 @@ Shadow stale/rug-like: <count>, PnL <x> SOL
 Canary quote PnL: counted <n>, skipped <n>, unknown <n>,
   win/loss <w>/<l>, PnL after fee <x> SOL, delta vs shadow <x> SOL
 Thresholds: 150=<pnl/count>, 300=<pnl/count>, 500=<pnl/count>, 1000=<pnl/count>
+Providers: paired <n>, pump_fun_better <n>, generic_better <n>,
+  avg_paid_minus_generic_bps <x>, latest <provider/delta>
 Metis dry-run: latest_simulation <passed/failed/missing>, proof <instructions/transaction/missing>, gate <ready/blocked>
 Latency/routes/fees: entry delay <ms>, quote <ms>, route <top>, priority <ok/errors>
 Open: <n> lots, exposure <x> SOL
@@ -357,6 +379,8 @@ Minimum report checks:
 - Metis dry-run latest simulation is `passed` or failure reason is understood
 - If `swap_transaction_dry_run_enabled=true`, latest simulation proof contains
   `metis_swap_transaction_ok`
+- paid provider comparison has enough paired events to judge if paid Pump.fun
+  improves slippage/latency versus generic Metis on the same events
 - priority fee errors are low or safely ignored
 - ingestion gaps/drops/429/5xx are zero
 - SQLite busy/retry is not rising

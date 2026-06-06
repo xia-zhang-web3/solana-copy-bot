@@ -1,4 +1,5 @@
 use crate::{
+    execution_quote_canary_route_samples::ensure_execution_quote_canary_provider_samples_table,
     observed_row::parse_sqlite_slot, observed_timestamp::parse_rfc3339_utc, schema::ensure_column,
     ExecutionCanaryCloseCandidate, ExecutionCanaryObservedLeg, ExecutionQuoteCanaryEventInsert,
     ExecutionQuoteCanaryRecordOutcome, SqliteDiscoveryStore,
@@ -20,7 +21,8 @@ pub(crate) fn ensure_execution_quote_canary_tables(store: &SqliteDiscoveryStore)
         "execution_quote_canary_events",
         "quote_response_json",
         "TEXT",
-    )
+    )?;
+    ensure_execution_quote_canary_provider_samples_table(store)
 }
 
 impl SqliteDiscoveryStore {

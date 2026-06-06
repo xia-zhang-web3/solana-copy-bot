@@ -150,6 +150,11 @@ pub(super) fn apply_discovery_shadow_execution_env_overrides(config: &mut AppCon
     {
         config.execution.quote_canary_timeout_ms = quote_canary_timeout_ms;
     }
+    if let Some(pump_fun_parallel_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_QUOTE_CANARY_PUMP_FUN_PARALLEL_ENABLED")?
+    {
+        config.execution.quote_canary_pump_fun_parallel_enabled = pump_fun_parallel_enabled;
+    }
     if let Some(swap_instructions_dry_run_enabled) =
         parse_env_bool("SOLANA_COPY_BOT_EXECUTION_SWAP_INSTRUCTIONS_DRY_RUN_ENABLED")?
     {

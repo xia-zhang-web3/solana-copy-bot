@@ -27,6 +27,8 @@ pub(crate) struct QuoteSample {
     pub(crate) response_json: String,
     pub(crate) price_impact_pct: Option<f64>,
     pub(crate) route_plan_json: Option<String>,
+    pub(crate) in_decimals: Option<u8>,
+    pub(crate) out_decimals: Option<u8>,
     pub(crate) latency_ms: u64,
 }
 

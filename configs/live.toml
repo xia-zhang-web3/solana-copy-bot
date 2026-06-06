@@ -154,6 +154,7 @@ quote_canary_enabled = false
 quote_canary_base_url = "https://api.jup.ag/swap/v1"
 quote_canary_api_key = ""
 quote_canary_timeout_ms = 1500
+quote_canary_pump_fun_parallel_enabled = false
 quote_canary_buy_size_sol = 0.2
 quote_canary_slippage_bps = 100
 quote_canary_buy_slippage_bps = 150

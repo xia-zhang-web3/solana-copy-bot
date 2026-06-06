@@ -21,6 +21,7 @@ mod execution_canary_state;
 mod execution_orders;
 mod execution_quote_canary;
 mod execution_quote_canary_lookup;
+mod execution_quote_canary_route_samples;
 mod history_retention;
 mod market_context;
 mod migrations;
@@ -73,6 +74,7 @@ pub use crate::startup_progress::{
     run_observed_startup_step_with_completion_detail,
 };
 pub use crate::status_snapshot::DiscoveryV2StatusSnapshotRow;
+pub use execution_quote_canary_route_samples::{PROVIDER_GENERIC_METIS, PROVIDER_PUMP_FUN_PAID};
 pub use migrations::SqliteStartupBootstrapResult;
 pub use money::{lamports_to_sol, signed_lamports_to_sol};
 pub use types::{
@@ -99,12 +101,14 @@ pub use types::{
     ExecutionCanaryReserveResult, ExecutionCanarySellDecision, ExecutionCanaryShadowCloseBreakdown,
     ExecutionCanaryShadowCloseContextSummary, ExecutionCanaryStatusReport, ExecutionDryRunOrder,
     ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
-    ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryRecordOutcome, FollowlistUpdateResult,
-    HistoryRetentionCutoffs, HistoryRetentionSummary, ObservedSolLegSwap,
-    ObservedSwapBatchWriteMetrics, ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow,
-    RecentRawJournalStateRow, RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome,
-    ShadowLotRow, ShadowSignalSummary, ShadowTokenLossCooldown, ShadowTokenRecentClose,
-    ShadowWalletFeedback, ShadowWalletTokenFastLossCooldown, SqliteBatchedDeleteSummary,
+    ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderComparisonEvent,
+    ExecutionQuoteCanaryProviderComparisonSummary, ExecutionQuoteCanaryProviderSampleInsert,
+    ExecutionQuoteCanaryRecordOutcome, FollowlistUpdateResult, HistoryRetentionCutoffs,
+    HistoryRetentionSummary, ObservedSolLegSwap, ObservedSwapBatchWriteMetrics,
+    ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow,
+    RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome, ShadowLotRow,
+    ShadowSignalSummary, ShadowTokenLossCooldown, ShadowTokenRecentClose, ShadowWalletFeedback,
+    ShadowWalletTokenFastLossCooldown, SqliteBatchedDeleteSummary,
     SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
     SqliteSnapshotDeferredReason, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
     SqliteSnapshotRetryReason, SqliteSnapshotSourceMetrics, SqliteSnapshotSummary,

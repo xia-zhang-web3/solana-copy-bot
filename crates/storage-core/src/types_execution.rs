@@ -288,6 +288,27 @@ pub enum ExecutionQuoteCanaryRecordOutcome {
     Existing,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecutionQuoteCanaryProviderSampleInsert {
+    pub event_id: String,
+    pub provider: String,
+    pub side: String,
+    pub quote_status: String,
+    pub request_ts: DateTime<Utc>,
+    pub quote_latency_ms: Option<u64>,
+    pub quote_in_amount_raw: Option<String>,
+    pub quote_out_amount_raw: Option<String>,
+    pub quote_response_json: Option<String>,
+    pub quote_price_sol: Option<f64>,
+    pub shadow_price_sol: Option<f64>,
+    pub slippage_bps: Option<f64>,
+    pub price_impact_pct: Option<f64>,
+    pub route_plan_json: Option<String>,
+    pub decision_status: Option<String>,
+    pub decision_reason: Option<String>,
+    pub error: Option<String>,
+}
+
 pub const EXECUTION_STATUS_DRY_RUN_CONFIRMED: &str = "execution_dry_run_confirmed";
 pub const EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED: &str = "dry_run_skipped";
 pub const EXECUTION_STATUS_CANARY_CANDIDATE: &str = "execution_canary_candidate";
