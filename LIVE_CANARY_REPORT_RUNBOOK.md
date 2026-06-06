@@ -32,6 +32,9 @@ is not an approval to change production state.
   - `Bonding curve for mint not found` is a route mismatch, not a system error
 - Priority Fee API is measured and included in quote PnL after fee.
 - Tiny execution gate is report-only until a separate explicit rollout.
+- Main quote PnL now includes `buy_shadow_gate`: quote-approved BUYs are split
+  into `shadow_recorded`, `shadow_dropped`, and `shadow_pending`. This is the
+  source of truth for whether a good quote would actually become a shadow entry.
 
 Use the newest relevant rollout/config timestamp as `SINCE`. Do not use a
 rolling 24h window as the main answer unless the user asks for it.
@@ -164,6 +167,12 @@ else
   "CANARY_MARKET closed=\($s.total_closed_trades) counted=\($s.pnl_counted_trades) skipped=\($s.skipped_trades) unknown=\($s.unknown_trades)",
   "CANARY_PNL quote_win_loss=\($s.quote_win_count)/\($s.quote_loss_count) shadow_pnl=\($s.shadow_pnl_sol) quote_after_fee=\($s.quote_adjusted_pnl_after_priority_fee_sol) delta_after_fee=\($s.quote_after_fee_vs_shadow_delta_sol)",
   "SKIPS skipped_shadow_pnl=\($s.skipped_shadow_pnl_sol) skipped_counterfactual_after_fee=\($s.skipped_counterfactual_pnl_after_priority_fee_sol)",
+  "BUY_SHADOW_GATE quote_buy=\($s.buy_shadow_gate.total_buy_quote_events) quote_would_execute=\($s.buy_shadow_gate.quote_would_execute_events) recorded=\($s.buy_shadow_gate.shadow_recorded_events) dropped=\($s.buy_shadow_gate.shadow_dropped_events) pending=\($s.buy_shadow_gate.shadow_pending_events) execute_recorded=\($s.buy_shadow_gate.quote_would_execute_shadow_recorded_events) execute_dropped=\($s.buy_shadow_gate.quote_would_execute_shadow_dropped_events) execute_pending=\($s.buy_shadow_gate.quote_would_execute_shadow_pending_events)",
+  "BUY_SHADOW_GATE_REASONS " + (
+    $s.buy_shadow_gate.drop_reason_counts
+    | map("\(.reason)=\(.events)")
+    | join(" | ")
+  ),
   "FORCE_EXIT counted=\($s.force_exit_counted_trades) skipped_entry=\($s.force_exit_skipped_entry_trades)",
   "ENTRY_DIAG counted_events=\($s.quote_diagnostics.entry_counted.events) avg_delay_ms=\($s.quote_diagnostics.entry_counted.decision_delay_ms_avg) avg_quote_ms=\($s.quote_diagnostics.entry_counted.quote_latency_ms_avg) avg_slippage_bps=\($s.quote_diagnostics.entry_counted.slippage_bps_avg)",
   "THRESHOLDS " + (
@@ -214,7 +223,7 @@ else
     | map("\(.side):\(.selected_provider) reason=\(.selected_reason) generic=\(.generic_metis_status // \"n/a\") public=\(.generic_public_status // \"n/a\") pump=\(.pump_fun_paid_status // \"n/a\") pump_completed=\(.pump_fun_paid_is_completed // \"n/a\") pump_error=\(.pump_fun_paid_error // \"\")")
     | join(" | ")
   ),
-  "QUOTE_GATE status=\($s.readiness_gate.status) can_start=\($s.readiness_gate.can_start_tiny_execution) blockers=\($s.readiness_gate.blocker_count) warnings=\($s.readiness_gate.warning_count) min_market=\($s.readiness_gate.min_market_closed_trades) market=\($s.readiness_gate.market_closed_trades) skip_rate=\($s.readiness_gate.skip_rate_pct) unknown_rate=\($s.readiness_gate.unknown_rate_pct)",
+  "QUOTE_GATE status=\($s.readiness_gate.status) can_start=\($s.readiness_gate.can_start_tiny_execution) blockers=\($s.readiness_gate.blocker_count) warnings=\($s.readiness_gate.warning_count) min_market=\($s.readiness_gate.min_market_closed_trades) market=\($s.readiness_gate.market_closed_trades) skip_rate=\($s.readiness_gate.skip_rate_pct) unknown_rate=\($s.readiness_gate.unknown_rate_pct) shadow_gate_drop_rate=\($s.readiness_gate.entry_shadow_gate_drop_rate_pct)",
   "TINY_GATE status=\($g.status) can_start=\($g.can_start_tiny_execution) blockers=\($g.blocker_count) warnings=\($g.warning_count) latest_status=\($g.latest_order_status) latest_simulation=\($g.latest_simulation_status) latest_age_s=\($g.latest_metadata_age_seconds)",
   "TINY_CHECKS " + (
     $g.checks
@@ -230,6 +239,13 @@ This report answers:
 - how many closed market pairs are in the current sample
 - Shadow PnL vs canary quote-adjusted PnL after priority fee
 - skipped/unknown count and how much Shadow PnL was skipped
+- BUY shadow gate outcome:
+  - `quote_would_execute` means quote/slippage accepted the BUY
+  - `execute_recorded` means that BUY also became a shadow entry
+  - `execute_dropped` means shadow gate rejected it; reasons are in
+    `BUY_SHADOW_GATE_REASONS`
+  - `pending` means outcome is not yet written, usually an in-flight or
+    pre-rollout sample
 - threshold candidates for `150/300/500/1000 bps`
 - slippage, delay, leader-notional, route, and priority-fee buckets
 - Metis dry-run status through `latest_simulation=passed`

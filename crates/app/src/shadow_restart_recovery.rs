@@ -161,9 +161,12 @@ pub(crate) async fn apply_shadow_restart_recovery_swaps(
             }
         }
         handle_shadow_task_output(
+            Some(store),
             ShadowTaskOutput {
                 signature: swap.signature,
                 key,
+                signal_id: None,
+                side: None,
                 outcome,
             },
             open_shadow_lots,

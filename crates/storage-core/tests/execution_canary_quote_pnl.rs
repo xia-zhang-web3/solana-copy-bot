@@ -120,13 +120,23 @@ fn quote_pnl_readiness_gate_allows_clean_tiny_execution_window() -> Result<()> {
             closed,
         )?;
         let close_id = close_id_for_signal(&store, &signal_id)?;
+        let buy_signal_id = format!("buy-ready-{index}");
         store.record_execution_quote_canary_event(&buy_quote(
             &format!("quote:buy:ready:{index}"),
-            &format!("buy-ready-{index}"),
+            &buy_signal_id,
             &token,
             trade_opened,
             "would_execute",
         ))?;
+        store.record_execution_quote_canary_shadow_gate_event(
+            &buy_signal_id,
+            "leader-wallet",
+            &token,
+            "buy",
+            "shadow_recorded",
+            None,
+            trade_opened + Duration::milliseconds(15),
+        )?;
         store.record_execution_quote_canary_event(&sell_quote(
             &format!("quote:sell:ready:{index}"),
             close_id,

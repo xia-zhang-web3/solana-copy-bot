@@ -32,6 +32,8 @@ fn test_task_output(error: anyhow::Error) -> ShadowTaskOutput {
             wallet: "wallet-a".to_string(),
             token: "token-a".to_string(),
         },
+        signal_id: None,
+        side: None,
         outcome: Err(error),
     }
 }
@@ -46,6 +48,7 @@ fn handle_shadow_task_output_returns_error_on_fatal_sqlite_io() {
     ));
 
     let error = handle_shadow_task_output(
+        None,
         task_output,
         &mut open_shadow_lots,
         &mut shadow_drop_reason_counts,
@@ -74,6 +77,7 @@ fn handle_shadow_task_output_warns_and_continues_on_busy_lock() -> Result<()> {
     let task_output = test_task_output(anyhow!("database is locked"));
 
     handle_shadow_task_output(
+        None,
         task_output,
         &mut open_shadow_lots,
         &mut shadow_drop_reason_counts,

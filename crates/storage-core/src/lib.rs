@@ -12,6 +12,7 @@ mod execution_canary_quote_pnl_buckets;
 mod execution_canary_quote_pnl_compute;
 mod execution_canary_quote_pnl_diagnostics;
 mod execution_canary_quote_pnl_gate;
+mod execution_canary_quote_pnl_gate_shadow;
 mod execution_canary_quote_pnl_rows;
 mod execution_canary_readiness;
 mod execution_canary_report;
@@ -22,6 +23,7 @@ mod execution_orders;
 mod execution_quote_canary;
 mod execution_quote_canary_lookup;
 mod execution_quote_canary_route_samples;
+mod execution_quote_canary_shadow_gate;
 mod execution_quote_provider_lookup;
 mod execution_quote_provider_selection_report;
 mod history_retention;
@@ -79,6 +81,9 @@ pub use crate::status_snapshot::DiscoveryV2StatusSnapshotRow;
 pub use execution_quote_canary_route_samples::{
     PROVIDER_GENERIC_METIS, PROVIDER_GENERIC_PUBLIC, PROVIDER_PUMP_FUN_PAID,
 };
+pub use execution_quote_canary_shadow_gate::{
+    EXECUTION_QUOTE_CANARY_SHADOW_GATE_DROPPED, EXECUTION_QUOTE_CANARY_SHADOW_GATE_RECORDED,
+};
 pub use migrations::SqliteStartupBootstrapResult;
 pub use money::{lamports_to_sol, signed_lamports_to_sol};
 pub use types::{
@@ -98,6 +103,7 @@ pub use types::{
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlThresholdSummary,
     ExecutionCanaryQuotePnlTrade, ExecutionCanaryQuoteReadinessCheck,
     ExecutionCanaryQuoteReadinessGate, ExecutionCanaryQuoteRouteCount,
+    ExecutionCanaryQuoteShadowGateReasonCount, ExecutionCanaryQuoteShadowGateSummary,
     ExecutionCanaryQuoteSideDiagnostics, ExecutionCanaryQuoteStatusCount,
     ExecutionCanaryQuoteThresholdCandidate, ExecutionCanaryReadinessCount,
     ExecutionCanaryReadinessLatestOrder, ExecutionCanaryReadinessSummary,

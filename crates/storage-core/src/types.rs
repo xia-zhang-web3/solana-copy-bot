@@ -34,6 +34,7 @@ pub use types_execution_quote_pnl::{
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlThresholdSummary,
     ExecutionCanaryQuotePnlTrade, ExecutionCanaryQuoteReadinessCheck,
     ExecutionCanaryQuoteReadinessGate, ExecutionCanaryQuoteRouteCount,
+    ExecutionCanaryQuoteShadowGateReasonCount, ExecutionCanaryQuoteShadowGateSummary,
     ExecutionCanaryQuoteSideDiagnostics, ExecutionCanaryQuoteStatusCount,
     ExecutionCanaryQuoteThresholdCandidate, ExecutionCanaryShadowCloseBreakdown,
     ExecutionCanaryShadowCloseContextSummary, ExecutionQuoteCanaryProviderComparisonEvent,

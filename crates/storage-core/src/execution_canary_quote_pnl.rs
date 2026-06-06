@@ -27,6 +27,7 @@ impl SqliteDiscoveryStore {
         ensure_execution_quote_canary_tables(self)?;
         let shadow_close_breakdown = self.execution_canary_shadow_close_breakdown(since)?;
         let open_position_count = self.execution_canary_open_position_count()?;
+        let buy_shadow_gate = self.execution_quote_canary_shadow_gate_summary(since, limit)?;
         let rows = self.execution_canary_quote_pnl_rows(since, limit)?;
         let trades = rows
             .into_iter()
@@ -39,6 +40,7 @@ impl SqliteDiscoveryStore {
             trades,
             shadow_close_breakdown,
             open_position_count,
+            buy_shadow_gate,
         ))
     }
 

@@ -71,6 +71,7 @@ pub(super) fn prepare_shadow_scheduler_before_select(
 }
 
 pub(super) fn handle_shadow_worker_join(
+    store: &SqliteStore,
     shadow_result: Option<std::result::Result<ShadowTaskOutput, tokio::task::JoinError>>,
     shadow_scheduler: &mut ShadowScheduler,
     open_shadow_lots: &mut HashSet<(String, String)>,
@@ -82,6 +83,7 @@ pub(super) fn handle_shadow_worker_join(
         Some(Ok(task_output)) => {
             shadow_scheduler.mark_task_complete(&task_output.key);
             recorded_signal = handle_shadow_task_output(
+                Some(store),
                 task_output,
                 open_shadow_lots,
                 shadow_drop_reason_counts,

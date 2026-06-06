@@ -56,9 +56,10 @@ fn quote_readiness_gate_ignores_skipped_priority_fee_statuses() -> Result<()> {
             .next()
             .expect("close candidate")
             .id;
+        let buy_signal_id = format!("buy-gate-{index}");
         store.record_execution_quote_canary_event(&quote_event(
             format!("quote:buy:gate:{index}"),
-            Some(format!("buy-gate-{index}")),
+            Some(buy_signal_id.clone()),
             None,
             &token,
             "buy",
@@ -66,6 +67,15 @@ fn quote_readiness_gate_ignores_skipped_priority_fee_statuses() -> Result<()> {
             buy_decision,
             priority_status,
         ))?;
+        store.record_execution_quote_canary_shadow_gate_event(
+            &buy_signal_id,
+            "leader-wallet",
+            &token,
+            "buy",
+            "shadow_recorded",
+            None,
+            trade_opened + Duration::milliseconds(15),
+        )?;
         store.record_execution_quote_canary_event(&quote_event(
             format!("quote:sell:gate:{index}"),
             Some(format!("sell:{close_id}")),

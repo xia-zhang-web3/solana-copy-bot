@@ -174,6 +174,7 @@ pub(super) async fn run_app_loop(
         tokio::select! {
             shadow_result = shadow_scheduler.shadow_workers.join_next(), if !shadow_scheduler.shadow_workers.is_empty() => {
                 if let Some(signal) = handle_shadow_worker_join(
+                    &store,
                     shadow_result,
                     &mut shadow_scheduler,
                     &mut open_shadow_lots,

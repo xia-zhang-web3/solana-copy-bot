@@ -38,6 +38,7 @@ pub struct ExecutionCanaryQuotePnlSummary {
     pub route_counts: Vec<ExecutionCanaryQuoteRouteCount>,
     pub priority_fee_status_counts: Vec<ExecutionCanaryQuoteStatusCount>,
     pub priority_fee_lamports_sum: u64,
+    pub buy_shadow_gate: ExecutionCanaryQuoteShadowGateSummary,
     pub readiness_gate: ExecutionCanaryQuoteReadinessGate,
     pub trades: Vec<ExecutionCanaryQuotePnlTrade>,
 }
@@ -152,6 +153,28 @@ pub struct ExecutionCanaryQuoteRouteCount {
 pub struct ExecutionCanaryQuoteStatusCount {
     pub side: String,
     pub status: String,
+    pub events: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuoteShadowGateSummary {
+    pub total_buy_quote_events: u64,
+    pub quote_would_execute_events: u64,
+    pub quote_would_skip_events: u64,
+    pub quote_unknown_events: u64,
+    pub shadow_gate_sampled_events: u64,
+    pub shadow_recorded_events: u64,
+    pub shadow_dropped_events: u64,
+    pub shadow_pending_events: u64,
+    pub quote_would_execute_shadow_recorded_events: u64,
+    pub quote_would_execute_shadow_dropped_events: u64,
+    pub quote_would_execute_shadow_pending_events: u64,
+    pub drop_reason_counts: Vec<ExecutionCanaryQuoteShadowGateReasonCount>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionCanaryQuoteShadowGateReasonCount {
+    pub reason: String,
     pub events: u64,
 }
 
@@ -287,6 +310,7 @@ pub struct ExecutionCanaryQuoteReadinessGate {
     pub quote_win_rate_pct: f64,
     pub skip_rate_pct: f64,
     pub unknown_rate_pct: f64,
+    pub entry_shadow_gate_drop_rate_pct: f64,
     pub non_ok_priority_fee_rate_pct: f64,
     pub avg_entry_quote_latency_ms: f64,
     pub avg_entry_decision_delay_ms: f64,

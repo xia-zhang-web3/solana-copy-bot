@@ -3,8 +3,8 @@ use crate::{
     execution_canary_quote_pnl_diagnostics::{empty_quote_diagnostics, record_quote_diagnostics},
     execution_canary_quote_pnl_gate::build_quote_readiness_gate,
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlTrade,
-    ExecutionCanaryShadowCloseBreakdown, EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED,
-    EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
+    ExecutionCanaryQuoteShadowGateSummary, ExecutionCanaryShadowCloseBreakdown,
+    EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED, EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
 };
 use chrono::{DateTime, Utc};
 
@@ -17,8 +17,9 @@ pub(crate) fn summarize_quote_pnl(
     trades: Vec<ExecutionCanaryQuotePnlTrade>,
     shadow_close_breakdown: ExecutionCanaryShadowCloseBreakdown,
     open_position_count: u64,
+    buy_shadow_gate: ExecutionCanaryQuoteShadowGateSummary,
 ) -> ExecutionCanaryQuotePnlSummary {
-    let mut summary = empty_summary(as_of, since, limit, shadow_close_breakdown);
+    let mut summary = empty_summary(as_of, since, limit, shadow_close_breakdown, buy_shadow_gate);
     for trade in trades {
         record_trade(&mut summary, trade);
     }
@@ -32,6 +33,7 @@ fn empty_summary(
     since: DateTime<Utc>,
     limit: u32,
     shadow_close_breakdown: ExecutionCanaryShadowCloseBreakdown,
+    buy_shadow_gate: ExecutionCanaryQuoteShadowGateSummary,
 ) -> ExecutionCanaryQuotePnlSummary {
     ExecutionCanaryQuotePnlSummary {
         as_of,
@@ -69,6 +71,7 @@ fn empty_summary(
         route_counts: Vec::new(),
         priority_fee_status_counts: Vec::new(),
         priority_fee_lamports_sum: 0,
+        buy_shadow_gate,
         readiness_gate: Default::default(),
         trades: Vec::new(),
     }

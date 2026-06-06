@@ -1,4 +1,5 @@
 use crate::{
+    execution_canary_quote_pnl_gate_shadow::entry_shadow_gate_check,
     ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuoteReadinessCheck,
     ExecutionCanaryQuoteReadinessGate, ExecutionCanaryQuoteThresholdCandidate,
 };
@@ -29,6 +30,12 @@ pub(crate) fn build_quote_readiness_gate(
     let sampled_market_trades = summary.total_closed_trades;
     let skip_rate_pct = percent(summary.skipped_trades, sampled_market_trades);
     let unknown_rate_pct = percent(summary.unknown_trades, sampled_market_trades);
+    let entry_shadow_gate_drop_rate_pct = percent(
+        summary
+            .buy_shadow_gate
+            .quote_would_execute_shadow_dropped_events,
+        summary.buy_shadow_gate.quote_would_execute_events,
+    );
     let quote_win_rate_pct = percent(
         summary.quote_win_count,
         summary.quote_win_count + summary.quote_loss_count,
@@ -47,6 +54,10 @@ pub(crate) fn build_quote_readiness_gate(
         summary.quote_adjusted_pnl_after_priority_fee_sol,
     ));
     checks.push(skip_rate_check(skip_rate_pct));
+    checks.push(entry_shadow_gate_check(
+        summary,
+        entry_shadow_gate_drop_rate_pct,
+    ));
     if skip_rate_pct > MAX_SKIP_RATE_PCT {
         if let Some(candidate) = &threshold_candidate {
             checks.push(candidate_threshold_check(candidate));
@@ -95,6 +106,7 @@ pub(crate) fn build_quote_readiness_gate(
         quote_win_rate_pct,
         skip_rate_pct,
         unknown_rate_pct,
+        entry_shadow_gate_drop_rate_pct,
         non_ok_priority_fee_rate_pct,
         avg_entry_quote_latency_ms,
         avg_entry_decision_delay_ms,

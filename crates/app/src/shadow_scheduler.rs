@@ -29,6 +29,8 @@ pub(crate) struct ShadowScheduler {
 pub(crate) struct ShadowTaskOutput {
     pub(crate) signature: String,
     pub(crate) key: ShadowTaskKey,
+    pub(crate) signal_id: Option<String>,
+    pub(crate) side: Option<ShadowSwapSide>,
     pub(crate) outcome: Result<copybot_shadow::ShadowProcessOutcome>,
 }
 
