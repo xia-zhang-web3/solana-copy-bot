@@ -30,6 +30,10 @@ is not an approval to change production state.
     Pump.fun AMM/Raydium/Orca routes
   - `generic_public` only as fallback/comparison
   - `Bonding curve for mint not found` is a route mismatch, not a system error
+- Builder dry-run uses paid Metis first. If paid `/swap-instructions` or
+  `/swap` returns `Missing token program`, it retries the same dry-run through
+  public Jupiter and records `metis_swap_*_public_fallback_ok` in simulation
+  proof. This fallback is dry-run only.
 - Priority Fee API is measured and included in quote PnL after fee.
 - Tiny execution gate is report-only until a separate explicit rollout.
 - Main quote PnL now includes `buy_shadow_gate`: quote-approved BUYs are split

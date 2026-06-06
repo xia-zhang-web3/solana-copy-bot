@@ -3,7 +3,7 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::time::{Duration as StdDuration, Instant};
 
-const MISSING_TOKEN_PROGRAM: &str = "Missing token program";
+pub(crate) const MISSING_TOKEN_PROGRAM: &str = "Missing token program";
 const RETRY_DELAYS_MS: [u64; 2] = [250, 750];
 
 #[derive(Debug)]
@@ -58,4 +58,8 @@ pub(crate) async fn post_swap_json_with_retry(
 
 fn should_retry_missing_token_program(response_body: &str, attempt: usize) -> bool {
     attempt < RETRY_DELAYS_MS.len() && response_body.contains(MISSING_TOKEN_PROGRAM)
+}
+
+pub(crate) fn is_missing_token_program_error(error: &anyhow::Error) -> bool {
+    error.to_string().contains(MISSING_TOKEN_PROGRAM)
 }

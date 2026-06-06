@@ -1,7 +1,7 @@
 use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_submit_adapter::ExecutionTransactionPlan;
 use crate::execution_swap_http_request::{swap_endpoint_url, swap_request_body};
-use crate::execution_swap_http_retry::post_swap_json_with_retry;
+use crate::execution_swap_http_retry::{is_missing_token_program_error, post_swap_json_with_retry};
 use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
 use serde_json::Value;
@@ -38,11 +38,30 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
         timeout,
         "swap transaction dry-run",
     )
-    .await?;
+    .await;
+    let (response, fallback_used) = match response {
+        Ok(response) => (response, false),
+        Err(error) if should_use_public_builder_fallback(config, &error) => {
+            let fallback_url =
+                swap_endpoint_url(&config.quote_canary_public_base_url, "swap", "public swap")?;
+            let fallback_response = post_swap_json_with_retry(
+                http,
+                fallback_url,
+                "",
+                &body,
+                timeout,
+                "public swap transaction dry-run fallback",
+            )
+            .await?;
+            (fallback_response, true)
+        }
+        Err(error) => return Err(error),
+    };
     Ok(Some(swap_transaction_response_summary(
         response.value,
         response.elapsed_ms,
         response.attempts,
+        fallback_used,
     )?))
 }
 
@@ -50,6 +69,7 @@ fn swap_transaction_response_summary(
     value: Value,
     elapsed_ms: u64,
     attempts: usize,
+    fallback_used: bool,
 ) -> Result<String> {
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
         return Err(anyhow!(
@@ -67,11 +87,23 @@ fn swap_transaction_response_summary(
         .filter(|item| !item.is_null())
         .map(|item| truncate_for_log(&item.to_string(), 180));
     let summary = format!(
-        "metis_swap_transaction_ok base64_len={} latency_ms={} attempts={} simulation_error={}",
+        "metis_swap_transaction_{} base64_len={} latency_ms={} attempts={} simulation_error={}",
+        if fallback_used {
+            "public_fallback_ok"
+        } else {
+            "ok"
+        },
         swap_transaction.len(),
         elapsed_ms,
         attempts,
         simulation_error.unwrap_or_else(|| "none".to_string())
     );
     Ok(truncate_for_log(&summary, 500))
+}
+
+fn should_use_public_builder_fallback(config: &ExecutionConfig, error: &anyhow::Error) -> bool {
+    config.quote_canary_public_parallel_enabled
+        && is_missing_token_program_error(error)
+        && !config.quote_canary_public_base_url.trim().is_empty()
+        && config.quote_canary_public_base_url.trim() != config.quote_canary_base_url.trim()
 }

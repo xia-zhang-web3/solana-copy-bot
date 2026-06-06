@@ -112,9 +112,99 @@ async fn swap_transaction_dry_run_missing_transaction_fails_simulation() -> Resu
     Ok(())
 }
 
+#[tokio::test]
+async fn swap_transaction_dry_run_falls_back_to_public_builder() -> Result<()> {
+    let db_path = unique_swap_transaction_test_path("http-public-fallback");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let fallback_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let primary_url = format!("http://{}", primary_listener.local_addr()?);
+    let fallback_url = format!("http://{}", fallback_listener.local_addr()?);
+    let primary_server = tokio::spawn(async move {
+        let mut buffer = [0_u8; 4096];
+        for _ in 0..3 {
+            let (mut socket, _) = primary_listener.accept().await.expect("primary request");
+            let read = socket
+                .read(&mut buffer)
+                .await
+                .expect("read primary request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.starts_with("POST /swap "));
+            write_swap_transaction_http_status(
+                &mut socket,
+                500,
+                r#"{"error":"Missing token program for TokenMint"}"#,
+            )
+            .await;
+        }
+    });
+    let fallback_server = tokio::spawn(async move {
+        let (mut socket, _) = fallback_listener.accept().await.expect("fallback request");
+        let mut buffer = [0_u8; 4096];
+        let read = socket
+            .read(&mut buffer)
+            .await
+            .expect("read fallback request");
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        assert!(request.starts_with("POST /swap "));
+        write_swap_transaction_http_json(
+            &mut socket,
+            r#"{"swapTransaction":"serialized-transaction-base64","simulationError":null}"#,
+        )
+        .await;
+    });
+    let now = Utc::now();
+    let signal = swap_transaction_signal("http-public-fallback", now);
+    store.insert_copy_signal(&signal)?;
+    record_swap_transaction_quote(&store, &signal, now)?;
+    let mut config = swap_transaction_config(primary_url, true);
+    config.quote_canary_public_parallel_enabled = true;
+    config.quote_canary_public_base_url = fallback_url;
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let state_machine =
+        crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(config, adapter);
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+    primary_server.await?;
+    fallback_server.await?;
+    let order = store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .expect("order should exist");
+
+    assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.submit_disabled, 1);
+    assert_eq!(
+        order.simulation_status.as_deref(),
+        Some(copybot_storage_core::EXECUTION_SIMULATION_STATUS_PASSED)
+    );
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("metis_swap_transaction_public_fallback_ok"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
 async fn write_swap_transaction_http_json(socket: &mut tokio::net::TcpStream, body: &str) {
+    write_swap_transaction_http_status(socket, 200, body).await;
+}
+
+async fn write_swap_transaction_http_status(
+    socket: &mut tokio::net::TcpStream,
+    status: u16,
+    body: &str,
+) {
     let response = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+        "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
         body.len(),
         body
     );
