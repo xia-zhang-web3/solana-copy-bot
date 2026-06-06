@@ -103,6 +103,90 @@ async fn execution_canary_records_hot_observed_buy_quote_before_shadow_join() ->
 }
 
 #[tokio::test]
+async fn hot_observed_buy_retries_transient_token_not_tradable() -> Result<()> {
+    let db_path = unique_execution_canary_test_path("hot-observed-token-not-tradable-retry");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let quote_base_url = format!("http://{}", listener.local_addr()?);
+    let quote_server = tokio::spawn(async move {
+        for attempt in 0..2 {
+            let (mut socket, _) = listener.accept().await.expect("quote request");
+            let mut buffer = [0_u8; 2048];
+            let read = socket.read(&mut buffer).await.expect("read quote request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.starts_with("GET /quote?"));
+            if attempt == 0 {
+                write_http_response(
+                    &mut socket,
+                    400,
+                    r#"{"error":"The token TokenMint is not tradable","errorCode":"TOKEN_NOT_TRADABLE"}"#,
+                )
+                .await;
+            } else {
+                write_http_response(
+                    &mut socket,
+                    200,
+                    r#"{"inAmount":"200000000","outAmount":"1000000","priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
+                )
+                .await;
+            }
+        }
+    });
+
+    let now = Utc::now();
+    let swap = copybot_core_types::SwapEvent {
+        wallet: "leader-wallet".to_string(),
+        dex: "pumpfun".to_string(),
+        token_in: crate::execution_quote_canary_helpers::SOL_MINT.to_string(),
+        token_out: "TokenMint".to_string(),
+        amount_in: 0.2,
+        amount_out: 1.0,
+        signature: "sig-hot-observed-token-not-tradable-retry".to_string(),
+        slot: 42,
+        ts_utc: now - chrono::Duration::milliseconds(25),
+        exact_amounts: Some(copybot_core_types::ExactSwapAmounts {
+            amount_in_raw: "200000000".to_string(),
+            amount_in_decimals: 9,
+            amount_out_raw: "1000000".to_string(),
+            amount_out_decimals: 6,
+        }),
+    };
+
+    let mut config = ExecutionConfig::default();
+    config.canary_enabled = true;
+    config.canary_dry_run = true;
+    config.quote_canary_enabled = true;
+    config.quote_canary_base_url = quote_base_url;
+    config.quote_canary_buy_size_sol = 0.2;
+    config.quote_canary_buy_slippage_bps = 50;
+    config.quote_canary_timeout_ms = 1_000;
+    let runner = ExecutionCanaryRunner::new(config);
+
+    let summary = runner
+        .process_hot_observed_buy_quote(&store, &swap, now)
+        .await?;
+    quote_server.await?;
+
+    assert_eq!(summary.quote_entry_inserted, 1);
+    assert_eq!(summary.quote_would_execute, 1);
+    let event = store
+        .load_latest_execution_quote_canary_entry_event(
+            "shadow:sig-hot-observed-token-not-tradable-retry:leader-wallet:buy:TokenMint",
+        )?
+        .expect("hot observed quote event");
+    assert_eq!(event.quote_status, "ok");
+    assert_eq!(event.decision_status.as_deref(), Some("would_execute"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
 async fn hot_observed_buy_quote_runs_before_priority_fee_sample() -> Result<()> {
     let db_path = unique_execution_canary_test_path("hot-observed-buy-quote-before-fee");
     let mut store = SqliteStore::open(&db_path)?;
@@ -210,6 +294,18 @@ async fn hot_observed_buy_quote_runs_before_priority_fee_sample() -> Result<()> 
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
+}
+
+async fn write_http_response(socket: &mut tokio::net::TcpStream, status: u16, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    socket
+        .write_all(response.as_bytes())
+        .await
+        .expect("write quote response");
 }
 
 #[tokio::test]

@@ -1,10 +1,13 @@
 use crate::execution_quote_canary_helpers::{
     elapsed_ms, numeric_field, quote_url, string_field, truncate_for_log, QuoteSample,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
 use serde_json::Value;
 use std::time::{Duration as StdDuration, Instant};
+
+const TOKEN_NOT_TRADABLE: &str = "TOKEN_NOT_TRADABLE";
+const TOKEN_NOT_TRADABLE_RETRY_DELAYS_MS: [u64; 3] = [100, 300, 700];
 
 pub(crate) async fn fetch_quote_sample(
     http: &reqwest::Client,
@@ -41,37 +44,64 @@ pub(crate) async fn fetch_quote_sample_from_base_url(
     let timeout = StdDuration::from_millis(timeout_ms.max(1));
     let slippage_bps = slippage_bps.to_string();
     let started = Instant::now();
-    let mut request = http
-        .get(url)
-        .query(&[
-            ("inputMint", input_mint),
-            ("outputMint", output_mint),
-            ("amount", amount_raw),
-            ("slippageBps", slippage_bps.as_str()),
-            ("swapMode", "ExactIn"),
-        ])
-        .timeout(timeout);
-    let api_key = api_key.trim();
-    if !api_key.is_empty() {
-        request = request.header("x-api-key", api_key);
+    let api_key = api_key.trim().to_string();
+    for attempt in 0..=TOKEN_NOT_TRADABLE_RETRY_DELAYS_MS.len() {
+        let mut request = http
+            .get(&url)
+            .query(&[
+                ("inputMint", input_mint),
+                ("outputMint", output_mint),
+                ("amount", amount_raw),
+                ("slippageBps", slippage_bps.as_str()),
+                ("swapMode", "ExactIn"),
+            ])
+            .timeout(timeout);
+        if !api_key.is_empty() {
+            request = request.header("x-api-key", api_key.as_str());
+        }
+        match fetch_quote_json_once(request).await {
+            Ok(value) => return quote_sample_from_json(value, started),
+            Err(error)
+                if error.retryable_token_not_tradable
+                    && attempt < TOKEN_NOT_TRADABLE_RETRY_DELAYS_MS.len() =>
+            {
+                tokio::time::sleep(StdDuration::from_millis(
+                    TOKEN_NOT_TRADABLE_RETRY_DELAYS_MS[attempt],
+                ))
+                .await;
+            }
+            Err(error) => return Err(anyhow!(error.message)),
+        }
     }
-    let response = request
-        .send()
-        .await
-        .context("quote canary request failed")?;
+    Err(anyhow!("quote canary retry loop exhausted"))
+}
+
+struct QuoteHttpError {
+    message: String,
+    retryable_token_not_tradable: bool,
+}
+
+async fn fetch_quote_json_once(request: reqwest::RequestBuilder) -> Result<Value, QuoteHttpError> {
+    let response = request.send().await.map_err(|error| QuoteHttpError {
+        message: format!("quote canary request failed: {error}"),
+        retryable_token_not_tradable: false,
+    })?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!(
-            "quote canary returned HTTP {status}: {}",
-            truncate_for_log(&body, 240)
-        ));
+        let retryable_token_not_tradable = body.contains(TOKEN_NOT_TRADABLE);
+        return Err(QuoteHttpError {
+            message: format!(
+                "quote canary returned HTTP {status}: {}",
+                truncate_for_log(&body, 240)
+            ),
+            retryable_token_not_tradable,
+        });
     }
-    let value = response
-        .json()
-        .await
-        .context("quote canary response JSON decode failed")?;
-    quote_sample_from_json(value, started)
+    response.json().await.map_err(|error| QuoteHttpError {
+        message: format!("quote canary response JSON decode failed: {error}"),
+        retryable_token_not_tradable: false,
+    })
 }
 
 fn quote_sample_from_json(value: Value, started: Instant) -> Result<QuoteSample> {
