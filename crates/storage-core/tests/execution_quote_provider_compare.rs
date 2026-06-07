@@ -195,7 +195,59 @@ fn provider_selection_treats_pump_fun_not_found_as_generic_path() -> Result<()> 
     assert_eq!(summary.selected_generic_metis_events, 1);
     assert_eq!(summary.selected_pump_fun_paid_events, 0);
     assert_eq!(latest.selected_provider, PROVIDER_GENERIC_METIS);
-    assert_eq!(latest.selected_reason, "paid_generic_quote_ok");
+    assert_eq!(latest.selected_reason, "paid_generic_best_slippage");
+    assert_eq!(
+        latest.pump_fun_paid_error.as_deref(),
+        Some("Bonding curve for mint not found")
+    );
+    Ok(())
+}
+
+#[test]
+fn provider_selection_prefers_public_when_public_slippage_is_better() -> Result<()> {
+    let store = open_migrated_store("execution-quote-provider-selection-public-better")?;
+    let now = ts("2026-06-06T08:40:00Z");
+    let event = quote_event(now);
+    store.record_execution_quote_canary_event(&event)?;
+    store.record_execution_quote_canary_provider_sample(&provider_sample(
+        &event,
+        PROVIDER_GENERIC_METIS,
+        110,
+        1_043.0,
+        0.11043,
+        None,
+    ))?;
+    store.record_execution_quote_canary_provider_sample(&provider_sample(
+        &event,
+        PROVIDER_GENERIC_PUBLIC,
+        95,
+        730.0,
+        0.1073,
+        None,
+    ))?;
+    store.record_execution_quote_canary_provider_sample(&provider_sample_with_response(
+        &event,
+        PROVIDER_PUMP_FUN_PAID,
+        80,
+        0.0,
+        0.0,
+        None,
+        Some("Bonding curve for mint not found".to_string()),
+    ))?;
+
+    let summary = store.execution_quote_canary_provider_selection_summary(
+        now,
+        now - chrono::Duration::seconds(1),
+        10,
+    )?;
+    let latest = summary.latest.first().expect("provider selection event");
+
+    assert_eq!(summary.total_events, 1);
+    assert_eq!(summary.selected_generic_public_events, 1);
+    assert_eq!(summary.selected_generic_metis_events, 0);
+    assert_eq!(summary.selected_pump_fun_paid_events, 0);
+    assert_eq!(latest.selected_provider, PROVIDER_GENERIC_PUBLIC);
+    assert_eq!(latest.selected_reason, "public_generic_best_slippage");
     assert_eq!(
         latest.pump_fun_paid_error.as_deref(),
         Some("Bonding curve for mint not found")

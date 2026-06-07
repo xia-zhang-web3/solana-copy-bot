@@ -10,13 +10,14 @@ is not an approval to change production state.
 
 - Shadow trading uses fixed `0.2 SOL` accounting.
 - Quote canary is the main measurement path for entry/exit quality.
-- BUY slippage threshold is currently evaluated around `500 bps`.
+- BUY slippage threshold is currently evaluated around `1000 bps`.
 - Metis swap-instructions dry-run is measured through the canary route.
 - Metis swap transaction dry-run may also be measured when
   `swap_transaction_dry_run_enabled=true`.
 - Public-vs-paid generic quote comparison is measured when
   `quote_canary_public_parallel_enabled=true`; it compares public Jupiter/Metis
-  `/quote` against paid/private Metis `/quote` on the same event.
+  `/quote` against paid/private Metis `/quote` on the same event. Runtime now
+  selects the lower-slippage OK generic provider for migrated AMM routes.
 - Paid Metis Pump.fun quote comparison is measured when
   `quote_canary_pump_fun_parallel_enabled=true`; it compares the old generic
   Metis/Jupiter `/quote` result against paid `/pump-fun/quote` on the same
@@ -26,9 +27,10 @@ is not an approval to change production state.
 - Selected provider is now explicit:
   - `pump_fun_paid` only when paid `/pump-fun/quote` is OK and
     `quote.meta.isCompleted=false`
-  - `generic_metis` for paid generic Metis quotes, including migrated
-    Pump.fun AMM/Raydium/Orca routes
-  - `generic_public` only as fallback/comparison
+  - `generic_metis` for paid generic Metis quotes when it is the best generic
+    route, including migrated Pump.fun AMM/Raydium/Orca routes
+  - `generic_public` when public generic slippage is better or paid generic is
+    unavailable
   - `Bonding curve for mint not found` is a route mismatch, not a system error
 - Builder dry-run uses paid Metis first. If paid `/swap-instructions` or
   `/swap` returns `Missing token program`, it retries the same dry-run through

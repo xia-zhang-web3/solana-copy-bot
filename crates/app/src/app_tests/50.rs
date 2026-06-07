@@ -188,6 +188,98 @@ async fn quote_canary_sell_uses_public_quote_when_paid_generic_is_not_tradable()
     Ok(())
 }
 
+#[tokio::test]
+async fn quote_canary_uses_public_quote_when_public_slippage_is_better() -> Result<()> {
+    let (store, db_path) = make_test_store("quote-provider-public-better")?;
+    let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let primary_url = format!("http://{}", primary_listener.local_addr()?);
+    let public_url = format!("http://{}", public_listener.local_addr()?);
+    let primary_server = tokio::spawn(async move {
+        let request = read_provider_fallback_request(&primary_listener).await;
+        assert!(request.body.starts_with("GET /quote?"));
+        write_provider_fallback_status(
+            request.socket,
+            200,
+            r#"{"inAmount":"200000000","outAmount":"100000","priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
+        )
+        .await;
+    });
+    let public_server = tokio::spawn(async move {
+        let request = read_provider_fallback_request(&public_listener).await;
+        assert!(request.body.starts_with("GET /quote?"));
+        write_provider_fallback_status(
+            request.socket,
+            200,
+            r#"{"inAmount":"200000000","outAmount":"1000000","priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
+        )
+        .await;
+    });
+
+    let now = Utc::now();
+    let signal = provider_fallback_signal(now);
+    store.insert_observed_swap(&provider_fallback_observed_swap(now))?;
+    store.insert_copy_signal(&signal)?;
+    let mut config = ExecutionConfig::default();
+    config.quote_canary_enabled = true;
+    config.quote_canary_base_url = primary_url;
+    config.quote_canary_public_parallel_enabled = true;
+    config.quote_canary_public_base_url = public_url;
+    config.quote_canary_buy_size_sol = 0.2;
+    config.quote_canary_buy_slippage_bps = 500;
+    config.quote_canary_timeout_ms = 1_000;
+    let runner = crate::execution_quote_canary::ExecutionQuoteCanaryRunner::new(config);
+
+    let summary = runner
+        .process_recorded_shadow_signal(
+            &store,
+            &copybot_shadow::ShadowSignalResult {
+                signal_id: signal.signal_id.clone(),
+                wallet_id: signal.wallet_id.clone(),
+                side: "buy".to_string(),
+                token: signal.token.clone(),
+                notional_sol: signal.notional_sol,
+                latency_ms: 25,
+                closed_qty: 0.0,
+                realized_pnl_sol: 0.0,
+                has_open_lots_after_signal: Some(true),
+            },
+            now,
+        )
+        .await?;
+    primary_server.await?;
+    public_server.await?;
+
+    assert_eq!(summary.entry_inserted, 1);
+    assert_eq!(summary.would_execute, 1);
+    assert_eq!(summary.would_skip, 0);
+    let event = store
+        .load_latest_execution_quote_canary_entry_event(&signal.signal_id)?
+        .expect("entry quote");
+    assert_eq!(event.quote_status, "ok");
+    assert_eq!(event.decision_status.as_deref(), Some("would_execute"));
+    assert_eq!(event.quote_out_amount_raw.as_deref(), Some("1000000"));
+    assert!(event.slippage_bps.unwrap_or(f64::INFINITY) <= 500.0);
+    let generic = store
+        .load_execution_quote_canary_provider_sample(
+            &event.event_id,
+            copybot_storage_core::PROVIDER_GENERIC_METIS,
+        )?
+        .expect("generic metis sample");
+    let public = store
+        .load_execution_quote_canary_provider_sample(
+            &event.event_id,
+            copybot_storage_core::PROVIDER_GENERIC_PUBLIC,
+        )?
+        .expect("public sample");
+    assert_eq!(generic.quote_status, "ok");
+    assert_eq!(public.quote_status, "ok");
+    assert!(generic.slippage_bps.unwrap() > public.slippage_bps.unwrap());
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
 struct ProviderFallbackRequest {
     socket: tokio::net::TcpStream,
     body: String,

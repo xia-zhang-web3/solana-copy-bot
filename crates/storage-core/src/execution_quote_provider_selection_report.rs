@@ -45,6 +45,8 @@ impl SqliteDiscoveryStore {
                     public.quote_status,
                     pump.quote_status,
                     pump.quote_response_json,
+                    generic.slippage_bps,
+                    public.slippage_bps,
                     COALESCE(generic.error, event.error),
                     public.error,
                     pump.error
@@ -132,12 +134,18 @@ fn read_selection_event_result(
     let pump_status: Option<String> = row.get(6).context("failed reading pump status")?;
     let pump_response_json: Option<String> =
         row.get(7).context("failed reading pump response JSON")?;
+    let generic_slippage_bps: Option<f64> =
+        row.get(8).context("failed reading generic slippage bps")?;
+    let public_slippage_bps: Option<f64> =
+        row.get(9).context("failed reading public slippage bps")?;
     let pump_is_completed = pump_response_json
         .as_deref()
         .and_then(|raw| pump_fun_is_completed(raw).ok());
     let (selected_provider, selected_reason) = select_provider(
         &generic_status,
+        generic_slippage_bps,
         &public_status,
+        public_slippage_bps,
         &pump_status,
         pump_is_completed,
     );
@@ -152,15 +160,17 @@ fn read_selection_event_result(
         generic_public_status: public_status,
         pump_fun_paid_status: pump_status,
         pump_fun_paid_is_completed: pump_is_completed,
-        generic_metis_error: row.get(8).context("failed reading generic error")?,
-        generic_public_error: row.get(9).context("failed reading public error")?,
-        pump_fun_paid_error: row.get(10).context("failed reading pump error")?,
+        generic_metis_error: row.get(10).context("failed reading generic error")?,
+        generic_public_error: row.get(11).context("failed reading public error")?,
+        pump_fun_paid_error: row.get(12).context("failed reading pump error")?,
     })
 }
 
 fn select_provider(
     generic_status: &Option<String>,
+    generic_slippage_bps: Option<f64>,
     public_status: &Option<String>,
+    public_slippage_bps: Option<f64>,
     pump_status: &Option<String>,
     pump_is_completed: Option<bool>,
 ) -> (String, String) {
@@ -168,6 +178,24 @@ fn select_provider(
         return (
             SELECTED_PUMP_FUN_PAID.to_string(),
             "pump_fun_bonding_curve_quote_ok".to_string(),
+        );
+    }
+    if provider_has_finite_slippage(generic_status, generic_slippage_bps)
+        || provider_has_finite_slippage(public_status, public_slippage_bps)
+    {
+        if provider_has_finite_slippage(public_status, public_slippage_bps)
+            && (!provider_has_finite_slippage(generic_status, generic_slippage_bps)
+                || public_slippage_bps.expect("checked finite")
+                    < generic_slippage_bps.expect("checked finite"))
+        {
+            return (
+                SELECTED_GENERIC_PUBLIC.to_string(),
+                "public_generic_best_slippage".to_string(),
+            );
+        }
+        return (
+            SELECTED_GENERIC_METIS.to_string(),
+            "paid_generic_best_slippage".to_string(),
         );
     }
     if generic_status.as_deref() == Some("ok") {
@@ -186,6 +214,10 @@ fn select_provider(
         SELECTED_UNRESOLVED.to_string(),
         "no_usable_quote".to_string(),
     )
+}
+
+fn provider_has_finite_slippage(status: &Option<String>, slippage_bps: Option<f64>) -> bool {
+    status.as_deref() == Some("ok") && slippage_bps.is_some_and(f64::is_finite)
 }
 
 fn pump_fun_is_completed(raw: &str) -> Result<bool> {

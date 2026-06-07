@@ -98,7 +98,8 @@ pub(super) fn select_usable_provider_for_event(
         apply_provider_sample_to_event(event, sample);
         return;
     }
-    if event.quote_status == QUOTE_STATUS_OK {
+    if let Some(sample) = best_generic_provider_sample(provider_samples) {
+        apply_provider_sample_to_event(event, sample);
         return;
     }
     if let Some(sample) = provider_samples
@@ -106,6 +107,35 @@ pub(super) fn select_usable_provider_for_event(
         .find(|sample| sample.provider == PROVIDER_GENERIC_PUBLIC && provider_quote_is_ok(sample))
     {
         apply_provider_sample_to_event(event, sample);
+    }
+}
+
+fn best_generic_provider_sample(
+    provider_samples: &[ExecutionQuoteCanaryProviderSampleInsert],
+) -> Option<&ExecutionQuoteCanaryProviderSampleInsert> {
+    provider_samples
+        .iter()
+        .filter(|sample| {
+            matches!(
+                sample.provider.as_str(),
+                PROVIDER_GENERIC_METIS | PROVIDER_GENERIC_PUBLIC
+            ) && provider_quote_has_finite_slippage(sample)
+        })
+        .min_by(|left, right| {
+            let left_slippage = left.slippage_bps.expect("filtered finite slippage");
+            let right_slippage = right.slippage_bps.expect("filtered finite slippage");
+            left_slippage.total_cmp(&right_slippage).then(
+                provider_priority(left.provider.as_str())
+                    .cmp(&provider_priority(right.provider.as_str())),
+            )
+        })
+}
+
+fn provider_priority(provider: &str) -> u8 {
+    match provider {
+        PROVIDER_GENERIC_METIS => 0,
+        PROVIDER_GENERIC_PUBLIC => 1,
+        _ => 2,
     }
 }
 
@@ -133,6 +163,10 @@ fn apply_provider_sample_to_event(
 
 fn provider_quote_is_ok(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> bool {
     sample.quote_status == QUOTE_STATUS_OK
+}
+
+fn provider_quote_has_finite_slippage(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> bool {
+    provider_quote_is_ok(sample) && sample.slippage_bps.is_some_and(f64::is_finite)
 }
 
 fn pump_fun_quote_is_completed(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> Option<bool> {
