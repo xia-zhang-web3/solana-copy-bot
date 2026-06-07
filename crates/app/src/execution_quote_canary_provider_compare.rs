@@ -1,12 +1,13 @@
 use crate::execution_quote_canary_helpers::{
     price_sol_per_token, quote_slippage_bps_for_buy, quote_slippage_bps_for_sell, raw_amount_to_ui,
     short_error, DECISION_UNKNOWN, DECISION_WOULD_EXECUTE, DECISION_WOULD_FORCE_EXIT,
-    DECISION_WOULD_SKIP, QUOTE_STATUS_ERROR, SIDE_BUY, SIDE_SELL,
+    DECISION_WOULD_SKIP, QUOTE_STATUS_ERROR, QUOTE_STATUS_OK, SIDE_BUY, SIDE_SELL,
 };
 use copybot_storage_core::{
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderSampleInsert,
-    PROVIDER_GENERIC_METIS,
+    PROVIDER_GENERIC_METIS, PROVIDER_GENERIC_PUBLIC, PROVIDER_PUMP_FUN_PAID,
 };
+use serde_json::Value;
 
 pub(crate) struct QuoteEventBundle {
     pub(crate) event: ExecutionQuoteCanaryEventInsert,
@@ -83,6 +84,63 @@ pub(super) fn provider_error_sample(
     sample.decision_reason = Some("quote_error".to_string());
     sample.error = Some(short_error(error));
     sample
+}
+
+pub(super) fn select_usable_provider_for_event(
+    event: &mut ExecutionQuoteCanaryEventInsert,
+    provider_samples: &[ExecutionQuoteCanaryProviderSampleInsert],
+) {
+    if let Some(sample) = provider_samples.iter().find(|sample| {
+        sample.provider == PROVIDER_PUMP_FUN_PAID
+            && provider_quote_is_ok(sample)
+            && pump_fun_quote_is_completed(sample) == Some(false)
+    }) {
+        apply_provider_sample_to_event(event, sample);
+        return;
+    }
+    if event.quote_status == QUOTE_STATUS_OK {
+        return;
+    }
+    if let Some(sample) = provider_samples
+        .iter()
+        .find(|sample| sample.provider == PROVIDER_GENERIC_PUBLIC && provider_quote_is_ok(sample))
+    {
+        apply_provider_sample_to_event(event, sample);
+    }
+}
+
+fn apply_provider_sample_to_event(
+    event: &mut ExecutionQuoteCanaryEventInsert,
+    sample: &ExecutionQuoteCanaryProviderSampleInsert,
+) {
+    event.quote_status = sample.quote_status.clone();
+    event.quote_latency_ms = sample.quote_latency_ms;
+    event.quote_in_amount_raw = sample.quote_in_amount_raw.clone();
+    event.quote_out_amount_raw = sample.quote_out_amount_raw.clone();
+    event.quote_response_json = sample.quote_response_json.clone();
+    event.quote_price_sol = sample.quote_price_sol;
+    event.slippage_bps = sample.slippage_bps;
+    event.price_impact_pct = sample.price_impact_pct;
+    event.route_plan_json = sample.route_plan_json.clone();
+    event.decision_status = sample.decision_status.clone();
+    event.decision_reason = sample.decision_reason.clone();
+    event.error = if sample.quote_status == QUOTE_STATUS_ERROR {
+        sample.error.clone()
+    } else {
+        None
+    };
+}
+
+fn provider_quote_is_ok(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> bool {
+    sample.quote_status == QUOTE_STATUS_OK
+}
+
+fn pump_fun_quote_is_completed(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> Option<bool> {
+    let raw = sample.quote_response_json.as_deref()?;
+    let value: Value = serde_json::from_str(raw).ok()?;
+    value
+        .pointer("/quote/meta/isCompleted")
+        .and_then(Value::as_bool)
 }
 
 pub(super) fn buy_quote_price_and_slippage(

@@ -10,6 +10,7 @@ use copybot_shadow::ShadowSignalResult;
 use copybot_storage_core::{
     ExecutionCanaryCloseCandidate, ExecutionQuoteCanaryEventInsert,
     ExecutionQuoteCanaryProviderSampleInsert, ExecutionQuoteCanaryRecordOutcome, SqliteStore,
+    PROVIDER_GENERIC_METIS,
 };
 
 #[path = "execution_quote_canary_hot_observed.rs"]
@@ -347,8 +348,13 @@ impl ExecutionQuoteCanaryRunner {
         provider_samples: Vec<ExecutionQuoteCanaryProviderSampleInsert>,
         limit_bps: u64,
     ) -> Result<()> {
-        let generic = generic_provider_sample(event, limit_bps);
-        store.record_execution_quote_canary_provider_sample(&generic)?;
+        if !provider_samples
+            .iter()
+            .any(|sample| sample.provider == PROVIDER_GENERIC_METIS)
+        {
+            let generic = generic_provider_sample(event, limit_bps);
+            store.record_execution_quote_canary_provider_sample(&generic)?;
+        }
         for sample in provider_samples {
             store.record_execution_quote_canary_provider_sample(&sample)?;
         }

@@ -49,6 +49,8 @@ include!("app_tests/34.rs");
 include!("app_tests/35.rs");
 #[path = "app_tests/43.rs"]
 mod execution_quote_canary_hot_observed;
+#[path = "app_tests/50.rs"]
+mod execution_quote_canary_provider_fallback;
 #[path = "app_tests/37.rs"]
 mod execution_state_machine;
 #[path = "app_tests/41.rs"]
