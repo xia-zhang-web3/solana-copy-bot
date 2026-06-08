@@ -130,6 +130,20 @@ pub(crate) struct ExecutionSubmitRequest {
     pub(crate) metadata: ExecutionBuildPlanMetadata,
 }
 
+pub(crate) fn cap_execution_priority_fee_lamports(
+    config: &ExecutionConfig,
+    mut metadata: ExecutionBuildPlanMetadata,
+) -> ExecutionBuildPlanMetadata {
+    let cap = config.pretrade_max_priority_fee_lamports;
+    if cap == 0 {
+        return metadata;
+    }
+    if metadata.priority_fee_lamports.is_some_and(|fee| fee > cap) {
+        metadata.priority_fee_lamports = Some(cap);
+    }
+    metadata
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ExecutionTransactionPlan {
     pub(crate) plan_id: String,

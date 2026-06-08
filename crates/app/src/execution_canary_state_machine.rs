@@ -6,7 +6,9 @@ use crate::execution_canary_safety::pre_submit_safety_snapshot;
 use crate::execution_canary_signing_contract::record_execution_signing_envelope;
 use crate::execution_canary_submit_contract::record_execution_submit_plan;
 use crate::execution_quote_canary_helpers::{quote_canary_slippage_limit_bps, SIDE_SELL};
-use crate::execution_submit_adapter::{ExecutionSubmitAdapter, ExecutionSubmitRequest};
+use crate::execution_submit_adapter::{
+    cap_execution_priority_fee_lamports, ExecutionSubmitAdapter, ExecutionSubmitRequest,
+};
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::ExecutionConfig;
@@ -153,6 +155,7 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
             }
         }
 
+        let metadata = cap_execution_priority_fee_lamports(&self.config, metadata);
         let request = ExecutionSubmitRequest {
             order_id: reserve.order.order_id.clone(),
             signal_id: signal.signal_id.clone(),

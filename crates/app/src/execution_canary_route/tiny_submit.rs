@@ -13,9 +13,10 @@ use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_canary_submit_contract::ExecutionTinySubmitGate;
 use crate::execution_quote_canary_helpers::quote_canary_slippage_limit_bps;
 use crate::execution_submit_adapter::{
-    reconcile_execution_tiny_submit_confirmation, record_execution_tiny_submit_confirm_path,
-    ExecutionSubmitAdapter, ExecutionSubmitRequest, ExecutionTinySubmitConfirmPathOutcome,
-    JupiterMetisDryRunExecutionAdapter, RpcExecutionSubmitTransport,
+    cap_execution_priority_fee_lamports, reconcile_execution_tiny_submit_confirmation,
+    record_execution_tiny_submit_confirm_path, ExecutionSubmitAdapter, ExecutionSubmitRequest,
+    ExecutionTinySubmitConfirmPathOutcome, JupiterMetisDryRunExecutionAdapter,
+    RpcExecutionSubmitTransport,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -252,6 +253,7 @@ pub(super) fn build_submit_request(
     order: &copybot_storage_core::ExecutionCanaryOrder,
     metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata,
 ) -> ExecutionSubmitRequest {
+    let metadata = cap_execution_priority_fee_lamports(config, metadata);
     ExecutionSubmitRequest {
         order_id: order.order_id.clone(),
         signal_id: signal.signal_id.clone(),

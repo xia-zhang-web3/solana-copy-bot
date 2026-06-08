@@ -1,7 +1,8 @@
 use super::{
-    record_execution_rpc_confirmation_boundary, ExecutionConfirmationBoundaryOutcome,
-    ExecutionConfirmedBuyFill, ExecutionConfirmedFill, ExecutionConfirmedSellFill,
-    ExecutionSubmitAdapter, ExecutionSubmitRequest, RpcExecutionSubmitTransport,
+    cap_execution_priority_fee_lamports, record_execution_rpc_confirmation_boundary,
+    ExecutionConfirmationBoundaryOutcome, ExecutionConfirmedBuyFill, ExecutionConfirmedFill,
+    ExecutionConfirmedSellFill, ExecutionSubmitAdapter, ExecutionSubmitRequest,
+    RpcExecutionSubmitTransport,
 };
 use crate::execution_canary_submit_contract::{
     record_execution_tiny_submit_plan, ExecutionSubmitPlanOutcome, ExecutionTinySubmitGate,
@@ -165,6 +166,8 @@ pub(crate) fn build_tiny_submit_reconciliation_request(
     let metadata = store
         .load_execution_canary_build_plan_metadata(&order.order_id)?
         .ok_or_else(|| anyhow::anyhow!("missing build metadata for {}", order.order_id))?;
+    let metadata =
+        cap_execution_priority_fee_lamports(config, build_plan_metadata_from_storage(metadata));
     Ok(ExecutionSubmitRequest {
         order_id: order.order_id.clone(),
         signal_id: order.signal_id.clone(),
@@ -181,7 +184,7 @@ pub(crate) fn build_tiny_submit_reconciliation_request(
                 &signal.side,
             ),
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
-        metadata: build_plan_metadata_from_storage(metadata),
+        metadata,
     })
 }
 

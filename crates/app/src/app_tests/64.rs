@@ -29,7 +29,8 @@ async fn tiny_submit_route_confirmed_sell_closes_owned_position() -> Result<()> 
     record_tiny_sell_route_quote(&store, &signal, &quote_event_id, now)?;
     let (base_url, server) =
         serve_sell_build_submit_and_confirm(&keypair.public_key, "tx-tiny-route-sell").await?;
-    let config = tiny_sell_route_config(&keypair.pubkey, &keypair_path, &base_url, &base_url);
+    let mut config = tiny_sell_route_config(&keypair.pubkey, &keypair_path, &base_url, &base_url);
+    config.pretrade_max_priority_fee_lamports = 10_000;
 
     let summary = crate::execution_canary_route::process_tiny_submit_sell_quote_event_for_route(
         &config,
@@ -43,6 +44,9 @@ async fn tiny_submit_route_confirmed_sell_closes_owned_position() -> Result<()> 
     let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .expect("tiny sell route should reserve an order");
+    let metadata = store
+        .load_execution_canary_build_plan_metadata(&order.order_id)?
+        .expect("tiny sell build metadata should be recorded");
 
     assert_eq!(summary.sell_candidates, 1);
     assert_eq!(summary.sell_execute, 1);
@@ -55,6 +59,7 @@ async fn tiny_submit_route_confirmed_sell_closes_owned_position() -> Result<()> 
         order.status,
         copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED
     );
+    assert_eq!(metadata.priority_fee_lamports, Some(10_000));
     assert_eq!(order.tx_signature.as_deref(), Some("tx-tiny-route-sell"));
     assert!(store
         .load_execution_canary_open_position(&signal.token)?
@@ -223,6 +228,9 @@ async fn serve_sell_build_submit_and_confirm(
             .body
             .starts_with("POST /swap-instructions "));
         assert!(swap_instructions.body.contains("\"inAmount\":\"10000\""));
+        assert!(swap_instructions
+            .body
+            .contains("\"prioritizationFeeLamports\":10000"));
         write_tiny_sell_route_http_response(
             swap_instructions.socket,
             r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":null}"#,
