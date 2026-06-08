@@ -20,6 +20,29 @@ pub(crate) fn swap_request_body(
     }))
 }
 
+pub(crate) fn disable_shared_accounts(body: &mut Value) {
+    if let Some(object) = body.as_object_mut() {
+        object.insert("useSharedAccounts".to_string(), Value::Bool(false));
+    }
+}
+
+pub(crate) fn is_missing_account_simulation_error(value: &Value) -> bool {
+    let Some(error) = simulation_error_text(value) else {
+        return false;
+    };
+    let lower = error.to_ascii_lowercase();
+    lower.contains("account required") && lower.contains("missing")
+        || lower.contains("not enough account")
+        || lower.contains("missing account")
+}
+
+pub(crate) fn simulation_error_text(value: &Value) -> Option<String> {
+    value
+        .get("simulationError")
+        .filter(|item| !item.is_null())
+        .map(Value::to_string)
+}
+
 fn quote_response_body(
     plan: &ExecutionTransactionPlan,
     slippage_bps: f64,

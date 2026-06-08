@@ -1,6 +1,9 @@
 use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_submit_adapter::ExecutionTransactionPlan;
-use crate::execution_swap_http_request::{swap_endpoint_url, swap_request_body};
+use crate::execution_swap_http_request::{
+    disable_shared_accounts, is_missing_account_simulation_error, simulation_error_text,
+    swap_endpoint_url, swap_request_body,
+};
 use crate::execution_swap_http_retry::{is_missing_token_program_error, post_swap_json_with_retry};
 use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
@@ -36,15 +39,15 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
     let api_key = config.quote_canary_api_key.trim();
     let response = post_swap_json_with_retry(
         http,
-        url,
+        url.clone(),
         api_key,
         &body,
         timeout,
         "swap-instructions dry-run",
     )
     .await;
-    let (response, fallback_used) = match response {
-        Ok(response) => (response, false),
+    let (url, api_key, response, fallback_used) = match response {
+        Ok(response) => (url, api_key, response, false),
         Err(error) if should_use_public_builder_fallback(config, &error) => {
             let fallback_url = swap_endpoint_url(
                 &config.quote_canary_public_base_url,
@@ -53,22 +56,43 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
             )?;
             let fallback_response = post_swap_json_with_retry(
                 http,
-                fallback_url,
+                fallback_url.clone(),
                 "",
                 &body,
                 timeout,
                 "public swap-instructions dry-run fallback",
             )
             .await?;
-            (fallback_response, true)
+            (fallback_url, "", fallback_response, true)
         }
         Err(error) => return Err(error),
     };
+    if is_missing_account_simulation_error(&response.value) {
+        let mut no_shared_body = body.clone();
+        disable_shared_accounts(&mut no_shared_body);
+        let retry = post_swap_json_with_retry(
+            http,
+            url,
+            api_key,
+            &no_shared_body,
+            timeout,
+            "swap-instructions dry-run no-shared-accounts fallback",
+        )
+        .await?;
+        return Ok(Some(swap_instructions_response_summary(
+            retry.value,
+            retry.elapsed_ms,
+            retry.attempts,
+            fallback_used,
+            true,
+        )?));
+    }
     Ok(Some(swap_instructions_response_summary(
         response.value,
         response.elapsed_ms,
         response.attempts,
         fallback_used,
+        false,
     )?))
 }
 
@@ -77,10 +101,20 @@ fn swap_instructions_response_summary(
     elapsed_ms: u64,
     attempts: usize,
     fallback_used: bool,
+    shared_accounts_disabled: bool,
 ) -> Result<String> {
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
         return Err(anyhow!(
             "swap-instructions dry-run error: {}",
+            truncate_for_log(&error.to_string(), 240)
+        ));
+    }
+    if let Some(error) = value
+        .get("simulationError")
+        .filter(|error| !error.is_null())
+    {
+        return Err(anyhow!(
+            "swap-instructions dry-run simulation error: {}",
             truncate_for_log(&error.to_string(), 240)
         ));
     }
@@ -91,13 +125,18 @@ fn swap_instructions_response_summary(
     {
         return Err(anyhow!("swap-instructions dry-run missing swapInstruction"));
     }
-    let simulation_error = value
-        .get("simulationError")
-        .filter(|item| !item.is_null())
-        .map(|item| truncate_for_log(&item.to_string(), 180));
+    let simulation_error = simulation_error_text(&value).map(|item| truncate_for_log(&item, 180));
     let summary = format!(
         "metis_swap_instructions_{} compute={} setup={} other={} alt={} cleanup={} latency_ms={} attempts={} simulation_error={}",
-        if fallback_used { "public_fallback_ok" } else { "ok" },
+        if fallback_used && shared_accounts_disabled {
+            "public_fallback_no_shared_accounts_ok"
+        } else if fallback_used {
+            "public_fallback_ok"
+        } else if shared_accounts_disabled {
+            "no_shared_accounts_ok"
+        } else {
+            "ok"
+        },
         array_len(value.get("computeBudgetInstructions")),
         array_len(value.get("setupInstructions")),
         array_len(value.get("otherInstructions")),

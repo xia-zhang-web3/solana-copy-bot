@@ -121,6 +121,123 @@ async fn swap_transaction_dry_run_missing_transaction_fails_simulation() -> Resu
 }
 
 #[tokio::test]
+async fn swap_transaction_dry_run_simulation_error_fails_before_submit() -> Result<()> {
+    let db_path = unique_swap_transaction_test_path("http-simulation-error");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("swap request");
+        let mut buffer = [0_u8; 4096];
+        let _ = socket.read(&mut buffer).await.expect("read request");
+        write_swap_transaction_http_json(
+            &mut socket,
+            r#"{"swapTransaction":"AQIDBA==","simulationError":{"error":"Slippage tolerance exceeded","errorCode":"TRANSACTION_ERROR"}}"#,
+        )
+        .await;
+    });
+    let now = Utc::now();
+    let signal = swap_transaction_signal("http-simulation-error", now);
+    store.insert_copy_signal(&signal)?;
+    record_swap_transaction_quote(&store, &signal, now)?;
+    let config = swap_transaction_config(base_url, true);
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let state_machine =
+        crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(config, adapter);
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+    server.await?;
+    let order = store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .expect("order should exist");
+
+    assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.failed, 1);
+    assert_eq!(summary.submit_disabled, 0);
+    assert_eq!(
+        order.simulation_status.as_deref(),
+        Some(copybot_storage_core::EXECUTION_SIMULATION_STATUS_FAILED)
+    );
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("swap transaction dry-run simulation error"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
+async fn swap_transaction_dry_run_retries_missing_account_without_shared_accounts() -> Result<()> {
+    let db_path = unique_swap_transaction_test_path("http-no-shared");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (mut first, _) = listener.accept().await.expect("first swap request");
+        let mut buffer = [0_u8; 4096];
+        let _ = first.read(&mut buffer).await.expect("read first request");
+        write_swap_transaction_http_json(
+            &mut first,
+            r#"{"swapTransaction":"AQIDBA==","simulationError":{"error":"Error processing Instruction 5: An account required by the instruction is missing","errorCode":"TRANSACTION_ERROR"}}"#,
+        )
+        .await;
+        drop(first);
+
+        let (mut second, _) = listener.accept().await.expect("retry swap request");
+        let read = second.read(&mut buffer).await.expect("read retry request");
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        assert!(request.contains("\"useSharedAccounts\":false"));
+        write_swap_transaction_http_json(&mut second, valid_swap_transaction_json()).await;
+    });
+    let now = Utc::now();
+    let signal = swap_transaction_signal("http-no-shared", now);
+    store.insert_copy_signal(&signal)?;
+    record_swap_transaction_quote(&store, &signal, now)?;
+    let config = swap_transaction_config(base_url, true);
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let state_machine =
+        crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(config, adapter);
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+    server.await?;
+    let order = store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .expect("order should exist");
+
+    assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.signing_envelope_built, 1);
+    assert_eq!(summary.submit_disabled, 1);
+    assert_eq!(
+        order.simulation_status.as_deref(),
+        Some(copybot_storage_core::EXECUTION_SIMULATION_STATUS_PASSED)
+    );
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("metis_swap_transaction_no_shared_accounts_ok"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
 async fn swap_transaction_dry_run_falls_back_to_public_builder() -> Result<()> {
     let db_path = unique_swap_transaction_test_path("http-public-fallback");
     let mut store = SqliteStore::open(&db_path)?;
@@ -224,7 +341,7 @@ async fn write_swap_transaction_http_status(
     body: &str,
 ) {
     let response = format!(
-        "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+        "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{}",
         body.len(),
         body
     );
