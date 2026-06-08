@@ -42,6 +42,23 @@ Treat that document as the roadmap for build and deployment architecture.
 - Do not add new inline tests inside production source files.
 - Do not add broad refactors hidden inside feature or diagnostic batches.
 
+## Execution Rollout Rules
+
+Current live trading mode is guarded tiny canary execution:
+
+- `execution.canary_tiny_submit_enabled=true` may submit real tiny trades when
+  the configured signer, wallet, priority-fee cap, loss cap, and open-position
+  limits pass preflight.
+- `execution.enabled` is the broader production execution path. It is not
+  required for tiny canary trading and must only be changed as part of an
+  explicit production cutover with config proof, rollback path, and live proof.
+- Do not manually submit trades outside the daemon path. Fix the daemon,
+  gates, adapters, and reports so every live action is observable and
+  reproducible.
+- Do not hide missed trades by widening filters without proving the root cause.
+  Every rejected tiny candidate should remain explainable by quote, simulation,
+  submit, confirmation, or risk accounting evidence.
+
 ## Hard File-Size Policy
 
 New and touched code must move toward small files.
