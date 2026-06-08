@@ -25,6 +25,7 @@ const RECONCILE_NOT_SUBMITTED_REASON: &str = "submitted_reconcile_not_submitted"
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionTinySubmitConfirmPathOutcome {
     pub(crate) submit_failed: usize,
+    pub(crate) confirmation_failed: usize,
     pub(crate) submitted: usize,
     pub(crate) submit_disabled: usize,
     pub(crate) submit_ready_rejected: usize,
@@ -269,6 +270,7 @@ fn apply_confirmation(
     outcome: &mut ExecutionTinySubmitConfirmPathOutcome,
     confirmation: ExecutionConfirmationBoundaryOutcome,
 ) {
+    outcome.confirmation_failed = confirmation.failed;
     outcome.confirmation_confirmed = confirmation.confirmed;
     outcome.confirmation_pending = confirmation.pending;
     outcome.buy_opened = confirmation.buy_opened;
@@ -278,6 +280,7 @@ fn apply_confirmation(
     outcome.sell_dust_closed = confirmation.sell_dust_closed;
     outcome.sell_no_position = confirmation.sell_no_position;
     outcome.reason = confirmation.reason;
+    outcome.error = confirmation.error;
 }
 
 fn positive_quote_price(request: &ExecutionSubmitRequest) -> Result<f64> {

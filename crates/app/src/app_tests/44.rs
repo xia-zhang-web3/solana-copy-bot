@@ -120,6 +120,41 @@ async fn execution_canary_entry_gate_blocks_missing_priority_fee_lamports_before
 }
 
 #[tokio::test]
+async fn execution_canary_entry_gate_blocks_priority_fee_above_cap_before_reserve() -> Result<()> {
+    let db_path = unique_entry_gate_test_path("priority-above-cap");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let signal = entry_gate_signal("buy-priority-above-cap", now);
+    store.insert_copy_signal(&signal)?;
+    record_entry_gate_quote(
+        &store,
+        &signal,
+        now,
+        "would_execute",
+        Some("ok"),
+        Some(1_000_001),
+    )?;
+    let state_machine = entry_gate_state_machine();
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+
+    assert_eq!(summary.entry_gate_blocked, 1);
+    assert_eq!(summary.skipped_reason, Some("priority_fee_above_cap"));
+    assert!(store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .is_none());
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
 async fn execution_canary_entry_gate_blocks_quote_amount_above_tiny_size_before_reserve(
 ) -> Result<()> {
     let db_path = unique_entry_gate_test_path("quote-amount-mismatch");
@@ -211,6 +246,7 @@ fn entry_gate_config() -> ExecutionConfig {
     config.canary_route = "metis-canary".to_string();
     config.canary_buy_size_sol = 0.01;
     config.quote_canary_buy_slippage_bps = 500;
+    config.pretrade_max_priority_fee_lamports = 1_000_000;
     config
 }
 

@@ -235,7 +235,7 @@ pub(super) fn apply_tiny_submit_confirm_path_outcome(
     summary: &mut ExecutionCanaryStateMachineSummary,
     outcome: ExecutionTinySubmitConfirmPathOutcome,
 ) {
-    summary.failed = outcome.submit_failed;
+    summary.failed = outcome.submit_failed + outcome.confirmation_failed;
     summary.submit_disabled = outcome.submit_disabled;
     summary.submit_ready_rejected = outcome.submit_ready_rejected;
     summary.sell_closed = outcome.sell_closed;

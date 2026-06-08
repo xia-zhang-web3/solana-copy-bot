@@ -350,6 +350,7 @@ pub const EXECUTION_ERROR_BUILD_FAILED: &str = "build_failed";
 pub const EXECUTION_ERROR_SIMULATION_FAILED: &str = "simulation_failed";
 pub const EXECUTION_ERROR_SUBMIT_PLAN_FAILED: &str = "submit_plan_failed";
 pub const EXECUTION_ERROR_SIGNING_ENVELOPE_FAILED: &str = "signing_envelope_failed";
+pub const EXECUTION_ERROR_CONFIRMATION_FAILED: &str = "confirmation_failed";
 pub const EXECUTION_ERROR_EXPIRED: &str = "expired";
 pub const EXECUTION_ERROR_SUBMIT_DISABLED: &str = "submit_disabled";
 pub const EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET: &str = "execution_canary";

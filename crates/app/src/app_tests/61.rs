@@ -151,7 +151,7 @@ async fn rpc_confirmation_boundary_confirmed_sell_closes_confirmed_position() ->
 }
 
 #[tokio::test]
-async fn rpc_confirmation_boundary_transaction_error_leaves_fill_unmodified() -> Result<()> {
+async fn rpc_confirmation_boundary_transaction_error_fails_order_without_fill() -> Result<()> {
     let db_path = unique_rpc_boundary_test_path("tx-error");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -166,7 +166,7 @@ async fn rpc_confirmation_boundary_transaction_error_leaves_fill_unmodified() ->
     )
     .await?;
 
-    let error = crate::execution_submit_adapter::record_execution_rpc_confirmation_boundary(
+    let outcome = crate::execution_submit_adapter::record_execution_rpc_confirmation_boundary(
         &store,
         &reqwest::Client::new(),
         &rpc_url,
@@ -175,16 +175,29 @@ async fn rpc_confirmation_boundary_transaction_error_leaves_fill_unmodified() ->
         now + chrono::Duration::seconds(7),
         1_000,
     )
-    .await
-    .expect_err("transaction error must not confirm fill accounting");
+    .await?;
     let order = store
         .load_execution_canary_order(&order_id)?
         .expect("order should exist");
 
-    assert!(format!("{error:#}").contains("confirmation RPC transaction_error"));
+    assert_eq!(outcome.failed, 1);
+    assert_eq!(outcome.confirmed, 0);
+    assert_eq!(outcome.pending, 0);
+    assert_eq!(
+        outcome.reason.as_deref(),
+        Some(copybot_storage_core::EXECUTION_ERROR_CONFIRMATION_FAILED)
+    );
+    assert!(outcome
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("confirmation RPC transaction_error")));
     assert_eq!(
         order.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
+        copybot_storage_core::EXECUTION_STATUS_CANARY_FAILED
+    );
+    assert_eq!(
+        order.err_code.as_deref(),
+        Some(copybot_storage_core::EXECUTION_ERROR_CONFIRMATION_FAILED)
     );
     assert_eq!(store.execution_canary_open_position_count()?, 0);
 
