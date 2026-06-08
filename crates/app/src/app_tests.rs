@@ -67,6 +67,8 @@ mod execution_state_machine_entry_gate;
 mod execution_state_machine_file_signer_contract;
 #[path = "app_tests/67.rs"]
 mod execution_state_machine_owned_sell_quote;
+#[path = "app_tests/68.rs"]
+mod shadow_risk_rug_rate_sample_floor;
 #[path = "app_tests/49.rs"]
 mod execution_state_machine_provider_selector;
 #[path = "app_tests/58.rs"]

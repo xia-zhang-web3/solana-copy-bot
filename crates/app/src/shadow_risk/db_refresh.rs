@@ -61,11 +61,7 @@ impl ShadowRiskGuard {
                 self.config.shadow_rug_loss_rate_sample_size.max(1),
                 self.config.shadow_rug_loss_return_threshold,
             )?;
-            let rug_rate_sample_floor = self
-                .config
-                .shadow_rug_loss_rate_sample_size
-                .min(self.config.shadow_rug_loss_count_threshold)
-                .max(1);
+            let rug_rate_sample_floor = self.config.shadow_rug_loss_rate_sample_size.max(1);
             let rug_rate_breach = rug_sample_total >= rug_rate_sample_floor
                 && rug_rate_recent > self.config.shadow_rug_loss_rate_threshold;
 
