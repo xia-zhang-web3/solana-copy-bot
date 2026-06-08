@@ -65,6 +65,8 @@ mod execution_state_machine_confirmed_fill_accounting;
 mod execution_state_machine_entry_gate;
 #[path = "app_tests/53.rs"]
 mod execution_state_machine_file_signer_contract;
+#[path = "app_tests/67.rs"]
+mod execution_state_machine_owned_sell_quote;
 #[path = "app_tests/49.rs"]
 mod execution_state_machine_provider_selector;
 #[path = "app_tests/58.rs"]

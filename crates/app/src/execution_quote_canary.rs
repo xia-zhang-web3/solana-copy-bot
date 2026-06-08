@@ -15,6 +15,8 @@ use copybot_storage_core::{
 
 #[path = "execution_quote_canary_hot_observed.rs"]
 mod hot_observed;
+#[path = "execution_quote_canary_owned_sell.rs"]
+mod owned_sell;
 #[path = "execution_quote_canary_parallel_samples.rs"]
 mod parallel_samples;
 #[path = "execution_quote_canary_provider_compare.rs"]
@@ -99,6 +101,15 @@ impl ExecutionQuoteCanaryRunner {
             &mut summary,
         )
         .await?;
+        self.process_owned_sell_signal_candidates(
+            store,
+            copy_signal_status,
+            now,
+            batch_limit,
+            &mut priority_fee_sample,
+            &mut summary,
+        )
+        .await?;
         Ok(summary)
     }
 
@@ -162,6 +173,18 @@ impl ExecutionQuoteCanaryRunner {
                     })?;
                 summary.close_candidates = closes.len();
                 if closes.is_empty() {
+                    if let Some(copy_signal) =
+                        store.load_copy_signal_by_signal_id(&signal.signal_id)?
+                    {
+                        self.process_owned_sell_signal(
+                            store,
+                            &copy_signal,
+                            now,
+                            &mut priority_fee_sample,
+                            &mut summary,
+                        )
+                        .await?;
+                    }
                     return Ok(summary);
                 }
                 let priority = self

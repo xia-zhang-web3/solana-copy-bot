@@ -15,7 +15,7 @@ pub(crate) struct QuoteEventBundle {
 }
 
 impl QuoteEventBundle {
-    pub(super) fn event_only(event: ExecutionQuoteCanaryEventInsert) -> Self {
+    pub(crate) fn event_only(event: ExecutionQuoteCanaryEventInsert) -> Self {
         Self {
             event,
             provider_samples: Vec::new(),
@@ -191,7 +191,7 @@ pub(super) fn buy_quote_price_and_slippage(
     )
 }
 
-pub(super) fn sell_quote_price_and_slippage(
+pub(crate) fn sell_quote_price_and_slippage(
     event: &ExecutionQuoteCanaryEventInsert,
     token_decimals: u8,
 ) -> (Option<f64>, Option<f64>) {

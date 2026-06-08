@@ -13,6 +13,60 @@ const DECISION_WOULD_EXECUTE: &str = "would_execute";
 const DECISION_WOULD_FORCE_EXIT: &str = "would_force_exit";
 
 impl SqliteDiscoveryStore {
+    pub fn list_execution_quote_canary_owned_sell_signal_candidate_ids(
+        &self,
+        copy_signal_status: &str,
+        since: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<String>> {
+        ensure_execution_quote_canary_tables(self)?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT signal.signal_id
+                 FROM copy_signals AS signal
+                 WHERE signal.status = ?1
+                   AND signal.ts >= ?2
+                   AND lower(signal.side) = 'sell'
+                   AND EXISTS (
+                        SELECT 1
+                        FROM positions AS pos
+                        WHERE pos.token = signal.token
+                          AND pos.accounting_bucket = ?3
+                          AND pos.state = ?4
+                          AND signal.ts >= pos.opened_ts
+                   )
+                   AND NOT EXISTS (
+                        SELECT 1
+                        FROM execution_quote_canary_events AS event
+                        WHERE event.signal_id = signal.signal_id
+                          AND lower(event.side) = 'sell'
+                   )
+                   AND NOT EXISTS (
+                        SELECT 1
+                        FROM orders
+                        WHERE orders.signal_id = signal.signal_id
+                   )
+                 ORDER BY signal.ts ASC, signal.signal_id ASC
+                 LIMIT ?5",
+            )
+            .context("failed to prepare owned sell signal quote canary candidate query")?;
+        let rows = stmt
+            .query_map(
+                params![
+                    copy_signal_status,
+                    since.to_rfc3339(),
+                    EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+                    EXECUTION_CANARY_POSITION_STATE_OPEN,
+                    i64::from(limit.max(1)),
+                ],
+                |row| row.get(0),
+            )
+            .context("failed querying owned sell signal quote canary candidates")?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed reading owned sell signal quote canary candidates")
+    }
+
     pub fn load_execution_quote_canary_event_by_id(
         &self,
         event_id: &str,
