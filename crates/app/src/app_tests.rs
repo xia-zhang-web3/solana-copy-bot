@@ -101,6 +101,8 @@ mod execution_state_machine_tiny_submit_gate_contract;
 mod execution_state_machine_tiny_submit_route;
 #[path = "app_tests/64.rs"]
 mod execution_state_machine_tiny_submit_sell_route;
+#[path = "app_tests/66.rs"]
+mod execution_state_machine_tiny_submit_terminal_write_off;
 #[path = "app_tests/65.rs"]
 mod execution_state_machine_tiny_submit_timeout_route;
 #[path = "app_tests/42.rs"]
