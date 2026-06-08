@@ -5,20 +5,26 @@ use super::tiny_submit::{
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_canary_submit_contract::ExecutionTinySubmitGate;
 use crate::execution_quote_canary_helpers::{
-    quote_canary_slippage_limit_bps, DECISION_WOULD_EXECUTE, DECISION_WOULD_FORCE_EXIT,
-    QUOTE_STATUS_OK, SIDE_SELL,
+    price_sol_per_token, quote_canary_slippage_limit_bps, ui_amount_to_raw_string,
+    DECISION_WOULD_EXECUTE, DECISION_WOULD_FORCE_EXIT, QUOTE_STATUS_OK, SIDE_SELL, SOL_MINT,
 };
-use crate::execution_quote_provider_selection::selected_execution_build_plan_metadata;
+use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
+use crate::execution_quote_http::fetch_quote_sample;
+use crate::execution_quote_provider_selection::{
+    selected_execution_build_plan_metadata, QUOTE_SOURCE_GENERIC_METIS,
+};
 use crate::execution_submit_adapter::{
     record_execution_tiny_submit_confirm_path, ExecutionBuildPlanMetadata,
     JupiterMetisDryRunExecutionAdapter, RpcExecutionSubmitTransport,
 };
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
-    ExecutionCanaryRecordOutcome, SqliteStore, EXECUTION_CANARY_SELL_DECISION_EXECUTE,
-    EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT, EXECUTION_CANARY_SELL_DECISION_NO_POSITION,
+    ExecutionCanaryOwnedPosition, ExecutionCanaryRecordOutcome, SqliteStore,
+    EXECUTION_CANARY_SELL_DECISION_EXECUTE, EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT,
+    EXECUTION_CANARY_SELL_DECISION_NO_POSITION, EXECUTION_ERROR_SIMULATION_FAILED,
+    EXECUTION_STATUS_CANARY_FAILED,
 };
 use std::path::Path;
 
@@ -61,12 +67,26 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
         return Ok(Some(summary));
     }
 
-    if let Some(existing) = store.load_execution_canary_order_by_signal(&signal.signal_id)? {
-        summary.existing = 1;
-        summary.last_order_id = Some(existing.order_id.clone());
-        reconcile_existing_tiny_submit_order(config, store, &existing, now, &mut summary).await?;
-        return Ok(Some(summary));
-    }
+    let retry_order =
+        if let Some(existing) = store.load_execution_canary_order_by_signal(&signal.signal_id)? {
+            summary.existing = 1;
+            summary.last_order_id = Some(existing.order_id.clone());
+            if failed_sell_simulation_retry_ready(config, &existing) {
+                Some(
+                    store.mark_execution_canary_failed_simulation_retry_candidate(
+                        &existing.order_id,
+                        now,
+                        "retry_failed_sell_with_owned_position_amount",
+                    )?,
+                )
+            } else {
+                reconcile_existing_tiny_submit_order(config, store, &existing, now, &mut summary)
+                    .await?;
+                return Ok(Some(summary));
+            }
+        } else {
+            None
+        };
 
     let metadata = selected_execution_build_plan_metadata(store, event)?;
     let sell_limit_bps = quote_canary_slippage_limit_bps(config, SIDE_SELL) as f64;
@@ -89,6 +109,7 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
             return Ok(Some(summary));
         }
     }
+    let metadata = owned_position_sell_metadata(config, store, &signal.token, metadata).await?;
 
     if let Some(reason) = validate_tiny_sell_metadata(&metadata) {
         summary.entry_gate_blocked = 1;
@@ -96,16 +117,22 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
         return Ok(Some(summary));
     }
 
-    let reserve =
-        store.reserve_execution_canary_order(&signal.signal_id, &config.canary_route, now)?;
-    summary.last_order_id = Some(reserve.order.order_id.clone());
-    if reserve.outcome == ExecutionCanaryRecordOutcome::Existing {
-        summary.existing = 1;
-        return Ok(Some(summary));
-    }
-    summary.reserved = 1;
+    let order = if let Some(order) = retry_order {
+        summary.last_order_id = Some(order.order_id.clone());
+        order
+    } else {
+        let reserve =
+            store.reserve_execution_canary_order(&signal.signal_id, &config.canary_route, now)?;
+        summary.last_order_id = Some(reserve.order.order_id.clone());
+        if reserve.outcome == ExecutionCanaryRecordOutcome::Existing {
+            summary.existing = 1;
+            return Ok(Some(summary));
+        }
+        summary.reserved = 1;
+        reserve.order
+    };
 
-    let request = build_submit_request(config, &signal, &reserve.order, metadata);
+    let request = build_submit_request(config, &signal, &order, metadata);
     let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let Some(envelope) =
         build_simulated_signed_envelope(store, &adapter, &request, now, &mut summary).await?
@@ -133,6 +160,75 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
     .await?;
     apply_tiny_submit_confirm_path_outcome(&mut summary, outcome);
     Ok(Some(summary))
+}
+
+fn failed_sell_simulation_retry_ready(
+    config: &ExecutionConfig,
+    order: &copybot_storage_core::ExecutionCanaryOrder,
+) -> bool {
+    order.status == EXECUTION_STATUS_CANARY_FAILED
+        && order.err_code.as_deref() == Some(EXECUTION_ERROR_SIMULATION_FAILED)
+        && order
+            .tx_signature
+            .as_deref()
+            .is_none_or(|signature| signature.trim().is_empty())
+        && order.attempt < config.max_submit_attempts.max(1)
+}
+
+async fn owned_position_sell_metadata(
+    config: &ExecutionConfig,
+    store: &SqliteStore,
+    token: &str,
+    mut metadata: ExecutionBuildPlanMetadata,
+) -> Result<ExecutionBuildPlanMetadata> {
+    let position = store
+        .load_execution_canary_open_position(token)?
+        .ok_or_else(|| anyhow!("missing owned execution canary position for sell {token}"))?;
+    let http = reqwest::Client::new();
+    let amount_raw = owned_position_amount_raw(config, &http, token, &position).await?;
+    let quote = fetch_quote_sample(
+        &http,
+        config,
+        token,
+        SOL_MINT,
+        &amount_raw,
+        quote_canary_slippage_limit_bps(config, SIDE_SELL),
+    )
+    .await?;
+    let out_lamports = quote
+        .out_amount
+        .parse::<u64>()
+        .with_context(|| format!("invalid owned sell quote outAmount {}", quote.out_amount))?;
+    metadata.quote_source = Some(QUOTE_SOURCE_GENERIC_METIS.to_string());
+    metadata.quote_status = Some(QUOTE_STATUS_OK.to_string());
+    metadata.quote_in_amount_raw = Some(quote.in_amount);
+    metadata.quote_out_amount_raw = Some(quote.out_amount);
+    metadata.quote_response_json = Some(quote.response_json);
+    metadata.quote_price_sol =
+        price_sol_per_token(out_lamports as f64 / 1_000_000_000.0, position.qty);
+    metadata.price_impact_pct = quote.price_impact_pct;
+    metadata.route_plan_json = quote.route_plan_json;
+    Ok(metadata)
+}
+
+async fn owned_position_amount_raw(
+    config: &ExecutionConfig,
+    http: &reqwest::Client,
+    token: &str,
+    position: &ExecutionCanaryOwnedPosition,
+) -> Result<String> {
+    if let Some(qty) = position.qty_exact {
+        return Ok(qty.raw().to_string());
+    }
+    let decimals = resolve_spl_token_decimals(http, config, token, None)
+        .await
+        .ok_or_else(|| anyhow!("missing token decimals for owned sell {token}"))?;
+    ui_amount_to_raw_string(position.qty, decimals).ok_or_else(|| {
+        anyhow!(
+            "invalid owned sell qty {} decimals {decimals}",
+            position.qty
+        )
+    })
 }
 
 fn sell_safety_blocked(

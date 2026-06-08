@@ -209,13 +209,20 @@ async fn serve_sell_build_submit_and_confirm(
     let tx = tx_signature.to_string();
     let serialized_transaction = serialized_sell_route_legacy_transaction(*first_signer);
     let server = tokio::spawn(async move {
+        let quote = read_tiny_sell_route_http_request(&listener).await;
+        assert!(quote.body.starts_with("GET /quote?"));
+        assert!(quote.body.contains("amount=10000"));
+        write_tiny_sell_route_http_response(
+            quote.socket,
+            r#"{"inputMint":"TokenMint","inAmount":"10000","outputMint":"So11111111111111111111111111111111111111112","outAmount":"1200000000","priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
+        )
+        .await;
+
         let swap_instructions = read_tiny_sell_route_http_request(&listener).await;
         assert!(swap_instructions
             .body
             .starts_with("POST /swap-instructions "));
-        assert!(swap_instructions
-            .body
-            .contains("\"inputMint\":\"TokenMint\""));
+        assert!(swap_instructions.body.contains("\"inAmount\":\"10000\""));
         write_tiny_sell_route_http_response(
             swap_instructions.socket,
             r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":null}"#,
@@ -306,10 +313,10 @@ fn mark_tiny_sell_route_submitted_order(
             quote_source: Some("test".to_string()),
             quote_event_id: Some(format!("quote:close:{}", signal.signal_id)),
             quote_status: Some("ok".to_string()),
-            quote_in_amount_raw: Some("10000".to_string()),
-            quote_out_amount_raw: Some("1200000000".to_string()),
+            quote_in_amount_raw: Some("200000".to_string()),
+            quote_out_amount_raw: Some("24000000000".to_string()),
             quote_response_json: Some(
-                r#"{"inputMint":"TokenMint","inAmount":"10000","outputMint":"So11111111111111111111111111111111111111112","outAmount":"1200000000","priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#
+                r#"{"inputMint":"TokenMint","inAmount":"200000","outputMint":"So11111111111111111111111111111111111111112","outAmount":"24000000000","priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#
                     .to_string(),
             ),
             quote_price_sol: Some(0.12),
