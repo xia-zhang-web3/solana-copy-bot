@@ -317,7 +317,7 @@ fn swap_instructions_config(base_url: String, enabled: bool) -> ExecutionConfig 
     config.canary_enabled = true;
     config.canary_dry_run = true;
     config.canary_route =
-        crate::execution_submit_adapter::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN.to_string();
+        crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN.to_string();
     config.canary_wallet_pubkey = "11111111111111111111111111111111".to_string();
     config.quote_canary_enabled = true;
     config.quote_canary_base_url = base_url;

@@ -3,6 +3,7 @@ mod copy_signals;
 mod db;
 mod discovery_rebuild_state;
 mod execution_canary_build_plan_metadata;
+mod execution_canary_confirmed_fill;
 mod execution_canary_position_close;
 mod execution_canary_positions;
 mod execution_canary_quote_pnl;
@@ -19,6 +20,8 @@ mod execution_canary_report;
 mod execution_canary_retry;
 mod execution_canary_rows;
 mod execution_canary_state;
+mod execution_canary_submit_risk;
+mod execution_canary_submitted;
 mod execution_orders;
 mod execution_quote_canary;
 mod execution_quote_canary_lookup;
@@ -109,7 +112,8 @@ pub use types::{
     ExecutionCanaryReadinessLatestOrder, ExecutionCanaryReadinessSummary,
     ExecutionCanaryReadinessWindowSummary, ExecutionCanaryRecordOutcome,
     ExecutionCanaryReserveResult, ExecutionCanarySellDecision, ExecutionCanaryShadowCloseBreakdown,
-    ExecutionCanaryShadowCloseContextSummary, ExecutionCanaryStatusReport, ExecutionDryRunOrder,
+    ExecutionCanaryShadowCloseContextSummary, ExecutionCanaryStatusReport,
+    ExecutionCanarySubmitRiskOrder, ExecutionCanarySubmitRiskSummary, ExecutionDryRunOrder,
     ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderComparisonEvent,
     ExecutionQuoteCanaryProviderComparisonSummary, ExecutionQuoteCanaryProviderSampleInsert,
@@ -138,8 +142,9 @@ pub use types::{
     EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED, EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
     EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN, EXECUTION_CANARY_SELL_DECISION_EXECUTE,
     EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT, EXECUTION_CANARY_SELL_DECISION_NO_POSITION,
-    EXECUTION_ERROR_BUILD_FAILED, EXECUTION_ERROR_EXPIRED, EXECUTION_ERROR_SIMULATION_FAILED,
-    EXECUTION_ERROR_SUBMIT_DISABLED, EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED,
+    EXECUTION_ERROR_BUILD_FAILED, EXECUTION_ERROR_EXPIRED, EXECUTION_ERROR_SIGNING_ENVELOPE_FAILED,
+    EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_ERROR_SUBMIT_DISABLED,
+    EXECUTION_ERROR_SUBMIT_PLAN_FAILED, EXECUTION_SIMULATION_STATUS_DRY_RUN_SKIPPED,
     EXECUTION_SIMULATION_STATUS_FAILED, EXECUTION_SIMULATION_STATUS_NOT_RUN,
     EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT,
     EXECUTION_STATUS_CANARY_BUILT, EXECUTION_STATUS_CANARY_CANDIDATE,

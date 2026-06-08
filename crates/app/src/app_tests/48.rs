@@ -21,11 +21,7 @@ async fn swap_transaction_dry_run_posts_http_before_submit_disabled() -> Result<
         assert!(request.contains("\"quoteResponse\""));
         assert!(request.contains("\"loadedLongtailToken\":true"));
         assert!(request.contains("\"prioritizationFeeLamports\":22000"));
-        write_swap_transaction_http_json(
-            &mut socket,
-            r#"{"swapTransaction":"serialized-transaction-base64","simulationError":null}"#,
-        )
-        .await;
+        write_swap_transaction_http_json(&mut socket, valid_swap_transaction_json()).await;
     });
     let now = Utc::now();
     let signal = swap_transaction_signal("http-ok", now);
@@ -46,7 +42,14 @@ async fn swap_transaction_dry_run_posts_http_before_submit_disabled() -> Result<
         .expect("order should exist");
 
     assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.signing_envelope_built, 1);
     assert_eq!(summary.submit_disabled, 1);
+    assert_eq!(
+        summary.last_signing_envelope_mode.as_deref(),
+        Some(
+            crate::execution_signing_envelope::EXECUTION_SIGNING_ENVELOPE_MODE_SERIALIZED_TRANSACTION_DRY_RUN
+        )
+    );
     assert_eq!(
         order.simulation_status.as_deref(),
         Some(copybot_storage_core::EXECUTION_SIMULATION_STATUS_PASSED)
@@ -56,6 +59,11 @@ async fn swap_transaction_dry_run_posts_http_before_submit_disabled() -> Result<
         .as_deref()
         .unwrap_or_default()
         .contains("metis_swap_transaction_ok"));
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("serialized_transaction_base64_ready=true"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -151,11 +159,7 @@ async fn swap_transaction_dry_run_falls_back_to_public_builder() -> Result<()> {
             .expect("read fallback request");
         let request = String::from_utf8_lossy(&buffer[..read]);
         assert!(request.starts_with("POST /swap "));
-        write_swap_transaction_http_json(
-            &mut socket,
-            r#"{"swapTransaction":"serialized-transaction-base64","simulationError":null}"#,
-        )
-        .await;
+        write_swap_transaction_http_json(&mut socket, valid_swap_transaction_json()).await;
     });
     let now = Utc::now();
     let signal = swap_transaction_signal("http-public-fallback", now);
@@ -179,7 +183,14 @@ async fn swap_transaction_dry_run_falls_back_to_public_builder() -> Result<()> {
         .expect("order should exist");
 
     assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.signing_envelope_built, 1);
     assert_eq!(summary.submit_disabled, 1);
+    assert_eq!(
+        summary.last_signing_envelope_mode.as_deref(),
+        Some(
+            crate::execution_signing_envelope::EXECUTION_SIGNING_ENVELOPE_MODE_SERIALIZED_TRANSACTION_DRY_RUN
+        )
+    );
     assert_eq!(
         order.simulation_status.as_deref(),
         Some(copybot_storage_core::EXECUTION_SIMULATION_STATUS_PASSED)
@@ -189,6 +200,11 @@ async fn swap_transaction_dry_run_falls_back_to_public_builder() -> Result<()> {
         .as_deref()
         .unwrap_or_default()
         .contains("metis_swap_transaction_public_fallback_ok"));
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("serialized_transaction_base64_ready=true"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -196,6 +212,10 @@ async fn swap_transaction_dry_run_falls_back_to_public_builder() -> Result<()> {
 
 async fn write_swap_transaction_http_json(socket: &mut tokio::net::TcpStream, body: &str) {
     write_swap_transaction_http_status(socket, 200, body).await;
+}
+
+fn valid_swap_transaction_json() -> &'static str {
+    r#"{"swapTransaction":"AQIDBA==","simulationError":null}"#
 }
 
 async fn write_swap_transaction_http_status(
@@ -219,7 +239,7 @@ fn swap_transaction_config(base_url: String, enabled: bool) -> ExecutionConfig {
     config.canary_enabled = true;
     config.canary_dry_run = true;
     config.canary_route =
-        crate::execution_submit_adapter::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN.to_string();
+        crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN.to_string();
     config.canary_wallet_pubkey = "11111111111111111111111111111111".to_string();
     config.quote_canary_enabled = true;
     config.quote_canary_base_url = base_url;

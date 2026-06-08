@@ -1,5 +1,12 @@
 use crate::execution_pump_fun_swap_instructions_http::fetch_pump_fun_swap_instructions_dry_run;
 use crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID;
+use crate::execution_serialized_transaction_slot::ExecutionSerializedTransactionPayloadSlot;
+use crate::execution_signing_envelope::{
+    build_dry_run_execution_signing_envelope, build_serialized_transaction_execution_envelope,
+    build_signed_transaction_execution_envelope, ExecutionSerializedTransactionPayload,
+    ExecutionSignedTransactionPayload, ExecutionSigningEnvelope,
+};
+use crate::execution_simulation_proof::combined_simulation_proof;
 use crate::execution_swap_blueprint::{
     build_execution_swap_blueprint, validate_execution_swap_blueprint_for_simulation,
     ExecutionSwapBlueprint,
@@ -14,14 +21,55 @@ use copybot_storage_core::{
 use std::future::Future;
 use std::pin::Pin;
 
-pub(crate) const CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN: &str =
-    "metis-swap-instructions-dry-run";
+mod confirmation;
+mod confirmation_boundary;
+mod confirmed_fill;
+mod file_signer;
+mod rpc_confirmation;
+mod rpc_submit;
+mod submit_plan;
+mod tiny_runner;
+mod transport;
+mod transport_record;
 
-pub(crate) fn uses_jupiter_metis_dry_run_adapter(route: &str) -> bool {
-    route
-        .trim()
-        .eq_ignore_ascii_case(CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN)
-}
+pub(crate) use self::confirmation::{
+    build_confirmation_request_from_order, record_confirmation_tracker_outcome,
+    ExecutionConfirmationProof, ExecutionConfirmationRequest, ExecutionConfirmationTrackerOutcome,
+};
+#[cfg(test)]
+pub(crate) use self::confirmation::{
+    ExecutionConfirmationTracker, ExecutionConfirmationTrackerRecordOutcome,
+    MockConfirmedExecutionConfirmationTracker, NoSendExecutionConfirmationTracker,
+};
+pub(crate) use self::confirmation_boundary::{
+    record_execution_rpc_confirmation_boundary, ExecutionConfirmationBoundaryOutcome,
+};
+pub(crate) use self::confirmed_fill::{
+    record_confirmed_fill_accounting, ExecutionConfirmedBuyFill, ExecutionConfirmedFill,
+    ExecutionConfirmedSellFill,
+};
+pub(crate) use self::file_signer::sign_serialized_transaction_from_config;
+pub(crate) use self::rpc_confirmation::fetch_rpc_signature_confirmation;
+pub(crate) use self::rpc_submit::RpcExecutionSubmitTransport;
+pub(crate) use self::submit_plan::{
+    execution_submit_idempotency_key, execution_submit_intent_from_signed_envelope,
+    ExecutionSubmitIntent, ExecutionSubmitPlan,
+};
+pub(crate) use self::tiny_runner::{
+    build_tiny_submit_reconciliation_request, reconcile_execution_tiny_submit_confirmation,
+    record_execution_tiny_submit_confirm_path, ExecutionTinySubmitConfirmPathOutcome,
+};
+pub(crate) use self::transport::{
+    build_submit_transport_attempt, dry_run_no_send_submit_intent, ExecutionSubmitTransportAttempt,
+    ExecutionSubmitTransportOutcome,
+};
+#[cfg(test)]
+pub(crate) use self::transport::{ExecutionSubmitTransport, NoSendExecutionSubmitTransport};
+pub(crate) use self::transport_record::record_submit_transport_outcome;
+#[cfg(test)]
+pub(crate) use self::transport_record::ExecutionSubmitTransportRecordOutcome;
+
+const EXECUTION_SUBMIT_ROUTE_RPC_DRY_RUN: &str = "rpc_dry_run";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ExecutionBuildPlanMetadata {
@@ -71,6 +119,7 @@ pub(crate) struct ExecutionSubmitRequest {
     pub(crate) order_id: String,
     pub(crate) signal_id: String,
     pub(crate) client_order_id: String,
+    pub(crate) attempt: u32,
     pub(crate) route: String,
     pub(crate) wallet_id: String,
     pub(crate) token: String,
@@ -81,12 +130,13 @@ pub(crate) struct ExecutionSubmitRequest {
     pub(crate) metadata: ExecutionBuildPlanMetadata,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) struct ExecutionTransactionPlan {
     pub(crate) plan_id: String,
     pub(crate) order_id: String,
     pub(crate) signal_id: String,
     pub(crate) client_order_id: String,
+    pub(crate) attempt: u32,
     pub(crate) route: String,
     pub(crate) token: String,
     pub(crate) side: String,
@@ -95,6 +145,8 @@ pub(crate) struct ExecutionTransactionPlan {
     pub(crate) wallet_pubkey: String,
     pub(crate) metadata: ExecutionBuildPlanMetadata,
     pub(crate) swap_blueprint: Option<ExecutionSwapBlueprint>,
+    pub(crate) serialized_transaction_payload_slot:
+        Option<ExecutionSerializedTransactionPayloadSlot>,
     pub(crate) submit_enabled: bool,
 }
 
@@ -102,11 +154,6 @@ pub(crate) struct ExecutionTransactionPlan {
 pub(crate) struct ExecutionSimulationResult {
     pub(crate) status: String,
     pub(crate) error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ExecutionSubmitPlan {
-    SubmitDisabled { reason: String },
 }
 
 pub(crate) type ExecutionSimulationFuture<'a> =
@@ -123,7 +170,46 @@ pub(crate) trait ExecutionSubmitAdapter {
         plan: &'a ExecutionTransactionPlan,
     ) -> ExecutionSimulationFuture<'a>;
 
+    fn build_signing_envelope(
+        &self,
+        request: &ExecutionSubmitRequest,
+        plan: &ExecutionTransactionPlan,
+    ) -> Result<ExecutionSigningEnvelope> {
+        if let Some(slot) = plan.serialized_transaction_payload_slot.as_ref() {
+            if let Some(payload) = slot.load()? {
+                if let Some(signed_payload) =
+                    self.sign_serialized_transaction(request, plan, &payload)?
+                {
+                    return build_signed_transaction_execution_envelope(
+                        request,
+                        plan,
+                        signed_payload,
+                    );
+                }
+                return build_serialized_transaction_execution_envelope(request, plan, payload);
+            }
+        }
+        build_dry_run_execution_signing_envelope(request, plan)
+    }
+
+    fn sign_serialized_transaction(
+        &self,
+        _request: &ExecutionSubmitRequest,
+        _plan: &ExecutionTransactionPlan,
+        _payload: &ExecutionSerializedTransactionPayload,
+    ) -> Result<Option<ExecutionSignedTransactionPayload>> {
+        Ok(None)
+    }
+
     fn plan_submit(&self, request: &ExecutionSubmitRequest) -> Result<ExecutionSubmitPlan>;
+
+    fn plan_submit_with_envelope(
+        &self,
+        request: &ExecutionSubmitRequest,
+        _envelope: &ExecutionSigningEnvelope,
+    ) -> Result<ExecutionSubmitPlan> {
+        self.plan_submit(request)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -139,6 +225,7 @@ impl ExecutionSubmitAdapter for NoSubmitExecutionAdapter {
             order_id: request.order_id.clone(),
             signal_id: request.signal_id.clone(),
             client_order_id: request.client_order_id.clone(),
+            attempt: request.attempt,
             route: request.route.clone(),
             token: request.token.clone(),
             side: request.side.clone(),
@@ -147,6 +234,7 @@ impl ExecutionSubmitAdapter for NoSubmitExecutionAdapter {
             wallet_pubkey: request.wallet_pubkey.clone(),
             metadata: request.metadata.clone(),
             swap_blueprint: None,
+            serialized_transaction_payload_slot: None,
             submit_enabled: false,
         })
     }
@@ -164,12 +252,13 @@ impl ExecutionSubmitAdapter for NoSubmitExecutionAdapter {
     }
 
     fn plan_submit(&self, request: &ExecutionSubmitRequest) -> Result<ExecutionSubmitPlan> {
-        Ok(ExecutionSubmitPlan::SubmitDisabled {
-            reason: format!(
+        Ok(ExecutionSubmitPlan::submit_disabled(
+            request,
+            format!(
                 "no_submit_adapter:{}:{}:{}",
                 request.route, request.side, request.token
             ),
-        })
+        ))
     }
 }
 
@@ -199,6 +288,7 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
             order_id: request.order_id.clone(),
             signal_id: request.signal_id.clone(),
             client_order_id: request.client_order_id.clone(),
+            attempt: request.attempt,
             route: request.route.clone(),
             token: request.token.clone(),
             side: request.side.clone(),
@@ -207,6 +297,9 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
             wallet_pubkey: request.wallet_pubkey.clone(),
             metadata: request.metadata.clone(),
             swap_blueprint: Some(swap_blueprint),
+            serialized_transaction_payload_slot: Some(
+                ExecutionSerializedTransactionPayloadSlot::new(),
+            ),
             submit_enabled: false,
         })
     }
@@ -231,8 +324,19 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
             }
             let instructions_proof =
                 fetch_swap_instructions_dry_run(&self.http, &self.config, plan).await?;
-            let transaction_proof =
+            let transaction_dry_run =
                 fetch_swap_transaction_dry_run(&self.http, &self.config, plan).await?;
+            if let Some(transaction) = transaction_dry_run.as_ref() {
+                if let Some(slot) = plan.serialized_transaction_payload_slot.as_ref() {
+                    slot.store(ExecutionSerializedTransactionPayload {
+                        source: transaction.source.clone(),
+                        serialized_transaction_base64: transaction
+                            .serialized_transaction_base64
+                            .clone(),
+                    })?;
+                }
+            }
+            let transaction_proof = transaction_dry_run.map(|transaction| transaction.summary);
             Ok(ExecutionSimulationResult {
                 status: EXECUTION_SIMULATION_STATUS_PASSED.to_string(),
                 error: combined_simulation_proof(instructions_proof, transaction_proof),
@@ -240,24 +344,38 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
         })
     }
 
+    fn sign_serialized_transaction(
+        &self,
+        request: &ExecutionSubmitRequest,
+        plan: &ExecutionTransactionPlan,
+        payload: &ExecutionSerializedTransactionPayload,
+    ) -> Result<Option<ExecutionSignedTransactionPayload>> {
+        sign_serialized_transaction_from_config(&self.config, request, plan, payload)
+    }
+
     fn plan_submit(&self, request: &ExecutionSubmitRequest) -> Result<ExecutionSubmitPlan> {
-        Ok(ExecutionSubmitPlan::SubmitDisabled {
-            reason: format!(
+        Ok(ExecutionSubmitPlan::submit_disabled(
+            request,
+            format!(
                 "jupiter_metis_dry_run:no_submit:{}:{}:{}",
                 request.route, request.side, request.token
             ),
-        })
+        ))
     }
-}
 
-fn combined_simulation_proof(
-    instructions_proof: Option<String>,
-    transaction_proof: Option<String>,
-) -> Option<String> {
-    match (instructions_proof, transaction_proof) {
-        (Some(instructions), Some(transaction)) => Some(format!("{instructions}; {transaction}")),
-        (Some(instructions), None) => Some(instructions),
-        (None, Some(transaction)) => Some(transaction),
-        (None, None) => None,
+    fn plan_submit_with_envelope(
+        &self,
+        request: &ExecutionSubmitRequest,
+        envelope: &ExecutionSigningEnvelope,
+    ) -> Result<ExecutionSubmitPlan> {
+        if envelope.signed_transaction_base64.is_some() {
+            let intent = execution_submit_intent_from_signed_envelope(
+                request,
+                envelope,
+                EXECUTION_SUBMIT_ROUTE_RPC_DRY_RUN.to_string(),
+            )?;
+            return Ok(ExecutionSubmitPlan::SubmitReady(intent));
+        }
+        self.plan_submit(request)
     }
 }

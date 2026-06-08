@@ -7,6 +7,53 @@ use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension};
 
 impl SqliteDiscoveryStore {
+    pub fn load_execution_quote_canary_event_by_id(
+        &self,
+        event_id: &str,
+    ) -> Result<Option<ExecutionQuoteCanaryEventInsert>> {
+        ensure_execution_quote_canary_tables(self)?;
+        self.conn
+            .query_row(
+                &format!(
+                    "SELECT
+                    event_id,
+                    signal_id,
+                    shadow_closed_trade_id,
+                    wallet_id,
+                    token,
+                    side,
+                    quote_status,
+                    request_ts,
+                    signal_ts,
+                    decision_delay_ms,
+                    quote_latency_ms,
+                    leader_notional_sol,
+                    quote_in_amount_raw,
+                    quote_out_amount_raw,
+                    {},
+                    quote_price_sol,
+                    shadow_price_sol,
+                    slippage_bps,
+                    price_impact_pct,
+                    route_plan_json,
+                    priority_fee_status,
+                    priority_fee_lamports,
+                    priority_fee_json,
+                    decision_status,
+                    decision_reason,
+                    error
+                 FROM execution_quote_canary_events
+                 WHERE event_id = ?1
+                 LIMIT 1",
+                    quote_response_json_expr(self)?
+                ),
+                params![event_id],
+                quote_canary_event_from_row,
+            )
+            .optional()
+            .context("failed loading execution quote canary event by id")
+    }
+
     pub fn load_latest_execution_quote_canary_entry_event(
         &self,
         signal_id: &str,

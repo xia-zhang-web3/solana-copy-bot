@@ -3,10 +3,10 @@ use crate::execution_build_plan_metadata::{
 };
 use crate::execution_canary_entry_gate::validate_execution_canary_entry_metadata;
 use crate::execution_canary_safety::pre_submit_safety_snapshot;
+use crate::execution_canary_signing_contract::record_execution_signing_envelope;
+use crate::execution_canary_submit_contract::record_execution_submit_plan;
 use crate::execution_quote_canary_helpers::{quote_canary_slippage_limit_bps, SIDE_SELL};
-use crate::execution_submit_adapter::{
-    ExecutionSubmitAdapter, ExecutionSubmitPlan, ExecutionSubmitRequest,
-};
+use crate::execution_submit_adapter::{ExecutionSubmitAdapter, ExecutionSubmitRequest};
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::ExecutionConfig;
@@ -21,7 +21,6 @@ use copybot_storage_core::{
     EXECUTION_ERROR_BUILD_FAILED, EXECUTION_ERROR_SIMULATION_FAILED,
     EXECUTION_SIMULATION_STATUS_FAILED, EXECUTION_STATUS_CANARY_EXPIRED,
     EXECUTION_STATUS_CANARY_FAILED, EXECUTION_STATUS_CANARY_SIMULATED,
-    EXECUTION_STATUS_CANARY_SUBMIT_DISABLED,
 };
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -31,8 +30,10 @@ pub(crate) struct ExecutionCanaryStateMachineSummary {
     pub(crate) existing: usize,
     pub(crate) built: usize,
     pub(crate) simulated: usize,
+    pub(crate) signing_envelope_built: usize,
     pub(crate) failed: usize,
     pub(crate) submit_disabled: usize,
+    pub(crate) submit_ready_rejected: usize,
     pub(crate) safety_blocked: usize,
     pub(crate) entry_gate_blocked: usize,
     pub(crate) open_positions: u64,
@@ -60,6 +61,9 @@ pub(crate) struct ExecutionCanaryStateMachineSummary {
     pub(crate) last_elapsed_seconds: i64,
     pub(crate) last_timeout_seconds: i64,
     pub(crate) last_order_id: Option<String>,
+    pub(crate) last_signing_envelope_id: Option<String>,
+    pub(crate) last_signing_envelope_mode: Option<String>,
+    pub(crate) last_submit_idempotency_key: Option<String>,
     pub(crate) last_error: Option<String>,
 }
 
@@ -146,6 +150,7 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
             order_id: reserve.order.order_id.clone(),
             signal_id: signal.signal_id.clone(),
             client_order_id: reserve.order.client_order_id.clone(),
+            attempt: reserve.order.attempt,
             route: self.config.canary_route.clone(),
             wallet_id: signal.wallet_id.clone(),
             token: signal.token.clone(),
@@ -227,15 +232,26 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
             return Ok(summary);
         }
 
-        match self.adapter.plan_submit(&request)? {
-            ExecutionSubmitPlan::SubmitDisabled { reason } => {
-                let order =
-                    store.mark_execution_canary_submit_disabled(&request.order_id, now, &reason)?;
-                if order.status == EXECUTION_STATUS_CANARY_SUBMIT_DISABLED {
-                    summary.submit_disabled = 1;
-                }
-            }
+        let signing_outcome =
+            record_execution_signing_envelope(store, &self.adapter, &request, &plan, now)?;
+        summary.signing_envelope_built = signing_outcome.built;
+        summary.last_signing_envelope_id = signing_outcome.envelope_id;
+        summary.last_signing_envelope_mode = signing_outcome.envelope_mode;
+        summary.failed = signing_outcome.failed;
+        summary.last_error = signing_outcome.error;
+        if summary.failed > 0 {
+            return Ok(summary);
         }
+        let signing_envelope = signing_outcome.envelope.as_ref().expect("missing envelope");
+
+        let submit_outcome =
+            record_execution_submit_plan(store, &self.adapter, &request, signing_envelope, now)?;
+        summary.failed = submit_outcome.failed;
+        summary.submit_disabled = submit_outcome.submit_disabled;
+        summary.submit_ready_rejected = submit_outcome.submit_ready_rejected;
+        summary.skipped_reason = submit_outcome.skipped_reason;
+        summary.last_submit_idempotency_key = submit_outcome.idempotency_key;
+        summary.last_error = submit_outcome.error;
         Ok(summary)
     }
 

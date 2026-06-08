@@ -158,6 +158,7 @@ fn swap_blueprint_request(
         order_id: "order-blueprint-direct".to_string(),
         signal_id: "signal-blueprint-direct".to_string(),
         client_order_id: "client-blueprint-direct".to_string(),
+        attempt: 1,
         route: "metis-swap-instructions-dry-run".to_string(),
         wallet_id: "leader-wallet".to_string(),
         token: "TokenMint".to_string(),

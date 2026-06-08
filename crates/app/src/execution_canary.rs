@@ -1,9 +1,10 @@
 use crate::execution_canary_route::{
     list_swap_blueprint_state_machine_candidates, process_canary_state_machine_for_route,
+    process_tiny_submit_reconciliation_sweep, process_tiny_submit_sell_quote_event_for_route,
     uses_swap_blueprint_state_machine,
 };
-use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
-use crate::execution_quote_canary::ExecutionQuoteCanaryRunner;
+use crate::execution_canary_summary::{apply_quote_summary, apply_state_machine_summary};
+use crate::execution_quote_canary::{ExecutionQuoteCanaryRunner, ExecutionQuoteCanaryTickSummary};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::ExecutionConfig;
@@ -161,7 +162,14 @@ impl ExecutionCanaryRunner {
                         self.config.canary_batch_limit.max(1),
                     )
                     .await?;
+                self.process_latest_close_quote_event(store, &quote_summary, now, &mut summary)
+                    .await?;
                 apply_quote_summary(&mut summary, quote_summary);
+            }
+            if let Some(state) =
+                process_tiny_submit_reconciliation_sweep(&self.config, store, now).await?
+            {
+                apply_state_machine_summary(&mut summary, state);
             }
             let signals = list_swap_blueprint_state_machine_candidates(
                 store,
@@ -187,14 +195,15 @@ impl ExecutionCanaryRunner {
                         self.config.canary_batch_limit.max(1),
                     )
                     .await?;
+                self.process_latest_close_quote_event(store, &quote_summary, now, &mut summary)
+                    .await?;
                 apply_quote_summary(&mut summary, quote_summary);
             }
             signals
         };
         for signal in &signals {
-            let state_summary = self
-                .process_no_submit_state_machine(store, signal, now)
-                .await?;
+            let state_summary =
+                process_canary_state_machine_for_route(&self.config, store, signal, now).await?;
             apply_state_machine_summary(&mut summary, state_summary);
         }
         if let Some(order) = store
@@ -254,13 +263,15 @@ impl ExecutionCanaryRunner {
                 .quote_canary
                 .process_recorded_shadow_signal(store, signal, now)
                 .await?;
+            self.process_latest_close_quote_event(store, &quote_summary, now, &mut summary)
+                .await?;
             apply_quote_summary(&mut summary, quote_summary);
         }
         if signal.side == "buy" {
             let state_signal = copy_signal_from_shadow_signal(signal, now);
-            let state_summary = self
-                .process_no_submit_state_machine(store, &state_signal, now)
-                .await?;
+            let state_summary =
+                process_canary_state_machine_for_route(&self.config, store, &state_signal, now)
+                    .await?;
             apply_state_machine_summary(&mut summary, state_summary);
         }
         if let Some(order) = store
@@ -336,13 +347,31 @@ impl ExecutionCanaryRunner {
         Ok(signals)
     }
 
-    async fn process_no_submit_state_machine(
+    async fn process_latest_close_quote_event(
         &self,
         store: &SqliteStore,
-        signal: &CopySignalRow,
+        quote: &ExecutionQuoteCanaryTickSummary,
         now: DateTime<Utc>,
-    ) -> Result<ExecutionCanaryStateMachineSummary> {
-        process_canary_state_machine_for_route(&self.config, store, signal, now).await
+        summary: &mut ExecutionCanaryTickSummary,
+    ) -> Result<()> {
+        if !uses_swap_blueprint_state_machine(&self.config)
+            || !self.config.canary_tiny_submit_enabled
+        {
+            return Ok(());
+        }
+        if quote.close_inserted == 0 && quote.close_existing == 0 {
+            return Ok(());
+        }
+        let Some(event_id) = quote.last_event_id.as_deref() else {
+            return Ok(());
+        };
+        if let Some(state) =
+            process_tiny_submit_sell_quote_event_for_route(&self.config, store, event_id, now)
+                .await?
+        {
+            apply_state_machine_summary(summary, state);
+        }
+        Ok(())
     }
 }
 
@@ -360,41 +389,5 @@ fn copy_signal_from_shadow_signal(
         notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE.to_string(),
         ts: now,
         status: CANARY_COPY_SIGNAL_STATUS.to_string(),
-    }
-}
-
-fn apply_quote_summary(
-    summary: &mut ExecutionCanaryTickSummary,
-    quote: crate::execution_quote_canary::ExecutionQuoteCanaryTickSummary,
-) {
-    summary.quote_entry_candidates = quote.entry_candidates;
-    summary.quote_entry_inserted = quote.entry_inserted;
-    summary.quote_entry_existing = quote.entry_existing;
-    summary.quote_entry_errors = quote.entry_errors;
-    summary.quote_close_candidates = quote.close_candidates;
-    summary.quote_close_inserted = quote.close_inserted;
-    summary.quote_close_existing = quote.close_existing;
-    summary.quote_close_errors = quote.close_errors;
-    summary.quote_would_execute = quote.would_execute;
-    summary.quote_would_force_exit = quote.would_force_exit;
-    summary.quote_would_skip = quote.would_skip;
-    summary.quote_decision_unknown = quote.decision_unknown;
-    summary.last_quote_event_id = quote.last_event_id;
-}
-
-fn apply_state_machine_summary(
-    summary: &mut ExecutionCanaryTickSummary,
-    state: ExecutionCanaryStateMachineSummary,
-) {
-    summary.state_machine_reserved += state.reserved;
-    summary.state_machine_existing += state.existing;
-    summary.state_machine_built += state.built;
-    summary.state_machine_simulated += state.simulated;
-    summary.state_machine_submit_disabled += state.submit_disabled;
-    summary.state_machine_failed += state.failed;
-    summary.state_machine_safety_blocked += state.safety_blocked;
-    summary.state_machine_entry_gate_blocked += state.entry_gate_blocked;
-    if state.last_order_id.is_some() {
-        summary.last_state_machine_order_id = state.last_order_id;
     }
 }

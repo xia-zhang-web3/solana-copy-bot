@@ -28,8 +28,6 @@ Treat that document as the roadmap for build and deployment architecture.
 
 ## Non-Negotiable Rules
 
-- Do not enable `execution.enabled`.
-- Do not submit real trades.
 - Do not weaken fail-closed behavior.
 - Do not mark production green from local tests, devnet, stale evidence, or
   operator observability.

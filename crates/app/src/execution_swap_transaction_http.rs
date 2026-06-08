@@ -1,4 +1,5 @@
 use crate::execution_quote_canary_helpers::truncate_for_log;
+use crate::execution_signing_envelope::validate_serialized_transaction_base64;
 use crate::execution_submit_adapter::ExecutionTransactionPlan;
 use crate::execution_swap_http_request::{swap_endpoint_url, swap_request_body};
 use crate::execution_swap_http_retry::{is_missing_token_program_error, post_swap_json_with_retry};
@@ -11,7 +12,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
     http: &reqwest::Client,
     config: &ExecutionConfig,
     plan: &ExecutionTransactionPlan,
-) -> Result<Option<String>> {
+) -> Result<Option<SwapTransactionDryRunResult>> {
     if !config.swap_transaction_dry_run_enabled {
         return Ok(None);
     }
@@ -65,12 +66,19 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
     )?))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SwapTransactionDryRunResult {
+    pub(crate) summary: String,
+    pub(crate) serialized_transaction_base64: String,
+    pub(crate) source: String,
+}
+
 fn swap_transaction_response_summary(
     value: Value,
     elapsed_ms: u64,
     attempts: usize,
     fallback_used: bool,
-) -> Result<String> {
+) -> Result<SwapTransactionDryRunResult> {
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
         return Err(anyhow!(
             "swap transaction dry-run error: {}",
@@ -82,12 +90,18 @@ fn swap_transaction_response_summary(
         .and_then(Value::as_str)
         .filter(|item| !item.trim().is_empty())
         .ok_or_else(|| anyhow!("swap transaction dry-run missing swapTransaction"))?;
+    validate_serialized_transaction_base64(swap_transaction)?;
     let simulation_error = value
         .get("simulationError")
         .filter(|item| !item.is_null())
         .map(|item| truncate_for_log(&item.to_string(), 180));
+    let source = if fallback_used {
+        "public_fallback"
+    } else {
+        "metis"
+    };
     let summary = format!(
-        "metis_swap_transaction_{} base64_len={} latency_ms={} attempts={} simulation_error={}",
+        "metis_swap_transaction_{} base64_len={} serialized_transaction_base64_ready=true latency_ms={} attempts={} simulation_error={}",
         if fallback_used {
             "public_fallback_ok"
         } else {
@@ -98,7 +112,11 @@ fn swap_transaction_response_summary(
         attempts,
         simulation_error.unwrap_or_else(|| "none".to_string())
     );
-    Ok(truncate_for_log(&summary, 500))
+    Ok(SwapTransactionDryRunResult {
+        summary: truncate_for_log(&summary, 500),
+        serialized_transaction_base64: swap_transaction.to_string(),
+        source: source.to_string(),
+    })
 }
 
 fn should_use_public_builder_fallback(config: &ExecutionConfig, error: &anyhow::Error) -> bool {

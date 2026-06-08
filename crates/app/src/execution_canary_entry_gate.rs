@@ -1,6 +1,7 @@
 use crate::execution_quote_canary_helpers::{
     quote_canary_slippage_limit_bps, DECISION_WOULD_EXECUTE, QUOTE_STATUS_OK, SIDE_BUY,
 };
+use crate::execution_quote_provider_selection::quote_response_requires_fee_account;
 use crate::execution_submit_adapter::ExecutionBuildPlanMetadata;
 use copybot_config::ExecutionConfig;
 
@@ -14,6 +15,8 @@ pub(crate) const ENTRY_GATE_MISSING_SLIPPAGE: &str = "missing_entry_slippage";
 pub(crate) const ENTRY_GATE_SLIPPAGE_ABOVE_LIMIT: &str = "entry_slippage_above_limit";
 pub(crate) const ENTRY_GATE_MISSING_PRIORITY_FEE: &str = "missing_priority_fee";
 pub(crate) const ENTRY_GATE_PRIORITY_FEE_NOT_OK: &str = "priority_fee_not_ok";
+pub(crate) const ENTRY_GATE_PLATFORM_FEE_REQUIRES_FEE_ACCOUNT: &str =
+    "platform_fee_requires_fee_account";
 
 pub(crate) fn validate_execution_canary_entry_metadata(
     config: &ExecutionConfig,
@@ -51,6 +54,9 @@ pub(crate) fn validate_execution_canary_entry_metadata(
         .is_none_or(str::is_empty)
     {
         return Some(ENTRY_GATE_MISSING_ROUTE_PLAN);
+    }
+    if quote_response_requires_fee_account(metadata.quote_response_json.as_deref()) {
+        return Some(ENTRY_GATE_PLATFORM_FEE_REQUIRES_FEE_ACCOUNT);
     }
     let Some(slippage_bps) = metadata.slippage_bps else {
         return Some(ENTRY_GATE_MISSING_SLIPPAGE);

@@ -92,6 +92,11 @@ pub(super) fn apply_discovery_shadow_execution_env_overrides(config: &mut AppCon
     if let Some(canary_dry_run) = parse_env_bool("SOLANA_COPY_BOT_EXECUTION_CANARY_DRY_RUN")? {
         config.execution.canary_dry_run = canary_dry_run;
     }
+    if let Some(tiny_submit_enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_CANARY_TINY_SUBMIT_ENABLED")?
+    {
+        config.execution.canary_tiny_submit_enabled = tiny_submit_enabled;
+    }
     if let Ok(canary_route) = env::var("SOLANA_COPY_BOT_EXECUTION_CANARY_ROUTE") {
         config.execution.canary_route = canary_route;
     }

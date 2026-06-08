@@ -27,6 +27,9 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
             "execution.canary_dry_run=false is not supported yet; canary execution is dry-run only"
         ));
     }
+    if config.canary_tiny_submit_enabled {
+        validate_execution_canary_tiny_submit_contract(config)?;
+    }
     let route = config.canary_route.trim();
     if route.is_empty() || contains_placeholder_value(route) {
         return Err(anyhow!(
@@ -164,6 +167,36 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
                 "execution.priority_fee_canary_last_n_blocks must be within 1..=1000"
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_execution_canary_tiny_submit_contract(config: &ExecutionConfig) -> Result<()> {
+    if config.submit_adapter_http_url.trim().is_empty()
+        || contains_placeholder_value(&config.submit_adapter_http_url)
+    {
+        return Err(anyhow!(
+            "execution.canary_tiny_submit_enabled requires submit_adapter_http_url"
+        ));
+    }
+    if config.execution_signer_pubkey.trim().is_empty()
+        || contains_placeholder_value(&config.execution_signer_pubkey)
+    {
+        return Err(anyhow!(
+            "execution.canary_tiny_submit_enabled requires execution_signer_pubkey"
+        ));
+    }
+    if config.execution_signer_keypair_path.trim().is_empty()
+        || contains_placeholder_value(&config.execution_signer_keypair_path)
+    {
+        return Err(anyhow!(
+            "execution.canary_tiny_submit_enabled requires execution_signer_keypair_path"
+        ));
+    }
+    if !config.swap_transaction_dry_run_enabled {
+        return Err(anyhow!(
+            "execution.canary_tiny_submit_enabled requires swap_transaction_dry_run_enabled"
+        ));
     }
     Ok(())
 }

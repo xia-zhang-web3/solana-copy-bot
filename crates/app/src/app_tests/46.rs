@@ -17,7 +17,7 @@ async fn execution_canary_runner_uses_swap_blueprint_route_without_legacy_insert
     config.canary_enabled = true;
     config.canary_dry_run = true;
     config.canary_route =
-        crate::execution_submit_adapter::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN.to_string();
+        crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN.to_string();
     config.canary_buy_size_sol = 0.01;
     config.canary_batch_limit = 5;
     config.canary_wallet_pubkey = "DryRunWallet11111111111111111111111111111111".to_string();

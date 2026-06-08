@@ -26,6 +26,8 @@ const DEFAULT_LIMIT: u32 = 50;
 const MAX_LIMIT: u32 = 200;
 const DEFAULT_SINCE_HOURS: i64 = 24;
 const MAX_SINCE_HOURS: i64 = 168;
+const TINY_SUBMIT_RETRY_AFTER_UNKNOWN_SUBMIT_TIMEOUT_REASON: &str =
+    "retry_after_unknown_submit_timeout";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cli {
@@ -273,11 +275,31 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
                 );
             }
         };
+    let max_submit_attempts = context
+        .config
+        .as_ref()
+        .map(|config| config.execution.max_submit_attempts)
+        .unwrap_or(1);
+    let submit_risk = match store.execution_canary_submit_risk_summary(
+        as_of,
+        TINY_SUBMIT_RETRY_AFTER_UNKNOWN_SUBMIT_TIMEOUT_REASON,
+        max_submit_attempts,
+    ) {
+        Ok(summary) => summary,
+        Err(error) => {
+            return CanaryQuotePnlOperatorReport::failed(
+                REASON_DB_UNREADABLE,
+                Some(error.to_string()),
+                as_of,
+            );
+        }
+    };
     let runtime_root = runtime_root_from_db_path(&context.db_path);
     let tiny_execution_gate = build_tiny_execution_gate(
         &summary,
         &canary_status,
         &canary_readiness,
+        &submit_risk,
         recent_loss,
         as_of,
         context.config.as_ref().map(|config| &config.execution),

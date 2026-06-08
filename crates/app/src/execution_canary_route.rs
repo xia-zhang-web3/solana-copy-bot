@@ -3,8 +3,7 @@ use crate::execution_canary_state_machine::{
 };
 use crate::execution_quote_canary_helpers::DECISION_WOULD_EXECUTE;
 use crate::execution_submit_adapter::{
-    uses_jupiter_metis_dry_run_adapter, JupiterMetisDryRunExecutionAdapter,
-    NoSubmitExecutionAdapter,
+    JupiterMetisDryRunExecutionAdapter, NoSubmitExecutionAdapter,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -12,8 +11,27 @@ use copybot_config::ExecutionConfig;
 use copybot_core_types::CopySignalRow;
 use copybot_storage_core::SqliteStore;
 
+mod tiny_submit;
+mod tiny_submit_retry;
+mod tiny_submit_sell;
+mod tiny_submit_timeout;
+
+use self::tiny_submit::{
+    process_tiny_submit_reconciliation_sweep_for_route, process_tiny_submit_state_machine_for_route,
+};
+use self::tiny_submit_sell::process_tiny_submit_sell_quote_event;
+
+pub(crate) const CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN: &str =
+    "metis-swap-instructions-dry-run";
+
 pub(crate) fn uses_swap_blueprint_state_machine(config: &ExecutionConfig) -> bool {
     uses_jupiter_metis_dry_run_adapter(&config.canary_route)
+}
+
+pub(crate) fn uses_jupiter_metis_dry_run_adapter(route: &str) -> bool {
+    route
+        .trim()
+        .eq_ignore_ascii_case(CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN)
 }
 
 pub(crate) fn list_swap_blueprint_state_machine_candidates(
@@ -49,6 +67,9 @@ pub(crate) async fn process_canary_state_machine_for_route(
     now: DateTime<Utc>,
 ) -> Result<ExecutionCanaryStateMachineSummary> {
     if uses_swap_blueprint_state_machine(config) {
+        if config.canary_tiny_submit_enabled {
+            return process_tiny_submit_state_machine_for_route(config, store, signal, now).await;
+        }
         let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
         let state_machine = ExecutionCanaryStateMachine::new(config.clone(), adapter);
         return state_machine
@@ -59,4 +80,29 @@ pub(crate) async fn process_canary_state_machine_for_route(
     state_machine
         .process_buy_candidate(store, signal, now)
         .await
+}
+
+pub(crate) async fn process_tiny_submit_sell_quote_event_for_route(
+    config: &ExecutionConfig,
+    store: &SqliteStore,
+    event_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<ExecutionCanaryStateMachineSummary>> {
+    if !uses_swap_blueprint_state_machine(config) || !config.canary_tiny_submit_enabled {
+        return Ok(None);
+    }
+    process_tiny_submit_sell_quote_event(config, store, event_id, now).await
+}
+
+pub(crate) async fn process_tiny_submit_reconciliation_sweep(
+    config: &ExecutionConfig,
+    store: &SqliteStore,
+    now: DateTime<Utc>,
+) -> Result<Option<ExecutionCanaryStateMachineSummary>> {
+    if !uses_swap_blueprint_state_machine(config) || !config.canary_tiny_submit_enabled {
+        return Ok(None);
+    }
+    process_tiny_submit_reconciliation_sweep_for_route(config, store, now)
+        .await
+        .map(Some)
 }

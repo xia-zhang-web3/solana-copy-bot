@@ -225,6 +225,29 @@ pub struct ExecutionCanaryReadinessLatestOrder {
     pub decision_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExecutionCanarySubmitRiskSummary {
+    pub as_of: DateTime<Utc>,
+    pub max_submit_attempts: u32,
+    pub active_orders: u64,
+    pub submitted_orders: u64,
+    pub submitted_with_signature_orders: u64,
+    pub submitted_without_signature_orders: u64,
+    pub retry_ready_orders: u64,
+    pub retry_budget_blocked_orders: u64,
+    pub max_active_attempt: u32,
+    pub latest_active_order: Option<ExecutionCanarySubmitRiskOrder>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecutionCanarySubmitRiskOrder {
+    pub order_id: String,
+    pub status: String,
+    pub attempt: u32,
+    pub tx_signature_present: bool,
+    pub simulation_error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionCanaryObservedLeg {
     pub signature: String,
@@ -325,6 +348,8 @@ pub const EXECUTION_SIMULATION_STATUS_FAILED: &str = "failed";
 pub const EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT: &str = "skipped_no_submit";
 pub const EXECUTION_ERROR_BUILD_FAILED: &str = "build_failed";
 pub const EXECUTION_ERROR_SIMULATION_FAILED: &str = "simulation_failed";
+pub const EXECUTION_ERROR_SUBMIT_PLAN_FAILED: &str = "submit_plan_failed";
+pub const EXECUTION_ERROR_SIGNING_ENVELOPE_FAILED: &str = "signing_envelope_failed";
 pub const EXECUTION_ERROR_EXPIRED: &str = "expired";
 pub const EXECUTION_ERROR_SUBMIT_DISABLED: &str = "submit_disabled";
 pub const EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET: &str = "execution_canary";

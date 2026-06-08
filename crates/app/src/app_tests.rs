@@ -55,14 +55,34 @@ mod execution_quote_canary_provider_fallback;
 mod execution_state_machine;
 #[path = "app_tests/41.rs"]
 mod execution_state_machine_build_metadata;
+#[path = "app_tests/61.rs"]
+mod execution_state_machine_confirmation_boundary_contract;
+#[path = "app_tests/57.rs"]
+mod execution_state_machine_confirmation_tracker_contract;
+#[path = "app_tests/56.rs"]
+mod execution_state_machine_confirmed_fill_accounting;
 #[path = "app_tests/44.rs"]
 mod execution_state_machine_entry_gate;
+#[path = "app_tests/53.rs"]
+mod execution_state_machine_file_signer_contract;
 #[path = "app_tests/49.rs"]
 mod execution_state_machine_provider_selector;
+#[path = "app_tests/58.rs"]
+mod execution_state_machine_rpc_confirmation_contract;
+#[path = "app_tests/59.rs"]
+mod execution_state_machine_rpc_submit_contract;
 #[path = "app_tests/40.rs"]
 mod execution_state_machine_safety;
 #[path = "app_tests/38.rs"]
 mod execution_state_machine_sell;
+#[path = "app_tests/52.rs"]
+mod execution_state_machine_signer_contract;
+#[path = "app_tests/51.rs"]
+mod execution_state_machine_submit_contract;
+#[path = "app_tests/54.rs"]
+mod execution_state_machine_submit_transport_contract;
+#[path = "app_tests/55.rs"]
+mod execution_state_machine_submit_transport_outcome_contract;
 #[path = "app_tests/45.rs"]
 mod execution_state_machine_swap_blueprint;
 #[path = "app_tests/46.rs"]
@@ -73,6 +93,16 @@ mod execution_state_machine_swap_instructions_http;
 mod execution_state_machine_swap_transaction_http;
 #[path = "app_tests/39.rs"]
 mod execution_state_machine_timeout;
+#[path = "app_tests/62.rs"]
+mod execution_state_machine_tiny_submit_confirm_path;
+#[path = "app_tests/60.rs"]
+mod execution_state_machine_tiny_submit_gate_contract;
+#[path = "app_tests/63.rs"]
+mod execution_state_machine_tiny_submit_route;
+#[path = "app_tests/64.rs"]
+mod execution_state_machine_tiny_submit_sell_route;
+#[path = "app_tests/65.rs"]
+mod execution_state_machine_tiny_submit_timeout_route;
 #[path = "app_tests/42.rs"]
 mod priority_fee_canary_transient;
 #[path = "app_tests/36_restart_recovery.rs"]

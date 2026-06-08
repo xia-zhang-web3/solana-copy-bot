@@ -57,6 +57,7 @@ pub struct ExecutionConfig {
     pub enabled: bool,
     pub canary_enabled: bool,
     pub canary_dry_run: bool,
+    pub canary_tiny_submit_enabled: bool,
     pub canary_route: String,
     pub canary_interval_seconds: u64,
     pub canary_batch_limit: u32,
@@ -66,6 +67,17 @@ pub struct ExecutionConfig {
     pub canary_max_daily_loss_sol: f64,
     pub canary_kill_switch_path: String,
     pub canary_wallet_pubkey: String,
+    pub execution_signer_pubkey: String,
+    pub execution_signer_keypair_path: String,
+    pub submit_adapter_http_url: String,
+    pub submit_adapter_auth_token_file: String,
+    pub submit_timeout_ms: u64,
+    pub max_confirm_seconds: u64,
+    pub max_submit_attempts: u32,
+    pub simulate_before_submit: bool,
+    pub pretrade_min_sol_reserve: f64,
+    pub pretrade_max_priority_fee_lamports: u64,
+    pub slippage_bps: f64,
     pub quote_canary_enabled: bool,
     pub quote_canary_base_url: String,
     pub quote_canary_api_key: String,
@@ -94,6 +106,7 @@ impl Default for ExecutionConfig {
             enabled: false,
             canary_enabled: false,
             canary_dry_run: true,
+            canary_tiny_submit_enabled: false,
             canary_route: "dry_run".to_string(),
             canary_interval_seconds: 15,
             canary_batch_limit: 1,
@@ -103,6 +116,17 @@ impl Default for ExecutionConfig {
             canary_max_daily_loss_sol: 0.02,
             canary_kill_switch_path: "state/execution_canary.stop".to_string(),
             canary_wallet_pubkey: String::new(),
+            execution_signer_pubkey: String::new(),
+            execution_signer_keypair_path: String::new(),
+            submit_adapter_http_url: String::new(),
+            submit_adapter_auth_token_file: String::new(),
+            submit_timeout_ms: 3_000,
+            max_confirm_seconds: 15,
+            max_submit_attempts: 1,
+            simulate_before_submit: true,
+            pretrade_min_sol_reserve: 0.05,
+            pretrade_max_priority_fee_lamports: 0,
+            slippage_bps: 50.0,
             quote_canary_enabled: false,
             quote_canary_base_url: "https://api.jup.ag/swap/v1".to_string(),
             quote_canary_api_key: String::new(),
@@ -133,6 +157,10 @@ impl fmt::Debug for ExecutionConfig {
             .field("enabled", &self.enabled)
             .field("canary_enabled", &self.canary_enabled)
             .field("canary_dry_run", &self.canary_dry_run)
+            .field(
+                "canary_tiny_submit_enabled",
+                &self.canary_tiny_submit_enabled,
+            )
             .field("canary_route", &self.canary_route)
             .field("canary_interval_seconds", &self.canary_interval_seconds)
             .field("canary_batch_limit", &self.canary_batch_limit)
@@ -145,6 +173,29 @@ impl fmt::Debug for ExecutionConfig {
             .field("canary_max_daily_loss_sol", &self.canary_max_daily_loss_sol)
             .field("canary_kill_switch_path", &self.canary_kill_switch_path)
             .field("canary_wallet_pubkey", &self.canary_wallet_pubkey)
+            .field("execution_signer_pubkey", &self.execution_signer_pubkey)
+            .field(
+                "execution_signer_keypair_path",
+                &redacted_path_debug_value(&self.execution_signer_keypair_path),
+            )
+            .field(
+                "submit_adapter_http_url",
+                &redacted_url_debug_value(&self.submit_adapter_http_url),
+            )
+            .field(
+                "submit_adapter_auth_token_file",
+                &redacted_path_debug_value(&self.submit_adapter_auth_token_file),
+            )
+            .field("submit_timeout_ms", &self.submit_timeout_ms)
+            .field("max_confirm_seconds", &self.max_confirm_seconds)
+            .field("max_submit_attempts", &self.max_submit_attempts)
+            .field("simulate_before_submit", &self.simulate_before_submit)
+            .field("pretrade_min_sol_reserve", &self.pretrade_min_sol_reserve)
+            .field(
+                "pretrade_max_priority_fee_lamports",
+                &self.pretrade_max_priority_fee_lamports,
+            )
+            .field("slippage_bps", &self.slippage_bps)
             .field("quote_canary_enabled", &self.quote_canary_enabled)
             .field(
                 "quote_canary_base_url",
@@ -233,6 +284,14 @@ fn redacted_url_debug_value(value: &str) -> String {
     match trimmed.split_once('?') {
         Some((prefix, _)) => format!("{prefix}?<redacted>"),
         None => trimmed.to_string(),
+    }
+}
+
+fn redacted_path_debug_value(value: &str) -> String {
+    if value.trim().is_empty() {
+        String::new()
+    } else {
+        "[REDACTED_PATH]".to_string()
     }
 }
 

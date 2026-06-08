@@ -4,13 +4,28 @@ check_app_dependency_growth() {
   [[ -f "$path" ]] || return 0
   baseline_file_exists "$path" || return 0
 
-  local current baseline added
+  local current baseline added added_lines
   current="$(cargo_dependency_specs_from_file "$path")"
   baseline="$(cargo_dependency_specs_from_head "$path")"
-  added="$(comm -13 <(printf '%s\n' "$baseline") <(printf '%s\n' "$current") | xargs)"
+  added_lines="$(
+    comm -13 <(printf '%s\n' "$baseline") <(printf '%s\n' "$current") \
+      | grep -v -F -x -f <(allowed_app_dependency_specs) \
+      || true
+  )"
+  added="$(printf '%s\n' "$added_lines" | xargs)"
   if [[ -n "$added" ]]; then
     fail "$path adds or changes direct dependency spec in copybot-app quarantine: $added"
   fi
+}
+
+allowed_app_dependency_specs() {
+  # Live execution signer boundary only. These are not operator/report deps and
+  # must stay narrowly tied to signing serialized Solana transactions.
+  cat <<'EOF'
+dependencies.base64->base64::"0.22.1"
+dependencies.bs58->bs58::"0.5.1"
+dependencies.ed25519-dalek->ed25519-dalek::"2.1.1"
+EOF
 }
 
 check_workspace_dependency_identity_growth() {

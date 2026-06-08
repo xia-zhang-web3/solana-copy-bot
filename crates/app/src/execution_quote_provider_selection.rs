@@ -45,7 +45,7 @@ pub(crate) fn selected_execution_build_plan_metadata(
             Some(QUOTE_SOURCE_GENERIC_METIS),
         ));
     }
-    if let Some(sample) = public.filter(provider_quote_is_ok) {
+    if let Some(sample) = public.filter(provider_quote_is_buildable_without_fee_account) {
         return Ok(metadata_from_provider_sample(
             &event,
             sample,
@@ -57,6 +57,13 @@ pub(crate) fn selected_execution_build_plan_metadata(
 
 fn provider_quote_is_ok(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> bool {
     sample.quote_status == QUOTE_STATUS_OK
+}
+
+fn provider_quote_is_buildable_without_fee_account(
+    sample: &ExecutionQuoteCanaryProviderSampleInsert,
+) -> bool {
+    provider_quote_is_ok(sample)
+        && !quote_response_requires_fee_account(sample.quote_response_json.as_deref())
 }
 
 fn best_generic_provider_sample<'a>(
@@ -89,7 +96,8 @@ fn best_generic_provider_sample<'a>(
 }
 
 fn provider_quote_has_finite_slippage(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> bool {
-    provider_quote_is_ok(sample) && sample.slippage_bps.is_some_and(f64::is_finite)
+    provider_quote_is_buildable_without_fee_account(sample)
+        && sample.slippage_bps.is_some_and(f64::is_finite)
 }
 
 fn pump_fun_bonding_curve_quote_is_usable(
@@ -109,6 +117,16 @@ fn pump_fun_is_completed(raw: &str) -> Result<bool> {
         .pointer("/quote/meta/isCompleted")
         .and_then(Value::as_bool)
         .context("missing pump.fun quote meta.isCompleted")
+}
+
+pub(crate) fn quote_response_requires_fee_account(raw: Option<&str>) -> bool {
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return false;
+    };
+    value.get("platformFee").is_some_and(|fee| !fee.is_null())
 }
 
 fn metadata_from_provider_sample(

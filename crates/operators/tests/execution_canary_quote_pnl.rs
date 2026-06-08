@@ -5,6 +5,9 @@ use copybot_operators::execution_canary_quote_pnl::{
 };
 use copybot_storage_core::{ExecutionQuoteCanaryEventInsert, SqliteStore};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use tempfile::tempdir;
 
 fn ts(raw: &str) -> DateTime<Utc> {
@@ -112,6 +115,9 @@ fn execution_canary_quote_pnl_gate_checks_tiny_config_preflight() -> Result<()> 
     let state_dir = dir.path().join("state");
     fs::create_dir(&state_dir)?;
     let db_path = state_dir.join("runtime.db");
+    let signer_path = dir.path().join("tiny-signer.json");
+    let submit_token_path = dir.path().join("submit-adapter.token");
+    let signer_pubkey = write_test_keypair(&signer_path)?;
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(std::path::Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -127,9 +133,13 @@ fn execution_canary_quote_pnl_gate_checks_tiny_config_preflight() -> Result<()> 
         "100",
     ))?;
     drop(store);
+    fs::write(&submit_token_path, "test-token")?;
 
     let config_path = dir.path().join("live.toml");
-    fs::write(&config_path, tiny_config(&db_path))?;
+    fs::write(
+        &config_path,
+        tiny_config(&db_path, &signer_path, &submit_token_path, &signer_pubkey),
+    )?;
     let report = build_report_from_config_path(&config_path, ts("2026-06-02T13:00:00Z"));
     let gate = report
         .tiny_execution_gate
@@ -147,10 +157,116 @@ fn execution_canary_quote_pnl_gate_checks_tiny_config_preflight() -> Result<()> 
     assert_gate_check(gate, "canary_max_open_positions", "pass");
     assert_gate_check(gate, "canary_daily_loss_cap", "pass");
     assert_gate_check(gate, "canary_kill_switch_inactive", "pass");
+    assert_gate_check(gate, "execution_signer_pubkey", "pass");
+    assert_gate_check(gate, "execution_signer_matches_canary_wallet", "pass");
+    assert_gate_check(gate, "execution_signer_keypair_path", "pass");
+    assert_gate_check(gate, "execution_signer_keypair_file", "pass");
+    assert_gate_check(gate, "execution_signer_keypair_format", "pass");
+    assert_gate_check(gate, "execution_signer_keypair_pubkey_match", "pass");
+    assert_gate_check(gate, "execution_signer_keypair_permissions", "pass");
+    assert_gate_check(gate, "execution_signer_can_sign_preflight", "pass");
+    assert_gate_check(gate, "submit_adapter_http_url", "pass");
+    assert_gate_check(gate, "submit_adapter_auth_token_file", "pass");
+    assert_gate_check(gate, "submit_adapter_auth_token_file_exists", "pass");
+    assert_gate_check(gate, "submit_timeout_ms", "pass");
+    assert_gate_check(gate, "max_confirm_seconds", "pass");
+    assert_gate_check(gate, "max_submit_attempts", "pass");
+    assert_gate_check(gate, "simulate_before_submit", "pass");
+    assert_gate_check(gate, "pretrade_min_sol_reserve", "pass");
+    assert_gate_check(gate, "pretrade_max_priority_fee_lamports", "pass");
+    assert_gate_check(gate, "execution_slippage_bps", "pass");
     assert_gate_check(gate, "quote_canary_enabled", "pass");
     assert_gate_check(gate, "swap_instructions_dry_run_enabled", "pass");
     assert_gate_check(gate, "swap_transaction_dry_run_enabled", "pass");
     assert_gate_check(gate, "priority_fee_canary_enabled", "pass");
+    Ok(())
+}
+
+#[test]
+fn execution_canary_quote_pnl_gate_blocks_keypair_secret_public_mismatch() -> Result<()> {
+    let dir = tempdir()?;
+    let state_dir = dir.path().join("state");
+    fs::create_dir(&state_dir)?;
+    let db_path = state_dir.join("runtime.db");
+    let signer_path = dir.path().join("tiny-signer.json");
+    let submit_token_path = dir.path().join("submit-adapter.token");
+    let signer_pubkey = write_mismatched_test_keypair(&signer_path)?;
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    store.record_execution_quote_canary_event(&quote_event(
+        "quote:buy:mismatch-prime",
+        Some("buy-mismatch-prime"),
+        None,
+        "buy",
+        ts("2026-05-01T00:00:00Z"),
+        "200000000",
+        "100",
+    ))?;
+    drop(store);
+    fs::write(&submit_token_path, "test-token")?;
+
+    let config_path = dir.path().join("live.toml");
+    fs::write(
+        &config_path,
+        tiny_config(&db_path, &signer_path, &submit_token_path, &signer_pubkey),
+    )?;
+    let report = build_report_from_config_path(&config_path, ts("2026-06-02T13:00:00Z"));
+    let gate = report
+        .tiny_execution_gate
+        .as_ref()
+        .unwrap_or_else(|| panic!("tiny execution gate should exist: {:?}", report.error));
+
+    assert_gate_check(gate, "execution_signer_keypair_format", "pass");
+    assert_gate_check(gate, "execution_signer_keypair_pubkey_match", "pass");
+    assert_gate_check(gate, "execution_signer_can_sign_preflight", "block");
+    Ok(())
+}
+
+#[test]
+fn execution_canary_quote_pnl_gate_redacts_malformed_keypair_content() -> Result<()> {
+    let dir = tempdir()?;
+    let state_dir = dir.path().join("state");
+    fs::create_dir(&state_dir)?;
+    let db_path = state_dir.join("runtime.db");
+    let signer_path = dir.path().join("tiny-signer.json");
+    let submit_token_path = dir.path().join("submit-adapter.token");
+    let signer_pubkey = test_signer_pubkey();
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    store.record_execution_quote_canary_event(&quote_event(
+        "quote:buy:redaction-prime",
+        Some("buy-redaction-prime"),
+        None,
+        "buy",
+        ts("2026-05-01T00:00:00Z"),
+        "200000000",
+        "100",
+    ))?;
+    drop(store);
+
+    fs::write(&signer_path, r#"["SUPER_SECRET_DO_NOT_LEAK"]"#)?;
+    set_owner_only_permissions(&signer_path)?;
+    fs::write(&submit_token_path, "test-token")?;
+    let config_path = dir.path().join("live.toml");
+    fs::write(
+        &config_path,
+        tiny_config(&db_path, &signer_path, &submit_token_path, &signer_pubkey),
+    )?;
+
+    let report = build_report_from_config_path(&config_path, ts("2026-06-02T13:00:00Z"));
+    let gate = report
+        .tiny_execution_gate
+        .as_ref()
+        .unwrap_or_else(|| panic!("tiny execution gate should exist: {:?}", report.error));
+
+    assert_gate_check(gate, "execution_signer_keypair_format", "block");
+    assert_gate_does_not_contain(gate, "SUPER_SECRET_DO_NOT_LEAK");
     Ok(())
 }
 
@@ -183,7 +299,12 @@ fn execution_canary_quote_pnl_cli_accepts_window_flags() -> Result<()> {
     Ok(())
 }
 
-fn tiny_config(db_path: &std::path::Path) -> String {
+fn tiny_config(
+    db_path: &std::path::Path,
+    signer_path: &std::path::Path,
+    submit_token_path: &std::path::Path,
+    signer_pubkey: &str,
+) -> String {
     format!(
         r#"
 [sqlite]
@@ -198,17 +319,73 @@ canary_buy_size_sol = 0.01
 canary_max_open_positions = 1
 canary_max_daily_loss_sol = 0.02
 canary_kill_switch_path = "state/execution_canary.stop"
-canary_wallet_pubkey = "J9Kf6Q2cMXx9HsLyzP8SzUrQyiPGXd9yEfqUPDKtn2AU"
+canary_wallet_pubkey = "{}"
+execution_signer_pubkey = "{}"
+execution_signer_keypair_path = "{}"
+submit_adapter_http_url = "http://127.0.0.1:8787/submit"
+submit_adapter_auth_token_file = "{}"
+submit_timeout_ms = 3000
+max_confirm_seconds = 15
+max_submit_attempts = 1
+simulate_before_submit = true
+pretrade_min_sol_reserve = 0.05
+pretrade_max_priority_fee_lamports = 1000000
+slippage_bps = 500.0
 quote_canary_enabled = true
 quote_canary_base_url = "https://jupiter-swap-api.quiknode.pro/test/"
 swap_instructions_dry_run_enabled = true
 swap_transaction_dry_run_enabled = true
 priority_fee_canary_enabled = true
 priority_fee_canary_rpc_url = "https://example.com/rpc"
-priority_fee_canary_account = "J9Kf6Q2cMXx9HsLyzP8SzUrQyiPGXd9yEfqUPDKtn2AU"
+priority_fee_canary_account = "{}"
 "#,
-        db_path.display()
+        db_path.display(),
+        signer_pubkey,
+        signer_pubkey,
+        signer_path.display(),
+        submit_token_path.display(),
+        signer_pubkey
     )
+}
+
+fn write_test_keypair(path: &Path) -> Result<String> {
+    let bytes = test_keypair_bytes();
+    fs::write(path, serde_json::to_string(&bytes)?)?;
+    set_owner_only_permissions(path)?;
+    Ok(bs58::encode(&bytes[32..64]).into_string())
+}
+
+fn test_signer_pubkey() -> String {
+    let bytes = test_keypair_bytes();
+    bs58::encode(&bytes[32..64]).into_string()
+}
+
+fn test_keypair_bytes() -> Vec<u8> {
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[42_u8; 32]);
+    let mut bytes = signing_key.to_bytes().to_vec();
+    bytes.extend(signing_key.verifying_key().to_bytes());
+    bytes
+}
+
+fn write_mismatched_test_keypair(path: &Path) -> Result<String> {
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[42_u8; 32]);
+    let mismatched_public_key = [7_u8; 32];
+    let mut bytes = signing_key.to_bytes().to_vec();
+    bytes.extend(mismatched_public_key);
+    fs::write(path, serde_json::to_string(&bytes)?)?;
+    set_owner_only_permissions(path)?;
+    Ok(bs58::encode(mismatched_public_key).into_string())
+}
+
+#[cfg(unix)]
+fn set_owner_only_permissions(path: &Path) -> Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_owner_only_permissions(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn quote_event(
@@ -269,4 +446,20 @@ fn assert_gate_check(
         "missing gate check {name} with status {status}: {:?}",
         gate.checks
     );
+}
+
+fn assert_gate_does_not_contain(
+    gate: &copybot_operators::execution_canary_quote_pnl::TinyExecutionGate,
+    needle: &str,
+) {
+    for check in &gate.checks {
+        assert!(
+            !check.name.contains(needle)
+                && !check.status.contains(needle)
+                && !check.value.contains(needle)
+                && !check.threshold.contains(needle)
+                && !check.reason.contains(needle),
+            "gate leaked {needle}: {check:?}"
+        );
+    }
 }
