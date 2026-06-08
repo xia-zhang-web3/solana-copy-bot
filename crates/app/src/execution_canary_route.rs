@@ -19,7 +19,9 @@ mod tiny_submit_timeout;
 use self::tiny_submit::{
     process_tiny_submit_reconciliation_sweep_for_route, process_tiny_submit_state_machine_for_route,
 };
-use self::tiny_submit_sell::process_tiny_submit_sell_quote_event;
+use self::tiny_submit_sell::{
+    process_failed_sell_simulation_sweep_for_route, process_tiny_submit_sell_quote_event,
+};
 
 pub(crate) const CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN: &str =
     "metis-swap-instructions-dry-run";
@@ -103,6 +105,19 @@ pub(crate) async fn process_tiny_submit_reconciliation_sweep(
         return Ok(None);
     }
     process_tiny_submit_reconciliation_sweep_for_route(config, store, now)
+        .await
+        .map(Some)
+}
+
+pub(crate) async fn process_failed_sell_simulation_sweep(
+    config: &ExecutionConfig,
+    store: &SqliteStore,
+    now: DateTime<Utc>,
+) -> Result<Option<ExecutionCanaryStateMachineSummary>> {
+    if !uses_swap_blueprint_state_machine(config) || !config.canary_tiny_submit_enabled {
+        return Ok(None);
+    }
+    process_failed_sell_simulation_sweep_for_route(config, store, now)
         .await
         .map(Some)
 }

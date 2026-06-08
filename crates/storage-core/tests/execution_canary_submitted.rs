@@ -1,6 +1,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
-use copybot_core_types::{CopySignalRow, Lamports, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS};
+use copybot_core_types::{
+    CopySignalRow, Lamports, TokenQuantity, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
+};
 use copybot_storage_core::{
     ExecutionCanaryBuildPlanMetadata, SqliteStore, EXECUTION_ERROR_SIMULATION_FAILED,
     EXECUTION_SIMULATION_STATUS_FAILED, EXECUTION_SIMULATION_STATUS_NOT_RUN,
@@ -158,7 +160,18 @@ fn failed_simulation_retry_candidate_clears_stale_build_metadata() -> Result<()>
     let store = open_migrated_store("failed-simulation-retry-candidate")?;
     let now = ts("2026-06-08T12:00:00Z");
     let signal_id = "sell-failed-simulation";
-    store.insert_copy_signal(&signal(signal_id, now))?;
+    store.record_execution_canary_open_position(
+        "exec-canary:buy-filled",
+        "TokenMint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        now,
+    )?;
+    store.insert_copy_signal(&CopySignalRow {
+        side: "sell".to_string(),
+        ..signal(signal_id, now)
+    })?;
     let reserve =
         store.reserve_execution_canary_order(signal_id, "metis-swap-instructions-dry-run", now)?;
     store.mark_execution_canary_built(&reserve.order.order_id, now + Duration::seconds(1))?;
@@ -180,6 +193,12 @@ fn failed_simulation_retry_candidate_clears_stale_build_metadata() -> Result<()>
         &reserve.order.client_order_id,
         now,
     ))?;
+    let failed = store.list_failed_simulation_sell_execution_canary_orders_for_route(
+        "metis-swap-instructions-dry-run",
+        10,
+    )?;
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].order_id, reserve.order.order_id);
 
     let retry = store.mark_execution_canary_failed_simulation_retry_candidate(
         &reserve.order.order_id,
@@ -201,6 +220,11 @@ fn failed_simulation_retry_candidate_clears_stale_build_metadata() -> Result<()>
     assert!(store
         .load_execution_canary_build_plan_metadata(&reserve.order.order_id)?
         .is_none());
+    let after_retry = store.list_failed_simulation_sell_execution_canary_orders_for_route(
+        "metis-swap-instructions-dry-run",
+        10,
+    )?;
+    assert!(after_retry.is_empty());
     Ok(())
 }
 

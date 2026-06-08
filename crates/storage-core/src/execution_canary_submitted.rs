@@ -1,6 +1,9 @@
 use crate::{
     execution_canary_rows::execution_canary_order_from_row, ExecutionCanaryOrder,
-    SqliteDiscoveryStore, EXECUTION_STATUS_CANARY_SIMULATED, EXECUTION_STATUS_CANARY_SUBMITTED,
+    SqliteDiscoveryStore, EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+    EXECUTION_CANARY_POSITION_STATE_OPEN, EXECUTION_ERROR_SIMULATION_FAILED,
+    EXECUTION_STATUS_CANARY_FAILED, EXECUTION_STATUS_CANARY_SIMULATED,
+    EXECUTION_STATUS_CANARY_SUBMITTED,
 };
 use anyhow::{Context, Result};
 use rusqlite::params;
@@ -57,5 +60,62 @@ impl SqliteDiscoveryStore {
             .context("failed querying submitted execution canary orders")?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("failed reading submitted execution canary orders")
+    }
+
+    pub fn list_failed_simulation_sell_execution_canary_orders_for_route(
+        &self,
+        route: &str,
+        limit: u32,
+    ) -> Result<Vec<ExecutionCanaryOrder>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    orders.order_id,
+                    orders.signal_id,
+                    orders.route,
+                    orders.submit_ts,
+                    orders.confirm_ts,
+                    orders.status,
+                    orders.err_code,
+                    orders.client_order_id,
+                    orders.tx_signature,
+                    orders.simulation_status,
+                    orders.simulation_error,
+                    orders.attempt
+                 FROM orders
+                 JOIN copy_signals ON copy_signals.signal_id = orders.signal_id
+                 WHERE orders.order_id LIKE 'exec-canary:%'
+                   AND orders.route = ?1
+                   AND orders.status = ?2
+                   AND orders.err_code = ?3
+                   AND (orders.tx_signature IS NULL OR TRIM(orders.tx_signature) = '')
+                   AND lower(copy_signals.side) = 'sell'
+                   AND EXISTS (
+                        SELECT 1
+                        FROM positions AS pos
+                        WHERE pos.token = copy_signals.token
+                          AND pos.accounting_bucket = ?4
+                          AND pos.state = ?5
+                   )
+                 ORDER BY orders.submit_ts ASC, orders.order_id ASC
+                 LIMIT ?6",
+            )
+            .context("failed to prepare failed simulation sell order query")?;
+        let rows = stmt
+            .query_map(
+                params![
+                    route,
+                    EXECUTION_STATUS_CANARY_FAILED,
+                    EXECUTION_ERROR_SIMULATION_FAILED,
+                    EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+                    EXECUTION_CANARY_POSITION_STATE_OPEN,
+                    i64::from(limit.max(1)),
+                ],
+                execution_canary_order_from_row,
+            )
+            .context("failed querying failed simulation sell orders")?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed reading failed simulation sell orders")
     }
 }

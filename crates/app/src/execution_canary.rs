@@ -1,7 +1,7 @@
 use crate::execution_canary_route::{
     list_swap_blueprint_state_machine_candidates, process_canary_state_machine_for_route,
-    process_tiny_submit_reconciliation_sweep, process_tiny_submit_sell_quote_event_for_route,
-    uses_swap_blueprint_state_machine,
+    process_failed_sell_simulation_sweep, process_tiny_submit_reconciliation_sweep,
+    process_tiny_submit_sell_quote_event_for_route, uses_swap_blueprint_state_machine,
 };
 use crate::execution_canary_summary::{apply_quote_summary, apply_state_machine_summary};
 use crate::execution_quote_canary::{ExecutionQuoteCanaryRunner, ExecutionQuoteCanaryTickSummary};
@@ -170,6 +170,11 @@ impl ExecutionCanaryRunner {
             }
             if let Some(state) =
                 process_tiny_submit_reconciliation_sweep(&self.config, store, now).await?
+            {
+                apply_state_machine_summary(&mut summary, state);
+            }
+            if let Some(state) =
+                process_failed_sell_simulation_sweep(&self.config, store, now).await?
             {
                 apply_state_machine_summary(&mut summary, state);
             }

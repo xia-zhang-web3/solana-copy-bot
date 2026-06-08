@@ -162,6 +162,33 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
     Ok(Some(summary))
 }
 
+pub(super) async fn process_failed_sell_simulation_sweep_for_route(
+    config: &ExecutionConfig,
+    store: &SqliteStore,
+    now: DateTime<Utc>,
+) -> Result<ExecutionCanaryStateMachineSummary> {
+    let mut orders = store
+        .list_failed_simulation_sell_execution_canary_orders_for_route(&config.canary_route, 1)?;
+    let Some(order) = orders.pop() else {
+        return Ok(ExecutionCanaryStateMachineSummary::default());
+    };
+    let Some(metadata) = store.load_execution_canary_build_plan_metadata(&order.order_id)? else {
+        return Ok(ExecutionCanaryStateMachineSummary::default());
+    };
+    let Some(event_id) = metadata
+        .quote_event_id
+        .as_deref()
+        .filter(|event_id| !event_id.trim().is_empty())
+    else {
+        return Ok(ExecutionCanaryStateMachineSummary::default());
+    };
+    Ok(
+        process_tiny_submit_sell_quote_event(config, store, event_id, now)
+            .await?
+            .unwrap_or_default(),
+    )
+}
+
 fn failed_sell_simulation_retry_ready(
     config: &ExecutionConfig,
     order: &copybot_storage_core::ExecutionCanaryOrder,
