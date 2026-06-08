@@ -59,9 +59,9 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
             "execution.canary_buy_size_sol must be within 0.01..=0.02 SOL for canary rollout"
         ));
     }
-    if config.canary_max_open_positions != 1 {
+    if config.canary_max_open_positions == 0 || config.canary_max_open_positions > 20 {
         return Err(anyhow!(
-            "execution.canary_max_open_positions must stay at 1 for canary rollout"
+            "execution.canary_max_open_positions must be within 1..=20 for canary rollout"
         ));
     }
     if !config.canary_max_daily_loss_sol.is_finite()

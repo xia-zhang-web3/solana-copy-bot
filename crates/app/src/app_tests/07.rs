@@ -106,7 +106,7 @@
         execution.canary_dry_run = true;
         execution.canary_route = "metis-dry-run".to_string();
         execution.canary_buy_size_sol = 0.01;
-        execution.canary_max_open_positions = 1;
+        execution.canary_max_open_positions = 20;
         execution.canary_max_daily_loss_sol = 0.02;
         execution.canary_kill_switch_path = "state/test-stop".to_string();
 

@@ -94,10 +94,10 @@ fn push_canary_guards(
     push_check(
         checks,
         "canary_max_open_positions",
-        config.canary_max_open_positions == 1,
+        (1..=20).contains(&config.canary_max_open_positions),
         config.canary_max_open_positions.to_string(),
-        "1".to_string(),
-        "tiny test must cap exposure to one open position",
+        "1..=20".to_string(),
+        "tiny test must keep aggregate open-position exposure bounded",
     );
     push_check(
         checks,
