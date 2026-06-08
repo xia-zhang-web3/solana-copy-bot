@@ -1,10 +1,16 @@
 use crate::{
     execution_quote_canary::ensure_execution_quote_canary_tables,
     observed_timestamp::parse_rfc3339_utc, schema::column_exists, ExecutionQuoteCanaryEventInsert,
-    SqliteDiscoveryStore,
+    SqliteDiscoveryStore, EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+    EXECUTION_CANARY_POSITION_STATE_OPEN,
 };
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
+
+const QUOTE_STATUS_OK: &str = "ok";
+const DECISION_WOULD_EXECUTE: &str = "would_execute";
+const DECISION_WOULD_FORCE_EXIT: &str = "would_force_exit";
 
 impl SqliteDiscoveryStore {
     pub fn load_execution_quote_canary_event_by_id(
@@ -101,6 +107,57 @@ impl SqliteDiscoveryStore {
             )
             .optional()
             .context("failed loading latest execution quote canary entry event")
+    }
+
+    pub fn list_execution_quote_canary_close_submit_retry_event_ids(
+        &self,
+        since: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<String>> {
+        ensure_execution_quote_canary_tables(self)?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT event.event_id
+                 FROM execution_quote_canary_events AS event
+                 WHERE lower(event.side) = 'sell'
+                   AND event.request_ts >= ?1
+                   AND event.signal_id IS NOT NULL
+                   AND TRIM(event.signal_id) <> ''
+                   AND event.quote_status = ?2
+                   AND event.decision_status IN (?3, ?4)
+                   AND EXISTS (
+                        SELECT 1
+                        FROM positions AS pos
+                        WHERE pos.token = event.token
+                          AND pos.accounting_bucket = ?5
+                          AND pos.state = ?6
+                   )
+                   AND NOT EXISTS (
+                        SELECT 1
+                        FROM orders
+                        WHERE orders.signal_id = event.signal_id
+                   )
+                 ORDER BY event.request_ts ASC, event.event_id ASC
+                 LIMIT ?7",
+            )
+            .context("failed to prepare execution quote canary close retry query")?;
+        let rows = stmt
+            .query_map(
+                params![
+                    since.to_rfc3339(),
+                    QUOTE_STATUS_OK,
+                    DECISION_WOULD_EXECUTE,
+                    DECISION_WOULD_FORCE_EXIT,
+                    EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+                    EXECUTION_CANARY_POSITION_STATE_OPEN,
+                    i64::from(limit.max(1)),
+                ],
+                |row| row.get(0),
+            )
+            .context("failed querying execution quote canary close retry events")?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed reading execution quote canary close retry events")
     }
 }
 

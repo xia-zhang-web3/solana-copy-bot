@@ -164,6 +164,8 @@ impl ExecutionCanaryRunner {
                     .await?;
                 self.process_latest_close_quote_event(store, &quote_summary, now, &mut summary)
                     .await?;
+                self.process_recent_close_quote_retries(store, now, since, &mut summary)
+                    .await?;
                 apply_quote_summary(&mut summary, quote_summary);
             }
             if let Some(state) =
@@ -196,6 +198,8 @@ impl ExecutionCanaryRunner {
                     )
                     .await?;
                 self.process_latest_close_quote_event(store, &quote_summary, now, &mut summary)
+                    .await?;
+                self.process_recent_close_quote_retries(store, now, since, &mut summary)
                     .await?;
                 apply_quote_summary(&mut summary, quote_summary);
             }
@@ -370,6 +374,36 @@ impl ExecutionCanaryRunner {
                 .await?
         {
             apply_state_machine_summary(summary, state);
+        }
+        Ok(())
+    }
+
+    async fn process_recent_close_quote_retries(
+        &self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        since: DateTime<Utc>,
+        summary: &mut ExecutionCanaryTickSummary,
+    ) -> Result<()> {
+        if !uses_swap_blueprint_state_machine(&self.config)
+            || !self.config.canary_tiny_submit_enabled
+            || !self.quote_canary.is_enabled()
+        {
+            return Ok(());
+        }
+        let event_ids = store
+            .list_execution_quote_canary_close_submit_retry_event_ids(
+                since,
+                self.config.canary_batch_limit.max(1),
+            )
+            .context("failed loading fresh close quote retry events")?;
+        for event_id in event_ids {
+            if let Some(state) =
+                process_tiny_submit_sell_quote_event_for_route(&self.config, store, &event_id, now)
+                    .await?
+            {
+                apply_state_machine_summary(summary, state);
+            }
         }
         Ok(())
     }

@@ -1,6 +1,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
-use copybot_core_types::{CopySignalRow, Lamports, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS};
+use copybot_core_types::{
+    CopySignalRow, Lamports, TokenQuantity, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
+};
 use copybot_storage_core::{ExecutionQuoteCanaryEventInsert, SqliteStore};
 use tempfile::tempdir;
 
@@ -55,6 +57,44 @@ fn latest_execution_quote_canary_entry_event_loads_metadata_for_signal() -> Resu
         loaded.route_plan_json.as_deref(),
         Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]")
     );
+    Ok(())
+}
+
+#[test]
+fn close_submit_retry_events_require_open_position_and_no_order() -> Result<()> {
+    let store = open_migrated_store("execution-quote-canary-close-retry")?;
+    let now = ts("2026-06-02T08:00:00Z");
+    store.record_execution_canary_open_position(
+        "exec-canary:buy-filled",
+        "TokenMint",
+        50.0,
+        Some(TokenQuantity::new(50, 0)),
+        0.01,
+        now,
+    )?;
+    let signal = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal("sell-retry", now)
+    };
+    store.insert_copy_signal(&signal)?;
+    let mut event = quote_event("quote:close:retry", &signal, now, "12000000");
+    event.side = "sell".to_string();
+    event.shadow_closed_trade_id = Some(42);
+    event.quote_in_amount_raw = Some("50".to_string());
+    store.record_execution_quote_canary_event(&event)?;
+
+    let stale = store
+        .list_execution_quote_canary_close_submit_retry_event_ids(now + Duration::seconds(1), 10)?;
+    assert!(stale.is_empty());
+
+    let fresh = store
+        .list_execution_quote_canary_close_submit_retry_event_ids(now - Duration::seconds(1), 10)?;
+    assert_eq!(fresh, vec!["quote:close:retry".to_string()]);
+
+    store.reserve_execution_canary_order(&signal.signal_id, "metis", now)?;
+    let already_reserved = store
+        .list_execution_quote_canary_close_submit_retry_event_ids(now - Duration::seconds(1), 10)?;
+    assert!(already_reserved.is_empty());
     Ok(())
 }
 
