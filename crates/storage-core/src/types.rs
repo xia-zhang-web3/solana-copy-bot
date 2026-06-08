@@ -46,6 +46,11 @@ pub use types_execution_quote_pnl::{
     ExecutionQuoteCanaryPublicPaidComparisonSummary, EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED,
     EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED, EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,
 };
+pub use types_execution_tiny_proof::{
+    ExecutionTinyProofLatencyStats, ExecutionTinyProofLatencySummary,
+    ExecutionTinyProofOpenPosition, ExecutionTinyProofOrder, ExecutionTinyProofReasonCount,
+    ExecutionTinyProofReport, ExecutionTinyProofSummary, ExecutionTinyProofTrade,
+};
 pub use types_history_retention::{
     ExecutionHistoryRetentionSummary, HistoryRetentionCutoffs, HistoryRetentionSummary,
 };
@@ -105,6 +110,8 @@ mod types_discovery_rebuild;
 mod types_execution;
 #[path = "types_execution_quote_pnl.rs"]
 mod types_execution_quote_pnl;
+#[path = "types_execution_tiny_proof.rs"]
+mod types_execution_tiny_proof;
 #[path = "types_history_retention.rs"]
 mod types_history_retention;
 #[path = "types_observed.rs"]

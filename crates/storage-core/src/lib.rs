@@ -29,6 +29,9 @@ mod execution_quote_canary_route_samples;
 mod execution_quote_canary_shadow_gate;
 mod execution_quote_provider_lookup;
 mod execution_quote_provider_selection_report;
+mod execution_tiny_proof;
+mod execution_tiny_proof_aggregate;
+mod execution_tiny_proof_rows;
 mod history_retention;
 mod market_context;
 mod migrations;
@@ -119,7 +122,10 @@ pub use types::{
     ExecutionQuoteCanaryProviderComparisonSummary, ExecutionQuoteCanaryProviderSampleInsert,
     ExecutionQuoteCanaryProviderSelectionEvent, ExecutionQuoteCanaryProviderSelectionSummary,
     ExecutionQuoteCanaryPublicPaidComparisonEvent, ExecutionQuoteCanaryPublicPaidComparisonSummary,
-    ExecutionQuoteCanaryRecordOutcome, FollowlistUpdateResult, HistoryRetentionCutoffs,
+    ExecutionQuoteCanaryRecordOutcome, ExecutionTinyProofLatencyStats,
+    ExecutionTinyProofLatencySummary, ExecutionTinyProofOpenPosition, ExecutionTinyProofOrder,
+    ExecutionTinyProofReasonCount, ExecutionTinyProofReport, ExecutionTinyProofSummary,
+    ExecutionTinyProofTrade, FollowlistUpdateResult, HistoryRetentionCutoffs,
     HistoryRetentionSummary, ObservedSolLegSwap, ObservedSwapBatchWriteMetrics,
     ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow,
     RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome, ShadowLotRow,
