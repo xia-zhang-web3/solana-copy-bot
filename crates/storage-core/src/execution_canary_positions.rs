@@ -3,14 +3,18 @@ use crate::{
     shadow_lots::{reject_zero_raw_exact_qty, to_sql_conversion_error},
     ExecutionCanaryOwnedPosition, ExecutionCanaryOwnedPositionRecordResult,
     ExecutionCanaryPositionRecordOutcome, ExecutionCanarySellDecision, SqliteDiscoveryStore,
-    EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET, EXECUTION_CANARY_POSITION_STATE_OPEN,
+    EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET, EXECUTION_CANARY_POSITION_CLOSE_CLOSED,
+    EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED, EXECUTION_CANARY_POSITION_STATE_OPEN,
     EXECUTION_CANARY_SELL_DECISION_EXECUTE, EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT,
     EXECUTION_CANARY_SELL_DECISION_NO_POSITION,
 };
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::{Lamports, TokenQuantity};
 use rusqlite::{params, OptionalExtension};
+
+const EXECUTION_CANARY_STALE_WRITE_OFF_EXIT_PRICE_SOL: f64 = 0.0;
+const EXECUTION_CANARY_STALE_WRITE_OFF_DUST_QTY_EPSILON: f64 = 0.0;
 
 impl SqliteDiscoveryStore {
     pub fn record_execution_canary_open_position(
@@ -151,6 +155,40 @@ impl SqliteDiscoveryStore {
         Ok(count as u64)
     }
 
+    pub fn close_stale_execution_canary_open_positions_as_zero_loss(
+        &self,
+        now: DateTime<Utc>,
+        max_age_seconds: i64,
+    ) -> Result<u64> {
+        if max_age_seconds <= 0 {
+            return Err(anyhow!(
+                "execution canary stale position max_age_seconds must be positive"
+            ));
+        }
+        let cutoff = now - Duration::seconds(max_age_seconds);
+        let positions = self.load_execution_canary_open_positions()?;
+        let mut closed = 0;
+        for position in positions
+            .into_iter()
+            .filter(|position| position.opened_ts <= cutoff)
+        {
+            let result = self.close_execution_canary_open_position(
+                &position.token,
+                position.qty,
+                position.qty_exact,
+                EXECUTION_CANARY_STALE_WRITE_OFF_EXIT_PRICE_SOL,
+                EXECUTION_CANARY_STALE_WRITE_OFF_DUST_QTY_EPSILON,
+                now,
+            )?;
+            if result.close_status == EXECUTION_CANARY_POSITION_CLOSE_CLOSED
+                || result.close_status == EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED
+            {
+                closed += 1;
+            }
+        }
+        Ok(closed)
+    }
+
     pub fn execution_canary_realized_loss_sol_since(&self, since: DateTime<Utc>) -> Result<f64> {
         let since_raw = since.to_rfc3339();
         self.conn
@@ -235,6 +273,42 @@ impl SqliteDiscoveryStore {
         stmt.query_row(params![position_id], execution_canary_position_from_row)
             .optional()
             .context("failed querying execution canary position")
+    }
+
+    fn load_execution_canary_open_positions(&self) -> Result<Vec<ExecutionCanaryOwnedPosition>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    position_id,
+                    token,
+                    qty,
+                    cost_sol,
+                    cost_lamports,
+                    qty_raw,
+                    qty_decimals,
+                    opened_ts,
+                    state,
+                    accounting_bucket
+                 FROM positions
+                 WHERE accounting_bucket = ?1
+                   AND state = ?2
+                 ORDER BY opened_ts ASC, position_id ASC",
+            )
+            .context("failed to prepare execution canary open positions query")?;
+        let rows = stmt
+            .query_map(
+                params![
+                    EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+                    EXECUTION_CANARY_POSITION_STATE_OPEN,
+                ],
+                execution_canary_position_from_row,
+            )
+            .context("failed querying execution canary open positions")?;
+        let positions = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed reading execution canary open positions")?;
+        Ok(positions)
     }
 }
 

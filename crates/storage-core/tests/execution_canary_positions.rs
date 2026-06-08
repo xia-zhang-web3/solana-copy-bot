@@ -160,6 +160,38 @@ fn execution_canary_position_count_tracks_open_only() -> Result<()> {
 }
 
 #[test]
+fn execution_canary_stale_open_positions_write_off_zero_loss() -> Result<()> {
+    let store = open_migrated_store("execution-canary-stale-write-off")?;
+    let now = ts("2026-06-01T08:20:00Z");
+    record_open_position_for_token(
+        &store,
+        "exec-canary:stale-open",
+        "StaleMint",
+        now - chrono::Duration::seconds(901),
+    )?;
+    record_open_position_for_token(
+        &store,
+        "exec-canary:fresh-open",
+        "FreshMint",
+        now - chrono::Duration::seconds(899),
+    )?;
+
+    let closed = store.close_stale_execution_canary_open_positions_as_zero_loss(now, 900)?;
+    let loss = store.execution_canary_realized_loss_sol_since(ts("2026-06-01T00:00:00Z"))?;
+
+    assert_eq!(closed, 1);
+    assert!(store
+        .load_execution_canary_open_position("StaleMint")?
+        .is_none());
+    assert!(store
+        .load_execution_canary_open_position("FreshMint")?
+        .is_some());
+    assert_eq!(store.execution_canary_open_position_count()?, 1);
+    assert!((loss - 0.2).abs() < 1e-9);
+    Ok(())
+}
+
+#[test]
 fn execution_canary_realized_loss_sums_closed_losses_since_cutoff() -> Result<()> {
     let store = open_migrated_store("execution-canary-daily-loss")?;
     let now = ts("2026-06-01T08:00:00Z");
