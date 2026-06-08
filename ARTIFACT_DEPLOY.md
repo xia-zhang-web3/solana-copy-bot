@@ -35,6 +35,10 @@ must include locked package tests plus both architecture guard modes.
 
 ## 4. Builder Commands
 
+Production artifact source of truth: commit the accepted change, push to GitHub,
+wait for `.github/workflows/operator-artifacts.yml`, download artifacts for that
+exact commit SHA, and verify them before uploading to production. Do not deploy local Docker or release-build artifacts unless the emergency fallback is invoked.
+
 Discovery V2 operators:
 
 ```bash

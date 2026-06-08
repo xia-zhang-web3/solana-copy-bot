@@ -111,13 +111,19 @@ Production is not a build machine.
 
 Normal rollout path:
 
-1. build artifacts off production
-2. generate SHA256 checksums and a manifest
-3. upload artifacts
-4. verify checksums on production
-5. install only the affected binary
-6. restart only the affected service, if required
-7. collect live proof
+1. commit the accepted change
+2. push the commit so GitHub Actions builds from a clean tree
+3. download the matching CI artifact for that exact git SHA
+4. verify SHA256 checksums and manifest locally
+5. upload artifacts to production
+6. verify checksums on production
+7. install only the affected binary
+8. restart only the affected service, if required
+9. collect live proof
+
+Do not use Docker or a local release build as the normal production rollout
+path. Docker/local builds are only for development smoke checks unless an
+emergency fallback is explicitly declared and recorded.
 
 Forbidden by default:
 
