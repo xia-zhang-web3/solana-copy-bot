@@ -22,6 +22,7 @@ use copybot_storage_core::{
     EXECUTION_SIMULATION_STATUS_FAILED, EXECUTION_STATUS_CANARY_EXPIRED,
     EXECUTION_STATUS_CANARY_FAILED, EXECUTION_STATUS_CANARY_SIMULATED,
 };
+use std::path::Path;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionCanaryStateMachineSummary {
@@ -109,12 +110,9 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
         }
 
         summary.candidates = 1;
-        let safety = pre_submit_safety_snapshot(&self.config, store, now)?;
-        summary.open_positions = safety.open_positions;
-        summary.daily_loss_sol = safety.daily_loss_sol;
-        if let Some(reason) = safety.blocked_reason {
+        if Path::new(&self.config.canary_kill_switch_path).exists() {
             summary.safety_blocked = 1;
-            summary.skipped_reason = Some(reason);
+            summary.skipped_reason = Some("kill_switch_active");
             return Ok(summary);
         }
         if let Some(existing) = store.load_execution_canary_order_by_signal(&signal.signal_id)? {
@@ -126,6 +124,15 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
         let metadata = load_execution_build_plan_metadata(store, &signal.signal_id)?;
         if let Some(reason) = validate_execution_canary_entry_metadata(&self.config, &metadata) {
             summary.entry_gate_blocked = 1;
+            summary.skipped_reason = Some(reason);
+            return Ok(summary);
+        }
+
+        let safety = pre_submit_safety_snapshot(&self.config, store, now)?;
+        summary.open_positions = safety.open_positions;
+        summary.daily_loss_sol = safety.daily_loss_sol;
+        if let Some(reason) = safety.blocked_reason {
+            summary.safety_blocked = 1;
             summary.skipped_reason = Some(reason);
             return Ok(summary);
         }

@@ -82,6 +82,22 @@ fn priority_fee_rate_contract_rejects_too_aggressive_interval() {
 }
 
 #[test]
+fn execution_canary_contract_accepts_live_tiny_daily_loss_budget() {
+    let mut config = copybot_config::ExecutionConfig::default();
+    config.canary_enabled = true;
+    config.canary_max_daily_loss_sol = 0.20;
+
+    crate::config_contract::validate_execution_canary_contract(&config)
+        .expect("live tiny daily loss budget should be accepted");
+
+    config.canary_max_daily_loss_sol = 0.21;
+    let error = crate::config_contract::validate_execution_canary_contract(&config)
+        .expect_err("daily loss budget above live tiny cap should be rejected");
+
+    assert!(error.to_string().contains("canary_max_daily_loss_sol"));
+}
+
+#[test]
 fn swap_transaction_dry_run_requires_quote_canary_metadata() {
     let mut config = copybot_config::ExecutionConfig::default();
     config.canary_enabled = true;

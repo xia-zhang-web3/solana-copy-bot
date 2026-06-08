@@ -33,6 +33,11 @@ pub(crate) fn apply_state_machine_summary(
     summary.state_machine_failed += state.failed;
     summary.state_machine_safety_blocked += state.safety_blocked;
     summary.state_machine_entry_gate_blocked += state.entry_gate_blocked;
+    if state.skipped_reason.is_some() {
+        summary.state_machine_skipped_reason = state.skipped_reason;
+    }
+    summary.state_machine_open_positions = state.open_positions;
+    summary.state_machine_daily_loss_sol = state.daily_loss_sol;
     if state.last_order_id.is_some() {
         summary.last_state_machine_order_id = state.last_order_id;
     }

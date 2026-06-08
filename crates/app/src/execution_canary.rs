@@ -51,6 +51,9 @@ pub(crate) struct ExecutionCanaryTickSummary {
     pub state_machine_failed: usize,
     pub state_machine_safety_blocked: usize,
     pub state_machine_entry_gate_blocked: usize,
+    pub state_machine_skipped_reason: Option<&'static str>,
+    pub state_machine_open_positions: u64,
+    pub state_machine_daily_loss_sol: f64,
     pub last_state_machine_order_id: Option<String>,
 }
 

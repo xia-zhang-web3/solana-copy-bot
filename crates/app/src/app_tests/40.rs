@@ -44,6 +44,7 @@ async fn execution_canary_state_machine_max_open_positions_blocks_buy_before_res
     let now = Utc::now();
     let signal = safety_signal("buy-max-open", now);
     store.insert_copy_signal(&signal)?;
+    record_safety_entry_quote(&store, &signal, now, "would_execute")?;
     store.record_execution_canary_open_position(
         "exec-canary:safety-open",
         "OpenTokenMint",
@@ -81,6 +82,7 @@ async fn execution_canary_state_machine_stale_open_position_does_not_block_buy()
     let now = Utc::now();
     let signal = safety_signal("buy-stale-open", now);
     store.insert_copy_signal(&signal)?;
+    record_safety_entry_quote(&store, &signal, now, "would_execute")?;
     store.record_execution_canary_open_position(
         "exec-canary:safety-stale-open",
         "StaleOpenTokenMint",
@@ -96,10 +98,9 @@ async fn execution_canary_state_machine_stale_open_position_does_not_block_buy()
         .await?;
 
     assert_eq!(summary.safety_blocked, 0);
-    assert_eq!(summary.entry_gate_blocked, 1);
     assert_eq!(summary.open_positions, 0);
     assert!((summary.daily_loss_sol - 0.01).abs() < 1e-9);
-    assert_eq!(summary.skipped_reason, Some("missing_quote_metadata"));
+    assert_eq!(summary.reserved, 1);
     assert_eq!(store.execution_canary_open_position_count()?, 0);
 
     let _ = std::fs::remove_file(db_path);
@@ -117,6 +118,7 @@ async fn execution_canary_state_machine_daily_loss_blocks_buy_before_reserve() -
     let now = Utc::now();
     let signal = safety_signal("buy-daily-loss", now);
     store.insert_copy_signal(&signal)?;
+    record_safety_entry_quote(&store, &signal, now, "would_execute")?;
     record_closed_canary_loss(&store, now)?;
     let state_machine = safety_state_machine();
 
@@ -128,6 +130,37 @@ async fn execution_canary_state_machine_daily_loss_blocks_buy_before_reserve() -
     assert_eq!(summary.open_positions, 0);
     assert!(summary.daily_loss_sol >= 0.02);
     assert_eq!(summary.skipped_reason, Some("max_daily_loss"));
+    assert_eq!(summary.reserved, 0);
+    assert!(store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .is_none());
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
+async fn execution_canary_state_machine_entry_gate_runs_before_daily_loss() -> Result<()> {
+    let db_path = unique_safety_state_machine_test_path("entry-before-daily-loss");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let signal = safety_signal("buy-entry-before-daily-loss", now);
+    store.insert_copy_signal(&signal)?;
+    record_safety_entry_quote(&store, &signal, now, "would_skip")?;
+    record_closed_canary_loss(&store, now)?;
+    let state_machine = safety_state_machine();
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+
+    assert_eq!(summary.entry_gate_blocked, 1);
+    assert_eq!(summary.safety_blocked, 0);
+    assert_eq!(summary.skipped_reason, Some("entry_decision_not_execute"));
     assert_eq!(summary.reserved, 0);
     assert!(store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
@@ -196,6 +229,45 @@ fn record_closed_canary_loss(store: &SqliteStore, now: chrono::DateTime<Utc>) ->
         0.097,
         0.001,
         now + chrono::Duration::seconds(1),
+    )?;
+    Ok(())
+}
+
+fn record_safety_entry_quote(
+    store: &SqliteStore,
+    signal: &copybot_core_types::CopySignalRow,
+    now: chrono::DateTime<Utc>,
+    decision_status: &str,
+) -> Result<()> {
+    store.record_execution_quote_canary_event(
+        &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            event_id: format!("quote:entry:{}", signal.signal_id),
+            signal_id: Some(signal.signal_id.clone()),
+            shadow_closed_trade_id: None,
+            wallet_id: signal.wallet_id.clone(),
+            token: signal.token.clone(),
+            side: "buy".to_string(),
+            quote_status: "ok".to_string(),
+            request_ts: now,
+            signal_ts: Some(signal.ts),
+            decision_delay_ms: Some(7),
+            quote_latency_ms: Some(11),
+            leader_notional_sol: Some(signal.notional_sol),
+            quote_in_amount_raw: Some("10000000".to_string()),
+            quote_out_amount_raw: Some("123456".to_string()),
+            quote_response_json: None,
+            quote_price_sol: Some(0.081),
+            shadow_price_sol: Some(0.08),
+            slippage_bps: Some(50.0),
+            price_impact_pct: Some(0.01),
+            route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
+            priority_fee_status: Some("ok".to_string()),
+            priority_fee_lamports: Some(12_345),
+            priority_fee_json: Some("{\"recommended\":12345}".to_string()),
+            decision_status: Some(decision_status.to_string()),
+            decision_reason: Some("test".to_string()),
+            error: None,
+        },
     )?;
     Ok(())
 }

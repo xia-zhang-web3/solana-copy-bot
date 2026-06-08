@@ -66,10 +66,10 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
     }
     if !config.canary_max_daily_loss_sol.is_finite()
         || config.canary_max_daily_loss_sol < 0.0
-        || config.canary_max_daily_loss_sol > 0.05
+        || config.canary_max_daily_loss_sol > 0.20
     {
         return Err(anyhow!(
-            "execution.canary_max_daily_loss_sol must be finite and <= 0.05 SOL for canary rollout"
+            "execution.canary_max_daily_loss_sol must be finite and <= 0.20 SOL for canary rollout"
         ));
     }
     if config.canary_kill_switch_path.trim().is_empty() {

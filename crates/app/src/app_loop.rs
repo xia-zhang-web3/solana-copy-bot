@@ -449,6 +449,9 @@ async fn handle_execution_canary_for_shadow_signal(
                 state_machine_failed = summary.state_machine_failed,
                 state_machine_safety_blocked = summary.state_machine_safety_blocked,
                 state_machine_entry_gate_blocked = summary.state_machine_entry_gate_blocked,
+                state_machine_skipped_reason = summary.state_machine_skipped_reason.as_deref().unwrap_or("none"),
+                state_machine_open_positions = summary.state_machine_open_positions,
+                state_machine_daily_loss_sol = summary.state_machine_daily_loss_sol,
                 last_state_machine_order_id = summary.last_state_machine_order_id.as_deref().unwrap_or("none"),
                 "execution canary shadow-signal task"
             );

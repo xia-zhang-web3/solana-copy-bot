@@ -9,7 +9,7 @@ use std::path::Path;
 
 use crate::execution_canary_tiny_config_checks::push_config_checks;
 
-const TINY_MAX_RECENT_LOSS_SOL_24H: f64 = 0.05;
+const DEFAULT_TINY_MAX_RECENT_LOSS_SOL_24H: f64 = 0.05;
 const TINY_MAX_LATEST_METADATA_AGE_SECONDS: i64 = 6 * 60 * 60;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -122,12 +122,16 @@ pub(crate) fn build_tiny_execution_gate(
         "tiny execution should start from a flat canary position book",
     );
     push_submit_risk_checks(&mut checks, submit_risk);
+    let recent_loss_cap_sol = config
+        .map(|config| config.canary_max_daily_loss_sol)
+        .filter(|cap| cap.is_finite() && *cap > 0.0)
+        .unwrap_or(DEFAULT_TINY_MAX_RECENT_LOSS_SOL_24H);
     push_check(
         &mut checks,
         "recent_realized_loss_24h",
-        recent_loss_sol_24h <= TINY_MAX_RECENT_LOSS_SOL_24H,
+        recent_loss_sol_24h <= recent_loss_cap_sol,
         format!("{recent_loss_sol_24h:.6}"),
-        format!("<={TINY_MAX_RECENT_LOSS_SOL_24H:.6} SOL"),
+        format!("<={recent_loss_cap_sol:.6} SOL"),
         "recent canary accounting losses must stay under the tiny-test cap",
     );
     push_warning(
