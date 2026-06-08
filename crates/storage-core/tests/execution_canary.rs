@@ -362,6 +362,43 @@ fn execution_quote_entry_candidates_skip_recorded_quote_events() -> Result<()> {
 }
 
 #[test]
+fn execution_quote_priority_fee_retry_updates_existing_entry_event() -> Result<()> {
+    let store = open_migrated_store("execution-quote-priority-retry")?;
+    let now = ts("2026-05-30T08:00:00Z");
+    store.insert_copy_signal(&signal("buy-retry", "buy", now - Duration::seconds(20)))?;
+
+    let mut event = quote_event("quote:entry:buy-retry", Some("buy-retry"), None, "buy", now);
+    event.priority_fee_status = Some("skipped".to_string());
+    event.priority_fee_lamports = None;
+    event.priority_fee_json =
+        Some("{\"reason\":\"priority_fee_transient_unavailable\"}".to_string());
+    event.error = Some("priority_fee: operation timed out".to_string());
+    store.record_execution_quote_canary_event(&event)?;
+
+    let retry = store.list_execution_quote_canary_entry_priority_fee_retry_candidates(
+        "shadow_recorded",
+        now - Duration::minutes(1),
+        10,
+    )?;
+    let updated = store.mark_execution_quote_canary_priority_fee_ok(
+        "quote:entry:buy-retry",
+        33_000,
+        Some("{\"recommended\":33000}"),
+    )?;
+    let loaded = store
+        .load_latest_execution_quote_canary_entry_event("buy-retry")?
+        .expect("updated quote event should exist");
+
+    assert_eq!(retry.len(), 1);
+    assert_eq!(retry[0].signal_id, "buy-retry");
+    assert!(updated);
+    assert_eq!(loaded.priority_fee_status.as_deref(), Some("ok"));
+    assert_eq!(loaded.priority_fee_lamports, Some(33_000));
+    assert!(loaded.error.is_none());
+    Ok(())
+}
+
+#[test]
 fn execution_quote_close_candidates_skip_recorded_quote_events() -> Result<()> {
     let store = open_migrated_store("execution-quote-close")?;
     let now = ts("2026-05-30T08:00:00Z");

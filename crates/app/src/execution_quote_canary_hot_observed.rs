@@ -23,7 +23,16 @@ impl ExecutionQuoteCanaryRunner {
         }
         let signal_id = observed_buy_signal_id(swap);
         summary.entry_candidates = 1;
-        if self.record_existing_entry_event_if_present(store, &signal_id, &mut summary)? {
+        let mut priority_fee_sample = None;
+        if self
+            .record_existing_entry_event_if_present(
+                store,
+                &signal_id,
+                &mut priority_fee_sample,
+                &mut summary,
+            )
+            .await?
+        {
             return Ok(summary);
         }
         let mut bundle = match self
@@ -35,7 +44,6 @@ impl ExecutionQuoteCanaryRunner {
                 &signal_id, swap, now, &error,
             )),
         };
-        let mut priority_fee_sample = None;
         let priority = self
             .priority_fee_sample_if_needed(&mut priority_fee_sample)
             .await;

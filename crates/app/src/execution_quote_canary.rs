@@ -19,6 +19,8 @@ mod hot_observed;
 mod owned_sell;
 #[path = "execution_quote_canary_parallel_samples.rs"]
 mod parallel_samples;
+#[path = "execution_quote_canary_priority_retry.rs"]
+mod priority_retry;
 #[path = "execution_quote_canary_provider_compare.rs"]
 mod provider_compare;
 #[path = "execution_quote_canary_public_parallel.rs"]
@@ -92,6 +94,15 @@ impl ExecutionQuoteCanaryRunner {
             &mut summary,
         )
         .await?;
+        self.process_entry_priority_fee_retry_candidates(
+            store,
+            copy_signal_status,
+            since,
+            batch_limit,
+            &mut priority_fee_sample,
+            &mut summary,
+        )
+        .await?;
         self.process_close_candidates(
             store,
             now,
@@ -138,11 +149,15 @@ impl ExecutionQuoteCanaryRunner {
                     return Ok(summary);
                 };
                 summary.entry_candidates = 1;
-                if self.record_existing_entry_event_if_present(
-                    store,
-                    &copy_signal.signal_id,
-                    &mut summary,
-                )? {
+                if self
+                    .record_existing_entry_event_if_present(
+                        store,
+                        &copy_signal.signal_id,
+                        &mut priority_fee_sample,
+                        &mut summary,
+                    )
+                    .await?
+                {
                     return Ok(summary);
                 }
                 let priority = self
@@ -273,7 +288,7 @@ impl ExecutionQuoteCanaryRunner {
         Ok(())
     }
 
-    async fn priority_fee_sample_if_needed<'a>(
+    pub(super) async fn priority_fee_sample_if_needed<'a>(
         &self,
         sample: &'a mut Option<PriorityFeeSample>,
     ) -> Option<&'a PriorityFeeSample> {
@@ -310,29 +325,6 @@ impl ExecutionQuoteCanaryRunner {
         }
         self.record_provider_samples(store, &event, bundle.provider_samples, limit_bps)?;
         Ok(())
-    }
-
-    pub(super) fn record_existing_entry_event_if_present(
-        &self,
-        store: &SqliteStore,
-        signal_id: &str,
-        summary: &mut ExecutionQuoteCanaryTickSummary,
-    ) -> Result<bool> {
-        let Some(event) = store
-            .load_latest_execution_quote_canary_entry_event(signal_id)
-            .with_context(|| {
-                format!("failed loading existing execution entry quote event for {signal_id}")
-            })?
-        else {
-            return Ok(false);
-        };
-        if event.quote_status == QUOTE_STATUS_ERROR {
-            summary.entry_errors += 1;
-        }
-        apply_decision_summary(&event, summary);
-        summary.entry_existing += 1;
-        summary.last_event_id = Some(event.event_id);
-        Ok(true)
     }
 
     fn record_close_event(
@@ -583,7 +575,7 @@ fn close_quote_event(
     }
 }
 
-fn apply_decision_summary(
+pub(super) fn apply_decision_summary(
     event: &ExecutionQuoteCanaryEventInsert,
     summary: &mut ExecutionQuoteCanaryTickSummary,
 ) {

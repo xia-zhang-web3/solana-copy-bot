@@ -108,6 +108,66 @@ impl SqliteDiscoveryStore {
         Ok(signals)
     }
 
+    pub fn list_execution_quote_canary_entry_priority_fee_retry_candidates(
+        &self,
+        copy_signal_status: &str,
+        since: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<CopySignalRow>> {
+        ensure_execution_quote_canary_tables(self)?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    signal.signal_id,
+                    signal.wallet_id,
+                    signal.side,
+                    signal.token,
+                    signal.notional_sol,
+                    signal.notional_lamports,
+                    signal.notional_origin,
+                    signal.ts,
+                    signal.status
+                 FROM copy_signals AS signal
+                 JOIN execution_quote_canary_events AS event
+                   ON event.signal_id = signal.signal_id
+                  AND lower(event.side) = 'buy'
+                 WHERE signal.status = ?1
+                   AND signal.ts >= ?2
+                   AND lower(signal.side) = 'buy'
+                   AND event.quote_status = 'ok'
+                   AND event.decision_status = 'would_execute'
+                   AND (
+                        event.priority_fee_status IS NULL
+                        OR event.priority_fee_status != 'ok'
+                        OR event.priority_fee_lamports IS NULL
+                   )
+                   AND NOT EXISTS (
+                        SELECT 1 FROM orders
+                        WHERE orders.signal_id = signal.signal_id
+                   )
+                 ORDER BY signal.ts ASC, signal.signal_id ASC
+                 LIMIT ?3",
+            )
+            .context("failed to prepare execution quote canary priority fee retry query")?;
+        let mut rows = stmt
+            .query(params![
+                copy_signal_status,
+                since.to_rfc3339(),
+                limit.max(1) as i64
+            ])
+            .context("failed querying execution quote canary priority fee retries")?;
+
+        let mut signals = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating execution quote canary priority fee retries")?
+        {
+            signals.push(copy_signal_from_row(row)?);
+        }
+        Ok(signals)
+    }
+
     pub fn list_execution_quote_canary_close_candidates_for_signal(
         &self,
         signal_id: &str,
@@ -368,6 +428,34 @@ impl SqliteDiscoveryStore {
         } else {
             Ok(ExecutionQuoteCanaryRecordOutcome::Existing)
         }
+    }
+
+    pub fn mark_execution_quote_canary_priority_fee_ok(
+        &self,
+        event_id: &str,
+        lamports: u64,
+        priority_fee_json: Option<&str>,
+    ) -> Result<bool> {
+        ensure_execution_quote_canary_tables(self)?;
+        let lamports = i64::try_from(lamports).with_context(|| {
+            format!("execution_quote_canary_events.priority_fee_lamports exceeds i64: {lamports}")
+        })?;
+        let updated = self
+            .execute_with_retry(|conn| {
+                conn.execute(
+                    "UPDATE execution_quote_canary_events
+                     SET priority_fee_status = 'ok',
+                         priority_fee_lamports = ?2,
+                         priority_fee_json = ?3,
+                         error = NULL
+                     WHERE event_id = ?1",
+                    params![event_id, lamports, priority_fee_json],
+                )
+            })
+            .with_context(|| {
+                format!("failed updating execution quote canary priority fee for {event_id}")
+            })?;
+        Ok(updated > 0)
     }
 }
 
