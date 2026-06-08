@@ -9,6 +9,7 @@ pub(crate) const ENTRY_GATE_MISSING_QUOTE_METADATA: &str = "missing_quote_metada
 pub(crate) const ENTRY_GATE_QUOTE_STATUS_NOT_OK: &str = "quote_status_not_ok";
 pub(crate) const ENTRY_GATE_DECISION_NOT_EXECUTE: &str = "entry_decision_not_execute";
 pub(crate) const ENTRY_GATE_MISSING_QUOTE_AMOUNTS: &str = "missing_quote_amounts";
+pub(crate) const ENTRY_GATE_QUOTE_AMOUNT_MISMATCH: &str = "quote_amount_mismatch";
 pub(crate) const ENTRY_GATE_INVALID_QUOTE_PRICE: &str = "invalid_quote_price";
 pub(crate) const ENTRY_GATE_MISSING_ROUTE_PLAN: &str = "missing_route_plan";
 pub(crate) const ENTRY_GATE_MISSING_SLIPPAGE: &str = "missing_entry_slippage";
@@ -42,6 +43,9 @@ pub(crate) fn validate_execution_canary_entry_metadata(
     {
         return Some(ENTRY_GATE_MISSING_QUOTE_AMOUNTS);
     }
+    if !quote_input_matches_canary_buy_size(config, metadata.quote_in_amount_raw.as_deref()) {
+        return Some(ENTRY_GATE_QUOTE_AMOUNT_MISMATCH);
+    }
     if metadata
         .quote_price_sol
         .is_none_or(|price| !price.is_finite() || price <= 0.0)
@@ -72,4 +76,24 @@ pub(crate) fn validate_execution_canary_entry_metadata(
         return Some(ENTRY_GATE_PRIORITY_FEE_NOT_OK);
     }
     None
+}
+
+fn quote_input_matches_canary_buy_size(
+    config: &ExecutionConfig,
+    quote_in_raw: Option<&str>,
+) -> bool {
+    let Some(quote_in_raw) = quote_in_raw else {
+        return false;
+    };
+    let Ok(actual_lamports) = quote_in_raw.parse::<u128>() else {
+        return false;
+    };
+    if !config.canary_buy_size_sol.is_finite() || config.canary_buy_size_sol <= 0.0 {
+        return false;
+    }
+    let expected = (config.canary_buy_size_sol * 1_000_000_000.0).round();
+    if !expected.is_finite() || expected <= 0.0 {
+        return false;
+    }
+    actual_lamports == expected as u128
 }

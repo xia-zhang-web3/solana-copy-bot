@@ -120,6 +120,43 @@ async fn execution_canary_entry_gate_blocks_missing_priority_fee_lamports_before
 }
 
 #[tokio::test]
+async fn execution_canary_entry_gate_blocks_quote_amount_above_tiny_size_before_reserve(
+) -> Result<()> {
+    let db_path = unique_entry_gate_test_path("quote-amount-mismatch");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let signal = entry_gate_signal("buy-quote-amount-mismatch", now);
+    store.insert_copy_signal(&signal)?;
+    record_entry_gate_quote_with_amount(
+        &store,
+        &signal,
+        now,
+        "would_execute",
+        Some("ok"),
+        Some(12_345),
+        "200000000",
+    )?;
+    let state_machine = entry_gate_state_machine();
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+
+    assert_eq!(summary.entry_gate_blocked, 1);
+    assert_eq!(summary.skipped_reason, Some("quote_amount_mismatch"));
+    assert!(store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .is_none());
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
 async fn execution_canary_entry_gate_blocks_platform_fee_quote_before_reserve() -> Result<()> {
     let db_path = unique_entry_gate_test_path("platform-fee");
     let mut store = SqliteStore::open(&db_path)?;
@@ -222,6 +259,49 @@ fn record_entry_gate_quote_with_response(
     priority_fee_lamports: Option<u64>,
     quote_response_json: Option<String>,
 ) -> Result<()> {
+    record_entry_gate_quote_with_amount_and_response(
+        store,
+        signal,
+        now,
+        decision_status,
+        priority_fee_status,
+        priority_fee_lamports,
+        "10000000",
+        quote_response_json,
+    )
+}
+
+fn record_entry_gate_quote_with_amount(
+    store: &SqliteStore,
+    signal: &copybot_core_types::CopySignalRow,
+    now: chrono::DateTime<Utc>,
+    decision_status: &str,
+    priority_fee_status: Option<&str>,
+    priority_fee_lamports: Option<u64>,
+    quote_in_amount_raw: &str,
+) -> Result<()> {
+    record_entry_gate_quote_with_amount_and_response(
+        store,
+        signal,
+        now,
+        decision_status,
+        priority_fee_status,
+        priority_fee_lamports,
+        quote_in_amount_raw,
+        None,
+    )
+}
+
+fn record_entry_gate_quote_with_amount_and_response(
+    store: &SqliteStore,
+    signal: &copybot_core_types::CopySignalRow,
+    now: chrono::DateTime<Utc>,
+    decision_status: &str,
+    priority_fee_status: Option<&str>,
+    priority_fee_lamports: Option<u64>,
+    quote_in_amount_raw: &str,
+    quote_response_json: Option<String>,
+) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
             event_id: format!("quote:entry:{}", signal.signal_id),
@@ -236,7 +316,7 @@ fn record_entry_gate_quote_with_response(
             decision_delay_ms: Some(7),
             quote_latency_ms: Some(11),
             leader_notional_sol: Some(signal.notional_sol),
-            quote_in_amount_raw: Some("10000000".to_string()),
+            quote_in_amount_raw: Some(quote_in_amount_raw.to_string()),
             quote_out_amount_raw: Some("123456".to_string()),
             quote_response_json,
             quote_price_sol: Some(0.081),
