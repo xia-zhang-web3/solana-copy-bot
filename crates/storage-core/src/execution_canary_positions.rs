@@ -336,7 +336,7 @@ fn validate_slippage_inputs(slippage_bps: Option<f64>, soft_slippage_limit_bps: 
         ));
     }
     if let Some(slippage_bps) = slippage_bps {
-        if !slippage_bps.is_finite() || slippage_bps < 0.0 {
+        if !slippage_bps.is_finite() {
             return Err(anyhow!(
                 "invalid execution canary sell slippage_bps={slippage_bps}"
             ));

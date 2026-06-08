@@ -106,6 +106,23 @@ fn execution_canary_sell_decision_executes_inside_soft_slippage_limit() -> Resul
 }
 
 #[test]
+fn execution_canary_sell_decision_executes_negative_slippage_improvement() -> Result<()> {
+    let store = open_migrated_store("execution-canary-sell-negative-slippage")?;
+    record_open_position(&store)?;
+
+    let decision = store.execution_canary_sell_decision("TokenMint", Some(-3457.45), 100.0)?;
+
+    assert_eq!(
+        decision.decision_status,
+        EXECUTION_CANARY_SELL_DECISION_EXECUTE
+    );
+    assert_eq!(decision.decision_reason, "owned_position");
+    assert_eq!(decision.slippage_bps, Some(-3457.45));
+    assert!(decision.position.is_some());
+    Ok(())
+}
+
+#[test]
 fn execution_canary_sell_decision_force_exits_owned_position_above_soft_limit() -> Result<()> {
     let store = open_migrated_store("execution-canary-sell-force-exit")?;
     record_open_position(&store)?;
