@@ -1,8 +1,10 @@
 use crate::{
     execution_quote_canary::ensure_execution_quote_canary_tables,
-    observed_timestamp::parse_rfc3339_utc, schema::column_exists, ExecutionQuoteCanaryEventInsert,
-    SqliteDiscoveryStore, EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
-    EXECUTION_CANARY_POSITION_STATE_OPEN,
+    observed_timestamp::parse_rfc3339_utc, schema::column_exists, ExecutionCanaryCloseCandidate,
+    ExecutionQuoteCanaryEventInsert, SqliteDiscoveryStore,
+    EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET, EXECUTION_CANARY_POSITION_STATE_OPEN,
+    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE, SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE,
+    SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE, SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -216,6 +218,74 @@ impl SqliteDiscoveryStore {
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("failed reading execution quote canary close retry events")
     }
+
+    pub fn list_execution_quote_canary_owned_stale_close_candidates(
+        &self,
+        since: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<ExecutionCanaryCloseCandidate>> {
+        ensure_execution_quote_canary_tables(self)?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    closed.id,
+                    closed.signal_id,
+                    closed.wallet_id,
+                    closed.token,
+                    closed.qty,
+                    closed.qty_raw,
+                    closed.qty_decimals,
+                    closed.exit_value_sol,
+                    closed.closed_ts
+                 FROM shadow_closed_trades AS closed
+                 WHERE closed.closed_ts >= ?1
+                   AND closed.signal_id LIKE 'stale-close-%'
+                   AND COALESCE(closed.close_context, '') IN (?2, ?3, ?4, ?5)
+                   AND EXISTS (
+                        SELECT 1
+                        FROM positions AS pos
+                        WHERE pos.token = closed.token
+                          AND pos.accounting_bucket = ?6
+                          AND pos.state = ?7
+                          AND closed.closed_ts >= pos.opened_ts
+                   )
+                   AND NOT EXISTS (
+                        SELECT 1
+                        FROM execution_quote_canary_events AS event
+                        WHERE lower(event.side) = 'sell'
+                          AND (
+                              event.shadow_closed_trade_id = closed.id
+                              OR event.signal_id = closed.signal_id
+                          )
+                   )
+                   AND NOT EXISTS (
+                        SELECT 1
+                        FROM orders
+                        WHERE orders.signal_id = closed.signal_id
+                   )
+                 ORDER BY closed.closed_ts ASC, closed.id ASC
+                 LIMIT ?8",
+            )
+            .context("failed to prepare owned stale close quote canary candidate query")?;
+        let rows = stmt
+            .query_map(
+                params![
+                    since.to_rfc3339(),
+                    SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE,
+                    SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
+                    SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+                    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
+                    EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+                    EXECUTION_CANARY_POSITION_STATE_OPEN,
+                    i64::from(limit.max(1)),
+                ],
+                stale_close_candidate_from_row,
+            )
+            .context("failed querying owned stale close quote canary candidates")?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed reading owned stale close quote canary candidates")
+    }
 }
 
 fn quote_canary_event_from_row(
@@ -300,4 +370,61 @@ fn optional_i64_to_u64(field: &str, value: Option<i64>) -> Result<Option<u64>> {
             u64::try_from(raw).with_context(|| format!("{field} is negative or invalid: {raw}"))
         })
         .transpose()
+}
+
+fn stale_close_candidate_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ExecutionCanaryCloseCandidate> {
+    read_stale_close_candidate_row(row).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                error.to_string(),
+            )),
+        )
+    })
+}
+
+fn read_stale_close_candidate_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<ExecutionCanaryCloseCandidate> {
+    let qty_decimals_raw: Option<i64> = row
+        .get(6)
+        .context("failed reading shadow_closed_trades.qty_decimals")?;
+    let qty_decimals = qty_decimals_raw
+        .map(|value| {
+            u8::try_from(value)
+                .with_context(|| format!("invalid shadow_closed_trades.qty_decimals: {value}"))
+        })
+        .transpose()?;
+    let closed_ts_raw: String = row
+        .get(8)
+        .context("failed reading shadow_closed_trades.closed_ts")?;
+    Ok(ExecutionCanaryCloseCandidate {
+        id: row
+            .get(0)
+            .context("failed reading shadow_closed_trades.id")?,
+        signal_id: row
+            .get(1)
+            .context("failed reading shadow_closed_trades.signal_id")?,
+        wallet_id: row
+            .get(2)
+            .context("failed reading shadow_closed_trades.wallet_id")?,
+        token: row
+            .get(3)
+            .context("failed reading shadow_closed_trades.token")?,
+        qty: row
+            .get(4)
+            .context("failed reading shadow_closed_trades.qty")?,
+        qty_raw: row
+            .get(5)
+            .context("failed reading shadow_closed_trades.qty_raw")?,
+        qty_decimals,
+        exit_value_sol: row
+            .get(7)
+            .context("failed reading shadow_closed_trades.exit_value_sol")?,
+        closed_ts: parse_rfc3339_utc(&closed_ts_raw, "shadow_closed_trades.closed_ts")?,
+    })
 }

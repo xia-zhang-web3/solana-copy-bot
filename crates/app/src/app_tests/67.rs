@@ -50,6 +50,68 @@ async fn quote_canary_sweeps_owned_sell_signal_without_shadow_close() -> Result<
     Ok(())
 }
 
+#[tokio::test]
+async fn quote_canary_sweeps_owned_stale_close_for_open_position() -> Result<()> {
+    let db_path = unique_owned_sell_quote_test_path("owned-stale-close");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let opened = now - chrono::Duration::minutes(20);
+    let closed = now - chrono::Duration::minutes(10);
+    let stale_signal_id = "stale-close-42-1770000000000";
+    store.record_execution_canary_open_position(
+        "confirmed-stale-buy-order",
+        "TokenMint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        opened,
+    )?;
+    store.insert_shadow_closed_trade_exact_with_context(
+        stale_signal_id,
+        "leader-wallet",
+        "TokenMint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.2,
+        0.0001,
+        -0.1999,
+        copybot_storage_core::SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
+        opened,
+        closed,
+    )?;
+    let (base_url, server) = serve_owned_sell_quote().await?;
+    let mut config = owned_sell_quote_config(&base_url);
+    config.canary_tiny_submit_enabled = false;
+    config.canary_max_signal_age_seconds = 60;
+    let runner = ExecutionCanaryRunner::new(config);
+
+    let summary = runner.process_tick(&store, now).await?;
+    server.await?;
+    let signal = store
+        .load_copy_signal_by_signal_id(stale_signal_id)?
+        .expect("stale close should create a synthetic sell signal");
+    let event = store
+        .load_execution_quote_canary_event_by_id("quote:owned-stale-close:1")?
+        .expect("owned stale close quote event should be recorded");
+
+    assert_eq!(signal.side, "sell");
+    assert_eq!(signal.status, "shadow_recorded");
+    assert_eq!(summary.quote_close_inserted, 1);
+    assert_eq!(summary.quote_would_execute, 1);
+    assert_eq!(event.signal_id.as_deref(), Some(stale_signal_id));
+    assert_eq!(event.shadow_closed_trade_id, Some(1));
+    assert_eq!(event.quote_in_amount_raw.as_deref(), Some("10000"));
+    assert_eq!(event.quote_out_amount_raw.as_deref(), Some("1200000000"));
+    assert_eq!(event.decision_status.as_deref(), Some("would_execute"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
 async fn serve_owned_sell_quote() -> Result<(String, tokio::task::JoinHandle<()>)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base_url = format!("http://{}", listener.local_addr()?);
