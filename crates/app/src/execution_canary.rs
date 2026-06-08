@@ -15,6 +15,7 @@ use std::path::Path;
 use tracing::info;
 
 const CANARY_COPY_SIGNAL_STATUS: &str = "shadow_recorded";
+const CLOSE_QUOTE_RETRY_LOOKBACK_SECONDS: i64 = 6 * 60 * 60;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionCanaryTickSummary {
@@ -164,7 +165,7 @@ impl ExecutionCanaryRunner {
                     .await?;
                 self.process_latest_close_quote_event(store, &quote_summary, now, &mut summary)
                     .await?;
-                self.process_recent_close_quote_retries(store, now, since, &mut summary)
+                self.process_recent_close_quote_retries(store, now, &mut summary)
                     .await?;
                 apply_quote_summary(&mut summary, quote_summary);
             }
@@ -204,7 +205,7 @@ impl ExecutionCanaryRunner {
                     .await?;
                 self.process_latest_close_quote_event(store, &quote_summary, now, &mut summary)
                     .await?;
-                self.process_recent_close_quote_retries(store, now, since, &mut summary)
+                self.process_recent_close_quote_retries(store, now, &mut summary)
                     .await?;
                 apply_quote_summary(&mut summary, quote_summary);
             }
@@ -387,7 +388,6 @@ impl ExecutionCanaryRunner {
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,
-        since: DateTime<Utc>,
         summary: &mut ExecutionCanaryTickSummary,
     ) -> Result<()> {
         if !uses_swap_blueprint_state_machine(&self.config)
@@ -396,6 +396,7 @@ impl ExecutionCanaryRunner {
         {
             return Ok(());
         }
+        let since = now - Duration::seconds(CLOSE_QUOTE_RETRY_LOOKBACK_SECONDS);
         let event_ids = store
             .list_execution_quote_canary_close_submit_retry_event_ids(
                 since,

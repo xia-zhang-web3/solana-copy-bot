@@ -64,8 +64,15 @@ fn latest_execution_quote_canary_entry_event_loads_metadata_for_signal() -> Resu
 fn close_submit_retry_events_require_open_position_and_no_order() -> Result<()> {
     let store = open_migrated_store("execution-quote-canary-close-retry")?;
     let now = ts("2026-06-02T08:00:00Z");
+    let buy_signal = signal("buy-retry", now - Duration::seconds(10));
+    store.insert_copy_signal(&buy_signal)?;
+    let buy = store.reserve_execution_canary_order(
+        &buy_signal.signal_id,
+        "metis",
+        now - Duration::seconds(5),
+    )?;
     store.record_execution_canary_open_position(
-        "exec-canary:buy-filled",
+        &buy.order.order_id,
         "TokenMint",
         50.0,
         Some(TokenQuantity::new(50, 0)),
@@ -95,6 +102,64 @@ fn close_submit_retry_events_require_open_position_and_no_order() -> Result<()> 
     let already_reserved = store
         .list_execution_quote_canary_close_submit_retry_event_ids(now - Duration::seconds(1), 10)?;
     assert!(already_reserved.is_empty());
+    Ok(())
+}
+
+#[test]
+fn close_submit_retry_events_ignore_quotes_before_current_buy_submit() -> Result<()> {
+    let store = open_migrated_store("execution-quote-canary-close-retry-buy-boundary")?;
+    let now = ts("2026-06-02T08:00:00Z");
+    let buy_signal = signal("buy-boundary", now);
+    store.insert_copy_signal(&buy_signal)?;
+    let buy = store.reserve_execution_canary_order(&buy_signal.signal_id, "metis", now)?;
+    store.record_execution_canary_open_position(
+        &buy.order.order_id,
+        "TokenMint",
+        50.0,
+        Some(TokenQuantity::new(50, 0)),
+        0.01,
+        now + Duration::minutes(3),
+    )?;
+
+    let before_signal = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal("sell-before-buy-submit", now - Duration::minutes(1))
+    };
+    store.insert_copy_signal(&before_signal)?;
+    let mut before_event = quote_event(
+        "quote:close:before-buy-submit",
+        &before_signal,
+        now - Duration::minutes(1),
+        "12000000",
+    );
+    before_event.side = "sell".to_string();
+    before_event.shadow_closed_trade_id = Some(41);
+    before_event.quote_in_amount_raw = Some("50".to_string());
+    store.record_execution_quote_canary_event(&before_event)?;
+
+    let after_signal = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal("sell-after-buy-submit", now + Duration::seconds(30))
+    };
+    store.insert_copy_signal(&after_signal)?;
+    let mut after_event = quote_event(
+        "quote:close:after-buy-submit",
+        &after_signal,
+        now + Duration::seconds(30),
+        "12000000",
+    );
+    after_event.side = "sell".to_string();
+    after_event.shadow_closed_trade_id = Some(42);
+    after_event.quote_in_amount_raw = Some("50".to_string());
+    store.record_execution_quote_canary_event(&after_event)?;
+
+    let retry_events = store
+        .list_execution_quote_canary_close_submit_retry_event_ids(now - Duration::minutes(2), 10)?;
+
+    assert_eq!(
+        retry_events,
+        vec!["quote:close:after-buy-submit".to_string()]
+    );
     Ok(())
 }
 
