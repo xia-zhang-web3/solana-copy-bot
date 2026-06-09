@@ -142,12 +142,12 @@ fn priority_fee_rate_contract_rejects_too_aggressive_interval() {
 fn execution_canary_contract_accepts_live_tiny_daily_loss_budget() {
     let mut config = copybot_config::ExecutionConfig::default();
     config.canary_enabled = true;
-    config.canary_max_daily_loss_sol = 1.00;
+    config.canary_max_daily_loss_sol = 2.00;
 
     crate::config_contract::validate_execution_canary_contract(&config)
         .expect("live tiny daily loss budget should be accepted");
 
-    config.canary_max_daily_loss_sol = 1.01;
+    config.canary_max_daily_loss_sol = 2.01;
     let error = crate::config_contract::validate_execution_canary_contract(&config)
         .expect_err("daily loss budget above live tiny cap should be rejected");
 

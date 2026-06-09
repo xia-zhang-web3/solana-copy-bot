@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::execution_canary_quote_pnl_gate::TinyExecutionGateCheck;
 use crate::execution_signer_keypair_preflight::push_signer_guards;
 
-const TINY_MAX_DAILY_LOSS_SOL: f64 = 1.00;
+const TINY_MAX_DAILY_LOSS_SOL: f64 = 2.00;
 const TINY_MIN_RESERVE_SOL: f64 = 0.05;
 const TINY_MAX_PRIORITY_FEE_LAMPORTS: u64 = 10_000_000;
 const TINY_MAX_SLIPPAGE_BPS: f64 = 1_000.0;
