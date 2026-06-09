@@ -4,7 +4,8 @@ use copybot_core_types::{CopySignalRow, Lamports, COPY_SIGNAL_NOTIONAL_ORIGIN_EX
 use copybot_operators::execution_canary_quote_pnl::build_report_from_db_path;
 use copybot_storage_core::{
     ExecutionCanaryBuildPlanMetadata, ExecutionQuoteCanaryEventInsert, SqliteStore,
-    EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_SIMULATION_STATUS_FAILED,
+    EXECUTION_ERROR_BUILD_FAILED, EXECUTION_ERROR_SIMULATION_FAILED,
+    EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE, EXECUTION_SIMULATION_STATUS_FAILED,
     EXECUTION_SIMULATION_STATUS_PASSED,
 };
 use tempfile::tempdir;
@@ -153,6 +154,12 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
         "quote:sell:failed",
         opened_skip + Duration::seconds(5),
     )?;
+    record_terminal_no_route_order(&store, "sell-no-route", opened_skip + Duration::seconds(6))?;
+    record_pump_fun_bonding_curve_order(
+        &store,
+        "sell-pump-fun-bonding",
+        opened_skip + Duration::seconds(7),
+    )?;
     drop(store);
 
     let report = build_report_from_db_path(&db_path, ts("2026-06-02T13:00:00Z"));
@@ -240,6 +247,18 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
             && count.err_code == EXECUTION_ERROR_SIMULATION_FAILED
             && count.simulation_status == EXECUTION_SIMULATION_STATUS_FAILED
             && count.simulation_error_class == "custom_program_error:0x1788"
+            && count.orders == 1
+    }));
+    assert!(proof.order_failure_counts.iter().any(|count| {
+        count.side == "sell"
+            && count.err_code == EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE
+            && count.simulation_error_class == "terminal_no_route"
+            && count.orders == 1
+    }));
+    assert!(proof.order_failure_counts.iter().any(|count| {
+        count.side == "sell"
+            && count.err_code == EXECUTION_ERROR_BUILD_FAILED
+            && count.simulation_error_class == "pump_fun_bonding_curve_not_found"
             && count.orders == 1
     }));
     Ok(())
@@ -368,6 +387,42 @@ fn record_failed_simulation_order(
         signal_ts + Duration::milliseconds(160),
         EXECUTION_ERROR_SIMULATION_FAILED,
         "Transaction simulation failed: custom program error: 0x1788",
+    )?;
+    Ok(reserve.order.order_id)
+}
+
+fn record_terminal_no_route_order(
+    store: &SqliteStore,
+    signal_id: &str,
+    signal_ts: DateTime<Utc>,
+) -> Result<String> {
+    insert_signal(store, signal_id, "sell", "TokenNoRoute", signal_ts)?;
+    let reserve = store.reserve_execution_canary_order(signal_id, ROUTE, signal_ts)?;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        signal_ts + Duration::milliseconds(10),
+        EXECUTION_ERROR_BUILD_FAILED,
+        "owned_sell_quote_failed: NO_ROUTES_FOUND; pump_fun: Bonding curve for mint not found",
+    )?;
+    store.mark_execution_canary_terminal_sell_no_route_blocked(
+        &reserve.order.order_id,
+        "terminal_failed_sell_no_route_written_off",
+    )?;
+    Ok(reserve.order.order_id)
+}
+
+fn record_pump_fun_bonding_curve_order(
+    store: &SqliteStore,
+    signal_id: &str,
+    signal_ts: DateTime<Utc>,
+) -> Result<String> {
+    insert_signal(store, signal_id, "sell", "TokenPumpFunBonding", signal_ts)?;
+    let reserve = store.reserve_execution_canary_order(signal_id, ROUTE, signal_ts)?;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        signal_ts + Duration::milliseconds(10),
+        EXECUTION_ERROR_BUILD_FAILED,
+        "pump_fun paid quote returned HTTP 400: Bonding curve for mint not found",
     )?;
     Ok(reserve.order.order_id)
 }

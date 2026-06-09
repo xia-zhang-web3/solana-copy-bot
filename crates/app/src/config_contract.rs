@@ -1,6 +1,8 @@
 use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
 
+const EXECUTION_CANARY_MAX_DAILY_LOSS_SOL_CAP: f64 = 1.00;
+
 pub(crate) fn contains_placeholder_value(value: &str) -> bool {
     value.to_ascii_uppercase().contains("REPLACE_ME")
 }
@@ -66,10 +68,11 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
     }
     if !config.canary_max_daily_loss_sol.is_finite()
         || config.canary_max_daily_loss_sol < 0.0
-        || config.canary_max_daily_loss_sol > 0.20
+        || config.canary_max_daily_loss_sol > EXECUTION_CANARY_MAX_DAILY_LOSS_SOL_CAP
     {
         return Err(anyhow!(
-            "execution.canary_max_daily_loss_sol must be finite and <= 0.20 SOL for canary rollout"
+            "execution.canary_max_daily_loss_sol must be finite and <= {:.2} SOL for canary rollout",
+            EXECUTION_CANARY_MAX_DAILY_LOSS_SOL_CAP
         ));
     }
     if config.canary_kill_switch_path.trim().is_empty() {

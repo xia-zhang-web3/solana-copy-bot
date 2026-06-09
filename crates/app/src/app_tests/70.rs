@@ -91,7 +91,7 @@ async fn retry_candidate_sell_quote_error_marks_order_failed() -> Result<()> {
 }
 
 #[tokio::test]
-async fn terminal_no_route_sell_keeps_open_position_after_max_build_attempts() -> Result<()> {
+async fn terminal_no_route_sell_writes_off_open_position_after_max_build_attempts() -> Result<()> {
     let db_path = unique_retry_candidate_sell_test_path("terminal-no-route");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -164,9 +164,15 @@ async fn terminal_no_route_sell_keeps_open_position_after_max_build_attempts() -
 
     assert_eq!(
         summary.skipped_reason,
-        Some("terminal_failed_sell_no_route_kept_open")
+        Some("terminal_failed_sell_no_route_written_off")
     );
-    assert_eq!(summary.open_positions, 1);
+    assert_eq!(summary.sell_closed, 1);
+    assert_eq!(summary.open_positions, 0);
+    assert!((summary.last_pnl_sol + 0.01).abs() < 1e-9);
+    assert_eq!(
+        summary.last_close_status.as_deref(),
+        Some(copybot_storage_core::EXECUTION_CANARY_POSITION_CLOSE_CLOSED)
+    );
     assert_eq!(
         order.err_code.as_deref(),
         Some(copybot_storage_core::EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE)
@@ -175,15 +181,19 @@ async fn terminal_no_route_sell_keeps_open_position_after_max_build_attempts() -
         .simulation_error
         .as_deref()
         .unwrap_or_default()
-        .contains("terminal_failed_sell_no_route_kept_open"));
-    assert!(store.load_execution_canary_open_position(token)?.is_some());
+        .contains("terminal_failed_sell_no_route_written_off"));
+    assert!(store.load_execution_canary_open_position(token)?.is_none());
+    assert_eq!(
+        store.execution_canary_realized_loss_sol_since(now - chrono::Duration::hours(1))?,
+        0.01
+    );
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
 }
 
 #[tokio::test]
-async fn terminal_no_route_sell_reprobes_after_cooldown() -> Result<()> {
+async fn terminal_no_route_sell_write_off_stops_reprobe_after_cooldown() -> Result<()> {
     let db_path = unique_retry_candidate_sell_test_path("terminal-no-route-reprobe");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -235,8 +245,7 @@ async fn terminal_no_route_sell_reprobes_after_cooldown() -> Result<()> {
         now + chrono::Duration::seconds(9),
     )
     .await?;
-    let (base_url, server) = serve_quote_no_routes().await?;
-    let config = retry_candidate_sell_config(&base_url);
+    let config = retry_candidate_sell_config("http://127.0.0.1:9");
 
     let summary = crate::execution_canary_route::process_failed_sell_simulation_sweep(
         &config,
@@ -245,24 +254,39 @@ async fn terminal_no_route_sell_reprobes_after_cooldown() -> Result<()> {
     )
     .await?
     .expect("terminal no-route sweep should run");
-    server.await??;
     let order = store
         .load_execution_canary_order(&reserve.order.order_id)?
-        .expect("reprobed no-route order should remain recorded");
+        .expect("written-off no-route order should remain recorded");
 
-    assert_eq!(summary.failed, 1);
-    assert_eq!(summary.skipped_reason, Some("owned_sell_quote_error"));
+    assert_eq!(
+        summary,
+        crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary::default()
+    );
     assert_eq!(
         order.err_code.as_deref(),
-        Some(copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED)
+        Some(copybot_storage_core::EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE)
     );
-    assert_eq!(order.attempt, 1);
+    assert_eq!(order.attempt, 3);
     assert!(order
         .simulation_error
         .as_deref()
         .unwrap_or_default()
-        .contains("NO_ROUTES_FOUND"));
-    assert!(store.load_execution_canary_open_position(token)?.is_some());
+        .contains("terminal_failed_sell_no_route_written_off"));
+    assert!(store.load_execution_canary_open_position(token)?.is_none());
+
+    let direct_summary =
+        crate::execution_canary_route::process_tiny_submit_sell_quote_event_for_route(
+            &config,
+            &store,
+            "quote:close:terminal-no-route-reprobe",
+            now + chrono::Duration::seconds(701),
+        )
+        .await?
+        .expect("direct terminal no-route reprocess should stay bounded");
+    assert_eq!(direct_summary.existing, 1);
+    assert_eq!(direct_summary.sell_no_position, 1);
+    assert_eq!(direct_summary.open_positions, 0);
+    assert_eq!(direct_summary.skipped_reason, Some("no_owned_position"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())

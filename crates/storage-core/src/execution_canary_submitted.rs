@@ -155,6 +155,18 @@ impl SqliteDiscoveryStore {
                         WHERE pos.token = copy_signals.token
                           AND pos.accounting_bucket = ?8
                           AND pos.state = ?9
+                          AND (
+                              (
+                                  pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
+                                  AND event.request_ts >= pos.opened_ts
+                              )
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM orders AS buy_order
+                                  WHERE pos.position_id = 'exec-canary-pos:' || buy_order.order_id
+                                    AND event.request_ts >= pos.opened_ts
+                              )
+                          )
                    )
                  ORDER BY orders.submit_ts ASC, event.request_ts DESC, event.event_id DESC
                  LIMIT ?10",
@@ -264,6 +276,18 @@ impl SqliteDiscoveryStore {
                         WHERE pos.token = copy_signals.token
                           AND pos.accounting_bucket = ?8
                           AND pos.state = ?9
+                          AND (
+                              (
+                                  pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
+                                  AND event.request_ts >= pos.opened_ts
+                              )
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM orders AS buy_order
+                                  WHERE pos.position_id = 'exec-canary-pos:' || buy_order.order_id
+                                    AND event.request_ts >= pos.opened_ts
+                              )
+                          )
                    )
                  ORDER BY COALESCE(orders.confirm_ts, orders.submit_ts) ASC,
                           event.request_ts DESC,

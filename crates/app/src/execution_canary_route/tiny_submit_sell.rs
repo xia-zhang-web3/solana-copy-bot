@@ -75,6 +75,15 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
             if retry_failed_sell_candidate_ready(&existing) {
                 Some(existing)
             } else if terminal_failed_sell_no_route_retry_ready(&existing, now) {
+                if store
+                    .load_execution_canary_open_position(&signal.token)?
+                    .is_none()
+                {
+                    summary.open_positions = store.execution_canary_open_position_count()?;
+                    summary.sell_no_position = 1;
+                    summary.skipped_reason = Some("no_owned_position");
+                    return Ok(Some(summary));
+                }
                 Some(
                     store.mark_execution_canary_terminal_sell_no_route_retry_candidate(
                         &existing.order_id,

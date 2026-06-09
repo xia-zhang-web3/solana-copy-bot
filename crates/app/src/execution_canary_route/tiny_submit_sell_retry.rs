@@ -4,10 +4,12 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
-    ExecutionCanaryOrder, SqliteStore, EXECUTION_ERROR_BUILD_FAILED,
-    EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE,
-    EXECUTION_SIMULATION_STATUS_NOT_RUN, EXECUTION_STATUS_CANARY_CANDIDATE,
-    EXECUTION_STATUS_CANARY_FAILED,
+    ExecutionCanaryOrder, ExecutionCanaryPositionCloseResult, SqliteStore,
+    EXECUTION_CANARY_POSITION_CLOSE_CLOSED, EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED,
+    EXECUTION_CANARY_POSITION_CLOSE_NO_POSITION, EXECUTION_CANARY_POSITION_CLOSE_PARTIAL,
+    EXECUTION_ERROR_BUILD_FAILED, EXECUTION_ERROR_SIMULATION_FAILED,
+    EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE, EXECUTION_SIMULATION_STATUS_NOT_RUN,
+    EXECUTION_STATUS_CANARY_CANDIDATE, EXECUTION_STATUS_CANARY_FAILED,
 };
 
 pub(super) const RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON: &str =
@@ -15,6 +17,8 @@ pub(super) const RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON: &str =
 pub(super) const RETRY_TERMINAL_SELL_NO_ROUTE_REASON: &str =
     "retry_terminal_sell_no_route_after_cooldown";
 pub(super) const TERMINAL_SELL_NO_ROUTE_REPROBE_COOLDOWN_SECONDS: i64 = 600;
+const TERMINAL_SELL_WRITE_OFF_EXIT_PRICE_SOL: f64 = 0.0;
+const TERMINAL_SELL_WRITE_OFF_DUST_QTY_EPSILON: f64 = 1e-12;
 
 pub(super) fn next_failed_sell_retry_event_id(
     config: &ExecutionConfig,
@@ -132,7 +136,7 @@ pub(super) fn terminal_failed_sell_simulation(
 pub(super) fn hold_terminal_failed_sell_simulation(
     store: &SqliteStore,
     order: &ExecutionCanaryOrder,
-    _now: DateTime<Utc>,
+    now: DateTime<Utc>,
 ) -> Result<ExecutionCanaryStateMachineSummary> {
     let mut summary = ExecutionCanaryStateMachineSummary {
         sell_candidates: 1,
@@ -148,28 +152,37 @@ pub(super) fn hold_terminal_failed_sell_simulation(
         summary.skipped_reason = Some("terminal_failed_sell_side_mismatch");
         return Ok(summary);
     }
-    if store
-        .load_execution_canary_open_position(&signal.token)?
-        .is_none()
-    {
+    let Some(position) = store.load_execution_canary_open_position(&signal.token)? else {
         summary.sell_no_position = 1;
         summary.skipped_reason = Some("no_owned_position");
         return Ok(summary);
-    }
-    store.mark_execution_canary_terminal_sell_simulation_blocked(
+    };
+    let terminal_order = store.mark_execution_canary_terminal_sell_simulation_blocked(
         &order.order_id,
-        "terminal_failed_sell_simulation_kept_open",
+        "terminal_failed_sell_simulation_written_off",
     )?;
-    summary.open_positions = store.execution_canary_open_position_count()?;
-    summary.last_error = order.simulation_error.clone();
-    summary.skipped_reason = Some("terminal_failed_sell_simulation_kept_open");
+    let close_result = store.close_execution_canary_open_position(
+        &signal.token,
+        position.qty,
+        position.qty_exact,
+        TERMINAL_SELL_WRITE_OFF_EXIT_PRICE_SOL,
+        TERMINAL_SELL_WRITE_OFF_DUST_QTY_EPSILON,
+        now,
+    )?;
+    record_terminal_write_off_summary(
+        store,
+        &mut summary,
+        &terminal_order,
+        close_result,
+        "terminal_failed_sell_simulation_written_off",
+    )?;
     Ok(summary)
 }
 
 pub(super) fn hold_terminal_failed_sell_no_route(
     store: &SqliteStore,
     order: &ExecutionCanaryOrder,
-    _now: DateTime<Utc>,
+    now: DateTime<Utc>,
 ) -> Result<ExecutionCanaryStateMachineSummary> {
     let mut summary = ExecutionCanaryStateMachineSummary {
         sell_candidates: 1,
@@ -185,20 +198,67 @@ pub(super) fn hold_terminal_failed_sell_no_route(
         summary.skipped_reason = Some("terminal_failed_sell_side_mismatch");
         return Ok(summary);
     }
-    if store
-        .load_execution_canary_open_position(&signal.token)?
-        .is_none()
-    {
+    let Some(position) = store.load_execution_canary_open_position(&signal.token)? else {
         summary.sell_no_position = 1;
         summary.skipped_reason = Some("no_owned_position");
         return Ok(summary);
-    }
-    store.mark_execution_canary_terminal_sell_no_route_blocked(
+    };
+    let terminal_order = store.mark_execution_canary_terminal_sell_no_route_blocked(
         &order.order_id,
-        "terminal_failed_sell_no_route_kept_open",
+        "terminal_failed_sell_no_route_written_off",
     )?;
+    let close_result = store.close_execution_canary_open_position(
+        &signal.token,
+        position.qty,
+        position.qty_exact,
+        TERMINAL_SELL_WRITE_OFF_EXIT_PRICE_SOL,
+        TERMINAL_SELL_WRITE_OFF_DUST_QTY_EPSILON,
+        now,
+    )?;
+    record_terminal_write_off_summary(
+        store,
+        &mut summary,
+        &terminal_order,
+        close_result,
+        "terminal_failed_sell_no_route_written_off",
+    )?;
+    Ok(summary)
+}
+
+fn record_terminal_write_off_summary(
+    store: &SqliteStore,
+    summary: &mut ExecutionCanaryStateMachineSummary,
+    order: &ExecutionCanaryOrder,
+    close_result: ExecutionCanaryPositionCloseResult,
+    reason: &'static str,
+) -> Result<()> {
+    summary.last_close_status = Some(close_result.close_status.clone());
+    summary.last_closed_qty = close_result.closed_qty;
+    summary.last_pnl_sol = close_result.pnl_sol;
+    match close_result.close_status.as_str() {
+        EXECUTION_CANARY_POSITION_CLOSE_NO_POSITION => {
+            summary.sell_no_position = 1;
+            summary.skipped_reason = Some("no_owned_position");
+        }
+        EXECUTION_CANARY_POSITION_CLOSE_PARTIAL => {
+            summary.sell_closed = 1;
+            summary.sell_partial = 1;
+            summary.skipped_reason = Some(reason);
+        }
+        EXECUTION_CANARY_POSITION_CLOSE_CLOSED => {
+            summary.sell_closed = 1;
+            summary.skipped_reason = Some(reason);
+        }
+        EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED => {
+            summary.sell_closed = 1;
+            summary.sell_dust_closed = 1;
+            summary.skipped_reason = Some(reason);
+        }
+        _ => {
+            summary.skipped_reason = Some("unsupported_terminal_write_off_close_status");
+        }
+    }
     summary.open_positions = store.execution_canary_open_position_count()?;
     summary.last_error = order.simulation_error.clone();
-    summary.skipped_reason = Some("terminal_failed_sell_no_route_kept_open");
-    Ok(summary)
+    Ok(())
 }

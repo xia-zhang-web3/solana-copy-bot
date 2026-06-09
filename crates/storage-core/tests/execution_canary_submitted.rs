@@ -235,8 +235,15 @@ fn retry_candidate_sell_event_lookup_includes_existing_retry_candidate_order() -
     let now = ts("2026-06-08T12:30:00Z");
     let signal_id = "sell-retry-candidate";
     let route = "metis-swap-instructions-dry-run";
+    let buy_order_id = submitted_order(
+        &store,
+        "buy-retry-candidate",
+        route,
+        "tx-buy-retry-candidate",
+        now - Duration::seconds(10),
+    )?;
     store.record_execution_canary_open_position(
-        "exec-canary:buy-filled",
+        &buy_order_id,
         "TokenMint",
         10.0,
         Some(TokenQuantity::new(10_000, 3)),
