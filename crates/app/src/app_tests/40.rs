@@ -72,7 +72,8 @@ async fn execution_canary_state_machine_max_open_positions_blocks_buy_before_res
 }
 
 #[tokio::test]
-async fn execution_canary_state_machine_stale_open_position_does_not_block_buy() -> Result<()> {
+async fn execution_canary_state_machine_stale_open_position_blocks_buy_without_write_off(
+) -> Result<()> {
     let db_path = unique_safety_state_machine_test_path("stale-open");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -97,11 +98,12 @@ async fn execution_canary_state_machine_stale_open_position_does_not_block_buy()
         .process_buy_candidate(&store, &signal, now)
         .await?;
 
-    assert_eq!(summary.safety_blocked, 0);
-    assert_eq!(summary.open_positions, 0);
-    assert!((summary.daily_loss_sol - 0.01).abs() < 1e-9);
-    assert_eq!(summary.reserved, 1);
-    assert_eq!(store.execution_canary_open_position_count()?, 0);
+    assert_eq!(summary.safety_blocked, 1);
+    assert_eq!(summary.open_positions, 1);
+    assert_eq!(summary.daily_loss_sol, 0.0);
+    assert_eq!(summary.skipped_reason, Some("max_open_positions"));
+    assert_eq!(summary.reserved, 0);
+    assert_eq!(store.execution_canary_open_position_count()?, 1);
 
     let _ = std::fs::remove_file(db_path);
     Ok(())

@@ -4,8 +4,8 @@ use super::tiny_submit::{
 };
 use super::tiny_submit_sell_retry::{
     failed_sell_build_retry_ready, failed_sell_simulation_retry_ready,
-    retry_failed_sell_candidate_ready, terminal_failed_sell_simulation,
-    write_off_terminal_failed_sell_simulation, RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
+    hold_terminal_failed_sell_simulation, retry_failed_sell_candidate_ready,
+    terminal_failed_sell_simulation, RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
 };
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_canary_submit_contract::ExecutionTinySubmitGate;
@@ -229,7 +229,7 @@ pub(super) async fn process_failed_sell_simulation_sweep_for_route(
         return Ok(ExecutionCanaryStateMachineSummary::default());
     };
     if terminal_failed_sell_simulation(config, &order) {
-        return write_off_terminal_failed_sell_simulation(store, &order, now);
+        return hold_terminal_failed_sell_simulation(store, &order, now);
     }
     let Some(metadata) = store.load_execution_canary_build_plan_metadata(&order.order_id)? else {
         return Ok(ExecutionCanaryStateMachineSummary::default());

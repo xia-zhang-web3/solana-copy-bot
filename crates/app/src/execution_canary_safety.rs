@@ -4,8 +4,6 @@ use copybot_config::ExecutionConfig;
 use copybot_storage_core::SqliteStore;
 use std::path::Path;
 
-const EXECUTION_CANARY_STALE_OPEN_POSITION_WRITE_OFF_SECONDS: i64 = 15 * 60;
-
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionCanarySafetySnapshot {
     pub(crate) blocked_reason: Option<&'static str>,
@@ -25,17 +23,7 @@ pub(crate) fn pre_submit_safety_snapshot(
         });
     }
 
-    let mut open_positions = store.execution_canary_open_position_count()?;
-    if open_positions >= u64::from(config.canary_max_open_positions) {
-        let closed_stale_positions = store
-            .close_stale_execution_canary_open_positions_as_zero_loss(
-                now,
-                EXECUTION_CANARY_STALE_OPEN_POSITION_WRITE_OFF_SECONDS,
-            )?;
-        if closed_stale_positions > 0 {
-            open_positions = store.execution_canary_open_position_count()?;
-        }
-    }
+    let open_positions = store.execution_canary_open_position_count()?;
     if open_positions >= u64::from(config.canary_max_open_positions) {
         return Ok(ExecutionCanarySafetySnapshot {
             blocked_reason: Some("max_open_positions"),

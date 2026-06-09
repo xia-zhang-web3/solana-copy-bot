@@ -4,7 +4,7 @@ use copybot_core_types::{
 };
 
 #[tokio::test]
-async fn terminal_failed_sell_simulation_sweep_writes_off_open_position() -> Result<()> {
+async fn terminal_failed_sell_simulation_sweep_keeps_open_position() -> Result<()> {
     let db_path = unique_terminal_write_off_test_path("terminal-failed-sell");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -47,21 +47,22 @@ async fn terminal_failed_sell_simulation_sweep_writes_off_open_position() -> Res
         .expect("failed sell order should remain recorded");
 
     assert_eq!(summary.existing, 1);
-    assert_eq!(summary.sell_closed, 1);
-    assert_eq!(summary.last_pnl_sol, -0.01);
+    assert_eq!(summary.sell_closed, 0);
+    assert_eq!(summary.open_positions, 1);
+    assert_eq!(summary.last_pnl_sol, 0.0);
     assert_eq!(
         summary.skipped_reason,
-        Some("terminal_failed_sell_simulation_write_off")
+        Some("terminal_failed_sell_simulation_kept_open")
     );
     assert_eq!(order.attempt, 3);
     assert_eq!(
-        order.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_FAILED
+        order.err_code.as_deref(),
+        Some(copybot_storage_core::EXECUTION_ERROR_TERMINAL_SELL_SIMULATION_FAILED)
     );
-    assert!(store.load_execution_canary_open_position(token)?.is_none());
+    assert!(store.load_execution_canary_open_position(token)?.is_some());
     assert_eq!(
         store.execution_canary_realized_loss_sol_since(now - chrono::Duration::hours(1))?,
-        0.01
+        0.0
     );
 
     let _ = std::fs::remove_file(db_path);

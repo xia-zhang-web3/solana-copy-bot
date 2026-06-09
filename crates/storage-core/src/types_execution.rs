@@ -349,6 +349,7 @@ pub const EXECUTION_SIMULATION_STATUS_FAILED: &str = "failed";
 pub const EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT: &str = "skipped_no_submit";
 pub const EXECUTION_ERROR_BUILD_FAILED: &str = "build_failed";
 pub const EXECUTION_ERROR_SIMULATION_FAILED: &str = "simulation_failed";
+pub const EXECUTION_ERROR_TERMINAL_SELL_SIMULATION_FAILED: &str = "terminal_sell_simulation_failed";
 pub const EXECUTION_ERROR_SUBMIT_PLAN_FAILED: &str = "submit_plan_failed";
 pub const EXECUTION_ERROR_SIGNING_ENVELOPE_FAILED: &str = "signing_envelope_failed";
 pub const EXECUTION_ERROR_CONFIRMATION_FAILED: &str = "confirmation_failed";

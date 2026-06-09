@@ -4,9 +4,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
-    ExecutionCanaryOrder, SqliteStore, EXECUTION_CANARY_POSITION_CLOSE_CLOSED,
-    EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED, EXECUTION_CANARY_POSITION_CLOSE_NO_POSITION,
-    EXECUTION_CANARY_POSITION_CLOSE_PARTIAL, EXECUTION_ERROR_BUILD_FAILED,
+    ExecutionCanaryOrder, SqliteStore, EXECUTION_ERROR_BUILD_FAILED,
     EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_SIMULATION_STATUS_NOT_RUN,
     EXECUTION_STATUS_CANARY_CANDIDATE, EXECUTION_STATUS_CANARY_FAILED,
 };
@@ -60,10 +58,10 @@ pub(super) fn terminal_failed_sell_simulation(
         && order.attempt >= config.max_submit_attempts.max(1)
 }
 
-pub(super) fn write_off_terminal_failed_sell_simulation(
+pub(super) fn hold_terminal_failed_sell_simulation(
     store: &SqliteStore,
     order: &ExecutionCanaryOrder,
-    now: DateTime<Utc>,
+    _now: DateTime<Utc>,
 ) -> Result<ExecutionCanaryStateMachineSummary> {
     let mut summary = ExecutionCanaryStateMachineSummary {
         sell_candidates: 1,
@@ -79,41 +77,20 @@ pub(super) fn write_off_terminal_failed_sell_simulation(
         summary.skipped_reason = Some("terminal_failed_sell_side_mismatch");
         return Ok(summary);
     }
-    let Some(position) = store.load_execution_canary_open_position(&signal.token)? else {
+    if store
+        .load_execution_canary_open_position(&signal.token)?
+        .is_none()
+    {
         summary.sell_no_position = 1;
         summary.skipped_reason = Some("no_owned_position");
         return Ok(summary);
-    };
-
-    let close = store.close_execution_canary_open_position(
-        &signal.token,
-        position.qty,
-        position.qty_exact,
-        0.0,
-        0.0,
-        now,
-    )?;
-    summary.last_close_status = Some(close.close_status.clone());
-    summary.last_closed_qty = close.closed_qty;
-    summary.last_pnl_sol = close.pnl_sol;
-    summary.skipped_reason = Some("terminal_failed_sell_simulation_write_off");
-    match close.close_status.as_str() {
-        EXECUTION_CANARY_POSITION_CLOSE_NO_POSITION => {
-            summary.sell_no_position = 1;
-            summary.skipped_reason = Some("no_owned_position");
-        }
-        EXECUTION_CANARY_POSITION_CLOSE_PARTIAL => {
-            summary.sell_closed = 1;
-            summary.sell_partial = 1;
-        }
-        EXECUTION_CANARY_POSITION_CLOSE_CLOSED => {
-            summary.sell_closed = 1;
-        }
-        EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED => {
-            summary.sell_closed = 1;
-            summary.sell_dust_closed = 1;
-        }
-        _ => summary.skipped_reason = Some("unsupported_terminal_write_off_status"),
     }
+    store.mark_execution_canary_terminal_sell_simulation_blocked(
+        &order.order_id,
+        "terminal_failed_sell_simulation_kept_open",
+    )?;
+    summary.open_positions = store.execution_canary_open_position_count()?;
+    summary.last_error = order.simulation_error.clone();
+    summary.skipped_reason = Some("terminal_failed_sell_simulation_kept_open");
     Ok(summary)
 }
