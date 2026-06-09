@@ -14,7 +14,9 @@ use copybot_core_types::CopySignalRow;
 use copybot_storage_core::SqliteStore;
 
 mod tiny_submit;
+mod tiny_submit_buy_retry;
 mod tiny_submit_orphan_recovery;
+mod tiny_submit_request;
 mod tiny_submit_retry;
 mod tiny_submit_sell;
 mod tiny_submit_sell_metadata;

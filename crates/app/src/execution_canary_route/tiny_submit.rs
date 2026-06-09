@@ -1,3 +1,7 @@
+use super::tiny_submit_buy_retry::{
+    buy_retry_decision_for_signal, next_failed_buy_retry_signal, BuyRetryDecision,
+};
+use super::tiny_submit_request::build_submit_request;
 use super::tiny_submit_retry::{
     is_tiny_submit_retry_ready, retry_existing_simulated_tiny_submit_order,
     TINY_SUBMIT_RETRY_AFTER_UNKNOWN_SUBMIT_TIMEOUT_REASON,
@@ -16,12 +20,10 @@ use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_canary_submit_contract::{
     ExecutionTinySubmitGate, TINY_SUBMIT_RETRY_AFTER_RPC_NOT_SENT_REASON,
 };
-use crate::execution_quote_canary_helpers::quote_canary_slippage_limit_bps;
 use crate::execution_submit_adapter::{
-    cap_execution_priority_fee_lamports, reconcile_execution_tiny_submit_confirmation,
-    record_execution_tiny_submit_confirm_path, ExecutionSubmitAdapter, ExecutionSubmitRequest,
-    ExecutionTinySubmitConfirmPathOutcome, JupiterMetisDryRunExecutionAdapter,
-    RpcExecutionSubmitTransport,
+    reconcile_execution_tiny_submit_confirmation, record_execution_tiny_submit_confirm_path,
+    ExecutionSubmitAdapter, ExecutionSubmitRequest, ExecutionTinySubmitConfirmPathOutcome,
+    JupiterMetisDryRunExecutionAdapter, RpcExecutionSubmitTransport,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -55,12 +57,21 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
     if apply_safety(config, store, now, &mut summary)? {
         return Ok(summary);
     }
-    if let Some(existing) = store.load_execution_canary_order_by_signal(&signal.signal_id)? {
-        summary.existing = 1;
-        summary.last_order_id = Some(existing.order_id.clone());
-        reconcile_existing_tiny_submit_order(config, store, &existing, now, &mut summary).await?;
-        return Ok(summary);
-    }
+    let retry_order = match buy_retry_decision_for_signal(config, store, &signal.signal_id, now)? {
+        BuyRetryDecision::Retry(order) => {
+            summary.existing = 1;
+            summary.last_order_id = Some(order.order_id.clone());
+            Some(order)
+        }
+        BuyRetryDecision::Reconcile(existing) => {
+            summary.existing = 1;
+            summary.last_order_id = Some(existing.order_id.clone());
+            reconcile_existing_tiny_submit_order(config, store, &existing, now, &mut summary)
+                .await?;
+            return Ok(summary);
+        }
+        BuyRetryDecision::None => None,
+    };
     let metadata = load_execution_build_plan_metadata(store, &signal.signal_id)?;
     let http = reqwest::Client::new();
     let metadata = refresh_tiny_buy_build_plan_metadata(&http, config, signal, metadata).await?;
@@ -70,16 +81,22 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
         return Ok(summary);
     }
 
-    let reserve =
-        store.reserve_execution_canary_order(&signal.signal_id, &config.canary_route, now)?;
-    summary.last_order_id = Some(reserve.order.order_id.clone());
-    if reserve.outcome == ExecutionCanaryRecordOutcome::Existing {
-        summary.existing = 1;
-        return Ok(summary);
-    }
-    summary.reserved = 1;
+    let order = if let Some(order) = retry_order {
+        summary.last_order_id = Some(order.order_id.clone());
+        order
+    } else {
+        let reserve =
+            store.reserve_execution_canary_order(&signal.signal_id, &config.canary_route, now)?;
+        summary.last_order_id = Some(reserve.order.order_id.clone());
+        if reserve.outcome == ExecutionCanaryRecordOutcome::Existing {
+            summary.existing = 1;
+            return Ok(summary);
+        }
+        summary.reserved = 1;
+        reserve.order
+    };
 
-    let request = build_submit_request(config, signal, &reserve.order, metadata);
+    let request = build_submit_request(config, signal, &order, metadata);
     let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let Some(envelope) =
         build_simulated_signed_envelope(store, &adapter, &request, now, &mut summary).await?
@@ -147,6 +164,12 @@ pub(crate) async fn process_tiny_submit_reconciliation_sweep_for_route(
         summary.existing += 1;
         summary.last_order_id = Some(order.order_id.clone());
         reconcile_existing_tiny_submit_order(config, store, &order, now, &mut summary).await?;
+    }
+    if summary.existing > 0 {
+        return Ok(summary);
+    }
+    if let Some(signal) = next_failed_buy_retry_signal(config, store, limit)? {
+        return process_tiny_submit_state_machine_for_route(config, store, &signal, now).await;
     }
     Ok(summary)
 }
@@ -270,29 +293,6 @@ pub(super) fn apply_tiny_submit_confirm_path_outcome(
     summary.sell_no_position = outcome.sell_no_position;
     summary.last_confirm_reason = outcome.reason.clone();
     summary.last_error = outcome.error.or(outcome.reason);
-}
-
-pub(super) fn build_submit_request(
-    config: &ExecutionConfig,
-    signal: &CopySignalRow,
-    order: &copybot_storage_core::ExecutionCanaryOrder,
-    metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata,
-) -> ExecutionSubmitRequest {
-    let metadata = cap_execution_priority_fee_lamports(config, metadata);
-    ExecutionSubmitRequest {
-        order_id: order.order_id.clone(),
-        signal_id: signal.signal_id.clone(),
-        client_order_id: order.client_order_id.clone(),
-        attempt: order.attempt,
-        route: config.canary_route.clone(),
-        wallet_id: signal.wallet_id.clone(),
-        token: signal.token.clone(),
-        side: signal.side.clone(),
-        buy_size_sol: config.canary_buy_size_sol,
-        slippage_tolerance_bps: quote_canary_slippage_limit_bps(config, signal.side.as_str()),
-        wallet_pubkey: config.canary_wallet_pubkey.clone(),
-        metadata,
-    }
 }
 
 pub(super) async fn build_simulated_signed_envelope(

@@ -225,7 +225,9 @@ fn swap_transaction_response_summary(
 ) -> Result<SwapTransactionDryRunResult> {
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
         return Err(anyhow!(
-            "swap transaction dry-run error: {}",
+            "swap transaction dry-run error source={} shared_accounts_disabled={}: {}",
+            source.summary_tag(shared_accounts_disabled),
+            shared_accounts_disabled,
             truncate_for_log(&error.to_string(), 240)
         ));
     }
@@ -234,7 +236,9 @@ fn swap_transaction_response_summary(
         .filter(|error| !error.is_null())
     {
         return Err(anyhow!(
-            "swap transaction dry-run simulation error: {}",
+            "swap transaction dry-run simulation error source={} shared_accounts_disabled={}: {}",
+            source.summary_tag(shared_accounts_disabled),
+            shared_accounts_disabled,
             truncate_for_log(&error.to_string(), 240)
         ));
     }

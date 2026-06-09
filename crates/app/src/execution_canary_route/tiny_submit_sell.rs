@@ -1,7 +1,8 @@
 use super::tiny_submit::{
-    apply_tiny_submit_confirm_path_outcome, build_simulated_signed_envelope, build_submit_request,
+    apply_tiny_submit_confirm_path_outcome, build_simulated_signed_envelope,
     reconcile_existing_tiny_submit_order, tiny_submit_runtime_block_reason,
 };
+use super::tiny_submit_request::build_submit_request;
 use super::tiny_submit_sell_metadata::{owned_position_sell_metadata, validate_tiny_sell_metadata};
 use super::tiny_submit_sell_retry::{
     failed_sell_build_retry_ready, failed_sell_simulation_retry_ready,

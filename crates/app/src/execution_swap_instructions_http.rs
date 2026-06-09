@@ -240,7 +240,9 @@ fn swap_instructions_response_summary(
 ) -> Result<String> {
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
         return Err(anyhow!(
-            "swap-instructions dry-run error: {}",
+            "swap-instructions dry-run error source={} shared_accounts_disabled={}: {}",
+            source.summary_tag(shared_accounts_disabled),
+            shared_accounts_disabled,
             truncate_for_log(&error.to_string(), 240)
         ));
     }
@@ -249,7 +251,9 @@ fn swap_instructions_response_summary(
         .filter(|error| !error.is_null())
     {
         return Err(anyhow!(
-            "swap-instructions dry-run simulation error: {}",
+            "swap-instructions dry-run simulation error source={} shared_accounts_disabled={}: {}",
+            source.summary_tag(shared_accounts_disabled),
+            shared_accounts_disabled,
             truncate_for_log(&error.to_string(), 240)
         ));
     }

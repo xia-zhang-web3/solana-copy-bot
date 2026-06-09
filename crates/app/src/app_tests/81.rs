@@ -105,6 +105,54 @@ async fn selected_public_missing_account_falls_back_to_metis_transaction_builder
     Ok(())
 }
 
+#[tokio::test]
+async fn selected_public_missing_account_falls_back_to_metis_instructions_builder() -> Result<()> {
+    let metis_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let metis_url = format!("http://{}", metis_listener.local_addr()?);
+    let public_url = format!("http://{}", public_listener.local_addr()?);
+    let public_server = tokio::spawn(async move {
+        let mut buffer = [0_u8; 4096];
+        for _ in 0..2 {
+            let (mut socket, _) = public_listener.accept().await.expect("public request");
+            let read = socket.read(&mut buffer).await.expect("read public request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.starts_with("POST /swap-instructions "));
+            write_alternate_builder_json(&mut socket, missing_account_instructions_json()).await;
+        }
+    });
+    let metis_server = tokio::spawn(async move {
+        let (mut socket, _) = metis_listener.accept().await.expect("metis request");
+        let mut buffer = [0_u8; 4096];
+        let read = socket.read(&mut buffer).await.expect("read metis request");
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        assert!(request.starts_with("POST /swap-instructions "));
+        assert!(request.contains("x-api-key"));
+        write_alternate_builder_json(&mut socket, valid_alternate_instructions_json()).await;
+    });
+    let mut config = alternate_builder_config(metis_url);
+    config.quote_canary_api_key = "metis-key".to_string();
+    config.quote_canary_public_parallel_enabled = true;
+    config.quote_canary_public_base_url = public_url;
+    let plan = alternate_builder_plan(
+        &config,
+        crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_PUBLIC,
+    )?;
+
+    let proof = crate::execution_swap_instructions_http::fetch_swap_instructions_dry_run(
+        &reqwest::Client::new(),
+        &config,
+        &plan,
+    )
+    .await?
+    .expect("proof should exist");
+    public_server.await?;
+    metis_server.await?;
+
+    assert!(proof.contains("metis_swap_instructions_metis_fallback_ok"));
+    Ok(())
+}
+
 async fn write_alternate_builder_json(socket: &mut tokio::net::TcpStream, body: &str) {
     write_alternate_builder_status(socket, 200, body).await;
 }
@@ -200,4 +248,8 @@ fn valid_alternate_transaction_json() -> &'static str {
 
 fn missing_account_transaction_json() -> &'static str {
     r#"{"swapTransaction":"AQIDBA==","simulationError":{"error":"Error processing Instruction 5: An account required by the instruction is missing","errorCode":"TRANSACTION_ERROR"}}"#
+}
+
+fn missing_account_instructions_json() -> &'static str {
+    r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":{"error":"Error processing Instruction 5: An account required by the instruction is missing","errorCode":"TRANSACTION_ERROR"}}"#
 }

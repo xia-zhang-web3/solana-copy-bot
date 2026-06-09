@@ -128,6 +128,54 @@ impl SqliteDiscoveryStore {
             .context("failed reading failed simulation sell orders")
     }
 
+    pub fn list_failed_simulation_buy_execution_canary_orders_for_route(
+        &self,
+        route: &str,
+        limit: u32,
+    ) -> Result<Vec<ExecutionCanaryOrder>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    orders.order_id,
+                    orders.signal_id,
+                    orders.route,
+                    orders.submit_ts,
+                    orders.confirm_ts,
+                    orders.status,
+                    orders.err_code,
+                    orders.client_order_id,
+                    orders.tx_signature,
+                    orders.simulation_status,
+                    orders.simulation_error,
+                    orders.attempt
+                 FROM orders
+                 JOIN copy_signals ON copy_signals.signal_id = orders.signal_id
+                 WHERE orders.order_id LIKE 'exec-canary:%'
+                   AND orders.route = ?1
+                   AND orders.status = ?2
+                   AND orders.err_code = ?3
+                   AND (orders.tx_signature IS NULL OR TRIM(orders.tx_signature) = '')
+                   AND lower(copy_signals.side) = 'buy'
+                 ORDER BY orders.submit_ts ASC, orders.order_id ASC
+                 LIMIT ?4",
+            )
+            .context("failed to prepare failed simulation buy order query")?;
+        let rows = stmt
+            .query_map(
+                params![
+                    route,
+                    EXECUTION_STATUS_CANARY_FAILED,
+                    EXECUTION_ERROR_SIMULATION_FAILED,
+                    i64::from(limit.max(1)),
+                ],
+                execution_canary_order_from_row,
+            )
+            .context("failed querying failed simulation buy orders")?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed reading failed simulation buy orders")
+    }
+
     pub fn list_retry_candidate_sell_execution_quote_event_ids_for_route(
         &self,
         route: &str,
