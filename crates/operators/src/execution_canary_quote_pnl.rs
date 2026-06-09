@@ -21,6 +21,8 @@ use crate::execution_canary_quote_pnl_quality::{
 use crate::execution_canary_quote_pnl_sell_side::{
     build_sell_side_diagnostics, SellSideDiagnosticsReport,
 };
+use crate::execution_canary_quote_pnl_wallet::WalletReconciliationReport;
+use crate::execution_canary_quote_pnl_wallet_live::build_live_wallet_reconciliation;
 
 #[path = "execution_canary_quote_pnl_cli.rs"]
 mod quote_pnl_cli;
@@ -47,6 +49,7 @@ pub struct Cli {
     pub since: Option<DateTime<Utc>>,
     pub since_hours: i64,
     pub metis_diagnostics: bool,
+    pub wallet_reconciliation: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,6 +69,7 @@ pub struct CanaryQuotePnlOperatorReport {
     pub sell_side_diagnostics: Option<SellSideDiagnosticsReport>,
     pub tiny_execution_gate: Option<TinyExecutionGate>,
     pub metis_diagnostics: Option<MetisDiagnosticsReport>,
+    pub wallet_reconciliation: Option<WalletReconciliationReport>,
 }
 
 impl CanaryQuotePnlOperatorReport {
@@ -86,6 +90,7 @@ impl CanaryQuotePnlOperatorReport {
             sell_side_diagnostics: None,
             tiny_execution_gate: None,
             metis_diagnostics: None,
+            wallet_reconciliation: None,
         }
     }
 
@@ -130,6 +135,7 @@ where
     let mut since = None;
     let mut since_hours = DEFAULT_SINCE_HOURS;
     let mut metis_diagnostics = false;
+    let mut wallet_reconciliation = false;
     let mut iter = args.into_iter().map(Into::into);
 
     while let Some(arg) = iter.next() {
@@ -142,6 +148,7 @@ where
                 since_hours = parse_since_hours(&next_value(&mut iter, "--since-hours")?)?;
             }
             "--metis-diagnostics" => metis_diagnostics = true,
+            "--wallet-reconciliation" => wallet_reconciliation = true,
             "--json" => json = true,
             other => return Err(anyhow!("unknown argument: {other}")),
         }
@@ -159,6 +166,7 @@ where
         since,
         since_hours,
         metis_diagnostics,
+        wallet_reconciliation,
     })
 }
 
@@ -175,6 +183,7 @@ pub fn build_report_from_db_path(
             since: None,
             since_hours: DEFAULT_SINCE_HOURS,
             metis_diagnostics: false,
+            wallet_reconciliation: false,
         },
         as_of,
     )
@@ -193,6 +202,7 @@ pub fn build_report_from_config_path(
             since: None,
             since_hours: DEFAULT_SINCE_HOURS,
             metis_diagnostics: false,
+            wallet_reconciliation: false,
         },
         as_of,
     )
@@ -350,6 +360,16 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
             )
         })
     });
+    let wallet_reconciliation = context.config.as_ref().and_then(|config| {
+        cli.wallet_reconciliation.then(|| {
+            build_live_wallet_reconciliation(
+                &config.execution,
+                &tiny_execution_proof,
+                &sell_side_diagnostics,
+                as_of,
+            )
+        })
+    });
 
     CanaryQuotePnlOperatorReport {
         config_loaded: cli.config_path.is_some(),
@@ -367,5 +387,6 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         sell_side_diagnostics: Some(sell_side_diagnostics),
         tiny_execution_gate: Some(tiny_execution_gate),
         metis_diagnostics,
+        wallet_reconciliation,
     }
 }

@@ -5,6 +5,8 @@ pub(crate) mod execution_canary_quote_pnl_gate_runtime;
 pub(crate) mod execution_canary_quote_pnl_metis;
 pub(crate) mod execution_canary_quote_pnl_quality;
 pub mod execution_canary_quote_pnl_sell_side;
+pub mod execution_canary_quote_pnl_wallet;
+pub(crate) mod execution_canary_quote_pnl_wallet_live;
 pub mod execution_canary_readiness;
 pub(crate) mod execution_canary_tiny_config_checks;
 pub(crate) mod execution_signer_adapter_preflight;
