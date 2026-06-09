@@ -1,6 +1,43 @@
+use crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_PUBLIC;
 use crate::execution_submit_adapter::ExecutionTransactionPlan;
 use anyhow::{anyhow, Result};
+use copybot_config::ExecutionConfig;
 use serde_json::{json, Value};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SwapBuilderSource {
+    Metis,
+    PublicSelected,
+    PublicFallback,
+}
+
+impl SwapBuilderSource {
+    pub(crate) fn summary_tag(self, shared_accounts_disabled: bool) -> &'static str {
+        match (self, shared_accounts_disabled) {
+            (Self::Metis, false) => "ok",
+            (Self::Metis, true) => "no_shared_accounts_ok",
+            (Self::PublicSelected, false) => "public_selected_ok",
+            (Self::PublicSelected, true) => "public_selected_no_shared_accounts_ok",
+            (Self::PublicFallback, false) => "public_fallback_ok",
+            (Self::PublicFallback, true) => "public_fallback_no_shared_accounts_ok",
+        }
+    }
+
+    pub(crate) fn payload_source(self, shared_accounts_disabled: bool) -> &'static str {
+        match (self, shared_accounts_disabled) {
+            (Self::Metis, false) => "metis",
+            (Self::Metis, true) => "metis_no_shared_accounts",
+            (Self::PublicSelected, _) => "public_selected",
+            (Self::PublicFallback, _) => "public_fallback",
+        }
+    }
+}
+
+pub(crate) struct SwapBuilderEndpoint {
+    pub(crate) url: String,
+    pub(crate) api_key: String,
+    pub(crate) source: SwapBuilderSource,
+}
 
 pub(crate) fn swap_request_body(
     plan: &ExecutionTransactionPlan,
@@ -118,6 +155,48 @@ pub(crate) fn swap_endpoint_url(base_url: &str, endpoint: &str, context: &str) -
         .or_else(|| without_slash.strip_suffix("/swap"))
         .unwrap_or(without_slash);
     Ok(format!("{root}/{endpoint}"))
+}
+
+pub(crate) fn primary_swap_builder_endpoint(
+    config: &ExecutionConfig,
+    plan: &ExecutionTransactionPlan,
+    endpoint: &str,
+    context: &str,
+) -> Result<SwapBuilderEndpoint> {
+    if should_use_selected_public_builder(config, plan) {
+        return Ok(SwapBuilderEndpoint {
+            url: swap_endpoint_url(&config.quote_canary_public_base_url, endpoint, context)?,
+            api_key: String::new(),
+            source: SwapBuilderSource::PublicSelected,
+        });
+    }
+    Ok(SwapBuilderEndpoint {
+        url: swap_endpoint_url(&config.quote_canary_base_url, endpoint, context)?,
+        api_key: config.quote_canary_api_key.trim().to_string(),
+        source: SwapBuilderSource::Metis,
+    })
+}
+
+pub(crate) fn public_fallback_swap_builder_endpoint(
+    config: &ExecutionConfig,
+    endpoint: &str,
+    context: &str,
+) -> Result<SwapBuilderEndpoint> {
+    Ok(SwapBuilderEndpoint {
+        url: swap_endpoint_url(&config.quote_canary_public_base_url, endpoint, context)?,
+        api_key: String::new(),
+        source: SwapBuilderSource::PublicFallback,
+    })
+}
+
+fn should_use_selected_public_builder(
+    config: &ExecutionConfig,
+    plan: &ExecutionTransactionPlan,
+) -> bool {
+    plan.metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_GENERIC_PUBLIC)
+        && config.quote_canary_public_parallel_enabled
+        && !config.quote_canary_public_base_url.trim().is_empty()
+        && config.quote_canary_public_base_url.trim() != config.quote_canary_base_url.trim()
 }
 
 fn other_amount_threshold(

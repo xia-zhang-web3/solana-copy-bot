@@ -1,8 +1,9 @@
 use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_submit_adapter::ExecutionTransactionPlan;
 use crate::execution_swap_http_request::{
-    disable_shared_accounts, is_missing_account_simulation_error, simulation_error_text,
-    swap_endpoint_url, swap_request_body,
+    disable_shared_accounts, is_missing_account_simulation_error, primary_swap_builder_endpoint,
+    public_fallback_swap_builder_endpoint, simulation_error_text, swap_request_body,
+    SwapBuilderSource,
 };
 use crate::execution_swap_http_retry::{is_missing_token_program_error, post_swap_json_with_retry};
 use anyhow::{anyhow, Result};
@@ -30,40 +31,36 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("missing user public key for swap-instructions dry-run"))?;
     let body = swap_request_body(plan, user_pubkey, "swap-instructions")?;
-    let url = swap_endpoint_url(
-        &config.quote_canary_base_url,
-        "swap-instructions",
-        "swap-instructions",
-    )?;
+    let primary =
+        primary_swap_builder_endpoint(config, plan, "swap-instructions", "swap-instructions")?;
     let timeout = StdDuration::from_millis(config.quote_canary_timeout_ms.max(1));
-    let api_key = config.quote_canary_api_key.trim();
     let response = post_swap_json_with_retry(
         http,
-        url.clone(),
-        api_key,
+        primary.url.clone(),
+        &primary.api_key,
         &body,
         timeout,
         "swap-instructions dry-run",
     )
     .await;
-    let (url, api_key, response, fallback_used) = match response {
-        Ok(response) => (url, api_key, response, false),
-        Err(error) if should_use_public_builder_fallback(config, &error) => {
-            let fallback_url = swap_endpoint_url(
-                &config.quote_canary_public_base_url,
+    let (endpoint, response) = match response {
+        Ok(response) => (primary, response),
+        Err(error) if should_use_public_builder_fallback(config, primary.source, &error) => {
+            let fallback = public_fallback_swap_builder_endpoint(
+                config,
                 "swap-instructions",
                 "public swap-instructions fallback",
             )?;
             let fallback_response = post_swap_json_with_retry(
                 http,
-                fallback_url.clone(),
-                "",
+                fallback.url.clone(),
+                &fallback.api_key,
                 &body,
                 timeout,
                 "public swap-instructions dry-run fallback",
             )
             .await?;
-            (fallback_url, "", fallback_response, true)
+            (fallback, fallback_response)
         }
         Err(error) => return Err(error),
     };
@@ -72,8 +69,8 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
         disable_shared_accounts(&mut no_shared_body);
         let retry = post_swap_json_with_retry(
             http,
-            url,
-            api_key,
+            endpoint.url,
+            &endpoint.api_key,
             &no_shared_body,
             timeout,
             "swap-instructions dry-run no-shared-accounts fallback",
@@ -83,7 +80,7 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
             retry.value,
             retry.elapsed_ms,
             retry.attempts,
-            fallback_used,
+            endpoint.source,
             true,
         )?));
     }
@@ -91,7 +88,7 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
         response.value,
         response.elapsed_ms,
         response.attempts,
-        fallback_used,
+        endpoint.source,
         false,
     )?))
 }
@@ -100,7 +97,7 @@ fn swap_instructions_response_summary(
     value: Value,
     elapsed_ms: u64,
     attempts: usize,
-    fallback_used: bool,
+    source: SwapBuilderSource,
     shared_accounts_disabled: bool,
 ) -> Result<String> {
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
@@ -128,15 +125,7 @@ fn swap_instructions_response_summary(
     let simulation_error = simulation_error_text(&value).map(|item| truncate_for_log(&item, 180));
     let summary = format!(
         "metis_swap_instructions_{} compute={} setup={} other={} alt={} cleanup={} latency_ms={} attempts={} simulation_error={}",
-        if fallback_used && shared_accounts_disabled {
-            "public_fallback_no_shared_accounts_ok"
-        } else if fallback_used {
-            "public_fallback_ok"
-        } else if shared_accounts_disabled {
-            "no_shared_accounts_ok"
-        } else {
-            "ok"
-        },
+        source.summary_tag(shared_accounts_disabled),
         array_len(value.get("computeBudgetInstructions")),
         array_len(value.get("setupInstructions")),
         array_len(value.get("otherInstructions")),
@@ -151,8 +140,13 @@ fn swap_instructions_response_summary(
     Ok(truncate_for_log(&summary, 500))
 }
 
-fn should_use_public_builder_fallback(config: &ExecutionConfig, error: &anyhow::Error) -> bool {
-    config.quote_canary_public_parallel_enabled
+fn should_use_public_builder_fallback(
+    config: &ExecutionConfig,
+    source: SwapBuilderSource,
+    error: &anyhow::Error,
+) -> bool {
+    source == SwapBuilderSource::Metis
+        && config.quote_canary_public_parallel_enabled
         && is_missing_token_program_error(error)
         && !config.quote_canary_public_base_url.trim().is_empty()
         && config.quote_canary_public_base_url.trim() != config.quote_canary_base_url.trim()

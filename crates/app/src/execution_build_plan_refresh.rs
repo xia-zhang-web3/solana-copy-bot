@@ -4,9 +4,9 @@ use crate::execution_quote_canary_helpers::{
     DECISION_UNKNOWN, DECISION_WOULD_EXECUTE, DECISION_WOULD_SKIP, QUOTE_STATUS_ERROR,
     QUOTE_STATUS_OK, SIDE_BUY, SOL_MINT,
 };
-use crate::execution_quote_http::fetch_quote_sample;
+use crate::execution_quote_http::fetch_quote_sample_from_base_url;
 use crate::execution_quote_provider_selection::{
-    QUOTE_SOURCE_GENERIC_METIS, QUOTE_SOURCE_PUMP_FUN_PAID,
+    QUOTE_SOURCE_GENERIC_METIS, QUOTE_SOURCE_GENERIC_PUBLIC, QUOTE_SOURCE_PUMP_FUN_PAID,
 };
 use crate::execution_submit_adapter::ExecutionBuildPlanMetadata;
 use anyhow::Result;
@@ -58,9 +58,12 @@ pub(crate) async fn refresh_tiny_buy_build_plan_metadata(
         }
     }
 
-    let quote = match fetch_quote_sample(
+    let (quote_source, base_url, api_key) = generic_refresh_source(config, &metadata);
+    let quote = match fetch_quote_sample_from_base_url(
         http,
-        config,
+        base_url,
+        api_key,
+        config.quote_canary_timeout_ms,
         SOL_MINT,
         &signal.token,
         &amount_raw,
@@ -69,20 +72,36 @@ pub(crate) async fn refresh_tiny_buy_build_plan_metadata(
     .await
     {
         Ok(quote) => quote,
-        Err(_) => {
-            return Ok(fresh_quote_error_metadata(
-                metadata,
-                QUOTE_SOURCE_GENERIC_METIS,
-            ))
-        }
+        Err(_) => return Ok(fresh_quote_error_metadata(metadata, quote_source)),
     };
 
     Ok(apply_fresh_quote(
         metadata,
         quote,
         max_slippage_bps,
-        QUOTE_SOURCE_GENERIC_METIS,
+        quote_source,
     ))
+}
+
+fn generic_refresh_source<'a>(
+    config: &'a ExecutionConfig,
+    metadata: &ExecutionBuildPlanMetadata,
+) -> (&'static str, &'a str, &'a str) {
+    if metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_GENERIC_PUBLIC)
+        && config.quote_canary_public_parallel_enabled
+        && !config.quote_canary_public_base_url.trim().is_empty()
+    {
+        return (
+            QUOTE_SOURCE_GENERIC_PUBLIC,
+            &config.quote_canary_public_base_url,
+            "",
+        );
+    }
+    (
+        QUOTE_SOURCE_GENERIC_METIS,
+        &config.quote_canary_base_url,
+        &config.quote_canary_api_key,
+    )
 }
 
 pub(crate) fn fresh_submit_gate_reason(
