@@ -26,6 +26,7 @@ mod confirmation_boundary;
 mod confirmed_fill;
 mod file_signer;
 mod rpc_confirmation;
+mod rpc_confirmed_fill;
 mod rpc_submit;
 mod submit_plan;
 mod tiny_runner;
@@ -50,6 +51,8 @@ pub(crate) use self::confirmed_fill::{
 };
 pub(crate) use self::file_signer::sign_serialized_transaction_from_config;
 pub(crate) use self::rpc_confirmation::fetch_rpc_signature_confirmation;
+#[cfg(test)]
+pub(crate) use self::rpc_confirmed_fill::confirmed_fill_from_transaction_json;
 pub(crate) use self::rpc_submit::RpcExecutionSubmitTransport;
 pub(crate) use self::submit_plan::{
     execution_submit_idempotency_key, execution_submit_intent_from_signed_envelope,

@@ -51,6 +51,8 @@ include!("app_tests/35.rs");
 mod execution_build_plan_refresh_contract;
 #[path = "app_tests/70.rs"]
 mod execution_candidate_sell_retry_contract;
+#[path = "app_tests/71.rs"]
+mod execution_confirmed_transaction_fill_contract;
 #[path = "app_tests/43.rs"]
 mod execution_quote_canary_hot_observed;
 #[path = "app_tests/50.rs"]

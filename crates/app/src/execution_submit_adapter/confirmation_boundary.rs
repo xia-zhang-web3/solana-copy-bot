@@ -1,6 +1,7 @@
 use super::{
     build_confirmation_request_from_order, fetch_rpc_signature_confirmation,
-    record_confirmation_tracker_outcome, ExecutionConfirmedFill,
+    record_confirmation_tracker_outcome, rpc_confirmed_fill::fetch_actual_confirmed_fill,
+    ExecutionConfirmationTrackerOutcome, ExecutionConfirmedFill,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -33,6 +34,7 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
     http: &reqwest::Client,
     rpc_url: &str,
     order_id: &str,
+    wallet_pubkey: &str,
     fill: ExecutionConfirmedFill,
     now: DateTime<Utc>,
     timeout_ms: u64,
@@ -58,6 +60,16 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
             }
             Err(error) => return Err(error),
         };
+    let fill = actual_confirmed_fill_or_expected(
+        http,
+        rpc_url,
+        wallet_pubkey,
+        &request.tx_signature,
+        fill,
+        &tracker_outcome,
+        timeout_ms,
+    )
+    .await;
     let record = record_confirmation_tracker_outcome(store, &request, tracker_outcome, fill)?;
     let mut outcome = ExecutionConfirmationBoundaryOutcome {
         confirmed: record.confirmed,
@@ -79,6 +91,36 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
         outcome.pnl_sol = fill.pnl_sol;
     }
     Ok(outcome)
+}
+
+async fn actual_confirmed_fill_or_expected(
+    http: &reqwest::Client,
+    rpc_url: &str,
+    wallet_pubkey: &str,
+    tx_signature: &str,
+    expected: ExecutionConfirmedFill,
+    tracker_outcome: &ExecutionConfirmationTrackerOutcome,
+    timeout_ms: u64,
+) -> ExecutionConfirmedFill {
+    if !matches!(
+        tracker_outcome,
+        ExecutionConfirmationTrackerOutcome::Confirmed(_)
+    ) {
+        return expected;
+    }
+    match fetch_actual_confirmed_fill(
+        http,
+        rpc_url,
+        wallet_pubkey,
+        tx_signature,
+        &expected,
+        timeout_ms,
+    )
+    .await
+    {
+        Ok(Some(actual)) => actual,
+        _ => expected,
+    }
 }
 
 fn is_rpc_confirmation_transaction_error(error: &anyhow::Error) -> bool {
