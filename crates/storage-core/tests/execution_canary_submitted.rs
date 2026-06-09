@@ -5,9 +5,10 @@ use copybot_core_types::{
 };
 use copybot_storage_core::{
     ExecutionCanaryBuildPlanMetadata, ExecutionQuoteCanaryEventInsert, SqliteStore,
-    EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_SIMULATION_STATUS_FAILED,
-    EXECUTION_SIMULATION_STATUS_NOT_RUN, EXECUTION_SIMULATION_STATUS_PASSED,
-    EXECUTION_STATUS_CANARY_CANDIDATE, EXECUTION_STATUS_CANARY_CONFIRMED,
+    EXECUTION_ERROR_BUILD_FAILED, EXECUTION_ERROR_SIMULATION_FAILED,
+    EXECUTION_SIMULATION_STATUS_FAILED, EXECUTION_SIMULATION_STATUS_NOT_RUN,
+    EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_STATUS_CANARY_CANDIDATE,
+    EXECUTION_STATUS_CANARY_CONFIRMED,
 };
 use tempfile::tempdir;
 
@@ -279,6 +280,60 @@ fn retry_candidate_sell_event_lookup_includes_existing_retry_candidate_order() -
     )?;
 
     assert_eq!(events, vec!["quote:close:retry-candidate".to_string()]);
+    Ok(())
+}
+
+#[test]
+fn failed_build_sell_retry_candidate_keeps_attempt_and_reuses_close_event() -> Result<()> {
+    let store = open_migrated_store("failed-build-sell-retry")?;
+    let now = ts("2026-06-08T12:45:00Z");
+    let signal_id = "sell-failed-build";
+    let route = "metis-swap-instructions-dry-run";
+    store.record_execution_canary_open_position(
+        "exec-canary:buy-filled",
+        "TokenMint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        now,
+    )?;
+    let sell_signal = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal(signal_id, now + Duration::seconds(1))
+    };
+    store.insert_copy_signal(&sell_signal)?;
+    store.record_execution_quote_canary_event(&sell_quote_event(
+        "quote:close:failed-build",
+        &sell_signal,
+        now + Duration::seconds(2),
+    ))?;
+    let reserve = store.reserve_execution_canary_order(signal_id, route, now)?;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        now + Duration::seconds(3),
+        EXECUTION_ERROR_BUILD_FAILED,
+        "owned_sell_quote_failed: NO_ROUTES_FOUND",
+    )?;
+
+    let events = store.list_failed_build_sell_execution_quote_event_ids_for_route(route, 10)?;
+    let retry = store.mark_execution_canary_failed_build_retry_candidate(
+        &reserve.order.order_id,
+        now + Duration::seconds(4),
+        "retry_failed_sell_with_owned_position_amount",
+    )?;
+
+    assert_eq!(events, vec!["quote:close:failed-build".to_string()]);
+    assert_eq!(retry.status, EXECUTION_STATUS_CANARY_CANDIDATE);
+    assert_eq!(retry.attempt, 1);
+    assert_eq!(
+        retry.simulation_status.as_deref(),
+        Some(EXECUTION_SIMULATION_STATUS_NOT_RUN)
+    );
+    assert_eq!(
+        retry.simulation_error.as_deref(),
+        Some("retry_failed_sell_with_owned_position_amount")
+    );
+    assert_eq!(retry.err_code, None);
     Ok(())
 }
 

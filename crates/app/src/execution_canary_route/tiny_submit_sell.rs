@@ -3,9 +3,9 @@ use super::tiny_submit::{
     reconcile_existing_tiny_submit_order, tiny_submit_runtime_block_reason,
 };
 use super::tiny_submit_sell_retry::{
-    failed_sell_simulation_retry_ready, retry_failed_sell_candidate_ready,
-    terminal_failed_sell_simulation, write_off_terminal_failed_sell_simulation,
-    RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
+    failed_sell_build_retry_ready, failed_sell_simulation_retry_ready,
+    retry_failed_sell_candidate_ready, terminal_failed_sell_simulation,
+    write_off_terminal_failed_sell_simulation, RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
 };
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_canary_submit_contract::ExecutionTinySubmitGate;
@@ -77,6 +77,12 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
             summary.last_order_id = Some(existing.order_id.clone());
             if retry_failed_sell_candidate_ready(&existing) {
                 Some(existing)
+            } else if failed_sell_build_retry_ready(&existing) {
+                Some(store.mark_execution_canary_failed_build_retry_candidate(
+                    &existing.order_id,
+                    now,
+                    RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
+                )?)
             } else if failed_sell_simulation_retry_ready(config, &existing) {
                 Some(
                     store.mark_execution_canary_failed_simulation_retry_candidate(
@@ -200,6 +206,16 @@ pub(super) async fn process_failed_sell_simulation_sweep_for_route(
         1,
     )?;
     if let Some(event_id) = retry_events.pop() {
+        return Ok(
+            process_tiny_submit_sell_quote_event(config, store, &event_id, now)
+                .await?
+                .unwrap_or_default(),
+        );
+    }
+
+    let mut failed_build_events = store
+        .list_failed_build_sell_execution_quote_event_ids_for_route(&config.canary_route, 1)?;
+    if let Some(event_id) = failed_build_events.pop() {
         return Ok(
             process_tiny_submit_sell_quote_event(config, store, &event_id, now)
                 .await?

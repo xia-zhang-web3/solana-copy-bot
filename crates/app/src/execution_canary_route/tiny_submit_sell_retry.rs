@@ -6,9 +6,9 @@ use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
     ExecutionCanaryOrder, SqliteStore, EXECUTION_CANARY_POSITION_CLOSE_CLOSED,
     EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED, EXECUTION_CANARY_POSITION_CLOSE_NO_POSITION,
-    EXECUTION_CANARY_POSITION_CLOSE_PARTIAL, EXECUTION_ERROR_SIMULATION_FAILED,
-    EXECUTION_SIMULATION_STATUS_NOT_RUN, EXECUTION_STATUS_CANARY_CANDIDATE,
-    EXECUTION_STATUS_CANARY_FAILED,
+    EXECUTION_CANARY_POSITION_CLOSE_PARTIAL, EXECUTION_ERROR_BUILD_FAILED,
+    EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_SIMULATION_STATUS_NOT_RUN,
+    EXECUTION_STATUS_CANARY_CANDIDATE, EXECUTION_STATUS_CANARY_FAILED,
 };
 
 pub(super) const RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON: &str =
@@ -32,6 +32,15 @@ pub(super) fn retry_failed_sell_candidate_ready(order: &ExecutionCanaryOrder) ->
         && order.simulation_status.as_deref() == Some(EXECUTION_SIMULATION_STATUS_NOT_RUN)
         && order.simulation_error.as_deref()
             == Some(RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON)
+        && order
+            .tx_signature
+            .as_deref()
+            .is_none_or(|signature| signature.trim().is_empty())
+}
+
+pub(super) fn failed_sell_build_retry_ready(order: &ExecutionCanaryOrder) -> bool {
+    order.status == EXECUTION_STATUS_CANARY_FAILED
+        && order.err_code.as_deref() == Some(EXECUTION_ERROR_BUILD_FAILED)
         && order
             .tx_signature
             .as_deref()

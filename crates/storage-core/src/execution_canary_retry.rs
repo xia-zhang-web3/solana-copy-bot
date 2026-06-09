@@ -2,10 +2,10 @@ use crate::{
     ExecutionCanaryConfirmTimeoutDecision, ExecutionCanaryOrder, SqliteDiscoveryStore,
     EXECUTION_CANARY_CONFIRM_DECISION_EXPIRE_UNSAFE,
     EXECUTION_CANARY_CONFIRM_DECISION_NOT_SUBMITTED, EXECUTION_CANARY_CONFIRM_DECISION_RETRY,
-    EXECUTION_CANARY_CONFIRM_DECISION_WAIT, EXECUTION_ERROR_SIMULATION_FAILED,
-    EXECUTION_SIMULATION_STATUS_NOT_RUN, EXECUTION_STATUS_CANARY_CANDIDATE,
-    EXECUTION_STATUS_CANARY_FAILED, EXECUTION_STATUS_CANARY_SIMULATED,
-    EXECUTION_STATUS_CANARY_SUBMITTED,
+    EXECUTION_CANARY_CONFIRM_DECISION_WAIT, EXECUTION_ERROR_BUILD_FAILED,
+    EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_SIMULATION_STATUS_NOT_RUN,
+    EXECUTION_STATUS_CANARY_CANDIDATE, EXECUTION_STATUS_CANARY_FAILED,
+    EXECUTION_STATUS_CANARY_SIMULATED, EXECUTION_STATUS_CANARY_SUBMITTED,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -247,6 +247,69 @@ impl SqliteDiscoveryStore {
         })?;
         self.load_execution_canary_order(order_id)?
             .ok_or_else(|| anyhow!("missing execution canary order after failed simulation retry"))
+    }
+
+    pub fn mark_execution_canary_failed_build_retry_candidate(
+        &self,
+        order_id: &str,
+        now: DateTime<Utc>,
+        reason: &str,
+    ) -> Result<ExecutionCanaryOrder> {
+        validate_reason(reason, "execution canary failed build retry reason")?;
+        let now_rfc3339 = now.to_rfc3339();
+        self.with_immediate_transaction_retry("execution canary failed build retry", |conn| {
+            let current: Option<(String, Option<String>, Option<String>)> = conn
+                .query_row(
+                    "SELECT status, err_code, tx_signature
+                     FROM orders
+                     WHERE order_id = ?1
+                     LIMIT 1",
+                    params![order_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .context("failed loading failed build retry state")?;
+            let Some((status, err_code, tx_signature)) = current else {
+                return Err(anyhow!("missing execution canary order {order_id}"));
+            };
+            if status != EXECUTION_STATUS_CANARY_FAILED
+                || err_code.as_deref() != Some(EXECUTION_ERROR_BUILD_FAILED)
+            {
+                return Err(anyhow!(
+                    "invalid failed build retry transition for {order_id}: status={status} err_code={:?}",
+                    err_code
+                ));
+            }
+            if tx_signature
+                .as_deref()
+                .is_some_and(|signature| !signature.trim().is_empty())
+            {
+                return Err(anyhow!(
+                    "execution canary failed build retry is unsafe for {order_id}: tx_signature is present"
+                ));
+            }
+            conn.execute(
+                "UPDATE orders
+                 SET status = ?2,
+                     submit_ts = ?3,
+                     confirm_ts = NULL,
+                     err_code = NULL,
+                     simulation_status = ?4,
+                     simulation_error = ?5
+                 WHERE order_id = ?1",
+                params![
+                    order_id,
+                    EXECUTION_STATUS_CANARY_CANDIDATE,
+                    now_rfc3339,
+                    EXECUTION_SIMULATION_STATUS_NOT_RUN,
+                    reason,
+                ],
+            )
+            .context("failed marking failed build retry candidate")?;
+            Ok(())
+        })?;
+        self.load_execution_canary_order(order_id)?
+            .ok_or_else(|| anyhow!("missing execution canary order after failed build retry"))
     }
 }
 
