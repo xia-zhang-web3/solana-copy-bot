@@ -2,6 +2,7 @@ use super::tiny_submit::{
     apply_tiny_submit_confirm_path_outcome, build_simulated_signed_envelope, build_submit_request,
     reconcile_existing_tiny_submit_order, tiny_submit_runtime_block_reason,
 };
+use super::tiny_submit_sell_metadata::{owned_position_sell_metadata, validate_tiny_sell_metadata};
 use super::tiny_submit_sell_retry::{
     failed_sell_build_retry_ready, failed_sell_simulation_retry_ready,
     hold_terminal_failed_sell_no_route, hold_terminal_failed_sell_simulation,
@@ -10,29 +11,21 @@ use super::tiny_submit_sell_retry::{
     terminal_failed_sell_simulation, RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
     RETRY_TERMINAL_SELL_NO_ROUTE_REASON,
 };
-use super::tiny_submit_wallet_balance::fetch_wallet_token_balance;
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_canary_submit_contract::ExecutionTinySubmitGate;
-use crate::execution_quote_canary_helpers::{
-    price_sol_per_token, quote_canary_slippage_limit_bps, ui_amount_to_raw_string,
-    DECISION_WOULD_EXECUTE, DECISION_WOULD_FORCE_EXIT, QUOTE_STATUS_OK, SIDE_SELL, SOL_MINT,
-};
-use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
-use crate::execution_quote_http::fetch_quote_sample;
-use crate::execution_quote_provider_selection::{
-    selected_execution_build_plan_metadata, QUOTE_SOURCE_GENERIC_METIS,
-};
+use crate::execution_quote_canary_helpers::{quote_canary_slippage_limit_bps, SIDE_SELL};
+use crate::execution_quote_provider_selection::selected_execution_build_plan_metadata;
 use crate::execution_submit_adapter::{
-    record_execution_tiny_submit_confirm_path, ExecutionBuildPlanMetadata,
-    JupiterMetisDryRunExecutionAdapter, RpcExecutionSubmitTransport,
+    record_execution_tiny_submit_confirm_path, JupiterMetisDryRunExecutionAdapter,
+    RpcExecutionSubmitTransport,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
-    ExecutionCanaryOwnedPosition, ExecutionCanaryRecordOutcome, SqliteStore,
-    EXECUTION_CANARY_SELL_DECISION_EXECUTE, EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT,
-    EXECUTION_CANARY_SELL_DECISION_NO_POSITION, EXECUTION_ERROR_BUILD_FAILED,
+    ExecutionCanaryRecordOutcome, SqliteStore, EXECUTION_CANARY_SELL_DECISION_EXECUTE,
+    EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT, EXECUTION_CANARY_SELL_DECISION_NO_POSITION,
+    EXECUTION_ERROR_BUILD_FAILED,
 };
 use std::path::Path;
 
@@ -249,85 +242,6 @@ pub(super) async fn process_failed_sell_simulation_sweep_for_route(
     )
 }
 
-async fn owned_position_sell_metadata(
-    config: &ExecutionConfig,
-    store: &SqliteStore,
-    token: &str,
-    mut metadata: ExecutionBuildPlanMetadata,
-) -> Result<ExecutionBuildPlanMetadata> {
-    let position = store
-        .load_execution_canary_open_position(token)?
-        .ok_or_else(|| anyhow!("missing owned execution canary position for sell {token}"))?;
-    let http = reqwest::Client::new();
-    let amount_raw = owned_position_amount_raw(config, &http, token, &position).await?;
-    let quote = fetch_quote_sample(
-        &http,
-        config,
-        token,
-        SOL_MINT,
-        &amount_raw,
-        quote_canary_slippage_limit_bps(config, SIDE_SELL),
-    )
-    .await?;
-    let out_lamports = quote
-        .out_amount
-        .parse::<u64>()
-        .with_context(|| format!("invalid owned sell quote outAmount {}", quote.out_amount))?;
-    metadata.quote_source = Some(QUOTE_SOURCE_GENERIC_METIS.to_string());
-    metadata.quote_status = Some(QUOTE_STATUS_OK.to_string());
-    metadata.quote_in_amount_raw = Some(quote.in_amount);
-    metadata.quote_out_amount_raw = Some(quote.out_amount);
-    metadata.quote_response_json = Some(quote.response_json);
-    metadata.quote_price_sol =
-        price_sol_per_token(out_lamports as f64 / 1_000_000_000.0, position.qty);
-    metadata.price_impact_pct = quote.price_impact_pct;
-    metadata.route_plan_json = quote.route_plan_json;
-    Ok(metadata)
-}
-
-async fn owned_position_amount_raw(
-    config: &ExecutionConfig,
-    http: &reqwest::Client,
-    token: &str,
-    position: &ExecutionCanaryOwnedPosition,
-) -> Result<String> {
-    let wallet = fetch_wallet_token_balance(http, config, token)
-        .await?
-        .ok_or_else(|| anyhow!("owned sell wallet token account missing for {token}"))?;
-    if wallet.raw == 0 {
-        return Err(anyhow!(
-            "owned sell wallet token balance is zero for {token}"
-        ));
-    }
-    let position_raw = if let Some(qty) = position.qty_exact {
-        if qty.decimals() != wallet.decimals {
-            return Err(anyhow!(
-                "owned sell wallet decimals mismatch for {token}: position={} wallet={}",
-                qty.decimals(),
-                wallet.decimals
-            ));
-        }
-        qty.raw()
-    } else {
-        let decimals = resolve_spl_token_decimals(http, config, token, Some(wallet.decimals))
-            .await
-            .unwrap_or(wallet.decimals);
-        let raw = ui_amount_to_raw_string(position.qty, decimals).ok_or_else(|| {
-            anyhow!(
-                "invalid owned sell qty {} decimals {decimals}",
-                position.qty
-            )
-        })?;
-        raw.parse::<u64>()
-            .with_context(|| format!("invalid owned sell raw amount {raw} for {token}"))?
-    };
-    let amount_raw = position_raw.min(wallet.raw);
-    if amount_raw == 0 {
-        return Err(anyhow!("owned sell amount is zero for {token}"));
-    }
-    Ok(amount_raw.to_string())
-}
-
 fn sell_safety_blocked(
     config: &ExecutionConfig,
     store: &SqliteStore,
@@ -340,51 +254,4 @@ fn sell_safety_blocked(
         return Ok(true);
     }
     Ok(false)
-}
-
-fn validate_tiny_sell_metadata(metadata: &ExecutionBuildPlanMetadata) -> Option<&'static str> {
-    if metadata.quote_status.as_deref() != Some(QUOTE_STATUS_OK) {
-        return Some("sell_quote_not_ok");
-    }
-    match metadata.decision_status.as_deref() {
-        Some(DECISION_WOULD_EXECUTE) | Some(DECISION_WOULD_FORCE_EXIT) => {}
-        _ => return Some("sell_quote_not_executable"),
-    }
-    if metadata.quote_event_id.as_deref().is_none_or(str::is_empty) {
-        return Some("missing_quote_event_id");
-    }
-    if metadata
-        .quote_in_amount_raw
-        .as_deref()
-        .is_none_or(str::is_empty)
-    {
-        return Some("missing_quote_in_amount_raw");
-    }
-    if metadata
-        .quote_out_amount_raw
-        .as_deref()
-        .is_none_or(str::is_empty)
-    {
-        return Some("missing_quote_out_amount_raw");
-    }
-    if metadata
-        .quote_price_sol
-        .is_none_or(|price| !price.is_finite() || price <= 0.0)
-    {
-        return Some("missing_quote_price_sol");
-    }
-    if metadata
-        .route_plan_json
-        .as_deref()
-        .is_none_or(str::is_empty)
-    {
-        return Some("missing_route_plan_json");
-    }
-    if metadata.priority_fee_status.as_deref() != Some(QUOTE_STATUS_OK) {
-        return Some("priority_fee_not_ok");
-    }
-    if metadata.priority_fee_lamports.is_none() {
-        return Some("missing_priority_fee_lamports");
-    }
-    None
 }

@@ -17,6 +17,7 @@ mod tiny_submit;
 mod tiny_submit_orphan_recovery;
 mod tiny_submit_retry;
 mod tiny_submit_sell;
+mod tiny_submit_sell_metadata;
 mod tiny_submit_sell_retry;
 mod tiny_submit_timeout;
 mod tiny_submit_wallet_balance;
@@ -28,6 +29,8 @@ use self::tiny_submit_orphan_recovery::process_tiny_submit_orphan_position_recov
 use self::tiny_submit_sell::{
     process_failed_sell_simulation_sweep_for_route, process_tiny_submit_sell_quote_event,
 };
+#[cfg(test)]
+pub(crate) use self::tiny_submit_sell_metadata::owned_position_sell_metadata;
 
 pub(crate) const CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN: &str =
     "metis-swap-instructions-dry-run";

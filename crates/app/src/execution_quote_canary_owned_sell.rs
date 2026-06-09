@@ -1,3 +1,4 @@
+use super::append_parallel_provider_samples;
 use super::provider_compare::{sell_quote_price_and_slippage, QuoteEventBundle};
 use super::{ExecutionQuoteCanaryRunner, ExecutionQuoteCanaryTickSummary};
 use crate::execution_quote_canary_helpers::{
@@ -188,7 +189,19 @@ impl ExecutionQuoteCanaryRunner {
                 event.error = Some(short_error(&error));
             }
         }
-        Ok(QuoteEventBundle::event_only(event))
+        let mut bundle = QuoteEventBundle::event_only(event);
+        append_parallel_provider_samples(
+            &mut bundle,
+            &self.http,
+            &self.config,
+            &signal.token,
+            SOL_MINT,
+            &amount,
+            decimals,
+            limit_bps,
+        )
+        .await;
+        Ok(bundle)
     }
 }
 
