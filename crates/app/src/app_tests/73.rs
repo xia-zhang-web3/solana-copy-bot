@@ -1,5 +1,7 @@
 use super::*;
-use copybot_core_types::{Lamports, TokenQuantity};
+use copybot_core_types::{
+    CopySignalRow, Lamports, TokenQuantity, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
@@ -54,6 +56,85 @@ async fn orphan_position_recovery_restores_only_known_execution_token() -> Resul
 
     let _ = std::fs::remove_file(db_path);
     config.priority_fee_canary_rpc_url.clear();
+    Ok(())
+}
+
+#[tokio::test]
+async fn orphan_position_recovery_skips_recent_terminal_write_off_token() -> Result<()> {
+    let db_path = unique_orphan_recovery_test_path("terminal-write-off-skip");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let token = "TerminalMint";
+    let historical_opened_ts = now - chrono::Duration::hours(3);
+    store.record_execution_canary_open_position(
+        "old-confirmed-buy",
+        token,
+        12.345,
+        Some(TokenQuantity::new(12_345, 3)),
+        0.01,
+        historical_opened_ts,
+    )?;
+    store.close_execution_canary_open_position(
+        token,
+        12.345,
+        Some(TokenQuantity::new(12_345, 3)),
+        0.001,
+        1e-9,
+        now - chrono::Duration::hours(2),
+    )?;
+    let signal = terminal_sell_signal(token, now - chrono::Duration::hours(1));
+    store.insert_copy_signal(&signal)?;
+    let reserve = store.reserve_execution_canary_order(
+        &signal.signal_id,
+        crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN,
+        now - chrono::Duration::minutes(50),
+    )?;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        now - chrono::Duration::minutes(49),
+        copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,
+        "owned_sell_quote_failed: NO_ROUTES_FOUND",
+    )?;
+    store.mark_execution_canary_terminal_sell_no_route_blocked(
+        &reserve.order.order_id,
+        "terminal_failed_sell_no_route_written_off",
+    )?;
+    store.record_execution_canary_open_position(
+        "recovery-orphan:TerminalMint:12345:manual",
+        token,
+        12.345,
+        Some(TokenQuantity::new(12_345, 3)),
+        0.01,
+        historical_opened_ts,
+    )?;
+    let body = r#"{"jsonrpc":"2.0","id":"execution-canary-orphan-recovery","result":{"value":[{"account":{"data":{"parsed":{"info":{"mint":"TerminalMint","tokenAmount":{"amount":"12345","decimals":3,"uiAmountString":"12.345"}}}}}}]}}"#;
+    let (rpc_url, server) = serve_orphan_token_accounts_body(body).await?;
+    let config = orphan_recovery_config(&rpc_url);
+
+    let summary =
+        crate::execution_canary_route::process_tiny_submit_orphan_position_recovery_sweep(
+            &config, &store, now,
+        )
+        .await?
+        .expect("orphan recovery should run");
+    server.await??;
+    let open = store.load_execution_canary_open_position(token)?;
+
+    assert_eq!(summary.orphan_recovery_checked, 1);
+    assert_eq!(summary.orphan_recovery_recovered, 0);
+    assert_eq!(summary.orphan_recovery_reconciled, 1);
+    assert_eq!(
+        summary.skipped_reason.as_deref(),
+        Some("orphan_recovery_recent_terminal_write_off")
+    );
+    assert_eq!(summary.open_positions, 0);
+    assert!(open.is_none());
+
+    let _ = std::fs::remove_file(db_path);
     Ok(())
 }
 
@@ -209,6 +290,20 @@ fn orphan_recovery_config(rpc_url: &str) -> ExecutionConfig {
     config.swap_transaction_dry_run_enabled = true;
     config.quote_canary_timeout_ms = 1_000;
     config
+}
+
+fn terminal_sell_signal(token: &str, ts: chrono::DateTime<Utc>) -> CopySignalRow {
+    CopySignalRow {
+        signal_id: format!("shadow:terminal-sell:leader:{token}"),
+        wallet_id: "leader".to_string(),
+        side: "sell".to_string(),
+        token: token.to_string(),
+        notional_sol: 0.2,
+        notional_lamports: Some(Lamports::new(200_000_000)),
+        notional_origin: COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS.to_string(),
+        ts,
+        status: "shadow_recorded".to_string(),
+    }
 }
 
 fn unique_orphan_recovery_test_path(name: &str) -> PathBuf {

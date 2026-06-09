@@ -5,9 +5,44 @@ use crate::{
     EXECUTION_STATUS_CANARY_CANDIDATE, EXECUTION_STATUS_CANARY_FAILED,
 };
 use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
 
 impl SqliteDiscoveryStore {
+    pub fn has_recent_execution_canary_terminal_write_off_for_token(
+        &self,
+        token: &str,
+        since: DateTime<Utc>,
+    ) -> Result<bool> {
+        let found: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM orders
+                 JOIN copy_signals ON copy_signals.signal_id = orders.signal_id
+                 WHERE orders.order_id LIKE 'exec-canary:%'
+                   AND copy_signals.token = ?1
+                   AND orders.err_code IN (?2, ?3)
+                   AND (orders.tx_signature IS NULL OR TRIM(orders.tx_signature) = '')
+                   AND COALESCE(orders.confirm_ts, orders.submit_ts) >= ?4
+                   AND (
+                       orders.simulation_error LIKE '%terminal_failed_sell_no_route_written_off%'
+                       OR orders.simulation_error LIKE '%terminal_failed_sell_simulation_written_off%'
+                   )
+                 LIMIT 1",
+                params![
+                    token,
+                    EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE,
+                    EXECUTION_ERROR_TERMINAL_SELL_SIMULATION_FAILED,
+                    since.to_rfc3339(),
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed checking recent execution canary terminal write-off")?;
+        Ok(found.is_some())
+    }
+
     pub fn mark_execution_canary_terminal_sell_simulation_blocked(
         &self,
         order_id: &str,
