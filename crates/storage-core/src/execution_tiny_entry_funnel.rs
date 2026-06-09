@@ -88,6 +88,7 @@ fn summarize_entry_funnel(rows: Vec<EntryFunnelRow>) -> ExecutionTinyEntryFunnel
             summary.quote_ok_events += 1;
         }
         let would_execute = row.decision_status == DECISION_WOULD_EXECUTE;
+        let actionable = row.shadow_gate_status == SHADOW_RECORDED && would_execute;
         match row.decision_status.as_str() {
             DECISION_WOULD_EXECUTE => summary.quote_would_execute_events += 1,
             DECISION_WOULD_SKIP => summary.quote_would_skip_events += 1,
@@ -98,6 +99,7 @@ fn summarize_entry_funnel(rows: Vec<EntryFunnelRow>) -> ExecutionTinyEntryFunnel
                 summary.shadow_recorded_events += 1;
                 if would_execute {
                     summary.quote_would_execute_shadow_recorded_events += 1;
+                    summary.actionable_quote_would_execute_events += 1;
                 }
             }
             SHADOW_DROPPED => {
@@ -124,6 +126,9 @@ fn summarize_entry_funnel(rows: Vec<EntryFunnelRow>) -> ExecutionTinyEntryFunnel
         match row.order_status.as_str() {
             MISSING => {
                 summary.tiny_missing_order_events += 1;
+                if actionable {
+                    summary.actionable_tiny_missing_order_events += 1;
+                }
                 match row.shadow_gate_status.as_str() {
                     SHADOW_RECORDED => summary.tiny_missing_order_shadow_recorded_events += 1,
                     SHADOW_DROPPED => summary.tiny_missing_order_shadow_dropped_events += 1,
@@ -133,16 +138,31 @@ fn summarize_entry_funnel(rows: Vec<EntryFunnelRow>) -> ExecutionTinyEntryFunnel
             EXECUTION_STATUS_CANARY_CONFIRMED => {
                 summary.tiny_ordered_events += 1;
                 summary.tiny_confirmed_events += 1;
+                if actionable {
+                    summary.actionable_tiny_ordered_events += 1;
+                    summary.actionable_tiny_confirmed_events += 1;
+                }
             }
             EXECUTION_STATUS_CANARY_FAILED => {
                 summary.tiny_ordered_events += 1;
                 summary.tiny_failed_events += 1;
+                if actionable {
+                    summary.actionable_tiny_ordered_events += 1;
+                }
             }
             EXECUTION_STATUS_CANARY_SUBMIT_DISABLED => {
                 summary.tiny_ordered_events += 1;
                 summary.tiny_submit_disabled_events += 1;
+                if actionable {
+                    summary.actionable_tiny_ordered_events += 1;
+                }
             }
-            _ => summary.tiny_ordered_events += 1,
+            _ => {
+                summary.tiny_ordered_events += 1;
+                if actionable {
+                    summary.actionable_tiny_ordered_events += 1;
+                }
+            }
         }
         *buckets
             .entry((

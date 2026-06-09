@@ -20,6 +20,12 @@ pub struct TinyExecutionQualityReport {
     pub quote_canary_entry_would_execute_trades: u64,
     pub quote_canary_exit_would_execute_trades: u64,
     pub shadow_gate_dropped_would_execute_events: u64,
+    pub actionable_entry_would_execute_events: u64,
+    pub actionable_entry_ordered_events: u64,
+    pub actionable_entry_confirmed_events: u64,
+    pub actionable_entry_missing_order_events: u64,
+    pub actionable_entry_confirmed_coverage_pct: f64,
+    pub shadow_pending_entry_would_execute_events: u64,
     pub tiny_entry_ordered_trades: u64,
     pub tiny_entry_confirmed_trades: u64,
     pub tiny_entry_failed_orders: u64,
@@ -79,6 +85,7 @@ pub fn build_tiny_execution_quality(
     let exit_failed = failed_orders(proof, "sell");
     let entry_missing = missing_entry_orders(proof);
     let exit_missing = missing_exit_orders(proof);
+    let actionable_entry_missing = proof.entry_funnel.actionable_tiny_missing_order_events;
     let sample_status = sample_status(proof_summary.shadow_market_closed_trades);
     let top_flow_blockers = top_flow_blockers(
         proof,
@@ -86,6 +93,7 @@ pub fn build_tiny_execution_quality(
         exit_failed,
         entry_missing,
         exit_missing,
+        actionable_entry_missing,
     );
     let verdict = verdict(
         &sample_status,
@@ -93,6 +101,7 @@ pub fn build_tiny_execution_quality(
         exit_failed,
         entry_missing,
         exit_missing,
+        actionable_entry_missing,
         proof.entry_funnel.quote_would_execute_shadow_dropped_events,
         proof_summary.tiny_open_positions,
         proof_summary.tiny_vs_shadow_delta_sol,
@@ -108,6 +117,19 @@ pub fn build_tiny_execution_quality(
         shadow_gate_dropped_would_execute_events: proof
             .entry_funnel
             .quote_would_execute_shadow_dropped_events,
+        actionable_entry_would_execute_events: proof
+            .entry_funnel
+            .actionable_quote_would_execute_events,
+        actionable_entry_ordered_events: proof.entry_funnel.actionable_tiny_ordered_events,
+        actionable_entry_confirmed_events: proof.entry_funnel.actionable_tiny_confirmed_events,
+        actionable_entry_missing_order_events: actionable_entry_missing,
+        actionable_entry_confirmed_coverage_pct: pct(
+            proof.entry_funnel.actionable_tiny_confirmed_events,
+            proof.entry_funnel.actionable_quote_would_execute_events,
+        ),
+        shadow_pending_entry_would_execute_events: proof
+            .entry_funnel
+            .quote_would_execute_shadow_pending_events,
         tiny_entry_ordered_trades: proof_summary.tiny_entry_ordered_trades,
         tiny_entry_confirmed_trades: proof_summary.tiny_entry_confirmed_trades,
         tiny_entry_failed_orders: entry_failed,
@@ -198,6 +220,7 @@ fn verdict(
     exit_failed: u64,
     entry_missing: u64,
     exit_missing: u64,
+    actionable_entry_missing: u64,
     shadow_gate_dropped_would_execute: u64,
     open_positions: u64,
     tiny_vs_shadow_delta_sol: f64,
@@ -205,7 +228,7 @@ fn verdict(
 ) -> String {
     if exit_failed > 0 || exit_missing > 0 {
         "sell_flow_loss".to_string()
-    } else if entry_failed > 0 || entry_missing > 0 {
+    } else if entry_failed > 0 || entry_missing > 0 || actionable_entry_missing > 0 {
         "entry_flow_loss".to_string()
     } else if open_positions > 0 {
         "open_positions_present".to_string()
@@ -226,8 +249,16 @@ fn top_flow_blockers(
     exit_failed: u64,
     entry_missing: u64,
     exit_missing: u64,
+    actionable_entry_missing: u64,
 ) -> Vec<TinyExecutionQualityBlocker> {
     let mut blockers = Vec::new();
+    if actionable_entry_missing > 0 {
+        blockers.push(TinyExecutionQualityBlocker {
+            stage: "entry_order".to_string(),
+            reason: "missing_tiny_order_after_actionable_would_execute".to_string(),
+            count: actionable_entry_missing,
+        });
+    }
     if entry_missing > 0 {
         blockers.push(TinyExecutionQualityBlocker {
             stage: "entry_order".to_string(),

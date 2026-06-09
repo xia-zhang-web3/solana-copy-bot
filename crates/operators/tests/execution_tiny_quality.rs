@@ -43,6 +43,15 @@ fn quality_summary_flags_entry_flow_loss() -> Result<()> {
     insert_signal(&store, "buy-market-not-found", "buy", opened_ts)?;
     insert_signal(&store, "sell-market-not-found", "sell", closed_ts)?;
     store.record_execution_quote_canary_event(&quote_event(opened_ts))?;
+    store.record_execution_quote_canary_shadow_gate_event(
+        "buy-market-not-found",
+        "leader-wallet",
+        "TokenMarketNotFound",
+        "buy",
+        "shadow_recorded",
+        None,
+        opened_ts + Duration::milliseconds(20),
+    )?;
     store.record_execution_quote_canary_event(&quote_event_for(
         "quote:exit:market-not-found",
         Some("sell-market-not-found"),
@@ -62,6 +71,11 @@ fn quality_summary_flags_entry_flow_loss() -> Result<()> {
     assert_eq!(report.reason_class, "execution_canary_quote_pnl_loaded");
     assert_eq!(quality.verdict, "entry_flow_loss");
     assert_eq!(quality.quote_canary_entry_would_execute_trades, 1);
+    assert_eq!(quality.actionable_entry_would_execute_events, 1);
+    assert_eq!(quality.actionable_entry_ordered_events, 1);
+    assert_eq!(quality.actionable_entry_confirmed_events, 0);
+    assert_eq!(quality.actionable_entry_missing_order_events, 0);
+    assert_eq!(quality.actionable_entry_confirmed_coverage_pct, 0.0);
     assert_eq!(quality.tiny_entry_ordered_trades, 1);
     assert_eq!(quality.tiny_entry_confirmed_trades, 0);
     assert_eq!(quality.tiny_entry_failed_orders, 1);

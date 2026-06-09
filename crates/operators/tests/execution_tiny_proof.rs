@@ -62,6 +62,15 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
         "inside_limits",
         40,
     ))?;
+    store.record_execution_quote_canary_shadow_gate_event(
+        "buy-win",
+        "leader-wallet",
+        "TokenWin",
+        "buy",
+        "shadow_recorded",
+        None,
+        opened_win + Duration::milliseconds(20),
+    )?;
     store.record_execution_quote_canary_event(&quote_event(
         "quote:sell:win",
         Some("sell-win"),
@@ -192,8 +201,13 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
     assert_eq!(proof.entry_funnel.total_buy_quote_events, 2);
     assert_eq!(proof.entry_funnel.quote_would_execute_events, 1);
     assert_eq!(proof.entry_funnel.quote_would_skip_events, 1);
+    assert_eq!(proof.entry_funnel.actionable_quote_would_execute_events, 1);
+    assert_eq!(proof.entry_funnel.actionable_tiny_ordered_events, 1);
+    assert_eq!(proof.entry_funnel.actionable_tiny_confirmed_events, 1);
+    assert_eq!(proof.entry_funnel.actionable_tiny_missing_order_events, 0);
+    assert_eq!(proof.entry_funnel.shadow_recorded_events, 1);
     assert_eq!(proof.entry_funnel.shadow_dropped_events, 1);
-    assert_eq!(proof.entry_funnel.shadow_pending_events, 1);
+    assert_eq!(proof.entry_funnel.shadow_pending_events, 0);
     assert_eq!(proof.entry_funnel.tiny_ordered_events, 1);
     assert_eq!(proof.entry_funnel.tiny_confirmed_events, 1);
     assert_eq!(proof.entry_funnel.tiny_missing_order_events, 1);
