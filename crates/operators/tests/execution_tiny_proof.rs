@@ -184,6 +184,7 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
     assert_eq!(proof.summary.tiny_exit_ordered_trades, 1);
     assert_eq!(proof.summary.tiny_exit_confirmed_trades, 1);
     assert_eq!(proof.summary.tiny_closed_positions, 1);
+    assert_eq!(proof.summary.tiny_unique_closed_positions, 1);
     assert_eq!(proof.summary.tiny_open_positions, 0);
     assert_close(proof.summary.shadow_pnl_sol, 0.05);
     assert_close(proof.summary.tiny_realized_pnl_sol, 0.00112);
@@ -220,7 +221,6 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
     assert_eq!(proof.latency.exit_signal_to_submit_ms.avg_ms, 500.0);
     assert_eq!(proof.latency.exit_quote_to_submit_ms.avg_ms, 490.0);
     assert_eq!(proof.latency.exit_submit_to_confirm_ms.avg_ms, 1000.0);
-
     let win = proof
         .trades
         .iter()

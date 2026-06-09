@@ -35,16 +35,15 @@ pub(crate) struct QuoteSide {
     pub(crate) decision_delay_ms: Option<u64>,
     pub(crate) priority_fee_lamports: Option<u64>,
 }
-
 #[derive(Debug, Default)]
 pub(crate) struct PositionSide {
+    pub(crate) position_id: Option<String>,
     pub(crate) state: Option<String>,
     pub(crate) opened_ts: Option<DateTime<Utc>>,
     pub(crate) closed_ts: Option<DateTime<Utc>>,
     pub(crate) cost_sol: Option<f64>,
     pub(crate) pnl_sol: Option<f64>,
 }
-
 pub(crate) fn execution_tiny_proof_rows(
     store: &SqliteDiscoveryStore,
     since: DateTime<Utc>,
@@ -228,14 +227,14 @@ fn read_order_side(
         decision_reason: row.get(base + 16)?,
     }))
 }
-
 fn read_position_side(row: &rusqlite::Row<'_>, base: usize) -> rusqlite::Result<PositionSide> {
     Ok(PositionSide {
-        state: row.get(base)?,
-        opened_ts: optional_ts(row, base + 1)?,
-        closed_ts: optional_ts(row, base + 2)?,
-        cost_sol: row.get(base + 3)?,
-        pnl_sol: row.get(base + 4)?,
+        position_id: row.get(base)?,
+        state: row.get(base + 1)?,
+        opened_ts: optional_ts(row, base + 2)?,
+        closed_ts: optional_ts(row, base + 3)?,
+        cost_sol: row.get(base + 4)?,
+        pnl_sol: row.get(base + 5)?,
     })
 }
 
@@ -386,6 +385,7 @@ SELECT
     sell_metadata.priority_fee_lamports,
     sell_metadata.decision_status,
     sell_metadata.decision_reason,
+    pos.position_id,
     pos.state,
     pos.opened_ts,
     pos.closed_ts,

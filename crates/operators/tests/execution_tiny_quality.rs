@@ -143,6 +143,97 @@ fn quality_summary_flags_exit_flow_loss() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn quality_does_not_flag_missing_exit_when_position_is_already_closed() -> Result<()> {
+    let dir = tempdir()?;
+    let db_path = dir.path().join("runtime.db");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+
+    let opened_ts = ts("2026-06-09T16:56:00Z");
+    let closed_ts = opened_ts + Duration::seconds(30);
+    store.insert_shadow_closed_trade_exact(
+        "sell-merged-close",
+        "leader-wallet",
+        "TokenMarketNotFound",
+        100.0,
+        None,
+        0.10,
+        0.10,
+        0.0,
+        opened_ts,
+        closed_ts,
+    )?;
+    let close_id = store
+        .list_execution_quote_canary_close_candidates_for_signal("sell-merged-close", 10)?
+        .into_iter()
+        .next()
+        .expect("close candidate")
+        .id;
+    insert_signal(&store, "buy-exit-missing", "buy", opened_ts)?;
+    insert_signal(&store, "sell-merged-close", "sell", closed_ts)?;
+    insert_signal(&store, "sell-other-close", "sell", closed_ts)?;
+    store.record_execution_quote_canary_event(&quote_event_for(
+        "quote:entry:closed-position",
+        Some("buy-exit-missing"),
+        None,
+        "buy",
+        opened_ts,
+    ))?;
+    store.record_execution_quote_canary_event(&quote_event_for(
+        "quote:exit:closed-position",
+        Some("sell-merged-close"),
+        Some(close_id),
+        "sell",
+        closed_ts,
+    ))?;
+    let buy_order_id = record_confirmed_buy_order(&store, opened_ts)?;
+    store.record_execution_canary_confirmed_buy_fill(
+        &buy_order_id,
+        "TokenMarketNotFound",
+        100.0,
+        None,
+        0.01,
+        opened_ts + Duration::milliseconds(1600),
+    )?;
+    let sell_order_id = record_confirmed_sell_order(&store, closed_ts)?;
+    store.close_execution_canary_confirmed_sell_fill(
+        &sell_order_id,
+        "TokenMarketNotFound",
+        100.0,
+        None,
+        0.0002,
+        0.000001,
+        closed_ts + Duration::milliseconds(1800),
+    )?;
+    drop(store);
+
+    let report = build_report_from_db_path(&db_path, ts("2026-06-09T17:00:00Z"));
+    let quality = report
+        .tiny_execution_quality
+        .as_ref()
+        .unwrap_or_else(|| panic!("quality report missing: {:?}", report.error));
+    let proof = report
+        .tiny_execution_proof
+        .as_ref()
+        .unwrap_or_else(|| panic!("proof report missing: {:?}", report.error));
+    let trade = proof.trades.first().expect("proof trade");
+
+    assert_eq!(trade.proof_status, "tiny_closed");
+    assert_eq!(trade.proof_reason, "closed_without_matched_exit_order");
+    assert_eq!(proof.summary.tiny_unique_closed_positions, 1);
+    assert_eq!(quality.tiny_exit_missing_orders, 0);
+    assert!(!quality.top_flow_blockers.iter().any(|blocker| {
+        blocker.stage == "exit_order"
+            && blocker.reason == "missing_tiny_sell_order_after_would_execute"
+    }));
+    assert_ne!(quality.verdict, "sell_flow_loss");
+    Ok(())
+}
+
 fn insert_signal(
     store: &SqliteStore,
     signal_id: &str,
@@ -253,6 +344,56 @@ fn record_confirmed_buy_order(store: &SqliteStore, signal_ts: DateTime<Utc>) -> 
         &reserve.order.order_id,
         signal_ts + Duration::milliseconds(500),
         "buy-signature",
+    )?;
+    store.mark_execution_canary_confirmed(
+        &reserve.order.order_id,
+        signal_ts + Duration::milliseconds(1500),
+    )?;
+    Ok(reserve.order.order_id)
+}
+
+fn record_confirmed_sell_order(store: &SqliteStore, signal_ts: DateTime<Utc>) -> Result<String> {
+    let reserve = store.reserve_execution_canary_order(
+        "sell-other-close",
+        ROUTE,
+        signal_ts + Duration::milliseconds(100),
+    )?;
+    store.record_execution_canary_build_plan_metadata(&ExecutionCanaryBuildPlanMetadata {
+        order_id: reserve.order.order_id.clone(),
+        signal_id: reserve.order.signal_id.clone(),
+        client_order_id: reserve.order.client_order_id.clone(),
+        recorded_ts: signal_ts + Duration::milliseconds(10),
+        quote_source: Some("execution_quote_canary_provider:generic_metis".to_string()),
+        quote_event_id: Some("quote:exit:other-close".to_string()),
+        quote_status: Some("ok".to_string()),
+        quote_in_amount_raw: Some("500000".to_string()),
+        quote_out_amount_raw: Some("20000000".to_string()),
+        quote_response_json: None,
+        quote_price_sol: Some(0.0002),
+        price_impact_pct: Some(0.01),
+        route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Pump.fun Amm\"}}]".to_string()),
+        priority_fee_source: Some("execution_quote_canary_event".to_string()),
+        priority_fee_status: Some("ok".to_string()),
+        priority_fee_lamports: Some(900_000),
+        priority_fee_json: Some("{\"recommended\":900000}".to_string()),
+        slippage_bps: Some(12.5),
+        decision_status: Some("would_execute".to_string()),
+        decision_reason: Some("owned_position".to_string()),
+    })?;
+    store.mark_execution_canary_built(
+        &reserve.order.order_id,
+        signal_ts + Duration::milliseconds(120),
+    )?;
+    store.mark_execution_canary_simulated(
+        &reserve.order.order_id,
+        signal_ts + Duration::milliseconds(140),
+        "passed",
+        None,
+    )?;
+    store.mark_execution_canary_submitted(
+        &reserve.order.order_id,
+        signal_ts + Duration::milliseconds(500),
+        "sell-signature",
     )?;
     store.mark_execution_canary_confirmed(
         &reserve.order.order_id,

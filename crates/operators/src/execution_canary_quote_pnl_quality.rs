@@ -4,7 +4,10 @@ use copybot_storage_core::{
 use serde::Serialize;
 
 const CONFIRMED: &str = "execution_canary_confirmed";
+const DECISION_WOULD_EXECUTE: &str = "would_execute";
+const DECISION_WOULD_FORCE_EXIT: &str = "would_force_exit";
 const MIN_SAMPLE_TRADES: u64 = 30;
+const PROOF_STATUS_CLOSED: &str = "tiny_closed";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TinyExecutionQualityReport {
@@ -51,12 +54,8 @@ pub fn build_tiny_execution_quality(
     let proof_summary = &proof.summary;
     let entry_failed = failed_orders(proof, "buy");
     let exit_failed = failed_orders(proof, "sell");
-    let entry_missing = proof_summary
-        .canary_entry_would_execute_trades
-        .saturating_sub(proof_summary.tiny_entry_ordered_trades);
-    let exit_missing = proof_summary
-        .canary_exit_would_execute_trades
-        .saturating_sub(proof_summary.tiny_exit_ordered_trades);
+    let entry_missing = missing_entry_orders(proof);
+    let exit_missing = missing_exit_orders(proof);
     let sample_status = sample_status(proof_summary.shadow_market_closed_trades);
     let top_flow_blockers = top_flow_blockers(
         proof,
@@ -122,6 +121,31 @@ fn failed_orders(proof: &ExecutionTinyProofReport, side: &str) -> u64 {
         .recent_orders
         .iter()
         .filter(|order| order.side.as_deref() == Some(side) && order.status != CONFIRMED)
+        .count() as u64
+}
+
+fn missing_entry_orders(proof: &ExecutionTinyProofReport) -> u64 {
+    proof
+        .trades
+        .iter()
+        .filter(|trade| {
+            trade.entry_decision_status.as_deref() == Some(DECISION_WOULD_EXECUTE)
+                && trade.tiny_buy_order.is_none()
+        })
+        .count() as u64
+}
+
+fn missing_exit_orders(proof: &ExecutionTinyProofReport) -> u64 {
+    proof
+        .trades
+        .iter()
+        .filter(|trade| {
+            matches!(
+                trade.exit_decision_status.as_deref(),
+                Some(DECISION_WOULD_EXECUTE | DECISION_WOULD_FORCE_EXIT)
+            ) && trade.tiny_sell_order.is_none()
+                && trade.proof_status != PROOF_STATUS_CLOSED
+        })
         .count() as u64
 }
 

@@ -7,7 +7,7 @@ use crate::{
     EXECUTION_STATUS_CANARY_CONFIRMED,
 };
 use chrono::{DateTime, Utc};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const QUOTE_STATUS_OK: &str = "ok";
 const DECISION_WOULD_EXECUTE: &str = "would_execute";
@@ -58,6 +58,7 @@ struct ProofAccumulator {
     summary: ExecutionTinyProofSummary,
     latency: LatencyAccumulator,
     reasons: BTreeMap<(String, String), u64>,
+    closed_position_ids: BTreeSet<String>,
 }
 
 impl ProofAccumulator {
@@ -95,13 +96,23 @@ impl ProofAccumulator {
         }
         if trade.tiny_position_state.as_deref() == Some(EXECUTION_CANARY_POSITION_STATE_CLOSED) {
             self.summary.tiny_closed_positions += 1;
-            self.summary.tiny_realized_pnl_sol += trade.tiny_realized_pnl_sol.unwrap_or(0.0);
+            if self.record_unique_closed_position(trade) {
+                self.summary.tiny_unique_closed_positions += 1;
+                self.summary.tiny_realized_pnl_sol += trade.tiny_realized_pnl_sol.unwrap_or(0.0);
+            }
         }
         self.latency.record(trade);
         *self
             .reasons
             .entry((trade.proof_stage.clone(), trade.proof_reason.clone()))
             .or_insert(0) += 1;
+    }
+
+    fn record_unique_closed_position(&mut self, trade: &ExecutionTinyProofTrade) -> bool {
+        match trade.tiny_position_id.as_deref() {
+            Some(position_id) => self.closed_position_ids.insert(position_id.to_string()),
+            None => true,
+        }
     }
 
     fn reason_counts(&self) -> Vec<ExecutionTinyProofReasonCount> {
@@ -223,6 +234,7 @@ fn classify_trade(row: ProofRow) -> ExecutionTinyProofTrade {
         proof_stage,
         proof_reason,
         shadow_pnl_sol: row.shadow_pnl_sol,
+        tiny_position_id: row.position.position_id,
         tiny_position_state: row.position.state,
         tiny_position_opened_ts: row.position.opened_ts,
         tiny_position_closed_ts: row.position.closed_ts,
@@ -278,10 +290,26 @@ fn classify_reason(row: &ProofRow) -> (String, String, String) {
             &order_reason("entry_order", buy_order),
         );
     }
+    let position_is_closed =
+        row.position.state.as_deref() == Some(EXECUTION_CANARY_POSITION_STATE_CLOSED);
     if row.sell_quote.event_id.is_none() {
+        if position_is_closed {
+            return reason(
+                PROOF_STATUS_CLOSED,
+                "position",
+                "closed_without_matched_exit_quote",
+            );
+        }
         return reason("open_unmatched", "exit_quote", "missing_exit_quote");
     }
     if row.sell_quote.quote_status.as_deref() != Some(QUOTE_STATUS_OK) {
+        if position_is_closed {
+            return reason(
+                PROOF_STATUS_CLOSED,
+                "position",
+                "closed_despite_exit_quote_status",
+            );
+        }
         return reason_status(
             "open_unmatched",
             "exit_quote",
@@ -293,6 +321,13 @@ fn classify_reason(row: &ProofRow) -> (String, String, String) {
         row.sell_quote.decision_status.as_deref(),
         Some(DECISION_WOULD_EXECUTE | DECISION_WOULD_FORCE_EXIT)
     ) {
+        if position_is_closed {
+            return reason(
+                PROOF_STATUS_CLOSED,
+                "position",
+                "closed_without_executable_exit_decision",
+            );
+        }
         return reason_status(
             "open_unmatched",
             "exit_decision",
@@ -301,6 +336,13 @@ fn classify_reason(row: &ProofRow) -> (String, String, String) {
         );
     }
     let Some(sell_order) = row.sell_order.as_ref() else {
+        if position_is_closed {
+            return reason(
+                PROOF_STATUS_CLOSED,
+                "position",
+                "closed_without_matched_exit_order",
+            );
+        }
         return reason("open_unmatched", "exit_order", "exit_order_missing");
     };
     if sell_order.status != EXECUTION_STATUS_CANARY_CONFIRMED {
