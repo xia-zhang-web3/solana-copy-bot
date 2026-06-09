@@ -295,7 +295,8 @@ impl SqliteDiscoveryStore {
                      confirm_ts = NULL,
                      err_code = NULL,
                      simulation_status = ?4,
-                     simulation_error = ?5
+                     simulation_error = ?5,
+                     attempt = attempt + 1
                  WHERE order_id = ?1",
                 params![
                     order_id,

@@ -132,6 +132,7 @@ fn metadata_query_is_available(store: &SqliteDiscoveryStore) -> Result<bool> {
     }
     for column in [
         "quote_event_id",
+        "quote_source",
         "priority_fee_lamports",
         "decision_status",
         "decision_reason",
@@ -158,10 +159,10 @@ fn read_proof_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProofRow> {
         opened_ts: parse_ts_sql(5, &opened_raw)?,
         closed_ts: parse_ts_sql(6, &closed_raw)?,
         buy_order: read_order_side(row, 27, "buy", buy_quote.signal_ts, buy_quote.request_ts)?,
-        sell_order: read_order_side(row, 39, "sell", sell_quote.signal_ts, sell_quote.request_ts)?,
+        sell_order: read_order_side(row, 44, "sell", sell_quote.signal_ts, sell_quote.request_ts)?,
         buy_quote,
         sell_quote,
-        position: read_position_side(row, 51)?,
+        position: read_position_side(row, 61)?,
     })
 }
 
@@ -220,10 +221,11 @@ fn read_order_side(
         submit_to_confirm_ms: confirm_ts.map(|confirm_ts| delta_ms(submit_ts, confirm_ts)),
         signal_to_submit_ms: signal_ts.map(|signal_ts| delta_ms(signal_ts, submit_ts)),
         quote_to_submit_ms: quote_ts.map(|quote_ts| delta_ms(quote_ts, submit_ts)),
-        quote_event_id: None,
-        priority_fee_lamports: None,
-        decision_status: None,
-        decision_reason: None,
+        quote_source: row.get(base + 12)?,
+        quote_event_id: row.get(base + 13)?,
+        priority_fee_lamports: optional_i64_to_u64_sql(row.get(base + 14)?, base + 14)?,
+        decision_status: row.get(base + 15)?,
+        decision_reason: row.get(base + 16)?,
     }))
 }
 
@@ -249,8 +251,8 @@ fn read_recent_order(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionTinyP
             Box::new(error),
         )
     })?;
-    let signal_ts = optional_ts(row, 17)?;
-    let metadata_ts = optional_ts(row, 18)?;
+    let signal_ts = optional_ts(row, 18)?;
+    let metadata_ts = optional_ts(row, 19)?;
     Ok(ExecutionTinyProofOrder {
         order_id: row.get(0)?,
         signal_id: row.get(1)?,
@@ -270,10 +272,11 @@ fn read_recent_order(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionTinyP
         submit_to_confirm_ms: confirm_ts.map(|confirm_ts| delta_ms(submit_ts, confirm_ts)),
         signal_to_submit_ms: signal_ts.map(|signal_ts| delta_ms(signal_ts, submit_ts)),
         quote_to_submit_ms: metadata_ts.map(|metadata_ts| delta_ms(metadata_ts, submit_ts)),
-        quote_event_id: row.get(13)?,
-        priority_fee_lamports: optional_i64_to_u64_sql(row.get(14)?, 14)?,
-        decision_status: row.get(15)?,
-        decision_reason: row.get(16)?,
+        quote_source: row.get(13)?,
+        quote_event_id: row.get(14)?,
+        priority_fee_lamports: optional_i64_to_u64_sql(row.get(15)?, 15)?,
+        decision_status: row.get(16)?,
+        decision_reason: row.get(17)?,
     })
 }
 
@@ -361,6 +364,11 @@ SELECT
     copy_buy.token,
     buy_order.route,
     buy_order.err_code,
+    buy_metadata.quote_source,
+    buy_metadata.quote_event_id,
+    buy_metadata.priority_fee_lamports,
+    buy_metadata.decision_status,
+    buy_metadata.decision_reason,
     sell_order.order_id,
     sell_order.signal_id,
     sell_order.status,
@@ -373,6 +381,11 @@ SELECT
     copy_sell.token,
     sell_order.route,
     sell_order.err_code,
+    sell_metadata.quote_source,
+    sell_metadata.quote_event_id,
+    sell_metadata.priority_fee_lamports,
+    sell_metadata.decision_status,
+    sell_metadata.decision_reason,
     pos.state,
     pos.opened_ts,
     pos.closed_ts,
@@ -398,11 +411,15 @@ LEFT JOIN orders AS buy_order
    AND buy_order.order_id LIKE 'exec-canary:%'
 LEFT JOIN copy_signals AS copy_buy
     ON copy_buy.signal_id = buy_order.signal_id
+LEFT JOIN execution_canary_build_plan_metadata AS buy_metadata
+    ON buy_metadata.order_id = buy_order.order_id
 LEFT JOIN orders AS sell_order
     ON sell_order.signal_id = sell.signal_id
    AND sell_order.order_id LIKE 'exec-canary:%'
 LEFT JOIN copy_signals AS copy_sell
     ON copy_sell.signal_id = sell_order.signal_id
+LEFT JOIN execution_canary_build_plan_metadata AS sell_metadata
+    ON sell_metadata.order_id = sell_order.order_id
 LEFT JOIN positions AS pos
     ON pos.position_id = 'exec-canary-pos:' || buy_order.order_id
    AND pos.accounting_bucket = 'execution_canary'
@@ -427,6 +444,7 @@ SELECT
     orders.simulation_status,
     orders.simulation_error,
     orders.attempt,
+    metadata.quote_source,
     metadata.quote_event_id,
     metadata.priority_fee_lamports,
     metadata.decision_status,
@@ -457,6 +475,7 @@ SELECT
     orders.simulation_status,
     orders.simulation_error,
     orders.attempt,
+    NULL AS quote_source,
     NULL AS quote_event_id,
     NULL AS priority_fee_lamports,
     NULL AS decision_status,

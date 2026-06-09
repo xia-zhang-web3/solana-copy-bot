@@ -1,9 +1,10 @@
 use crate::{
-    execution_tiny_proof_rows::ProofRow, ExecutionTinyProofLatencyStats,
-    ExecutionTinyProofLatencySummary, ExecutionTinyProofOpenPosition, ExecutionTinyProofOrder,
-    ExecutionTinyProofReasonCount, ExecutionTinyProofReport, ExecutionTinyProofSummary,
-    ExecutionTinyProofTrade, EXECUTION_CANARY_POSITION_STATE_CLOSED,
-    EXECUTION_CANARY_POSITION_STATE_OPEN, EXECUTION_STATUS_CANARY_CONFIRMED,
+    execution_tiny_order_failures::order_failure_counts, execution_tiny_proof_rows::ProofRow,
+    ExecutionTinyEntryFunnel, ExecutionTinyProofLatencyStats, ExecutionTinyProofLatencySummary,
+    ExecutionTinyProofOpenPosition, ExecutionTinyProofOrder, ExecutionTinyProofReasonCount,
+    ExecutionTinyProofReport, ExecutionTinyProofSummary, ExecutionTinyProofTrade,
+    EXECUTION_CANARY_POSITION_STATE_CLOSED, EXECUTION_CANARY_POSITION_STATE_OPEN,
+    EXECUTION_STATUS_CANARY_CONFIRMED,
 };
 use chrono::{DateTime, Utc};
 use std::collections::BTreeMap;
@@ -17,6 +18,7 @@ pub(crate) fn build_report(
     as_of: DateTime<Utc>,
     since: DateTime<Utc>,
     limit: u32,
+    entry_funnel: ExecutionTinyEntryFunnel,
     rows: Vec<ProofRow>,
     recent_orders: Vec<ExecutionTinyProofOrder>,
     open_positions: Vec<ExecutionTinyProofOpenPosition>,
@@ -31,6 +33,7 @@ pub(crate) fn build_report(
         })
         .collect();
     let reason_counts = acc.reason_counts();
+    let order_failure_counts = order_failure_counts(&recent_orders);
     let latency = acc.latency.finish();
     let mut summary = acc.summary;
     summary.tiny_open_positions = open_positions.len() as u64;
@@ -40,8 +43,10 @@ pub(crate) fn build_report(
         since,
         limit,
         summary,
+        entry_funnel,
         latency,
         reason_counts,
+        order_failure_counts,
         trades,
         recent_orders,
         open_positions,

@@ -90,12 +90,202 @@ async fn retry_candidate_sell_quote_error_marks_order_failed() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn terminal_no_route_sell_keeps_open_position_after_max_build_attempts() -> Result<()> {
+    let db_path = unique_retry_candidate_sell_test_path("terminal-no-route");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let token = "TokenMint";
+    let signal = retry_candidate_sell_signal(token, now + chrono::Duration::seconds(1));
+    store.record_execution_canary_open_position(
+        "existing-confirmed-buy",
+        token,
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        now,
+    )?;
+    store.insert_copy_signal(&signal)?;
+    store.record_execution_quote_canary_event(&retry_candidate_sell_quote(
+        "quote:close:terminal-no-route",
+        &signal,
+        now + chrono::Duration::seconds(2),
+    ))?;
+    let reserve = store.reserve_execution_canary_order(
+        &signal.signal_id,
+        crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN,
+        now + chrono::Duration::seconds(3),
+    )?;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        now + chrono::Duration::seconds(4),
+        copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,
+        "owned_sell_quote_failed: NO_ROUTES_FOUND",
+    )?;
+    store.mark_execution_canary_failed_build_retry_candidate(
+        &reserve.order.order_id,
+        now + chrono::Duration::seconds(5),
+        "retry_failed_sell_with_owned_position_amount",
+    )?;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        now + chrono::Duration::seconds(6),
+        copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,
+        "owned_sell_quote_failed: NO_ROUTES_FOUND",
+    )?;
+    store.mark_execution_canary_failed_build_retry_candidate(
+        &reserve.order.order_id,
+        now + chrono::Duration::seconds(7),
+        "retry_failed_sell_with_owned_position_amount",
+    )?;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        now + chrono::Duration::seconds(8),
+        copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,
+        "owned_sell_quote_failed: NO_ROUTES_FOUND",
+    )?;
+    let config = retry_candidate_sell_config("http://127.0.0.1:9");
+
+    let summary = crate::execution_canary_route::process_tiny_submit_sell_quote_event_for_route(
+        &config,
+        &store,
+        "quote:close:terminal-no-route",
+        now + chrono::Duration::seconds(9),
+    )
+    .await?
+    .expect("terminal no-route sell should be processed");
+    let order = store
+        .load_execution_canary_order(&reserve.order.order_id)?
+        .expect("terminal no-route order should remain recorded");
+
+    assert_eq!(
+        summary.skipped_reason,
+        Some("terminal_failed_sell_no_route_kept_open")
+    );
+    assert_eq!(summary.open_positions, 1);
+    assert_eq!(
+        order.err_code.as_deref(),
+        Some(copybot_storage_core::EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE)
+    );
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("terminal_failed_sell_no_route_kept_open"));
+    assert!(store.load_execution_canary_open_position(token)?.is_some());
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_no_route_sell_reprobes_after_cooldown() -> Result<()> {
+    let db_path = unique_retry_candidate_sell_test_path("terminal-no-route-reprobe");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let token = "TokenMint";
+    let signal = retry_candidate_sell_signal(token, now + chrono::Duration::seconds(1));
+    store.record_execution_canary_open_position(
+        "existing-confirmed-buy",
+        token,
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        now,
+    )?;
+    store.insert_copy_signal(&signal)?;
+    store.record_execution_quote_canary_event(&retry_candidate_sell_quote(
+        "quote:close:terminal-no-route-reprobe",
+        &signal,
+        now + chrono::Duration::seconds(2),
+    ))?;
+    let reserve = store.reserve_execution_canary_order(
+        &signal.signal_id,
+        crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN,
+        now + chrono::Duration::seconds(3),
+    )?;
+    for offset in [4, 6, 8] {
+        store.mark_execution_canary_failed(
+            &reserve.order.order_id,
+            now + chrono::Duration::seconds(offset),
+            copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,
+            "owned_sell_quote_failed: NO_ROUTES_FOUND",
+        )?;
+        if offset < 8 {
+            store.mark_execution_canary_failed_build_retry_candidate(
+                &reserve.order.order_id,
+                now + chrono::Duration::seconds(offset + 1),
+                "retry_failed_sell_with_owned_position_amount",
+            )?;
+        }
+    }
+    let terminal_config = retry_candidate_sell_config("http://127.0.0.1:9");
+    crate::execution_canary_route::process_tiny_submit_sell_quote_event_for_route(
+        &terminal_config,
+        &store,
+        "quote:close:terminal-no-route-reprobe",
+        now + chrono::Duration::seconds(9),
+    )
+    .await?;
+    let (base_url, server) = serve_quote_no_routes().await?;
+    let config = retry_candidate_sell_config(&base_url);
+
+    let summary = crate::execution_canary_route::process_failed_sell_simulation_sweep(
+        &config,
+        &store,
+        now + chrono::Duration::seconds(700),
+    )
+    .await?
+    .expect("terminal no-route sweep should run");
+    server.await??;
+    let order = store
+        .load_execution_canary_order(&reserve.order.order_id)?
+        .expect("reprobed no-route order should remain recorded");
+
+    assert_eq!(summary.failed, 1);
+    assert_eq!(summary.skipped_reason, Some("owned_sell_quote_error"));
+    assert_eq!(
+        order.err_code.as_deref(),
+        Some(copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED)
+    );
+    assert_eq!(order.attempt, 1);
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("NO_ROUTES_FOUND"));
+    assert!(store.load_execution_canary_open_position(token)?.is_some());
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
 async fn serve_quote_no_routes() -> Result<(String, tokio::task::JoinHandle<Result<()>>)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await?;
         let mut buffer = [0_u8; 4096];
+        let read = socket.read(&mut buffer).await?;
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        assert!(request.contains("getTokenAccountsByOwner"));
+        let body = r#"{"jsonrpc":"2.0","id":"execution-canary-wallet-token-balance","result":{"value":[{"account":{"data":{"parsed":{"info":{"mint":"TokenMint","tokenAmount":{"amount":"10000","decimals":3,"uiAmountString":"10"}}}}}}]}}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket.write_all(response.as_bytes()).await?;
+
+        let (mut socket, _) = listener.accept().await?;
         let read = socket.read(&mut buffer).await?;
         let request = String::from_utf8_lossy(&buffer[..read]);
         assert!(request.starts_with("GET /quote?"));
@@ -124,6 +314,7 @@ fn retry_candidate_sell_config(base_url: &str) -> ExecutionConfig {
     config.submit_adapter_http_url = base_url.to_string();
     config.quote_canary_base_url = base_url.to_string();
     config.quote_canary_timeout_ms = 1_000;
+    config.max_submit_attempts = 3;
     config.swap_transaction_dry_run_enabled = true;
     config
 }

@@ -54,6 +54,7 @@ pub(crate) struct ExecutionCanaryTickSummary {
     pub state_machine_entry_gate_blocked: usize,
     pub orphan_recovery_checked: usize,
     pub orphan_recovery_recovered: usize,
+    pub orphan_recovery_reconciled: usize,
     pub orphan_recovery_skipped_no_history: usize,
     pub orphan_recovery_errors: usize,
     pub last_orphan_recovery_token: Option<String>,
@@ -87,6 +88,7 @@ impl ExecutionCanaryTickSummary {
             || self.state_machine_safety_blocked > 0
             || self.state_machine_entry_gate_blocked > 0
             || self.orphan_recovery_recovered > 0
+            || self.orphan_recovery_reconciled > 0
             || self.orphan_recovery_errors > 0
     }
 }

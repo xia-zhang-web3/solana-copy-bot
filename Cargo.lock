@@ -319,6 +319,7 @@ dependencies = [
  "copybot-storage-core",
  "ed25519-dalek",
  "futures-util",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

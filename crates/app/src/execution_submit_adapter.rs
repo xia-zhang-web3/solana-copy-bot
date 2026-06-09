@@ -1,4 +1,5 @@
 use crate::execution_pump_fun_swap_instructions_http::fetch_pump_fun_swap_instructions_dry_run;
+use crate::execution_pump_fun_swap_transaction_http::fetch_pump_fun_swap_transaction_dry_run;
 use crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID;
 use crate::execution_serialized_transaction_slot::ExecutionSerializedTransactionPayloadSlot;
 use crate::execution_signing_envelope::{
@@ -58,6 +59,8 @@ pub(crate) use self::submit_plan::{
     execution_submit_idempotency_key, execution_submit_intent_from_signed_envelope,
     ExecutionSubmitIntent, ExecutionSubmitPlan,
 };
+#[cfg(test)]
+pub(crate) use self::tiny_runner::build_execution_confirmed_fill_from_request;
 pub(crate) use self::tiny_runner::{
     build_tiny_submit_reconciliation_request, reconcile_execution_tiny_submit_confirmation,
     record_execution_tiny_submit_confirm_path, ExecutionTinySubmitConfirmPathOutcome,
@@ -334,9 +337,22 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 let instructions_proof =
                     fetch_pump_fun_swap_instructions_dry_run(&self.http, &self.config, plan)
                         .await?;
+                let transaction_dry_run =
+                    fetch_pump_fun_swap_transaction_dry_run(&self.http, &self.config, plan).await?;
+                if let Some(transaction) = transaction_dry_run.as_ref() {
+                    if let Some(slot) = plan.serialized_transaction_payload_slot.as_ref() {
+                        slot.store(ExecutionSerializedTransactionPayload {
+                            source: transaction.source.clone(),
+                            serialized_transaction_base64: transaction
+                                .serialized_transaction_base64
+                                .clone(),
+                        })?;
+                    }
+                }
+                let transaction_proof = transaction_dry_run.map(|transaction| transaction.summary);
                 return Ok(ExecutionSimulationResult {
                     status: EXECUTION_SIMULATION_STATUS_PASSED.to_string(),
-                    error: instructions_proof,
+                    error: combined_simulation_proof(instructions_proof, transaction_proof),
                 });
             }
             let instructions_proof =

@@ -1,10 +1,13 @@
+use crate::execution_pump_fun_quote_http::fetch_pump_fun_quote_sample;
 use crate::execution_quote_canary_helpers::{
     quote_canary_slippage_limit_bps, quote_slippage_bps_for_buy, sol_to_lamports_raw,
     DECISION_UNKNOWN, DECISION_WOULD_EXECUTE, DECISION_WOULD_SKIP, QUOTE_STATUS_ERROR,
     QUOTE_STATUS_OK, SIDE_BUY, SOL_MINT,
 };
 use crate::execution_quote_http::fetch_quote_sample;
-use crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS;
+use crate::execution_quote_provider_selection::{
+    QUOTE_SOURCE_GENERIC_METIS, QUOTE_SOURCE_PUMP_FUN_PAID,
+};
 use crate::execution_submit_adapter::ExecutionBuildPlanMetadata;
 use anyhow::Result;
 use copybot_config::ExecutionConfig;
@@ -34,6 +37,27 @@ pub(crate) async fn refresh_tiny_buy_build_plan_metadata(
 
     let amount_raw = sol_to_lamports_raw(config.canary_buy_size_sol)?;
     let max_slippage_bps = quote_canary_slippage_limit_bps(config, SIDE_BUY);
+    if metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_PUMP_FUN_PAID) {
+        match fetch_pump_fun_quote_sample(http, config, SIDE_BUY, &signal.token, &amount_raw).await
+        {
+            Ok(quote) if pump_fun_quote_is_completed(&quote.response_json) != Some(true) => {
+                return Ok(apply_fresh_quote(
+                    metadata,
+                    quote,
+                    max_slippage_bps,
+                    QUOTE_SOURCE_PUMP_FUN_PAID,
+                ));
+            }
+            Ok(_) => {}
+            Err(_) => {
+                return Ok(fresh_quote_error_metadata(
+                    metadata,
+                    QUOTE_SOURCE_PUMP_FUN_PAID,
+                ));
+            }
+        }
+    }
+
     let quote = match fetch_quote_sample(
         http,
         config,
@@ -45,10 +69,20 @@ pub(crate) async fn refresh_tiny_buy_build_plan_metadata(
     .await
     {
         Ok(quote) => quote,
-        Err(_) => return Ok(fresh_quote_error_metadata(metadata)),
+        Err(_) => {
+            return Ok(fresh_quote_error_metadata(
+                metadata,
+                QUOTE_SOURCE_GENERIC_METIS,
+            ))
+        }
     };
 
-    Ok(apply_fresh_generic_quote(metadata, quote, max_slippage_bps))
+    Ok(apply_fresh_quote(
+        metadata,
+        quote,
+        max_slippage_bps,
+        QUOTE_SOURCE_GENERIC_METIS,
+    ))
 }
 
 pub(crate) fn fresh_submit_gate_reason(
@@ -65,18 +99,20 @@ pub(crate) fn fresh_submit_gate_reason(
 
 fn fresh_quote_error_metadata(
     mut metadata: ExecutionBuildPlanMetadata,
+    quote_source: &str,
 ) -> ExecutionBuildPlanMetadata {
-    metadata.quote_source = Some(QUOTE_SOURCE_GENERIC_METIS.to_string());
+    metadata.quote_source = Some(quote_source.to_string());
     metadata.quote_status = Some(QUOTE_STATUS_ERROR.to_string());
     metadata.decision_status = Some(DECISION_UNKNOWN.to_string());
     metadata.decision_reason = Some(FRESH_SUBMIT_QUOTE_ERROR.to_string());
     metadata
 }
 
-fn apply_fresh_generic_quote(
+fn apply_fresh_quote(
     mut metadata: ExecutionBuildPlanMetadata,
     quote: crate::execution_quote_canary_helpers::QuoteSample,
     max_slippage_bps: u64,
+    quote_source: &str,
 ) -> ExecutionBuildPlanMetadata {
     let price_and_slippage = fresh_buy_price_and_slippage(&metadata, &quote.out_amount);
     let quote_response_json = quote_response_with_copybot_sidecar(
@@ -84,7 +120,7 @@ fn apply_fresh_generic_quote(
         metadata.quote_response_json.as_deref(),
     );
 
-    metadata.quote_source = Some(QUOTE_SOURCE_GENERIC_METIS.to_string());
+    metadata.quote_source = Some(quote_source.to_string());
     metadata.quote_status = Some(QUOTE_STATUS_OK.to_string());
     metadata.quote_in_amount_raw = Some(quote.in_amount);
     metadata.quote_out_amount_raw = Some(quote.out_amount);
@@ -109,6 +145,14 @@ fn apply_fresh_generic_quote(
         metadata.decision_reason = Some(FRESH_SUBMIT_QUOTE_SLIPPAGE_ABOVE_LIMIT.to_string());
     }
     metadata
+}
+
+fn pump_fun_quote_is_completed(raw: &str) -> Option<bool> {
+    serde_json::from_str::<Value>(raw).ok().and_then(|value| {
+        value
+            .pointer("/quote/meta/isCompleted")
+            .and_then(Value::as_bool)
+    })
 }
 
 fn fresh_buy_price_and_slippage(

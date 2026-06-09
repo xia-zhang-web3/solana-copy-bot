@@ -244,12 +244,16 @@ fn build_sell_fill_from_request(
         return build_orphan_sell_fill_from_request(request, fill_ts);
     };
     let exit_price_sol = positive_quote_price(request)?;
-    validate_positive(position.qty, "sell fill target_qty")?;
+    let target_qty_exact = quote_exact_input_quantity(request, &position)?;
+    let target_qty = target_qty_exact
+        .map(TokenQuantity::as_f64)
+        .unwrap_or(position.qty);
+    validate_positive(target_qty, "sell fill target_qty")?;
     Ok(ExecutionConfirmedFill::Sell(ExecutionConfirmedSellFill {
         order_id: request.order_id.clone(),
         token: request.token.clone(),
-        target_qty: position.qty,
-        target_qty_exact: position.qty_exact,
+        target_qty,
+        target_qty_exact,
         exit_price_sol,
         dust_qty_epsilon: DEFAULT_TINY_SELL_DUST_QTY_EPSILON,
         fill_ts,
@@ -330,6 +334,23 @@ fn quote_exact_output_quantity(request: &ExecutionSubmitRequest) -> Result<Optio
         .parse::<u64>()
         .with_context(|| format!("invalid quote_out_amount_raw for {}", request.order_id))?;
     Ok(Some(TokenQuantity::new(raw, decimals)))
+}
+
+fn quote_exact_input_quantity(
+    request: &ExecutionSubmitRequest,
+    position: &copybot_storage_core::ExecutionCanaryOwnedPosition,
+) -> Result<Option<TokenQuantity>> {
+    let Some(position_qty) = position.qty_exact else {
+        return Ok(None);
+    };
+    let Some(raw) = request.metadata.quote_in_amount_raw.as_deref() else {
+        return Ok(Some(position_qty));
+    };
+    let raw = raw
+        .parse::<u64>()
+        .with_context(|| format!("invalid quote_in_amount_raw for {}", request.order_id))?;
+    let raw = raw.min(position_qty.raw());
+    Ok((raw > 0).then(|| TokenQuantity::new(raw, position_qty.decimals())))
 }
 
 fn quote_output_decimals(request: &ExecutionSubmitRequest) -> Option<u8> {

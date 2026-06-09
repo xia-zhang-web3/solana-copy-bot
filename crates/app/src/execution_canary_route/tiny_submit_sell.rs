@@ -4,9 +4,13 @@ use super::tiny_submit::{
 };
 use super::tiny_submit_sell_retry::{
     failed_sell_build_retry_ready, failed_sell_simulation_retry_ready,
-    hold_terminal_failed_sell_simulation, retry_failed_sell_candidate_ready,
+    hold_terminal_failed_sell_no_route, hold_terminal_failed_sell_simulation,
+    next_failed_sell_retry_event_id, retry_failed_sell_candidate_ready,
+    terminal_failed_sell_no_route, terminal_failed_sell_no_route_retry_ready,
     terminal_failed_sell_simulation, RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
+    RETRY_TERMINAL_SELL_NO_ROUTE_REASON,
 };
+use super::tiny_submit_wallet_balance::fetch_wallet_token_balance;
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_canary_submit_contract::ExecutionTinySubmitGate;
 use crate::execution_quote_canary_helpers::{
@@ -77,7 +81,19 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
             summary.last_order_id = Some(existing.order_id.clone());
             if retry_failed_sell_candidate_ready(&existing) {
                 Some(existing)
-            } else if failed_sell_build_retry_ready(&existing) {
+            } else if terminal_failed_sell_no_route_retry_ready(&existing, now) {
+                Some(
+                    store.mark_execution_canary_terminal_sell_no_route_retry_candidate(
+                        &existing.order_id,
+                        now,
+                        RETRY_TERMINAL_SELL_NO_ROUTE_REASON,
+                    )?,
+                )
+            } else if terminal_failed_sell_no_route(config, &existing) {
+                return Ok(Some(hold_terminal_failed_sell_no_route(
+                    store, &existing, now,
+                )?));
+            } else if failed_sell_build_retry_ready(config, &existing) {
                 Some(store.mark_execution_canary_failed_build_retry_candidate(
                     &existing.order_id,
                     now,
@@ -200,22 +216,7 @@ pub(super) async fn process_failed_sell_simulation_sweep_for_route(
     store: &SqliteStore,
     now: DateTime<Utc>,
 ) -> Result<ExecutionCanaryStateMachineSummary> {
-    let mut retry_events = store.list_retry_candidate_sell_execution_quote_event_ids_for_route(
-        &config.canary_route,
-        RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
-        1,
-    )?;
-    if let Some(event_id) = retry_events.pop() {
-        return Ok(
-            process_tiny_submit_sell_quote_event(config, store, &event_id, now)
-                .await?
-                .unwrap_or_default(),
-        );
-    }
-
-    let mut failed_build_events = store
-        .list_failed_build_sell_execution_quote_event_ids_for_route(&config.canary_route, 1)?;
-    if let Some(event_id) = failed_build_events.pop() {
+    if let Some(event_id) = next_failed_sell_retry_event_id(config, store, now)? {
         return Ok(
             process_tiny_submit_sell_quote_event(config, store, &event_id, now)
                 .await?
@@ -290,18 +291,41 @@ async fn owned_position_amount_raw(
     token: &str,
     position: &ExecutionCanaryOwnedPosition,
 ) -> Result<String> {
-    if let Some(qty) = position.qty_exact {
-        return Ok(qty.raw().to_string());
+    let wallet = fetch_wallet_token_balance(http, config, token)
+        .await?
+        .ok_or_else(|| anyhow!("owned sell wallet token account missing for {token}"))?;
+    if wallet.raw == 0 {
+        return Err(anyhow!(
+            "owned sell wallet token balance is zero for {token}"
+        ));
     }
-    let decimals = resolve_spl_token_decimals(http, config, token, None)
-        .await
-        .ok_or_else(|| anyhow!("missing token decimals for owned sell {token}"))?;
-    ui_amount_to_raw_string(position.qty, decimals).ok_or_else(|| {
-        anyhow!(
-            "invalid owned sell qty {} decimals {decimals}",
-            position.qty
-        )
-    })
+    let position_raw = if let Some(qty) = position.qty_exact {
+        if qty.decimals() != wallet.decimals {
+            return Err(anyhow!(
+                "owned sell wallet decimals mismatch for {token}: position={} wallet={}",
+                qty.decimals(),
+                wallet.decimals
+            ));
+        }
+        qty.raw()
+    } else {
+        let decimals = resolve_spl_token_decimals(http, config, token, Some(wallet.decimals))
+            .await
+            .unwrap_or(wallet.decimals);
+        let raw = ui_amount_to_raw_string(position.qty, decimals).ok_or_else(|| {
+            anyhow!(
+                "invalid owned sell qty {} decimals {decimals}",
+                position.qty
+            )
+        })?;
+        raw.parse::<u64>()
+            .with_context(|| format!("invalid owned sell raw amount {raw} for {token}"))?
+    };
+    let amount_raw = position_raw.min(wallet.raw);
+    if amount_raw == 0 {
+        return Err(anyhow!("owned sell amount is zero for {token}"));
+    }
+    Ok(amount_raw.to_string())
 }
 
 fn sell_safety_blocked(

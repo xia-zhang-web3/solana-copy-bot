@@ -114,7 +114,66 @@ async fn orphan_position_recovery_retimestamps_existing_recovery_position() -> R
     Ok(())
 }
 
+#[tokio::test]
+async fn orphan_position_recovery_reconciles_recovery_orphan_wallet_balance() -> Result<()> {
+    let db_path = unique_orphan_recovery_test_path("reconcile-wallet-balance");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    store.record_execution_canary_open_position(
+        "recovery-orphan:ZeroMint:10000:manual",
+        "ZeroMint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        now - chrono::Duration::hours(1),
+    )?;
+    store.record_execution_canary_open_position(
+        "recovery-orphan:PartialMint:10000:manual",
+        "PartialMint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        now - chrono::Duration::hours(1),
+    )?;
+    let body = r#"{"jsonrpc":"2.0","id":"execution-canary-orphan-recovery","result":{"value":[{"account":{"data":{"parsed":{"info":{"mint":"ZeroMint","tokenAmount":{"amount":"0","decimals":3,"uiAmountString":"0"}}}}}},{"account":{"data":{"parsed":{"info":{"mint":"PartialMint","tokenAmount":{"amount":"4000","decimals":3,"uiAmountString":"4"}}}}}}]}}"#;
+    let (rpc_url, server) = serve_orphan_token_accounts_body(body).await?;
+    let config = orphan_recovery_config(&rpc_url);
+
+    let summary =
+        crate::execution_canary_route::process_tiny_submit_orphan_position_recovery_sweep(
+            &config, &store, now,
+        )
+        .await?
+        .expect("orphan recovery should run");
+    server.await??;
+    let zero = store.load_execution_canary_open_position("ZeroMint")?;
+    let partial = store
+        .load_execution_canary_open_position("PartialMint")?
+        .expect("partial wallet balance should stay open");
+
+    assert_eq!(summary.orphan_recovery_checked, 1);
+    assert_eq!(summary.orphan_recovery_reconciled, 2);
+    assert_eq!(summary.open_positions, 1);
+    assert!(zero.is_none());
+    assert_eq!(partial.qty_exact, Some(TokenQuantity::new(4_000, 3)));
+    assert_eq!(partial.cost_lamports, Some(Lamports::new(4_000_000)));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
 async fn serve_orphan_token_accounts() -> Result<(String, tokio::task::JoinHandle<Result<()>>)> {
+    let body = r#"{"jsonrpc":"2.0","id":"execution-canary-orphan-recovery","result":{"value":[{"account":{"data":{"parsed":{"info":{"mint":"KnownMint","tokenAmount":{"amount":"12345","decimals":3,"uiAmountString":"12.345"}}}}}},{"account":{"data":{"parsed":{"info":{"mint":"UnknownMint","tokenAmount":{"amount":"5000","decimals":3,"uiAmountString":"5"}}}}}}]}}"#;
+    serve_orphan_token_accounts_body(body).await
+}
+
+async fn serve_orphan_token_accounts_body(
+    body: &'static str,
+) -> Result<(String, tokio::task::JoinHandle<Result<()>>)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let rpc_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
@@ -123,7 +182,6 @@ async fn serve_orphan_token_accounts() -> Result<(String, tokio::task::JoinHandl
         let read = socket.read(&mut buffer).await?;
         let request = String::from_utf8_lossy(&buffer[..read]);
         assert!(request.contains("getTokenAccountsByOwner"));
-        let body = r#"{"jsonrpc":"2.0","id":"execution-canary-orphan-recovery","result":{"value":[{"account":{"data":{"parsed":{"info":{"mint":"KnownMint","tokenAmount":{"amount":"12345","decimals":3,"uiAmountString":"12.345"}}}}}},{"account":{"data":{"parsed":{"info":{"mint":"UnknownMint","tokenAmount":{"amount":"5000","decimals":3,"uiAmountString":"5"}}}}}}]}}"#;
         let response = format!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
             body.len(),

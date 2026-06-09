@@ -285,6 +285,7 @@ fn execution_canary_quote_pnl_cli_accepts_window_flags() -> Result<()> {
         "--config",
         "/etc/solana-copy-bot/live.toml",
         "--json",
+        "--metis-diagnostics",
         "--since",
         "2026-06-02T12:00:00+00:00",
     ])?;
@@ -294,6 +295,7 @@ fn execution_canary_quote_pnl_cli_accepts_window_flags() -> Result<()> {
     assert_eq!(cli.since_hours, 6);
     assert!(by_since.config_path.is_some());
     assert!(by_since.since.is_some());
+    assert!(by_since.metis_diagnostics);
     assert!(parse_args_from(["--json"]).is_err());
     assert!(parse_args_from(["--db-path", "db.sqlite", "--json", "--limit", "0"]).is_err());
     Ok(())

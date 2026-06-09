@@ -7,8 +7,10 @@ pub struct ExecutionTinyProofReport {
     pub since: DateTime<Utc>,
     pub limit: u32,
     pub summary: ExecutionTinyProofSummary,
+    pub entry_funnel: ExecutionTinyEntryFunnel,
     pub latency: ExecutionTinyProofLatencySummary,
     pub reason_counts: Vec<ExecutionTinyProofReasonCount>,
+    pub order_failure_counts: Vec<ExecutionTinyOrderFailureCount>,
     pub trades: Vec<ExecutionTinyProofTrade>,
     pub recent_orders: Vec<ExecutionTinyProofOrder>,
     pub open_positions: Vec<ExecutionTinyProofOpenPosition>,
@@ -56,6 +58,47 @@ pub struct ExecutionTinyProofReasonCount {
     pub stage: String,
     pub reason: String,
     pub trades: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ExecutionTinyEntryFunnel {
+    pub total_buy_quote_events: u64,
+    pub quote_ok_events: u64,
+    pub quote_would_execute_events: u64,
+    pub quote_would_skip_events: u64,
+    pub shadow_recorded_events: u64,
+    pub shadow_dropped_events: u64,
+    pub shadow_pending_events: u64,
+    pub tiny_ordered_events: u64,
+    pub tiny_confirmed_events: u64,
+    pub tiny_failed_events: u64,
+    pub tiny_submit_disabled_events: u64,
+    pub tiny_missing_order_events: u64,
+    pub buckets: Vec<ExecutionTinyEntryFunnelBucket>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecutionTinyEntryFunnelBucket {
+    pub quote_source: String,
+    pub quote_status: String,
+    pub decision_status: String,
+    pub shadow_gate_status: String,
+    pub order_status: String,
+    pub err_code: String,
+    pub simulation_status: String,
+    pub events: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecutionTinyOrderFailureCount {
+    pub side: String,
+    pub status: String,
+    pub err_code: String,
+    pub simulation_status: String,
+    pub decision_reason: String,
+    pub route: String,
+    pub quote_source: String,
+    pub orders: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -112,6 +155,7 @@ pub struct ExecutionTinyProofOrder {
     pub submit_to_confirm_ms: Option<i64>,
     pub signal_to_submit_ms: Option<i64>,
     pub quote_to_submit_ms: Option<i64>,
+    pub quote_source: Option<String>,
     pub quote_event_id: Option<String>,
     pub priority_fee_lamports: Option<u64>,
     pub decision_status: Option<String>,

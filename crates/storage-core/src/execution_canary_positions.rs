@@ -117,6 +117,46 @@ impl SqliteDiscoveryStore {
         Ok(written > 0)
     }
 
+    pub fn list_execution_canary_open_recovery_orphan_positions(
+        &self,
+    ) -> Result<Vec<ExecutionCanaryOwnedPosition>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    position_id,
+                    token,
+                    qty,
+                    cost_sol,
+                    cost_lamports,
+                    qty_raw,
+                    qty_decimals,
+                    opened_ts,
+                    state,
+                    accounting_bucket
+                 FROM positions
+                 WHERE accounting_bucket = ?1
+                   AND state = ?2
+                   AND position_id LIKE 'exec-canary-pos:recovery-orphan:%'
+                 ORDER BY opened_ts ASC, position_id ASC",
+            )
+            .context("failed to prepare execution canary recovery orphan position list")?;
+        let rows = stmt
+            .query_map(
+                params![
+                    EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+                    EXECUTION_CANARY_POSITION_STATE_OPEN,
+                ],
+                execution_canary_position_from_row,
+            )
+            .context("failed querying execution canary recovery orphan positions")?;
+        let mut positions = Vec::new();
+        for row in rows {
+            positions.push(row.context("failed reading execution canary recovery orphan row")?);
+        }
+        Ok(positions)
+    }
+
     pub fn execution_canary_open_position_count(&self) -> Result<u64> {
         let count: i64 = self
             .conn

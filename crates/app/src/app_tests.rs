@@ -57,6 +57,10 @@ mod execution_confirmed_transaction_fill_contract;
 mod execution_orphan_position_recovery_contract;
 #[path = "app_tests/72.rs"]
 mod execution_orphan_sell_confirmation_contract;
+#[path = "app_tests/74.rs"]
+mod execution_partial_sell_accounting_contract;
+#[path = "app_tests/75.rs"]
+mod execution_pump_fun_swap_transaction_contract;
 #[path = "app_tests/43.rs"]
 mod execution_quote_canary_hot_observed;
 #[path = "app_tests/50.rs"]

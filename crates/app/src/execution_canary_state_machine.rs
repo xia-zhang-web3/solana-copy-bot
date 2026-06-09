@@ -56,6 +56,7 @@ pub(crate) struct ExecutionCanaryStateMachineSummary {
     pub(crate) sell_dust_closed: usize,
     pub(crate) orphan_recovery_checked: usize,
     pub(crate) orphan_recovery_recovered: usize,
+    pub(crate) orphan_recovery_reconciled: usize,
     pub(crate) orphan_recovery_skipped_no_history: usize,
     pub(crate) orphan_recovery_errors: usize,
     pub(crate) last_orphan_recovery_token: Option<String>,

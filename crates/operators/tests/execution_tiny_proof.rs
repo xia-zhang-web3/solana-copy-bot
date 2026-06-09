@@ -158,6 +158,13 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
     assert_close(proof.summary.shadow_pnl_sol, 0.05);
     assert_close(proof.summary.tiny_realized_pnl_sol, 0.002);
     assert_close(proof.summary.tiny_vs_shadow_delta_sol, -0.048);
+    assert_eq!(proof.entry_funnel.total_buy_quote_events, 2);
+    assert_eq!(proof.entry_funnel.quote_would_execute_events, 1);
+    assert_eq!(proof.entry_funnel.quote_would_skip_events, 1);
+    assert_eq!(proof.entry_funnel.shadow_pending_events, 2);
+    assert_eq!(proof.entry_funnel.tiny_ordered_events, 1);
+    assert_eq!(proof.entry_funnel.tiny_confirmed_events, 1);
+    assert_eq!(proof.entry_funnel.tiny_missing_order_events, 1);
 
     assert_reason(proof, "position", "tiny_closed", 1);
     assert_reason(proof, "entry_decision", "entry_decision:would_skip", 1);
@@ -193,8 +200,13 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
         .find(|order| order.signal_id == "buy-win")
         .expect("recent buy order");
     assert_eq!(recent_buy.quote_event_id.as_deref(), Some("quote:buy:win"));
+    assert_eq!(
+        recent_buy.quote_source.as_deref(),
+        Some("execution_quote_canary_event")
+    );
     assert_eq!(recent_buy.priority_fee_lamports, Some(12_345));
     assert_eq!(recent_buy.decision_status.as_deref(), Some("would_execute"));
+    assert!(proof.order_failure_counts.is_empty());
     Ok(())
 }
 

@@ -214,6 +214,16 @@ async fn serve_sell_build_submit_and_confirm(
     let tx = tx_signature.to_string();
     let serialized_transaction = serialized_sell_route_legacy_transaction(*first_signer);
     let server = tokio::spawn(async move {
+        let balance = read_tiny_sell_route_http_request(&listener).await;
+        assert!(balance
+            .body
+            .contains("\"method\":\"getTokenAccountsByOwner\""));
+        write_tiny_sell_route_http_response(
+            balance.socket,
+            r#"{"jsonrpc":"2.0","id":"execution-canary-owned-sell-balance","result":{"value":[{"account":{"data":{"parsed":{"info":{"tokenAmount":{"amount":"10000","decimals":3}}}}}}]}}"#,
+        )
+        .await;
+
         let quote = read_tiny_sell_route_http_request(&listener).await;
         assert!(quote.body.starts_with("GET /quote?"));
         assert!(quote.body.contains("amount=10000"));

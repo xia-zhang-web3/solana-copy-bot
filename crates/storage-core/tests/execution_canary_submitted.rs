@@ -284,7 +284,7 @@ fn retry_candidate_sell_event_lookup_includes_existing_retry_candidate_order() -
 }
 
 #[test]
-fn failed_build_sell_retry_candidate_keeps_attempt_and_reuses_close_event() -> Result<()> {
+fn failed_build_sell_retry_candidate_increments_attempt_and_reuses_close_event() -> Result<()> {
     let store = open_migrated_store("failed-build-sell-retry")?;
     let now = ts("2026-06-08T12:45:00Z");
     let signal_id = "sell-failed-build";
@@ -324,7 +324,7 @@ fn failed_build_sell_retry_candidate_keeps_attempt_and_reuses_close_event() -> R
 
     assert_eq!(events, vec!["quote:close:failed-build".to_string()]);
     assert_eq!(retry.status, EXECUTION_STATUS_CANARY_CANDIDATE);
-    assert_eq!(retry.attempt, 1);
+    assert_eq!(retry.attempt, 2);
     assert_eq!(
         retry.simulation_status.as_deref(),
         Some(EXECUTION_SIMULATION_STATUS_NOT_RUN)

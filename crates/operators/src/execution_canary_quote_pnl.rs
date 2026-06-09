@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::execution_canary_quote_pnl_gate::build_tiny_execution_gate;
 pub use crate::execution_canary_quote_pnl_gate::{TinyExecutionGate, TinyExecutionGateCheck};
+use crate::execution_canary_quote_pnl_metis::{build_metis_diagnostics, MetisDiagnosticsReport};
 
 #[path = "execution_canary_quote_pnl_cli.rs"]
 mod quote_pnl_cli;
@@ -37,6 +38,7 @@ pub struct Cli {
     pub limit: u32,
     pub since: Option<DateTime<Utc>>,
     pub since_hours: i64,
+    pub metis_diagnostics: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,6 +55,7 @@ pub struct CanaryQuotePnlOperatorReport {
     pub provider_selection: Option<ExecutionQuoteCanaryProviderSelectionSummary>,
     pub tiny_execution_proof: Option<ExecutionTinyProofReport>,
     pub tiny_execution_gate: Option<TinyExecutionGate>,
+    pub metis_diagnostics: Option<MetisDiagnosticsReport>,
 }
 
 impl CanaryQuotePnlOperatorReport {
@@ -70,6 +73,7 @@ impl CanaryQuotePnlOperatorReport {
             provider_selection: None,
             tiny_execution_proof: None,
             tiny_execution_gate: None,
+            metis_diagnostics: None,
         }
     }
 
@@ -113,6 +117,7 @@ where
     let mut limit = DEFAULT_LIMIT;
     let mut since = None;
     let mut since_hours = DEFAULT_SINCE_HOURS;
+    let mut metis_diagnostics = false;
     let mut iter = args.into_iter().map(Into::into);
 
     while let Some(arg) = iter.next() {
@@ -124,6 +129,7 @@ where
             "--since-hours" => {
                 since_hours = parse_since_hours(&next_value(&mut iter, "--since-hours")?)?;
             }
+            "--metis-diagnostics" => metis_diagnostics = true,
             "--json" => json = true,
             other => return Err(anyhow!("unknown argument: {other}")),
         }
@@ -140,6 +146,7 @@ where
         limit,
         since,
         since_hours,
+        metis_diagnostics,
     })
 }
 
@@ -155,6 +162,7 @@ pub fn build_report_from_db_path(
             limit: DEFAULT_LIMIT,
             since: None,
             since_hours: DEFAULT_SINCE_HOURS,
+            metis_diagnostics: false,
         },
         as_of,
     )
@@ -172,6 +180,7 @@ pub fn build_report_from_config_path(
             limit: DEFAULT_LIMIT,
             since: None,
             since_hours: DEFAULT_SINCE_HOURS,
+            metis_diagnostics: false,
         },
         as_of,
     )
@@ -317,6 +326,16 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         context.config.as_ref().map(|config| &config.execution),
         runtime_root.as_deref(),
     );
+    let metis_diagnostics = context.config.as_ref().and_then(|config| {
+        cli.metis_diagnostics.then(|| {
+            build_metis_diagnostics(
+                &config.execution,
+                &tiny_execution_proof,
+                &provider_selection,
+                as_of,
+            )
+        })
+    });
 
     CanaryQuotePnlOperatorReport {
         config_loaded: cli.config_path.is_some(),
@@ -331,6 +350,7 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         provider_selection: Some(provider_selection),
         tiny_execution_proof: Some(tiny_execution_proof),
         tiny_execution_gate: Some(tiny_execution_gate),
+        metis_diagnostics,
     }
 }
 

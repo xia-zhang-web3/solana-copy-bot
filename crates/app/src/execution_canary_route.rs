@@ -19,6 +19,7 @@ mod tiny_submit_retry;
 mod tiny_submit_sell;
 mod tiny_submit_sell_retry;
 mod tiny_submit_timeout;
+mod tiny_submit_wallet_balance;
 
 use self::tiny_submit::{
     process_tiny_submit_reconciliation_sweep_for_route, process_tiny_submit_state_machine_for_route,

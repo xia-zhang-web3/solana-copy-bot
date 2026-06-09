@@ -44,10 +44,18 @@ pub(super) async fn process_tiny_submit_orphan_position_recovery_for_route(
             return Ok(summary);
         }
     };
-    summary.orphan_recovery_checked = balances.len();
+    let balances_by_mint: BTreeMap<String, WalletTokenBalance> = balances
+        .iter()
+        .map(|balance| (balance.mint.clone(), balance.clone()))
+        .collect();
+    summary.orphan_recovery_checked = balances.iter().filter(|balance| balance.raw > 0).count();
+    reconcile_recovery_orphan_positions(store, &balances_by_mint, now, &mut summary)?;
 
     let limit = config.canary_max_open_positions.max(1) as usize;
     for balance in balances {
+        if balance.raw == 0 {
+            continue;
+        }
         if summary.orphan_recovery_recovered >= limit {
             break;
         }
@@ -86,6 +94,61 @@ pub(super) async fn process_tiny_submit_orphan_position_recovery_for_route(
     }
     summary.open_positions = store.execution_canary_open_position_count()?;
     Ok(summary)
+}
+
+fn reconcile_recovery_orphan_positions(
+    store: &SqliteStore,
+    balances_by_mint: &BTreeMap<String, WalletTokenBalance>,
+    now: DateTime<Utc>,
+    summary: &mut ExecutionCanaryStateMachineSummary,
+) -> Result<()> {
+    for position in store.list_execution_canary_open_recovery_orphan_positions()? {
+        let Some(position_qty) = position.qty_exact else {
+            summary.orphan_recovery_errors += 1;
+            summary.last_error = Some(format!(
+                "recovery orphan {} missing exact qty",
+                position.position_id
+            ));
+            continue;
+        };
+        let wallet_raw = match balances_by_mint.get(&position.token) {
+            Some(balance) => {
+                if balance.decimals != position_qty.decimals() {
+                    summary.orphan_recovery_errors += 1;
+                    summary.last_error = Some(format!(
+                        "recovery orphan wallet decimals mismatch for {}",
+                        position.token
+                    ));
+                    continue;
+                }
+                balance.raw
+            }
+            None => 0,
+        };
+        if wallet_raw >= position_qty.raw() {
+            continue;
+        }
+        let missing_qty =
+            TokenQuantity::new(position_qty.raw() - wallet_raw, position_qty.decimals());
+        store
+            .close_execution_canary_open_position(
+                &position.token,
+                missing_qty.as_f64(),
+                Some(missing_qty),
+                0.0,
+                1e-9,
+                now,
+            )
+            .with_context(|| {
+                format!(
+                    "failed reconciling recovery orphan {} to wallet balance",
+                    position.position_id
+                )
+            })?;
+        summary.orphan_recovery_reconciled += 1;
+        summary.last_orphan_recovery_token = Some(position.token);
+    }
+    Ok(())
 }
 
 async fn fetch_wallet_token_balances(config: &ExecutionConfig) -> Result<Vec<WalletTokenBalance>> {
@@ -144,7 +207,6 @@ fn parse_wallet_token_balances(value: Value) -> Result<Vec<WalletTokenBalance>> 
             .get("amount")
             .and_then(Value::as_str)
             .and_then(|raw| raw.parse::<u64>().ok())
-            .filter(|raw| *raw > 0)
         else {
             continue;
         };
