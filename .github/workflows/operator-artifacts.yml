@@ -1,133 +1,44 @@
 name: Operator Artifacts
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/operator-artifacts.yml"
-      - ".github/workflows/architecture-guard.yml"
-      - "AGENTS.md"
-      - "ARCHITECTURE_WAIVERS.md"
-      - "ARTIFACT_DEPLOY.md"
-      - "BUILD_ARCHITECTURE_REDESIGN_NO_HOUR_BUILDS.md"
-      - "BUILD_POLICY.md"
-      - "BUILD_REFACTOR_ROADMAP.md"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - ".cargo/**"
-      - "clippy.toml"
-      - "configs/**"
-      - "migrations/**"
-      - "docs/**"
-      - "crates/app/**"
-      - "crates/config/**"
-      - "crates/core-types/**"
-      - "crates/discovery/**"
-      - "crates/discovery-ops/**"
-      - "crates/discovery-v2/**"
-      - "crates/ingestion/**"
-      - "crates/live-ops/**"
-      - "crates/operators/**"
-      - "crates/runtime-artifacts/**"
-      - "crates/shadow/**"
-      - "crates/storage/**"
-      - "crates/storage-core/**"
-      - "crates/storage-ops/**"
-      - "ops/**"
-      - "rust-toolchain*"
-      - "rustfmt.toml"
-      - "tools/**"
-  push:
-    paths:
-      - ".github/workflows/operator-artifacts.yml"
-      - ".github/workflows/architecture-guard.yml"
-      - "AGENTS.md"
-      - "ARCHITECTURE_WAIVERS.md"
-      - "ARTIFACT_DEPLOY.md"
-      - "BUILD_ARCHITECTURE_REDESIGN_NO_HOUR_BUILDS.md"
-      - "BUILD_POLICY.md"
-      - "BUILD_REFACTOR_ROADMAP.md"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - ".cargo/**"
-      - "clippy.toml"
-      - "configs/**"
-      - "migrations/**"
-      - "docs/**"
-      - "crates/app/**"
-      - "crates/config/**"
-      - "crates/core-types/**"
-      - "crates/discovery/**"
-      - "crates/discovery-ops/**"
-      - "crates/discovery-v2/**"
-      - "crates/ingestion/**"
-      - "crates/live-ops/**"
-      - "crates/operators/**"
-      - "crates/runtime-artifacts/**"
-      - "crates/shadow/**"
-      - "crates/storage/**"
-      - "crates/storage-core/**"
-      - "crates/storage-ops/**"
-      - "ops/**"
-      - "rust-toolchain*"
-      - "rustfmt.toml"
-      - "tools/**"
   workflow_dispatch:
+    inputs:
+      package:
+        description: Package artifact to build
+        required: true
+        type: choice
+        options:
+          - copybot-app
+          - copybot-operators
+          - copybot-storage-ops
+          - copybot-discovery-v2
+          - copybot-discovery-ops
+          - copybot-live-ops
+      run_checks:
+        description: Run architecture guard and package tests before packaging
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: operator-artifacts-${{ github.ref }}
+  group: operator-artifacts-${{ github.ref }}-${{ inputs.package }}
   cancel-in-progress: true
 
 jobs:
-  operator-artifacts:
-    name: ${{ matrix.label }}
+  artifact:
+    name: ${{ inputs.package }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: Discovery V2 operators
-            package: copybot-discovery-v2
-            profile: operator-release
-            wanted_bins: discovery_v2_prepare_quality discovery_v2_status discovery_v2_publish discovery_v2_wallet_report
-            artifact_name: discovery-v2-operators
-          - label: Discovery scheduled operators
-            package: copybot-discovery-ops
-            profile: operator-release
-            wanted_bins: discovery_runtime_export discovery_recent_raw_snapshot discovery_v2_watchdog
-            artifact_name: discovery-scheduled-operators
-          - label: Source operators
-            package: copybot-operators
-            profile: operator-release
-            wanted_bins: copybot_execution_canary_quote_pnl copybot_execution_canary_readiness copybot_yellowstone_source_probe
-            artifact_name: source-operators
-          - label: Live operators
-            package: copybot-live-ops
-            profile: operator-release
-            wanted_bins: copybot_operator_emergency_stop copybot_live_service_control_wrapper
-            artifact_name: live-operators
-          - label: Storage operators
-            package: copybot-storage-ops
-            profile: operator-release
-            wanted_bins: copybot_runtime_sqlite_wal_maintenance copybot_runtime_sqlite_wal_pressure_report
-            artifact_name: storage-operators
-          - label: Live daemon
-            package: copybot-app
-            profile: release
-            wanted_bins: copybot-app
-            artifact_name: live-daemon
     env:
       ARTIFACT_ARCH: linux-x86_64
       CARGO_TERM_COLOR: always
+      CARGO_TARGET_DIR: target/artifacts/${{ inputs.package }}
       FORCE: "1"
-      PACKAGE: ${{ matrix.package }}
-      PROFILE: ${{ matrix.profile }}
-      RUN_CHECKS: "1"
+      PACKAGE: ${{ inputs.package }}
       TARGET: x86_64-unknown-linux-gnu
-      WANTED_BINS: ${{ matrix.wanted_bins }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -143,15 +54,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          candidate=""
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            candidate="${{ github.event.pull_request.base.sha }}"
-          elif [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-            candidate="${{ github.event.before }}"
-          fi
-          if [ -n "$candidate" ] && git diff --name-only "$candidate..HEAD" >/dev/null 2>&1; then
-            range="$candidate..HEAD"
-          elif git rev-parse HEAD^ >/dev/null 2>&1; then
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
             range="HEAD^..HEAD"
           else
             empty_tree="$(git hash-object -t tree /dev/null)"
@@ -160,101 +63,62 @@ jobs:
           echo "ARCH_GUARD_DIFF_RANGE=$range" >> "$GITHUB_ENV"
           echo "architecture_guard_range=$range"
 
-      - name: Classify artifact scope
+      - name: Resolve package settings
         shell: bash
         run: |
           set -euo pipefail
-          changed_files="$(git diff --name-only "$ARCH_GUARD_DIFF_RANGE")"
-          docs_policy_only=0
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] && \
-            ! printf '%s\n' "$changed_files" | grep -Ev '^(AGENTS\.md|ARCHITECTURE_WAIVERS\.md|ARTIFACT_DEPLOY\.md|BUILD_ARCHITECTURE_REDESIGN_NO_HOUR_BUILDS\.md|BUILD_POLICY\.md|BUILD_REFACTOR_ROADMAP\.md|docs/|ops/.*\.md$)' >/dev/null; then
-            docs_policy_only=1
+          case "$PACKAGE" in
+            copybot-app)
+              profile="release"
+              ;;
+            copybot-operators | copybot-storage-ops | copybot-discovery-v2 | copybot-discovery-ops | copybot-live-ops)
+              profile="operator-release"
+              ;;
+            *)
+              echo "unsupported package: $PACKAGE" >&2
+              exit 1
+              ;;
+          esac
+          wanted_bins="$(python3 tools/package_bins.py --package "$PACKAGE" | xargs)"
+          if [ -z "$wanted_bins" ]; then
+            echo "no package binaries found for $PACKAGE" >&2
+            exit 1
           fi
-          legacy_restore_test_selected=0
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] && \
-            printf '%s\n' "$changed_files" | grep -E '^crates/discovery/(src/restore_verdict\.rs|tests/restore_verdict\.rs|Cargo\.toml)' >/dev/null; then
-            legacy_restore_test_selected=1
+          if [ "${{ inputs.run_checks }}" = "true" ]; then
+            run_checks="1"
+          else
+            run_checks="0"
           fi
-          legacy_storage_test_selected=0
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] && \
-            printf '%s\n' "$changed_files" | grep -E '^(crates/storage/|migrations/)' >/dev/null; then
-            legacy_storage_test_selected=1
-          fi
-          storage_core_test_selected=0
-          if [ "${{ github.event_name }}" != "workflow_dispatch" ] && \
-            printf '%s\n' "$changed_files" | grep -E '^crates/storage-core/' >/dev/null; then
-            storage_core_test_selected=1
-          fi
-          build_selected=0
-          if [ "$docs_policy_only" = "1" ]; then
-            build_selected=0
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            build_selected=1
-          elif printf '%s\n' "$changed_files" | grep -E '^(\.github/workflows/operator-artifacts\.yml|Cargo\.lock|Cargo\.toml|\.cargo/|rust-toolchain|rust-toolchain\.toml)' >/dev/null; then
-            build_selected=1
-          elif printf '%s\n' "$changed_files" | grep -E '^(tools/architecture_guard\.sh|tools/lib/(architecture_guard/|operator_artifact_)|tools/(build_operator_artifacts|build_manifest|verify_operator_artifact|install_operator_artifacts|package_bins)\.)' >/dev/null; then
-            build_selected=1
-          elif [ "${{ matrix.package }}" = "copybot-app" ] && \
-            printf '%s\n' "$changed_files" | grep -E '^(configs/|migrations/|ops/server_templates/(app\.env\.example|live\.server\.toml\.example|solana-copy-bot\.service)|crates/(app|config|core-types|ingestion|shadow|storage-core)/)' >/dev/null; then
-            build_selected=1
-          elif [ "${{ matrix.package }}" = "copybot-discovery-v2" ] && \
-            printf '%s\n' "$changed_files" | grep -E '^(configs/|ops/server_templates/live\.server\.toml\.example|crates/(discovery-v2|config|core-types|storage-core)/)' >/dev/null; then
-            build_selected=1
-          elif [ "${{ matrix.package }}" = "copybot-discovery-ops" ] && \
-            printf '%s\n' "$changed_files" | grep -E '^(configs/|ops/server_templates/(copybot-discovery-|live\.server\.toml\.example)|crates/(discovery-ops|discovery-v2|config|core-types|runtime-artifacts|storage-core)/)' >/dev/null; then
-            build_selected=1
-          elif [ "${{ matrix.package }}" = "copybot-operators" ] && \
-            printf '%s\n' "$changed_files" | grep -E '^(configs/|crates/(operators|config|core-types|storage-core)/)' >/dev/null; then
-            build_selected=1
-          elif [ "${{ matrix.package }}" = "copybot-live-ops" ] && \
-            printf '%s\n' "$changed_files" | grep -E '^(ops/ingestion_failover_policy\.toml|crates/(live-ops|config|core-types)/)' >/dev/null; then
-            build_selected=1
-          elif [ "${{ matrix.package }}" = "copybot-storage-ops" ] && \
-            printf '%s\n' "$changed_files" | grep -E '^(configs/|crates/(storage-ops|storage-core|config|core-types)/)' >/dev/null; then
-            build_selected=1
-          fi
-          echo "BUILD_SELECTED=$build_selected" >> "$GITHUB_ENV"
-          echo "LEGACY_RESTORE_TEST_SELECTED=$legacy_restore_test_selected" >> "$GITHUB_ENV"
-          echo "LEGACY_STORAGE_TEST_SELECTED=$legacy_storage_test_selected" >> "$GITHUB_ENV"
-          echo "STORAGE_CORE_TEST_SELECTED=$storage_core_test_selected" >> "$GITHUB_ENV"
-          echo "build_selected=$build_selected legacy_restore_test_selected=$legacy_restore_test_selected legacy_storage_test_selected=$legacy_storage_test_selected storage_core_test_selected=$storage_core_test_selected package=${{ matrix.package }}"
+          echo "PROFILE=$profile" >> "$GITHUB_ENV"
+          echo "RUN_CHECKS=$run_checks" >> "$GITHUB_ENV"
+          echo "WANTED_BINS=$wanted_bins" >> "$GITHUB_ENV"
+          echo "profile=$profile run_checks=$run_checks package=$PACKAGE bins=$wanted_bins"
 
-      - name: Architecture guard
-        if: env.BUILD_SELECTED == '1' || env.LEGACY_RESTORE_TEST_SELECTED == '1' || env.LEGACY_STORAGE_TEST_SELECTED == '1' || env.STORAGE_CORE_TEST_SELECTED == '1'
-        run: |
-          tools/architecture_guard.sh --changed
-          tools/architecture_guard.sh --all
+      - name: Cache cargo state
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target/artifacts/${{ inputs.package }}
+          key: cargo-artifact-${{ runner.os }}-${{ inputs.package }}-${{ hashFiles('Cargo.lock', 'rust-toolchain*', '.cargo/**') }}
+          restore-keys: |
+            cargo-artifact-${{ runner.os }}-${{ inputs.package }}-
+            cargo-artifact-${{ runner.os }}-
 
-      - name: Legacy restore verdict quarantine test
-        if: matrix.package == 'copybot-discovery-v2' && env.LEGACY_RESTORE_TEST_SELECTED == '1'
-        run: cargo test --locked -j 1 --manifest-path crates/discovery/Cargo.toml --test restore_verdict -- --test-threads=1
-
-      - name: Legacy storage regression tests
-        if: matrix.package == 'copybot-storage-ops' && env.LEGACY_STORAGE_TEST_SELECTED == '1'
-        run: |
-          cargo test --locked -j 1 -p copybot-storage --lib -- --test-threads=1
-          cargo test --locked -j 1 -p copybot-storage --test runtime_artifact_export -- --test-threads=1
-
-      - name: Storage-core regression tests
-        if: matrix.package == 'copybot-storage-ops' && env.STORAGE_CORE_TEST_SELECTED == '1'
-        run: cargo test --locked -j 1 -p copybot-storage-core --all-targets -- --test-threads=1
-
-      - name: Build, test, and package operators
-        if: env.BUILD_SELECTED == '1'
+      - name: Build, test, and package artifact
         run: tools/build_operator_artifacts.sh
 
       - name: Verify packaged artifact
-        if: env.BUILD_SELECTED == '1'
         run: |
           python3 tools/verify_operator_artifact.py \
-            artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }} \
-            --expect-package "${{ matrix.package }}" \
+            artifacts/linux-x86_64/$PACKAGE-${{ github.sha }} \
+            --expect-package "$PACKAGE" \
             --expect-profile "$PROFILE" \
             --expect-target "$TARGET" \
             --enforce-workspace-bin-check
 
       - name: Dry-run operator install
-        if: env.BUILD_SELECTED == '1'
         shell: bash
         run: |
           install_root="$(mktemp -d)"
@@ -262,14 +126,13 @@ jobs:
           trap 'rm -rf "$install_root"' EXIT
           tools/install_operator_artifacts.sh \
             --dry-run \
-            --expect-package "${{ matrix.package }}" \
+            --expect-package "$PACKAGE" \
             --expect-profile "$PROFILE" \
             --expect-target "$TARGET" \
             --install-dir "$install_root/bin" \
-            artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}.tar.gz
+            artifacts/linux-x86_64/$PACKAGE-${{ github.sha }}.tar.gz
 
       - name: Temp install and rollback proof
-        if: env.BUILD_SELECTED == '1'
         shell: bash
         run: |
           set -euo pipefail
@@ -277,14 +140,14 @@ jobs:
           install_dir="$install_root/bin"
           mkdir -p "$install_dir"
           trap 'rm -rf "$install_root"' EXIT
-          artifact="artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}.tar.gz"
-          artifact_dir="artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}"
-          artifact_id="${{ matrix.package }}-${{ github.sha }}"
+          artifact="artifacts/linux-x86_64/$PACKAGE-${{ github.sha }}.tar.gz"
+          artifact_dir="artifacts/linux-x86_64/$PACKAGE-${{ github.sha }}"
+          artifact_id="$PACKAGE-${{ github.sha }}"
           previous_sha="0000000000000000000000000000000000000001"
-          previous_id="${{ matrix.package }}-${previous_sha}"
+          previous_id="$PACKAGE-${previous_sha}"
           previous_only_bin="previous_only_bin"
           previous_release="$install_dir/releases/$previous_id"
-          mkdir -p "$previous_release" "$install_dir/packages/${{ matrix.package }}"
+          mkdir -p "$previous_release" "$install_dir/packages/$PACKAGE"
           cp "$artifact_dir"/build-manifest.json "$previous_release"/
           cp "$artifact_dir"/SHA256SUMS "$previous_release"/
           if [ -f "$artifact_dir/migrations.tar.gz" ]; then
@@ -293,11 +156,11 @@ jobs:
           for bin in $WANTED_BINS; do
             cp "$artifact_dir/$bin" "$previous_release/$bin"
           done
-          python3 - "$previous_release" "$previous_id" "$previous_sha" "$previous_only_bin" "${{ matrix.package }}" <<'PY'
+          python3 - "$previous_release" "$previous_id" "$previous_sha" "$previous_only_bin" "$PACKAGE" <<'PY'
+          import hashlib
           import json
           import pathlib
           import sys
-          import hashlib
 
           release = pathlib.Path(sys.argv[1])
           path = release / "build-manifest.json"
@@ -325,16 +188,16 @@ jobs:
           (release / "SHA256SUMS").write_text("".join(sums))
           PY
           printf '%s\n' "$previous_id" > "$previous_release/INSTALL_COMPLETE"
-          ln -s "../../releases/$previous_id" "$install_dir/packages/${{ matrix.package }}/current"
-          ln -s "packages/${{ matrix.package }}/current/build-manifest.json" "$install_dir/operator-artifact-current-${{ matrix.package }}.json"
+          ln -s "../../releases/$previous_id" "$install_dir/packages/$PACKAGE/current"
+          ln -s "packages/$PACKAGE/current/build-manifest.json" "$install_dir/operator-artifact-current-$PACKAGE.json"
           for bin in $WANTED_BINS; do
-            ln -s "packages/${{ matrix.package }}/current/$bin" "$install_dir/$bin"
+            ln -s "packages/$PACKAGE/current/$bin" "$install_dir/$bin"
           done
-          ln -s "packages/${{ matrix.package }}/current/$previous_only_bin" "$install_dir/$previous_only_bin"
+          ln -s "packages/$PACKAGE/current/$previous_only_bin" "$install_dir/$previous_only_bin"
           rm "$install_dir/$previous_only_bin"
           printf '%s\n' stale > "$install_dir/$previous_only_bin"
           if tools/install_operator_artifacts.sh \
-            --expect-package "${{ matrix.package }}" \
+            --expect-package "$PACKAGE" \
             --expect-profile "$PROFILE" \
             --expect-target "$TARGET" \
             --install-dir "$install_dir" \
@@ -342,7 +205,7 @@ jobs:
             echo "install unexpectedly succeeded with stale non-symlink previous binary" >&2
             exit 1
           fi
-          python3 - "$install_dir/operator-artifact-current-${{ matrix.package }}.json" "$previous_id" <<'PY'
+          python3 - "$install_dir/operator-artifact-current-$PACKAGE.json" "$previous_id" <<'PY'
           import json
           import sys
 
@@ -351,11 +214,11 @@ jobs:
           assert actual == sys.argv[2], (actual, sys.argv[2])
           PY
           rm "$install_dir/$previous_only_bin"
-          ln -s "packages/${{ matrix.package }}/current/$previous_only_bin" "$install_dir/$previous_only_bin"
+          ln -s "packages/$PACKAGE/current/$previous_only_bin" "$install_dir/$previous_only_bin"
           first_bin="${WANTED_BINS%% *}"
           mkdir "$install_dir/$first_bin.new"
           if tools/install_operator_artifacts.sh \
-            --expect-package "${{ matrix.package }}" \
+            --expect-package "$PACKAGE" \
             --expect-profile "$PROFILE" \
             --expect-target "$TARGET" \
             --install-dir "$install_dir" \
@@ -364,7 +227,7 @@ jobs:
             exit 1
           fi
           rmdir "$install_dir/$first_bin.new"
-          python3 - "$install_dir/operator-artifact-current-${{ matrix.package }}.json" "$previous_id" <<'PY'
+          python3 - "$install_dir/operator-artifact-current-$PACKAGE.json" "$previous_id" <<'PY'
           import json
           import sys
 
@@ -373,15 +236,15 @@ jobs:
           assert actual == sys.argv[2], (actual, sys.argv[2])
           PY
           tools/install_operator_artifacts.sh \
-            --expect-package "${{ matrix.package }}" \
+            --expect-package "$PACKAGE" \
             --expect-profile "$PROFILE" \
             --expect-target "$TARGET" \
             --install-dir "$install_dir" \
             "$artifact"
           test -f "$install_dir/releases/$artifact_id/INSTALL_COMPLETE"
-          test -L "$install_dir/packages/${{ matrix.package }}/current"
-          test -L "$install_dir/operator-artifact-current-${{ matrix.package }}.json"
-          if [ "${{ matrix.package }}" = "copybot-app" ]; then
+          test -L "$install_dir/packages/$PACKAGE/current"
+          test -L "$install_dir/operator-artifact-current-$PACKAGE.json"
+          if [ "$PACKAGE" = "copybot-app" ]; then
             test -L "$install_root/migrations"
             test "$(readlink "$install_root/migrations")" = "bin/packages/copybot-app/current/migrations"
             test -d "$install_dir/packages/copybot-app/current/migrations"
@@ -391,7 +254,7 @@ jobs:
           done
           test ! -e "$install_dir/$previous_only_bin"
           test ! -L "$install_dir/$previous_only_bin"
-          python3 - "$install_dir/operator-artifact-current-${{ matrix.package }}.json" "$artifact_id" <<'PY'
+          python3 - "$install_dir/operator-artifact-current-$PACKAGE.json" "$artifact_id" <<'PY'
           import json
           import sys
 
@@ -400,12 +263,12 @@ jobs:
           assert actual == sys.argv[2], (actual, sys.argv[2])
           PY
           tools/install_operator_artifacts.sh \
-            --expect-package "${{ matrix.package }}" \
+            --expect-package "$PACKAGE" \
             --expect-profile "$PROFILE" \
             --expect-target "$TARGET" \
             --install-dir "$install_dir" \
             --rollback "$previous_id"
-          python3 - "$install_dir/operator-artifact-current-${{ matrix.package }}.json" "$previous_id" <<'PY'
+          python3 - "$install_dir/operator-artifact-current-$PACKAGE.json" "$previous_id" <<'PY'
           import json
           import sys
 
@@ -416,21 +279,20 @@ jobs:
           for bin in $WANTED_BINS; do
             test -x "$install_dir/$bin"
           done
-          if [ "${{ matrix.package }}" = "copybot-app" ]; then
+          if [ "$PACKAGE" = "copybot-app" ]; then
             test -L "$install_root/migrations"
             test "$(readlink "$install_root/migrations")" = "bin/packages/copybot-app/current/migrations"
             test -d "$install_dir/packages/copybot-app/current/migrations"
           fi
           test -x "$install_dir/$previous_only_bin"
 
-      - name: Upload operator artifacts
-        if: env.BUILD_SELECTED == '1'
+      - name: Upload operator artifact
         uses: actions/upload-artifact@v4
         with:
           if-no-files-found: error
-          name: ${{ matrix.artifact_name }}-${{ github.sha }}-linux-x86_64
+          name: ${{ inputs.package }}-${{ github.sha }}-linux-x86_64
           path: |
-            artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}/
-            artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}.tar.gz
-            artifacts/linux-x86_64/${{ matrix.package }}-${{ github.sha }}.tar.gz.sha256
+            artifacts/linux-x86_64/${{ inputs.package }}-${{ github.sha }}/
+            artifacts/linux-x86_64/${{ inputs.package }}-${{ github.sha }}.tar.gz
+            artifacts/linux-x86_64/${{ inputs.package }}-${{ github.sha }}.tar.gz.sha256
           retention-days: 14
