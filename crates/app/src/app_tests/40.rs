@@ -142,6 +142,35 @@ async fn execution_canary_state_machine_daily_loss_blocks_buy_before_reserve() -
 }
 
 #[tokio::test]
+async fn execution_canary_state_machine_recovery_orphan_loss_does_not_block_buy() -> Result<()> {
+    let db_path = unique_safety_state_machine_test_path("recovery-orphan-loss");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let signal = safety_signal("buy-after-recovery-orphan-loss", now);
+    store.insert_copy_signal(&signal)?;
+    record_safety_entry_quote(&store, &signal, now, "would_execute")?;
+    record_closed_recovery_orphan_loss(&store, now)?;
+    let state_machine = safety_state_machine();
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+
+    assert_eq!(summary.safety_blocked, 0);
+    assert_eq!(summary.open_positions, 0);
+    assert_eq!(summary.daily_loss_sol, 0.0);
+    assert_eq!(summary.reserved, 1);
+    assert_eq!(summary.submit_disabled, 1);
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
 async fn execution_canary_state_machine_entry_gate_runs_before_daily_loss() -> Result<()> {
     let db_path = unique_safety_state_machine_test_path("entry-before-daily-loss");
     let mut store = SqliteStore::open(&db_path)?;
@@ -226,6 +255,29 @@ fn record_closed_canary_loss(store: &SqliteStore, now: chrono::DateTime<Utc>) ->
     )?;
     store.close_execution_canary_open_position(
         "LossTokenMint",
+        10.0,
+        Some(copybot_core_types::TokenQuantity::new(10_000, 3)),
+        0.097,
+        0.001,
+        now + chrono::Duration::seconds(1),
+    )?;
+    Ok(())
+}
+
+fn record_closed_recovery_orphan_loss(
+    store: &SqliteStore,
+    now: chrono::DateTime<Utc>,
+) -> Result<()> {
+    store.record_execution_canary_open_position(
+        "recovery-orphan:RecoveredLossTokenMint:5000:test",
+        "RecoveredLossTokenMint",
+        10.0,
+        Some(copybot_core_types::TokenQuantity::new(10_000, 3)),
+        1.0,
+        now,
+    )?;
+    store.close_execution_canary_open_position(
+        "RecoveredLossTokenMint",
         10.0,
         Some(copybot_core_types::TokenQuantity::new(10_000, 3)),
         0.097,

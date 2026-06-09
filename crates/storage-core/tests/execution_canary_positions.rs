@@ -257,6 +257,43 @@ fn execution_canary_realized_loss_sums_closed_losses_since_cutoff() -> Result<()
     Ok(())
 }
 
+#[test]
+fn execution_canary_entry_safety_loss_excludes_recovery_orphan_cleanup() -> Result<()> {
+    let store = open_migrated_store("execution-canary-entry-safety-loss")?;
+    let now = ts("2026-06-01T08:00:00Z");
+    record_open_position_for_token(&store, "exec-canary:regular-loss", "RegularLossMint", now)?;
+    record_open_position_for_token(
+        &store,
+        "recovery-orphan:RecoveredLossMint:5000:test",
+        "RecoveredLossMint",
+        now,
+    )?;
+    store.close_execution_canary_open_position(
+        "RegularLossMint",
+        1.0,
+        Some(TokenQuantity::new(1_000_000, 6)),
+        0.15,
+        0.001,
+        now + chrono::Duration::seconds(1),
+    )?;
+    store.close_execution_canary_open_position(
+        "RecoveredLossMint",
+        1.0,
+        Some(TokenQuantity::new(1_000_000, 6)),
+        0.10,
+        0.001,
+        now + chrono::Duration::seconds(2),
+    )?;
+
+    let since = ts("2026-06-01T00:00:00Z");
+    let total_loss = store.execution_canary_realized_loss_sol_since(since)?;
+    let entry_safety_loss = store.execution_canary_entry_safety_loss_sol_since(since)?;
+
+    assert!((total_loss - 0.15).abs() < 1e-9);
+    assert!((entry_safety_loss - 0.05).abs() < 1e-9);
+    Ok(())
+}
+
 fn record_open_position(store: &SqliteStore) -> Result<()> {
     record_open_position_for_token(
         store,

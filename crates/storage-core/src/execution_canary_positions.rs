@@ -141,20 +141,43 @@ impl SqliteDiscoveryStore {
     }
 
     pub fn execution_canary_realized_loss_sol_since(&self, since: DateTime<Utc>) -> Result<f64> {
+        self.execution_canary_realized_loss_sol_since_query(since, true)
+    }
+
+    pub fn execution_canary_entry_safety_loss_sol_since(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<f64> {
+        self.execution_canary_realized_loss_sol_since_query(since, false)
+    }
+
+    fn execution_canary_realized_loss_sol_since_query(
+        &self,
+        since: DateTime<Utc>,
+        include_recovery_orphans: bool,
+    ) -> Result<f64> {
         let since_raw = since.to_rfc3339();
+        let recovery_filter = if include_recovery_orphans {
+            ""
+        } else {
+            " AND position_id NOT LIKE 'exec-canary-pos:recovery-orphan:%'"
+        };
+        let sql = format!(
+            "SELECT COALESCE(SUM(
+                CASE
+                  WHEN COALESCE(pnl_lamports, ROUND(COALESCE(pnl_sol, 0.0) * 1000000000.0)) < 0
+                  THEN -COALESCE(pnl_lamports, ROUND(COALESCE(pnl_sol, 0.0) * 1000000000.0)) / 1000000000.0
+                  ELSE 0.0
+                END
+             ), 0.0)
+             FROM positions
+             WHERE accounting_bucket = ?1
+               AND state = ?2
+               AND closed_ts >= ?3{recovery_filter}"
+        );
         self.conn
             .query_row(
-                "SELECT COALESCE(SUM(
-                    CASE
-                      WHEN COALESCE(pnl_lamports, ROUND(COALESCE(pnl_sol, 0.0) * 1000000000.0)) < 0
-                      THEN -COALESCE(pnl_lamports, ROUND(COALESCE(pnl_sol, 0.0) * 1000000000.0)) / 1000000000.0
-                      ELSE 0.0
-                    END
-                 ), 0.0)
-                 FROM positions
-                 WHERE accounting_bucket = ?1
-                   AND state = ?2
-                   AND closed_ts >= ?3",
+                &sql,
                 params![
                     EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
                     crate::EXECUTION_CANARY_POSITION_STATE_CLOSED,

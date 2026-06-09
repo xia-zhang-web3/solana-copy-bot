@@ -40,7 +40,7 @@ pub(crate) fn pre_submit_safety_snapshot(
         });
     }
 
-    let daily_loss_sol = store.execution_canary_realized_loss_sol_since(day_start_utc(now))?;
+    let daily_loss_sol = store.execution_canary_entry_safety_loss_sol_since(day_start_utc(now))?;
     if daily_loss_sol >= config.canary_max_daily_loss_sol {
         return Ok(ExecutionCanarySafetySnapshot {
             blocked_reason: Some("max_daily_loss"),
