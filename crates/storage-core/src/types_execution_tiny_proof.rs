@@ -74,6 +74,9 @@ pub struct ExecutionTinyEntryFunnel {
     pub tiny_failed_events: u64,
     pub tiny_submit_disabled_events: u64,
     pub tiny_missing_order_events: u64,
+    pub tiny_missing_order_shadow_recorded_events: u64,
+    pub tiny_missing_order_shadow_dropped_events: u64,
+    pub tiny_missing_order_shadow_pending_events: u64,
     pub buckets: Vec<ExecutionTinyEntryFunnelBucket>,
 }
 
@@ -95,6 +98,7 @@ pub struct ExecutionTinyOrderFailureCount {
     pub status: String,
     pub err_code: String,
     pub simulation_status: String,
+    pub simulation_error_class: String,
     pub decision_reason: String,
     pub route: String,
     pub quote_source: String,

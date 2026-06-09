@@ -4,6 +4,7 @@ use copybot_core_types::{CopySignalRow, Lamports, COPY_SIGNAL_NOTIONAL_ORIGIN_EX
 use copybot_operators::execution_canary_quote_pnl::build_report_from_db_path;
 use copybot_storage_core::{
     ExecutionCanaryBuildPlanMetadata, ExecutionQuoteCanaryEventInsert, SqliteStore,
+    EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_SIMULATION_STATUS_FAILED,
     EXECUTION_SIMULATION_STATUS_PASSED,
 };
 use tempfile::tempdir;
@@ -137,6 +138,21 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
         "entry_slippage_too_high",
         30,
     ))?;
+    store.record_execution_quote_canary_shadow_gate_event(
+        "buy-skip",
+        "leader-wallet",
+        "TokenSkip",
+        "buy",
+        "shadow_dropped",
+        Some("entry_slippage_too_high"),
+        opened_skip + Duration::milliseconds(20),
+    )?;
+    record_failed_simulation_order(
+        &store,
+        "sell-failed",
+        "quote:sell:failed",
+        opened_skip + Duration::seconds(5),
+    )?;
     drop(store);
 
     let report = build_report_from_db_path(&db_path, ts("2026-06-02T13:00:00Z"));
@@ -161,10 +177,23 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
     assert_eq!(proof.entry_funnel.total_buy_quote_events, 2);
     assert_eq!(proof.entry_funnel.quote_would_execute_events, 1);
     assert_eq!(proof.entry_funnel.quote_would_skip_events, 1);
-    assert_eq!(proof.entry_funnel.shadow_pending_events, 2);
+    assert_eq!(proof.entry_funnel.shadow_dropped_events, 1);
+    assert_eq!(proof.entry_funnel.shadow_pending_events, 1);
     assert_eq!(proof.entry_funnel.tiny_ordered_events, 1);
     assert_eq!(proof.entry_funnel.tiny_confirmed_events, 1);
     assert_eq!(proof.entry_funnel.tiny_missing_order_events, 1);
+    assert_eq!(
+        proof.entry_funnel.tiny_missing_order_shadow_dropped_events,
+        1
+    );
+    assert_eq!(
+        proof.entry_funnel.tiny_missing_order_shadow_recorded_events,
+        0
+    );
+    assert_eq!(
+        proof.entry_funnel.tiny_missing_order_shadow_pending_events,
+        0
+    );
 
     assert_reason(proof, "position", "tiny_closed", 1);
     assert_reason(proof, "entry_decision", "entry_decision:would_skip", 1);
@@ -206,7 +235,13 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
     );
     assert_eq!(recent_buy.priority_fee_lamports, Some(12_345));
     assert_eq!(recent_buy.decision_status.as_deref(), Some("would_execute"));
-    assert!(proof.order_failure_counts.is_empty());
+    assert!(proof.order_failure_counts.iter().any(|count| {
+        count.side == "sell"
+            && count.err_code == EXECUTION_ERROR_SIMULATION_FAILED
+            && count.simulation_status == EXECUTION_SIMULATION_STATUS_FAILED
+            && count.simulation_error_class == "custom_program_error:0x1788"
+            && count.orders == 1
+    }));
     Ok(())
 }
 
@@ -283,6 +318,56 @@ fn record_confirmed_order(
     store.mark_execution_canary_confirmed(
         &reserve.order.order_id,
         signal_ts + Duration::milliseconds(1500),
+    )?;
+    Ok(reserve.order.order_id)
+}
+
+fn record_failed_simulation_order(
+    store: &SqliteStore,
+    signal_id: &str,
+    quote_event_id: &str,
+    signal_ts: DateTime<Utc>,
+) -> Result<String> {
+    insert_signal(store, signal_id, "sell", "TokenFailed", signal_ts)?;
+    let reserve_ts = signal_ts + Duration::milliseconds(100);
+    let reserve = store.reserve_execution_canary_order(signal_id, ROUTE, reserve_ts)?;
+    store.record_execution_canary_build_plan_metadata(&ExecutionCanaryBuildPlanMetadata {
+        order_id: reserve.order.order_id.clone(),
+        signal_id: reserve.order.signal_id.clone(),
+        client_order_id: reserve.order.client_order_id.clone(),
+        recorded_ts: signal_ts + Duration::milliseconds(10),
+        quote_source: Some("execution_quote_canary_provider:generic_metis".to_string()),
+        quote_event_id: Some(quote_event_id.to_string()),
+        quote_status: Some("ok".to_string()),
+        quote_in_amount_raw: Some("500000".to_string()),
+        quote_out_amount_raw: Some("10000000".to_string()),
+        quote_response_json: None,
+        quote_price_sol: Some(0.0001),
+        price_impact_pct: Some(0.01),
+        route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
+        priority_fee_source: Some("execution_quote_canary_event".to_string()),
+        priority_fee_status: Some("ok".to_string()),
+        priority_fee_lamports: Some(12_345),
+        priority_fee_json: Some("{\"recommended\":12345}".to_string()),
+        slippage_bps: Some(12.5),
+        decision_status: Some("would_execute".to_string()),
+        decision_reason: Some("owned_position".to_string()),
+    })?;
+    store.mark_execution_canary_built(
+        &reserve.order.order_id,
+        signal_ts + Duration::milliseconds(120),
+    )?;
+    store.mark_execution_canary_simulated(
+        &reserve.order.order_id,
+        signal_ts + Duration::milliseconds(140),
+        EXECUTION_SIMULATION_STATUS_FAILED,
+        Some("Transaction simulation failed: custom program error: 0x1788"),
+    )?;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        signal_ts + Duration::milliseconds(160),
+        EXECUTION_ERROR_SIMULATION_FAILED,
+        "Transaction simulation failed: custom program error: 0x1788",
     )?;
     Ok(reserve.order.order_id)
 }

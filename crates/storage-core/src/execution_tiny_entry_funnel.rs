@@ -82,7 +82,14 @@ fn summarize_entry_funnel(rows: Vec<EntryFunnelRow>) -> ExecutionTinyEntryFunnel
             _ => summary.shadow_pending_events += 1,
         }
         match row.order_status.as_str() {
-            MISSING => summary.tiny_missing_order_events += 1,
+            MISSING => {
+                summary.tiny_missing_order_events += 1;
+                match row.shadow_gate_status.as_str() {
+                    SHADOW_RECORDED => summary.tiny_missing_order_shadow_recorded_events += 1,
+                    SHADOW_DROPPED => summary.tiny_missing_order_shadow_dropped_events += 1,
+                    _ => summary.tiny_missing_order_shadow_pending_events += 1,
+                }
+            }
             EXECUTION_STATUS_CANARY_CONFIRMED => {
                 summary.tiny_ordered_events += 1;
                 summary.tiny_confirmed_events += 1;

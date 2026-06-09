@@ -307,9 +307,12 @@ fn redact_url(value: &str) -> String {
     if trimmed.is_empty() {
         return "missing".to_string();
     }
-    match trimmed.split_once('?') {
-        Some((prefix, _)) => format!("{prefix}?<redacted>"),
-        None => trimmed.to_string(),
+    if trimmed.starts_with("http://") {
+        "http://<redacted>".to_string()
+    } else if trimmed.starts_with("https://") {
+        "https://<redacted>".to_string()
+    } else {
+        "<redacted>".to_string()
     }
 }
 

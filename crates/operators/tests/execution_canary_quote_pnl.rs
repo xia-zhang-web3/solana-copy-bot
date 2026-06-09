@@ -166,6 +166,8 @@ fn execution_canary_quote_pnl_gate_checks_tiny_config_preflight() -> Result<()> 
     assert_gate_check(gate, "execution_signer_keypair_permissions", "pass");
     assert_gate_check(gate, "execution_signer_can_sign_preflight", "pass");
     assert_gate_check(gate, "submit_adapter_http_url", "pass");
+    assert_gate_check_value(gate, "submit_adapter_http_url", "http://<redacted>");
+    assert_gate_does_not_contain(gate, "127.0.0.1:8787");
     assert_gate_check(gate, "submit_adapter_auth_token_file", "pass");
     assert_gate_check(gate, "submit_adapter_auth_token_file_exists", "pass");
     assert_gate_check(gate, "submit_timeout_ms", "pass");
@@ -446,6 +448,20 @@ fn assert_gate_check(
             .iter()
             .any(|check| check.name == name && check.status == status),
         "missing gate check {name} with status {status}: {:?}",
+        gate.checks
+    );
+}
+
+fn assert_gate_check_value(
+    gate: &copybot_operators::execution_canary_quote_pnl::TinyExecutionGate,
+    name: &str,
+    value: &str,
+) {
+    assert!(
+        gate.checks
+            .iter()
+            .any(|check| check.name == name && check.value == value),
+        "missing gate check {name} with value {value}: {:?}",
         gate.checks
     );
 }
