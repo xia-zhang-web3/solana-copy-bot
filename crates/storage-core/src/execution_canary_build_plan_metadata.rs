@@ -28,10 +28,22 @@ impl SqliteDiscoveryStore {
             "execution_canary_build_plan_metadata.priority_fee_lamports",
             metadata.priority_fee_lamports,
         )?;
-        let inserted = self
-            .execute_with_retry(|conn| {
-                conn.execute(
-                    "INSERT OR IGNORE INTO execution_canary_build_plan_metadata(
+        let existed = self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM execution_canary_build_plan_metadata
+                 WHERE order_id = ?1
+                 LIMIT 1",
+                params![&metadata.order_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .context("failed checking execution canary build plan metadata existence")?
+            .is_some();
+        self.execute_with_retry(|conn| {
+            conn.execute(
+                "INSERT INTO execution_canary_build_plan_metadata(
                         order_id,
                         signal_id,
                         client_order_id,
@@ -56,36 +68,56 @@ impl SqliteDiscoveryStore {
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
                         ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
                         ?17, ?18, ?19, ?20
-                    )",
-                    params![
-                        &metadata.order_id,
-                        &metadata.signal_id,
-                        &metadata.client_order_id,
-                        metadata.recorded_ts.to_rfc3339(),
-                        metadata.quote_source.as_deref(),
-                        metadata.quote_event_id.as_deref(),
-                        metadata.quote_status.as_deref(),
-                        metadata.quote_in_amount_raw.as_deref(),
-                        metadata.quote_out_amount_raw.as_deref(),
-                        metadata.quote_response_json.as_deref(),
-                        metadata.quote_price_sol,
-                        metadata.price_impact_pct,
-                        metadata.route_plan_json.as_deref(),
-                        metadata.priority_fee_source.as_deref(),
-                        metadata.priority_fee_status.as_deref(),
-                        priority_fee_lamports,
-                        metadata.priority_fee_json.as_deref(),
-                        metadata.slippage_bps,
-                        metadata.decision_status.as_deref(),
-                        metadata.decision_reason.as_deref(),
-                    ],
-                )
-            })
-            .context("failed recording execution canary build plan metadata")?;
-        if inserted > 0 {
-            Ok(ExecutionCanaryBuildPlanMetadataRecordOutcome::Inserted)
-        } else {
+                    )
+                    ON CONFLICT(order_id) DO UPDATE SET
+                        signal_id = excluded.signal_id,
+                        client_order_id = excluded.client_order_id,
+                        recorded_ts = excluded.recorded_ts,
+                        quote_source = excluded.quote_source,
+                        quote_event_id = excluded.quote_event_id,
+                        quote_status = excluded.quote_status,
+                        quote_in_amount_raw = excluded.quote_in_amount_raw,
+                        quote_out_amount_raw = excluded.quote_out_amount_raw,
+                        quote_response_json = excluded.quote_response_json,
+                        quote_price_sol = excluded.quote_price_sol,
+                        price_impact_pct = excluded.price_impact_pct,
+                        route_plan_json = excluded.route_plan_json,
+                        priority_fee_source = excluded.priority_fee_source,
+                        priority_fee_status = excluded.priority_fee_status,
+                        priority_fee_lamports = excluded.priority_fee_lamports,
+                        priority_fee_json = excluded.priority_fee_json,
+                        slippage_bps = excluded.slippage_bps,
+                        decision_status = excluded.decision_status,
+                        decision_reason = excluded.decision_reason",
+                params![
+                    &metadata.order_id,
+                    &metadata.signal_id,
+                    &metadata.client_order_id,
+                    metadata.recorded_ts.to_rfc3339(),
+                    metadata.quote_source.as_deref(),
+                    metadata.quote_event_id.as_deref(),
+                    metadata.quote_status.as_deref(),
+                    metadata.quote_in_amount_raw.as_deref(),
+                    metadata.quote_out_amount_raw.as_deref(),
+                    metadata.quote_response_json.as_deref(),
+                    metadata.quote_price_sol,
+                    metadata.price_impact_pct,
+                    metadata.route_plan_json.as_deref(),
+                    metadata.priority_fee_source.as_deref(),
+                    metadata.priority_fee_status.as_deref(),
+                    priority_fee_lamports,
+                    metadata.priority_fee_json.as_deref(),
+                    metadata.slippage_bps,
+                    metadata.decision_status.as_deref(),
+                    metadata.decision_reason.as_deref(),
+                ],
+            )
+        })
+        .context("failed recording execution canary build plan metadata")?;
+        if existed {
             Ok(ExecutionCanaryBuildPlanMetadataRecordOutcome::Existing)
+        } else {
+            Ok(ExecutionCanaryBuildPlanMetadataRecordOutcome::Inserted)
         }
     }
 

@@ -105,6 +105,9 @@ async fn tiny_submit_sweep_replays_retry_ready_simulated_order() -> Result<()> {
     let confirmed = store
         .load_execution_canary_order(&order_id)?
         .expect("confirmed order should exist");
+    let metadata = store
+        .load_execution_canary_build_plan_metadata(&order_id)?
+        .expect("retry should refresh build metadata");
 
     assert_eq!(summary.existing, 1);
     assert_eq!(summary.simulated, 1);
@@ -115,6 +118,7 @@ async fn tiny_submit_sweep_replays_retry_ready_simulated_order() -> Result<()> {
     );
     assert_eq!(confirmed.attempt, 2);
     assert_eq!(confirmed.tx_signature.as_deref(), Some("tx-retry-replay"));
+    assert_eq!(metadata.quote_out_amount_raw.as_deref(), Some("20000"));
     assert_eq!(store.execution_canary_open_position_count()?, 1);
 
     let _ = std::fs::remove_file(db_path);
@@ -165,6 +169,9 @@ async fn tiny_submit_sweep_replays_rpc_not_sent_retry_ready_order() -> Result<()
     let confirmed = store
         .load_execution_canary_order(&order_id)?
         .expect("confirmed order should exist");
+    let metadata = store
+        .load_execution_canary_build_plan_metadata(&order_id)?
+        .expect("retry should refresh build metadata");
 
     assert_eq!(summary.existing, 1);
     assert_eq!(summary.simulated, 1);
@@ -175,6 +182,7 @@ async fn tiny_submit_sweep_replays_rpc_not_sent_retry_ready_order() -> Result<()
     );
     assert_eq!(confirmed.attempt, 2);
     assert_eq!(confirmed.tx_signature.as_deref(), Some("tx-rpc-retry"));
+    assert_eq!(metadata.quote_out_amount_raw.as_deref(), Some("20000"));
 
     let _ = std::fs::remove_file(db_path);
     let _ = std::fs::remove_file(keypair_path);
@@ -400,6 +408,19 @@ async fn serve_tiny_retry_build_submit_and_confirm(
     let tx = tx_signature.to_string();
     let serialized_transaction = serialized_tiny_timeout_transaction(*first_signer);
     let server = tokio::spawn(async move {
+        let quote = read_tiny_timeout_http_request(&listener).await;
+        assert!(quote.body.starts_with("GET /quote?"));
+        assert!(quote
+            .body
+            .contains("inputMint=So11111111111111111111111111111111111111112"));
+        assert!(quote.body.contains("outputMint=TokenMint"));
+        assert!(quote.body.contains("amount=10000000"));
+        write_tiny_timeout_http_response(
+            quote.socket,
+            r#"{"inAmount":"10000000","outAmount":"20000","priceImpactPct":"0","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
+        )
+        .await;
+
         let swap_instructions = read_tiny_timeout_http_request(&listener).await;
         assert!(swap_instructions
             .body

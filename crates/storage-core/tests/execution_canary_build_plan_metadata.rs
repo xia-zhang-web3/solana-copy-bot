@@ -64,7 +64,11 @@ fn execution_canary_build_plan_metadata_records_and_reports_latest() -> Result<(
     );
     let first = store.record_execution_canary_build_plan_metadata(&old_metadata)?;
     let second = store.record_execution_canary_build_plan_metadata(&new_metadata)?;
-    let duplicate = store.record_execution_canary_build_plan_metadata(&new_metadata)?;
+    let mut duplicate_metadata = new_metadata.clone();
+    duplicate_metadata.recorded_ts = now + Duration::seconds(2);
+    duplicate_metadata.quote_out_amount_raw = Some("654321".to_string());
+    duplicate_metadata.priority_fee_lamports = Some(33_000);
+    let duplicate = store.record_execution_canary_build_plan_metadata(&duplicate_metadata)?;
     let loaded = store
         .load_execution_canary_build_plan_metadata(&new.order.order_id)?
         .expect("metadata should load by order");
@@ -88,12 +92,12 @@ fn execution_canary_build_plan_metadata_records_and_reports_latest() -> Result<(
     assert_eq!(loaded.order_id, new.order.order_id);
     assert_eq!(loaded.quote_event_id.as_deref(), Some("quote:buy-new"));
     assert_eq!(loaded.quote_in_amount_raw.as_deref(), Some("10000000"));
-    assert_eq!(loaded.quote_out_amount_raw.as_deref(), Some("123456"));
+    assert_eq!(loaded.quote_out_amount_raw.as_deref(), Some("654321"));
     assert_eq!(
         loaded.quote_response_json.as_deref(),
         Some("{\"loadedLongtailToken\":true}")
     );
-    assert_eq!(loaded.priority_fee_lamports, Some(12_345));
+    assert_eq!(loaded.priority_fee_lamports, Some(33_000));
     assert_eq!(loaded.slippage_bps, Some(12.5));
     assert_eq!(loaded.decision_status.as_deref(), Some("would_execute"));
     assert_eq!(latest.order_id, new.order.order_id);
@@ -110,7 +114,7 @@ fn execution_canary_build_plan_metadata_records_and_reports_latest() -> Result<(
         readiness_latest.quote_in_amount_raw.as_deref(),
         Some("10000000")
     );
-    assert_eq!(readiness_latest.priority_fee_lamports, Some(12_345));
+    assert_eq!(readiness_latest.priority_fee_lamports, Some(33_000));
     Ok(())
 }
 

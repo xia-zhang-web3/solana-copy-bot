@@ -2,7 +2,13 @@ use super::tiny_submit::apply_tiny_submit_confirm_path_outcome;
 use super::tiny_submit_expiry::{
     retry_budget_exhausted_reason, TINY_SUBMIT_RETRY_BUDGET_EXHAUSTED,
 };
+use super::tiny_submit_request::build_submit_request;
+use crate::execution_build_plan_metadata::load_execution_build_plan_metadata;
 use crate::execution_build_plan_metadata::record_execution_build_plan_metadata;
+use crate::execution_build_plan_refresh::{
+    fresh_submit_gate_reason, refresh_tiny_buy_build_plan_metadata,
+};
+use crate::execution_canary_entry_gate::validate_execution_canary_entry_metadata;
 use crate::execution_canary_signing_contract::record_execution_signing_envelope;
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_canary_submit_contract::{
@@ -66,7 +72,10 @@ pub(super) async fn retry_existing_simulated_tiny_submit_order(
         }
         return Ok(());
     }
-    let request = build_tiny_submit_reconciliation_request(store, config, order)?;
+    let Some(request) = build_retry_submit_request(config, store, order, now, summary).await?
+    else {
+        return Ok(());
+    };
     let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let Some(envelope) =
         build_retry_signed_envelope(store, &adapter, &request, now, summary).await?
@@ -94,6 +103,50 @@ pub(super) async fn retry_existing_simulated_tiny_submit_order(
     .await?;
     apply_tiny_submit_confirm_path_outcome(summary, outcome);
     Ok(())
+}
+
+async fn build_retry_submit_request(
+    config: &ExecutionConfig,
+    store: &SqliteStore,
+    order: &ExecutionCanaryOrder,
+    now: DateTime<Utc>,
+    summary: &mut ExecutionCanaryStateMachineSummary,
+) -> Result<Option<ExecutionSubmitRequest>> {
+    let request = build_tiny_submit_reconciliation_request(store, config, order)?;
+    if !request.side.eq_ignore_ascii_case("buy") {
+        return Ok(Some(request));
+    }
+    let signal = store
+        .load_copy_signal_by_signal_id(&order.signal_id)?
+        .ok_or_else(|| anyhow::anyhow!("missing copy signal for {}", order.order_id))?;
+    let metadata = load_execution_build_plan_metadata(store, &signal.signal_id)
+        .ok()
+        .filter(|metadata| {
+            metadata
+                .quote_event_id
+                .as_deref()
+                .is_some_and(|event_id| !event_id.trim().is_empty())
+        })
+        .unwrap_or_else(|| request.metadata.clone());
+    let metadata =
+        refresh_tiny_buy_build_plan_metadata(&reqwest::Client::new(), config, &signal, metadata)
+            .await?;
+    if let Some(reason) = validate_execution_canary_entry_metadata(config, &metadata) {
+        let reason = fresh_submit_gate_reason(&metadata, reason);
+        let error = format!("retry_buy_fresh_metadata_blocked:{reason}");
+        store.mark_execution_canary_failed(
+            &order.order_id,
+            now,
+            EXECUTION_ERROR_BUILD_FAILED,
+            &error,
+        )?;
+        summary.entry_gate_blocked = 1;
+        summary.failed = 1;
+        summary.skipped_reason = Some(reason);
+        summary.last_error = Some(error);
+        return Ok(None);
+    }
+    Ok(Some(build_submit_request(config, &signal, order, metadata)))
 }
 
 async fn build_retry_signed_envelope(
