@@ -137,6 +137,22 @@ fn close_submit_retry_events_ignore_quotes_before_current_buy_submit() -> Result
     before_event.quote_in_amount_raw = Some("50".to_string());
     store.record_execution_quote_canary_event(&before_event)?;
 
+    let late_quote_stale_signal = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal("sell-before-buy-late-quote", now - Duration::seconds(10))
+    };
+    store.insert_copy_signal(&late_quote_stale_signal)?;
+    let mut late_quote_stale_event = quote_event(
+        "quote:close:before-buy-late-quote",
+        &late_quote_stale_signal,
+        now + Duration::minutes(5),
+        "12000000",
+    );
+    late_quote_stale_event.side = "sell".to_string();
+    late_quote_stale_event.shadow_closed_trade_id = Some(43);
+    late_quote_stale_event.quote_in_amount_raw = Some("50".to_string());
+    store.record_execution_quote_canary_event(&late_quote_stale_event)?;
+
     let after_signal = CopySignalRow {
         side: "sell".to_string(),
         ..signal("sell-after-buy-submit", now + Duration::seconds(30))
@@ -159,6 +175,49 @@ fn close_submit_retry_events_ignore_quotes_before_current_buy_submit() -> Result
     assert_eq!(
         retry_events,
         vec!["quote:close:after-buy-submit".to_string()]
+    );
+    Ok(())
+}
+
+#[test]
+fn owned_sell_signal_candidates_use_buy_signal_boundary() -> Result<()> {
+    let store = open_migrated_store("execution-quote-canary-owned-sell-buy-boundary")?;
+    let now = ts("2026-06-02T08:00:00Z");
+    let buy_signal = signal("buy-boundary-owned", now);
+    store.insert_copy_signal(&buy_signal)?;
+    let buy = store.reserve_execution_canary_order(&buy_signal.signal_id, "metis", now)?;
+    store.record_execution_canary_open_position(
+        &buy.order.order_id,
+        "TokenMint",
+        50.0,
+        Some(TokenQuantity::new(50, 0)),
+        0.01,
+        now + Duration::minutes(3),
+    )?;
+
+    let stale_sell = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal("sell-before-buy-owned", now - Duration::seconds(1))
+    };
+    store.insert_copy_signal(&stale_sell)?;
+    let fast_sell = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal(
+            "sell-after-buy-before-confirm-owned",
+            now + Duration::seconds(1),
+        )
+    };
+    store.insert_copy_signal(&fast_sell)?;
+
+    let candidates = store.list_execution_quote_canary_owned_sell_signal_candidate_ids(
+        "shadow_recorded",
+        now - Duration::minutes(1),
+        10,
+    )?;
+
+    assert_eq!(
+        candidates,
+        vec!["sell-after-buy-before-confirm-owned".to_string()]
     );
     Ok(())
 }

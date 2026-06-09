@@ -33,10 +33,18 @@ impl SqliteDiscoveryStore {
                    AND EXISTS (
                         SELECT 1
                         FROM positions AS pos
+                        LEFT JOIN orders AS buy_order
+                          ON pos.position_id = 'exec-canary-pos:' || buy_order.order_id
+                        LEFT JOIN copy_signals AS buy_signal
+                          ON buy_signal.signal_id = buy_order.signal_id
                         WHERE pos.token = signal.token
                           AND pos.accounting_bucket = ?3
                           AND pos.state = ?4
-                          AND signal.ts >= pos.opened_ts
+                          AND signal.ts >= CASE
+                              WHEN pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
+                              THEN pos.opened_ts
+                              ELSE COALESCE(buy_signal.ts, pos.opened_ts)
+                          END
                    )
                    AND NOT EXISTS (
                         SELECT 1
@@ -185,21 +193,18 @@ impl SqliteDiscoveryStore {
                    AND EXISTS (
                         SELECT 1
                         FROM positions AS pos
+                        LEFT JOIN orders AS buy_order
+                          ON pos.position_id = 'exec-canary-pos:' || buy_order.order_id
+                        LEFT JOIN copy_signals AS buy_signal
+                          ON buy_signal.signal_id = buy_order.signal_id
                         WHERE pos.token = event.token
                           AND pos.accounting_bucket = ?5
                           AND pos.state = ?6
-                          AND (
-                              (
-                                  pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
-                                  AND event.request_ts >= pos.opened_ts
-                              )
-                              OR EXISTS (
-                                  SELECT 1
-                                  FROM orders AS buy_order
-                                  WHERE pos.position_id = 'exec-canary-pos:' || buy_order.order_id
-                                    AND event.request_ts >= buy_order.submit_ts
-                              )
-                          )
+                          AND COALESCE(event.signal_ts, event.request_ts) >= CASE
+                              WHEN pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
+                              THEN pos.opened_ts
+                              ELSE COALESCE(buy_signal.ts, pos.opened_ts)
+                          END
                    )
                    AND NOT EXISTS (
                         SELECT 1
@@ -253,21 +258,18 @@ impl SqliteDiscoveryStore {
                    AND EXISTS (
                         SELECT 1
                         FROM positions AS pos
+                        LEFT JOIN orders AS buy_order
+                          ON pos.position_id = 'exec-canary-pos:' || buy_order.order_id
+                        LEFT JOIN copy_signals AS buy_signal
+                          ON buy_signal.signal_id = buy_order.signal_id
                         WHERE pos.token = event.token
                           AND pos.accounting_bucket = ?5
                           AND pos.state = ?6
-                          AND (
-                              (
-                                  pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
-                                  AND event.request_ts >= pos.opened_ts
-                              )
-                              OR EXISTS (
-                                  SELECT 1
-                                  FROM orders AS buy_order
-                                  WHERE pos.position_id = 'exec-canary-pos:' || buy_order.order_id
-                                    AND event.request_ts >= buy_order.submit_ts
-                              )
-                          )
+                          AND COALESCE(event.signal_ts, event.request_ts) >= CASE
+                              WHEN pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
+                              THEN pos.opened_ts
+                              ELSE COALESCE(buy_signal.ts, pos.opened_ts)
+                          END
                    )
                    AND NOT EXISTS (
                         SELECT 1
