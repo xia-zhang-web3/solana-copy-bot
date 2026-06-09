@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SwapBuilderSource {
     Metis,
+    MetisFallback,
     PublicSelected,
     PublicFallback,
 }
@@ -16,6 +17,8 @@ impl SwapBuilderSource {
         match (self, shared_accounts_disabled) {
             (Self::Metis, false) => "ok",
             (Self::Metis, true) => "no_shared_accounts_ok",
+            (Self::MetisFallback, false) => "metis_fallback_ok",
+            (Self::MetisFallback, true) => "metis_fallback_no_shared_accounts_ok",
             (Self::PublicSelected, false) => "public_selected_ok",
             (Self::PublicSelected, true) => "public_selected_no_shared_accounts_ok",
             (Self::PublicFallback, false) => "public_fallback_ok",
@@ -27,6 +30,8 @@ impl SwapBuilderSource {
         match (self, shared_accounts_disabled) {
             (Self::Metis, false) => "metis",
             (Self::Metis, true) => "metis_no_shared_accounts",
+            (Self::MetisFallback, false) => "metis_fallback",
+            (Self::MetisFallback, true) => "metis_fallback_no_shared_accounts",
             (Self::PublicSelected, _) => "public_selected",
             (Self::PublicFallback, _) => "public_fallback",
         }
@@ -186,6 +191,18 @@ pub(crate) fn public_fallback_swap_builder_endpoint(
         url: swap_endpoint_url(&config.quote_canary_public_base_url, endpoint, context)?,
         api_key: String::new(),
         source: SwapBuilderSource::PublicFallback,
+    })
+}
+
+pub(crate) fn metis_fallback_swap_builder_endpoint(
+    config: &ExecutionConfig,
+    endpoint: &str,
+    context: &str,
+) -> Result<SwapBuilderEndpoint> {
+    Ok(SwapBuilderEndpoint {
+        url: swap_endpoint_url(&config.quote_canary_base_url, endpoint, context)?,
+        api_key: config.quote_canary_api_key.trim().to_string(),
+        source: SwapBuilderSource::MetisFallback,
     })
 }
 
