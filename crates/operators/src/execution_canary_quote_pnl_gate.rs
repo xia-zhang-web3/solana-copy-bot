@@ -7,6 +7,7 @@ use copybot_storage_core::{
 use serde::Serialize;
 use std::path::Path;
 
+use crate::execution_canary_quote_pnl_gate_runtime::classify_runtime_gate;
 use crate::execution_canary_tiny_config_checks::push_config_checks;
 
 const DEFAULT_TINY_MAX_RECENT_LOSS_SOL_24H: f64 = 0.05;
@@ -17,12 +18,19 @@ pub struct TinyExecutionGate {
     pub status: String,
     pub startup_readiness_status: String,
     pub runtime_status: String,
+    pub runtime_mode: String,
     pub can_start_tiny_execution: bool,
     pub can_continue_tiny_execution: bool,
+    pub can_open_new_tiny_entries: bool,
+    pub can_process_tiny_sells: bool,
     pub blocker_count: u64,
     pub runtime_blocker_count: u64,
+    pub entry_runtime_blocker_count: u64,
+    pub sell_runtime_blocker_count: u64,
     pub warning_count: u64,
     pub runtime_blockers: Vec<TinyExecutionGateCheck>,
+    pub entry_runtime_blockers: Vec<TinyExecutionGateCheck>,
+    pub sell_runtime_blockers: Vec<TinyExecutionGateCheck>,
     pub why_not_trading_now: Vec<String>,
     pub quote_gate_status: String,
     pub latest_order_id: Option<String>,
@@ -220,10 +228,6 @@ fn finish_gate(
         .iter()
         .filter(|check| check.status == "block")
         .count() as u64;
-    let runtime_blocker_count = checks
-        .iter()
-        .filter(|check| check.status == "block" && is_tiny_runtime_blocker(&check.name))
-        .count() as u64;
     let warning_count = checks.iter().filter(|check| check.status == "warn").count() as u64;
     let status = if blocker_count > 0 {
         "blocked"
@@ -232,34 +236,30 @@ fn finish_gate(
     } else {
         "ready"
     };
-    let runtime_status = if runtime_blocker_count > 0 {
-        "blocked"
-    } else if warning_count > 0 {
-        "ready_with_warnings"
-    } else {
-        "ready"
-    };
-    let runtime_blockers: Vec<_> = checks
-        .iter()
-        .filter(|check| check.status == "block" && is_tiny_runtime_blocker(&check.name))
-        .cloned()
-        .collect();
-    let why_not_trading_now = runtime_blockers
-        .iter()
-        .map(runtime_blocker_reason)
-        .collect();
+    let runtime = classify_runtime_gate(
+        &checks,
+        warning_count,
+        summary.readiness_gate.open_position_count,
+    );
 
     TinyExecutionGate {
         status: status.to_string(),
         startup_readiness_status: status.to_string(),
-        runtime_status: runtime_status.to_string(),
+        runtime_status: runtime.runtime_status,
+        runtime_mode: runtime.runtime_mode,
         can_start_tiny_execution: blocker_count == 0,
-        can_continue_tiny_execution: runtime_blocker_count == 0,
+        can_continue_tiny_execution: runtime.can_process_tiny_sells,
+        can_open_new_tiny_entries: runtime.can_open_new_tiny_entries,
+        can_process_tiny_sells: runtime.can_process_tiny_sells,
         blocker_count,
-        runtime_blocker_count,
+        runtime_blocker_count: runtime.runtime_blocker_count,
+        entry_runtime_blocker_count: runtime.entry_runtime_blocker_count,
+        sell_runtime_blocker_count: runtime.sell_runtime_blocker_count,
         warning_count,
-        runtime_blockers,
-        why_not_trading_now,
+        runtime_blockers: runtime.runtime_blockers,
+        entry_runtime_blockers: runtime.entry_runtime_blockers,
+        sell_runtime_blockers: runtime.sell_runtime_blockers,
+        why_not_trading_now: runtime.why_not_trading_now,
         quote_gate_status: summary.readiness_gate.status.clone(),
         latest_order_id: latest_order.map(|order| order.order_id.clone()),
         latest_order_status: latest_order.map(|order| order.status.clone()),
@@ -272,53 +272,6 @@ fn finish_gate(
         recent_realized_loss_sol_24h: recent_loss_sol_24h,
         checks,
     }
-}
-
-fn is_tiny_runtime_blocker(name: &str) -> bool {
-    matches!(
-        name,
-        "execution_disabled"
-            | "canary_enabled"
-            | "canary_dry_run"
-            | "canary_tiny_submit_enabled"
-            | "canary_entry_submit_enabled"
-            | "canary_wallet_pubkey"
-            | "canary_buy_size"
-            | "canary_max_open_positions"
-            | "canary_daily_loss_cap"
-            | "canary_kill_switch_inactive"
-            | "execution_signer_pubkey"
-            | "execution_signer_matches_canary_wallet"
-            | "execution_signer_keypair_path"
-            | "execution_signer_keypair_file"
-            | "execution_signer_keypair_format"
-            | "execution_signer_keypair_pubkey_match"
-            | "execution_signer_can_sign_preflight"
-            | "submit_adapter_http_url"
-            | "submit_timeout_ms"
-            | "max_confirm_seconds"
-            | "max_submit_attempts"
-            | "simulate_before_submit"
-            | "pretrade_min_sol_reserve"
-            | "pretrade_max_priority_fee_lamports"
-            | "quote_canary_enabled"
-            | "swap_instructions_dry_run_enabled"
-            | "swap_transaction_dry_run_enabled"
-            | "priority_fee_canary_enabled"
-            | "open_canary_positions"
-            | "recent_realized_loss_24h"
-            | "pending_signed_submit_orders"
-            | "pending_unknown_submit_orders"
-            | "retry_ready_orders"
-            | "retry_budget_blocked_orders"
-    )
-}
-
-fn runtime_blocker_reason(check: &TinyExecutionGateCheck) -> String {
-    format!(
-        "{}={} blocks runtime: {}",
-        check.name, check.value, check.reason
-    )
 }
 
 fn push_check(
