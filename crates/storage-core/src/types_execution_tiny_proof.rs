@@ -70,6 +70,9 @@ pub struct ExecutionTinyEntryFunnel {
     pub shadow_recorded_events: u64,
     pub shadow_dropped_events: u64,
     pub shadow_pending_events: u64,
+    pub quote_would_execute_shadow_recorded_events: u64,
+    pub quote_would_execute_shadow_dropped_events: u64,
+    pub quote_would_execute_shadow_pending_events: u64,
     pub tiny_ordered_events: u64,
     pub tiny_confirmed_events: u64,
     pub tiny_failed_events: u64,
@@ -78,7 +81,15 @@ pub struct ExecutionTinyEntryFunnel {
     pub tiny_missing_order_shadow_recorded_events: u64,
     pub tiny_missing_order_shadow_dropped_events: u64,
     pub tiny_missing_order_shadow_pending_events: u64,
+    pub shadow_drop_reason_counts: Vec<ExecutionTinyEntryFunnelDropReasonCount>,
+    pub quote_would_execute_shadow_drop_reason_counts: Vec<ExecutionTinyEntryFunnelDropReasonCount>,
     pub buckets: Vec<ExecutionTinyEntryFunnelBucket>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecutionTinyEntryFunnelDropReasonCount {
+    pub reason: String,
+    pub events: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -87,6 +98,7 @@ pub struct ExecutionTinyEntryFunnelBucket {
     pub quote_status: String,
     pub decision_status: String,
     pub shadow_gate_status: String,
+    pub shadow_gate_reason: String,
     pub order_status: String,
     pub err_code: String,
     pub simulation_status: String,

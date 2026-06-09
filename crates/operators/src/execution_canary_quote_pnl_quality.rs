@@ -1,5 +1,7 @@
+use chrono::{DateTime, Utc};
 use copybot_storage_core::{
-    ExecutionCanaryQuotePnlSummary, ExecutionTinyProofLatencyStats, ExecutionTinyProofReport,
+    ExecutionCanaryQuotePnlSummary, ExecutionTinyProofLatencyStats, ExecutionTinyProofOrder,
+    ExecutionTinyProofReport,
 };
 use serde::Serialize;
 
@@ -7,6 +9,7 @@ const CONFIRMED: &str = "execution_canary_confirmed";
 const DECISION_WOULD_EXECUTE: &str = "would_execute";
 const DECISION_WOULD_FORCE_EXIT: &str = "would_force_exit";
 const MIN_SAMPLE_TRADES: u64 = 30;
+const FAILED_ORDER_SAMPLE_LIMIT: usize = 5;
 const PROOF_STATUS_CLOSED: &str = "tiny_closed";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -16,6 +19,7 @@ pub struct TinyExecutionQualityReport {
     pub shadow_market_closed_trades: u64,
     pub quote_canary_entry_would_execute_trades: u64,
     pub quote_canary_exit_would_execute_trades: u64,
+    pub shadow_gate_dropped_would_execute_events: u64,
     pub tiny_entry_ordered_trades: u64,
     pub tiny_entry_confirmed_trades: u64,
     pub tiny_entry_failed_orders: u64,
@@ -38,6 +42,8 @@ pub struct TinyExecutionQualityReport {
     pub entry_submit_to_confirm_ms: ExecutionTinyProofLatencyStats,
     pub exit_submit_to_confirm_ms: ExecutionTinyProofLatencyStats,
     pub top_flow_blockers: Vec<TinyExecutionQualityBlocker>,
+    pub failed_entry_order_samples: Vec<TinyExecutionQualityOrderSample>,
+    pub failed_exit_order_samples: Vec<TinyExecutionQualityOrderSample>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -45,6 +51,23 @@ pub struct TinyExecutionQualityBlocker {
     pub stage: String,
     pub reason: String,
     pub count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TinyExecutionQualityOrderSample {
+    pub order_id: String,
+    pub signal_id: String,
+    pub token: Option<String>,
+    pub status: String,
+    pub err_code: Option<String>,
+    pub simulation_status: Option<String>,
+    pub simulation_error_class: String,
+    pub decision_reason: Option<String>,
+    pub route: String,
+    pub quote_source: Option<String>,
+    pub quote_event_id: Option<String>,
+    pub priority_fee_lamports: Option<u64>,
+    pub submit_ts: DateTime<Utc>,
 }
 
 pub fn build_tiny_execution_quality(
@@ -70,6 +93,7 @@ pub fn build_tiny_execution_quality(
         exit_failed,
         entry_missing,
         exit_missing,
+        proof.entry_funnel.quote_would_execute_shadow_dropped_events,
         proof_summary.tiny_open_positions,
         proof_summary.tiny_vs_shadow_delta_sol,
         summary.quote_adjusted_pnl_after_priority_fee_sol,
@@ -81,6 +105,9 @@ pub fn build_tiny_execution_quality(
         shadow_market_closed_trades: proof_summary.shadow_market_closed_trades,
         quote_canary_entry_would_execute_trades: proof_summary.canary_entry_would_execute_trades,
         quote_canary_exit_would_execute_trades: proof_summary.canary_exit_would_execute_trades,
+        shadow_gate_dropped_would_execute_events: proof
+            .entry_funnel
+            .quote_would_execute_shadow_dropped_events,
         tiny_entry_ordered_trades: proof_summary.tiny_entry_ordered_trades,
         tiny_entry_confirmed_trades: proof_summary.tiny_entry_confirmed_trades,
         tiny_entry_failed_orders: entry_failed,
@@ -113,6 +140,8 @@ pub fn build_tiny_execution_quality(
         entry_submit_to_confirm_ms: proof.latency.entry_submit_to_confirm_ms.clone(),
         exit_submit_to_confirm_ms: proof.latency.exit_submit_to_confirm_ms.clone(),
         top_flow_blockers,
+        failed_entry_order_samples: failed_order_samples(proof, "buy"),
+        failed_exit_order_samples: failed_order_samples(proof, "sell"),
     }
 }
 
@@ -169,13 +198,14 @@ fn verdict(
     exit_failed: u64,
     entry_missing: u64,
     exit_missing: u64,
+    shadow_gate_dropped_would_execute: u64,
     open_positions: u64,
     tiny_vs_shadow_delta_sol: f64,
     quote_after_fee_sol: f64,
 ) -> String {
     if exit_failed > 0 || exit_missing > 0 {
         "sell_flow_loss".to_string()
-    } else if entry_failed > 0 || entry_missing > 0 {
+    } else if entry_failed > 0 || entry_missing > 0 || shadow_gate_dropped_would_execute > 0 {
         "entry_flow_loss".to_string()
     } else if open_positions > 0 {
         "open_positions_present".to_string()
@@ -210,6 +240,19 @@ fn top_flow_blockers(
             count: exit_missing,
         });
     }
+    for count in &proof
+        .entry_funnel
+        .quote_would_execute_shadow_drop_reason_counts
+    {
+        if count.events == 0 {
+            continue;
+        }
+        blockers.push(TinyExecutionQualityBlocker {
+            stage: "shadow_gate".to_string(),
+            reason: format!("shadow_dropped:{}", count.reason),
+            count: count.events,
+        });
+    }
     for count in &proof.order_failure_counts {
         if count.orders == 0 {
             continue;
@@ -229,6 +272,88 @@ fn top_flow_blockers(
         }
     }
     blockers
+}
+
+fn failed_order_samples(
+    proof: &ExecutionTinyProofReport,
+    side: &str,
+) -> Vec<TinyExecutionQualityOrderSample> {
+    proof
+        .recent_orders
+        .iter()
+        .filter(|order| order.side.as_deref() == Some(side) && order.status != CONFIRMED)
+        .take(FAILED_ORDER_SAMPLE_LIMIT)
+        .map(order_sample)
+        .collect()
+}
+
+fn order_sample(order: &ExecutionTinyProofOrder) -> TinyExecutionQualityOrderSample {
+    TinyExecutionQualityOrderSample {
+        order_id: order.order_id.clone(),
+        signal_id: order.signal_id.clone(),
+        token: order.token.clone(),
+        status: order.status.clone(),
+        err_code: order.err_code.clone(),
+        simulation_status: order.simulation_status.clone(),
+        simulation_error_class: simulation_error_class(order.simulation_error.as_deref()),
+        decision_reason: order.decision_reason.clone(),
+        route: order.route.clone(),
+        quote_source: order.quote_source.clone(),
+        quote_event_id: order.quote_event_id.clone(),
+        priority_fee_lamports: order.priority_fee_lamports,
+        submit_ts: order.submit_ts,
+    }
+}
+
+fn simulation_error_class(value: Option<&str>) -> String {
+    let Some(raw) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return "missing".to_string();
+    };
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("no_routes_found")
+        || lower.contains("no routes found")
+        || lower.contains("terminal_failed_sell_no_route")
+        || lower.contains("terminal_sell_no_route")
+    {
+        return "terminal_no_route".to_string();
+    }
+    if lower.contains("bonding curve for mint not found") {
+        return "pump_fun_bonding_curve_not_found".to_string();
+    }
+    if lower.contains("market not found")
+        || (lower.contains("market ") && lower.contains(" not found"))
+    {
+        return "market_not_found".to_string();
+    }
+    if let Some(hex) = custom_program_error_code(&lower) {
+        return format!("custom_program_error:{hex}");
+    }
+    if lower.contains("insufficient funds") {
+        return "insufficient_funds".to_string();
+    }
+    if lower.contains("account not found") || lower.contains("could not find account") {
+        return "account_not_found".to_string();
+    }
+    if lower.contains("blockhash") {
+        return "blockhash".to_string();
+    }
+    if lower.contains("slippage") {
+        return "slippage".to_string();
+    }
+    "other".to_string()
+}
+
+fn custom_program_error_code(lower: &str) -> Option<String> {
+    let marker = "custom program error:";
+    let (_, tail) = lower.split_once(marker)?;
+    let code = tail
+        .trim_start()
+        .split(|ch: char| ch.is_whitespace() || ch == ',' || ch == ';' || ch == '}')
+        .next()?
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '.' || ch == ':');
+    code.strip_prefix("0x")
+        .filter(|hex| !hex.is_empty() && hex.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .map(|hex| format!("0x{hex}"))
 }
 
 fn pct(numerator: u64, denominator: u64) -> f64 {

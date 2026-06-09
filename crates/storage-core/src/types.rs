@@ -48,7 +48,8 @@ pub use types_execution_quote_pnl::{
     EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED, EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,
 };
 pub use types_execution_tiny_proof::{
-    ExecutionTinyEntryFunnel, ExecutionTinyEntryFunnelBucket, ExecutionTinyOrderFailureCount,
+    ExecutionTinyEntryFunnel, ExecutionTinyEntryFunnelBucket,
+    ExecutionTinyEntryFunnelDropReasonCount, ExecutionTinyOrderFailureCount,
     ExecutionTinyProofLatencyStats, ExecutionTinyProofLatencySummary,
     ExecutionTinyProofOpenPosition, ExecutionTinyProofOrder, ExecutionTinyProofReasonCount,
     ExecutionTinyProofReport, ExecutionTinyProofSummary, ExecutionTinyProofTrade,

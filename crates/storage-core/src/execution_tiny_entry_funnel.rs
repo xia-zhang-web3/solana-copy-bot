@@ -1,5 +1,6 @@
 use crate::{
-    ExecutionTinyEntryFunnel, ExecutionTinyEntryFunnelBucket, SqliteDiscoveryStore,
+    ExecutionTinyEntryFunnel, ExecutionTinyEntryFunnelBucket,
+    ExecutionTinyEntryFunnelDropReasonCount, SqliteDiscoveryStore,
     EXECUTION_STATUS_CANARY_CONFIRMED, EXECUTION_STATUS_CANARY_FAILED,
     EXECUTION_STATUS_CANARY_SUBMIT_DISABLED,
 };
@@ -44,6 +45,7 @@ struct EntryFunnelRow {
     quote_status: String,
     decision_status: String,
     shadow_gate_status: String,
+    shadow_gate_reason: String,
     order_status: String,
     err_code: String,
     simulation_status: String,
@@ -55,31 +57,69 @@ fn read_entry_funnel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntryFunne
         quote_status: string_or_missing(row.get(0)?),
         decision_status: string_or_missing(row.get(1)?),
         shadow_gate_status: string_or_default(row.get(2)?, SHADOW_PENDING),
-        order_status: string_or_missing(row.get(3)?),
-        err_code: string_or_missing(row.get(4)?),
-        simulation_status: string_or_missing(row.get(5)?),
-        quote_source: string_or_default(row.get(6)?, "not_ordered"),
+        shadow_gate_reason: string_or_default(row.get(3)?, "unknown"),
+        order_status: string_or_missing(row.get(4)?),
+        err_code: string_or_missing(row.get(5)?),
+        simulation_status: string_or_missing(row.get(6)?),
+        quote_source: string_or_default(row.get(7)?, "not_ordered"),
     })
 }
 
 fn summarize_entry_funnel(rows: Vec<EntryFunnelRow>) -> ExecutionTinyEntryFunnel {
     let mut summary = ExecutionTinyEntryFunnel::default();
-    let mut buckets =
-        BTreeMap::<(String, String, String, String, String, String, String), u64>::new();
+    let mut drop_reasons = BTreeMap::<String, u64>::new();
+    let mut execute_drop_reasons = BTreeMap::<String, u64>::new();
+    let mut buckets = BTreeMap::<
+        (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        ),
+        u64,
+    >::new();
     for row in rows {
         summary.total_buy_quote_events += 1;
         if row.quote_status == QUOTE_STATUS_OK {
             summary.quote_ok_events += 1;
         }
+        let would_execute = row.decision_status == DECISION_WOULD_EXECUTE;
         match row.decision_status.as_str() {
             DECISION_WOULD_EXECUTE => summary.quote_would_execute_events += 1,
             DECISION_WOULD_SKIP => summary.quote_would_skip_events += 1,
             _ => {}
         }
         match row.shadow_gate_status.as_str() {
-            SHADOW_RECORDED => summary.shadow_recorded_events += 1,
-            SHADOW_DROPPED => summary.shadow_dropped_events += 1,
-            _ => summary.shadow_pending_events += 1,
+            SHADOW_RECORDED => {
+                summary.shadow_recorded_events += 1;
+                if would_execute {
+                    summary.quote_would_execute_shadow_recorded_events += 1;
+                }
+            }
+            SHADOW_DROPPED => {
+                summary.shadow_dropped_events += 1;
+                if would_execute {
+                    summary.quote_would_execute_shadow_dropped_events += 1;
+                }
+                *drop_reasons
+                    .entry(row.shadow_gate_reason.clone())
+                    .or_insert(0) += 1;
+                if would_execute {
+                    *execute_drop_reasons
+                        .entry(row.shadow_gate_reason.clone())
+                        .or_insert(0) += 1;
+                }
+            }
+            _ => {
+                summary.shadow_pending_events += 1;
+                if would_execute {
+                    summary.quote_would_execute_shadow_pending_events += 1;
+                }
+            }
         }
         match row.order_status.as_str() {
             MISSING => {
@@ -110,6 +150,7 @@ fn summarize_entry_funnel(rows: Vec<EntryFunnelRow>) -> ExecutionTinyEntryFunnel
                 row.quote_status,
                 row.decision_status,
                 row.shadow_gate_status,
+                row.shadow_gate_reason,
                 row.order_status,
                 row.err_code,
                 row.simulation_status,
@@ -125,6 +166,7 @@ fn summarize_entry_funnel(rows: Vec<EntryFunnelRow>) -> ExecutionTinyEntryFunnel
                     quote_status,
                     decision_status,
                     shadow_gate_status,
+                    shadow_gate_reason,
                     order_status,
                     err_code,
                     simulation_status,
@@ -135,12 +177,21 @@ fn summarize_entry_funnel(rows: Vec<EntryFunnelRow>) -> ExecutionTinyEntryFunnel
                 quote_status,
                 decision_status,
                 shadow_gate_status,
+                shadow_gate_reason,
                 order_status,
                 err_code,
                 simulation_status,
                 events,
             },
         )
+        .collect();
+    summary.shadow_drop_reason_counts = drop_reasons
+        .into_iter()
+        .map(|(reason, events)| ExecutionTinyEntryFunnelDropReasonCount { reason, events })
+        .collect();
+    summary.quote_would_execute_shadow_drop_reason_counts = execute_drop_reasons
+        .into_iter()
+        .map(|(reason, events)| ExecutionTinyEntryFunnelDropReasonCount { reason, events })
         .collect();
     summary
 }
@@ -161,6 +212,7 @@ SELECT
     quote.quote_status,
     quote.decision_status,
     gate.status,
+    gate.reason,
     orders.status,
     orders.err_code,
     orders.simulation_status,
