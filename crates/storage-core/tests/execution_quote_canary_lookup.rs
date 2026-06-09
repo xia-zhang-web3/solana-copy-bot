@@ -3,7 +3,9 @@ use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::{
     CopySignalRow, Lamports, TokenQuantity, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
 };
-use copybot_storage_core::{ExecutionQuoteCanaryEventInsert, SqliteStore};
+use copybot_storage_core::{
+    ExecutionQuoteCanaryEventInsert, SqliteStore, EXECUTION_SIMULATION_STATUS_PASSED,
+};
 use tempfile::tempdir;
 
 fn ts(raw: &str) -> DateTime<Utc> {
@@ -302,6 +304,106 @@ fn close_submit_retry_events_include_recovery_orphan_open_positions() -> Result<
         vec!["quote:close:recovery-missing-priority".to_string()]
     );
     Ok(())
+}
+
+#[test]
+fn close_submit_retry_events_ignore_recovery_orphan_sell_before_latest_buy() -> Result<()> {
+    let store = open_migrated_store("execution-quote-canary-close-retry-recovery-latest-buy")?;
+    let now = ts("2026-06-02T08:00:00Z");
+    store.record_execution_canary_open_position(
+        "recovery-orphan:TokenMint:5000:test",
+        "TokenMint",
+        50.0,
+        Some(TokenQuantity::new(50, 0)),
+        0.01,
+        now - Duration::minutes(30),
+    )?;
+
+    let buy_signal = signal("buy-fresh-merge", now);
+    store.insert_copy_signal(&buy_signal)?;
+    let buy_order_id = mark_confirmed_order(&store, &buy_signal.signal_id, now)?;
+    store.record_execution_canary_open_position(
+        &buy_order_id,
+        "TokenMint",
+        25.0,
+        Some(TokenQuantity::new(25, 0)),
+        0.02,
+        now + Duration::seconds(4),
+    )?;
+
+    let stale_sell = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal("sell-after-recovery-before-buy", now - Duration::minutes(5))
+    };
+    store.insert_copy_signal(&stale_sell)?;
+    let mut stale_event = quote_event(
+        "quote:close:recovery-before-latest-buy",
+        &stale_sell,
+        now + Duration::seconds(5),
+        "12000000",
+    );
+    stale_event.side = "sell".to_string();
+    stale_event.quote_in_amount_raw = Some("75".to_string());
+    stale_event.priority_fee_status = None;
+    stale_event.priority_fee_lamports = None;
+    store.record_execution_quote_canary_event(&stale_event)?;
+
+    let fresh_sell = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal("sell-after-latest-buy", now + Duration::seconds(6))
+    };
+    store.insert_copy_signal(&fresh_sell)?;
+    let mut fresh_event = quote_event(
+        "quote:close:recovery-after-latest-buy",
+        &fresh_sell,
+        now + Duration::seconds(6),
+        "12000000",
+    );
+    fresh_event.side = "sell".to_string();
+    fresh_event.quote_in_amount_raw = Some("75".to_string());
+    fresh_event.priority_fee_status = None;
+    fresh_event.priority_fee_lamports = None;
+    store.record_execution_quote_canary_event(&fresh_event)?;
+
+    let retry_events = store
+        .list_execution_quote_canary_close_submit_retry_event_ids(now - Duration::hours(1), 10)?;
+    let priority_retry_events = store
+        .list_execution_quote_canary_close_priority_fee_retry_event_ids(
+            now - Duration::hours(1),
+            10,
+        )?;
+
+    assert_eq!(
+        retry_events,
+        vec!["quote:close:recovery-after-latest-buy".to_string()]
+    );
+    assert_eq!(
+        priority_retry_events,
+        vec!["quote:close:recovery-after-latest-buy".to_string()]
+    );
+    Ok(())
+}
+
+fn mark_confirmed_order(
+    store: &SqliteStore,
+    signal_id: &str,
+    now: DateTime<Utc>,
+) -> Result<String> {
+    let reserve = store.reserve_execution_canary_order(signal_id, "metis", now)?;
+    store.mark_execution_canary_built(&reserve.order.order_id, now + Duration::seconds(1))?;
+    store.mark_execution_canary_simulated(
+        &reserve.order.order_id,
+        now + Duration::seconds(2),
+        EXECUTION_SIMULATION_STATUS_PASSED,
+        None,
+    )?;
+    store.mark_execution_canary_submitted(
+        &reserve.order.order_id,
+        now + Duration::seconds(3),
+        "tx-sig",
+    )?;
+    store.mark_execution_canary_confirmed(&reserve.order.order_id, now + Duration::seconds(4))?;
+    Ok(reserve.order.order_id)
 }
 
 fn signal(signal_id: &str, ts: DateTime<Utc>) -> CopySignalRow {

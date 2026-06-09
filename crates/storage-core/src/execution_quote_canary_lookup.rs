@@ -40,11 +40,22 @@ impl SqliteDiscoveryStore {
                         WHERE pos.token = signal.token
                           AND pos.accounting_bucket = ?3
                           AND pos.state = ?4
-                          AND signal.ts >= CASE
+                          AND signal.ts >= COALESCE((
+                              SELECT MAX(COALESCE(latest_buy_signal.ts, latest_buy_order.submit_ts))
+                              FROM orders AS latest_buy_order
+                              JOIN copy_signals AS latest_buy_signal
+                                ON latest_buy_signal.signal_id = latest_buy_order.signal_id
+                              WHERE latest_buy_order.order_id LIKE 'exec-canary:%'
+                                AND latest_buy_order.status = 'execution_canary_confirmed'
+                                AND latest_buy_order.confirm_ts IS NOT NULL
+                                AND lower(latest_buy_signal.side) = 'buy'
+                                AND latest_buy_signal.token = pos.token
+                                AND latest_buy_order.submit_ts >= pos.opened_ts
+                          ), CASE
                               WHEN pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
                               THEN pos.opened_ts
                               ELSE COALESCE(buy_signal.ts, pos.opened_ts)
-                          END
+                          END)
                    )
                    AND NOT EXISTS (
                         SELECT 1
@@ -200,11 +211,22 @@ impl SqliteDiscoveryStore {
                         WHERE pos.token = event.token
                           AND pos.accounting_bucket = ?5
                           AND pos.state = ?6
-                          AND COALESCE(event.signal_ts, event.request_ts) >= CASE
+                          AND COALESCE(event.signal_ts, event.request_ts) >= COALESCE((
+                              SELECT MAX(COALESCE(latest_buy_signal.ts, latest_buy_order.submit_ts))
+                              FROM orders AS latest_buy_order
+                              JOIN copy_signals AS latest_buy_signal
+                                ON latest_buy_signal.signal_id = latest_buy_order.signal_id
+                              WHERE latest_buy_order.order_id LIKE 'exec-canary:%'
+                                AND latest_buy_order.status = 'execution_canary_confirmed'
+                                AND latest_buy_order.confirm_ts IS NOT NULL
+                                AND lower(latest_buy_signal.side) = 'buy'
+                                AND latest_buy_signal.token = pos.token
+                                AND latest_buy_order.submit_ts >= pos.opened_ts
+                          ), CASE
                               WHEN pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
                               THEN pos.opened_ts
                               ELSE COALESCE(buy_signal.ts, pos.opened_ts)
-                          END
+                          END)
                    )
                    AND NOT EXISTS (
                         SELECT 1
@@ -265,11 +287,22 @@ impl SqliteDiscoveryStore {
                         WHERE pos.token = event.token
                           AND pos.accounting_bucket = ?5
                           AND pos.state = ?6
-                          AND COALESCE(event.signal_ts, event.request_ts) >= CASE
+                          AND COALESCE(event.signal_ts, event.request_ts) >= COALESCE((
+                              SELECT MAX(COALESCE(latest_buy_signal.ts, latest_buy_order.submit_ts))
+                              FROM orders AS latest_buy_order
+                              JOIN copy_signals AS latest_buy_signal
+                                ON latest_buy_signal.signal_id = latest_buy_order.signal_id
+                              WHERE latest_buy_order.order_id LIKE 'exec-canary:%'
+                                AND latest_buy_order.status = 'execution_canary_confirmed'
+                                AND latest_buy_order.confirm_ts IS NOT NULL
+                                AND lower(latest_buy_signal.side) = 'buy'
+                                AND latest_buy_signal.token = pos.token
+                                AND latest_buy_order.submit_ts >= pos.opened_ts
+                          ), CASE
                               WHEN pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
                               THEN pos.opened_ts
                               ELSE COALESCE(buy_signal.ts, pos.opened_ts)
-                          END
+                          END)
                    )
                    AND NOT EXISTS (
                         SELECT 1
@@ -327,7 +360,18 @@ impl SqliteDiscoveryStore {
                         WHERE pos.token = closed.token
                           AND pos.accounting_bucket = ?6
                           AND pos.state = ?7
-                          AND closed.closed_ts >= pos.opened_ts
+                          AND closed.closed_ts >= COALESCE((
+                              SELECT MAX(COALESCE(latest_buy_signal.ts, latest_buy_order.submit_ts))
+                              FROM orders AS latest_buy_order
+                              JOIN copy_signals AS latest_buy_signal
+                                ON latest_buy_signal.signal_id = latest_buy_order.signal_id
+                              WHERE latest_buy_order.order_id LIKE 'exec-canary:%'
+                                AND latest_buy_order.status = 'execution_canary_confirmed'
+                                AND latest_buy_order.confirm_ts IS NOT NULL
+                                AND lower(latest_buy_signal.side) = 'buy'
+                                AND latest_buy_signal.token = pos.token
+                                AND latest_buy_order.submit_ts >= pos.opened_ts
+                          ), pos.opened_ts)
                    )
                    AND NOT EXISTS (
                         SELECT 1
