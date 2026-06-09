@@ -160,6 +160,61 @@ fn confirmed_buy_fill_is_idempotent_per_order() -> Result<()> {
 }
 
 #[test]
+fn confirmed_buy_fill_merges_same_token_new_order() -> Result<()> {
+    let store = open_migrated_store("execution-canary-confirmed-buy-merge")?;
+    let now = ts("2026-06-06T08:00:00Z");
+    let first_order_id = confirmed_order(&store, "buy-merge-a", "buy", now)?;
+    let second_order_id =
+        confirmed_order(&store, "buy-merge-b", "buy", now + Duration::seconds(5))?;
+
+    let first = store.record_execution_canary_confirmed_buy_fill(
+        &first_order_id,
+        "TokenMint",
+        1.0,
+        Some(TokenQuantity::new(1_000_000, 6)),
+        0.2,
+        now + Duration::seconds(10),
+    )?;
+    let second = store.record_execution_canary_confirmed_buy_fill(
+        &second_order_id,
+        "TokenMint",
+        1.5,
+        Some(TokenQuantity::new(1_500_000, 6)),
+        0.3,
+        now + Duration::seconds(15),
+    )?;
+    let second_repeat = store.record_execution_canary_confirmed_buy_fill(
+        &second_order_id,
+        "TokenMint",
+        1.5,
+        Some(TokenQuantity::new(1_500_000, 6)),
+        0.3,
+        now + Duration::seconds(15),
+    )?;
+    let position = store
+        .load_execution_canary_open_position("TokenMint")?
+        .expect("merged confirmed fill should keep one open position");
+
+    assert_eq!(
+        first.outcome,
+        ExecutionCanaryPositionRecordOutcome::Inserted
+    );
+    assert_eq!(second.outcome, ExecutionCanaryPositionRecordOutcome::Merged);
+    assert_eq!(
+        second_repeat.outcome,
+        ExecutionCanaryPositionRecordOutcome::Existing
+    );
+    assert_eq!(
+        position.position_id,
+        "exec-canary-pos:exec-canary:buy-merge-a"
+    );
+    assert!((position.qty - 2.5).abs() < 1e-9);
+    assert_eq!(position.qty_exact, Some(TokenQuantity::new(2_500_000, 6)));
+    assert_eq!(position.cost_lamports, Some(Lamports::new(500_000_000)));
+    Ok(())
+}
+
+#[test]
 fn confirmed_sell_fill_closes_canary_owned_position() -> Result<()> {
     let store = open_migrated_store("execution-canary-confirmed-sell-fill")?;
     let now = ts("2026-06-06T08:00:00Z");

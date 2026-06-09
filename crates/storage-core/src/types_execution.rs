@@ -90,6 +90,7 @@ pub struct ExecutionCanaryOwnedPosition {
 pub enum ExecutionCanaryPositionRecordOutcome {
     Inserted,
     Existing,
+    Merged,
 }
 
 #[derive(Debug, Clone, PartialEq)]

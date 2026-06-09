@@ -75,6 +75,47 @@ fn execution_canary_open_position_recording_is_idempotent() -> Result<()> {
 }
 
 #[test]
+fn execution_canary_open_position_recording_merges_same_token_new_order() -> Result<()> {
+    let store = open_migrated_store("execution-canary-owned-position-merge")?;
+    let now = ts("2026-06-01T08:00:00Z");
+
+    let first = store.record_execution_canary_open_position(
+        "exec-canary:buy-merge-1",
+        "TokenMint",
+        1.234567,
+        Some(TokenQuantity::new(1_234_567, 6)),
+        0.2,
+        now,
+    )?;
+    let second = store.record_execution_canary_open_position(
+        "exec-canary:buy-merge-2",
+        "TokenMint",
+        2.0,
+        Some(TokenQuantity::new(2_000_000, 6)),
+        0.3,
+        now + chrono::Duration::seconds(10),
+    )?;
+    let loaded = store
+        .load_execution_canary_open_position("TokenMint")?
+        .expect("merged execution canary position should load");
+
+    assert_eq!(
+        first.outcome,
+        ExecutionCanaryPositionRecordOutcome::Inserted
+    );
+    assert_eq!(second.outcome, ExecutionCanaryPositionRecordOutcome::Merged);
+    assert_eq!(
+        second.position.position_id,
+        "exec-canary-pos:exec-canary:buy-merge-1"
+    );
+    assert!((loaded.qty - 3.234567).abs() < 1e-9);
+    assert_eq!(loaded.qty_exact, Some(TokenQuantity::new(3_234_567, 6)));
+    assert_eq!(loaded.cost_lamports, Some(Lamports::new(500_000_000)));
+    assert_eq!(store.execution_canary_open_position_count()?, 1);
+    Ok(())
+}
+
+#[test]
 fn execution_canary_sell_decision_skips_when_no_owned_position() -> Result<()> {
     let store = open_migrated_store("execution-canary-sell-no-position")?;
 

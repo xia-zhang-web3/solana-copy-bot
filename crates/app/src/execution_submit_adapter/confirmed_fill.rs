@@ -81,7 +81,7 @@ fn record_confirmed_buy_fill_accounting(
     )?;
     Ok(ExecutionConfirmedFillAccountingOutcome {
         buy_opened: usize::from(result.outcome == ExecutionCanaryPositionRecordOutcome::Inserted),
-        buy_existing: usize::from(result.outcome == ExecutionCanaryPositionRecordOutcome::Existing),
+        buy_existing: usize::from(result.outcome != ExecutionCanaryPositionRecordOutcome::Inserted),
         position_id: Some(result.position.position_id),
         ..ExecutionConfirmedFillAccountingOutcome::default()
     })

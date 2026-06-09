@@ -1,8 +1,6 @@
 use crate::{
-    money::{sol_to_lamports_ceil, token_quantity_from_sql, u64_to_sql_i64},
-    shadow_lots::{reject_zero_raw_exact_qty, to_sql_conversion_error},
-    ExecutionCanaryOwnedPosition, ExecutionCanaryOwnedPositionRecordResult,
-    ExecutionCanaryPositionRecordOutcome, ExecutionCanarySellDecision, SqliteDiscoveryStore,
+    money::token_quantity_from_sql, shadow_lots::to_sql_conversion_error,
+    ExecutionCanaryOwnedPosition, ExecutionCanarySellDecision, SqliteDiscoveryStore,
     EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET, EXECUTION_CANARY_POSITION_CLOSE_CLOSED,
     EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED, EXECUTION_CANARY_POSITION_STATE_OPEN,
     EXECUTION_CANARY_SELL_DECISION_EXECUTE, EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT,
@@ -10,91 +8,13 @@ use crate::{
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
-use copybot_core_types::{Lamports, TokenQuantity};
+use copybot_core_types::Lamports;
 use rusqlite::{params, OptionalExtension};
 
 const EXECUTION_CANARY_STALE_WRITE_OFF_EXIT_PRICE_SOL: f64 = 0.0;
 const EXECUTION_CANARY_STALE_WRITE_OFF_DUST_QTY_EPSILON: f64 = 0.0;
 
 impl SqliteDiscoveryStore {
-    pub fn record_execution_canary_open_position(
-        &self,
-        order_id: &str,
-        token: &str,
-        qty: f64,
-        qty_exact: Option<TokenQuantity>,
-        cost_sol: f64,
-        opened_ts: DateTime<Utc>,
-    ) -> Result<ExecutionCanaryOwnedPositionRecordResult> {
-        validate_position_inputs(order_id, token, qty)?;
-        let qty_exact = reject_zero_raw_exact_qty(qty_exact, "execution canary open position")?;
-        let position_id = execution_canary_position_id(order_id);
-        let cost_lamports = sol_to_lamports_ceil(cost_sol, "execution canary position cost_sol")?;
-        let qty_raw = qty_exact.map(|value| value.raw().to_string());
-        let qty_decimals = qty_exact.map(|value| i64::from(value.decimals()));
-        let opened_ts_raw = opened_ts.to_rfc3339();
-        let inserted = self.with_immediate_transaction_retry(
-            "execution canary open position record",
-            |conn| {
-                let existing: Option<String> = conn
-                    .query_row(
-                        "SELECT position_id
-                         FROM positions
-                         WHERE position_id = ?1
-                         LIMIT 1",
-                        params![position_id],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .context("failed checking existing execution canary position")?;
-                if existing.is_some() {
-                    return Ok(false);
-                }
-
-                conn.execute(
-                    "INSERT INTO positions(
-                        position_id,
-                        token,
-                        qty,
-                        cost_sol,
-                        opened_ts,
-                        closed_ts,
-                        pnl_sol,
-                        state,
-                        cost_lamports,
-                        qty_raw,
-                        qty_decimals,
-                        pnl_lamports,
-                        accounting_bucket
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8, ?9, NULL, ?10)",
-                    params![
-                        position_id,
-                        token,
-                        qty,
-                        cost_sol,
-                        opened_ts_raw,
-                        EXECUTION_CANARY_POSITION_STATE_OPEN,
-                        u64_to_sql_i64("positions.cost_lamports", cost_lamports.as_u64())?,
-                        qty_raw,
-                        qty_decimals,
-                        EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
-                    ],
-                )
-                .context("failed inserting execution canary position")?;
-                Ok(true)
-            },
-        )?;
-        let position = self
-            .load_execution_canary_position(&position_id)?
-            .ok_or_else(|| anyhow!("missing execution canary position for order {order_id}"))?;
-        let outcome = if inserted {
-            ExecutionCanaryPositionRecordOutcome::Inserted
-        } else {
-            ExecutionCanaryPositionRecordOutcome::Existing
-        };
-        Ok(ExecutionCanaryOwnedPositionRecordResult { outcome, position })
-    }
-
     pub fn load_execution_canary_open_position(
         &self,
         token: &str,
@@ -247,34 +167,6 @@ impl SqliteDiscoveryStore {
         })
     }
 
-    fn load_execution_canary_position(
-        &self,
-        position_id: &str,
-    ) -> Result<Option<ExecutionCanaryOwnedPosition>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT
-                    position_id,
-                    token,
-                    qty,
-                    cost_sol,
-                    cost_lamports,
-                    qty_raw,
-                    qty_decimals,
-                    opened_ts,
-                    state,
-                    accounting_bucket
-                 FROM positions
-                 WHERE position_id = ?1
-                 LIMIT 1",
-            )
-            .context("failed to prepare execution canary position query")?;
-        stmt.query_row(params![position_id], execution_canary_position_from_row)
-            .optional()
-            .context("failed querying execution canary position")
-    }
-
     fn load_execution_canary_open_positions(&self) -> Result<Vec<ExecutionCanaryOwnedPosition>> {
         let mut stmt = self
             .conn
@@ -310,23 +202,6 @@ impl SqliteDiscoveryStore {
             .context("failed reading execution canary open positions")?;
         Ok(positions)
     }
-}
-
-fn validate_position_inputs(order_id: &str, token: &str, qty: f64) -> Result<()> {
-    if order_id.trim().is_empty() {
-        return Err(anyhow!(
-            "execution canary position order_id must not be empty"
-        ));
-    }
-    if token.trim().is_empty() {
-        return Err(anyhow!("execution canary position token must not be empty"));
-    }
-    if !qty.is_finite() || qty <= 0.0 {
-        return Err(anyhow!(
-            "invalid execution canary position qty={qty} (must be finite and > 0)"
-        ));
-    }
-    Ok(())
 }
 
 fn validate_slippage_inputs(slippage_bps: Option<f64>, soft_slippage_limit_bps: f64) -> Result<()> {
@@ -389,8 +264,4 @@ fn read_execution_canary_position_row(
         opened_ts,
         state: row.get(8).context("failed reading positions.state")?,
     })
-}
-
-fn execution_canary_position_id(order_id: &str) -> String {
-    format!("exec-canary-pos:{order_id}")
 }
