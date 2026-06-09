@@ -165,6 +165,8 @@ fn tiny_execution_gate_status_reports_runtime_not_startup_readiness() -> Result<
         .unwrap_or_else(|| panic!("tiny execution gate should exist: {:?}", report.error));
 
     assert_eq!(gate.status, "ready");
+    assert!(gate.live_trading_enabled);
+    assert_eq!(gate.live_trading_status, "yes_entries_and_sells_enabled");
     assert_eq!(gate.startup_readiness_status, "blocked");
     assert!(gate.startup_blocker_count > 0);
     assert_eq!(gate.blocker_count, 0);

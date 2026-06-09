@@ -16,6 +16,8 @@ const TINY_MAX_LATEST_METADATA_AGE_SECONDS: i64 = 6 * 60 * 60;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TinyExecutionGate {
     pub status: String,
+    pub live_trading_enabled: bool,
+    pub live_trading_status: String,
     pub startup_readiness_status: String,
     pub runtime_status: String,
     pub runtime_mode: String,
@@ -245,6 +247,11 @@ fn finish_gate(
 
     TinyExecutionGate {
         status: runtime.runtime_status.clone(),
+        live_trading_enabled: runtime.can_open_new_tiny_entries && runtime.can_process_tiny_sells,
+        live_trading_status: live_trading_status(
+            runtime.can_open_new_tiny_entries,
+            runtime.can_process_tiny_sells,
+        ),
         startup_readiness_status: startup_readiness_status.to_string(),
         runtime_status: runtime.runtime_status,
         runtime_mode: runtime.runtime_mode,
@@ -274,6 +281,16 @@ fn finish_gate(
         recent_realized_loss_sol_24h: recent_loss_sol_24h,
         checks,
     }
+}
+
+fn live_trading_status(can_open_entries: bool, can_process_sells: bool) -> String {
+    match (can_open_entries, can_process_sells) {
+        (true, true) => "yes_entries_and_sells_enabled",
+        (false, true) => "sell_only_entries_paused",
+        (true, false) => "entry_only_sell_blocked",
+        (false, false) => "blocked",
+    }
+    .to_string()
 }
 
 fn push_check(
