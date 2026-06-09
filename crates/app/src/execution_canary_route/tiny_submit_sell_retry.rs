@@ -1,6 +1,6 @@
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_quote_canary_helpers::SIDE_SELL;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
@@ -19,6 +19,7 @@ pub(super) const RETRY_TERMINAL_SELL_NO_ROUTE_REASON: &str =
 pub(super) const TERMINAL_SELL_NO_ROUTE_REPROBE_COOLDOWN_SECONDS: i64 = 600;
 const TERMINAL_SELL_WRITE_OFF_EXIT_PRICE_SOL: f64 = 0.0;
 const TERMINAL_SELL_WRITE_OFF_DUST_QTY_EPSILON: f64 = 1e-12;
+const TERMINAL_SELL_WRITE_OFF_MAX_POSITIONS_PER_TOKEN: usize = 32;
 
 pub(super) fn next_failed_sell_retry_event_id(
     config: &ExecutionConfig,
@@ -152,7 +153,7 @@ pub(super) fn hold_terminal_failed_sell_simulation(
         summary.skipped_reason = Some("terminal_failed_sell_side_mismatch");
         return Ok(summary);
     }
-    let Some(position) = store.load_execution_canary_open_position(&signal.token)? else {
+    let Some(_position) = store.load_execution_canary_open_position(&signal.token)? else {
         summary.sell_no_position = 1;
         summary.skipped_reason = Some("no_owned_position");
         return Ok(summary);
@@ -161,19 +162,12 @@ pub(super) fn hold_terminal_failed_sell_simulation(
         &order.order_id,
         "terminal_failed_sell_simulation_written_off",
     )?;
-    let close_result = store.close_execution_canary_open_position(
-        &signal.token,
-        position.qty,
-        position.qty_exact,
-        TERMINAL_SELL_WRITE_OFF_EXIT_PRICE_SOL,
-        TERMINAL_SELL_WRITE_OFF_DUST_QTY_EPSILON,
-        now,
-    )?;
+    let close_results = close_terminal_write_off_positions(store, &signal.token, now)?;
     record_terminal_write_off_summary(
         store,
         &mut summary,
         &terminal_order,
-        close_result,
+        close_results,
         "terminal_failed_sell_simulation_written_off",
     )?;
     Ok(summary)
@@ -198,7 +192,7 @@ pub(super) fn hold_terminal_failed_sell_no_route(
         summary.skipped_reason = Some("terminal_failed_sell_side_mismatch");
         return Ok(summary);
     }
-    let Some(position) = store.load_execution_canary_open_position(&signal.token)? else {
+    let Some(_position) = store.load_execution_canary_open_position(&signal.token)? else {
         summary.sell_no_position = 1;
         summary.skipped_reason = Some("no_owned_position");
         return Ok(summary);
@@ -207,56 +201,95 @@ pub(super) fn hold_terminal_failed_sell_no_route(
         &order.order_id,
         "terminal_failed_sell_no_route_written_off",
     )?;
-    let close_result = store.close_execution_canary_open_position(
-        &signal.token,
-        position.qty,
-        position.qty_exact,
-        TERMINAL_SELL_WRITE_OFF_EXIT_PRICE_SOL,
-        TERMINAL_SELL_WRITE_OFF_DUST_QTY_EPSILON,
-        now,
-    )?;
+    let close_results = close_terminal_write_off_positions(store, &signal.token, now)?;
     record_terminal_write_off_summary(
         store,
         &mut summary,
         &terminal_order,
-        close_result,
+        close_results,
         "terminal_failed_sell_no_route_written_off",
     )?;
     Ok(summary)
+}
+
+fn close_terminal_write_off_positions(
+    store: &SqliteStore,
+    token: &str,
+    now: DateTime<Utc>,
+) -> Result<Vec<ExecutionCanaryPositionCloseResult>> {
+    let mut close_results = Vec::new();
+    for _ in 0..TERMINAL_SELL_WRITE_OFF_MAX_POSITIONS_PER_TOKEN {
+        let Some(position) = store.load_execution_canary_open_position(token)? else {
+            return Ok(close_results);
+        };
+        close_results.push(store.close_execution_canary_open_position(
+            token,
+            position.qty,
+            position.qty_exact,
+            TERMINAL_SELL_WRITE_OFF_EXIT_PRICE_SOL,
+            TERMINAL_SELL_WRITE_OFF_DUST_QTY_EPSILON,
+            now,
+        )?);
+    }
+
+    if store.load_execution_canary_open_position(token)?.is_some() {
+        return Err(anyhow!(
+            "terminal sell write-off left more than {} open positions for token {token}",
+            TERMINAL_SELL_WRITE_OFF_MAX_POSITIONS_PER_TOKEN
+        ));
+    }
+    Ok(close_results)
 }
 
 fn record_terminal_write_off_summary(
     store: &SqliteStore,
     summary: &mut ExecutionCanaryStateMachineSummary,
     order: &ExecutionCanaryOrder,
-    close_result: ExecutionCanaryPositionCloseResult,
+    close_results: Vec<ExecutionCanaryPositionCloseResult>,
     reason: &'static str,
 ) -> Result<()> {
-    summary.last_close_status = Some(close_result.close_status.clone());
-    summary.last_closed_qty = close_result.closed_qty;
-    summary.last_pnl_sol = close_result.pnl_sol;
-    match close_result.close_status.as_str() {
-        EXECUTION_CANARY_POSITION_CLOSE_NO_POSITION => {
-            summary.sell_no_position = 1;
-            summary.skipped_reason = Some("no_owned_position");
+    if close_results.is_empty() {
+        summary.sell_no_position = 1;
+        summary.skipped_reason = Some("no_owned_position");
+        summary.open_positions = store.execution_canary_open_position_count()?;
+        summary.last_error = order.simulation_error.clone();
+        return Ok(());
+    }
+
+    summary.last_close_status = close_results
+        .last()
+        .map(|result| result.close_status.clone());
+    summary.last_closed_qty = close_results.iter().map(|result| result.closed_qty).sum();
+    summary.last_pnl_sol = close_results.iter().map(|result| result.pnl_sol).sum();
+
+    let mut unsupported = false;
+    for close_result in &close_results {
+        match close_result.close_status.as_str() {
+            EXECUTION_CANARY_POSITION_CLOSE_NO_POSITION => {
+                summary.sell_no_position = 1;
+                summary.skipped_reason = Some("no_owned_position");
+            }
+            EXECUTION_CANARY_POSITION_CLOSE_PARTIAL => {
+                summary.sell_closed += 1;
+                summary.sell_partial += 1;
+                summary.skipped_reason = Some(reason);
+            }
+            EXECUTION_CANARY_POSITION_CLOSE_CLOSED => {
+                summary.sell_closed += 1;
+                summary.skipped_reason = Some(reason);
+            }
+            EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED => {
+                summary.sell_closed += 1;
+                summary.sell_dust_closed += 1;
+                summary.skipped_reason = Some(reason);
+            }
+            _ => {
+                unsupported = true;
+            }
         }
-        EXECUTION_CANARY_POSITION_CLOSE_PARTIAL => {
-            summary.sell_closed = 1;
-            summary.sell_partial = 1;
-            summary.skipped_reason = Some(reason);
-        }
-        EXECUTION_CANARY_POSITION_CLOSE_CLOSED => {
-            summary.sell_closed = 1;
-            summary.skipped_reason = Some(reason);
-        }
-        EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED => {
-            summary.sell_closed = 1;
-            summary.sell_dust_closed = 1;
-            summary.skipped_reason = Some(reason);
-        }
-        _ => {
-            summary.skipped_reason = Some("unsupported_terminal_write_off_close_status");
-        }
+    }
+    if unsupported {
+        summary.skipped_reason = Some("unsupported_terminal_write_off_close_status");
     }
     summary.open_positions = store.execution_canary_open_position_count()?;
     summary.last_error = order.simulation_error.clone();

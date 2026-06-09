@@ -15,9 +15,6 @@ const WARN_ENTRY_QUOTE_LATENCY_MS: f64 = 250.0;
 const MAX_ENTRY_DECISION_DELAY_MS: f64 = 4_000.0;
 const WARN_ENTRY_DECISION_DELAY_MS: f64 = 2_500.0;
 
-const STATUS_READY: &str = "ready";
-const STATUS_READY_WITH_WARNINGS: &str = "ready_with_warnings";
-const STATUS_BLOCKED: &str = "blocked";
 const CHECK_PASS: &str = "pass";
 const CHECK_WARN: &str = "warn";
 const CHECK_BLOCK: &str = "block";
@@ -30,16 +27,13 @@ pub(crate) fn build_quote_readiness_gate(
     let sampled_market_trades = summary.total_closed_trades;
     let skip_rate_pct = percent(summary.skipped_trades, sampled_market_trades);
     let unknown_rate_pct = percent(summary.unknown_trades, sampled_market_trades);
+    let buy_shadow_gate = &summary.buy_shadow_gate;
     let entry_shadow_gate_drop_rate_pct = percent(
-        summary
-            .buy_shadow_gate
-            .quote_would_execute_shadow_dropped_events,
-        summary.buy_shadow_gate.quote_would_execute_events,
+        buy_shadow_gate.quote_would_execute_shadow_dropped_events,
+        buy_shadow_gate.quote_would_execute_events,
     );
-    let quote_win_rate_pct = percent(
-        summary.quote_win_count,
-        summary.quote_win_count + summary.quote_loss_count,
-    );
+    let quote_outcomes = summary.quote_win_count + summary.quote_loss_count;
+    let quote_win_rate_pct = percent(summary.quote_win_count, quote_outcomes);
     let non_ok_priority_fee_rate_pct = non_ok_priority_fee_rate_pct(summary);
     let avg_entry_quote_latency_ms = summary.quote_diagnostics.entry_all.quote_latency_ms_avg;
     let avg_entry_decision_delay_ms = summary.quote_diagnostics.entry_all.decision_delay_ms_avg;
@@ -73,9 +67,9 @@ pub(crate) fn build_quote_readiness_gate(
         summary.shadow_close_breakdown.stale_rug_like_closed_trades,
         summary.shadow_close_breakdown.stale_rug_like_pnl_sol,
     ));
-    checks.push(force_exit_check(
-        summary.force_exit_counted_trades + summary.force_exit_skipped_entry_trades,
-    ));
+    let force_exit_trades =
+        summary.force_exit_counted_trades + summary.force_exit_skipped_entry_trades;
+    checks.push(force_exit_check(force_exit_trades));
 
     let blocker_count = checks
         .iter()
@@ -86,11 +80,11 @@ pub(crate) fn build_quote_readiness_gate(
         .filter(|check| check.status == CHECK_WARN)
         .count() as u64;
     let status = if blocker_count > 0 {
-        STATUS_BLOCKED
+        "blocked"
     } else if warning_count > 0 {
-        STATUS_READY_WITH_WARNINGS
+        "ready_with_warnings"
     } else {
-        STATUS_READY
+        "ready"
     };
 
     ExecutionCanaryQuoteReadinessGate {
@@ -149,11 +143,11 @@ fn open_position_check(open_position_count: u64) -> ExecutionCanaryQuoteReadines
         if open_position_count == 0 {
             CHECK_PASS
         } else {
-            CHECK_BLOCK
+            CHECK_WARN
         },
         open_position_count.to_string(),
-        "0",
-        "tiny test should start from a clean canary-owned position state",
+        "watch",
+        "ongoing tiny execution may hold canary-owned positions; enforce the runtime cap separately",
     )
 }
 

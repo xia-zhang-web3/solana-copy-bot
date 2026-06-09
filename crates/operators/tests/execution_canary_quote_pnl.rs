@@ -132,6 +132,14 @@ fn execution_canary_quote_pnl_gate_checks_tiny_config_preflight() -> Result<()> 
         "200000000",
         "100",
     ))?;
+    store.record_execution_canary_open_position(
+        "existing-live-open",
+        "StillOpenToken",
+        10.0,
+        None,
+        0.01,
+        ts("2026-05-01T00:00:00Z"),
+    )?;
     drop(store);
     fs::write(&submit_token_path, "test-token")?;
 
@@ -149,6 +157,8 @@ fn execution_canary_quote_pnl_gate_checks_tiny_config_preflight() -> Result<()> 
     assert_eq!(report.reason_class, "execution_canary_quote_pnl_loaded");
     assert!(report.config_loaded);
     assert!(report.db_opened);
+    assert!(gate.can_continue_tiny_execution);
+    assert_eq!(gate.runtime_blocker_count, 0);
     assert_gate_check(gate, "execution_disabled", "pass");
     assert_gate_check(gate, "canary_enabled", "pass");
     assert_gate_check(gate, "canary_dry_run", "pass");
@@ -181,6 +191,8 @@ fn execution_canary_quote_pnl_gate_checks_tiny_config_preflight() -> Result<()> 
     assert_gate_check(gate, "swap_instructions_dry_run_enabled", "pass");
     assert_gate_check(gate, "swap_transaction_dry_run_enabled", "pass");
     assert_gate_check(gate, "priority_fee_canary_enabled", "pass");
+    assert_gate_check(gate, "open_canary_positions", "pass");
+    assert_gate_check_value(gate, "open_canary_positions", "1");
     Ok(())
 }
 
@@ -224,6 +236,8 @@ fn execution_canary_quote_pnl_gate_blocks_keypair_secret_public_mismatch() -> Re
     assert_gate_check(gate, "execution_signer_keypair_format", "pass");
     assert_gate_check(gate, "execution_signer_keypair_pubkey_match", "pass");
     assert_gate_check(gate, "execution_signer_can_sign_preflight", "block");
+    assert!(!gate.can_continue_tiny_execution);
+    assert_eq!(gate.runtime_blocker_count, 1);
     Ok(())
 }
 
@@ -318,6 +332,7 @@ path = "{}"
 enabled = false
 canary_enabled = true
 canary_dry_run = true
+canary_tiny_submit_enabled = true
 canary_route = "metis-swap-instructions-dry-run"
 canary_buy_size_sol = 0.01
 canary_max_open_positions = 1

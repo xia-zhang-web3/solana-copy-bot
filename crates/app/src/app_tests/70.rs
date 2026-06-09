@@ -120,34 +120,7 @@ async fn terminal_no_route_sell_writes_off_open_position_after_max_build_attempt
         crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN,
         now + chrono::Duration::seconds(3),
     )?;
-    store.mark_execution_canary_failed(
-        &reserve.order.order_id,
-        now + chrono::Duration::seconds(4),
-        copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,
-        "owned_sell_quote_failed: NO_ROUTES_FOUND",
-    )?;
-    store.mark_execution_canary_failed_build_retry_candidate(
-        &reserve.order.order_id,
-        now + chrono::Duration::seconds(5),
-        "retry_failed_sell_with_owned_position_amount",
-    )?;
-    store.mark_execution_canary_failed(
-        &reserve.order.order_id,
-        now + chrono::Duration::seconds(6),
-        copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,
-        "owned_sell_quote_failed: NO_ROUTES_FOUND",
-    )?;
-    store.mark_execution_canary_failed_build_retry_candidate(
-        &reserve.order.order_id,
-        now + chrono::Duration::seconds(7),
-        "retry_failed_sell_with_owned_position_amount",
-    )?;
-    store.mark_execution_canary_failed(
-        &reserve.order.order_id,
-        now + chrono::Duration::seconds(8),
-        copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,
-        "owned_sell_quote_failed: NO_ROUTES_FOUND",
-    )?;
+    mark_no_route_failures_to_terminal(&store, &reserve.order.order_id, now)?;
     let config = retry_candidate_sell_config("http://127.0.0.1:9");
 
     let summary = crate::execution_canary_route::process_tiny_submit_sell_quote_event_for_route(
@@ -193,6 +166,81 @@ async fn terminal_no_route_sell_writes_off_open_position_after_max_build_attempt
 }
 
 #[tokio::test]
+async fn terminal_no_route_sell_writes_off_duplicate_open_positions_for_token() -> Result<()> {
+    let db_path = unique_retry_candidate_sell_test_path("terminal-no-route-duplicates");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let token = "TokenMint";
+    let signal = retry_candidate_sell_signal(token, now + chrono::Duration::seconds(1));
+    store.record_execution_canary_open_position(
+        "recovery-orphan:TokenMint:first",
+        token,
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        now,
+    )?;
+    drop_single_open_position_guard(&db_path)?;
+    insert_duplicate_open_position(
+        &db_path,
+        "exec-canary-pos:recovery-orphan:TokenMint:second",
+        token,
+        12.0,
+        12_000,
+        3,
+        0.02,
+        now + chrono::Duration::seconds(1),
+    )?;
+    store.insert_copy_signal(&signal)?;
+    store.record_execution_quote_canary_event(&retry_candidate_sell_quote(
+        "quote:close:terminal-no-route-duplicates",
+        &signal,
+        now + chrono::Duration::seconds(2),
+    ))?;
+    let reserve = store.reserve_execution_canary_order(
+        &signal.signal_id,
+        crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN,
+        now + chrono::Duration::seconds(3),
+    )?;
+    mark_no_route_failures_to_terminal(&store, &reserve.order.order_id, now)?;
+    let config = retry_candidate_sell_config("http://127.0.0.1:9");
+
+    let summary = crate::execution_canary_route::process_tiny_submit_sell_quote_event_for_route(
+        &config,
+        &store,
+        "quote:close:terminal-no-route-duplicates",
+        now + chrono::Duration::seconds(9),
+    )
+    .await?
+    .expect("terminal no-route duplicate positions should be processed");
+    let order = store
+        .load_execution_canary_order(&reserve.order.order_id)?
+        .expect("terminal no-route order should remain recorded");
+
+    assert_eq!(
+        summary.skipped_reason,
+        Some("terminal_failed_sell_no_route_written_off")
+    );
+    assert_eq!(summary.sell_closed, 2);
+    assert_eq!(summary.open_positions, 0);
+    assert!((summary.last_closed_qty - 22.0).abs() < 1e-9);
+    assert!((summary.last_pnl_sol + 0.03).abs() < 1e-9);
+    assert_eq!(
+        order.err_code.as_deref(),
+        Some(copybot_storage_core::EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE)
+    );
+    let realized_loss =
+        store.execution_canary_realized_loss_sol_since(now - chrono::Duration::hours(1))?;
+    assert_eq!(realized_loss, 0.03);
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
 async fn terminal_no_route_sell_write_off_stops_reprobe_after_cooldown() -> Result<()> {
     let db_path = unique_retry_candidate_sell_test_path("terminal-no-route-reprobe");
     let mut store = SqliteStore::open(&db_path)?;
@@ -222,21 +270,7 @@ async fn terminal_no_route_sell_write_off_stops_reprobe_after_cooldown() -> Resu
         crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN,
         now + chrono::Duration::seconds(3),
     )?;
-    for offset in [4, 6, 8] {
-        store.mark_execution_canary_failed(
-            &reserve.order.order_id,
-            now + chrono::Duration::seconds(offset),
-            copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,
-            "owned_sell_quote_failed: NO_ROUTES_FOUND",
-        )?;
-        if offset < 8 {
-            store.mark_execution_canary_failed_build_retry_candidate(
-                &reserve.order.order_id,
-                now + chrono::Duration::seconds(offset + 1),
-                "retry_failed_sell_with_owned_position_amount",
-            )?;
-        }
-    }
+    mark_no_route_failures_to_terminal(&store, &reserve.order.order_id, now)?;
     let terminal_config = retry_candidate_sell_config("http://127.0.0.1:9");
     crate::execution_canary_route::process_tiny_submit_sell_quote_event_for_route(
         &terminal_config,
@@ -392,6 +426,66 @@ fn retry_candidate_sell_quote(
     }
 }
 
+fn mark_no_route_failures_to_terminal(
+    store: &SqliteStore,
+    order_id: &str,
+    now: chrono::DateTime<Utc>,
+) -> Result<()> {
+    for offset in [4, 6, 8] {
+        store.mark_execution_canary_failed(
+            order_id,
+            now + chrono::Duration::seconds(offset),
+            copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,
+            "owned_sell_quote_failed: NO_ROUTES_FOUND",
+        )?;
+        if offset < 8 {
+            store.mark_execution_canary_failed_build_retry_candidate(
+                order_id,
+                now + chrono::Duration::seconds(offset + 1),
+                "retry_failed_sell_with_owned_position_amount",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn drop_single_open_position_guard(db_path: &Path) -> Result<()> {
+    let conn = rusqlite::Connection::open(db_path)?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_positions_one_open_token_bucket;")?;
+    Ok(())
+}
+
+fn insert_duplicate_open_position(
+    db_path: &Path,
+    position_id: &str,
+    token: &str,
+    qty: f64,
+    qty_raw: u64,
+    qty_decimals: u8,
+    cost_sol: f64,
+    opened_ts: chrono::DateTime<Utc>,
+) -> Result<()> {
+    let conn = rusqlite::Connection::open(db_path)?;
+    conn.execute(
+        "INSERT INTO positions(
+            position_id, token, qty, cost_sol, opened_ts, closed_ts, pnl_sol,
+            state, cost_lamports, qty_raw, qty_decimals, pnl_lamports, accounting_bucket
+        ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7, ?8, ?9, NULL, ?10)",
+        rusqlite::params![
+            position_id,
+            token,
+            qty,
+            cost_sol,
+            opened_ts.to_rfc3339(),
+            copybot_storage_core::EXECUTION_CANARY_POSITION_STATE_OPEN,
+            (cost_sol * 1_000_000_000.0).round() as i64,
+            qty_raw.to_string(),
+            i64::from(qty_decimals),
+            copybot_storage_core::EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+        ],
+    )?;
+    Ok(())
+}
 fn unique_retry_candidate_sell_test_path(name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

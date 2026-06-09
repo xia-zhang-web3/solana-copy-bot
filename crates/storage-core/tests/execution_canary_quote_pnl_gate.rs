@@ -105,6 +105,81 @@ fn quote_readiness_gate_ignores_skipped_priority_fee_statuses() -> Result<()> {
 }
 
 #[test]
+fn quote_readiness_gate_warns_for_open_positions_during_live_tiny() -> Result<()> {
+    let store = open_migrated_store("execution-canary-quote-pnl-gate-open-position")?;
+    let opened = ts("2026-06-02T13:00:00Z");
+
+    for index in 0..30 {
+        let token = format!("LiveOpenToken{index}");
+        let signal_id = format!("sell-live-open-{index}");
+        let trade_opened = opened + Duration::seconds(index);
+        let closed = trade_opened + Duration::seconds(30);
+        store.insert_shadow_closed_trade_exact(
+            &signal_id,
+            "leader-wallet",
+            &token,
+            50.0,
+            Some(TokenQuantity::new(50, 0)),
+            0.10,
+            0.13,
+            0.03,
+            trade_opened,
+            closed,
+        )?;
+        let close_id = store
+            .list_execution_quote_canary_close_candidates_for_signal(&signal_id, 10)?
+            .into_iter()
+            .next()
+            .expect("close candidate")
+            .id;
+        store.record_execution_quote_canary_event(&quote_event(
+            format!("quote:buy:live-open:{index}"),
+            Some(format!("buy-live-open-{index}")),
+            None,
+            &token,
+            "buy",
+            trade_opened,
+            "would_execute",
+            "ok",
+        ))?;
+        store.record_execution_quote_canary_event(&quote_event(
+            format!("quote:sell:live-open:{index}"),
+            Some(format!("sell:{close_id}")),
+            Some(close_id),
+            &token,
+            "sell",
+            trade_opened + Duration::seconds(30),
+            "would_execute",
+            "ok",
+        ))?;
+    }
+    store.record_execution_canary_open_position(
+        "existing-live-open",
+        "StillOpenToken",
+        10.0,
+        Some(TokenQuantity::new(10, 0)),
+        0.01,
+        opened,
+    )?;
+
+    let summary = store.execution_canary_quote_pnl_summary(
+        opened + Duration::seconds(120),
+        opened - Duration::seconds(1),
+        100,
+    )?;
+
+    assert_eq!(summary.readiness_gate.status, "ready_with_warnings");
+    assert!(summary.readiness_gate.can_start_tiny_execution);
+    assert_eq!(summary.readiness_gate.blocker_count, 0);
+    assert!(summary
+        .readiness_gate
+        .checks
+        .iter()
+        .any(|check| check.name == "canary_open_positions" && check.status == "warn"));
+    Ok(())
+}
+
+#[test]
 fn quote_readiness_gate_reports_candidate_threshold_without_unblocking() -> Result<()> {
     let store = open_migrated_store("execution-canary-quote-pnl-gate-candidate")?;
     let opened = ts("2026-06-02T14:00:00Z");

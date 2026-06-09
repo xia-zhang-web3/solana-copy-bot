@@ -16,7 +16,9 @@ const TINY_MAX_LATEST_METADATA_AGE_SECONDS: i64 = 6 * 60 * 60;
 pub struct TinyExecutionGate {
     pub status: String,
     pub can_start_tiny_execution: bool,
+    pub can_continue_tiny_execution: bool,
     pub blocker_count: u64,
+    pub runtime_blocker_count: u64,
     pub warning_count: u64,
     pub quote_gate_status: String,
     pub latest_order_id: Option<String>,
@@ -113,13 +115,19 @@ pub(crate) fn build_tiny_execution_gate(
         format!("<={TINY_MAX_LATEST_METADATA_AGE_SECONDS}s"),
         "latest quote/build metadata must be recent enough for the gate",
     );
+    let open_position_limit = config.map(|config| u64::from(config.canary_max_open_positions));
+    let open_position_ok = open_position_limit
+        .map(|limit| summary.readiness_gate.open_position_count <= limit)
+        .unwrap_or(summary.readiness_gate.open_position_count == 0);
     push_check(
         &mut checks,
         "open_canary_positions",
-        summary.readiness_gate.open_position_count == 0,
+        open_position_ok,
         summary.readiness_gate.open_position_count.to_string(),
-        "0".to_string(),
-        "tiny execution should start from a flat canary position book",
+        open_position_limit
+            .map(|limit| format!("<={limit}"))
+            .unwrap_or_else(|| "0".to_string()),
+        "open tiny positions must stay within the configured live cap",
     );
     push_submit_risk_checks(&mut checks, submit_risk);
     let recent_loss_cap_sol = config
@@ -208,6 +216,10 @@ fn finish_gate(
         .iter()
         .filter(|check| check.status == "block")
         .count() as u64;
+    let runtime_blocker_count = checks
+        .iter()
+        .filter(|check| check.status == "block" && is_tiny_runtime_blocker(&check.name))
+        .count() as u64;
     let warning_count = checks.iter().filter(|check| check.status == "warn").count() as u64;
     let status = if blocker_count > 0 {
         "blocked"
@@ -220,7 +232,9 @@ fn finish_gate(
     TinyExecutionGate {
         status: status.to_string(),
         can_start_tiny_execution: blocker_count == 0,
+        can_continue_tiny_execution: runtime_blocker_count == 0,
         blocker_count,
+        runtime_blocker_count,
         warning_count,
         quote_gate_status: summary.readiness_gate.status.clone(),
         latest_order_id: latest_order.map(|order| order.order_id.clone()),
@@ -234,6 +248,41 @@ fn finish_gate(
         recent_realized_loss_sol_24h: recent_loss_sol_24h,
         checks,
     }
+}
+
+fn is_tiny_runtime_blocker(name: &str) -> bool {
+    matches!(
+        name,
+        "execution_disabled"
+            | "canary_enabled"
+            | "canary_dry_run"
+            | "canary_tiny_submit_enabled"
+            | "canary_wallet_pubkey"
+            | "canary_buy_size"
+            | "canary_max_open_positions"
+            | "canary_daily_loss_cap"
+            | "canary_kill_switch_inactive"
+            | "execution_signer_pubkey"
+            | "execution_signer_matches_canary_wallet"
+            | "execution_signer_keypair_path"
+            | "execution_signer_keypair_file"
+            | "execution_signer_keypair_format"
+            | "execution_signer_keypair_pubkey_match"
+            | "execution_signer_can_sign_preflight"
+            | "submit_adapter_http_url"
+            | "submit_timeout_ms"
+            | "max_confirm_seconds"
+            | "max_submit_attempts"
+            | "simulate_before_submit"
+            | "pretrade_min_sol_reserve"
+            | "pretrade_max_priority_fee_lamports"
+            | "quote_canary_enabled"
+            | "swap_instructions_dry_run_enabled"
+            | "swap_transaction_dry_run_enabled"
+            | "priority_fee_canary_enabled"
+            | "open_canary_positions"
+            | "recent_realized_loss_24h"
+    )
 }
 
 fn push_check(
