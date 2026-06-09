@@ -269,22 +269,31 @@ impl ExecutionQuoteCanaryRunner {
             .list_execution_quote_canary_close_candidates(since, batch_limit)
             .context("failed loading execution quote canary close candidates")?;
         summary.close_candidates = closes.len();
-        if closes.is_empty() {
-            return Ok(());
+        if !closes.is_empty() {
+            let priority = self
+                .priority_fee_sample_if_needed(priority_fee_sample)
+                .await;
+            for close in closes {
+                let bundle = match self
+                    .build_close_quote_event(store, &close, now, priority)
+                    .await
+                {
+                    Ok(bundle) => bundle,
+                    Err(error) => {
+                        QuoteEventBundle::event_only(close_error_event(&close, now, &error))
+                    }
+                };
+                self.record_close_event(store, bundle, summary)?;
+            }
         }
-        let priority = self
-            .priority_fee_sample_if_needed(priority_fee_sample)
-            .await;
-        for close in closes {
-            let bundle = match self
-                .build_close_quote_event(store, &close, now, priority)
-                .await
-            {
-                Ok(bundle) => bundle,
-                Err(error) => QuoteEventBundle::event_only(close_error_event(&close, now, &error)),
-            };
-            self.record_close_event(store, bundle, summary)?;
-        }
+        self.process_close_priority_fee_retry_candidates(
+            store,
+            now,
+            batch_limit,
+            priority_fee_sample,
+            summary,
+        )
+        .await?;
         Ok(())
     }
 

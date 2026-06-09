@@ -219,6 +219,65 @@ impl SqliteDiscoveryStore {
             .context("failed reading execution quote canary close retry events")
     }
 
+    pub fn list_execution_quote_canary_close_priority_fee_retry_event_ids(
+        &self,
+        since: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<String>> {
+        ensure_execution_quote_canary_tables(self)?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT event.event_id
+                 FROM execution_quote_canary_events AS event
+                 WHERE lower(event.side) = 'sell'
+                   AND event.request_ts >= ?1
+                   AND event.signal_id IS NOT NULL
+                   AND TRIM(event.signal_id) <> ''
+                   AND event.quote_status = ?2
+                   AND event.decision_status IN (?3, ?4)
+                   AND (
+                        event.priority_fee_status IS NULL
+                        OR event.priority_fee_status != ?2
+                        OR event.priority_fee_lamports IS NULL
+                   )
+                   AND EXISTS (
+                        SELECT 1
+                        FROM positions AS pos
+                        JOIN orders AS buy_order
+                          ON pos.position_id = 'exec-canary-pos:' || buy_order.order_id
+                        WHERE pos.token = event.token
+                          AND pos.accounting_bucket = ?5
+                          AND pos.state = ?6
+                          AND event.request_ts >= buy_order.submit_ts
+                   )
+                   AND NOT EXISTS (
+                        SELECT 1
+                        FROM orders
+                        WHERE orders.signal_id = event.signal_id
+                   )
+                 ORDER BY event.request_ts ASC, event.event_id ASC
+                 LIMIT ?7",
+            )
+            .context("failed to prepare execution quote canary close priority fee retry query")?;
+        let rows = stmt
+            .query_map(
+                params![
+                    since.to_rfc3339(),
+                    QUOTE_STATUS_OK,
+                    DECISION_WOULD_EXECUTE,
+                    DECISION_WOULD_FORCE_EXIT,
+                    EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+                    EXECUTION_CANARY_POSITION_STATE_OPEN,
+                    i64::from(limit.max(1)),
+                ],
+                |row| row.get(0),
+            )
+            .context("failed querying execution quote canary close priority fee retries")?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed reading execution quote canary close priority fee retry events")
+    }
+
     pub fn list_execution_quote_canary_owned_stale_close_candidates(
         &self,
         since: DateTime<Utc>,
