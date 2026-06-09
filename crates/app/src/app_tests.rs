@@ -127,6 +127,8 @@ mod execution_state_machine_tiny_submit_sell_route;
 mod execution_state_machine_tiny_submit_terminal_write_off;
 #[path = "app_tests/65.rs"]
 mod execution_state_machine_tiny_submit_timeout_route;
+#[path = "app_tests/80.rs"]
+mod execution_swap_instructions_soft_failure_contract;
 #[path = "app_tests/42.rs"]
 mod priority_fee_canary_transient;
 #[path = "app_tests/36_restart_recovery.rs"]

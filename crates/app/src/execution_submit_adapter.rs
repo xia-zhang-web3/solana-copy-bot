@@ -1,5 +1,6 @@
 use crate::execution_pump_fun_swap_instructions_http::fetch_pump_fun_swap_instructions_dry_run;
 use crate::execution_pump_fun_swap_transaction_http::fetch_pump_fun_swap_transaction_dry_run;
+use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID;
 use crate::execution_serialized_transaction_slot::ExecutionSerializedTransactionPayloadSlot;
 use crate::execution_signing_envelope::{
@@ -12,6 +13,7 @@ use crate::execution_swap_blueprint::{
     build_execution_swap_blueprint, validate_execution_swap_blueprint_for_simulation,
     ExecutionSwapBlueprint,
 };
+use crate::execution_swap_http_request::is_missing_account_error_text;
 use crate::execution_swap_instructions_http::fetch_swap_instructions_dry_run;
 use crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run;
 use anyhow::Result;
@@ -356,7 +358,15 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 });
             }
             let instructions_proof =
-                fetch_swap_instructions_dry_run(&self.http, &self.config, plan).await?;
+                match fetch_swap_instructions_dry_run(&self.http, &self.config, plan).await {
+                    Ok(proof) => proof,
+                    Err(error) => {
+                        let Some(proof) = soft_swap_instructions_failure_proof(&error) else {
+                            return Err(error);
+                        };
+                        Some(proof)
+                    }
+                };
             let transaction_dry_run =
                 fetch_swap_transaction_dry_run(&self.http, &self.config, plan).await?;
             if let Some(transaction) = transaction_dry_run.as_ref() {
@@ -411,4 +421,15 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
         }
         self.plan_submit(request)
     }
+}
+
+fn soft_swap_instructions_failure_proof(error: &anyhow::Error) -> Option<String> {
+    let message = error.to_string();
+    if !is_missing_account_error_text(&message) {
+        return None;
+    }
+    Some(format!(
+        "metis_swap_instructions_missing_account_soft_failed error={}",
+        truncate_for_log(&message, 180)
+    ))
 }

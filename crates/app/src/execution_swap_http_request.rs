@@ -30,6 +30,10 @@ pub(crate) fn is_missing_account_simulation_error(value: &Value) -> bool {
     let Some(error) = simulation_error_text(value) else {
         return false;
     };
+    is_missing_account_error_text(&error)
+}
+
+pub(crate) fn is_missing_account_error_text(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     lower.contains("account required") && lower.contains("missing")
         || lower.contains("not enough account")
