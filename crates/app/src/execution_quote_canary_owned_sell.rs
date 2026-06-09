@@ -16,8 +16,8 @@ use copybot_storage_core::{
     SqliteStore,
 };
 
-const OWNED_SELL_SIGNAL_LOOKBACK_SECONDS: i64 = 6 * 60 * 60;
-const OWNED_STALE_CLOSE_LOOKBACK_SECONDS: i64 = 6 * 60 * 60;
+const OWNED_SELL_SIGNAL_LOOKBACK_SECONDS: i64 = 24 * 60 * 60;
+const OWNED_STALE_CLOSE_LOOKBACK_SECONDS: i64 = 24 * 60 * 60;
 
 impl ExecutionQuoteCanaryRunner {
     pub(super) async fn process_owned_sell_signal_candidates(

@@ -11,13 +11,14 @@ async fn orphan_position_recovery_restores_only_known_execution_token() -> Resul
         "/../../migrations"
     )))?;
     let now = Utc::now();
+    let historical_opened_ts = now - chrono::Duration::minutes(20);
     store.record_execution_canary_open_position(
         "old-confirmed-buy",
         "KnownMint",
         10.0,
         Some(TokenQuantity::new(10_000, 3)),
         0.01,
-        now - chrono::Duration::minutes(20),
+        historical_opened_ts,
     )?;
     store.close_execution_canary_open_position(
         "KnownMint",
@@ -48,10 +49,68 @@ async fn orphan_position_recovery_restores_only_known_execution_token() -> Resul
     assert_eq!(summary.open_positions, 1);
     assert_eq!(known.qty_exact, Some(TokenQuantity::new(12_345, 3)));
     assert_eq!(known.cost_lamports, Some(Lamports::new(10_000_000)));
+    assert_eq!(known.opened_ts, historical_opened_ts);
     assert!(unknown.is_none());
 
     let _ = std::fs::remove_file(db_path);
     config.priority_fee_canary_rpc_url.clear();
+    Ok(())
+}
+
+#[tokio::test]
+async fn orphan_position_recovery_retimestamps_existing_recovery_position() -> Result<()> {
+    let db_path = unique_orphan_recovery_test_path("retimestamp-existing");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let historical_opened_ts = now - chrono::Duration::hours(8);
+    store.record_execution_canary_open_position(
+        "old-confirmed-buy",
+        "KnownMint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        historical_opened_ts,
+    )?;
+    store.close_execution_canary_open_position(
+        "KnownMint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.001,
+        1e-9,
+        now - chrono::Duration::hours(7),
+    )?;
+    store.record_execution_canary_open_position(
+        "recovery-orphan:KnownMint:12345:manual",
+        "KnownMint",
+        12.345,
+        Some(TokenQuantity::new(12_345, 3)),
+        0.01,
+        now,
+    )?;
+    let (rpc_url, server) = serve_orphan_token_accounts().await?;
+    let config = orphan_recovery_config(&rpc_url);
+
+    let summary =
+        crate::execution_canary_route::process_tiny_submit_orphan_position_recovery_sweep(
+            &config, &store, now,
+        )
+        .await?
+        .expect("orphan recovery should run");
+    server.await??;
+    let known = store
+        .load_execution_canary_open_position("KnownMint")?
+        .expect("known token should stay open");
+
+    assert_eq!(summary.orphan_recovery_checked, 2);
+    assert_eq!(summary.orphan_recovery_recovered, 0);
+    assert_eq!(summary.orphan_recovery_skipped_no_history, 1);
+    assert_eq!(known.opened_ts, historical_opened_ts);
+
+    let _ = std::fs::remove_file(db_path);
     Ok(())
 }
 

@@ -65,6 +65,58 @@ impl SqliteDiscoveryStore {
         Ok(found.is_some())
     }
 
+    pub fn execution_canary_recovery_opened_ts(
+        &self,
+        token: &str,
+    ) -> Result<Option<DateTime<Utc>>> {
+        let opened_ts: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT opened_ts
+                 FROM positions
+                 WHERE token = ?1
+                   AND accounting_bucket = ?2
+                   AND position_id NOT LIKE 'exec-canary-pos:recovery-orphan:%'
+                 ORDER BY opened_ts ASC, position_id ASC
+                 LIMIT 1",
+                params![token, EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed loading execution canary recovery opened_ts")?;
+        opened_ts
+            .as_deref()
+            .map(|raw| parse_position_ts(raw, "positions.opened_ts"))
+            .transpose()
+    }
+
+    pub fn retimestamp_execution_canary_orphan_open_position(
+        &self,
+        token: &str,
+        opened_ts: DateTime<Utc>,
+    ) -> Result<bool> {
+        let opened_ts = opened_ts.to_rfc3339();
+        let written = self
+            .execute_with_retry(|conn| {
+                conn.execute(
+                    "UPDATE positions
+                     SET opened_ts = ?3
+                     WHERE token = ?1
+                       AND accounting_bucket = ?2
+                       AND state = ?4
+                       AND position_id LIKE 'exec-canary-pos:recovery-orphan:%'",
+                    params![
+                        token,
+                        EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+                        opened_ts,
+                        EXECUTION_CANARY_POSITION_STATE_OPEN,
+                    ],
+                )
+            })
+            .context("failed retimestamping execution canary orphan position")?;
+        Ok(written > 0)
+    }
+
     pub fn execution_canary_open_position_count(&self) -> Result<u64> {
         let count: i64 = self
             .conn
@@ -145,6 +197,12 @@ impl SqliteDiscoveryStore {
             slippage_bps,
         })
     }
+}
+
+fn parse_position_ts(raw: &str, label: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|dt| dt.with_timezone(&Utc))
+        .with_context(|| format!("invalid {label} value: {raw}"))
 }
 
 fn validate_slippage_inputs(slippage_bps: Option<f64>, soft_slippage_limit_bps: f64) -> Result<()> {

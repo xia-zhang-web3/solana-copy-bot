@@ -51,16 +51,24 @@ pub(super) async fn process_tiny_submit_orphan_position_recovery_for_route(
         if summary.orphan_recovery_recovered >= limit {
             break;
         }
-        if store
-            .load_execution_canary_open_position(&balance.mint)?
-            .is_some()
-        {
+        if let Some(position) = store.load_execution_canary_open_position(&balance.mint)? {
+            if position
+                .position_id
+                .starts_with("exec-canary-pos:recovery-orphan:")
+            {
+                if let Some(opened_ts) = store.execution_canary_recovery_opened_ts(&balance.mint)? {
+                    store.retimestamp_execution_canary_orphan_open_position(
+                        &balance.mint,
+                        opened_ts,
+                    )?;
+                }
+            }
             continue;
         }
-        if !store.has_execution_canary_position_history(&balance.mint)? {
+        let Some(opened_ts) = store.execution_canary_recovery_opened_ts(&balance.mint)? else {
             summary.orphan_recovery_skipped_no_history += 1;
             continue;
-        }
+        };
         let qty = TokenQuantity::new(balance.raw, balance.decimals);
         let order_id = recovery_order_id(&balance, now);
         let result = store.record_execution_canary_open_position(
@@ -69,7 +77,7 @@ pub(super) async fn process_tiny_submit_orphan_position_recovery_for_route(
             qty.as_f64(),
             Some(qty),
             config.canary_buy_size_sol.max(0.0),
-            now,
+            opened_ts,
         )?;
         if result.outcome != ExecutionCanaryPositionRecordOutcome::Existing {
             summary.orphan_recovery_recovered += 1;
