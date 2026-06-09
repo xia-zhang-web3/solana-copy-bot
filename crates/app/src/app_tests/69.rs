@@ -15,6 +15,7 @@ async fn fresh_submit_quote_replaces_pump_fun_metadata_with_generic_metis() -> R
         assert!(request.contains("outputMint=TokenMint"));
         assert!(request.contains("amount=10000000"));
         assert!(request.contains("slippageBps=1000"));
+        assert!(request.contains("instructionVersion=V2"));
         write_http_json(
             &mut socket,
             r#"{"inputMint":"So11111111111111111111111111111111111111112","inAmount":"10000000","outputMint":"TokenMint","outAmount":"246912","otherAmountThreshold":"222220","swapMode":"ExactIn","slippageBps":1000,"platformFee":null,"priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,

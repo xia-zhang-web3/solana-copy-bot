@@ -132,7 +132,7 @@ impl Default for ExecutionConfig {
             quote_canary_api_key: String::new(),
             quote_canary_timeout_ms: 1_500,
             quote_canary_public_parallel_enabled: false,
-            quote_canary_public_base_url: "https://public.jupiterapi.com".to_string(),
+            quote_canary_public_base_url: "https://lite-api.jup.ag/swap/v1".to_string(),
             quote_canary_pump_fun_parallel_enabled: false,
             swap_instructions_dry_run_enabled: false,
             swap_transaction_dry_run_enabled: false,

@@ -100,7 +100,7 @@ fn execution_defaults_are_fail_closed_and_canary_dry_run_only() {
     assert!(!execution.quote_canary_public_parallel_enabled);
     assert_eq!(
         execution.quote_canary_public_base_url,
-        "https://public.jupiterapi.com"
+        "https://lite-api.jup.ag/swap/v1"
     );
     assert!(!execution.quote_canary_pump_fun_parallel_enabled);
     assert!(!execution.swap_instructions_dry_run_enabled);

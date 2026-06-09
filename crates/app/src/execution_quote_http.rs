@@ -54,6 +54,7 @@ pub(crate) async fn fetch_quote_sample_from_base_url(
                 ("amount", amount_raw),
                 ("slippageBps", slippage_bps.as_str()),
                 ("swapMode", "ExactIn"),
+                ("instructionVersion", "V2"),
             ])
             .timeout(timeout);
         if !api_key.is_empty() {
