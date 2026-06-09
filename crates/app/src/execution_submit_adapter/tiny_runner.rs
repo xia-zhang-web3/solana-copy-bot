@@ -1,3 +1,7 @@
+#[path = "tiny_runner_confirmed_reconcile.rs"]
+mod tiny_runner_confirmed_reconcile;
+
+use self::tiny_runner_confirmed_reconcile::reconcile_already_confirmed_tiny_submit_fill;
 use super::{
     cap_execution_priority_fee_lamports, record_execution_rpc_confirmation_boundary,
     ExecutionConfirmationBoundaryOutcome, ExecutionConfirmedBuyFill, ExecutionConfirmedFill,
@@ -96,11 +100,13 @@ pub(crate) async fn reconcile_execution_tiny_submit_confirmation(
         anyhow::bail!("missing execution canary order {order_id}");
     };
     if order.status == EXECUTION_STATUS_CANARY_CONFIRMED {
-        return Ok(ExecutionTinySubmitConfirmPathOutcome {
-            confirmation_confirmed: 1,
-            reason: Some(RECONCILE_ALREADY_CONFIRMED_REASON.to_string()),
-            ..ExecutionTinySubmitConfirmPathOutcome::default()
-        });
+        return Ok(reconcile_already_confirmed_tiny_submit_fill(
+            store,
+            config,
+            &order,
+            now,
+            RECONCILE_ALREADY_CONFIRMED_REASON,
+        ));
     }
     if order.status != EXECUTION_STATUS_CANARY_SUBMITTED {
         return Ok(ExecutionTinySubmitConfirmPathOutcome {
