@@ -215,6 +215,84 @@ async fn generic_public_platform_fee_does_not_replace_buildable_metis_quote() ->
     Ok(())
 }
 
+#[test]
+fn state_machine_candidates_skip_platform_fee_only_public_quote() -> Result<()> {
+    let db_path = unique_provider_selector_test_path("public-fee-only-candidate");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let signal = provider_selector_signal("public-fee-only-candidate", now);
+    store.insert_copy_signal(&signal)?;
+    record_provider_selector_quote(
+        &store,
+        &signal,
+        now,
+        "ok",
+        Some(public_platform_fee_quote_json()),
+    )?;
+    let config = provider_selector_config("http://127.0.0.1:1".to_string());
+
+    let candidates = crate::execution_canary_route::list_swap_blueprint_state_machine_candidates(
+        &store,
+        &config,
+        "shadow_recorded",
+        now - chrono::Duration::seconds(60),
+    )?;
+
+    assert!(candidates.is_empty());
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[test]
+fn state_machine_candidates_keep_buildable_metis_over_platform_fee_event() -> Result<()> {
+    let db_path = unique_provider_selector_test_path("buildable-metis-candidate");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let signal = provider_selector_signal("buildable-metis-candidate", now);
+    store.insert_copy_signal(&signal)?;
+    record_provider_selector_quote(
+        &store,
+        &signal,
+        now,
+        "ok",
+        Some(public_platform_fee_quote_json()),
+    )?;
+    record_provider_sample_with_slippage(
+        &store,
+        &signal,
+        now,
+        copybot_storage_core::PROVIDER_GENERIC_METIS,
+        "ok",
+        Some(generic_quote_json()),
+        Some("would_execute"),
+        None,
+        100.0,
+    )?;
+    let config = provider_selector_config("http://127.0.0.1:1".to_string());
+
+    let candidates = crate::execution_canary_route::list_swap_blueprint_state_machine_candidates(
+        &store,
+        &config,
+        "shadow_recorded",
+        now - chrono::Duration::seconds(60),
+    )?;
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].signal_id, signal.signal_id);
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
 struct CapturedRequest {
     into_socket: tokio::net::TcpStream,
     body: String,

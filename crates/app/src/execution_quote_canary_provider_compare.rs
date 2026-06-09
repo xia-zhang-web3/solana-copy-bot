@@ -3,6 +3,7 @@ use crate::execution_quote_canary_helpers::{
     short_error, DECISION_UNKNOWN, DECISION_WOULD_EXECUTE, DECISION_WOULD_FORCE_EXIT,
     DECISION_WOULD_SKIP, QUOTE_STATUS_ERROR, QUOTE_STATUS_OK, SIDE_BUY, SIDE_SELL,
 };
+use crate::execution_quote_provider_selection::quote_response_requires_fee_account;
 use copybot_storage_core::{
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderSampleInsert,
     PROVIDER_GENERIC_METIS, PROVIDER_GENERIC_PUBLIC, PROVIDER_PUMP_FUN_PAID,
@@ -102,10 +103,10 @@ pub(super) fn select_usable_provider_for_event(
         apply_provider_sample_to_event(event, sample);
         return;
     }
-    if let Some(sample) = provider_samples
-        .iter()
-        .find(|sample| sample.provider == PROVIDER_GENERIC_PUBLIC && provider_quote_is_ok(sample))
-    {
+    if let Some(sample) = provider_samples.iter().find(|sample| {
+        sample.provider == PROVIDER_GENERIC_PUBLIC
+            && provider_quote_is_buildable_without_fee_account(sample)
+    }) {
         apply_provider_sample_to_event(event, sample);
     }
 }
@@ -166,7 +167,15 @@ fn provider_quote_is_ok(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> bo
 }
 
 fn provider_quote_has_finite_slippage(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> bool {
-    provider_quote_is_ok(sample) && sample.slippage_bps.is_some_and(f64::is_finite)
+    provider_quote_is_buildable_without_fee_account(sample)
+        && sample.slippage_bps.is_some_and(f64::is_finite)
+}
+
+fn provider_quote_is_buildable_without_fee_account(
+    sample: &ExecutionQuoteCanaryProviderSampleInsert,
+) -> bool {
+    provider_quote_is_ok(sample)
+        && !quote_response_requires_fee_account(sample.quote_response_json.as_deref())
 }
 
 fn pump_fun_quote_is_completed(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> Option<bool> {

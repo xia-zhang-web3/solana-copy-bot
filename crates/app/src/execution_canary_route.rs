@@ -1,3 +1,5 @@
+use crate::execution_build_plan_metadata::load_execution_build_plan_metadata;
+use crate::execution_canary_entry_gate::validate_execution_canary_entry_metadata;
 use crate::execution_canary_state_machine::{
     ExecutionCanaryStateMachine, ExecutionCanaryStateMachineSummary,
 };
@@ -52,7 +54,13 @@ pub(crate) fn list_swap_blueprint_state_machine_candidates(
         let event = store.load_latest_execution_quote_canary_entry_event(&signal.signal_id)?;
         let would_execute = event.and_then(|event| event.decision_status).as_deref()
             == Some(DECISION_WOULD_EXECUTE);
-        if would_execute {
+        if would_execute
+            && validate_execution_canary_entry_metadata(
+                config,
+                &load_execution_build_plan_metadata(store, &signal.signal_id)?,
+            )
+            .is_none()
+        {
             executable.push(signal);
             if executable.len() >= batch_limit as usize {
                 break;

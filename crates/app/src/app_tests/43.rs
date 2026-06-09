@@ -396,3 +396,100 @@ async fn hot_observed_buy_records_paid_pump_fun_provider_comparison() -> Result<
     let _ = std::fs::remove_file(db_path);
     Ok(())
 }
+
+#[tokio::test]
+async fn public_platform_fee_fallback_does_not_mark_quote_executable() -> Result<()> {
+    let db_path = unique_execution_canary_test_path("public-platform-fee-fallback");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+
+    let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let primary_url = format!("http://{}", primary_listener.local_addr()?);
+    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let public_url = format!("http://{}", public_listener.local_addr()?);
+    let primary_server = tokio::spawn(async move {
+        for _ in 0..4 {
+            let (mut socket, _) = primary_listener.accept().await.expect("primary quote");
+            let mut buffer = [0_u8; 2048];
+            let _ = socket.read(&mut buffer).await.expect("read primary quote");
+            write_http_response(
+                &mut socket,
+                400,
+                r#"{"error":"The token TokenMint is not tradable","errorCode":"TOKEN_NOT_TRADABLE"}"#,
+            )
+            .await;
+        }
+    });
+    let public_server = tokio::spawn(async move {
+        let (mut socket, _) = public_listener.accept().await.expect("public quote");
+        let mut buffer = [0_u8; 2048];
+        let _ = socket.read(&mut buffer).await.expect("read public quote");
+        write_http_response(
+            &mut socket,
+            200,
+            r#"{"inAmount":"200000000","outAmount":"1000000","platformFee":{"amount":"2000","feeBps":20},"priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
+        )
+        .await;
+    });
+
+    let now = Utc::now();
+    let signal = copybot_shadow::ShadowSignalResult {
+        signal_id: "shadow:sig-public-platform-fee:leader-wallet:buy:TokenMint".to_string(),
+        wallet_id: "leader-wallet".to_string(),
+        side: "buy".to_string(),
+        token: "TokenMint".to_string(),
+        notional_sol: 0.2,
+        latency_ms: 25,
+        closed_qty: 0.0,
+        realized_pnl_sol: 0.0,
+        has_open_lots_after_signal: Some(true),
+    };
+    store.insert_copy_signal(&copybot_core_types::CopySignalRow {
+        signal_id: signal.signal_id.clone(),
+        wallet_id: signal.wallet_id.clone(),
+        side: signal.side.clone(),
+        token: signal.token.clone(),
+        notional_sol: signal.notional_sol,
+        notional_lamports: Some(Lamports::new(200_000_000)),
+        notional_origin: copybot_core_types::COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS.to_string(),
+        ts: now - chrono::Duration::milliseconds(25),
+        status: "shadow_recorded".to_string(),
+    })?;
+
+    let mut config = ExecutionConfig::default();
+    config.canary_enabled = true;
+    config.canary_dry_run = true;
+    config.quote_canary_enabled = true;
+    config.quote_canary_base_url = primary_url;
+    config.quote_canary_public_parallel_enabled = true;
+    config.quote_canary_public_base_url = public_url;
+    config.quote_canary_buy_size_sol = 0.2;
+    config.quote_canary_buy_slippage_bps = 1_000;
+    config.quote_canary_timeout_ms = 1_000;
+    let runner = ExecutionCanaryRunner::new(config);
+
+    let summary = runner
+        .process_recorded_shadow_signal(&store, &signal, now)
+        .await?;
+    primary_server.await?;
+    public_server.await?;
+    let event = store
+        .load_latest_execution_quote_canary_entry_event(&signal.signal_id)?
+        .expect("quote event should exist");
+
+    assert_eq!(summary.quote_entry_errors, 1);
+    assert_eq!(summary.quote_would_execute, 0);
+    assert_eq!(event.quote_status, "error");
+    assert_eq!(event.decision_status.as_deref(), Some("unknown"));
+    assert!(event
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("TOKEN_NOT_TRADABLE"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
