@@ -8,7 +8,7 @@ use copybot_storage_core::{
     EXECUTION_ERROR_BUILD_FAILED, EXECUTION_ERROR_SIMULATION_FAILED,
     EXECUTION_SIMULATION_STATUS_FAILED, EXECUTION_SIMULATION_STATUS_NOT_RUN,
     EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_STATUS_CANARY_CANDIDATE,
-    EXECUTION_STATUS_CANARY_CONFIRMED,
+    EXECUTION_STATUS_CANARY_CONFIRMED, EXECUTION_STATUS_CANARY_SIMULATED,
 };
 use tempfile::tempdir;
 
@@ -102,6 +102,34 @@ fn submitted_canary_order_query_is_bounded_to_route_and_status() -> Result<()> {
 }
 
 #[test]
+fn submitted_canary_order_query_includes_rpc_not_sent_retry_prefix() -> Result<()> {
+    let store = open_migrated_store("submitted-canary-rpc-not-sent-prefix")?;
+    let now = ts("2026-06-08T10:30:00Z");
+    let retry = rpc_not_sent_retry_ready_order(
+        &store,
+        "buy-rpc-not-sent",
+        "metis-swap-instructions-dry-run",
+        now,
+    )?;
+
+    let orders = store.list_reconcilable_execution_canary_orders_for_route(
+        "metis-swap-instructions-dry-run",
+        "retry_after_rpc_submit_not_sent",
+        10,
+    )?;
+
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0].order_id, retry);
+    assert_eq!(orders[0].status, EXECUTION_STATUS_CANARY_SIMULATED);
+    assert_eq!(orders[0].attempt, 2);
+    assert_eq!(
+        orders[0].simulation_error.as_deref(),
+        Some("retry_after_rpc_submit_not_sent:rpc_send_transaction_error")
+    );
+    Ok(())
+}
+
+#[test]
 fn submit_risk_summary_counts_pending_retry_ready_and_budget_blockers() -> Result<()> {
     let store = open_migrated_store("submit-risk-summary")?;
     let now = ts("2026-06-08T11:00:00Z");
@@ -124,6 +152,12 @@ fn submit_risk_summary_counts_pending_retry_ready_and_budget_blockers() -> Resul
         "metis-swap-instructions-dry-run",
         now + Duration::seconds(20),
     )?;
+    let rpc_retry_ready = rpc_not_sent_retry_ready_order(
+        &store,
+        "risk-rpc-retry-ready",
+        "metis-swap-instructions-dry-run",
+        now + Duration::seconds(25),
+    )?;
     let confirmed = submitted_order(
         &store,
         "risk-confirmed",
@@ -139,12 +173,12 @@ fn submit_risk_summary_counts_pending_retry_ready_and_budget_blockers() -> Resul
         1,
     )?;
 
-    assert_eq!(summary.active_orders, 3);
+    assert_eq!(summary.active_orders, 4);
     assert_eq!(summary.submitted_orders, 2);
     assert_eq!(summary.submitted_with_signature_orders, 1);
     assert_eq!(summary.submitted_without_signature_orders, 1);
-    assert_eq!(summary.retry_ready_orders, 1);
-    assert_eq!(summary.retry_budget_blocked_orders, 2);
+    assert_eq!(summary.retry_ready_orders, 2);
+    assert_eq!(summary.retry_budget_blocked_orders, 3);
     assert_eq!(summary.max_active_attempt, 2);
     let latest = summary
         .latest_active_order
@@ -153,6 +187,7 @@ fn submit_risk_summary_counts_pending_retry_ready_and_budget_blockers() -> Resul
     assert_eq!(latest.attempt, 2);
     assert!(!latest.tx_signature_present);
     assert_ne!(signed, no_sig);
+    assert_ne!(retry_ready, rpc_retry_ready);
     Ok(())
 }
 
@@ -358,6 +393,29 @@ fn retry_ready_simulated_order(
         "retry_after_unknown_submit_timeout",
     )?;
     Ok(order_id)
+}
+
+fn rpc_not_sent_retry_ready_order(
+    store: &SqliteStore,
+    signal_id: &str,
+    route: &str,
+    now: DateTime<Utc>,
+) -> Result<String> {
+    store.insert_copy_signal(&signal(signal_id, now))?;
+    let reserve = store.reserve_execution_canary_order(signal_id, route, now)?;
+    store.mark_execution_canary_built(&reserve.order.order_id, now + Duration::seconds(1))?;
+    store.mark_execution_canary_simulated(
+        &reserve.order.order_id,
+        now + Duration::seconds(2),
+        EXECUTION_SIMULATION_STATUS_PASSED,
+        Some("metis_swap_transaction_ok"),
+    )?;
+    store.mark_execution_canary_retry_after_submit_not_sent(
+        &reserve.order.order_id,
+        now + Duration::seconds(3),
+        "retry_after_rpc_submit_not_sent:rpc_send_transaction_error",
+    )?;
+    Ok(reserve.order.order_id)
 }
 
 fn submitted_order(

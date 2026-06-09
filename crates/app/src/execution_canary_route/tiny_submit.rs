@@ -13,7 +13,9 @@ use crate::execution_canary_entry_gate::validate_execution_canary_entry_metadata
 use crate::execution_canary_safety::pre_submit_safety_snapshot;
 use crate::execution_canary_signing_contract::record_execution_signing_envelope;
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
-use crate::execution_canary_submit_contract::ExecutionTinySubmitGate;
+use crate::execution_canary_submit_contract::{
+    ExecutionTinySubmitGate, TINY_SUBMIT_RETRY_AFTER_RPC_NOT_SENT_REASON,
+};
 use crate::execution_quote_canary_helpers::quote_canary_slippage_limit_bps;
 use crate::execution_submit_adapter::{
     cap_execution_priority_fee_lamports, reconcile_execution_tiny_submit_confirmation,
@@ -31,6 +33,7 @@ use copybot_storage_core::{
     EXECUTION_STATUS_CANARY_CONFIRMED, EXECUTION_STATUS_CANARY_FAILED,
     EXECUTION_STATUS_CANARY_SUBMITTED,
 };
+use std::collections::HashSet;
 
 pub(crate) async fn process_tiny_submit_state_machine_for_route(
     config: &ExecutionConfig,
@@ -118,11 +121,28 @@ pub(crate) async fn process_tiny_submit_reconciliation_sweep_for_route(
         return Ok(summary);
     }
     let limit = config.canary_batch_limit.max(1);
-    let orders = store.list_reconcilable_execution_canary_orders_for_route(
+    let mut orders = store.list_reconcilable_execution_canary_orders_for_route(
         &config.canary_route,
         TINY_SUBMIT_RETRY_AFTER_UNKNOWN_SUBMIT_TIMEOUT_REASON,
         limit,
     )?;
+    let remaining = limit.saturating_sub(orders.len() as u32);
+    if remaining > 0 {
+        let mut seen = orders
+            .iter()
+            .map(|order| order.order_id.clone())
+            .collect::<HashSet<_>>();
+        let extra = store.list_reconcilable_execution_canary_orders_for_route(
+            &config.canary_route,
+            TINY_SUBMIT_RETRY_AFTER_RPC_NOT_SENT_REASON,
+            remaining,
+        )?;
+        orders.extend(
+            extra
+                .into_iter()
+                .filter(|order| seen.insert(order.order_id.clone())),
+        );
+    }
     for order in orders {
         summary.existing += 1;
         summary.last_order_id = Some(order.order_id.clone());

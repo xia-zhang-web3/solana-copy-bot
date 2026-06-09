@@ -8,6 +8,8 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::params;
 
+const RPC_NOT_SENT_RETRY_REASON: &str = "retry_after_rpc_submit_not_sent";
+
 impl SqliteDiscoveryStore {
     pub fn execution_canary_submit_risk_summary(
         &self,
@@ -122,7 +124,13 @@ fn record_submit_risk_order(
 fn is_retry_ready_order(order: &ExecutionCanaryOrder, retry_reason: &str) -> bool {
     order.status == EXECUTION_STATUS_CANARY_SIMULATED
         && !tx_signature_present(order)
-        && order.simulation_error.as_deref() == Some(retry_reason)
+        && order.simulation_error.as_deref().is_some_and(|reason| {
+            reason == retry_reason
+                || reason == RPC_NOT_SENT_RETRY_REASON
+                || reason
+                    .strip_prefix(RPC_NOT_SENT_RETRY_REASON)
+                    .is_some_and(|suffix| suffix.starts_with(':'))
+        })
 }
 
 fn submit_risk_latest_order(order: &ExecutionCanaryOrder) -> ExecutionCanarySubmitRiskOrder {

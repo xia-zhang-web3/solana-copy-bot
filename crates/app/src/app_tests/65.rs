@@ -123,6 +123,65 @@ async fn tiny_submit_sweep_replays_retry_ready_simulated_order() -> Result<()> {
 }
 
 #[tokio::test]
+async fn tiny_submit_sweep_replays_rpc_not_sent_retry_ready_order() -> Result<()> {
+    let db_path = unique_tiny_timeout_route_test_path("rpc-not-sent-retry");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let keypair = tiny_timeout_keypair(67);
+    let keypair_path = write_tiny_timeout_keypair_file("rpc-not-sent-retry", &keypair.bytes)?;
+    let now = Utc::now();
+    let signal = tiny_timeout_signal("rpc-not-sent-retry", now);
+    store.insert_copy_signal(&signal)?;
+    let order_id = mark_tiny_timeout_simulated(&store, &signal, now)?;
+    record_tiny_timeout_build_metadata(&store, &order_id, &signal, now)?;
+    store.mark_execution_canary_retry_after_submit_not_sent(
+        &order_id,
+        now + chrono::Duration::seconds(3),
+        "retry_after_rpc_submit_not_sent:rpc_send_transaction_error",
+    )?;
+    let (base_url, server) =
+        serve_tiny_retry_build_submit_and_confirm(&keypair.public_key, "tx-rpc-retry").await?;
+    let mut config = tiny_timeout_config(&base_url);
+    config.max_submit_attempts = 2;
+    config.quote_canary_base_url = base_url.clone();
+    config.submit_adapter_http_url = base_url;
+    config.canary_wallet_pubkey = keypair.pubkey.clone();
+    config.execution_signer_pubkey = keypair.pubkey.clone();
+    config.execution_signer_keypair_path = keypair_path.to_string_lossy().to_string();
+    config.swap_instructions_dry_run_enabled = true;
+    config.swap_transaction_dry_run_enabled = true;
+
+    let summary = crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
+        &config,
+        &store,
+        now + chrono::Duration::seconds(4),
+    )
+    .await?
+    .expect("sweep should replay rpc-not-sent retry-ready order");
+    server.await?;
+    let confirmed = store
+        .load_execution_canary_order(&order_id)?
+        .expect("confirmed order should exist");
+
+    assert_eq!(summary.existing, 1);
+    assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.signing_envelope_built, 1);
+    assert_eq!(
+        confirmed.status,
+        copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED
+    );
+    assert_eq!(confirmed.attempt, 2);
+    assert_eq!(confirmed.tx_signature.as_deref(), Some("tx-rpc-retry"));
+
+    let _ = std::fs::remove_file(db_path);
+    let _ = std::fs::remove_file(keypair_path);
+    Ok(())
+}
+
+#[tokio::test]
 async fn tiny_submit_sweep_expires_unknown_without_signature_when_retry_budget_is_exhausted(
 ) -> Result<()> {
     let db_path = unique_tiny_timeout_route_test_path("retry-budget");

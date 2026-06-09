@@ -104,7 +104,7 @@ async fn tiny_submit_gate_allowed_records_rpc_signature() -> Result<()> {
 }
 
 #[tokio::test]
-async fn tiny_submit_gate_allowed_records_rpc_error_as_not_sent() -> Result<()> {
+async fn tiny_submit_gate_allowed_records_rpc_error_as_retry_ready() -> Result<()> {
     let db_path = unique_tiny_submit_test_path("rpc-error");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -144,16 +144,27 @@ async fn tiny_submit_gate_allowed_records_rpc_error_as_not_sent() -> Result<()> 
         .load_execution_canary_order(&request.order_id)?
         .expect("order should exist");
 
-    assert_eq!(outcome.submit_disabled, 1);
+    assert_eq!(outcome.submit_disabled, 0);
+    assert_eq!(
+        outcome.skipped_reason,
+        Some("tiny_submit_retry_after_rpc_not_sent")
+    );
     assert!(outcome
         .reason
         .as_deref()
         .unwrap_or_default()
-        .contains("rpc_send_transaction_error"));
+        .starts_with("retry_after_rpc_submit_not_sent:rpc_send_transaction_error"));
     assert_eq!(
         order.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMIT_DISABLED
+        copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED
     );
+    assert_eq!(order.attempt, 2);
+    assert!(order.err_code.is_none());
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .starts_with("retry_after_rpc_submit_not_sent:rpc_send_transaction_error"));
     assert!(order.tx_signature.is_none());
 
     let _ = std::fs::remove_file(db_path);

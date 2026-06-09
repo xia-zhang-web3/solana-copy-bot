@@ -1,3 +1,4 @@
+use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_signing_envelope::ExecutionSigningEnvelope;
 use crate::execution_submit_adapter::{
     build_submit_transport_attempt, dry_run_no_send_submit_intent, record_submit_transport_outcome,
@@ -10,6 +11,11 @@ use copybot_storage_core::{
     SqliteStore, EXECUTION_ERROR_SUBMIT_PLAN_FAILED, EXECUTION_STATUS_CANARY_FAILED,
     EXECUTION_STATUS_CANARY_SUBMIT_DISABLED,
 };
+
+pub(crate) const TINY_SUBMIT_RETRY_AFTER_RPC_NOT_SENT_REASON: &str =
+    "retry_after_rpc_submit_not_sent";
+const RPC_SUBMIT_ERROR_REASON: &str = "rpc_send_transaction_error";
+const RPC_SUBMIT_MISSING_SIGNATURE_REASON: &str = "rpc_send_transaction_missing_signature";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionSubmitPlanOutcome {
@@ -154,6 +160,26 @@ pub(crate) async fn record_execution_tiny_submit_plan<A: ExecutionSubmitAdapter>
                     return record_submit_plan_failure(store, request, now, error.to_string());
                 }
             };
+            if let ExecutionSubmitTransportOutcome::NotSent {
+                idempotency_key,
+                reason,
+            } = &transport_outcome
+            {
+                if is_retryable_tiny_submit_not_sent(reason) {
+                    let retry_reason = tiny_submit_not_sent_retry_reason(reason);
+                    store.mark_execution_canary_retry_after_submit_not_sent(
+                        &request.order_id,
+                        now,
+                        &retry_reason,
+                    )?;
+                    return Ok(ExecutionSubmitPlanOutcome {
+                        idempotency_key: Some(idempotency_key.clone()),
+                        reason: Some(retry_reason),
+                        skipped_reason: Some("tiny_submit_retry_after_rpc_not_sent"),
+                        ..ExecutionSubmitPlanOutcome::default()
+                    });
+                }
+            }
             let record_outcome =
                 record_submit_transport_outcome(store, request, transport_outcome, now)?;
             Ok(ExecutionSubmitPlanOutcome {
@@ -176,6 +202,18 @@ fn validated_submit_plan<A: ExecutionSubmitAdapter>(
     let plan = adapter.plan_submit_with_envelope(request, envelope)?;
     plan.validate_for_request(request)?;
     Ok(plan)
+}
+
+fn is_retryable_tiny_submit_not_sent(reason: &str) -> bool {
+    reason.starts_with(RPC_SUBMIT_ERROR_REASON)
+        || reason.starts_with(RPC_SUBMIT_MISSING_SIGNATURE_REASON)
+}
+
+fn tiny_submit_not_sent_retry_reason(reason: &str) -> String {
+    format!(
+        "{TINY_SUBMIT_RETRY_AFTER_RPC_NOT_SENT_REASON}:{}",
+        truncate_for_log(reason, 220)
+    )
 }
 
 fn record_submit_plan_failure(

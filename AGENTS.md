@@ -142,6 +142,13 @@ Do not use Docker or a local release build as the normal production rollout
 path. Docker/local builds are only for development smoke checks unless an
 emergency fallback is explicitly declared and recorded.
 
+Exact artifact build, verification, install, rollback, and daemon restart
+commands live in `ARTIFACT_DEPLOY.md`. Before touching production or building a
+deployable artifact, open that file and follow the package-specific command path
+for the exact build target. Do not substitute Docker, local release builds, or
+production builds for the documented artifact flow unless the batch is explicitly
+marked as an emergency fallback.
+
 Forbidden by default:
 
 - `cargo build --release` on production is forbidden by default
@@ -213,6 +220,34 @@ Target split:
 - `copybot-live-ops`: bundled live proof and service-control commands
 
 Legacy monoliths remain only as compatibility shells while code is extracted.
+
+## Active Operator Reports
+
+For live tiny execution work, prefer these existing report/operator binaries.
+Do not add reports to `copybot-app`.
+
+- `copybot_execution_canary_quote_pnl`
+  - source: `crates/operators/src/bin/copybot_execution_canary_quote_pnl.rs`
+  - primary live report for Shadow/Canary/Tiny comparison, gate state,
+    sell diagnostics, Metis diagnostics, and wallet reconciliation
+- `copybot_execution_canary_readiness`
+  - source: `crates/operators/src/bin/copybot_execution_canary_readiness.rs`
+  - standalone canary readiness proof
+- `copybot_yellowstone_source_probe`
+  - source: `crates/operators/src/bin/copybot_yellowstone_source_probe.rs`
+  - Yellowstone source probe
+- `discovery_v2_status`
+  - source: `crates/discovery-v2/src/bin/discovery_v2_status.rs`
+- `discovery_v2_wallet_report`
+  - source: `crates/discovery-v2/src/bin/discovery_v2_wallet_report.rs`
+- `discovery_runtime_export`
+  - source: `crates/discovery-ops/src/bin/discovery_runtime_export.rs`
+- `discovery_recent_raw_snapshot`
+  - source: `crates/discovery-ops/src/bin/discovery_recent_raw_snapshot.rs`
+- `discovery_v2_watchdog`
+  - source: `crates/discovery-ops/src/bin/discovery_v2_watchdog.rs`
+- `copybot_runtime_sqlite_wal_pressure_report`
+  - source: `crates/storage-ops/src/bin/copybot_runtime_sqlite_wal_pressure_report.rs`
 
 ## Worker Contract
 

@@ -45,7 +45,10 @@ impl SqliteDiscoveryStore {
                        OR (
                            status = ?3
                            AND (tx_signature IS NULL OR TRIM(tx_signature) = '')
-                           AND simulation_error = ?4
+                           AND (
+                               simulation_error = ?4
+                               OR simulation_error LIKE ?4 || ':%'
+                           )
                        )
                    )
                  ORDER BY submit_ts ASC, order_id ASC

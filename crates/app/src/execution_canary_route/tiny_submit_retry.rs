@@ -2,7 +2,9 @@ use super::tiny_submit::apply_tiny_submit_confirm_path_outcome;
 use crate::execution_build_plan_metadata::record_execution_build_plan_metadata;
 use crate::execution_canary_signing_contract::record_execution_signing_envelope;
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
-use crate::execution_canary_submit_contract::ExecutionTinySubmitGate;
+use crate::execution_canary_submit_contract::{
+    ExecutionTinySubmitGate, TINY_SUBMIT_RETRY_AFTER_RPC_NOT_SENT_REASON,
+};
 use crate::execution_submit_adapter::{
     build_tiny_submit_reconciliation_request, record_execution_tiny_submit_confirm_path,
     ExecutionSubmitAdapter, ExecutionSubmitRequest, JupiterMetisDryRunExecutionAdapter,
@@ -27,8 +29,18 @@ pub(super) fn is_tiny_submit_retry_ready(order: &ExecutionCanaryOrder) -> bool {
             .tx_signature
             .as_deref()
             .is_none_or(|signature| signature.trim().is_empty())
-        && order.simulation_error.as_deref()
-            == Some(TINY_SUBMIT_RETRY_AFTER_UNKNOWN_SUBMIT_TIMEOUT_REASON)
+        && order
+            .simulation_error
+            .as_deref()
+            .is_some_and(is_tiny_submit_retry_reason)
+}
+
+pub(crate) fn is_tiny_submit_retry_reason(reason: &str) -> bool {
+    reason == TINY_SUBMIT_RETRY_AFTER_UNKNOWN_SUBMIT_TIMEOUT_REASON
+        || reason == TINY_SUBMIT_RETRY_AFTER_RPC_NOT_SENT_REASON
+        || reason
+            .strip_prefix(TINY_SUBMIT_RETRY_AFTER_RPC_NOT_SENT_REASON)
+            .is_some_and(|suffix| suffix.starts_with(':'))
 }
 
 pub(super) async fn retry_existing_simulated_tiny_submit_order(

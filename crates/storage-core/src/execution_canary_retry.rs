@@ -176,6 +176,59 @@ impl SqliteDiscoveryStore {
             .ok_or_else(|| anyhow!("missing execution canary order after retry mark"))
     }
 
+    pub fn mark_execution_canary_retry_after_submit_not_sent(
+        &self,
+        order_id: &str,
+        now: DateTime<Utc>,
+        reason: &str,
+    ) -> Result<ExecutionCanaryOrder> {
+        validate_reason(reason, "execution canary submit-not-sent retry reason")?;
+        let now_rfc3339 = now.to_rfc3339();
+        self.with_immediate_transaction_retry("execution canary submit-not-sent retry", |conn| {
+            let current: Option<(String, Option<String>)> = conn
+                .query_row(
+                    "SELECT status, tx_signature
+                     FROM orders
+                     WHERE order_id = ?1
+                     LIMIT 1",
+                    params![order_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .context("failed loading submit-not-sent retry state")?;
+            let Some((status, tx_signature)) = current else {
+                return Err(anyhow!("missing execution canary order {order_id}"));
+            };
+            if status != EXECUTION_STATUS_CANARY_SIMULATED {
+                return Err(anyhow!(
+                    "invalid execution canary submit-not-sent retry transition for {order_id}: {status} -> {EXECUTION_STATUS_CANARY_SIMULATED}"
+                ));
+            }
+            if tx_signature
+                .as_deref()
+                .is_some_and(|signature| !signature.trim().is_empty())
+            {
+                return Err(anyhow!(
+                    "execution canary submit-not-sent retry is unsafe for {order_id}: tx_signature is present"
+                ));
+            }
+            conn.execute(
+                "UPDATE orders
+                 SET submit_ts = ?2,
+                     confirm_ts = NULL,
+                     err_code = NULL,
+                     simulation_error = ?3,
+                     attempt = attempt + 1
+                 WHERE order_id = ?1",
+                params![order_id, now_rfc3339, reason],
+            )
+            .context("failed marking execution canary retry after submit-not-sent")?;
+            Ok(())
+        })?;
+        self.load_execution_canary_order(order_id)?
+            .ok_or_else(|| anyhow!("missing execution canary order after submit-not-sent retry"))
+    }
+
     pub fn mark_execution_canary_failed_simulation_retry_candidate(
         &self,
         order_id: &str,
