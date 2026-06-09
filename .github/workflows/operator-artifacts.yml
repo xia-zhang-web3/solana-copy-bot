@@ -14,11 +14,6 @@ on:
           - copybot-discovery-v2
           - copybot-discovery-ops
           - copybot-live-ops
-      run_checks:
-        description: Run architecture guard and package tests before packaging
-        required: true
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -84,11 +79,7 @@ jobs:
             echo "no package binaries found for $PACKAGE" >&2
             exit 1
           fi
-          if [ "${{ inputs.run_checks }}" = "true" ]; then
-            run_checks="1"
-          else
-            run_checks="0"
-          fi
+          run_checks="1"
           echo "PROFILE=$profile" >> "$GITHUB_ENV"
           echo "RUN_CHECKS=$run_checks" >> "$GITHUB_ENV"
           echo "WANTED_BINS=$wanted_bins" >> "$GITHUB_ENV"
