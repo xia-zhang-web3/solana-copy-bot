@@ -23,9 +23,9 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
-    ExecutionCanaryRecordOutcome, SqliteStore, EXECUTION_CANARY_SELL_DECISION_EXECUTE,
-    EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT, EXECUTION_CANARY_SELL_DECISION_NO_POSITION,
-    EXECUTION_ERROR_BUILD_FAILED,
+    ExecutionCanaryOrder, ExecutionCanaryRecordOutcome, SqliteStore,
+    EXECUTION_CANARY_SELL_DECISION_EXECUTE, EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT,
+    EXECUTION_CANARY_SELL_DECISION_NO_POSITION, EXECUTION_ERROR_BUILD_FAILED,
 };
 use std::path::Path;
 
@@ -144,18 +144,15 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
         Ok(metadata) => metadata,
         Err(error) => {
             let error = format!("owned_sell_quote_failed: {error}");
-            if let Some(order) = retry_order.as_ref() {
-                store.mark_execution_canary_failed(
-                    &order.order_id,
-                    now,
-                    EXECUTION_ERROR_BUILD_FAILED,
-                    &error,
-                )?;
-                summary.failed = 1;
-                summary.last_order_id = Some(order.order_id.clone());
-            } else {
-                summary.entry_gate_blocked = 1;
-            }
+            record_owned_sell_quote_failure(
+                config,
+                store,
+                &signal.signal_id,
+                retry_order.as_ref(),
+                now,
+                &error,
+                &mut summary,
+            )?;
             summary.skipped_reason = Some("owned_sell_quote_error");
             summary.last_error = Some(error);
             return Ok(Some(summary));
@@ -263,4 +260,42 @@ fn sell_safety_blocked(
         return Ok(true);
     }
     Ok(false)
+}
+
+fn record_owned_sell_quote_failure(
+    config: &ExecutionConfig,
+    store: &SqliteStore,
+    signal_id: &str,
+    retry_order: Option<&ExecutionCanaryOrder>,
+    now: DateTime<Utc>,
+    error: &str,
+    summary: &mut ExecutionCanaryStateMachineSummary,
+) -> Result<()> {
+    if let Some(order) = retry_order {
+        store.mark_execution_canary_failed(
+            &order.order_id,
+            now,
+            EXECUTION_ERROR_BUILD_FAILED,
+            error,
+        )?;
+        summary.failed = 1;
+        summary.last_order_id = Some(order.order_id.clone());
+        return Ok(());
+    }
+
+    let reserve = store.reserve_execution_canary_order(signal_id, &config.canary_route, now)?;
+    summary.last_order_id = Some(reserve.order.order_id.clone());
+    if reserve.outcome == ExecutionCanaryRecordOutcome::Existing {
+        summary.existing = 1;
+        return Ok(());
+    }
+    summary.reserved = 1;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        now,
+        EXECUTION_ERROR_BUILD_FAILED,
+        error,
+    )?;
+    summary.failed = 1;
+    Ok(())
 }

@@ -44,18 +44,7 @@ async fn pump_fun_paid_quote_builds_pump_fun_swap_transaction_payload() -> Resul
             error: None,
         },
     )?;
-    let mut config = ExecutionConfig::default();
-    config.canary_enabled = true;
-    config.canary_dry_run = true;
-    config.canary_route =
-        crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN.to_string();
-    config.canary_wallet_pubkey = "11111111111111111111111111111111".to_string();
-    config.quote_canary_enabled = true;
-    config.quote_canary_base_url = base_url;
-    config.quote_canary_timeout_ms = 1_000;
-    config.quote_canary_buy_slippage_bps = 500;
-    config.swap_instructions_dry_run_enabled = true;
-    config.swap_transaction_dry_run_enabled = true;
+    let config = pump_fun_swap_config(&base_url);
     let adapter =
         crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let state_machine =
@@ -81,6 +70,80 @@ async fn pump_fun_paid_quote_builds_pump_fun_swap_transaction_payload() -> Resul
     let simulation = order.simulation_error.as_deref().unwrap_or_default();
     assert!(simulation.contains("pump_fun_swap_instructions_ok"));
     assert!(simulation.contains("pump_fun_swap_transaction_ok"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pump_fun_swap_instructions_simulation_error_marks_order_failed() -> Result<()> {
+    let db_path = unique_pump_fun_swap_test_path("instructions-simulation-error");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let request = read_http_request(&listener).await;
+        assert!(request.starts_with("POST /pump-fun/swap-instructions "));
+        write_http_json(
+            request.into_socket,
+            r#"{"simulationError":"Transaction simulation failed: custom program error: 0x1788","instructions":[{"keys":[],"programId":"ComputeBudget111111111111111111111111111111","data":[2]}]}"#,
+        )
+        .await;
+    });
+    let now = Utc::now();
+    let signal = pump_fun_swap_signal(now);
+    store.insert_copy_signal(&signal)?;
+    store.record_execution_quote_canary_event(&quote_event(&signal, now))?;
+    store.record_execution_quote_canary_provider_sample(
+        &copybot_storage_core::ExecutionQuoteCanaryProviderSampleInsert {
+            event_id: format!("quote:entry:{}", signal.signal_id),
+            provider: copybot_storage_core::PROVIDER_PUMP_FUN_PAID.to_string(),
+            side: "buy".to_string(),
+            quote_status: "ok".to_string(),
+            request_ts: now,
+            quote_latency_ms: Some(9),
+            quote_in_amount_raw: Some("10000000".to_string()),
+            quote_out_amount_raw: Some("123456".to_string()),
+            quote_response_json: Some(pump_quote_json()),
+            quote_price_sol: Some(0.081),
+            shadow_price_sol: Some(0.08),
+            slippage_bps: Some(125.0),
+            price_impact_pct: Some(0.01),
+            route_plan_json: Some(r#"[{"swapInfo":{"label":"Pump.fun Paid"}}]"#.to_string()),
+            decision_status: Some("would_execute".to_string()),
+            decision_reason: Some("within_slippage_limit".to_string()),
+            error: None,
+        },
+    )?;
+    let config = pump_fun_swap_config(&base_url);
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let state_machine =
+        crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(config, adapter);
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+    server.await?;
+    let order = store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .expect("order should exist");
+
+    assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.failed, 1);
+    assert_eq!(
+        order.err_code.as_deref(),
+        Some(copybot_storage_core::EXECUTION_ERROR_SIMULATION_FAILED)
+    );
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("custom program error: 0x1788"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -186,6 +249,22 @@ fn quote_event(
 
 fn pump_quote_json() -> String {
     r#"{"quote":{"mint":"TokenMint","bondingCurve":"BondingCurve","type":"BUY","inAmount":"10000000","inTokenAddress":"So11111111111111111111111111111111111111112","outAmount":"123456","outTokenAddress":"TokenMint","meta":{"isCompleted":false,"outDecimals":6,"inDecimals":9}}}"#.to_string()
+}
+
+fn pump_fun_swap_config(base_url: &str) -> ExecutionConfig {
+    let mut config = ExecutionConfig::default();
+    config.canary_enabled = true;
+    config.canary_dry_run = true;
+    config.canary_route =
+        crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN.to_string();
+    config.canary_wallet_pubkey = "11111111111111111111111111111111".to_string();
+    config.quote_canary_enabled = true;
+    config.quote_canary_base_url = base_url.to_string();
+    config.quote_canary_timeout_ms = 1_000;
+    config.quote_canary_buy_slippage_bps = 500;
+    config.swap_instructions_dry_run_enabled = true;
+    config.swap_transaction_dry_run_enabled = true;
+    config
 }
 
 fn unique_pump_fun_swap_test_path(name: &str) -> PathBuf {

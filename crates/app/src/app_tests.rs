@@ -67,6 +67,8 @@ mod execution_pump_fun_swap_transaction_contract;
 mod execution_quote_canary_hot_observed;
 #[path = "app_tests/50.rs"]
 mod execution_quote_canary_provider_fallback;
+#[path = "app_tests/77.rs"]
+mod execution_sell_quote_failure_contract;
 #[path = "app_tests/37.rs"]
 mod execution_state_machine;
 #[path = "app_tests/41.rs"]

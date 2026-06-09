@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 use crate::execution_canary_quote_pnl_gate::build_tiny_execution_gate;
 pub use crate::execution_canary_quote_pnl_gate::{TinyExecutionGate, TinyExecutionGateCheck};
 use crate::execution_canary_quote_pnl_metis::{build_metis_diagnostics, MetisDiagnosticsReport};
+use crate::execution_canary_quote_pnl_sell_side::{
+    build_sell_side_diagnostics, SellSideDiagnosticsReport,
+};
 
 #[path = "execution_canary_quote_pnl_cli.rs"]
 mod quote_pnl_cli;
@@ -54,6 +57,7 @@ pub struct CanaryQuotePnlOperatorReport {
     pub public_paid_comparison: Option<ExecutionQuoteCanaryPublicPaidComparisonSummary>,
     pub provider_selection: Option<ExecutionQuoteCanaryProviderSelectionSummary>,
     pub tiny_execution_proof: Option<ExecutionTinyProofReport>,
+    pub sell_side_diagnostics: Option<SellSideDiagnosticsReport>,
     pub tiny_execution_gate: Option<TinyExecutionGate>,
     pub metis_diagnostics: Option<MetisDiagnosticsReport>,
 }
@@ -72,6 +76,7 @@ impl CanaryQuotePnlOperatorReport {
             public_paid_comparison: None,
             provider_selection: None,
             tiny_execution_proof: None,
+            sell_side_diagnostics: None,
             tiny_execution_gate: None,
             metis_diagnostics: None,
         }
@@ -285,6 +290,7 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
             );
         }
     };
+    let sell_side_diagnostics = build_sell_side_diagnostics(&tiny_execution_proof);
     let recent_loss =
         match store.execution_canary_realized_loss_sol_since(as_of - Duration::hours(24)) {
             Ok(loss) => loss,
@@ -349,6 +355,7 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         public_paid_comparison: Some(public_paid_comparison),
         provider_selection: Some(provider_selection),
         tiny_execution_proof: Some(tiny_execution_proof),
+        sell_side_diagnostics: Some(sell_side_diagnostics),
         tiny_execution_gate: Some(tiny_execution_gate),
         metis_diagnostics,
     }

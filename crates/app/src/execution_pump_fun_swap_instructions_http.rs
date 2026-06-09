@@ -65,6 +65,15 @@ fn pump_fun_swap_instructions_summary(
             truncate_for_log(&error.to_string(), 240)
         ));
     }
+    if let Some(error) = value
+        .get("simulationError")
+        .filter(|error| !error.is_null())
+    {
+        return Err(anyhow!(
+            "pump.fun swap-instructions dry-run simulation error: {}",
+            truncate_for_log(&error.to_string(), 240)
+        ));
+    }
     let instructions = value
         .get("instructions")
         .and_then(Value::as_array)
