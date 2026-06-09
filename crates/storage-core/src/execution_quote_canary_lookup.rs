@@ -185,12 +185,21 @@ impl SqliteDiscoveryStore {
                    AND EXISTS (
                         SELECT 1
                         FROM positions AS pos
-                        JOIN orders AS buy_order
-                          ON pos.position_id = 'exec-canary-pos:' || buy_order.order_id
                         WHERE pos.token = event.token
                           AND pos.accounting_bucket = ?5
                           AND pos.state = ?6
-                          AND event.request_ts >= buy_order.submit_ts
+                          AND (
+                              (
+                                  pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
+                                  AND event.request_ts >= pos.opened_ts
+                              )
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM orders AS buy_order
+                                  WHERE pos.position_id = 'exec-canary-pos:' || buy_order.order_id
+                                    AND event.request_ts >= buy_order.submit_ts
+                              )
+                          )
                    )
                    AND NOT EXISTS (
                         SELECT 1
@@ -244,12 +253,21 @@ impl SqliteDiscoveryStore {
                    AND EXISTS (
                         SELECT 1
                         FROM positions AS pos
-                        JOIN orders AS buy_order
-                          ON pos.position_id = 'exec-canary-pos:' || buy_order.order_id
                         WHERE pos.token = event.token
                           AND pos.accounting_bucket = ?5
                           AND pos.state = ?6
-                          AND event.request_ts >= buy_order.submit_ts
+                          AND (
+                              (
+                                  pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
+                                  AND event.request_ts >= pos.opened_ts
+                              )
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM orders AS buy_order
+                                  WHERE pos.position_id = 'exec-canary-pos:' || buy_order.order_id
+                                    AND event.request_ts >= buy_order.submit_ts
+                              )
+                          )
                    )
                    AND NOT EXISTS (
                         SELECT 1

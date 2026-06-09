@@ -163,6 +163,88 @@ fn close_submit_retry_events_ignore_quotes_before_current_buy_submit() -> Result
     Ok(())
 }
 
+#[test]
+fn close_submit_retry_events_include_recovery_orphan_open_positions() -> Result<()> {
+    let store = open_migrated_store("execution-quote-canary-close-retry-recovery-orphan")?;
+    let now = ts("2026-06-02T08:00:00Z");
+    store.record_execution_canary_open_position(
+        "recovery-orphan:TokenMint:5000:test",
+        "TokenMint",
+        50.0,
+        Some(TokenQuantity::new(50, 0)),
+        0.01,
+        now - Duration::minutes(10),
+    )?;
+
+    let before_signal = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal("sell-recovery-before-open", now - Duration::minutes(20))
+    };
+    store.insert_copy_signal(&before_signal)?;
+    let mut before_event = quote_event(
+        "quote:close:recovery-before-open",
+        &before_signal,
+        now - Duration::minutes(20),
+        "12000000",
+    );
+    before_event.side = "sell".to_string();
+    before_event.quote_in_amount_raw = Some("50".to_string());
+    store.record_execution_quote_canary_event(&before_event)?;
+
+    let after_signal = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal("sell-recovery-after-open", now)
+    };
+    store.insert_copy_signal(&after_signal)?;
+    let mut after_event = quote_event(
+        "quote:close:recovery-after-open",
+        &after_signal,
+        now,
+        "12000000",
+    );
+    after_event.side = "sell".to_string();
+    after_event.quote_in_amount_raw = Some("50".to_string());
+    store.record_execution_quote_canary_event(&after_event)?;
+
+    let missing_priority_signal = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal("sell-recovery-missing-priority", now + Duration::seconds(1))
+    };
+    store.insert_copy_signal(&missing_priority_signal)?;
+    let mut missing_priority_event = quote_event(
+        "quote:close:recovery-missing-priority",
+        &missing_priority_signal,
+        now + Duration::seconds(1),
+        "12000000",
+    );
+    missing_priority_event.side = "sell".to_string();
+    missing_priority_event.quote_in_amount_raw = Some("50".to_string());
+    missing_priority_event.priority_fee_status = None;
+    missing_priority_event.priority_fee_lamports = None;
+    store.record_execution_quote_canary_event(&missing_priority_event)?;
+
+    let retry_events = store
+        .list_execution_quote_canary_close_submit_retry_event_ids(now - Duration::hours(1), 10)?;
+    let priority_retry_events = store
+        .list_execution_quote_canary_close_priority_fee_retry_event_ids(
+            now - Duration::hours(1),
+            10,
+        )?;
+
+    assert_eq!(
+        retry_events,
+        vec![
+            "quote:close:recovery-after-open".to_string(),
+            "quote:close:recovery-missing-priority".to_string()
+        ]
+    );
+    assert_eq!(
+        priority_retry_events,
+        vec!["quote:close:recovery-missing-priority".to_string()]
+    );
+    Ok(())
+}
+
 fn signal(signal_id: &str, ts: DateTime<Utc>) -> CopySignalRow {
     CopySignalRow {
         signal_id: signal_id.to_string(),
