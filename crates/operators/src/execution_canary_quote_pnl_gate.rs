@@ -24,6 +24,7 @@ pub struct TinyExecutionGate {
     pub can_open_new_tiny_entries: bool,
     pub can_process_tiny_sells: bool,
     pub blocker_count: u64,
+    pub startup_blocker_count: u64,
     pub runtime_blocker_count: u64,
     pub entry_runtime_blocker_count: u64,
     pub sell_runtime_blocker_count: u64,
@@ -224,12 +225,12 @@ fn finish_gate(
     recent_loss_sol_24h: f64,
     checks: Vec<TinyExecutionGateCheck>,
 ) -> TinyExecutionGate {
-    let blocker_count = checks
+    let startup_blocker_count = checks
         .iter()
         .filter(|check| check.status == "block")
         .count() as u64;
     let warning_count = checks.iter().filter(|check| check.status == "warn").count() as u64;
-    let status = if blocker_count > 0 {
+    let startup_readiness_status = if startup_blocker_count > 0 {
         "blocked"
     } else if warning_count > 0 {
         "ready_with_warnings"
@@ -243,15 +244,16 @@ fn finish_gate(
     );
 
     TinyExecutionGate {
-        status: status.to_string(),
-        startup_readiness_status: status.to_string(),
+        status: runtime.runtime_status.clone(),
+        startup_readiness_status: startup_readiness_status.to_string(),
         runtime_status: runtime.runtime_status,
         runtime_mode: runtime.runtime_mode,
-        can_start_tiny_execution: blocker_count == 0,
+        can_start_tiny_execution: runtime.can_open_new_tiny_entries,
         can_continue_tiny_execution: runtime.can_process_tiny_sells,
         can_open_new_tiny_entries: runtime.can_open_new_tiny_entries,
         can_process_tiny_sells: runtime.can_process_tiny_sells,
-        blocker_count,
+        blocker_count: runtime.runtime_blocker_count,
+        startup_blocker_count,
         runtime_blocker_count: runtime.runtime_blocker_count,
         entry_runtime_blocker_count: runtime.entry_runtime_blocker_count,
         sell_runtime_blocker_count: runtime.sell_runtime_blocker_count,

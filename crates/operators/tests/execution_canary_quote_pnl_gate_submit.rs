@@ -55,7 +55,9 @@ fn tiny_execution_gate_blocks_pending_submit_and_retry_ready_orders() -> Result<
     assert_eq!(gate.pending_submit_orders, 2);
     assert_eq!(gate.retry_ready_orders, 1);
     assert_eq!(gate.retry_budget_blocked_orders, 2);
+    assert_eq!(gate.status, "blocked");
     assert_eq!(gate.startup_readiness_status, "blocked");
+    assert!(gate.startup_blocker_count >= gate.blocker_count);
     assert_eq!(gate.runtime_status, "blocked");
     assert!(gate
         .runtime_blockers
@@ -104,6 +106,8 @@ fn tiny_execution_gate_separates_paused_entries_from_sell_close_path() -> Result
         .as_ref()
         .unwrap_or_else(|| panic!("tiny execution gate should exist: {:?}", report.error));
 
+    assert_eq!(gate.status, "entries_paused");
+    assert_eq!(gate.startup_readiness_status, "blocked");
     assert_eq!(gate.runtime_status, "entries_paused");
     assert_eq!(
         gate.runtime_mode,
@@ -126,6 +130,49 @@ fn tiny_execution_gate_separates_paused_entries_from_sell_close_path() -> Result
         .why_not_trading_now
         .iter()
         .any(|reason| reason.contains("canary_entry_submit_enabled=false")));
+    Ok(())
+}
+
+#[test]
+fn tiny_execution_gate_status_reports_runtime_not_startup_readiness() -> Result<()> {
+    let dir = tempdir()?;
+    let state_dir = dir.path().join("state");
+    fs::create_dir(&state_dir)?;
+    let db_path = state_dir.join("runtime.db");
+    let signer_path = dir.path().join("tiny-signer.json");
+    let submit_token_path = dir.path().join("submit-adapter.token");
+    let signer_pubkey = write_test_keypair(&signer_path)?;
+    fs::write(&submit_token_path, "test-token")?;
+
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = ts("2026-06-08T12:00:00Z");
+    store.record_execution_quote_canary_event(&quote_event(now))?;
+    drop(store);
+
+    let config_path = dir.path().join("live.toml");
+    fs::write(
+        &config_path,
+        tiny_config(&db_path, &signer_path, &submit_token_path, &signer_pubkey),
+    )?;
+    let report = build_report_from_config_path(&config_path, now + Duration::seconds(40));
+    let gate = report
+        .tiny_execution_gate
+        .as_ref()
+        .unwrap_or_else(|| panic!("tiny execution gate should exist: {:?}", report.error));
+
+    assert_eq!(gate.status, "ready");
+    assert_eq!(gate.startup_readiness_status, "blocked");
+    assert!(gate.startup_blocker_count > 0);
+    assert_eq!(gate.blocker_count, 0);
+    assert_eq!(gate.runtime_blocker_count, 0);
+    assert!(gate.can_start_tiny_execution);
+    assert!(gate.can_open_new_tiny_entries);
+    assert!(gate.can_process_tiny_sells);
+    assert_gate_check(gate, "quote_readiness_gate", "block");
     Ok(())
 }
 

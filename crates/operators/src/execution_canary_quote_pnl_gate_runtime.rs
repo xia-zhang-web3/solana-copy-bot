@@ -112,7 +112,8 @@ fn is_sell_runtime_blocker(name: &str) -> bool {
 fn is_entry_runtime_blocker(name: &str) -> bool {
     matches!(
         name,
-        "execution_disabled"
+        "config_loaded"
+            | "execution_disabled"
             | "canary_enabled"
             | "canary_dry_run"
             | "canary_tiny_submit_enabled"
