@@ -89,6 +89,11 @@ fn simulation_error_class(value: Option<&str>) -> String {
     if lower.contains("bonding curve for mint not found") {
         return "pump_fun_bonding_curve_not_found".to_string();
     }
+    if lower.contains("market not found")
+        || (lower.contains("market ") && lower.contains(" not found"))
+    {
+        return "market_not_found".to_string();
+    }
     if let Some(hex) = custom_program_error_code(&lower) {
         return format!("custom_program_error:{hex}");
     }

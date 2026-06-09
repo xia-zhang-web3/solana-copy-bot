@@ -58,7 +58,13 @@ pub fn build_tiny_execution_quality(
         .canary_exit_would_execute_trades
         .saturating_sub(proof_summary.tiny_exit_ordered_trades);
     let sample_status = sample_status(proof_summary.shadow_market_closed_trades);
-    let top_flow_blockers = top_flow_blockers(proof, entry_failed, exit_failed, entry_missing);
+    let top_flow_blockers = top_flow_blockers(
+        proof,
+        entry_failed,
+        exit_failed,
+        entry_missing,
+        exit_missing,
+    );
     let verdict = verdict(
         &sample_status,
         entry_failed,
@@ -157,6 +163,7 @@ fn top_flow_blockers(
     entry_failed: u64,
     exit_failed: u64,
     entry_missing: u64,
+    exit_missing: u64,
 ) -> Vec<TinyExecutionQualityBlocker> {
     let mut blockers = Vec::new();
     if entry_missing > 0 {
@@ -164,6 +171,13 @@ fn top_flow_blockers(
             stage: "entry_order".to_string(),
             reason: "missing_tiny_order_after_would_execute".to_string(),
             count: entry_missing,
+        });
+    }
+    if exit_missing > 0 {
+        blockers.push(TinyExecutionQualityBlocker {
+            stage: "exit_order".to_string(),
+            reason: "missing_tiny_sell_order_after_would_execute".to_string(),
+            count: exit_missing,
         });
     }
     for count in &proof.order_failure_counts {
