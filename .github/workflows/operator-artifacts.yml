@@ -160,11 +160,6 @@ jobs:
           echo "ARCH_GUARD_DIFF_RANGE=$range" >> "$GITHUB_ENV"
           echo "architecture_guard_range=$range"
 
-      - name: Architecture guard
-        run: |
-          tools/architecture_guard.sh --changed
-          tools/architecture_guard.sh --all
-
       - name: Classify artifact scope
         shell: bash
         run: |
@@ -223,6 +218,12 @@ jobs:
           echo "LEGACY_STORAGE_TEST_SELECTED=$legacy_storage_test_selected" >> "$GITHUB_ENV"
           echo "STORAGE_CORE_TEST_SELECTED=$storage_core_test_selected" >> "$GITHUB_ENV"
           echo "build_selected=$build_selected legacy_restore_test_selected=$legacy_restore_test_selected legacy_storage_test_selected=$legacy_storage_test_selected storage_core_test_selected=$storage_core_test_selected package=${{ matrix.package }}"
+
+      - name: Architecture guard
+        if: env.BUILD_SELECTED == '1' || env.LEGACY_RESTORE_TEST_SELECTED == '1' || env.LEGACY_STORAGE_TEST_SELECTED == '1' || env.STORAGE_CORE_TEST_SELECTED == '1'
+        run: |
+          tools/architecture_guard.sh --changed
+          tools/architecture_guard.sh --all
 
       - name: Legacy restore verdict quarantine test
         if: matrix.package == 'copybot-discovery-v2' && env.LEGACY_RESTORE_TEST_SELECTED == '1'
