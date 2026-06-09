@@ -16,6 +16,7 @@ use copybot_storage_core::SqliteStore;
 mod tiny_submit;
 mod tiny_submit_retry;
 mod tiny_submit_sell;
+mod tiny_submit_sell_retry;
 mod tiny_submit_timeout;
 
 use self::tiny_submit::{

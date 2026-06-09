@@ -2,11 +2,16 @@ use crate::{
     execution_canary_rows::execution_canary_order_from_row, ExecutionCanaryOrder,
     SqliteDiscoveryStore, EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
     EXECUTION_CANARY_POSITION_STATE_OPEN, EXECUTION_ERROR_SIMULATION_FAILED,
+    EXECUTION_SIMULATION_STATUS_NOT_RUN, EXECUTION_STATUS_CANARY_CANDIDATE,
     EXECUTION_STATUS_CANARY_FAILED, EXECUTION_STATUS_CANARY_SIMULATED,
     EXECUTION_STATUS_CANARY_SUBMITTED,
 };
 use anyhow::{Context, Result};
 use rusqlite::params;
+
+const QUOTE_STATUS_OK: &str = "ok";
+const DECISION_WOULD_EXECUTE: &str = "would_execute";
+const DECISION_WOULD_FORCE_EXIT: &str = "would_force_exit";
 
 impl SqliteDiscoveryStore {
     pub fn list_reconcilable_execution_canary_orders_for_route(
@@ -117,5 +122,61 @@ impl SqliteDiscoveryStore {
             .context("failed querying failed simulation sell orders")?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("failed reading failed simulation sell orders")
+    }
+
+    pub fn list_retry_candidate_sell_execution_quote_event_ids_for_route(
+        &self,
+        route: &str,
+        retry_reason: &str,
+        limit: u32,
+    ) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT event.event_id
+                 FROM orders
+                 JOIN copy_signals ON copy_signals.signal_id = orders.signal_id
+                 JOIN execution_quote_canary_events AS event
+                   ON event.signal_id = orders.signal_id
+                  AND lower(event.side) = 'sell'
+                 WHERE orders.order_id LIKE 'exec-canary:%'
+                   AND orders.route = ?1
+                   AND orders.status = ?2
+                   AND orders.simulation_status = ?3
+                   AND orders.simulation_error = ?4
+                   AND (orders.tx_signature IS NULL OR TRIM(orders.tx_signature) = '')
+                   AND lower(copy_signals.side) = 'sell'
+                   AND event.quote_status = ?5
+                   AND event.decision_status IN (?6, ?7)
+                   AND EXISTS (
+                        SELECT 1
+                        FROM positions AS pos
+                        WHERE pos.token = copy_signals.token
+                          AND pos.accounting_bucket = ?8
+                          AND pos.state = ?9
+                   )
+                 ORDER BY orders.submit_ts ASC, event.request_ts DESC, event.event_id DESC
+                 LIMIT ?10",
+            )
+            .context("failed to prepare retry candidate sell quote event query")?;
+        let rows = stmt
+            .query_map(
+                params![
+                    route,
+                    EXECUTION_STATUS_CANARY_CANDIDATE,
+                    EXECUTION_SIMULATION_STATUS_NOT_RUN,
+                    retry_reason,
+                    QUOTE_STATUS_OK,
+                    DECISION_WOULD_EXECUTE,
+                    DECISION_WOULD_FORCE_EXIT,
+                    EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+                    EXECUTION_CANARY_POSITION_STATE_OPEN,
+                    i64::from(limit.max(1)),
+                ],
+                |row| row.get(0),
+            )
+            .context("failed querying retry candidate sell quote events")?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed reading retry candidate sell quote events")
     }
 }

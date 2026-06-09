@@ -4,10 +4,10 @@ use copybot_core_types::{
     CopySignalRow, Lamports, TokenQuantity, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS,
 };
 use copybot_storage_core::{
-    ExecutionCanaryBuildPlanMetadata, SqliteStore, EXECUTION_ERROR_SIMULATION_FAILED,
-    EXECUTION_SIMULATION_STATUS_FAILED, EXECUTION_SIMULATION_STATUS_NOT_RUN,
-    EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_STATUS_CANARY_CANDIDATE,
-    EXECUTION_STATUS_CANARY_CONFIRMED,
+    ExecutionCanaryBuildPlanMetadata, ExecutionQuoteCanaryEventInsert, SqliteStore,
+    EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_SIMULATION_STATUS_FAILED,
+    EXECUTION_SIMULATION_STATUS_NOT_RUN, EXECUTION_SIMULATION_STATUS_PASSED,
+    EXECUTION_STATUS_CANARY_CANDIDATE, EXECUTION_STATUS_CANARY_CONFIRMED,
 };
 use tempfile::tempdir;
 
@@ -228,6 +228,60 @@ fn failed_simulation_retry_candidate_clears_stale_build_metadata() -> Result<()>
     Ok(())
 }
 
+#[test]
+fn retry_candidate_sell_event_lookup_includes_existing_retry_candidate_order() -> Result<()> {
+    let store = open_migrated_store("retry-candidate-sell-event")?;
+    let now = ts("2026-06-08T12:30:00Z");
+    let signal_id = "sell-retry-candidate";
+    let route = "metis-swap-instructions-dry-run";
+    store.record_execution_canary_open_position(
+        "exec-canary:buy-filled",
+        "TokenMint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        now,
+    )?;
+    let sell_signal = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal(signal_id, now + Duration::seconds(1))
+    };
+    store.insert_copy_signal(&sell_signal)?;
+    store.record_execution_quote_canary_event(&sell_quote_event(
+        "quote:close:retry-candidate",
+        &sell_signal,
+        now + Duration::seconds(2),
+    ))?;
+    let reserve = store.reserve_execution_canary_order(signal_id, route, now)?;
+    store.mark_execution_canary_built(&reserve.order.order_id, now + Duration::seconds(3))?;
+    store.mark_execution_canary_simulated(
+        &reserve.order.order_id,
+        now + Duration::seconds(4),
+        EXECUTION_SIMULATION_STATUS_FAILED,
+        Some("old simulation failed"),
+    )?;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        now + Duration::seconds(5),
+        EXECUTION_ERROR_SIMULATION_FAILED,
+        "old simulation failed",
+    )?;
+    store.mark_execution_canary_failed_simulation_retry_candidate(
+        &reserve.order.order_id,
+        now + Duration::seconds(6),
+        "retry_failed_sell_with_owned_position_amount",
+    )?;
+
+    let events = store.list_retry_candidate_sell_execution_quote_event_ids_for_route(
+        route,
+        "retry_failed_sell_with_owned_position_amount",
+        10,
+    )?;
+
+    assert_eq!(events, vec!["quote:close:retry-candidate".to_string()]);
+    Ok(())
+}
+
 fn retry_ready_simulated_order(
     store: &SqliteStore,
     signal_id: &str,
@@ -332,5 +386,40 @@ fn metadata_for_order(
         slippage_bps: Some(0.0),
         decision_status: Some("would_execute".to_string()),
         decision_reason: Some("within_slippage_limit".to_string()),
+    }
+}
+
+fn sell_quote_event(
+    event_id: &str,
+    signal: &CopySignalRow,
+    request_ts: DateTime<Utc>,
+) -> ExecutionQuoteCanaryEventInsert {
+    ExecutionQuoteCanaryEventInsert {
+        event_id: event_id.to_string(),
+        signal_id: Some(signal.signal_id.clone()),
+        shadow_closed_trade_id: Some(42),
+        wallet_id: signal.wallet_id.clone(),
+        token: signal.token.clone(),
+        side: "sell".to_string(),
+        quote_status: "ok".to_string(),
+        request_ts,
+        signal_ts: Some(signal.ts),
+        decision_delay_ms: Some(1000),
+        quote_latency_ms: Some(50),
+        leader_notional_sol: Some(signal.notional_sol),
+        quote_in_amount_raw: Some("10000".to_string()),
+        quote_out_amount_raw: Some("11000000".to_string()),
+        quote_response_json: Some("{\"loadedLongtailToken\":true}".to_string()),
+        quote_price_sol: Some(0.0011),
+        shadow_price_sol: Some(0.001),
+        slippage_bps: Some(50.0),
+        price_impact_pct: Some(0.01),
+        route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
+        priority_fee_status: Some("ok".to_string()),
+        priority_fee_lamports: Some(12_345),
+        priority_fee_json: Some("{\"recommended\":12345}".to_string()),
+        decision_status: Some("would_execute".to_string()),
+        decision_reason: Some("within_slippage_limit".to_string()),
+        error: None,
     }
 }
