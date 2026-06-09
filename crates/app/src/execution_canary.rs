@@ -166,6 +166,11 @@ impl ExecutionCanaryRunner {
         let since = now - Duration::seconds(self.config.canary_max_signal_age_seconds as i64);
         let signals = if uses_swap_blueprint_state_machine(&self.config) {
             if let Some(state) =
+                process_tiny_submit_reconciliation_sweep(&self.config, store, now).await?
+            {
+                apply_state_machine_summary(&mut summary, state);
+            }
+            if let Some(state) =
                 process_tiny_submit_orphan_position_recovery_sweep(&self.config, store, now).await?
             {
                 apply_state_machine_summary(&mut summary, state);
@@ -186,11 +191,6 @@ impl ExecutionCanaryRunner {
                 self.process_recent_close_quote_retries(store, now, &mut summary)
                     .await?;
                 apply_quote_summary(&mut summary, quote_summary);
-            }
-            if let Some(state) =
-                process_tiny_submit_reconciliation_sweep(&self.config, store, now).await?
-            {
-                apply_state_machine_summary(&mut summary, state);
             }
             if let Some(state) =
                 process_failed_sell_simulation_sweep(&self.config, store, now).await?
