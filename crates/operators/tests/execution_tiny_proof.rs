@@ -84,6 +84,14 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
         opened_win,
         "buy-signature",
     )?;
+    store.record_execution_canary_open_position(
+        "exec-canary-pos:recovery-orphan:TokenWin",
+        "TokenWin",
+        1.0,
+        None,
+        0.001,
+        opened_win - Duration::seconds(5),
+    )?;
     store.record_execution_canary_confirmed_buy_fill(
         &buy_order_id,
         "TokenWin",
@@ -105,13 +113,12 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
     store.close_execution_canary_confirmed_sell_fill(
         &sell_order_id,
         "TokenWin",
-        100.0,
+        101.0,
         None,
         0.00012,
         0.000001,
         closed_win + Duration::milliseconds(1600),
     )?;
-
     let opened_skip = ts("2026-06-02T12:01:00Z");
     let closed_skip = opened_skip + Duration::seconds(20);
     store.insert_shadow_closed_trade_exact(
@@ -179,8 +186,8 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
     assert_eq!(proof.summary.tiny_closed_positions, 1);
     assert_eq!(proof.summary.tiny_open_positions, 0);
     assert_close(proof.summary.shadow_pnl_sol, 0.05);
-    assert_close(proof.summary.tiny_realized_pnl_sol, 0.002);
-    assert_close(proof.summary.tiny_vs_shadow_delta_sol, -0.048);
+    assert_close(proof.summary.tiny_realized_pnl_sol, 0.00112);
+    assert_close(proof.summary.tiny_vs_shadow_delta_sol, -0.04888);
     assert_eq!(proof.entry_funnel.total_buy_quote_events, 2);
     assert_eq!(proof.entry_funnel.quote_would_execute_events, 1);
     assert_eq!(proof.entry_funnel.quote_would_skip_events, 1);
@@ -201,7 +208,6 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
         proof.entry_funnel.tiny_missing_order_shadow_pending_events,
         0
     );
-
     assert_reason(proof, "position", "tiny_closed", 1);
     assert_reason(proof, "entry_decision", "entry_decision:would_skip", 1);
     assert_eq!(proof.latency.entry_quote_latency_ms.samples, 2);

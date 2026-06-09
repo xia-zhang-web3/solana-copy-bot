@@ -421,8 +421,17 @@ LEFT JOIN copy_signals AS copy_sell
 LEFT JOIN execution_canary_build_plan_metadata AS sell_metadata
     ON sell_metadata.order_id = sell_order.order_id
 LEFT JOIN positions AS pos
-    ON pos.position_id = 'exec-canary-pos:' || buy_order.order_id
-   AND pos.accounting_bucket = 'execution_canary'
+    ON pos.position_id = (
+        SELECT candidate.position_id FROM positions AS candidate
+        WHERE candidate.accounting_bucket = 'execution_canary'
+          AND buy_order.order_id IS NOT NULL
+          AND (candidate.position_id = 'exec-canary-pos:' || buy_order.order_id
+               OR (candidate.token = closed.token
+                   AND buy_order.status = 'execution_canary_confirmed'
+                   AND candidate.opened_ts <= COALESCE(sell_order.confirm_ts, closed.closed_ts)
+                   AND COALESCE(candidate.closed_ts, '9999-12-31T00:00:00Z') >= buy_order.confirm_ts))
+        ORDER BY candidate.opened_ts DESC, candidate.position_id DESC LIMIT 1
+    )
 WHERE closed.closed_ts >= ?1
   AND COALESCE(closed.close_context, 'market') = 'market'
   AND closed.signal_id NOT LIKE 'stale-close-%'
