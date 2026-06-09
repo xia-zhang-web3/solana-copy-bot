@@ -1,4 +1,7 @@
 use super::tiny_submit::apply_tiny_submit_confirm_path_outcome;
+use super::tiny_submit_expiry::{
+    retry_budget_exhausted_reason, TINY_SUBMIT_RETRY_BUDGET_EXHAUSTED,
+};
 use crate::execution_build_plan_metadata::record_execution_build_plan_metadata;
 use crate::execution_canary_signing_contract::record_execution_signing_envelope;
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
@@ -54,14 +57,12 @@ pub(super) async fn retry_existing_simulated_tiny_submit_order(
         return Ok(());
     }
     if order.attempt > config.max_submit_attempts.max(1) {
-        let order = store.mark_execution_canary_expired(
-            &order.order_id,
-            now,
-            "submit_retry_budget_exhausted",
-        )?;
+        let reason = retry_budget_exhausted_reason(order);
+        let order = store.mark_execution_canary_expired(&order.order_id, now, &reason)?;
         if order.status == EXECUTION_STATUS_CANARY_EXPIRED {
             summary.expired += 1;
-            summary.skipped_reason = Some("submit_retry_budget_exhausted");
+            summary.skipped_reason = Some(TINY_SUBMIT_RETRY_BUDGET_EXHAUSTED);
+            summary.last_error = Some(reason);
         }
         return Ok(());
     }

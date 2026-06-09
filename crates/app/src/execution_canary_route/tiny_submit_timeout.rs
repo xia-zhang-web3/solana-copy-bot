@@ -1,3 +1,6 @@
+use super::tiny_submit_expiry::{
+    retry_budget_exhausted_reason, TINY_SUBMIT_RETRY_BUDGET_EXHAUSTED,
+};
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
@@ -34,15 +37,13 @@ pub(super) fn process_tiny_submit_timeout(
         }
         EXECUTION_CANARY_CONFIRM_DECISION_RETRY => {
             if decision.order.attempt >= max_submit_attempts.max(1) {
-                let order = store.mark_execution_canary_expired(
-                    order_id,
-                    now,
-                    "submit_retry_budget_exhausted",
-                )?;
+                let reason = retry_budget_exhausted_reason(&decision.order);
+                let order = store.mark_execution_canary_expired(order_id, now, &reason)?;
                 if order.status == EXECUTION_STATUS_CANARY_EXPIRED {
                     summary.expired += 1;
-                    summary.skipped_reason = Some("submit_retry_budget_exhausted");
-                    summary.last_confirm_reason = Some("submit_retry_budget_exhausted".to_string());
+                    summary.skipped_reason = Some(TINY_SUBMIT_RETRY_BUDGET_EXHAUSTED);
+                    summary.last_confirm_reason = Some(reason.clone());
+                    summary.last_error = Some(reason);
                 }
                 return Ok(());
             }

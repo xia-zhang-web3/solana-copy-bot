@@ -221,6 +221,11 @@ async fn tiny_submit_sweep_expires_unknown_without_signature_when_retry_budget_i
     );
     assert_eq!(order.attempt, 1);
     assert!(order.tx_signature.is_none());
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .starts_with("submit_retry_budget_exhausted_after:submitted_without_signature"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())

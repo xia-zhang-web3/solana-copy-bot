@@ -76,7 +76,79 @@ async fn pump_fun_paid_quote_builds_pump_fun_swap_transaction_payload() -> Resul
 }
 
 #[tokio::test]
-async fn pump_fun_swap_instructions_simulation_error_marks_order_failed() -> Result<()> {
+async fn pump_fun_swap_instructions_error_is_soft_when_transaction_payload_passes() -> Result<()> {
+    let db_path = unique_pump_fun_swap_test_path("instructions-soft-error");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let request = read_http_request(&listener).await;
+        assert!(request.starts_with("POST /pump-fun/swap-instructions "));
+        write_http_status_json(
+            request.into_socket,
+            400,
+            r#"{"status":"error","message":"Failed to simulate transaction {\"InstructionError\":[3,{\"Custom\":6063}]}"}"#,
+        )
+        .await;
+
+        assert_pump_fun_request(read_http_request(&listener).await, "/pump-fun/swap").await;
+    });
+    let now = Utc::now();
+    let signal = pump_fun_swap_signal(now);
+    store.insert_copy_signal(&signal)?;
+    store.record_execution_quote_canary_event(&quote_event(&signal, now))?;
+    store.record_execution_quote_canary_provider_sample(
+        &copybot_storage_core::ExecutionQuoteCanaryProviderSampleInsert {
+            event_id: format!("quote:entry:{}", signal.signal_id),
+            provider: copybot_storage_core::PROVIDER_PUMP_FUN_PAID.to_string(),
+            side: "buy".to_string(),
+            quote_status: "ok".to_string(),
+            request_ts: now,
+            quote_latency_ms: Some(9),
+            quote_in_amount_raw: Some("10000000".to_string()),
+            quote_out_amount_raw: Some("123456".to_string()),
+            quote_response_json: Some(pump_quote_json()),
+            quote_price_sol: Some(0.081),
+            shadow_price_sol: Some(0.08),
+            slippage_bps: Some(125.0),
+            price_impact_pct: Some(0.01),
+            route_plan_json: Some(r#"[{"swapInfo":{"label":"Pump.fun Paid"}}]"#.to_string()),
+            decision_status: Some("would_execute".to_string()),
+            decision_reason: Some("within_slippage_limit".to_string()),
+            error: None,
+        },
+    )?;
+    let config = pump_fun_swap_config(&base_url);
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let state_machine =
+        crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(config, adapter);
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+    server.await?;
+    let order = store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .expect("order should exist");
+
+    assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.signing_envelope_built, 1);
+    assert_eq!(summary.submit_disabled, 1);
+    let simulation = order.simulation_error.as_deref().unwrap_or_default();
+    assert!(simulation.contains("pump_fun_swap_instructions_soft_failed"));
+    assert!(simulation.contains("pump_fun_swap_transaction_ok"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pump_fun_swap_transaction_simulation_error_marks_order_failed() -> Result<()> {
     let db_path = unique_pump_fun_swap_test_path("instructions-simulation-error");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -91,6 +163,14 @@ async fn pump_fun_swap_instructions_simulation_error_marks_order_failed() -> Res
         write_http_json(
             request.into_socket,
             r#"{"simulationError":"Transaction simulation failed: custom program error: 0x1788","instructions":[{"keys":[],"programId":"ComputeBudget111111111111111111111111111111","data":[2]}]}"#,
+        )
+        .await;
+
+        let request = read_http_request(&listener).await;
+        assert!(request.starts_with("POST /pump-fun/swap "));
+        write_http_json(
+            request.into_socket,
+            r#"{"simulationError":"Transaction simulation failed: custom program error: 0x1788"}"#,
         )
         .await;
     });
@@ -143,7 +223,7 @@ async fn pump_fun_swap_instructions_simulation_error_marks_order_failed() -> Res
         .simulation_error
         .as_deref()
         .unwrap_or_default()
-        .contains("custom program error: 0x1788"));
+        .contains("pump.fun swap transaction dry-run simulation error"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -187,9 +267,13 @@ async fn read_http_request(listener: &tokio::net::TcpListener) -> CapturedReques
     }
 }
 
-async fn write_http_json(mut socket: tokio::net::TcpStream, body: &str) {
+async fn write_http_json(socket: tokio::net::TcpStream, body: &str) {
+    write_http_status_json(socket, 200, body).await;
+}
+
+async fn write_http_status_json(mut socket: tokio::net::TcpStream, status: u16, body: &str) {
     let response = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+        "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
         body.len(),
         body
     );

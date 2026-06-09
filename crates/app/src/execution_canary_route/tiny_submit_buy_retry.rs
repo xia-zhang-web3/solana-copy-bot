@@ -93,4 +93,15 @@ fn transient_buy_simulation_error(error: Option<&str>) -> bool {
     is_missing_account_error_text(&lower)
         || lower.contains("market not found")
         || (lower.contains("market ") && lower.contains(" not found"))
+        || pump_fun_paid_simulation_retryable(&lower)
+}
+
+fn pump_fun_paid_simulation_retryable(lower_error: &str) -> bool {
+    lower_error.contains("pump.fun swap")
+        && lower_error.contains("failed to simulate transaction")
+        && (lower_error.contains("custom\":6063")
+            || lower_error.contains("\"custom\":6063")
+            || lower_error.contains("custom program error: 0x1788")
+            || lower_error.contains("too much sol")
+            || lower_error.contains("too little sol"))
 }

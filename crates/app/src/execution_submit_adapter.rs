@@ -337,8 +337,12 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
             validate_execution_swap_blueprint_for_simulation(blueprint)?;
             if plan.metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_PUMP_FUN_PAID) {
                 let instructions_proof =
-                    fetch_pump_fun_swap_instructions_dry_run(&self.http, &self.config, plan)
-                        .await?;
+                    match fetch_pump_fun_swap_instructions_dry_run(&self.http, &self.config, plan)
+                        .await
+                    {
+                        Ok(proof) => proof,
+                        Err(error) => Some(soft_pump_fun_swap_instructions_failure_proof(&error)),
+                    };
                 let transaction_dry_run =
                     fetch_pump_fun_swap_transaction_dry_run(&self.http, &self.config, plan).await?;
                 if let Some(transaction) = transaction_dry_run.as_ref() {
@@ -432,4 +436,11 @@ fn soft_swap_instructions_failure_proof(error: &anyhow::Error) -> Option<String>
         "metis_swap_instructions_missing_account_soft_failed error={}",
         truncate_for_log(&message, 180)
     ))
+}
+
+fn soft_pump_fun_swap_instructions_failure_proof(error: &anyhow::Error) -> String {
+    format!(
+        "pump_fun_swap_instructions_soft_failed error={}",
+        truncate_for_log(&error.to_string(), 180)
+    )
 }
