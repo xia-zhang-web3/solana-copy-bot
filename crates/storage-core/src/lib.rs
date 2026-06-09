@@ -22,6 +22,7 @@ mod execution_canary_report;
 mod execution_canary_retry;
 mod execution_canary_retry_terminal;
 mod execution_canary_rows;
+mod execution_canary_sell_boundary;
 mod execution_canary_sell_reserve;
 mod execution_canary_state;
 mod execution_canary_submit_risk;

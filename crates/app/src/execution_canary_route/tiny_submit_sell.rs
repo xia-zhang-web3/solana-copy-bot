@@ -67,6 +67,12 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
         summary.skipped_reason = Some("sell_signal_side_mismatch");
         return Ok(Some(summary));
     }
+    if let Some(latest_buy_ts) = store.latest_live_execution_canary_buy_signal_ts(&signal.token)? {
+        if signal.ts < latest_buy_ts {
+            summary.skipped_reason = Some("sell_before_latest_buy");
+            return Ok(Some(summary));
+        }
+    }
 
     let retry_order =
         if let Some(existing) = store.load_execution_canary_order_by_signal(&signal.signal_id)? {
