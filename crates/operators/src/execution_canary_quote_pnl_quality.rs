@@ -173,10 +173,12 @@ fn verdict(
     tiny_vs_shadow_delta_sol: f64,
     quote_after_fee_sol: f64,
 ) -> String {
-    if exit_failed > 0 || exit_missing > 0 || open_positions > 0 {
+    if exit_failed > 0 || exit_missing > 0 {
         "sell_flow_loss".to_string()
     } else if entry_failed > 0 || entry_missing > 0 {
         "entry_flow_loss".to_string()
+    } else if open_positions > 0 {
+        "open_positions_present".to_string()
     } else if tiny_vs_shadow_delta_sol < 0.0 || quote_after_fee_sol < 0.0 {
         "execution_cost_negative".to_string()
     } else if sample_status != "sampled" {

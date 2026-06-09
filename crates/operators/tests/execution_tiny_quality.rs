@@ -18,13 +18,7 @@ fn ts(raw: &str) -> DateTime<Utc> {
 
 #[test]
 fn quality_summary_flags_entry_flow_loss() -> Result<()> {
-    let dir = tempdir()?;
-    let db_path = dir.path().join("runtime.db");
-    let mut store = SqliteStore::open(&db_path)?;
-    store.run_migrations(std::path::Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../migrations"
-    )))?;
+    let (_dir, db_path, store) = open_store()?;
 
     let opened_ts = ts("2026-06-09T16:54:29Z");
     let closed_ts = opened_ts + Duration::seconds(45);
@@ -85,13 +79,7 @@ fn quality_summary_flags_entry_flow_loss() -> Result<()> {
 
 #[test]
 fn quality_summary_flags_exit_flow_loss() -> Result<()> {
-    let dir = tempdir()?;
-    let db_path = dir.path().join("runtime.db");
-    let mut store = SqliteStore::open(&db_path)?;
-    store.run_migrations(std::path::Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../migrations"
-    )))?;
+    let (_dir, db_path, store) = open_store()?;
 
     let opened_ts = ts("2026-06-09T16:55:00Z");
     let closed_ts = opened_ts + Duration::seconds(30);
@@ -161,13 +149,7 @@ fn quality_summary_flags_exit_flow_loss() -> Result<()> {
 
 #[test]
 fn quality_does_not_flag_missing_exit_when_position_is_already_closed() -> Result<()> {
-    let dir = tempdir()?;
-    let db_path = dir.path().join("runtime.db");
-    let mut store = SqliteStore::open(&db_path)?;
-    store.run_migrations(std::path::Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../migrations"
-    )))?;
+    let (_dir, db_path, store) = open_store()?;
 
     let opened_ts = ts("2026-06-09T16:56:00Z");
     let closed_ts = opened_ts + Duration::seconds(30);
@@ -248,6 +230,53 @@ fn quality_does_not_flag_missing_exit_when_position_is_already_closed() -> Resul
     }));
     assert_ne!(quality.verdict, "sell_flow_loss");
     Ok(())
+}
+
+#[test]
+fn quality_reports_open_positions_without_sell_flow_loss() -> Result<()> {
+    let (_dir, db_path, store) = open_store()?;
+
+    let opened_ts = ts("2026-06-09T16:57:00Z");
+    insert_signal(&store, "buy-exit-missing", "buy", opened_ts)?;
+    store.record_execution_quote_canary_event(&quote_event_for(
+        "quote:entry:open-position",
+        Some("buy-exit-missing"),
+        None,
+        "buy",
+        opened_ts,
+    ))?;
+    let buy_order_id = record_confirmed_buy_order(&store, opened_ts)?;
+    store.record_execution_canary_confirmed_buy_fill(
+        &buy_order_id,
+        "TokenMarketNotFound",
+        100.0,
+        None,
+        0.01,
+        opened_ts + Duration::milliseconds(1600),
+    )?;
+    drop(store);
+
+    let report = build_report_from_db_path(&db_path, ts("2026-06-09T17:00:00Z"));
+    let quality = report
+        .tiny_execution_quality
+        .as_ref()
+        .unwrap_or_else(|| panic!("quality report missing: {:?}", report.error));
+
+    assert_eq!(quality.verdict, "open_positions_present");
+    assert_eq!(quality.tiny_open_positions, 1);
+    assert_eq!(quality.tiny_exit_missing_orders, 0);
+    Ok(())
+}
+
+fn open_store() -> Result<(tempfile::TempDir, std::path::PathBuf, SqliteStore)> {
+    let dir = tempdir()?;
+    let db_path = dir.path().join("runtime.db");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    Ok((dir, db_path, store))
 }
 
 fn insert_signal(
