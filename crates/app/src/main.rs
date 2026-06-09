@@ -43,6 +43,7 @@ mod app_loop_shutdown;
 mod config_contract;
 mod discovery_runtime;
 mod execution_build_plan_metadata;
+mod execution_build_plan_refresh;
 mod execution_canary;
 mod execution_canary_entry_gate;
 mod execution_canary_route;

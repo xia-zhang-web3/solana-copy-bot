@@ -314,6 +314,7 @@ fn quote_output_decimals(request: &ExecutionSubmitRequest) -> Option<u8> {
         .or_else(|| decimal_pointer(&json, "/meta/outDecimals"))
         .or_else(|| decimal_pointer(&json, "/quote/outDecimals"))
         .or_else(|| decimal_pointer(&json, "/outDecimals"))
+        .or_else(|| decimal_pointer(&json, "/_copybot/outDecimals"))
 }
 
 fn quote_output_ui_amount(request: &ExecutionSubmitRequest) -> Option<f64> {

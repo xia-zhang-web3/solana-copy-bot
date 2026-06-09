@@ -55,12 +55,15 @@ fn quote_response_body(
         .map(str::trim)
         .filter(|raw| !raw.is_empty())
     {
-        let value: Value = serde_json::from_str(raw)
+        let mut value: Value = serde_json::from_str(raw)
             .map_err(|error| anyhow!("invalid quote_response_json for {context} body: {error}"))?;
         if !value.is_object() {
             return Err(anyhow!(
                 "quote_response_json must be an object for {context} body"
             ));
+        }
+        if let Some(object) = value.as_object_mut() {
+            object.remove("_copybot");
         }
         return Ok(value);
     }

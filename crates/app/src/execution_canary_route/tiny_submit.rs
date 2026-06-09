@@ -6,6 +6,9 @@ use super::tiny_submit_timeout::process_tiny_submit_timeout;
 use crate::execution_build_plan_metadata::{
     load_execution_build_plan_metadata, record_execution_build_plan_metadata,
 };
+use crate::execution_build_plan_refresh::{
+    fresh_submit_gate_reason, refresh_tiny_buy_build_plan_metadata,
+};
 use crate::execution_canary_entry_gate::validate_execution_canary_entry_metadata;
 use crate::execution_canary_safety::pre_submit_safety_snapshot;
 use crate::execution_canary_signing_contract::record_execution_signing_envelope;
@@ -56,9 +59,11 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
         return Ok(summary);
     }
     let metadata = load_execution_build_plan_metadata(store, &signal.signal_id)?;
+    let http = reqwest::Client::new();
+    let metadata = refresh_tiny_buy_build_plan_metadata(&http, config, signal, metadata).await?;
     if let Some(reason) = validate_execution_canary_entry_metadata(config, &metadata) {
         summary.entry_gate_blocked = 1;
-        summary.skipped_reason = Some(reason);
+        summary.skipped_reason = Some(fresh_submit_gate_reason(&metadata, reason));
         return Ok(summary);
     }
 

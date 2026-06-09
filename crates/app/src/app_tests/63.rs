@@ -211,6 +211,14 @@ async fn serve_metis_build_submit_and_confirm(
     let tx = tx_signature.to_string();
     let serialized_transaction = serialized_legacy_transaction(*first_signer);
     let server = tokio::spawn(async move {
+        let quote = read_tiny_route_http_request(&listener).await;
+        assert!(quote.body.starts_with("GET /quote?"));
+        write_tiny_route_http_response(
+            quote.socket,
+            r#"{"inputMint":"So11111111111111111111111111111111111111112","inAmount":"10000000","outputMint":"TokenMint","outAmount":"10000","otherAmountThreshold":"9500","swapMode":"ExactIn","slippageBps":500,"platformFee":null,"priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
+        )
+        .await;
+
         let swap_instructions = read_tiny_route_http_request(&listener).await;
         assert!(swap_instructions
             .body
