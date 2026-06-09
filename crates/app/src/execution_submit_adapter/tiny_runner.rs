@@ -240,9 +240,9 @@ fn build_sell_fill_from_request(
     request: &ExecutionSubmitRequest,
     fill_ts: DateTime<Utc>,
 ) -> Result<ExecutionConfirmedFill> {
-    let position = store
-        .load_execution_canary_open_position(&request.token)?
-        .ok_or_else(|| anyhow::anyhow!("missing confirmed open position for {}", request.token))?;
+    let Some(position) = store.load_execution_canary_open_position(&request.token)? else {
+        return build_orphan_sell_fill_from_request(request, fill_ts);
+    };
     let exit_price_sol = positive_quote_price(request)?;
     validate_positive(position.qty, "sell fill target_qty")?;
     Ok(ExecutionConfirmedFill::Sell(ExecutionConfirmedSellFill {
@@ -250,6 +250,28 @@ fn build_sell_fill_from_request(
         token: request.token.clone(),
         target_qty: position.qty,
         target_qty_exact: position.qty_exact,
+        exit_price_sol,
+        dust_qty_epsilon: DEFAULT_TINY_SELL_DUST_QTY_EPSILON,
+        fill_ts,
+    }))
+}
+
+fn build_orphan_sell_fill_from_request(
+    request: &ExecutionSubmitRequest,
+    fill_ts: DateTime<Utc>,
+) -> Result<ExecutionConfirmedFill> {
+    let target_qty = 1.0;
+    validate_positive(target_qty, "orphan sell fill target_qty")?;
+    let exit_price_sol = request
+        .metadata
+        .quote_price_sol
+        .filter(|price| price.is_finite() && *price >= 0.0)
+        .unwrap_or(0.0);
+    Ok(ExecutionConfirmedFill::Sell(ExecutionConfirmedSellFill {
+        order_id: request.order_id.clone(),
+        token: request.token.clone(),
+        target_qty,
+        target_qty_exact: None,
         exit_price_sol,
         dust_qty_epsilon: DEFAULT_TINY_SELL_DUST_QTY_EPSILON,
         fill_ts,
