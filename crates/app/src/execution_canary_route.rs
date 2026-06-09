@@ -14,6 +14,7 @@ use copybot_core_types::CopySignalRow;
 use copybot_storage_core::SqliteStore;
 
 mod tiny_submit;
+mod tiny_submit_orphan_recovery;
 mod tiny_submit_retry;
 mod tiny_submit_sell;
 mod tiny_submit_sell_retry;
@@ -22,6 +23,7 @@ mod tiny_submit_timeout;
 use self::tiny_submit::{
     process_tiny_submit_reconciliation_sweep_for_route, process_tiny_submit_state_machine_for_route,
 };
+use self::tiny_submit_orphan_recovery::process_tiny_submit_orphan_position_recovery_for_route;
 use self::tiny_submit_sell::{
     process_failed_sell_simulation_sweep_for_route, process_tiny_submit_sell_quote_event,
 };
@@ -114,6 +116,19 @@ pub(crate) async fn process_tiny_submit_reconciliation_sweep(
         return Ok(None);
     }
     process_tiny_submit_reconciliation_sweep_for_route(config, store, now)
+        .await
+        .map(Some)
+}
+
+pub(crate) async fn process_tiny_submit_orphan_position_recovery_sweep(
+    config: &ExecutionConfig,
+    store: &SqliteStore,
+    now: DateTime<Utc>,
+) -> Result<Option<ExecutionCanaryStateMachineSummary>> {
+    if !uses_swap_blueprint_state_machine(config) || !config.canary_tiny_submit_enabled {
+        return Ok(None);
+    }
+    process_tiny_submit_orphan_position_recovery_for_route(config, store, now)
         .await
         .map(Some)
 }

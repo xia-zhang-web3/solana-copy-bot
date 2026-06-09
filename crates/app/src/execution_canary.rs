@@ -1,7 +1,8 @@
 use crate::execution_canary_route::{
     list_swap_blueprint_state_machine_candidates, process_canary_state_machine_for_route,
-    process_failed_sell_simulation_sweep, process_tiny_submit_reconciliation_sweep,
-    process_tiny_submit_sell_quote_event_for_route, uses_swap_blueprint_state_machine,
+    process_failed_sell_simulation_sweep, process_tiny_submit_orphan_position_recovery_sweep,
+    process_tiny_submit_reconciliation_sweep, process_tiny_submit_sell_quote_event_for_route,
+    uses_swap_blueprint_state_machine,
 };
 use crate::execution_canary_summary::{apply_quote_summary, apply_state_machine_summary};
 use crate::execution_quote_canary::{ExecutionQuoteCanaryRunner, ExecutionQuoteCanaryTickSummary};
@@ -51,6 +52,11 @@ pub(crate) struct ExecutionCanaryTickSummary {
     pub state_machine_failed: usize,
     pub state_machine_safety_blocked: usize,
     pub state_machine_entry_gate_blocked: usize,
+    pub orphan_recovery_checked: usize,
+    pub orphan_recovery_recovered: usize,
+    pub orphan_recovery_skipped_no_history: usize,
+    pub orphan_recovery_errors: usize,
+    pub last_orphan_recovery_token: Option<String>,
     pub state_machine_skipped_reason: Option<&'static str>,
     pub state_machine_open_positions: u64,
     pub state_machine_daily_loss_sol: f64,
@@ -80,6 +86,8 @@ impl ExecutionCanaryTickSummary {
             || self.state_machine_failed > 0
             || self.state_machine_safety_blocked > 0
             || self.state_machine_entry_gate_blocked > 0
+            || self.orphan_recovery_recovered > 0
+            || self.orphan_recovery_errors > 0
     }
 }
 
@@ -155,6 +163,11 @@ impl ExecutionCanaryRunner {
 
         let since = now - Duration::seconds(self.config.canary_max_signal_age_seconds as i64);
         let signals = if uses_swap_blueprint_state_machine(&self.config) {
+            if let Some(state) =
+                process_tiny_submit_orphan_position_recovery_sweep(&self.config, store, now).await?
+            {
+                apply_state_machine_summary(&mut summary, state);
+            }
             if self.quote_canary.is_enabled() {
                 let quote_summary = self
                     .quote_canary

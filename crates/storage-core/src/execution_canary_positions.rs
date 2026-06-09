@@ -48,6 +48,23 @@ impl SqliteDiscoveryStore {
         .context("failed querying execution canary open position")
     }
 
+    pub fn has_execution_canary_position_history(&self, token: &str) -> Result<bool> {
+        let found: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1
+                 FROM positions
+                 WHERE token = ?1
+                   AND accounting_bucket = ?2
+                 LIMIT 1",
+                params![token, EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("failed checking execution canary position history")?;
+        Ok(found.is_some())
+    }
+
     pub fn execution_canary_open_position_count(&self) -> Result<u64> {
         let count: i64 = self
             .conn

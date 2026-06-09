@@ -270,6 +270,11 @@ pub(super) async fn run_app_loop(
                             state_machine_failed = summary.state_machine_failed,
                             state_machine_safety_blocked = summary.state_machine_safety_blocked,
                             state_machine_entry_gate_blocked = summary.state_machine_entry_gate_blocked,
+                            orphan_recovery_checked = summary.orphan_recovery_checked,
+                            orphan_recovery_recovered = summary.orphan_recovery_recovered,
+                            orphan_recovery_skipped_no_history = summary.orphan_recovery_skipped_no_history,
+                            orphan_recovery_errors = summary.orphan_recovery_errors,
+                            last_orphan_recovery_token = summary.last_orphan_recovery_token.as_deref().unwrap_or("none"),
                             last_state_machine_order_id = summary.last_state_machine_order_id.as_deref().unwrap_or("none"),
                             "execution canary dry-run tick"
                         );
@@ -449,6 +454,11 @@ async fn handle_execution_canary_for_shadow_signal(
                 state_machine_failed = summary.state_machine_failed,
                 state_machine_safety_blocked = summary.state_machine_safety_blocked,
                 state_machine_entry_gate_blocked = summary.state_machine_entry_gate_blocked,
+                orphan_recovery_checked = summary.orphan_recovery_checked,
+                orphan_recovery_recovered = summary.orphan_recovery_recovered,
+                orphan_recovery_skipped_no_history = summary.orphan_recovery_skipped_no_history,
+                orphan_recovery_errors = summary.orphan_recovery_errors,
+                last_orphan_recovery_token = summary.last_orphan_recovery_token.as_deref().unwrap_or("none"),
                 state_machine_skipped_reason = summary.state_machine_skipped_reason.as_deref().unwrap_or("none"),
                 state_machine_open_positions = summary.state_machine_open_positions,
                 state_machine_daily_loss_sol = summary.state_machine_daily_loss_sol,

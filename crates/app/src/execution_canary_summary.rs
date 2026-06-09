@@ -33,6 +33,13 @@ pub(crate) fn apply_state_machine_summary(
     summary.state_machine_failed += state.failed;
     summary.state_machine_safety_blocked += state.safety_blocked;
     summary.state_machine_entry_gate_blocked += state.entry_gate_blocked;
+    summary.orphan_recovery_checked += state.orphan_recovery_checked;
+    summary.orphan_recovery_recovered += state.orphan_recovery_recovered;
+    summary.orphan_recovery_skipped_no_history += state.orphan_recovery_skipped_no_history;
+    summary.orphan_recovery_errors += state.orphan_recovery_errors;
+    if state.last_orphan_recovery_token.is_some() {
+        summary.last_orphan_recovery_token = state.last_orphan_recovery_token;
+    }
     if state.skipped_reason.is_some() {
         summary.state_machine_skipped_reason = state.skipped_reason;
     }
