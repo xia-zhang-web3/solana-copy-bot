@@ -162,6 +162,7 @@ fn execution_canary_quote_pnl_gate_checks_tiny_config_preflight() -> Result<()> 
     assert_gate_check(gate, "execution_disabled", "pass");
     assert_gate_check(gate, "canary_enabled", "pass");
     assert_gate_check(gate, "canary_dry_run", "pass");
+    assert_gate_check(gate, "canary_entry_submit_enabled", "pass");
     assert_gate_check(gate, "canary_wallet_pubkey", "pass");
     assert_gate_check(gate, "canary_buy_size", "pass");
     assert_gate_check(gate, "canary_max_open_positions", "pass");
@@ -333,6 +334,7 @@ enabled = false
 canary_enabled = true
 canary_dry_run = true
 canary_tiny_submit_enabled = true
+canary_entry_submit_enabled = true
 canary_route = "metis-swap-instructions-dry-run"
 canary_buy_size_sol = 0.01
 canary_max_open_positions = 1

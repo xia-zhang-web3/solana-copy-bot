@@ -55,6 +55,16 @@ fn tiny_execution_gate_blocks_pending_submit_and_retry_ready_orders() -> Result<
     assert_eq!(gate.pending_submit_orders, 2);
     assert_eq!(gate.retry_ready_orders, 1);
     assert_eq!(gate.retry_budget_blocked_orders, 2);
+    assert_eq!(gate.startup_readiness_status, "blocked");
+    assert_eq!(gate.runtime_status, "blocked");
+    assert!(gate
+        .runtime_blockers
+        .iter()
+        .any(|check| check.name == "pending_signed_submit_orders"));
+    assert!(gate
+        .why_not_trading_now
+        .iter()
+        .any(|reason| reason.contains("pending_signed_submit_orders")));
     assert_gate_check(gate, "pending_signed_submit_orders", "block");
     assert_gate_check(gate, "pending_unknown_submit_orders", "block");
     assert_gate_check(gate, "retry_ready_orders", "block");
@@ -173,6 +183,7 @@ enabled = false
 canary_enabled = true
 canary_dry_run = true
 canary_tiny_submit_enabled = true
+canary_entry_submit_enabled = true
 canary_route = "metis-swap-instructions-dry-run"
 canary_buy_size_sol = 0.01
 canary_max_open_positions = 1

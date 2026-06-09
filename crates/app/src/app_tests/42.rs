@@ -53,6 +53,63 @@ fn priority_fee_timeout_is_non_blocking_canary_metadata() {
 }
 
 #[test]
+fn sell_quote_with_missing_slippage_is_force_exit_not_unknown() {
+    let now = Utc::now();
+    let mut sell_event = ExecutionQuoteCanaryEventInsert {
+        event_id: "quote:sell-missing-slippage".to_string(),
+        signal_id: Some("sell-sig".to_string()),
+        shadow_closed_trade_id: None,
+        wallet_id: "leader-wallet".to_string(),
+        token: "TokenMint".to_string(),
+        side: "sell".to_string(),
+        quote_status: crate::execution_quote_canary_helpers::QUOTE_STATUS_OK.to_string(),
+        request_ts: now,
+        signal_ts: Some(now),
+        decision_delay_ms: Some(0),
+        quote_latency_ms: Some(12),
+        leader_notional_sol: Some(0.2),
+        quote_in_amount_raw: Some("10000".to_string()),
+        quote_out_amount_raw: Some("1000000".to_string()),
+        quote_response_json: None,
+        quote_price_sol: Some(0.1),
+        shadow_price_sol: None,
+        slippage_bps: None,
+        price_impact_pct: Some(0.01),
+        route_plan_json: Some("[]".to_string()),
+        priority_fee_status: Some(
+            crate::execution_quote_canary_helpers::QUOTE_STATUS_OK.to_string(),
+        ),
+        priority_fee_lamports: Some(1),
+        priority_fee_json: Some("{}".to_string()),
+        decision_status: None,
+        decision_reason: None,
+        error: None,
+    };
+    let mut buy_event = sell_event.clone();
+    buy_event.side = "buy".to_string();
+
+    crate::execution_quote_canary_helpers::finalize_quote_decision(&mut sell_event, 500);
+    crate::execution_quote_canary_helpers::finalize_quote_decision(&mut buy_event, 500);
+
+    assert_eq!(
+        sell_event.decision_status.as_deref(),
+        Some(crate::execution_quote_canary_helpers::DECISION_WOULD_FORCE_EXIT)
+    );
+    assert_eq!(
+        sell_event.decision_reason.as_deref(),
+        Some("exit_missing_slippage_force_exit")
+    );
+    assert_eq!(
+        buy_event.decision_status.as_deref(),
+        Some(crate::execution_quote_canary_helpers::DECISION_UNKNOWN)
+    );
+    assert_eq!(
+        buy_event.decision_reason.as_deref(),
+        Some("missing_slippage_bps")
+    );
+}
+
+#[test]
 fn priority_fee_base_rate_contract_accepts_250ms_interval() {
     let mut config = copybot_config::ExecutionConfig::default();
     config.canary_enabled = true;

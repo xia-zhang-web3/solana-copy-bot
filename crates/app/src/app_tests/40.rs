@@ -72,6 +72,42 @@ async fn execution_canary_state_machine_max_open_positions_blocks_buy_before_res
 }
 
 #[tokio::test]
+async fn execution_canary_state_machine_entry_submit_disabled_blocks_buy_before_reserve(
+) -> Result<()> {
+    let db_path = unique_safety_state_machine_test_path("entry-disabled");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let signal = safety_signal("buy-entry-disabled", now);
+    store.insert_copy_signal(&signal)?;
+    record_safety_entry_quote(&store, &signal, now, "would_execute")?;
+    let mut config =
+        safety_canary_config(unique_safety_state_machine_test_path("entry-disabled-stop"));
+    config.canary_entry_submit_enabled = false;
+    let state_machine = crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(
+        config,
+        crate::execution_submit_adapter::NoSubmitExecutionAdapter,
+    );
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+
+    assert_eq!(summary.safety_blocked, 1);
+    assert_eq!(summary.skipped_reason, Some("entry_submit_disabled"));
+    assert_eq!(summary.reserved, 0);
+    assert!(store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .is_none());
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
 async fn execution_canary_state_machine_stale_open_position_blocks_buy_without_write_off(
 ) -> Result<()> {
     let db_path = unique_safety_state_machine_test_path("stale-open");

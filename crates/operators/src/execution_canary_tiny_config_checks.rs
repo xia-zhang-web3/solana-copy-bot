@@ -67,6 +67,14 @@ fn push_runtime_guards(checks: &mut Vec<TinyExecutionGateCheck>, config: &Execut
         "true".to_string(),
         "tiny submit gate must be explicitly enabled for rollout",
     );
+    push_check(
+        checks,
+        "canary_entry_submit_enabled",
+        config.canary_entry_submit_enabled,
+        config.canary_entry_submit_enabled.to_string(),
+        "true".to_string(),
+        "new tiny entries are paused when this is false; sell close path may still run",
+    );
 }
 
 fn push_canary_guards(

@@ -81,6 +81,7 @@ fn execution_defaults_are_fail_closed_and_canary_dry_run_only() {
     assert!(!execution.canary_enabled);
     assert!(execution.canary_dry_run);
     assert!(!execution.canary_tiny_submit_enabled);
+    assert!(execution.canary_entry_submit_enabled);
     assert_eq!(execution.canary_route, "dry_run");
     assert_eq!(execution.canary_interval_seconds, 15);
     assert_eq!(execution.canary_batch_limit, 1);

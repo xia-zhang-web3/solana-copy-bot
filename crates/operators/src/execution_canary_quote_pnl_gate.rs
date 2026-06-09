@@ -15,11 +15,15 @@ const TINY_MAX_LATEST_METADATA_AGE_SECONDS: i64 = 6 * 60 * 60;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TinyExecutionGate {
     pub status: String,
+    pub startup_readiness_status: String,
+    pub runtime_status: String,
     pub can_start_tiny_execution: bool,
     pub can_continue_tiny_execution: bool,
     pub blocker_count: u64,
     pub runtime_blocker_count: u64,
     pub warning_count: u64,
+    pub runtime_blockers: Vec<TinyExecutionGateCheck>,
+    pub why_not_trading_now: Vec<String>,
     pub quote_gate_status: String,
     pub latest_order_id: Option<String>,
     pub latest_order_status: Option<String>,
@@ -228,14 +232,34 @@ fn finish_gate(
     } else {
         "ready"
     };
+    let runtime_status = if runtime_blocker_count > 0 {
+        "blocked"
+    } else if warning_count > 0 {
+        "ready_with_warnings"
+    } else {
+        "ready"
+    };
+    let runtime_blockers: Vec<_> = checks
+        .iter()
+        .filter(|check| check.status == "block" && is_tiny_runtime_blocker(&check.name))
+        .cloned()
+        .collect();
+    let why_not_trading_now = runtime_blockers
+        .iter()
+        .map(runtime_blocker_reason)
+        .collect();
 
     TinyExecutionGate {
         status: status.to_string(),
+        startup_readiness_status: status.to_string(),
+        runtime_status: runtime_status.to_string(),
         can_start_tiny_execution: blocker_count == 0,
         can_continue_tiny_execution: runtime_blocker_count == 0,
         blocker_count,
         runtime_blocker_count,
         warning_count,
+        runtime_blockers,
+        why_not_trading_now,
         quote_gate_status: summary.readiness_gate.status.clone(),
         latest_order_id: latest_order.map(|order| order.order_id.clone()),
         latest_order_status: latest_order.map(|order| order.status.clone()),
@@ -257,6 +281,7 @@ fn is_tiny_runtime_blocker(name: &str) -> bool {
             | "canary_enabled"
             | "canary_dry_run"
             | "canary_tiny_submit_enabled"
+            | "canary_entry_submit_enabled"
             | "canary_wallet_pubkey"
             | "canary_buy_size"
             | "canary_max_open_positions"
@@ -282,6 +307,17 @@ fn is_tiny_runtime_blocker(name: &str) -> bool {
             | "priority_fee_canary_enabled"
             | "open_canary_positions"
             | "recent_realized_loss_24h"
+            | "pending_signed_submit_orders"
+            | "pending_unknown_submit_orders"
+            | "retry_ready_orders"
+            | "retry_budget_blocked_orders"
+    )
+}
+
+fn runtime_blocker_reason(check: &TinyExecutionGateCheck) -> String {
+    format!(
+        "{}={} blocks runtime: {}",
+        check.name, check.value, check.reason
     )
 }
 

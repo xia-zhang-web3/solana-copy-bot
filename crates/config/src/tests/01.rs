@@ -380,6 +380,10 @@ fn load_from_env_applies_execution_canary_overrides() {
                     "SOLANA_COPY_BOT_EXECUTION_CANARY_TINY_SUBMIT_ENABLED",
                     "true",
                 ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_CANARY_ENTRY_SUBMIT_ENABLED",
+                    "false",
+                ),
                 ("SOLANA_COPY_BOT_EXECUTION_CANARY_ROUTE", "metis-dry-run"),
                 ("SOLANA_COPY_BOT_EXECUTION_CANARY_INTERVAL_SECONDS", "7"),
                 ("SOLANA_COPY_BOT_EXECUTION_CANARY_BATCH_LIMIT", "3"),
@@ -475,6 +479,7 @@ fn load_from_env_applies_execution_canary_overrides() {
             assert!(config.execution.canary_enabled);
             assert!(config.execution.canary_dry_run);
             assert!(config.execution.canary_tiny_submit_enabled);
+            assert!(!config.execution.canary_entry_submit_enabled);
             assert_eq!(config.execution.canary_route, "metis-dry-run");
             assert_eq!(config.execution.canary_interval_seconds, 7);
             assert_eq!(config.execution.canary_batch_limit, 3);

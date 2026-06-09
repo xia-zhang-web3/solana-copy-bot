@@ -58,6 +58,7 @@ pub struct ExecutionConfig {
     pub canary_enabled: bool,
     pub canary_dry_run: bool,
     pub canary_tiny_submit_enabled: bool,
+    pub canary_entry_submit_enabled: bool,
     pub canary_route: String,
     pub canary_interval_seconds: u64,
     pub canary_batch_limit: u32,
@@ -107,6 +108,7 @@ impl Default for ExecutionConfig {
             canary_enabled: false,
             canary_dry_run: true,
             canary_tiny_submit_enabled: false,
+            canary_entry_submit_enabled: true,
             canary_route: "dry_run".to_string(),
             canary_interval_seconds: 15,
             canary_batch_limit: 1,
@@ -160,6 +162,10 @@ impl fmt::Debug for ExecutionConfig {
             .field(
                 "canary_tiny_submit_enabled",
                 &self.canary_tiny_submit_enabled,
+            )
+            .field(
+                "canary_entry_submit_enabled",
+                &self.canary_entry_submit_enabled,
             )
             .field("canary_route", &self.canary_route)
             .field("canary_interval_seconds", &self.canary_interval_seconds)

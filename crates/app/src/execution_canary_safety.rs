@@ -23,6 +23,13 @@ pub(crate) fn pre_submit_safety_snapshot(
         });
     }
 
+    if !config.canary_entry_submit_enabled {
+        return Ok(ExecutionCanarySafetySnapshot {
+            blocked_reason: Some("entry_submit_disabled"),
+            ..ExecutionCanarySafetySnapshot::default()
+        });
+    }
+
     let open_positions = store.execution_canary_open_position_count()?;
     if open_positions >= u64::from(config.canary_max_open_positions) {
         return Ok(ExecutionCanarySafetySnapshot {

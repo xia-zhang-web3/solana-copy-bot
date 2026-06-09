@@ -85,7 +85,15 @@ pub(crate) fn finalize_quote_decision(
         return;
     }
     let Some(slippage_bps) = event.slippage_bps else {
-        set_decision(event, DECISION_UNKNOWN, "missing_slippage_bps");
+        if event.side.eq_ignore_ascii_case(SIDE_SELL) {
+            set_decision(
+                event,
+                DECISION_WOULD_FORCE_EXIT,
+                "exit_missing_slippage_force_exit",
+            );
+        } else {
+            set_decision(event, DECISION_UNKNOWN, "missing_slippage_bps");
+        }
         return;
     };
     if !slippage_bps.is_finite() {
@@ -144,7 +152,6 @@ pub(crate) fn load_matching_observed_leg_for_signal(
 pub(crate) fn entry_quote_event_id(signal_id: &str) -> String {
     format!("quote:entry:{signal_id}")
 }
-
 pub(crate) fn close_quote_event_id(close_id: i64) -> String {
     format!("quote:close:{close_id}")
 }
@@ -317,8 +324,7 @@ pub(crate) fn infer_decimals_from_raw_and_ui(raw: &str, ui_amount: f64) -> Optio
 }
 
 pub(crate) fn duration_ms_between(from: DateTime<Utc>, to: DateTime<Utc>) -> Option<u64> {
-    let millis = to.signed_duration_since(from).num_milliseconds();
-    u64::try_from(millis).ok()
+    u64::try_from(to.signed_duration_since(from).num_milliseconds()).ok()
 }
 
 pub(crate) fn elapsed_ms(started: Instant) -> u64 {
@@ -326,10 +332,7 @@ pub(crate) fn elapsed_ms(started: Instant) -> u64 {
 }
 
 pub(crate) fn string_field(value: &Value, field: &str) -> Option<String> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
+    value.get(field)?.as_str().map(ToString::to_string)
 }
 
 pub(crate) fn numeric_field(value: &Value, field: &str) -> Option<f64> {
