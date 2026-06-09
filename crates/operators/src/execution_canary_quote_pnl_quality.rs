@@ -205,12 +205,14 @@ fn verdict(
 ) -> String {
     if exit_failed > 0 || exit_missing > 0 {
         "sell_flow_loss".to_string()
-    } else if entry_failed > 0 || entry_missing > 0 || shadow_gate_dropped_would_execute > 0 {
+    } else if entry_failed > 0 || entry_missing > 0 {
         "entry_flow_loss".to_string()
     } else if open_positions > 0 {
         "open_positions_present".to_string()
     } else if tiny_vs_shadow_delta_sol < 0.0 || quote_after_fee_sol < 0.0 {
         "execution_cost_negative".to_string()
+    } else if shadow_gate_dropped_would_execute > 0 {
+        "shadow_gate_filtered".to_string()
     } else if sample_status != "sampled" {
         sample_status.to_string()
     } else {

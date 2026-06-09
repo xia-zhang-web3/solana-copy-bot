@@ -86,7 +86,7 @@ fn report_explains_shadow_dropped_entry_flow() -> Result<()> {
             && bucket.events == 1
     }));
 
-    assert_eq!(quality.verdict, "entry_flow_loss");
+    assert_eq!(quality.verdict, "shadow_gate_filtered");
     assert_eq!(quality.shadow_gate_dropped_would_execute_events, 2);
     assert!(quality.top_flow_blockers.iter().any(|blocker| {
         blocker.stage == "shadow_gate"
