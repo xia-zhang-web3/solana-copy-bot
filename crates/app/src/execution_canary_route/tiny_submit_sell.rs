@@ -139,20 +139,35 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
             return Ok(Some(summary));
         }
     }
+    let order = if let Some(order) = retry_order {
+        summary.last_order_id = Some(order.order_id.clone());
+        order
+    } else {
+        let reserve = store.reserve_execution_canary_sell_order_unless_token_in_flight(
+            &signal.signal_id,
+            &config.canary_route,
+            now,
+        )?;
+        summary.last_order_id = Some(reserve.order.order_id.clone());
+        if reserve.blocked_by_in_flight_sell {
+            summary.existing = 1;
+            summary.skipped_reason = Some("sell_token_in_flight");
+            return Ok(Some(summary));
+        }
+        if reserve.outcome == ExecutionCanaryRecordOutcome::Existing {
+            summary.existing = 1;
+            return Ok(Some(summary));
+        }
+        summary.reserved = 1;
+        reserve.order
+    };
+
     let metadata = match owned_position_sell_metadata(config, store, &signal.token, metadata).await
     {
         Ok(metadata) => metadata,
         Err(error) => {
             let error = format!("owned_sell_quote_failed: {error}");
-            record_owned_sell_quote_failure(
-                config,
-                store,
-                &signal.signal_id,
-                retry_order.as_ref(),
-                now,
-                &error,
-                &mut summary,
-            )?;
+            record_owned_sell_quote_failure(store, &order, now, &error, &mut summary)?;
             summary.skipped_reason = Some("owned_sell_quote_error");
             summary.last_error = Some(error);
             return Ok(Some(summary));
@@ -164,21 +179,6 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
         summary.skipped_reason = Some(reason);
         return Ok(Some(summary));
     }
-
-    let order = if let Some(order) = retry_order {
-        summary.last_order_id = Some(order.order_id.clone());
-        order
-    } else {
-        let reserve =
-            store.reserve_execution_canary_order(&signal.signal_id, &config.canary_route, now)?;
-        summary.last_order_id = Some(reserve.order.order_id.clone());
-        if reserve.outcome == ExecutionCanaryRecordOutcome::Existing {
-            summary.existing = 1;
-            return Ok(Some(summary));
-        }
-        summary.reserved = 1;
-        reserve.order
-    };
 
     let request = build_submit_request(config, &signal, &order, metadata);
     let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
@@ -263,39 +263,19 @@ fn sell_safety_blocked(
 }
 
 fn record_owned_sell_quote_failure(
-    config: &ExecutionConfig,
     store: &SqliteStore,
-    signal_id: &str,
-    retry_order: Option<&ExecutionCanaryOrder>,
+    order: &ExecutionCanaryOrder,
     now: DateTime<Utc>,
     error: &str,
     summary: &mut ExecutionCanaryStateMachineSummary,
 ) -> Result<()> {
-    if let Some(order) = retry_order {
-        store.mark_execution_canary_failed(
-            &order.order_id,
-            now,
-            EXECUTION_ERROR_BUILD_FAILED,
-            error,
-        )?;
-        summary.failed = 1;
-        summary.last_order_id = Some(order.order_id.clone());
-        return Ok(());
-    }
-
-    let reserve = store.reserve_execution_canary_order(signal_id, &config.canary_route, now)?;
-    summary.last_order_id = Some(reserve.order.order_id.clone());
-    if reserve.outcome == ExecutionCanaryRecordOutcome::Existing {
-        summary.existing = 1;
-        return Ok(());
-    }
-    summary.reserved = 1;
     store.mark_execution_canary_failed(
-        &reserve.order.order_id,
+        &order.order_id,
         now,
         EXECUTION_ERROR_BUILD_FAILED,
         error,
     )?;
     summary.failed = 1;
+    summary.last_order_id = Some(order.order_id.clone());
     Ok(())
 }

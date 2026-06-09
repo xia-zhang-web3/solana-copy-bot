@@ -50,6 +50,13 @@ pub struct ExecutionCanaryReserveResult {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ExecutionCanarySellReserveResult {
+    pub outcome: ExecutionCanaryRecordOutcome,
+    pub order: ExecutionCanaryOrder,
+    pub blocked_by_in_flight_sell: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionCanaryStatusReport {
     pub as_of: DateTime<Utc>,
     pub total: u64,

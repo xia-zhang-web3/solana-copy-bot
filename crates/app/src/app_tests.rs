@@ -69,6 +69,8 @@ mod execution_quote_canary_hot_observed;
 mod execution_quote_canary_provider_fallback;
 #[path = "app_tests/77.rs"]
 mod execution_sell_quote_failure_contract;
+#[path = "app_tests/78.rs"]
+mod execution_sell_token_in_flight_contract;
 #[path = "app_tests/37.rs"]
 mod execution_state_machine;
 #[path = "app_tests/41.rs"]

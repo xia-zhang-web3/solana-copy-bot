@@ -22,6 +22,7 @@ mod execution_canary_report;
 mod execution_canary_retry;
 mod execution_canary_retry_terminal;
 mod execution_canary_rows;
+mod execution_canary_sell_reserve;
 mod execution_canary_state;
 mod execution_canary_submit_risk;
 mod execution_canary_submitted;
@@ -119,10 +120,10 @@ pub use types::{
     ExecutionCanaryQuoteThresholdCandidate, ExecutionCanaryReadinessCount,
     ExecutionCanaryReadinessLatestOrder, ExecutionCanaryReadinessSummary,
     ExecutionCanaryReadinessWindowSummary, ExecutionCanaryRecordOutcome,
-    ExecutionCanaryReserveResult, ExecutionCanarySellDecision, ExecutionCanaryShadowCloseBreakdown,
-    ExecutionCanaryShadowCloseContextSummary, ExecutionCanaryStatusReport,
-    ExecutionCanarySubmitRiskOrder, ExecutionCanarySubmitRiskSummary, ExecutionDryRunOrder,
-    ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
+    ExecutionCanaryReserveResult, ExecutionCanarySellDecision, ExecutionCanarySellReserveResult,
+    ExecutionCanaryShadowCloseBreakdown, ExecutionCanaryShadowCloseContextSummary,
+    ExecutionCanaryStatusReport, ExecutionCanarySubmitRiskOrder, ExecutionCanarySubmitRiskSummary,
+    ExecutionDryRunOrder, ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderComparisonEvent,
     ExecutionQuoteCanaryProviderComparisonSummary, ExecutionQuoteCanaryProviderSampleInsert,
     ExecutionQuoteCanaryProviderSelectionEvent, ExecutionQuoteCanaryProviderSelectionSummary,
