@@ -16,7 +16,7 @@ use std::path::Path;
 use tracing::info;
 
 const CANARY_COPY_SIGNAL_STATUS: &str = "shadow_recorded";
-const CLOSE_QUOTE_RETRY_LOOKBACK_SECONDS: i64 = 6 * 60 * 60;
+const CLOSE_QUOTE_RETRY_LOOKBACK_SECONDS: i64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionCanaryTickSummary {
