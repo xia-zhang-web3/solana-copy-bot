@@ -1,6 +1,5 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
-use copybot_config::{load_from_path, AppConfig};
 use copybot_storage_core::{
     ExecutionCanaryQuotePnlSummary, ExecutionQuoteCanaryProviderComparisonSummary,
     ExecutionQuoteCanaryProviderSelectionSummary, ExecutionQuoteCanaryPublicPaidComparisonSummary,
@@ -10,9 +9,15 @@ use serde::Serialize;
 use std::env;
 use std::path::{Path, PathBuf};
 
+use crate::execution_canary_quote_pnl_context::{
+    resolve_report_context, runtime_root_from_db_path,
+};
 use crate::execution_canary_quote_pnl_gate::build_tiny_execution_gate;
 pub use crate::execution_canary_quote_pnl_gate::{TinyExecutionGate, TinyExecutionGateCheck};
 use crate::execution_canary_quote_pnl_metis::{build_metis_diagnostics, MetisDiagnosticsReport};
+use crate::execution_canary_quote_pnl_quality::{
+    build_tiny_execution_quality, TinyExecutionQualityReport,
+};
 use crate::execution_canary_quote_pnl_sell_side::{
     build_sell_side_diagnostics, SellSideDiagnosticsReport,
 };
@@ -57,6 +62,7 @@ pub struct CanaryQuotePnlOperatorReport {
     pub public_paid_comparison: Option<ExecutionQuoteCanaryPublicPaidComparisonSummary>,
     pub provider_selection: Option<ExecutionQuoteCanaryProviderSelectionSummary>,
     pub tiny_execution_proof: Option<ExecutionTinyProofReport>,
+    pub tiny_execution_quality: Option<TinyExecutionQualityReport>,
     pub sell_side_diagnostics: Option<SellSideDiagnosticsReport>,
     pub tiny_execution_gate: Option<TinyExecutionGate>,
     pub metis_diagnostics: Option<MetisDiagnosticsReport>,
@@ -76,6 +82,7 @@ impl CanaryQuotePnlOperatorReport {
             public_paid_comparison: None,
             provider_selection: None,
             tiny_execution_proof: None,
+            tiny_execution_quality: None,
             sell_side_diagnostics: None,
             tiny_execution_gate: None,
             metis_diagnostics: None,
@@ -291,6 +298,7 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         }
     };
     let sell_side_diagnostics = build_sell_side_diagnostics(&tiny_execution_proof);
+    let tiny_execution_quality = build_tiny_execution_quality(&summary, &tiny_execution_proof);
     let recent_loss =
         match store.execution_canary_realized_loss_sol_since(as_of - Duration::hours(24)) {
             Ok(loss) => loss,
@@ -355,45 +363,9 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         public_paid_comparison: Some(public_paid_comparison),
         provider_selection: Some(provider_selection),
         tiny_execution_proof: Some(tiny_execution_proof),
+        tiny_execution_quality: Some(tiny_execution_quality),
         sell_side_diagnostics: Some(sell_side_diagnostics),
         tiny_execution_gate: Some(tiny_execution_gate),
         metis_diagnostics,
     }
-}
-
-struct ReportContext {
-    config: Option<AppConfig>,
-    db_path: PathBuf,
-}
-
-fn resolve_report_context(cli: &Cli) -> Result<ReportContext> {
-    if let Some(config_path) = &cli.config_path {
-        let config = load_from_path(config_path)
-            .with_context(|| format!("failed to load config: {}", config_path.display()))?;
-        let db_path = cli
-            .db_path
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(config.sqlite.path.clone()));
-        return Ok(ReportContext {
-            config: Some(config),
-            db_path,
-        });
-    }
-
-    let db_path = cli
-        .db_path
-        .clone()
-        .ok_or_else(|| anyhow!("either --config or --db-path is required"))?;
-    Ok(ReportContext {
-        config: None,
-        db_path,
-    })
-}
-
-fn runtime_root_from_db_path(db_path: &Path) -> Option<PathBuf> {
-    let parent = db_path.parent()?;
-    if parent.file_name().and_then(|name| name.to_str()) == Some("state") {
-        return parent.parent().map(Path::to_path_buf);
-    }
-    Some(parent.to_path_buf())
 }
