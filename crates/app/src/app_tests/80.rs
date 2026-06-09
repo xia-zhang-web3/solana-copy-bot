@@ -140,6 +140,96 @@ async fn selected_public_quote_uses_public_builder() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn missing_account_no_shared_retry_falls_back_to_public_builder() -> Result<()> {
+    let db_path = unique_soft_swap_test_path("missing-account-public-builder-fallback");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let primary_url = format!("http://{}", primary_listener.local_addr()?);
+    let public_url = format!("http://{}", public_listener.local_addr()?);
+    let primary_server = tokio::spawn(async move {
+        let mut buffer = [0_u8; 8192];
+        for expected_path in [
+            "POST /swap-instructions ",
+            "POST /swap-instructions ",
+            "POST /swap ",
+            "POST /swap ",
+        ] {
+            let (mut socket, _) = primary_listener.accept().await.expect("primary request");
+            let read = socket
+                .read(&mut buffer)
+                .await
+                .expect("read primary request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.starts_with(expected_path));
+            if expected_path == "POST /swap " {
+                write_soft_swap_json(&mut socket, missing_account_transaction_json()).await;
+            } else {
+                write_soft_swap_json(&mut socket, missing_account_instructions_json()).await;
+            }
+            drop(socket);
+        }
+    });
+    let public_server = tokio::spawn(async move {
+        let mut buffer = [0_u8; 8192];
+
+        let (mut first, _) = public_listener
+            .accept()
+            .await
+            .expect("public instructions request");
+        let read = first
+            .read(&mut buffer)
+            .await
+            .expect("read public instructions");
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        assert!(request.starts_with("POST /swap-instructions "));
+        write_soft_swap_json(&mut first, valid_soft_swap_instructions_json()).await;
+        drop(first);
+
+        let (mut second, _) = public_listener.accept().await.expect("public swap request");
+        let read = second.read(&mut buffer).await.expect("read public swap");
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        assert!(request.starts_with("POST /swap "));
+        write_soft_swap_json(&mut second, valid_soft_swap_transaction_json()).await;
+    });
+    let now = Utc::now();
+    let signal = soft_swap_signal(now);
+    store.insert_copy_signal(&signal)?;
+    record_soft_swap_quote(&store, &signal, now)?;
+    let mut config = soft_swap_config(primary_url);
+    config.quote_canary_public_parallel_enabled = true;
+    config.quote_canary_public_base_url = public_url;
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let state_machine =
+        crate::execution_canary_state_machine::ExecutionCanaryStateMachine::new(config, adapter);
+
+    let summary = state_machine
+        .process_buy_candidate(&store, &signal, now)
+        .await?;
+    primary_server.await?;
+    public_server.await?;
+    let order = store
+        .load_execution_canary_order_by_signal(&signal.signal_id)?
+        .expect("order should exist");
+
+    assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.signing_envelope_built, 1);
+    assert_eq!(summary.submit_disabled, 1);
+    assert_eq!(summary.failed, 0);
+    let proof = order.simulation_error.as_deref().unwrap_or_default();
+    assert!(proof.contains("metis_swap_instructions_public_fallback_ok"));
+    assert!(proof.contains("metis_swap_transaction_public_fallback_ok"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
 async fn write_soft_swap_json(socket: &mut tokio::net::TcpStream, body: &str) {
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{}",
@@ -154,6 +244,10 @@ async fn write_soft_swap_json(socket: &mut tokio::net::TcpStream, body: &str) {
 
 fn missing_account_instructions_json() -> &'static str {
     r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":{"error":"Error processing Instruction 5: An account required by the instruction is missing","errorCode":"TRANSACTION_ERROR"}}"#
+}
+
+fn missing_account_transaction_json() -> &'static str {
+    r#"{"swapTransaction":"AQIDBA==","simulationError":{"error":"Error processing Instruction 5: An account required by the instruction is missing","errorCode":"TRANSACTION_ERROR"}}"#
 }
 
 fn valid_soft_swap_instructions_json() -> &'static str {

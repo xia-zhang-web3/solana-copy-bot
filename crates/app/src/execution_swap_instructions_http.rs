@@ -69,13 +69,25 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
         disable_shared_accounts(&mut no_shared_body);
         let retry = post_swap_json_with_retry(
             http,
-            endpoint.url,
+            endpoint.url.clone(),
             &endpoint.api_key,
             &no_shared_body,
             timeout,
             "swap-instructions dry-run no-shared-accounts fallback",
         )
         .await?;
+        if is_missing_account_simulation_error(&retry.value)
+            && can_use_public_builder_fallback(config, endpoint.source)
+        {
+            return retry_public_swap_instructions_builder(
+                http,
+                config,
+                &body,
+                timeout,
+                "swap-instructions",
+            )
+            .await;
+        }
         return Ok(Some(swap_instructions_response_summary(
             retry.value,
             retry.elapsed_ms,
@@ -89,6 +101,53 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
         response.elapsed_ms,
         response.attempts,
         endpoint.source,
+        false,
+    )?))
+}
+
+async fn retry_public_swap_instructions_builder(
+    http: &reqwest::Client,
+    config: &ExecutionConfig,
+    body: &Value,
+    timeout: StdDuration,
+    endpoint_name: &str,
+) -> Result<Option<String>> {
+    let fallback =
+        public_fallback_swap_builder_endpoint(config, endpoint_name, "public swap-instructions")?;
+    let response = post_swap_json_with_retry(
+        http,
+        fallback.url.clone(),
+        &fallback.api_key,
+        body,
+        timeout,
+        "public swap-instructions dry-run fallback",
+    )
+    .await?;
+    if is_missing_account_simulation_error(&response.value) {
+        let mut no_shared_body = body.clone();
+        disable_shared_accounts(&mut no_shared_body);
+        let retry = post_swap_json_with_retry(
+            http,
+            fallback.url,
+            &fallback.api_key,
+            &no_shared_body,
+            timeout,
+            "public swap-instructions dry-run no-shared-accounts fallback",
+        )
+        .await?;
+        return Ok(Some(swap_instructions_response_summary(
+            retry.value,
+            retry.elapsed_ms,
+            retry.attempts,
+            fallback.source,
+            true,
+        )?));
+    }
+    Ok(Some(swap_instructions_response_summary(
+        response.value,
+        response.elapsed_ms,
+        response.attempts,
+        fallback.source,
         false,
     )?))
 }
@@ -145,9 +204,12 @@ fn should_use_public_builder_fallback(
     source: SwapBuilderSource,
     error: &anyhow::Error,
 ) -> bool {
+    can_use_public_builder_fallback(config, source) && is_missing_token_program_error(error)
+}
+
+fn can_use_public_builder_fallback(config: &ExecutionConfig, source: SwapBuilderSource) -> bool {
     source == SwapBuilderSource::Metis
         && config.quote_canary_public_parallel_enabled
-        && is_missing_token_program_error(error)
         && !config.quote_canary_public_base_url.trim().is_empty()
         && config.quote_canary_public_base_url.trim() != config.quote_canary_base_url.trim()
 }
