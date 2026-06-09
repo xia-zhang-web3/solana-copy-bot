@@ -120,7 +120,7 @@ async fn execution_canary_entry_gate_blocks_missing_priority_fee_lamports_before
 }
 
 #[tokio::test]
-async fn execution_canary_entry_gate_blocks_priority_fee_above_cap_before_reserve() -> Result<()> {
+async fn execution_canary_entry_gate_caps_priority_fee_above_cap_before_build() -> Result<()> {
     let db_path = unique_entry_gate_test_path("priority-above-cap");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -144,11 +144,18 @@ async fn execution_canary_entry_gate_blocks_priority_fee_above_cap_before_reserv
         .process_buy_candidate(&store, &signal, now)
         .await?;
 
-    assert_eq!(summary.entry_gate_blocked, 1);
-    assert_eq!(summary.skipped_reason, Some("priority_fee_above_cap"));
-    assert!(store
+    assert_eq!(summary.entry_gate_blocked, 0);
+    assert_eq!(summary.reserved, 1);
+    assert_eq!(summary.built, 1);
+    assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.submit_disabled, 1);
+    let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
-        .is_none());
+        .expect("high recommended fee should still reserve a capped tiny order");
+    let metadata = store
+        .load_execution_canary_build_plan_metadata(&order.order_id)?
+        .expect("capped fee should be recorded in build metadata");
+    assert_eq!(metadata.priority_fee_lamports, Some(1_000_000));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
