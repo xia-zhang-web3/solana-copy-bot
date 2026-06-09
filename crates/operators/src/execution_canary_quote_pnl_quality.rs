@@ -143,7 +143,11 @@ fn missing_exit_orders(proof: &ExecutionTinyProofReport) -> u64 {
             matches!(
                 trade.exit_decision_status.as_deref(),
                 Some(DECISION_WOULD_EXECUTE | DECISION_WOULD_FORCE_EXIT)
-            ) && trade.tiny_sell_order.is_none()
+            ) && trade
+                .tiny_buy_order
+                .as_ref()
+                .is_some_and(|order| order.status == CONFIRMED)
+                && trade.tiny_sell_order.is_none()
                 && trade.proof_status != PROOF_STATUS_CLOSED
         })
         .count() as u64

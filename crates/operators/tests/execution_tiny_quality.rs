@@ -40,8 +40,22 @@ fn quality_summary_flags_entry_flow_loss() -> Result<()> {
         opened_ts,
         closed_ts,
     )?;
+    let close_id = store
+        .list_execution_quote_canary_close_candidates_for_signal("sell-market-not-found", 10)?
+        .into_iter()
+        .next()
+        .expect("close candidate")
+        .id;
     insert_signal(&store, "buy-market-not-found", "buy", opened_ts)?;
+    insert_signal(&store, "sell-market-not-found", "sell", closed_ts)?;
     store.record_execution_quote_canary_event(&quote_event(opened_ts))?;
+    store.record_execution_quote_canary_event(&quote_event_for(
+        "quote:exit:market-not-found",
+        Some("sell-market-not-found"),
+        Some(close_id),
+        "sell",
+        closed_ts,
+    ))?;
     record_failed_buy_order(&store, opened_ts)?;
     drop(store);
 
@@ -58,7 +72,9 @@ fn quality_summary_flags_entry_flow_loss() -> Result<()> {
     assert_eq!(quality.tiny_entry_confirmed_trades, 0);
     assert_eq!(quality.tiny_entry_failed_orders, 1);
     assert_eq!(quality.entry_confirmed_coverage_pct, 0.0);
+    assert_eq!(quality.quote_canary_exit_would_execute_trades, 1);
     assert_eq!(quality.tiny_exit_failed_orders, 0);
+    assert_eq!(quality.tiny_exit_missing_orders, 0);
     assert!(quality.top_flow_blockers.iter().any(|blocker| {
         blocker.stage == "entry_order"
             && blocker.reason == "simulation_failed:market_not_found"
