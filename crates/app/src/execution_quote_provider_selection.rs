@@ -32,7 +32,7 @@ pub(crate) fn selected_execution_build_plan_metadata(
             QUOTE_SOURCE_PUMP_FUN_PAID,
         ));
     }
-    if let Some((source, sample)) = best_generic_provider_sample(&generic, &public) {
+    if let Some((source, sample)) = preferred_generic_provider_sample(&generic, &public) {
         return Ok(metadata_from_provider_sample(
             &event,
             sample.clone(),
@@ -66,33 +66,20 @@ fn provider_quote_is_buildable_without_fee_account(
         && !quote_response_requires_fee_account(sample.quote_response_json.as_deref())
 }
 
-fn best_generic_provider_sample<'a>(
+fn preferred_generic_provider_sample<'a>(
     generic: &'a Option<ExecutionQuoteCanaryProviderSampleInsert>,
     public: &'a Option<ExecutionQuoteCanaryProviderSampleInsert>,
 ) -> Option<(&'static str, &'a ExecutionQuoteCanaryProviderSampleInsert)> {
-    let mut best: Option<(&'static str, &ExecutionQuoteCanaryProviderSampleInsert)> = None;
-    for (source, sample) in [
-        (QUOTE_SOURCE_GENERIC_METIS, generic.as_ref()),
-        (QUOTE_SOURCE_GENERIC_PUBLIC, public.as_ref()),
-    ] {
-        let Some(sample) = sample.filter(|sample| provider_quote_has_finite_slippage(sample))
-        else {
-            continue;
-        };
-        best = match best {
-            Some((best_source, best_sample))
-                if best_sample
-                    .slippage_bps
-                    .expect("filtered finite slippage")
-                    .total_cmp(&sample.slippage_bps.expect("filtered finite slippage"))
-                    .is_le() =>
-            {
-                Some((best_source, best_sample))
-            }
-            _ => Some((source, sample)),
-        };
+    if let Some(sample) = generic
+        .as_ref()
+        .filter(|sample| provider_quote_has_finite_slippage(sample))
+    {
+        return Some((QUOTE_SOURCE_GENERIC_METIS, sample));
     }
-    best
+    public
+        .as_ref()
+        .filter(|sample| provider_quote_has_finite_slippage(sample))
+        .map(|sample| (QUOTE_SOURCE_GENERIC_PUBLIC, sample))
 }
 
 fn provider_quote_has_finite_slippage(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> bool {
