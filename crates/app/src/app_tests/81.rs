@@ -217,6 +217,73 @@ async fn selected_public_missing_account_retries_metis_skip_user_accounts_transa
     Ok(())
 }
 
+#[tokio::test]
+async fn pump_fun_amm_missing_account_retries_paid_pump_fun_transaction_builder() -> Result<()> {
+    let metis_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let metis_url = format!("http://{}", metis_listener.local_addr()?);
+    let public_url = format!("http://{}", public_listener.local_addr()?);
+    let metis_server = tokio::spawn(async move {
+        let mut buffer = [0_u8; 4096];
+        for attempt in 0..4 {
+            let (mut socket, _) = metis_listener.accept().await.expect("metis request");
+            let read = socket.read(&mut buffer).await.expect("read metis request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            if attempt < 3 {
+                assert!(request.starts_with("POST /swap "));
+                match attempt {
+                    0 => assert_default_builder_request(&request),
+                    1 => assert_no_shared_builder_request(&request),
+                    _ => assert_no_shared_skip_user_accounts_request(&request),
+                }
+                write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
+            } else {
+                assert!(request.starts_with("POST /pump-fun/swap "));
+                assert!(request.contains("\"type\":\"BUY\""));
+                assert!(request.contains("\"mint\":\"TokenMint\""));
+                write_alternate_builder_json(&mut socket, valid_pump_fun_transaction_json()).await;
+            }
+        }
+    });
+    let public_server = tokio::spawn(async move {
+        let mut buffer = [0_u8; 4096];
+        for attempt in 0..3 {
+            let (mut socket, _) = public_listener.accept().await.expect("public request");
+            let read = socket.read(&mut buffer).await.expect("read public request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.starts_with("POST /swap "));
+            match attempt {
+                0 => assert_default_builder_request(&request),
+                1 => assert_no_shared_builder_request(&request),
+                _ => assert_no_shared_skip_user_accounts_request(&request),
+            }
+            write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
+        }
+    });
+    let mut config = alternate_builder_config(metis_url);
+    config.quote_canary_public_parallel_enabled = true;
+    config.quote_canary_public_base_url = public_url;
+    config.quote_canary_pump_fun_parallel_enabled = true;
+    let plan = alternate_builder_plan(
+        &config,
+        crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS,
+    )?;
+
+    let proof = crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run(
+        &reqwest::Client::new(),
+        &config,
+        &plan,
+    )
+    .await?
+    .expect("proof should exist");
+    metis_server.await?;
+    public_server.await?;
+
+    assert_eq!(proof.source, "pump_fun_paid");
+    assert!(proof.summary.contains("pump_fun_swap_transaction_ok"));
+    Ok(())
+}
+
 async fn write_alternate_builder_json(socket: &mut tokio::net::TcpStream, body: &str) {
     write_alternate_builder_status(socket, 200, body).await;
 }
@@ -323,6 +390,10 @@ fn valid_alternate_instructions_json() -> &'static str {
 
 fn valid_alternate_transaction_json() -> &'static str {
     r#"{"swapTransaction":"AQIDBA==","simulationError":null}"#
+}
+
+fn valid_pump_fun_transaction_json() -> &'static str {
+    r#"{"tx":"AQIDBA=="}"#
 }
 
 fn missing_account_transaction_json() -> &'static str {

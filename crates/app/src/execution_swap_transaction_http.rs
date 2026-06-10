@@ -10,8 +10,11 @@ use crate::execution_swap_http_request::{
 use crate::execution_swap_http_retry::{
     is_market_not_found_error, is_missing_token_program_error, post_swap_json_with_retry,
 };
+#[path = "execution_swap_transaction_pump_fun_fallback.rs"]
+mod pump_fun_fallback;
 use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
+use pump_fun_fallback::retry_on_pump_fun_amm_missing_account;
 use serde_json::Value;
 use std::time::Duration as StdDuration;
 
@@ -114,23 +117,27 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
         if is_missing_account_simulation_error(&retry.value)
             && can_use_public_builder_fallback(config, endpoint.source)
         {
-            return retry_public_swap_transaction_builder(http, config, &body, timeout, "swap")
-                .await;
+            let result =
+                retry_public_swap_transaction_builder(http, config, &body, timeout, "swap").await;
+            return retry_on_pump_fun_amm_missing_account(result, http, config, plan).await;
         }
         if is_missing_account_simulation_error(&retry.value)
             && can_use_metis_builder_fallback(config, endpoint.source)
         {
-            return retry_metis_swap_transaction_builder(http, config, &body, timeout, "swap")
-                .await;
+            let result =
+                retry_metis_swap_transaction_builder(http, config, &body, timeout, "swap").await;
+            return retry_on_pump_fun_amm_missing_account(result, http, config, plan).await;
         }
-        return Ok(Some(swap_transaction_response_summary(
+        let result = swap_transaction_response_summary(
             retry.value,
             retry.elapsed_ms,
             retry.attempts,
             endpoint.source,
             true,
             false,
-        )?));
+        )
+        .map(Some);
+        return retry_on_pump_fun_amm_missing_account(result, http, config, plan).await;
     }
     Ok(Some(swap_transaction_response_summary(
         response.value,
