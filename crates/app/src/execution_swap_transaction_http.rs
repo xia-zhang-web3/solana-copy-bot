@@ -8,9 +8,10 @@ use crate::execution_swap_http_request::{
     simulation_error_text, swap_request_body, SwapBuilderSource,
 };
 use crate::execution_swap_http_retry::post_swap_json_with_retry;
+use crate::execution_transaction_rpc_simulation::verify_serialized_transaction_rpc_simulation;
 use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::time::Duration as StdDuration;
 
 pub(crate) async fn fetch_swap_transaction_dry_run(
@@ -263,70 +264,14 @@ async fn verify_rpc_simulation(
     mut result: SwapTransactionDryRunResult,
     timeout: StdDuration,
 ) -> Result<SwapTransactionDryRunResult> {
-    if !config.canary_tiny_submit_enabled {
-        return Ok(result);
-    }
-    let rpc_url = config.submit_adapter_http_url.trim();
-    if rpc_url.is_empty() {
-        return Ok(result);
-    }
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": "execution-swap-transaction-simulate",
-        "method": "simulateTransaction",
-        "params": [
-            result.serialized_transaction_base64,
-            {
-                "encoding": "base64",
-                "sigVerify": false,
-                "replaceRecentBlockhash": true,
-                "commitment": "confirmed",
-            }
-        ],
-    });
-    let response = http
-        .post(rpc_url)
-        .timeout(timeout)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|error| anyhow!("swap transaction RPC simulation request failed: {error}"))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| anyhow!("swap transaction RPC simulation body read failed: {error}"))?;
-    if !status.is_success() {
-        return Err(anyhow!(
-            "swap transaction RPC simulation returned HTTP {status}: {}",
-            truncate_for_log(&body, 240)
-        ));
-    }
-    let value: Value = serde_json::from_str(&body)
-        .map_err(|error| anyhow!("swap transaction RPC simulation JSON decode failed: {error}"))?;
-    if let Some(error) = value.get("error") {
-        return Err(anyhow!(
-            "swap transaction RPC simulation error source={}: {}",
-            result.source,
-            truncate_for_log(&error.to_string(), 240)
-        ));
-    }
-    let simulation = value.pointer("/result/value");
-    if let Some(error) = simulation
-        .and_then(|item| item.get("err"))
-        .filter(|item| !item.is_null())
-    {
-        let logs = simulation
-            .and_then(|item| item.get("logs"))
-            .map(|logs| truncate_for_log(&logs.to_string(), 260))
-            .unwrap_or_else(|| "[]".to_string());
-        return Err(anyhow!(
-            "swap transaction RPC simulation failed source={} err={} logs={}",
-            result.source,
-            truncate_for_log(&error.to_string(), 180),
-            logs
-        ));
-    }
+    verify_serialized_transaction_rpc_simulation(
+        http,
+        config,
+        &result.serialized_transaction_base64,
+        &result.source,
+        timeout,
+    )
+    .await?;
     result.summary = truncate_for_log(&format!("{} rpc_simulation=passed", result.summary), 500);
     Ok(result)
 }

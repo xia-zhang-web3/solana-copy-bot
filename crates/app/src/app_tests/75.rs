@@ -236,6 +236,22 @@ async fn generic_pump_fun_amm_missing_token_program_keeps_generic_failure() -> R
     let base_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
         let request = read_http_request(&listener).await;
+        assert!(request.starts_with("POST /pump-fun/swap-instructions "));
+        write_http_json(
+            request.into_socket,
+            r#"{"instructions":[{"keys":[],"programId":"ComputeBudget111111111111111111111111111111","data":[2]}]}"#,
+        )
+        .await;
+
+        let request = read_http_request(&listener).await;
+        assert!(request.starts_with("POST /pump-fun/swap "));
+        write_http_json(
+            request.into_socket,
+            r#"{"error":"Missing token program for TokenMint"}"#,
+        )
+        .await;
+
+        let request = read_http_request(&listener).await;
         assert!(request.starts_with("POST /swap-instructions "));
         assert!(request.contains("\"useSharedAccounts\":false"));
         write_http_json(
@@ -271,10 +287,13 @@ async fn generic_pump_fun_amm_missing_token_program_keeps_generic_failure() -> R
     let error = adapter
         .simulate_transaction_plan(&plan)
         .await
-        .expect_err("generic missing token program should stay visible");
+        .expect_err("direct and generic missing token program should stay visible");
     server.await?;
 
-    assert!(error.to_string().contains("Missing token program"));
+    let error = error.to_string();
+    assert!(error.contains("pump.fun direct swap failed"));
+    assert!(error.contains("generic Metis swap failed"));
+    assert!(error.contains("Missing token program"));
     let payload = plan
         .serialized_transaction_payload_slot
         .as_ref()

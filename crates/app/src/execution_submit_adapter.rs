@@ -2,6 +2,7 @@ use crate::execution_pump_fun_swap_instructions_http::fetch_pump_fun_swap_instru
 use crate::execution_pump_fun_swap_transaction_http::fetch_pump_fun_swap_transaction_dry_run;
 use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID;
+use crate::execution_route_plan::route_plan_has_pump_fun_amm;
 use crate::execution_serialized_transaction_slot::ExecutionSerializedTransactionPayloadSlot;
 use crate::execution_signing_envelope::{
     build_dry_run_execution_signing_envelope, build_serialized_transaction_execution_envelope,
@@ -17,7 +18,7 @@ use crate::execution_swap_http_request::is_missing_account_error_text;
 use crate::execution_swap_http_retry::is_missing_token_program_error;
 use crate::execution_swap_instructions_http::fetch_swap_instructions_dry_run;
 use crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
     EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT,
@@ -336,31 +337,19 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 anyhow::bail!("missing swap blueprint for dry-run simulation");
             };
             validate_execution_swap_blueprint_for_simulation(blueprint)?;
-            if plan.metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_PUMP_FUN_PAID) {
-                let instructions_proof =
-                    match fetch_pump_fun_swap_instructions_dry_run(&self.http, &self.config, plan)
-                        .await
+            let direct_pump_fun = should_use_direct_pump_fun_builder(&self.config, plan);
+            let mut pump_fun_direct_error = None;
+            if direct_pump_fun {
+                match pump_fun_simulation_result(&self.http, &self.config, plan).await {
+                    Ok(result) => return Ok(result),
+                    Err(error)
+                        if plan.metadata.quote_source.as_deref()
+                            == Some(QUOTE_SOURCE_PUMP_FUN_PAID) =>
                     {
-                        Ok(proof) => proof,
-                        Err(error) => Some(soft_pump_fun_swap_instructions_failure_proof(&error)),
-                    };
-                let transaction_dry_run =
-                    fetch_pump_fun_swap_transaction_dry_run(&self.http, &self.config, plan).await?;
-                if let Some(transaction) = transaction_dry_run.as_ref() {
-                    if let Some(slot) = plan.serialized_transaction_payload_slot.as_ref() {
-                        slot.store(ExecutionSerializedTransactionPayload {
-                            source: transaction.source.clone(),
-                            serialized_transaction_base64: transaction
-                                .serialized_transaction_base64
-                                .clone(),
-                        })?;
+                        return Err(error);
                     }
+                    Err(error) => pump_fun_direct_error = Some(error),
                 }
-                let transaction_proof = transaction_dry_run.map(|transaction| transaction.summary);
-                return Ok(ExecutionSimulationResult {
-                    status: EXECUTION_SIMULATION_STATUS_PASSED.to_string(),
-                    error: combined_simulation_proof(instructions_proof, transaction_proof),
-                });
             }
             let instructions_proof =
                 match fetch_swap_instructions_dry_run(&self.http, &self.config, plan).await {
@@ -373,7 +362,19 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                     }
                 };
             let transaction_dry_run =
-                fetch_swap_transaction_dry_run(&self.http, &self.config, plan).await?;
+                match fetch_swap_transaction_dry_run(&self.http, &self.config, plan).await {
+                    Ok(result) => result,
+                    Err(error) => {
+                        if let Some(pump_fun_error) = pump_fun_direct_error {
+                            return Err(anyhow!(
+                                "pump.fun direct swap failed: {}; generic Metis swap failed: {}",
+                                truncate_for_log(&pump_fun_error.to_string(), 180),
+                                truncate_for_log(&error.to_string(), 180)
+                            ));
+                        }
+                        return Err(error);
+                    }
+                };
             if let Some(transaction) = transaction_dry_run.as_ref() {
                 if let Some(slot) = plan.serialized_transaction_payload_slot.as_ref() {
                     slot.store(ExecutionSerializedTransactionPayload {
@@ -385,9 +386,19 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 }
             }
             let transaction_proof = transaction_dry_run.map(|transaction| transaction.summary);
+            let mut proof = combined_simulation_proof(instructions_proof, transaction_proof);
+            if let Some(error) = pump_fun_direct_error {
+                proof = combined_simulation_proof(
+                    Some(format!(
+                        "pump_fun_direct_swap_soft_failed error={}",
+                        truncate_for_log(&error.to_string(), 180)
+                    )),
+                    proof,
+                );
+            }
             Ok(ExecutionSimulationResult {
                 status: EXECUTION_SIMULATION_STATUS_PASSED.to_string(),
-                error: combined_simulation_proof(instructions_proof, transaction_proof),
+                error: proof,
             })
         })
     }
@@ -426,6 +437,41 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
         }
         self.plan_submit(request)
     }
+}
+
+fn should_use_direct_pump_fun_builder(
+    config: &ExecutionConfig,
+    plan: &ExecutionTransactionPlan,
+) -> bool {
+    plan.metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_PUMP_FUN_PAID)
+        || (config.quote_canary_pump_fun_parallel_enabled
+            && route_plan_has_pump_fun_amm(plan.metadata.route_plan_json.as_deref()))
+}
+
+async fn pump_fun_simulation_result(
+    http: &reqwest::Client,
+    config: &ExecutionConfig,
+    plan: &ExecutionTransactionPlan,
+) -> Result<ExecutionSimulationResult> {
+    let instructions_proof =
+        match fetch_pump_fun_swap_instructions_dry_run(http, config, plan).await {
+            Ok(proof) => proof,
+            Err(error) => Some(soft_pump_fun_swap_instructions_failure_proof(&error)),
+        };
+    let transaction_dry_run = fetch_pump_fun_swap_transaction_dry_run(http, config, plan).await?;
+    if let Some(transaction) = transaction_dry_run.as_ref() {
+        if let Some(slot) = plan.serialized_transaction_payload_slot.as_ref() {
+            slot.store(ExecutionSerializedTransactionPayload {
+                source: transaction.source.clone(),
+                serialized_transaction_base64: transaction.serialized_transaction_base64.clone(),
+            })?;
+        }
+    }
+    let transaction_proof = transaction_dry_run.map(|transaction| transaction.summary);
+    Ok(ExecutionSimulationResult {
+        status: EXECUTION_SIMULATION_STATUS_PASSED.to_string(),
+        error: combined_simulation_proof(instructions_proof, transaction_proof),
+    })
 }
 
 fn soft_swap_instructions_failure_proof(error: &anyhow::Error) -> Option<String> {

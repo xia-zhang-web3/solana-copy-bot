@@ -3,6 +3,7 @@ use crate::execution_signing_envelope::validate_serialized_transaction_base64;
 use crate::execution_submit_adapter::ExecutionTransactionPlan;
 use crate::execution_swap_http_retry::post_swap_json_with_retry;
 use crate::execution_swap_transaction_http::SwapTransactionDryRunResult;
+use crate::execution_transaction_rpc_simulation::verify_serialized_transaction_rpc_simulation;
 use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
 use serde_json::{json, Value};
@@ -48,11 +49,11 @@ pub(crate) async fn fetch_pump_fun_swap_transaction_dry_run(
         "pump.fun swap transaction dry-run",
     )
     .await?;
-    Ok(Some(pump_fun_swap_transaction_summary(
-        response.value,
-        response.elapsed_ms,
-        response.attempts,
-    )?))
+    let result =
+        pump_fun_swap_transaction_summary(response.value, response.elapsed_ms, response.attempts)?;
+    Ok(Some(
+        verified_pump_fun_swap_transaction_summary(http, config, result, timeout).await?,
+    ))
 }
 
 fn pump_fun_swap_transaction_summary(
@@ -93,6 +94,24 @@ fn pump_fun_swap_transaction_summary(
         serialized_transaction_base64: tx.to_string(),
         source: "pump_fun_paid".to_string(),
     })
+}
+
+async fn verified_pump_fun_swap_transaction_summary(
+    http: &reqwest::Client,
+    config: &ExecutionConfig,
+    mut result: SwapTransactionDryRunResult,
+    timeout: StdDuration,
+) -> Result<SwapTransactionDryRunResult> {
+    verify_serialized_transaction_rpc_simulation(
+        http,
+        config,
+        &result.serialized_transaction_base64,
+        &result.source,
+        timeout,
+    )
+    .await?;
+    result.summary = truncate_for_log(&format!("{} rpc_simulation=passed", result.summary), 500);
+    Ok(result)
 }
 
 fn pump_fun_swap_url(base_url: &str) -> Result<String> {

@@ -59,6 +59,8 @@ mod execution_orphan_position_recovery_contract;
 mod execution_orphan_sell_confirmation_contract;
 #[path = "app_tests/74.rs"]
 mod execution_partial_sell_accounting_contract;
+#[path = "app_tests/89.rs"]
+mod execution_pump_fun_direct_builder_contract;
 #[path = "app_tests/76.rs"]
 mod execution_pump_fun_owned_sell_contract;
 #[path = "app_tests/75.rs"]
