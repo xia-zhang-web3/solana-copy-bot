@@ -154,12 +154,16 @@ async fn missing_account_no_shared_retry_falls_back_to_public_builder() -> Resul
     let public_url = format!("http://{}", public_listener.local_addr()?);
     let primary_server = tokio::spawn(async move {
         let mut buffer = [0_u8; 8192];
-        for expected_path in [
+        for (attempt, expected_path) in [
             "POST /swap-instructions ",
             "POST /swap-instructions ",
             "POST /swap ",
             "POST /swap ",
-        ] {
+            "POST /swap ",
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let (mut socket, _) = primary_listener.accept().await.expect("primary request");
             let read = socket
                 .read(&mut buffer)
@@ -167,6 +171,10 @@ async fn missing_account_no_shared_retry_falls_back_to_public_builder() -> Resul
                 .expect("read primary request");
             let request = String::from_utf8_lossy(&buffer[..read]);
             assert!(request.starts_with(expected_path));
+            if attempt == 4 {
+                assert!(request.contains("\"useSharedAccounts\":false"));
+                assert!(request.contains("\"skipUserAccountsRpcCalls\":true"));
+            }
             if expected_path == "POST /swap " {
                 write_soft_swap_json(&mut socket, missing_account_transaction_json()).await;
             } else {

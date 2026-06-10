@@ -1,8 +1,10 @@
 use crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_PUBLIC;
 use crate::execution_submit_adapter::ExecutionTransactionPlan;
+use crate::execution_swap_http_retry::{post_swap_json_with_retry, SwapHttpJsonResponse};
 use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
 use serde_json::{json, Value};
+use std::time::Duration as StdDuration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SwapBuilderSource {
@@ -66,6 +68,34 @@ pub(crate) fn disable_shared_accounts(body: &mut Value) {
     if let Some(object) = body.as_object_mut() {
         object.insert("useSharedAccounts".to_string(), Value::Bool(false));
     }
+}
+
+pub(crate) fn enable_skip_user_accounts_rpc_calls(body: &mut Value) {
+    if let Some(object) = body.as_object_mut() {
+        object.insert("skipUserAccountsRpcCalls".to_string(), Value::Bool(true));
+    }
+}
+
+pub(crate) async fn post_no_shared_skip_user_accounts_json_with_retry(
+    http: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    body: &Value,
+    timeout: StdDuration,
+    context: &str,
+) -> Result<SwapHttpJsonResponse> {
+    let mut retry_body = body.clone();
+    disable_shared_accounts(&mut retry_body);
+    enable_skip_user_accounts_rpc_calls(&mut retry_body);
+    post_swap_json_with_retry(
+        http,
+        url.to_string(),
+        api_key,
+        &retry_body,
+        timeout,
+        context,
+    )
+    .await
 }
 
 pub(crate) fn is_missing_account_simulation_error(value: &Value) -> bool {

@@ -153,6 +153,70 @@ async fn selected_public_missing_account_falls_back_to_metis_instructions_builde
     Ok(())
 }
 
+#[tokio::test]
+async fn selected_public_missing_account_retries_metis_skip_user_accounts_transaction_builder(
+) -> Result<()> {
+    let metis_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let metis_url = format!("http://{}", metis_listener.local_addr()?);
+    let public_url = format!("http://{}", public_listener.local_addr()?);
+    let public_server = tokio::spawn(async move {
+        let mut buffer = [0_u8; 4096];
+        for _ in 0..2 {
+            let (mut socket, _) = public_listener.accept().await.expect("public request");
+            let read = socket.read(&mut buffer).await.expect("read public request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.starts_with("POST /swap "));
+            write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
+        }
+    });
+    let metis_server = tokio::spawn(async move {
+        let mut buffer = [0_u8; 4096];
+        for attempt in 0..3 {
+            let (mut socket, _) = metis_listener.accept().await.expect("metis request");
+            let read = socket.read(&mut buffer).await.expect("read metis request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.starts_with("POST /swap "));
+            assert!(request.contains("x-api-key"));
+            match attempt {
+                0 => assert_default_builder_request(&request),
+                1 => assert_no_shared_builder_request(&request),
+                _ => assert_no_shared_skip_user_accounts_request(&request),
+            }
+            if attempt < 2 {
+                write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
+            } else {
+                write_alternate_builder_json(&mut socket, valid_alternate_transaction_json()).await;
+            }
+        }
+    });
+    let mut config = alternate_builder_config(metis_url);
+    config.quote_canary_api_key = "metis-key".to_string();
+    config.quote_canary_public_parallel_enabled = true;
+    config.quote_canary_public_base_url = public_url;
+    let plan = alternate_builder_plan(
+        &config,
+        crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_PUBLIC,
+    )?;
+
+    let proof = crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run(
+        &reqwest::Client::new(),
+        &config,
+        &plan,
+    )
+    .await?
+    .expect("proof should exist");
+    public_server.await?;
+    metis_server.await?;
+
+    assert_eq!(
+        proof.source,
+        "metis_fallback_no_shared_accounts_skip_user_accounts"
+    );
+    assert!(proof.summary.contains("skip_user_accounts_rpc_calls=true"));
+    Ok(())
+}
+
 async fn write_alternate_builder_json(socket: &mut tokio::net::TcpStream, body: &str) {
     write_alternate_builder_status(socket, 200, body).await;
 }
@@ -171,6 +235,21 @@ async fn write_alternate_builder_status(
         .write_all(response.as_bytes())
         .await
         .expect("write response");
+}
+
+fn assert_default_builder_request(request: &str) {
+    assert!(!request.contains("\"useSharedAccounts\":false"));
+    assert!(!request.contains("\"skipUserAccountsRpcCalls\":true"));
+}
+
+fn assert_no_shared_builder_request(request: &str) {
+    assert!(request.contains("\"useSharedAccounts\":false"));
+    assert!(!request.contains("\"skipUserAccountsRpcCalls\":true"));
+}
+
+fn assert_no_shared_skip_user_accounts_request(request: &str) {
+    assert!(request.contains("\"useSharedAccounts\":false"));
+    assert!(request.contains("\"skipUserAccountsRpcCalls\":true"));
 }
 
 fn alternate_builder_config(base_url: String) -> ExecutionConfig {
