@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
 use serde_json::Value;
 
-pub(crate) async fn retry_on_pump_fun_amm_missing_account(
+pub(crate) async fn retry_on_pump_fun_amm_builder_error(
     generic_result: Result<Option<SwapTransactionDryRunResult>>,
     http: &reqwest::Client,
     config: &ExecutionConfig,
@@ -23,11 +23,11 @@ pub(crate) async fn retry_on_pump_fun_amm_missing_account(
     match fetch_pump_fun_swap_transaction_dry_run(http, config, plan).await {
         Ok(Some(result)) => Ok(Some(result)),
         Ok(None) => Err(anyhow!(
-            "generic Pump.fun AMM transaction builder failed after missing-account; pump.fun paid fallback returned no transaction; generic error: {}",
+            "generic Pump.fun AMM transaction builder failed; pump.fun paid fallback returned no transaction; generic error: {}",
             generic_message
         )),
         Err(pump_error) => Err(anyhow!(
-            "generic Pump.fun AMM transaction builder failed after missing-account; pump.fun paid fallback failed: {}; generic error: {}",
+            "generic Pump.fun AMM transaction builder failed; pump.fun paid fallback failed: {}; generic error: {}",
             pump_error,
             generic_message
         )),
@@ -40,8 +40,17 @@ fn should_retry_pump_fun_amm(
     generic_error: &str,
 ) -> bool {
     config.quote_canary_pump_fun_parallel_enabled
-        && is_missing_account_error_text(generic_error)
+        && retryable_pump_fun_amm_builder_error(generic_error)
         && route_plan_has_pump_fun_amm(plan.metadata.route_plan_json.as_deref())
+}
+
+fn retryable_pump_fun_amm_builder_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    is_missing_account_error_text(error)
+        || lower.contains("market_not_found")
+        || (lower.contains("market") && lower.contains("not found"))
+        || lower.contains("no_routes_found")
+        || lower.contains("no routes found")
 }
 
 fn route_plan_has_pump_fun_amm(route_plan_json: Option<&str>) -> bool {

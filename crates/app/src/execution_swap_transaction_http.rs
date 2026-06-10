@@ -10,11 +10,16 @@ use crate::execution_swap_http_request::{
 use crate::execution_swap_http_retry::{
     is_market_not_found_error, is_missing_token_program_error, post_swap_json_with_retry,
 };
+#[path = "execution_swap_transaction_builder_fallback.rs"]
+mod builder_fallback;
 #[path = "execution_swap_transaction_pump_fun_fallback.rs"]
 mod pump_fun_fallback;
 use anyhow::{anyhow, Result};
+use builder_fallback::{
+    retry_metis_swap_transaction_builder, retry_public_swap_transaction_builder,
+};
 use copybot_config::ExecutionConfig;
-use pump_fun_fallback::retry_on_pump_fun_amm_missing_account;
+use pump_fun_fallback::retry_on_pump_fun_amm_builder_error;
 use serde_json::Value;
 use std::time::Duration as StdDuration;
 
@@ -53,7 +58,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
         Ok(response) => (primary, response),
         Err(error) if should_use_public_builder_fallback(config, primary.source, &error) => {
             let fallback = public_fallback_swap_builder_endpoint(config, "swap", "public swap")?;
-            let fallback_response = post_swap_json_with_retry(
+            let fallback_response = match post_swap_json_with_retry(
                 http,
                 fallback.url.clone(),
                 &fallback.api_key,
@@ -61,12 +66,19 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
                 timeout,
                 "public swap transaction dry-run fallback",
             )
-            .await?;
+            .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    return retry_on_pump_fun_amm_builder_error(Err(error), http, config, plan)
+                        .await;
+                }
+            };
             (fallback, fallback_response)
         }
         Err(error) if should_use_metis_builder_fallback(config, primary.source, &error) => {
             let fallback = metis_fallback_swap_builder_endpoint(config, "swap", "metis swap")?;
-            let fallback_response = post_swap_json_with_retry(
+            let fallback_response = match post_swap_json_with_retry(
                 http,
                 fallback.url.clone(),
                 &fallback.api_key,
@@ -74,10 +86,19 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
                 timeout,
                 "metis swap transaction dry-run fallback",
             )
-            .await?;
+            .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    return retry_on_pump_fun_amm_builder_error(Err(error), http, config, plan)
+                        .await;
+                }
+            };
             (fallback, fallback_response)
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            return retry_on_pump_fun_amm_builder_error(Err(error), http, config, plan).await;
+        }
     };
     if is_missing_account_simulation_error(&response.value) {
         let mut no_shared_body = body.clone();
@@ -119,14 +140,14 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
         {
             let result =
                 retry_public_swap_transaction_builder(http, config, &body, timeout, "swap").await;
-            return retry_on_pump_fun_amm_missing_account(result, http, config, plan).await;
+            return retry_on_pump_fun_amm_builder_error(result, http, config, plan).await;
         }
         if is_missing_account_simulation_error(&retry.value)
             && can_use_metis_builder_fallback(config, endpoint.source)
         {
             let result =
                 retry_metis_swap_transaction_builder(http, config, &body, timeout, "swap").await;
-            return retry_on_pump_fun_amm_missing_account(result, http, config, plan).await;
+            return retry_on_pump_fun_amm_builder_error(result, http, config, plan).await;
         }
         let result = swap_transaction_response_summary(
             retry.value,
@@ -137,147 +158,13 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
             false,
         )
         .map(Some);
-        return retry_on_pump_fun_amm_missing_account(result, http, config, plan).await;
+        return retry_on_pump_fun_amm_builder_error(result, http, config, plan).await;
     }
     Ok(Some(swap_transaction_response_summary(
         response.value,
         response.elapsed_ms,
         response.attempts,
         endpoint.source,
-        false,
-        false,
-    )?))
-}
-
-async fn retry_public_swap_transaction_builder(
-    http: &reqwest::Client,
-    config: &ExecutionConfig,
-    body: &Value,
-    timeout: StdDuration,
-    endpoint_name: &str,
-) -> Result<Option<SwapTransactionDryRunResult>> {
-    let fallback = public_fallback_swap_builder_endpoint(config, endpoint_name, "public swap")?;
-    let response = post_swap_json_with_retry(
-        http,
-        fallback.url.clone(),
-        &fallback.api_key,
-        body,
-        timeout,
-        "public swap transaction dry-run fallback",
-    )
-    .await?;
-    if is_missing_account_simulation_error(&response.value) {
-        let mut no_shared_body = body.clone();
-        disable_shared_accounts(&mut no_shared_body);
-        let retry = post_swap_json_with_retry(
-            http,
-            fallback.url.clone(),
-            &fallback.api_key,
-            &no_shared_body,
-            timeout,
-            "public swap transaction dry-run no-shared-accounts fallback",
-        )
-        .await?;
-        if is_missing_account_simulation_error(&retry.value) {
-            let skip_retry = post_no_shared_skip_user_accounts_json_with_retry(
-                http,
-                &fallback.url,
-                &fallback.api_key,
-                body,
-                timeout,
-                "public swap transaction dry-run no-shared skip-user-accounts fallback",
-            )
-            .await?;
-            return Ok(Some(swap_transaction_response_summary(
-                skip_retry.value,
-                skip_retry.elapsed_ms,
-                skip_retry.attempts,
-                fallback.source,
-                true,
-                true,
-            )?));
-        }
-        return Ok(Some(swap_transaction_response_summary(
-            retry.value,
-            retry.elapsed_ms,
-            retry.attempts,
-            fallback.source,
-            true,
-            false,
-        )?));
-    }
-    Ok(Some(swap_transaction_response_summary(
-        response.value,
-        response.elapsed_ms,
-        response.attempts,
-        fallback.source,
-        false,
-        false,
-    )?))
-}
-
-async fn retry_metis_swap_transaction_builder(
-    http: &reqwest::Client,
-    config: &ExecutionConfig,
-    body: &Value,
-    timeout: StdDuration,
-    endpoint_name: &str,
-) -> Result<Option<SwapTransactionDryRunResult>> {
-    let fallback = metis_fallback_swap_builder_endpoint(config, endpoint_name, "metis swap")?;
-    let response = post_swap_json_with_retry(
-        http,
-        fallback.url.clone(),
-        &fallback.api_key,
-        body,
-        timeout,
-        "metis swap transaction dry-run fallback",
-    )
-    .await?;
-    if is_missing_account_simulation_error(&response.value) {
-        let mut no_shared_body = body.clone();
-        disable_shared_accounts(&mut no_shared_body);
-        let retry = post_swap_json_with_retry(
-            http,
-            fallback.url.clone(),
-            &fallback.api_key,
-            &no_shared_body,
-            timeout,
-            "metis swap transaction dry-run no-shared-accounts fallback",
-        )
-        .await?;
-        if is_missing_account_simulation_error(&retry.value) {
-            let skip_retry = post_no_shared_skip_user_accounts_json_with_retry(
-                http,
-                &fallback.url,
-                &fallback.api_key,
-                body,
-                timeout,
-                "metis swap transaction dry-run no-shared skip-user-accounts fallback",
-            )
-            .await?;
-            return Ok(Some(swap_transaction_response_summary(
-                skip_retry.value,
-                skip_retry.elapsed_ms,
-                skip_retry.attempts,
-                fallback.source,
-                true,
-                true,
-            )?));
-        }
-        return Ok(Some(swap_transaction_response_summary(
-            retry.value,
-            retry.elapsed_ms,
-            retry.attempts,
-            fallback.source,
-            true,
-            false,
-        )?));
-    }
-    Ok(Some(swap_transaction_response_summary(
-        response.value,
-        response.elapsed_ms,
-        response.attempts,
-        fallback.source,
         false,
         false,
     )?))

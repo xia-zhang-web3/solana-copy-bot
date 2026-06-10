@@ -103,7 +103,16 @@ pub(super) fn terminal_failed_sell_no_route(
         && order
             .simulation_error
             .as_deref()
-            .is_some_and(|error| error.contains("NO_ROUTES_FOUND"))
+            .is_some_and(terminal_sell_no_route_proof)
+}
+
+fn terminal_sell_no_route_proof(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("no_routes_found")
+        || lower.contains("no routes found")
+        || lower.contains("token_not_tradable")
+        || lower.contains("not tradable")
+        || lower.contains("bonding curve for mint not found")
 }
 
 pub(super) fn terminal_failed_sell_no_route_retry_ready(

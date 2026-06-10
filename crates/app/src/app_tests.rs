@@ -137,6 +137,8 @@ mod execution_tiny_buy_simulation_retry_contract;
 mod execution_tiny_terminal_dust_no_route;
 #[path = "app_tests/84.rs"]
 mod execution_tiny_terminal_stale_signal_guard;
+#[path = "app_tests/86.rs"]
+mod execution_tiny_terminal_token_not_tradable;
 #[path = "app_tests/83.rs"]
 mod execution_tiny_tick_ordering_contract;
 #[path = "app_tests/42.rs"]
