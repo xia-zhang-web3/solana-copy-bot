@@ -3,6 +3,7 @@ mod copy_signals;
 mod db;
 mod discovery_rebuild_state;
 mod execution_canary_build_plan_metadata;
+mod execution_canary_buy_retry_candidates;
 mod execution_canary_confirmed_fill;
 mod execution_canary_fill_marker;
 mod execution_canary_position_close;

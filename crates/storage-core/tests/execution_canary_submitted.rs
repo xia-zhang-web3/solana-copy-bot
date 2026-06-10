@@ -299,6 +299,58 @@ fn failed_simulation_buy_retry_query_prefers_fresh_orders() -> Result<()> {
 }
 
 #[test]
+fn retry_candidate_buy_query_prefers_fresh_orders() -> Result<()> {
+    let store = open_migrated_store("retry-candidate-buy-fresh-first")?;
+    let now = ts("2026-06-10T02:00:00Z");
+    let route = "metis-swap-instructions-dry-run";
+    let old = failed_buy_simulation_order(
+        &store,
+        "retry-buy-old",
+        route,
+        now,
+        "swap transaction dry-run simulation error: an account required by the instruction is missing",
+    )?;
+    let fresh = failed_buy_simulation_order(
+        &store,
+        "retry-buy-fresh",
+        route,
+        now + Duration::seconds(60),
+        "swap transaction dry-run simulation error: an account required by the instruction is missing",
+    )?;
+    store.mark_execution_canary_failed_simulation_retry_candidate(
+        &old,
+        now + Duration::seconds(70),
+        "retry_failed_buy_transient_simulation",
+    )?;
+    store.mark_execution_canary_failed_simulation_retry_candidate(
+        &fresh,
+        now + Duration::seconds(80),
+        "retry_failed_buy_transient_simulation",
+    )?;
+
+    let one = store.list_retry_candidate_buy_execution_canary_orders_for_route(
+        route,
+        "retry_failed_buy_transient_simulation",
+        1,
+    )?;
+    let all = store.list_retry_candidate_buy_execution_canary_orders_for_route(
+        route,
+        "retry_failed_buy_transient_simulation",
+        10,
+    )?;
+
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].order_id, fresh);
+    assert_eq!(
+        all.iter()
+            .map(|order| order.order_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![fresh.as_str(), old.as_str()]
+    );
+    Ok(())
+}
+
+#[test]
 fn failed_simulation_sell_retry_queries_prefer_fresh_orders() -> Result<()> {
     let store = open_migrated_store("failed-sell-simulation-fresh-first")?;
     let now = ts("2026-06-10T02:10:00Z");

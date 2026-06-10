@@ -76,8 +76,16 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
     let http = reqwest::Client::new();
     let metadata = refresh_tiny_buy_build_plan_metadata(&http, config, signal, metadata).await?;
     if let Some(reason) = validate_execution_canary_entry_metadata(config, &metadata) {
+        let reason = fresh_submit_gate_reason(&metadata, reason);
         summary.entry_gate_blocked = 1;
-        summary.skipped_reason = Some(fresh_submit_gate_reason(&metadata, reason));
+        summary.skipped_reason = Some(reason);
+        if let Some(order) = retry_order.as_ref() {
+            let error = format!("retry_buy_fresh_metadata_blocked:{reason}");
+            let code = EXECUTION_ERROR_BUILD_FAILED;
+            store.mark_execution_canary_failed(&order.order_id, now, code, &error)?;
+            summary.failed = 1;
+            summary.last_error = Some(error);
+        }
         return Ok(summary);
     }
 

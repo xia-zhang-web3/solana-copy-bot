@@ -11,6 +11,11 @@ use copybot_storage_core::{
 
 pub(super) const RETRY_FAILED_BUY_TRANSIENT_SIMULATION_REASON: &str =
     "retry_failed_buy_transient_simulation";
+const RETRY_FAILED_BUY_CANDIDATE_STALE_REASON: &str = "retry_failed_buy_candidate_stale";
+const RETRY_FAILED_BUY_CANDIDATE_STALE_AFTER_SELL_REASON: &str =
+    "retry_failed_buy_candidate_stale_after_sell";
+const RETRY_FAILED_BUY_CANDIDATE_MISSING_SIGNAL_REASON: &str =
+    "retry_failed_buy_candidate_missing_signal";
 
 pub(super) enum BuyRetryDecision {
     None,
@@ -28,6 +33,12 @@ pub(super) fn buy_retry_decision_for_signal(
         return Ok(BuyRetryDecision::None);
     };
     if retry_failed_buy_candidate_ready(&existing) {
+        if let Some(reason) =
+            failed_buy_retry_candidate_expiry_reason(config, store, &existing, now)?
+        {
+            let expired = store.mark_execution_canary_expired(&existing.order_id, now, reason)?;
+            return Ok(BuyRetryDecision::Reconcile(expired));
+        }
         return Ok(BuyRetryDecision::Retry(existing));
     }
     if failed_buy_simulation_retry_ready(config, &existing) {
@@ -49,6 +60,17 @@ pub(super) fn next_failed_buy_retry_signal(
     store: &SqliteStore,
     limit: u32,
 ) -> Result<Option<CopySignalRow>> {
+    let retry_candidates = store.list_retry_candidate_buy_execution_canary_orders_for_route(
+        &config.canary_route,
+        RETRY_FAILED_BUY_TRANSIENT_SIMULATION_REASON,
+        limit,
+    )?;
+    for order in retry_candidates {
+        if let Some(signal) = store.load_copy_signal_by_signal_id(&order.signal_id)? {
+            return Ok(Some(signal));
+        }
+    }
+
     let failed_buy_orders = store.list_failed_simulation_buy_execution_canary_orders_for_route(
         &config.canary_route,
         limit,
@@ -121,4 +143,27 @@ fn failed_buy_retry_is_stale_after_sell(
         return Ok(false);
     };
     store.has_later_copy_sell_signal(&signal.token, signal.ts)
+}
+
+fn failed_buy_retry_candidate_expiry_reason(
+    config: &ExecutionConfig,
+    store: &SqliteStore,
+    order: &ExecutionCanaryOrder,
+    now: DateTime<Utc>,
+) -> Result<Option<&'static str>> {
+    let Some(signal) = store.load_copy_signal_by_signal_id(&order.signal_id)? else {
+        return Ok(Some(RETRY_FAILED_BUY_CANDIDATE_MISSING_SIGNAL_REASON));
+    };
+    let max_signal_age_seconds = config
+        .canary_max_signal_age_seconds
+        .max(1)
+        .min(i64::MAX as u64) as i64;
+    let max_age = chrono::Duration::seconds(max_signal_age_seconds);
+    if now.signed_duration_since(signal.ts) > max_age {
+        return Ok(Some(RETRY_FAILED_BUY_CANDIDATE_STALE_REASON));
+    }
+    if store.has_later_copy_sell_signal(&signal.token, signal.ts)? {
+        return Ok(Some(RETRY_FAILED_BUY_CANDIDATE_STALE_AFTER_SELL_REASON));
+    }
+    Ok(None)
 }

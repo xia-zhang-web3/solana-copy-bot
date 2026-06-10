@@ -101,6 +101,115 @@ async fn tiny_submit_sweep_skips_failed_buy_retry_after_later_sell_signal() -> R
     Ok(())
 }
 
+#[tokio::test]
+async fn failed_buy_retry_candidate_is_failed_when_fresh_metadata_blocks_entry() -> Result<()> {
+    let db_path = unique_buy_retry_test_path("fresh-metadata-blocked");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let signal = buy_retry_signal("fresh-metadata-blocked", now);
+    store.insert_copy_signal(&signal)?;
+    record_buy_retry_quote(&store, &signal, now)?;
+    let order_id = mark_failed_buy_simulation_order(&store, &signal, now)?;
+    store.mark_execution_canary_failed_simulation_retry_candidate(
+        &order_id,
+        now + chrono::Duration::seconds(4),
+        "retry_failed_buy_transient_simulation",
+    )?;
+    let mut config = buy_retry_config("http://127.0.0.1:1");
+    config.quote_canary_timeout_ms = 50;
+
+    let summary = crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
+        &config,
+        &store,
+        now + chrono::Duration::seconds(5),
+    )
+    .await?
+    .expect("tiny submit route should sweep retry candidate");
+    let order = store
+        .load_execution_canary_order(&order_id)?
+        .expect("retry order should remain present");
+
+    assert_eq!(summary.existing, 1);
+    assert_eq!(summary.entry_gate_blocked, 1);
+    assert_eq!(summary.failed, 1);
+    assert_eq!(summary.skipped_reason, Some("fresh_submit_quote_error"));
+    assert_eq!(
+        order.status,
+        copybot_storage_core::EXECUTION_STATUS_CANARY_FAILED
+    );
+    assert_eq!(
+        order.err_code.as_deref(),
+        Some(copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED)
+    );
+    assert_eq!(order.attempt, 2);
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("retry_buy_fresh_metadata_blocked:fresh_submit_quote_error"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_failed_buy_retry_candidate_expires_without_submit() -> Result<()> {
+    let db_path = unique_buy_retry_test_path("stale-candidate");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let signal = buy_retry_signal("stale-candidate", now);
+    store.insert_copy_signal(&signal)?;
+    record_buy_retry_quote(&store, &signal, now)?;
+    let order_id = mark_failed_buy_simulation_order(&store, &signal, now)?;
+    store.mark_execution_canary_failed_simulation_retry_candidate(
+        &order_id,
+        now + chrono::Duration::seconds(4),
+        "retry_failed_buy_transient_simulation",
+    )?;
+    let mut config = buy_retry_config("http://127.0.0.1:1");
+    config.canary_max_signal_age_seconds = 30;
+
+    let summary = crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
+        &config,
+        &store,
+        now + chrono::Duration::seconds(60),
+    )
+    .await?
+    .expect("tiny submit route should sweep stale retry candidate");
+    let order = store
+        .load_execution_canary_order(&order_id)?
+        .expect("retry order should remain present");
+
+    assert_eq!(summary.existing, 1);
+    assert_eq!(summary.built, 0);
+    assert_eq!(summary.simulated, 0);
+    assert_eq!(
+        order.status,
+        copybot_storage_core::EXECUTION_STATUS_CANARY_EXPIRED
+    );
+    assert_eq!(
+        order.err_code.as_deref(),
+        Some(copybot_storage_core::EXECUTION_ERROR_EXPIRED)
+    );
+    assert_eq!(
+        order.simulation_error.as_deref(),
+        Some("retry_failed_buy_candidate_stale")
+    );
+    assert_eq!(order.attempt, 2);
+    assert_eq!(store.execution_canary_open_position_count()?, 0);
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
 fn mark_failed_buy_simulation_order(
     store: &SqliteStore,
     signal: &CopySignalRow,
@@ -313,6 +422,8 @@ fn buy_retry_config(base_url: &str) -> ExecutionConfig {
     config.max_submit_attempts = 2;
     config.max_confirm_seconds = 2;
     config.canary_batch_limit = 2;
+    config.execution_signer_pubkey = "test-signer".to_string();
+    config.execution_signer_keypair_path = "unused-test-signer.json".to_string();
     config
 }
 
