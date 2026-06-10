@@ -133,6 +133,8 @@ mod execution_swap_builder_alternate_fallback_contract;
 mod execution_swap_instructions_soft_failure_contract;
 #[path = "app_tests/82.rs"]
 mod execution_tiny_buy_simulation_retry_contract;
+#[path = "app_tests/84.rs"]
+mod execution_tiny_terminal_stale_signal_guard;
 #[path = "app_tests/83.rs"]
 mod execution_tiny_tick_ordering_contract;
 #[path = "app_tests/42.rs"]

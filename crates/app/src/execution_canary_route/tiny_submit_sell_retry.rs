@@ -153,11 +153,21 @@ pub(super) fn hold_terminal_failed_sell_simulation(
         summary.skipped_reason = Some("terminal_failed_sell_side_mismatch");
         return Ok(summary);
     }
-    let Some(_position) = store.load_execution_canary_open_position(&signal.token)? else {
+    let Some(position) = store.load_execution_canary_open_position(&signal.token)? else {
         summary.sell_no_position = 1;
         summary.skipped_reason = Some("no_owned_position");
         return Ok(summary);
     };
+    if !terminal_sell_signal_matches_open_position(
+        store,
+        &signal.token,
+        signal.ts,
+        position.opened_ts,
+    )? {
+        summary.open_positions = store.execution_canary_open_position_count()?;
+        summary.skipped_reason = Some("terminal_failed_sell_stale_position_signal");
+        return Ok(summary);
+    }
     let terminal_order = store.mark_execution_canary_terminal_sell_simulation_blocked(
         &order.order_id,
         "terminal_failed_sell_simulation_written_off",
@@ -192,11 +202,21 @@ pub(super) fn hold_terminal_failed_sell_no_route(
         summary.skipped_reason = Some("terminal_failed_sell_side_mismatch");
         return Ok(summary);
     }
-    let Some(_position) = store.load_execution_canary_open_position(&signal.token)? else {
+    let Some(position) = store.load_execution_canary_open_position(&signal.token)? else {
         summary.sell_no_position = 1;
         summary.skipped_reason = Some("no_owned_position");
         return Ok(summary);
     };
+    if !terminal_sell_signal_matches_open_position(
+        store,
+        &signal.token,
+        signal.ts,
+        position.opened_ts,
+    )? {
+        summary.open_positions = store.execution_canary_open_position_count()?;
+        summary.skipped_reason = Some("terminal_failed_sell_stale_position_signal");
+        return Ok(summary);
+    }
     let terminal_order = store.mark_execution_canary_terminal_sell_no_route_blocked(
         &order.order_id,
         "terminal_failed_sell_no_route_written_off",
@@ -210,6 +230,23 @@ pub(super) fn hold_terminal_failed_sell_no_route(
         "terminal_failed_sell_no_route_written_off",
     )?;
     Ok(summary)
+}
+
+fn terminal_sell_signal_matches_open_position(
+    store: &SqliteStore,
+    token: &str,
+    signal_ts: DateTime<Utc>,
+    position_opened_ts: DateTime<Utc>,
+) -> Result<bool> {
+    if signal_ts < position_opened_ts {
+        return Ok(false);
+    }
+    if let Some(latest_buy_ts) = store.latest_live_execution_canary_buy_signal_ts(token)? {
+        if signal_ts < latest_buy_ts {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn close_terminal_write_off_positions(

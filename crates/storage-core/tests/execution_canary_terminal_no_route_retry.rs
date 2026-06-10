@@ -137,6 +137,51 @@ fn terminal_no_route_retry_ignores_sell_quote_before_position_opened() -> Result
     Ok(())
 }
 
+#[test]
+fn failed_build_sell_retry_ignores_sell_quote_before_position_opened() -> Result<()> {
+    let store = open_migrated_store("failed-build-sell-before-open")?;
+    let now = ts("2026-06-09T14:00:00Z");
+    let token = "TokenMint";
+
+    let buy_order_id = confirmed_buy_order(&store, "buy-before-failed-build", token, now)?;
+    let early_sell = signal(
+        "sell-before-failed-build-open",
+        "sell",
+        token,
+        now + Duration::seconds(10),
+    );
+    store.insert_copy_signal(&early_sell)?;
+    store.record_execution_quote_canary_event(&sell_quote_event(
+        "quote:failed-build-before-open",
+        &early_sell,
+        now + Duration::seconds(11),
+    ))?;
+    let sell_order = store.reserve_execution_canary_order(
+        &early_sell.signal_id,
+        ROUTE,
+        now + Duration::seconds(12),
+    )?;
+    store.mark_execution_canary_failed(
+        &sell_order.order.order_id,
+        now + Duration::seconds(13),
+        EXECUTION_ERROR_BUILD_FAILED,
+        "owned_sell_quote_failed: NO_ROUTES_FOUND",
+    )?;
+    store.record_execution_canary_open_position(
+        &buy_order_id,
+        token,
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        now + Duration::seconds(20),
+    )?;
+
+    assert!(store
+        .list_failed_build_sell_execution_quote_event_ids_for_route(ROUTE, 10)?
+        .is_empty());
+    Ok(())
+}
+
 fn confirmed_buy_order(
     store: &SqliteStore,
     signal_id: &str,
