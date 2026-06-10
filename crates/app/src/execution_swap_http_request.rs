@@ -76,6 +76,12 @@ pub(crate) fn enable_skip_user_accounts_rpc_calls(body: &mut Value) {
     }
 }
 
+pub(crate) fn disable_dynamic_compute_unit_limit(body: &mut Value) {
+    if let Some(object) = body.as_object_mut() {
+        object.insert("dynamicComputeUnitLimit".to_string(), Value::Bool(false));
+    }
+}
+
 pub(crate) async fn post_no_shared_skip_user_accounts_json_with_retry(
     http: &reqwest::Client,
     url: &str,
@@ -87,6 +93,29 @@ pub(crate) async fn post_no_shared_skip_user_accounts_json_with_retry(
     let mut retry_body = body.clone();
     disable_shared_accounts(&mut retry_body);
     enable_skip_user_accounts_rpc_calls(&mut retry_body);
+    post_swap_json_with_retry(
+        http,
+        url.to_string(),
+        api_key,
+        &retry_body,
+        timeout,
+        context,
+    )
+    .await
+}
+
+pub(crate) async fn post_no_shared_skip_user_accounts_static_cu_json_with_retry(
+    http: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    body: &Value,
+    timeout: StdDuration,
+    context: &str,
+) -> Result<SwapHttpJsonResponse> {
+    let mut retry_body = body.clone();
+    disable_shared_accounts(&mut retry_body);
+    enable_skip_user_accounts_rpc_calls(&mut retry_body);
+    disable_dynamic_compute_unit_limit(&mut retry_body);
     post_swap_json_with_retry(
         http,
         url.to_string(),

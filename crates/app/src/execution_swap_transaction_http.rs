@@ -4,8 +4,9 @@ use crate::execution_submit_adapter::ExecutionTransactionPlan;
 use crate::execution_swap_http_request::{
     disable_shared_accounts, is_missing_account_simulation_error,
     metis_fallback_swap_builder_endpoint, post_no_shared_skip_user_accounts_json_with_retry,
-    primary_swap_builder_endpoint, public_fallback_swap_builder_endpoint, simulation_error_text,
-    swap_request_body, SwapBuilderSource,
+    post_no_shared_skip_user_accounts_static_cu_json_with_retry, primary_swap_builder_endpoint,
+    public_fallback_swap_builder_endpoint, simulation_error_text, swap_request_body,
+    SwapBuilderSource,
 };
 use crate::execution_swap_http_retry::{
     is_market_not_found_error, is_missing_token_program_error, post_swap_json_with_retry,
@@ -127,6 +128,27 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
                     endpoint.source,
                     true,
                     true,
+                    true,
+                )?));
+            }
+            let static_cu_retry = post_no_shared_skip_user_accounts_static_cu_json_with_retry(
+                http,
+                &endpoint.url,
+                &endpoint.api_key,
+                &body,
+                timeout,
+                "swap transaction dry-run no-shared skip-user-accounts static-cu fallback",
+            )
+            .await?;
+            if !is_missing_account_simulation_error(&static_cu_retry.value) {
+                return Ok(Some(swap_transaction_response_summary(
+                    static_cu_retry.value,
+                    static_cu_retry.elapsed_ms,
+                    static_cu_retry.attempts,
+                    endpoint.source,
+                    true,
+                    true,
+                    false,
                 )?));
             }
         }
@@ -151,6 +173,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
             endpoint.source,
             true,
             false,
+            true,
         )
         .map(Some);
         return result;
@@ -162,6 +185,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
         endpoint.source,
         false,
         false,
+        true,
     )
     .map(Some);
     result
@@ -181,22 +205,25 @@ fn swap_transaction_response_summary(
     source: SwapBuilderSource,
     shared_accounts_disabled: bool,
     skip_user_accounts_rpc_calls: bool,
+    dynamic_compute_unit_limit: bool,
 ) -> Result<SwapTransactionDryRunResult> {
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
         return Err(anyhow!(
-            "swap transaction dry-run error source={} shared_accounts_disabled={} skip_user_accounts_rpc_calls={}: {}",
+            "swap transaction dry-run error source={} shared_accounts_disabled={} skip_user_accounts_rpc_calls={} dynamic_compute_unit_limit={}: {}",
             source.summary_tag(shared_accounts_disabled),
             shared_accounts_disabled,
             skip_user_accounts_rpc_calls,
+            dynamic_compute_unit_limit,
             truncate_for_log(&error.to_string(), 240)
         ));
     }
     if let Some(error) = simulation_error_text(&value) {
         return Err(anyhow!(
-            "swap transaction dry-run simulation error source={} shared_accounts_disabled={} skip_user_accounts_rpc_calls={}: {}",
+            "swap transaction dry-run simulation error source={} shared_accounts_disabled={} skip_user_accounts_rpc_calls={} dynamic_compute_unit_limit={}: {}",
             source.summary_tag(shared_accounts_disabled),
             shared_accounts_disabled,
             skip_user_accounts_rpc_calls,
+            dynamic_compute_unit_limit,
             truncate_for_log(&error, 240)
         ));
     }
@@ -210,14 +237,16 @@ fn swap_transaction_response_summary(
         source,
         shared_accounts_disabled,
         skip_user_accounts_rpc_calls,
+        dynamic_compute_unit_limit,
     );
     let summary = format!(
-        "metis_swap_transaction_{} base64_len={} serialized_transaction_base64_ready=true latency_ms={} attempts={} skip_user_accounts_rpc_calls={} simulation_error={}",
+        "metis_swap_transaction_{} base64_len={} serialized_transaction_base64_ready=true latency_ms={} attempts={} skip_user_accounts_rpc_calls={} dynamic_compute_unit_limit={} simulation_error={}",
         source.summary_tag(shared_accounts_disabled),
         swap_transaction.len(),
         elapsed_ms,
         attempts,
         skip_user_accounts_rpc_calls,
+        dynamic_compute_unit_limit,
         "none"
     );
     Ok(SwapTransactionDryRunResult {
@@ -231,13 +260,18 @@ fn payload_source(
     source: SwapBuilderSource,
     shared_accounts_disabled: bool,
     skip_user_accounts_rpc_calls: bool,
+    dynamic_compute_unit_limit: bool,
 ) -> String {
     let base = source.payload_source(shared_accounts_disabled);
-    if skip_user_accounts_rpc_calls {
+    let mut value = if skip_user_accounts_rpc_calls {
         format!("{base}_skip_user_accounts")
     } else {
         base.to_string()
+    };
+    if !dynamic_compute_unit_limit {
+        value.push_str("_static_cu");
     }
+    value
 }
 
 fn should_use_public_builder_fallback(

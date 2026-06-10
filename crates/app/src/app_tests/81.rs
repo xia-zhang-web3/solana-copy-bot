@@ -218,6 +218,54 @@ async fn selected_public_missing_account_retries_metis_skip_user_accounts_transa
 }
 
 #[tokio::test]
+async fn pump_fun_amm_missing_account_uses_static_cu_transaction_fallback() -> Result<()> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let mut buffer = [0_u8; 4096];
+        for attempt in 0..4 {
+            let (mut socket, _) = listener.accept().await.expect("metis request");
+            let read = socket.read(&mut buffer).await.expect("read metis request");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.starts_with("POST /swap "));
+            match attempt {
+                0 => assert_default_builder_request(&request),
+                1 => assert_no_shared_builder_request(&request),
+                2 => assert_no_shared_skip_user_accounts_request(&request),
+                _ => assert_no_shared_skip_user_accounts_static_cu_request(&request),
+            }
+            if attempt < 3 {
+                write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
+            } else {
+                write_alternate_builder_json(&mut socket, valid_alternate_transaction_json()).await;
+            }
+        }
+    });
+    let config = alternate_builder_config(base_url);
+    let plan = alternate_builder_plan(
+        &config,
+        crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS,
+    )?;
+
+    let proof = crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run(
+        &reqwest::Client::new(),
+        &config,
+        &plan,
+    )
+    .await?
+    .expect("static CU proof should exist");
+    server.await?;
+
+    assert_eq!(
+        proof.source,
+        "metis_no_shared_accounts_skip_user_accounts_static_cu"
+    );
+    assert!(proof.summary.contains("dynamic_compute_unit_limit=false"));
+    assert!(proof.summary.contains("simulation_error=none"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn pump_fun_amm_missing_account_keeps_generic_simulation_failure_without_paid_fallback(
 ) -> Result<()> {
     let metis_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -226,7 +274,7 @@ async fn pump_fun_amm_missing_account_keeps_generic_simulation_failure_without_p
     let public_url = format!("http://{}", public_listener.local_addr()?);
     let metis_server = tokio::spawn(async move {
         let mut buffer = [0_u8; 4096];
-        for attempt in 0..3 {
+        for attempt in 0..4 {
             let (mut socket, _) = metis_listener.accept().await.expect("metis request");
             let read = socket.read(&mut buffer).await.expect("read metis request");
             let request = String::from_utf8_lossy(&buffer[..read]);
@@ -234,14 +282,15 @@ async fn pump_fun_amm_missing_account_keeps_generic_simulation_failure_without_p
             match attempt {
                 0 => assert_default_builder_request(&request),
                 1 => assert_no_shared_builder_request(&request),
-                _ => assert_no_shared_skip_user_accounts_request(&request),
+                2 => assert_no_shared_skip_user_accounts_request(&request),
+                _ => assert_no_shared_skip_user_accounts_static_cu_request(&request),
             }
             write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
         }
     });
     let public_server = tokio::spawn(async move {
         let mut buffer = [0_u8; 4096];
-        for attempt in 0..3 {
+        for attempt in 0..4 {
             let (mut socket, _) = public_listener.accept().await.expect("public request");
             let read = socket.read(&mut buffer).await.expect("read public request");
             let request = String::from_utf8_lossy(&buffer[..read]);
@@ -249,7 +298,8 @@ async fn pump_fun_amm_missing_account_keeps_generic_simulation_failure_without_p
             match attempt {
                 0 => assert_default_builder_request(&request),
                 1 => assert_no_shared_builder_request(&request),
-                _ => assert_no_shared_skip_user_accounts_request(&request),
+                2 => assert_no_shared_skip_user_accounts_request(&request),
+                _ => assert_no_shared_skip_user_accounts_static_cu_request(&request),
             }
             write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
         }
@@ -277,6 +327,7 @@ async fn pump_fun_amm_missing_account_keeps_generic_simulation_failure_without_p
     assert!(error.contains("swap transaction dry-run simulation error"));
     assert!(error.contains("public_fallback_no_shared_accounts_ok"));
     assert!(error.contains("skip_user_accounts_rpc_calls=true"));
+    assert!(error.contains("dynamic_compute_unit_limit=false"));
     Ok(())
 }
 
@@ -353,6 +404,13 @@ fn assert_no_shared_builder_request(request: &str) {
 fn assert_no_shared_skip_user_accounts_request(request: &str) {
     assert!(request.contains("\"useSharedAccounts\":false"));
     assert!(request.contains("\"skipUserAccountsRpcCalls\":true"));
+    assert!(request.contains("\"dynamicComputeUnitLimit\":true"));
+}
+
+fn assert_no_shared_skip_user_accounts_static_cu_request(request: &str) {
+    assert!(request.contains("\"useSharedAccounts\":false"));
+    assert!(request.contains("\"skipUserAccountsRpcCalls\":true"));
+    assert!(request.contains("\"dynamicComputeUnitLimit\":false"));
 }
 
 fn alternate_builder_config(base_url: String) -> ExecutionConfig {

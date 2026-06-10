@@ -2,6 +2,7 @@ use super::{swap_transaction_response_summary, SwapTransactionDryRunResult};
 use crate::execution_swap_http_request::{
     disable_shared_accounts, is_missing_account_simulation_error,
     metis_fallback_swap_builder_endpoint, post_no_shared_skip_user_accounts_json_with_retry,
+    post_no_shared_skip_user_accounts_static_cu_json_with_retry,
     public_fallback_swap_builder_endpoint,
 };
 use crate::execution_swap_http_retry::post_swap_json_with_retry;
@@ -68,6 +69,7 @@ async fn retry_swap_transaction_builder(
             fallback.source,
             false,
             false,
+            true,
         )?));
     }
 
@@ -90,6 +92,7 @@ async fn retry_swap_transaction_builder(
             fallback.source,
             true,
             false,
+            true,
         )?));
     }
 
@@ -102,12 +105,36 @@ async fn retry_swap_transaction_builder(
         &format!("{label} swap transaction dry-run no-shared skip-user-accounts fallback"),
     )
     .await?;
+    if !is_missing_account_simulation_error(&skip_retry.value) {
+        return Ok(Some(swap_transaction_response_summary(
+            skip_retry.value,
+            skip_retry.elapsed_ms,
+            skip_retry.attempts,
+            fallback.source,
+            true,
+            true,
+            true,
+        )?));
+    }
+
+    let static_cu_retry = post_no_shared_skip_user_accounts_static_cu_json_with_retry(
+        http,
+        &fallback.url,
+        &fallback.api_key,
+        body,
+        timeout,
+        &format!(
+            "{label} swap transaction dry-run no-shared skip-user-accounts static-cu fallback"
+        ),
+    )
+    .await?;
     Ok(Some(swap_transaction_response_summary(
-        skip_retry.value,
-        skip_retry.elapsed_ms,
-        skip_retry.attempts,
+        static_cu_retry.value,
+        static_cu_retry.elapsed_ms,
+        static_cu_retry.attempts,
         fallback.source,
         true,
         true,
+        false,
     )?))
 }
