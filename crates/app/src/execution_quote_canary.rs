@@ -23,8 +23,6 @@ mod parallel_samples;
 mod priority_retry;
 #[path = "execution_quote_canary_provider_compare.rs"]
 mod provider_compare;
-#[path = "execution_quote_canary_public_parallel.rs"]
-mod public_parallel;
 #[path = "execution_quote_canary_pump_fun_parallel.rs"]
 mod pump_fun_parallel;
 #[path = "execution_pump_fun_quote_http.rs"]

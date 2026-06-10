@@ -3,11 +3,9 @@ use crate::execution_submit_adapter::ExecutionSubmitAdapter;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
-async fn metis_market_not_found_falls_back_to_public_instructions_builder() -> Result<()> {
+async fn metis_market_not_found_does_not_fallback_to_public_instructions_builder() -> Result<()> {
     let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let primary_url = format!("http://{}", primary_listener.local_addr()?);
-    let public_url = format!("http://{}", public_listener.local_addr()?);
     let primary_server = tokio::spawn(async move {
         let (mut socket, _) = primary_listener.accept().await.expect("primary request");
         let mut buffer = [0_u8; 4096];
@@ -24,52 +22,31 @@ async fn metis_market_not_found_falls_back_to_public_instructions_builder() -> R
         )
         .await;
     });
-    let public_server = tokio::spawn(async move {
-        let (mut socket, _) = public_listener.accept().await.expect("public request");
-        let mut buffer = [0_u8; 4096];
-        let read = socket.read(&mut buffer).await.expect("read public request");
-        let request = String::from_utf8_lossy(&buffer[..read]);
-        assert!(request.starts_with("POST /swap-instructions "));
-        write_alternate_builder_json(&mut socket, valid_alternate_instructions_json()).await;
-    });
     let mut config = alternate_builder_config(primary_url);
     config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
+    config.quote_canary_public_base_url = "http://127.0.0.1:9".to_string();
     let plan = alternate_builder_plan(
         &config,
         crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS,
     )?;
 
-    let proof = crate::execution_swap_instructions_http::fetch_swap_instructions_dry_run(
+    let error = crate::execution_swap_instructions_http::fetch_swap_instructions_dry_run(
         &reqwest::Client::new(),
         &config,
         &plan,
     )
-    .await?
-    .expect("proof should exist");
+    .await
+    .expect_err("paid Metis builder error should stay visible");
     primary_server.await?;
-    public_server.await?;
 
-    assert!(proof.contains("metis_swap_instructions_public_fallback_ok"));
+    assert!(error.to_string().contains("Market"));
     Ok(())
 }
 
 #[tokio::test]
-async fn selected_public_missing_account_falls_back_to_metis_transaction_builder() -> Result<()> {
+async fn generic_public_metadata_uses_paid_metis_transaction_builder() -> Result<()> {
     let metis_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let metis_url = format!("http://{}", metis_listener.local_addr()?);
-    let public_url = format!("http://{}", public_listener.local_addr()?);
-    let public_server = tokio::spawn(async move {
-        let mut buffer = [0_u8; 4096];
-        for _ in 0..2 {
-            let (mut socket, _) = public_listener.accept().await.expect("public request");
-            let read = socket.read(&mut buffer).await.expect("read public request");
-            let request = String::from_utf8_lossy(&buffer[..read]);
-            assert!(request.starts_with("POST /swap "));
-            write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
-        }
-    });
     let metis_server = tokio::spawn(async move {
         let (mut socket, _) = metis_listener.accept().await.expect("metis request");
         let mut buffer = [0_u8; 4096];
@@ -82,7 +59,7 @@ async fn selected_public_missing_account_falls_back_to_metis_transaction_builder
     let mut config = alternate_builder_config(metis_url);
     config.quote_canary_api_key = "metis-key".to_string();
     config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
+    config.quote_canary_public_base_url = "http://127.0.0.1:9".to_string();
     let plan = alternate_builder_plan(
         &config,
         crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_PUBLIC,
@@ -95,32 +72,17 @@ async fn selected_public_missing_account_falls_back_to_metis_transaction_builder
     )
     .await?
     .expect("proof should exist");
-    public_server.await?;
     metis_server.await?;
 
-    assert_eq!(proof.source, "metis_fallback");
-    assert!(proof
-        .summary
-        .contains("metis_swap_transaction_metis_fallback_ok"));
+    assert_eq!(proof.source, "metis");
+    assert!(proof.summary.contains("metis_swap_transaction_ok"));
     Ok(())
 }
 
 #[tokio::test]
-async fn selected_public_missing_account_falls_back_to_metis_instructions_builder() -> Result<()> {
+async fn generic_public_metadata_uses_paid_metis_instructions_builder() -> Result<()> {
     let metis_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let metis_url = format!("http://{}", metis_listener.local_addr()?);
-    let public_url = format!("http://{}", public_listener.local_addr()?);
-    let public_server = tokio::spawn(async move {
-        let mut buffer = [0_u8; 4096];
-        for _ in 0..2 {
-            let (mut socket, _) = public_listener.accept().await.expect("public request");
-            let read = socket.read(&mut buffer).await.expect("read public request");
-            let request = String::from_utf8_lossy(&buffer[..read]);
-            assert!(request.starts_with("POST /swap-instructions "));
-            write_alternate_builder_json(&mut socket, missing_account_instructions_json()).await;
-        }
-    });
     let metis_server = tokio::spawn(async move {
         let (mut socket, _) = metis_listener.accept().await.expect("metis request");
         let mut buffer = [0_u8; 4096];
@@ -133,7 +95,7 @@ async fn selected_public_missing_account_falls_back_to_metis_instructions_builde
     let mut config = alternate_builder_config(metis_url);
     config.quote_canary_api_key = "metis-key".to_string();
     config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
+    config.quote_canary_public_base_url = "http://127.0.0.1:9".to_string();
     let plan = alternate_builder_plan(
         &config,
         crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_PUBLIC,
@@ -146,74 +108,9 @@ async fn selected_public_missing_account_falls_back_to_metis_instructions_builde
     )
     .await?
     .expect("proof should exist");
-    public_server.await?;
     metis_server.await?;
 
-    assert!(proof.contains("metis_swap_instructions_metis_fallback_ok"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn selected_public_missing_account_retries_metis_skip_user_accounts_transaction_builder(
-) -> Result<()> {
-    let metis_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let metis_url = format!("http://{}", metis_listener.local_addr()?);
-    let public_url = format!("http://{}", public_listener.local_addr()?);
-    let public_server = tokio::spawn(async move {
-        let mut buffer = [0_u8; 4096];
-        for _ in 0..2 {
-            let (mut socket, _) = public_listener.accept().await.expect("public request");
-            let read = socket.read(&mut buffer).await.expect("read public request");
-            let request = String::from_utf8_lossy(&buffer[..read]);
-            assert!(request.starts_with("POST /swap "));
-            write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
-        }
-    });
-    let metis_server = tokio::spawn(async move {
-        let mut buffer = [0_u8; 4096];
-        for attempt in 0..3 {
-            let (mut socket, _) = metis_listener.accept().await.expect("metis request");
-            let read = socket.read(&mut buffer).await.expect("read metis request");
-            let request = String::from_utf8_lossy(&buffer[..read]);
-            assert!(request.starts_with("POST /swap "));
-            assert!(request.contains("x-api-key"));
-            match attempt {
-                0 => assert_default_builder_request(&request),
-                1 => assert_no_shared_builder_request(&request),
-                _ => assert_no_shared_skip_user_accounts_request(&request),
-            }
-            if attempt < 2 {
-                write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
-            } else {
-                write_alternate_builder_json(&mut socket, valid_alternate_transaction_json()).await;
-            }
-        }
-    });
-    let mut config = alternate_builder_config(metis_url);
-    config.quote_canary_api_key = "metis-key".to_string();
-    config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
-    let plan = alternate_builder_plan(
-        &config,
-        crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_PUBLIC,
-    )?;
-
-    let proof = crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run(
-        &reqwest::Client::new(),
-        &config,
-        &plan,
-    )
-    .await?
-    .expect("proof should exist");
-    public_server.await?;
-    metis_server.await?;
-
-    assert_eq!(
-        proof.source,
-        "metis_fallback_no_shared_accounts_skip_user_accounts"
-    );
-    assert!(proof.summary.contains("skip_user_accounts_rpc_calls=true"));
+    assert!(proof.contains("metis_swap_instructions_ok"));
     Ok(())
 }
 
@@ -269,9 +166,7 @@ async fn pump_fun_amm_missing_account_uses_static_cu_transaction_fallback() -> R
 async fn pump_fun_amm_missing_account_keeps_generic_simulation_failure_without_paid_fallback(
 ) -> Result<()> {
     let metis_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let metis_url = format!("http://{}", metis_listener.local_addr()?);
-    let public_url = format!("http://{}", public_listener.local_addr()?);
     let metis_server = tokio::spawn(async move {
         let mut buffer = [0_u8; 4096];
         for attempt in 0..4 {
@@ -288,25 +183,9 @@ async fn pump_fun_amm_missing_account_keeps_generic_simulation_failure_without_p
             write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
         }
     });
-    let public_server = tokio::spawn(async move {
-        let mut buffer = [0_u8; 4096];
-        for attempt in 0..4 {
-            let (mut socket, _) = public_listener.accept().await.expect("public request");
-            let read = socket.read(&mut buffer).await.expect("read public request");
-            let request = String::from_utf8_lossy(&buffer[..read]);
-            assert!(request.starts_with("POST /swap "));
-            match attempt {
-                0 => assert_default_builder_request(&request),
-                1 => assert_no_shared_builder_request(&request),
-                2 => assert_no_shared_skip_user_accounts_request(&request),
-                _ => assert_no_shared_skip_user_accounts_static_cu_request(&request),
-            }
-            write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
-        }
-    });
     let mut config = alternate_builder_config(metis_url);
     config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
+    config.quote_canary_public_base_url = "http://127.0.0.1:9".to_string();
     config.quote_canary_pump_fun_parallel_enabled = true;
     let plan = alternate_builder_plan(
         &config,
@@ -321,11 +200,10 @@ async fn pump_fun_amm_missing_account_keeps_generic_simulation_failure_without_p
     .await
     .expect_err("generic missing-account simulation error should stay visible");
     metis_server.await?;
-    public_server.await?;
 
     let error = error.to_string();
     assert!(error.contains("swap transaction dry-run simulation error"));
-    assert!(error.contains("public_fallback_no_shared_accounts_ok"));
+    assert!(error.contains("no_shared_accounts_ok"));
     assert!(error.contains("skip_user_accounts_rpc_calls=true"));
     assert!(error.contains("dynamic_compute_unit_limit=false"));
     Ok(())
@@ -488,8 +366,4 @@ fn valid_alternate_transaction_json() -> &'static str {
 
 fn missing_account_transaction_json() -> &'static str {
     r#"{"swapTransaction":"AQIDBA==","simulationError":{"error":"Error processing Instruction 5: An account required by the instruction is missing","errorCode":"TRANSACTION_ERROR"}}"#
-}
-
-fn missing_account_instructions_json() -> &'static str {
-    r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":{"error":"Error processing Instruction 5: An account required by the instruction is missing","errorCode":"TRANSACTION_ERROR"}}"#
 }

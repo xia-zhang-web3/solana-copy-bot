@@ -294,7 +294,7 @@ async fn swap_instructions_dry_run_retries_missing_token_program() -> Result<()>
 }
 
 #[tokio::test]
-async fn swap_instructions_dry_run_falls_back_to_public_builder() -> Result<()> {
+async fn swap_instructions_dry_run_does_not_fallback_to_public_builder() -> Result<()> {
     let db_path = unique_swap_instructions_test_path("http-public-fallback");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -302,9 +302,7 @@ async fn swap_instructions_dry_run_falls_back_to_public_builder() -> Result<()> 
         "/../../migrations"
     )))?;
     let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let fallback_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let primary_url = format!("http://{}", primary_listener.local_addr()?);
-    let fallback_url = format!("http://{}", fallback_listener.local_addr()?);
     let primary_server = tokio::spawn(async move {
         let mut buffer = [0_u8; 4096];
         for _ in 0..3 {
@@ -323,28 +321,13 @@ async fn swap_instructions_dry_run_falls_back_to_public_builder() -> Result<()> 
             .await;
         }
     });
-    let fallback_server = tokio::spawn(async move {
-        let (mut socket, _) = fallback_listener.accept().await.expect("fallback request");
-        let mut buffer = [0_u8; 4096];
-        let read = socket
-            .read(&mut buffer)
-            .await
-            .expect("read fallback request");
-        let request = String::from_utf8_lossy(&buffer[..read]);
-        assert!(request.starts_with("POST /swap-instructions "));
-        write_http_json(
-            &mut socket,
-            r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":null}"#,
-        )
-        .await;
-    });
     let now = Utc::now();
     let signal = swap_instructions_signal("http-public-fallback", now);
     store.insert_copy_signal(&signal)?;
     record_swap_instructions_quote(&store, &signal, now)?;
     let mut config = swap_instructions_config(primary_url, true);
     config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = fallback_url;
+    config.quote_canary_public_base_url = "http://127.0.0.1:9".to_string();
     let adapter =
         crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let state_machine =
@@ -354,7 +337,6 @@ async fn swap_instructions_dry_run_falls_back_to_public_builder() -> Result<()> 
         .process_buy_candidate(&store, &signal, now)
         .await?;
     primary_server.await?;
-    fallback_server.await?;
     let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .expect("order should exist");
@@ -365,11 +347,9 @@ async fn swap_instructions_dry_run_falls_back_to_public_builder() -> Result<()> 
         order.simulation_status.as_deref(),
         Some(copybot_storage_core::EXECUTION_SIMULATION_STATUS_PASSED)
     );
-    assert!(order
-        .simulation_error
-        .as_deref()
-        .unwrap_or_default()
-        .contains("metis_swap_instructions_public_fallback_ok"));
+    let proof = order.simulation_error.as_deref().unwrap_or_default();
+    assert!(proof.contains("metis_swap_instructions_missing_token_program_soft_failed"));
+    assert!(!proof.contains("public_fallback"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())

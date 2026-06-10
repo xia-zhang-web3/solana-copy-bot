@@ -2,28 +2,14 @@ use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
-async fn quote_canary_uses_public_quote_when_paid_generic_is_not_tradable() -> Result<()> {
-    let (store, db_path) = make_test_store("quote-provider-public-fallback")?;
+async fn quote_canary_ignores_public_parallel_quote_for_buy() -> Result<()> {
+    let (store, db_path) = make_test_store("quote-provider-public-ignored")?;
     let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let primary_url = format!("http://{}", primary_listener.local_addr()?);
-    let public_url = format!("http://{}", public_listener.local_addr()?);
     let primary_server = tokio::spawn(async move {
-        for _ in 0..4 {
-            let request = read_provider_fallback_request(&primary_listener).await;
-            assert!(request.body.starts_with("GET /quote?"));
-            write_provider_fallback_status(
-                request.socket,
-                400,
-                r#"{"error":"The token TokenMint is not tradable","errorCode":"TOKEN_NOT_TRADABLE"}"#,
-            )
-            .await;
-        }
-    });
-    let public_server = tokio::spawn(async move {
-        let request = read_provider_fallback_request(&public_listener).await;
+        let request = read_provider_request(&primary_listener).await;
         assert!(request.body.starts_with("GET /quote?"));
-        write_provider_fallback_status(
+        write_provider_status(
             request.socket,
             200,
             r#"{"inAmount":"200000000","outAmount":"1000000","priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
@@ -32,14 +18,14 @@ async fn quote_canary_uses_public_quote_when_paid_generic_is_not_tradable() -> R
     });
 
     let now = Utc::now();
-    let signal = provider_fallback_signal(now);
-    store.insert_observed_swap(&provider_fallback_observed_swap(now))?;
+    let signal = provider_signal(now);
+    store.insert_observed_swap(&provider_observed_swap(now))?;
     store.insert_copy_signal(&signal)?;
     let mut config = ExecutionConfig::default();
     config.quote_canary_enabled = true;
     config.quote_canary_base_url = primary_url;
     config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
+    config.quote_canary_public_base_url = "http://127.0.0.1:9".to_string();
     config.quote_canary_buy_size_sol = 0.2;
     config.quote_canary_buy_slippage_bps = 500;
     config.quote_canary_timeout_ms = 1_000;
@@ -63,7 +49,6 @@ async fn quote_canary_uses_public_quote_when_paid_generic_is_not_tradable() -> R
         )
         .await?;
     primary_server.await?;
-    public_server.await?;
 
     assert_eq!(summary.entry_inserted, 1);
     assert_eq!(summary.would_execute, 1);
@@ -73,39 +58,37 @@ async fn quote_canary_uses_public_quote_when_paid_generic_is_not_tradable() -> R
     assert_eq!(event.quote_status, "ok");
     assert_eq!(event.decision_status.as_deref(), Some("would_execute"));
     assert_eq!(event.quote_out_amount_raw.as_deref(), Some("1000000"));
-    let generic = store
+    let metis = store
         .load_execution_quote_canary_provider_sample(
             &event.event_id,
             copybot_storage_core::PROVIDER_GENERIC_METIS,
         )?
         .expect("generic metis sample");
-    let public = store
-        .load_execution_quote_canary_provider_sample(
-            &event.event_id,
-            copybot_storage_core::PROVIDER_GENERIC_PUBLIC,
-        )?
-        .expect("public sample");
-    assert_eq!(generic.quote_status, "error");
-    assert_eq!(public.quote_status, "ok");
+    assert_eq!(metis.quote_status, "ok");
+    assert!(
+        store
+            .load_execution_quote_canary_provider_sample(
+                &event.event_id,
+                copybot_storage_core::PROVIDER_GENERIC_PUBLIC,
+            )?
+            .is_none(),
+        "public Jupiter must not be sampled for live quote canary"
+    );
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
 }
 
 #[tokio::test]
-async fn quote_canary_public_fallback_resolves_missing_decimals() -> Result<()> {
-    let (store, db_path) = make_test_store("quote-provider-public-fallback-decimals")?;
+async fn quote_canary_paid_generic_error_stays_fail_closed_without_public_fallback() -> Result<()> {
+    let (store, db_path) = make_test_store("quote-provider-no-public-fallback")?;
     let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let rpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let primary_url = format!("http://{}", primary_listener.local_addr()?);
-    let public_url = format!("http://{}", public_listener.local_addr()?);
-    let rpc_url = format!("http://{}", rpc_listener.local_addr()?);
     let primary_server = tokio::spawn(async move {
         for _ in 0..4 {
-            let request = read_provider_fallback_request(&primary_listener).await;
+            let request = read_provider_request(&primary_listener).await;
             assert!(request.body.starts_with("GET /quote?"));
-            write_provider_fallback_status(
+            write_provider_status(
                 request.socket,
                 400,
                 r#"{"error":"The token TokenMint is not tradable","errorCode":"TOKEN_NOT_TRADABLE"}"#,
@@ -113,40 +96,16 @@ async fn quote_canary_public_fallback_resolves_missing_decimals() -> Result<()> 
             .await;
         }
     });
-    let public_server = tokio::spawn(async move {
-        let request = read_provider_fallback_request(&public_listener).await;
-        assert!(request.body.starts_with("GET /quote?"));
-        write_provider_fallback_status(
-            request.socket,
-            200,
-            r#"{"inAmount":"200000000","outAmount":"1000000","priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
-        )
-        .await;
-    });
-    let rpc_server = tokio::spawn(async move {
-        let request = read_provider_fallback_request(&rpc_listener).await;
-        assert!(request.body.contains("getTokenSupply"));
-        assert!(request.body.contains("TokenMint"));
-        write_provider_fallback_status(
-            request.socket,
-            200,
-            r#"{"jsonrpc":"2.0","result":{"value":{"decimals":6}},"id":"execution-quote-canary-token-decimals"}"#,
-        )
-        .await;
-    });
 
     let now = Utc::now();
-    let signal = provider_fallback_signal(now);
-    let mut swap = provider_fallback_observed_swap(now);
-    swap.exact_amounts = None;
-    store.insert_observed_swap(&swap)?;
+    let signal = provider_signal(now);
+    store.insert_observed_swap(&provider_observed_swap(now))?;
     store.insert_copy_signal(&signal)?;
     let mut config = ExecutionConfig::default();
     config.quote_canary_enabled = true;
     config.quote_canary_base_url = primary_url;
     config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
-    config.priority_fee_canary_rpc_url = rpc_url;
+    config.quote_canary_public_base_url = "http://127.0.0.1:9".to_string();
     config.quote_canary_buy_size_sol = 0.2;
     config.quote_canary_buy_slippage_bps = 500;
     config.quote_canary_timeout_ms = 1_000;
@@ -170,237 +129,56 @@ async fn quote_canary_public_fallback_resolves_missing_decimals() -> Result<()> 
         )
         .await?;
     primary_server.await?;
-    public_server.await?;
-    rpc_server.await?;
 
     assert_eq!(summary.entry_inserted, 1);
-    assert_eq!(summary.would_execute, 1);
+    assert_eq!(summary.entry_errors, 1);
+    assert_eq!(summary.would_execute, 0);
     let event = store
         .load_latest_execution_quote_canary_entry_event(&signal.signal_id)?
         .expect("entry quote");
-    assert_eq!(event.quote_status, "ok");
-    assert_eq!(event.decision_status.as_deref(), Some("would_execute"));
-    assert_eq!(
-        event.decision_reason.as_deref(),
-        Some("within_slippage_limit")
-    );
-    assert_eq!(event.quote_out_amount_raw.as_deref(), Some("1000000"));
-    assert_eq!(event.slippage_bps, Some(0.0));
-
-    let _ = std::fs::remove_file(db_path);
-    Ok(())
-}
-
-#[tokio::test]
-async fn quote_canary_sell_uses_public_quote_when_paid_generic_is_not_tradable() -> Result<()> {
-    let (store, db_path) = make_test_store("quote-provider-public-fallback-sell")?;
-    let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let primary_url = format!("http://{}", primary_listener.local_addr()?);
-    let public_url = format!("http://{}", public_listener.local_addr()?);
-    let primary_server = tokio::spawn(async move {
-        for _ in 0..4 {
-            let request = read_provider_fallback_request(&primary_listener).await;
-            assert!(request.body.starts_with("GET /quote?"));
-            write_provider_fallback_status(
-                request.socket,
-                400,
-                r#"{"error":"The token TokenMint is not tradable","errorCode":"TOKEN_NOT_TRADABLE"}"#,
-            )
-            .await;
-        }
-    });
-    let public_server = tokio::spawn(async move {
-        let request = read_provider_fallback_request(&public_listener).await;
-        assert!(request.body.starts_with("GET /quote?"));
-        write_provider_fallback_status(
-            request.socket,
-            200,
-            r#"{"inAmount":"1000000","outAmount":"190000000","priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
-        )
-        .await;
-    });
-
-    let now = Utc::now();
-    let signal_id = "shadow:sig-provider-fallback-sell:leader-wallet:sell:TokenMint";
-    store.insert_shadow_closed_trade_exact(
-        signal_id,
-        "leader-wallet",
-        "TokenMint",
-        1.0,
-        Some(copybot_core_types::TokenQuantity::new(1_000_000, 6)),
-        0.2,
-        0.19,
-        -0.01,
-        now - chrono::Duration::minutes(3),
-        now - chrono::Duration::milliseconds(25),
-    )?;
-    let mut config = ExecutionConfig::default();
-    config.quote_canary_enabled = true;
-    config.quote_canary_base_url = primary_url;
-    config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
-    config.quote_canary_sell_slippage_bps = 500;
-    config.quote_canary_timeout_ms = 1_000;
-    let runner = crate::execution_quote_canary::ExecutionQuoteCanaryRunner::new(config);
-
-    let summary = runner
-        .process_recorded_shadow_signal(
-            &store,
-            &copybot_shadow::ShadowSignalResult {
-                signal_id: signal_id.to_string(),
-                wallet_id: "leader-wallet".to_string(),
-                side: "sell".to_string(),
-                token: "TokenMint".to_string(),
-                notional_sol: 0.19,
-                latency_ms: 25,
-                closed_qty: 1.0,
-                realized_pnl_sol: -0.01,
-                has_open_lots_after_signal: Some(false),
-            },
-            now,
-        )
-        .await?;
-    primary_server.await?;
-    public_server.await?;
-
-    assert_eq!(summary.close_inserted, 1);
-    assert_eq!(summary.would_execute, 1);
-    let event = store
-        .execution_quote_canary_provider_selection_summary(
-            now,
-            now - chrono::Duration::seconds(1),
-            10,
-        )?
-        .latest
-        .into_iter()
-        .find(|event| event.side == "sell")
-        .expect("sell quote event");
-    assert_eq!(
-        event.selected_provider,
-        copybot_storage_core::PROVIDER_GENERIC_PUBLIC
-    );
-    assert_eq!(event.generic_metis_status.as_deref(), Some("error"));
-    assert_eq!(event.generic_public_status.as_deref(), Some("ok"));
-
-    let _ = std::fs::remove_file(db_path);
-    Ok(())
-}
-
-#[tokio::test]
-async fn quote_canary_uses_public_quote_when_public_slippage_is_better() -> Result<()> {
-    let (store, db_path) = make_test_store("quote-provider-public-better")?;
-    let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let primary_url = format!("http://{}", primary_listener.local_addr()?);
-    let public_url = format!("http://{}", public_listener.local_addr()?);
-    let primary_server = tokio::spawn(async move {
-        let request = read_provider_fallback_request(&primary_listener).await;
-        assert!(request.body.starts_with("GET /quote?"));
-        write_provider_fallback_status(
-            request.socket,
-            200,
-            r#"{"inAmount":"200000000","outAmount":"100000","priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
-        )
-        .await;
-    });
-    let public_server = tokio::spawn(async move {
-        let request = read_provider_fallback_request(&public_listener).await;
-        assert!(request.body.starts_with("GET /quote?"));
-        write_provider_fallback_status(
-            request.socket,
-            200,
-            r#"{"inAmount":"200000000","outAmount":"1000000","priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
-        )
-        .await;
-    });
-
-    let now = Utc::now();
-    let signal = provider_fallback_signal(now);
-    store.insert_observed_swap(&provider_fallback_observed_swap(now))?;
-    store.insert_copy_signal(&signal)?;
-    let mut config = ExecutionConfig::default();
-    config.quote_canary_enabled = true;
-    config.quote_canary_base_url = primary_url;
-    config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
-    config.quote_canary_buy_size_sol = 0.2;
-    config.quote_canary_buy_slippage_bps = 500;
-    config.quote_canary_timeout_ms = 1_000;
-    let runner = crate::execution_quote_canary::ExecutionQuoteCanaryRunner::new(config);
-
-    let summary = runner
-        .process_recorded_shadow_signal(
-            &store,
-            &copybot_shadow::ShadowSignalResult {
-                signal_id: signal.signal_id.clone(),
-                wallet_id: signal.wallet_id.clone(),
-                side: "buy".to_string(),
-                token: signal.token.clone(),
-                notional_sol: signal.notional_sol,
-                latency_ms: 25,
-                closed_qty: 0.0,
-                realized_pnl_sol: 0.0,
-                has_open_lots_after_signal: Some(true),
-            },
-            now,
-        )
-        .await?;
-    primary_server.await?;
-    public_server.await?;
-
-    assert_eq!(summary.entry_inserted, 1);
-    assert_eq!(summary.would_execute, 1);
-    assert_eq!(summary.would_skip, 0);
-    let event = store
-        .load_latest_execution_quote_canary_entry_event(&signal.signal_id)?
-        .expect("entry quote");
-    assert_eq!(event.quote_status, "ok");
-    assert_eq!(event.decision_status.as_deref(), Some("would_execute"));
-    assert_eq!(event.quote_out_amount_raw.as_deref(), Some("1000000"));
-    assert!(event.slippage_bps.unwrap_or(f64::INFINITY) <= 500.0);
-    let generic = store
+    assert_eq!(event.quote_status, "error");
+    assert!(event
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("TOKEN_NOT_TRADABLE"));
+    let metis = store
         .load_execution_quote_canary_provider_sample(
             &event.event_id,
             copybot_storage_core::PROVIDER_GENERIC_METIS,
         )?
         .expect("generic metis sample");
-    let public = store
-        .load_execution_quote_canary_provider_sample(
-            &event.event_id,
-            copybot_storage_core::PROVIDER_GENERIC_PUBLIC,
-        )?
-        .expect("public sample");
-    assert_eq!(generic.quote_status, "ok");
-    assert_eq!(public.quote_status, "ok");
-    assert!(generic.slippage_bps.unwrap() > public.slippage_bps.unwrap());
+    assert_eq!(metis.quote_status, "error");
+    assert!(
+        store
+            .load_execution_quote_canary_provider_sample(
+                &event.event_id,
+                copybot_storage_core::PROVIDER_GENERIC_PUBLIC,
+            )?
+            .is_none(),
+        "public Jupiter must not be a fail-open quote fallback"
+    );
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
 }
 
-struct ProviderFallbackRequest {
+struct ProviderRequest {
     socket: tokio::net::TcpStream,
     body: String,
 }
 
-async fn read_provider_fallback_request(
-    listener: &tokio::net::TcpListener,
-) -> ProviderFallbackRequest {
+async fn read_provider_request(listener: &tokio::net::TcpListener) -> ProviderRequest {
     let (mut socket, _) = listener.accept().await.expect("http request");
     let mut buffer = [0_u8; 4096];
     let read = socket.read(&mut buffer).await.expect("read request");
-    ProviderFallbackRequest {
+    ProviderRequest {
         socket,
         body: String::from_utf8_lossy(&buffer[..read]).to_string(),
     }
 }
 
-async fn write_provider_fallback_status(
-    mut socket: tokio::net::TcpStream,
-    status: u16,
-    body: &str,
-) {
+async fn write_provider_status(mut socket: tokio::net::TcpStream, status: u16, body: &str) {
     let response = format!(
         "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
         body.len(),
@@ -412,9 +190,9 @@ async fn write_provider_fallback_status(
         .expect("write response");
 }
 
-fn provider_fallback_signal(now: chrono::DateTime<Utc>) -> copybot_core_types::CopySignalRow {
+fn provider_signal(now: chrono::DateTime<Utc>) -> copybot_core_types::CopySignalRow {
     copybot_core_types::CopySignalRow {
-        signal_id: "shadow:sig-provider-fallback:leader-wallet:buy:TokenMint".to_string(),
+        signal_id: "shadow:sig-provider-no-public:leader-wallet:buy:TokenMint".to_string(),
         wallet_id: "leader-wallet".to_string(),
         side: "buy".to_string(),
         token: "TokenMint".to_string(),
@@ -426,17 +204,17 @@ fn provider_fallback_signal(now: chrono::DateTime<Utc>) -> copybot_core_types::C
     }
 }
 
-fn provider_fallback_observed_swap(now: chrono::DateTime<Utc>) -> copybot_core_types::SwapEvent {
+fn provider_observed_swap(now: chrono::DateTime<Utc>) -> copybot_core_types::SwapEvent {
     copybot_core_types::SwapEvent {
         wallet: "leader-wallet".to_string(),
-        dex: "pumpfun".to_string(),
-        token_in: crate::execution_quote_canary_helpers::SOL_MINT.to_string(),
+        dex: "pumpswap".to_string(),
+        token_in: "So11111111111111111111111111111111111111112".to_string(),
         token_out: "TokenMint".to_string(),
         amount_in: 0.2,
         amount_out: 1.0,
-        signature: "sig-provider-fallback".to_string(),
-        slot: 42,
-        ts_utc: now - chrono::Duration::milliseconds(25),
+        signature: "sig-provider-no-public".to_string(),
+        slot: 10,
+        ts_utc: now - chrono::Duration::milliseconds(40),
         exact_amounts: Some(copybot_core_types::ExactSwapAmounts {
             amount_in_raw: "200000000".to_string(),
             amount_in_decimals: 9,

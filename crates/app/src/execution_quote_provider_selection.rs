@@ -3,7 +3,7 @@ use crate::execution_submit_adapter::ExecutionBuildPlanMetadata;
 use anyhow::{Context, Result};
 use copybot_storage_core::{
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderSampleInsert, SqliteStore,
-    PROVIDER_GENERIC_METIS, PROVIDER_GENERIC_PUBLIC, PROVIDER_PUMP_FUN_PAID,
+    PROVIDER_GENERIC_METIS, PROVIDER_PUMP_FUN_PAID,
 };
 use serde_json::Value;
 
@@ -20,8 +20,6 @@ pub(crate) fn selected_execution_build_plan_metadata(
     let event_id = event.event_id.clone();
     let generic =
         store.load_execution_quote_canary_provider_sample(&event_id, PROVIDER_GENERIC_METIS)?;
-    let public =
-        store.load_execution_quote_canary_provider_sample(&event_id, PROVIDER_GENERIC_PUBLIC)?;
     let pump =
         store.load_execution_quote_canary_provider_sample(&event_id, PROVIDER_PUMP_FUN_PAID)?;
 
@@ -32,24 +30,20 @@ pub(crate) fn selected_execution_build_plan_metadata(
             QUOTE_SOURCE_PUMP_FUN_PAID,
         ));
     }
-    if let Some((source, sample)) = preferred_generic_provider_sample(&generic, &public) {
+    if let Some(sample) = generic.as_ref().filter(|sample| {
+        provider_quote_has_finite_slippage(sample)
+            || provider_quote_is_buildable_without_fee_account(sample)
+    }) {
         return Ok(metadata_from_provider_sample(
             &event,
             sample.clone(),
-            source,
+            QUOTE_SOURCE_GENERIC_METIS,
         ));
     }
     if event.quote_status == QUOTE_STATUS_OK {
         return Ok(metadata_from_quote_event(
             event,
             Some(QUOTE_SOURCE_GENERIC_METIS),
-        ));
-    }
-    if let Some(sample) = public.filter(provider_quote_is_buildable_without_fee_account) {
-        return Ok(metadata_from_provider_sample(
-            &event,
-            sample,
-            QUOTE_SOURCE_GENERIC_PUBLIC,
         ));
     }
     Ok(metadata_from_quote_event(event, Some(QUOTE_SOURCE_EVENT)))
@@ -64,31 +58,6 @@ fn provider_quote_is_buildable_without_fee_account(
 ) -> bool {
     provider_quote_is_ok(sample)
         && !quote_response_requires_fee_account(sample.quote_response_json.as_deref())
-}
-
-fn preferred_generic_provider_sample<'a>(
-    generic: &'a Option<ExecutionQuoteCanaryProviderSampleInsert>,
-    public: &'a Option<ExecutionQuoteCanaryProviderSampleInsert>,
-) -> Option<(&'static str, &'a ExecutionQuoteCanaryProviderSampleInsert)> {
-    let generic = generic
-        .as_ref()
-        .filter(|sample| provider_quote_has_finite_slippage(sample));
-    let public = public
-        .as_ref()
-        .filter(|sample| provider_quote_has_finite_slippage(sample));
-    if let Some(public) = public {
-        if generic
-            .and_then(|sample| sample.slippage_bps)
-            .is_none_or(|generic_slippage| {
-                public
-                    .slippage_bps
-                    .is_some_and(|public_slippage| public_slippage < generic_slippage)
-            })
-        {
-            return Some((QUOTE_SOURCE_GENERIC_PUBLIC, public));
-        }
-    }
-    generic.map(|sample| (QUOTE_SOURCE_GENERIC_METIS, sample))
 }
 
 fn provider_quote_has_finite_slippage(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> bool {

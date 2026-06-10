@@ -6,7 +6,7 @@ use crate::execution_quote_canary_helpers::{
 use crate::execution_quote_provider_selection::quote_response_requires_fee_account;
 use copybot_storage_core::{
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderSampleInsert,
-    PROVIDER_GENERIC_METIS, PROVIDER_GENERIC_PUBLIC, PROVIDER_PUMP_FUN_PAID,
+    PROVIDER_GENERIC_METIS, PROVIDER_PUMP_FUN_PAID,
 };
 use serde_json::Value;
 
@@ -103,12 +103,6 @@ pub(super) fn select_usable_provider_for_event(
         apply_provider_sample_to_event(event, sample);
         return;
     }
-    if let Some(sample) = provider_samples.iter().find(|sample| {
-        sample.provider == PROVIDER_GENERIC_PUBLIC
-            && provider_quote_is_buildable_without_fee_account(sample)
-    }) {
-        apply_provider_sample_to_event(event, sample);
-    }
 }
 
 fn best_generic_provider_sample(
@@ -117,27 +111,13 @@ fn best_generic_provider_sample(
     provider_samples
         .iter()
         .filter(|sample| {
-            matches!(
-                sample.provider.as_str(),
-                PROVIDER_GENERIC_METIS | PROVIDER_GENERIC_PUBLIC
-            ) && provider_quote_has_finite_slippage(sample)
+            sample.provider == PROVIDER_GENERIC_METIS && provider_quote_has_finite_slippage(sample)
         })
         .min_by(|left, right| {
             let left_slippage = left.slippage_bps.expect("filtered finite slippage");
             let right_slippage = right.slippage_bps.expect("filtered finite slippage");
-            left_slippage.total_cmp(&right_slippage).then(
-                provider_priority(left.provider.as_str())
-                    .cmp(&provider_priority(right.provider.as_str())),
-            )
+            left_slippage.total_cmp(&right_slippage)
         })
-}
-
-fn provider_priority(provider: &str) -> u8 {
-    match provider {
-        PROVIDER_GENERIC_METIS => 0,
-        PROVIDER_GENERIC_PUBLIC => 1,
-        _ => 2,
-    }
 }
 
 fn apply_provider_sample_to_event(

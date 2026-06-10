@@ -408,8 +408,6 @@ async fn public_platform_fee_fallback_does_not_mark_quote_executable() -> Result
 
     let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let primary_url = format!("http://{}", primary_listener.local_addr()?);
-    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_url = format!("http://{}", public_listener.local_addr()?);
     let primary_server = tokio::spawn(async move {
         for _ in 0..4 {
             let (mut socket, _) = primary_listener.accept().await.expect("primary quote");
@@ -422,17 +420,6 @@ async fn public_platform_fee_fallback_does_not_mark_quote_executable() -> Result
             )
             .await;
         }
-    });
-    let public_server = tokio::spawn(async move {
-        let (mut socket, _) = public_listener.accept().await.expect("public quote");
-        let mut buffer = [0_u8; 2048];
-        let _ = socket.read(&mut buffer).await.expect("read public quote");
-        write_http_response(
-            &mut socket,
-            200,
-            r#"{"inAmount":"200000000","outAmount":"1000000","platformFee":{"amount":"2000","feeBps":20},"priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
-        )
-        .await;
     });
 
     let now = Utc::now();
@@ -465,7 +452,7 @@ async fn public_platform_fee_fallback_does_not_mark_quote_executable() -> Result
     config.quote_canary_enabled = true;
     config.quote_canary_base_url = primary_url;
     config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
+    config.quote_canary_public_base_url = "http://127.0.0.1:9".to_string();
     config.quote_canary_buy_size_sol = 0.2;
     config.quote_canary_buy_slippage_bps = 1_000;
     config.quote_canary_timeout_ms = 1_000;
@@ -475,7 +462,6 @@ async fn public_platform_fee_fallback_does_not_mark_quote_executable() -> Result
         .process_recorded_shadow_signal(&store, &signal, now)
         .await?;
     primary_server.await?;
-    public_server.await?;
     let event = store
         .load_latest_execution_quote_canary_entry_event(&signal.signal_id)?
         .expect("quote event should exist");

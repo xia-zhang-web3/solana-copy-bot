@@ -151,18 +151,18 @@ async fn fresh_submit_quote_switches_completed_pump_fun_to_generic_metis() -> Re
 }
 
 #[tokio::test]
-async fn fresh_submit_quote_preserves_generic_public_metadata() -> Result<()> {
+async fn fresh_submit_quote_reroutes_generic_public_metadata_to_metis() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_url = format!("http://{}", listener.local_addr()?);
+    let metis_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
-        let mut socket = listener.accept().await.expect("accept public quote").0;
+        let mut socket = listener.accept().await.expect("accept metis quote").0;
         let mut buf = vec![0; 4096];
-        let n = socket.read(&mut buf).await.expect("read public quote");
+        let n = socket.read(&mut buf).await.expect("read metis quote");
         let request = String::from_utf8_lossy(&buf[..n]);
         assert!(request.starts_with("GET /quote?"));
         assert!(request.contains("inputMint=So11111111111111111111111111111111111111112"));
         assert!(request.contains("outputMint=TokenMint"));
-        assert!(!request.contains("x-api-key"));
+        assert!(request.contains("x-api-key"));
         write_http_json(
             &mut socket,
             r#"{"inputMint":"So11111111111111111111111111111111111111112","inAmount":"10000000","outputMint":"TokenMint","outAmount":"246912","otherAmountThreshold":"222220","swapMode":"ExactIn","slippageBps":1000,"platformFee":null,"priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
@@ -171,9 +171,10 @@ async fn fresh_submit_quote_preserves_generic_public_metadata() -> Result<()> {
     });
     let mut config = copybot_config::ExecutionConfig::default();
     config.canary_buy_size_sol = 0.01;
-    config.quote_canary_base_url = "http://127.0.0.1:9".to_string();
+    config.quote_canary_base_url = metis_url;
+    config.quote_canary_api_key = "metis-key".to_string();
     config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
+    config.quote_canary_public_base_url = "http://127.0.0.1:9".to_string();
     config.quote_canary_buy_slippage_bps = 1_000;
     config.quote_canary_timeout_ms = 1_000;
     let signal = copybot_core_types::CopySignalRow {
@@ -200,7 +201,7 @@ async fn fresh_submit_quote_preserves_generic_public_metadata() -> Result<()> {
 
     assert_eq!(
         refreshed.quote_source.as_deref(),
-        Some(crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_PUBLIC)
+        Some(crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS)
     );
     assert_eq!(refreshed.quote_out_amount_raw.as_deref(), Some("246912"));
     assert_eq!(refreshed.decision_status.as_deref(), Some("would_execute"));

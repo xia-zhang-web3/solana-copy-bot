@@ -1,7 +1,6 @@
 use super::provider_compare::{
     generic_provider_sample, select_usable_provider_for_event, QuoteEventBundle,
 };
-use super::public_parallel::build_public_generic_provider_sample;
 use super::pump_fun_parallel::build_pump_fun_provider_sample;
 use crate::execution_quote_canary_helpers::{SIDE_BUY, SIDE_SELL};
 use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
@@ -29,20 +28,6 @@ pub(crate) async fn append_parallel_provider_samples(
     bundle
         .provider_samples
         .push(generic_provider_sample(&bundle.event, limit_bps));
-    if let Some(sample) = build_public_generic_provider_sample(
-        http,
-        config,
-        &bundle.event,
-        input_mint,
-        output_mint,
-        amount_raw,
-        token_decimals,
-        limit_bps,
-    )
-    .await
-    {
-        bundle.provider_samples.push(sample);
-    }
     if let Some(sample) = build_pump_fun_provider_sample(
         http,
         config,
@@ -69,9 +54,7 @@ async fn resolve_parallel_token_decimals(
     if token_decimals.is_some() {
         return token_decimals;
     }
-    if !config.quote_canary_public_parallel_enabled
-        && !config.quote_canary_pump_fun_parallel_enabled
-    {
+    if !config.quote_canary_pump_fun_parallel_enabled {
         return token_decimals;
     }
     let token_mint = match side {

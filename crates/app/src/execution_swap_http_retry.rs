@@ -63,9 +63,3 @@ fn should_retry_missing_token_program(response_body: &str, attempt: usize) -> bo
 pub(crate) fn is_missing_token_program_error(error: &anyhow::Error) -> bool {
     error.to_string().contains(MISSING_TOKEN_PROGRAM)
 }
-
-pub(crate) fn is_market_not_found_error(error: &anyhow::Error) -> bool {
-    let message = error.to_string().to_ascii_lowercase();
-    message.contains("market_not_found")
-        || (message.contains("market") && message.contains("not found"))
-}

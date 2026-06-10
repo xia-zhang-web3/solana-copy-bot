@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn public_execute_beats_metis_skip_for_live_execution_selection() -> Result<()> {
+fn live_execution_selection_keeps_metis_when_public_would_execute() -> Result<()> {
     let db_path = unique_provider_selection_path("public-execute-metis-skip");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -54,14 +54,14 @@ fn public_execute_beats_metis_skip_for_live_execution_selection() -> Result<()> 
 
     assert_eq!(
         metadata.quote_source.as_deref(),
-        Some(crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_PUBLIC)
+        Some(crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS)
     );
-    assert_eq!(metadata.decision_status.as_deref(), Some("would_execute"));
+    assert_eq!(metadata.decision_status.as_deref(), Some("would_skip"));
     assert_eq!(
         metadata.decision_reason.as_deref(),
-        Some("within_slippage_limit")
+        Some("slippage_above_limit")
     );
-    assert_eq!(metadata.slippage_bps, Some(-328.46));
+    assert_eq!(metadata.slippage_bps, Some(12_786.65));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())

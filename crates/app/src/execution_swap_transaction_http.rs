@@ -3,20 +3,12 @@ use crate::execution_signing_envelope::validate_serialized_transaction_base64;
 use crate::execution_submit_adapter::ExecutionTransactionPlan;
 use crate::execution_swap_http_request::{
     disable_shared_accounts, is_missing_account_simulation_error,
-    metis_fallback_swap_builder_endpoint, post_no_shared_skip_user_accounts_json_with_retry,
+    post_no_shared_skip_user_accounts_json_with_retry,
     post_no_shared_skip_user_accounts_static_cu_json_with_retry, primary_swap_builder_endpoint,
-    public_fallback_swap_builder_endpoint, simulation_error_text, swap_request_body,
-    SwapBuilderSource,
+    simulation_error_text, swap_request_body, SwapBuilderSource,
 };
-use crate::execution_swap_http_retry::{
-    is_market_not_found_error, is_missing_token_program_error, post_swap_json_with_retry,
-};
-#[path = "execution_swap_transaction_builder_fallback.rs"]
-mod builder_fallback;
+use crate::execution_swap_http_retry::post_swap_json_with_retry;
 use anyhow::{anyhow, Result};
-use builder_fallback::{
-    retry_metis_swap_transaction_builder, retry_public_swap_transaction_builder,
-};
 use copybot_config::ExecutionConfig;
 use serde_json::Value;
 use std::time::Duration as StdDuration;
@@ -54,44 +46,6 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
     .await;
     let (endpoint, response) = match response {
         Ok(response) => (primary, response),
-        Err(error) if should_use_public_builder_fallback(config, primary.source, &error) => {
-            let fallback = public_fallback_swap_builder_endpoint(config, "swap", "public swap")?;
-            let fallback_response = match post_swap_json_with_retry(
-                http,
-                fallback.url.clone(),
-                &fallback.api_key,
-                &body,
-                timeout,
-                "public swap transaction dry-run fallback",
-            )
-            .await
-            {
-                Ok(response) => response,
-                Err(error) => {
-                    return Err(error);
-                }
-            };
-            (fallback, fallback_response)
-        }
-        Err(error) if should_use_metis_builder_fallback(config, primary.source, &error) => {
-            let fallback = metis_fallback_swap_builder_endpoint(config, "swap", "metis swap")?;
-            let fallback_response = match post_swap_json_with_retry(
-                http,
-                fallback.url.clone(),
-                &fallback.api_key,
-                &body,
-                timeout,
-                "metis swap transaction dry-run fallback",
-            )
-            .await
-            {
-                Ok(response) => response,
-                Err(error) => {
-                    return Err(error);
-                }
-            };
-            (fallback, fallback_response)
-        }
         Err(error) => {
             return Err(error);
         }
@@ -151,20 +105,16 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
                     false,
                 )?));
             }
-        }
-        if is_missing_account_simulation_error(&retry.value)
-            && can_use_public_builder_fallback(config, endpoint.source)
-        {
-            let result =
-                retry_public_swap_transaction_builder(http, config, &body, timeout, "swap").await;
-            return result;
-        }
-        if is_missing_account_simulation_error(&retry.value)
-            && can_use_metis_builder_fallback(config, endpoint.source)
-        {
-            let result =
-                retry_metis_swap_transaction_builder(http, config, &body, timeout, "swap").await;
-            return result;
+            return swap_transaction_response_summary(
+                static_cu_retry.value,
+                static_cu_retry.elapsed_ms,
+                static_cu_retry.attempts,
+                endpoint.source,
+                true,
+                true,
+                false,
+            )
+            .map(Some);
         }
         let result = swap_transaction_response_summary(
             retry.value,
@@ -272,37 +222,4 @@ fn payload_source(
         value.push_str("_static_cu");
     }
     value
-}
-
-fn should_use_public_builder_fallback(
-    config: &ExecutionConfig,
-    source: SwapBuilderSource,
-    error: &anyhow::Error,
-) -> bool {
-    can_use_public_builder_fallback(config, source)
-        && (is_missing_token_program_error(error) || is_market_not_found_error(error))
-}
-
-fn should_use_metis_builder_fallback(
-    config: &ExecutionConfig,
-    source: SwapBuilderSource,
-    error: &anyhow::Error,
-) -> bool {
-    can_use_metis_builder_fallback(config, source)
-        && (is_missing_token_program_error(error) || is_market_not_found_error(error))
-}
-
-fn can_use_public_builder_fallback(config: &ExecutionConfig, source: SwapBuilderSource) -> bool {
-    source == SwapBuilderSource::Metis
-        && config.quote_canary_public_parallel_enabled
-        && !config.quote_canary_public_base_url.trim().is_empty()
-        && config.quote_canary_public_base_url.trim() != config.quote_canary_base_url.trim()
-}
-
-fn can_use_metis_builder_fallback(config: &ExecutionConfig, source: SwapBuilderSource) -> bool {
-    source == SwapBuilderSource::PublicSelected
-        && config.quote_canary_public_parallel_enabled
-        && !config.quote_canary_base_url.trim().is_empty()
-        && !config.quote_canary_public_base_url.trim().is_empty()
-        && config.quote_canary_public_base_url.trim() != config.quote_canary_base_url.trim()
 }

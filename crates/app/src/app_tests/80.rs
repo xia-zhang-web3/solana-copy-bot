@@ -74,7 +74,7 @@ async fn swap_instructions_missing_account_allows_swap_transaction_proof() -> Re
 }
 
 #[tokio::test]
-async fn selected_public_quote_uses_public_builder() -> Result<()> {
+async fn selected_public_quote_uses_paid_metis_builder() -> Result<()> {
     let db_path = unique_soft_swap_test_path("selected-public-builder");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -82,29 +82,24 @@ async fn selected_public_quote_uses_public_builder() -> Result<()> {
         "/../../migrations"
     )))?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_url = format!("http://{}", listener.local_addr()?);
+    let metis_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
         let mut buffer = [0_u8; 8192];
 
-        let (mut first, _) = listener
-            .accept()
-            .await
-            .expect("public instructions request");
+        let (mut first, _) = listener.accept().await.expect("metis instructions request");
         let read = first
             .read(&mut buffer)
             .await
-            .expect("read public instructions");
+            .expect("read metis instructions");
         let request = String::from_utf8_lossy(&buffer[..read]);
         assert!(request.starts_with("POST /swap-instructions "));
-        assert!(!request.contains("x-api-key"));
         write_soft_swap_json(&mut first, valid_soft_swap_instructions_json()).await;
         drop(first);
 
-        let (mut second, _) = listener.accept().await.expect("public swap request");
-        let read = second.read(&mut buffer).await.expect("read public swap");
+        let (mut second, _) = listener.accept().await.expect("metis swap request");
+        let read = second.read(&mut buffer).await.expect("read metis swap");
         let request = String::from_utf8_lossy(&buffer[..read]);
         assert!(request.starts_with("POST /swap "));
-        assert!(!request.contains("x-api-key"));
         write_soft_swap_json(&mut second, valid_soft_swap_transaction_json()).await;
     });
     let now = Utc::now();
@@ -112,9 +107,9 @@ async fn selected_public_quote_uses_public_builder() -> Result<()> {
     store.insert_copy_signal(&signal)?;
     record_soft_swap_quote(&store, &signal, now)?;
     record_soft_swap_public_provider_sample(&store, &signal, now)?;
-    let mut config = soft_swap_config("http://127.0.0.1:9".to_string());
+    let mut config = soft_swap_config(metis_url);
     config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
+    config.quote_canary_public_base_url = "http://127.0.0.1:9".to_string();
     let adapter =
         crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let state_machine =
@@ -133,15 +128,15 @@ async fn selected_public_quote_uses_public_builder() -> Result<()> {
     assert_eq!(summary.submit_disabled, 1);
     assert_eq!(summary.failed, 0);
     let proof = order.simulation_error.as_deref().unwrap_or_default();
-    assert!(proof.contains("metis_swap_instructions_public_selected_ok"));
-    assert!(proof.contains("metis_swap_transaction_public_selected_ok"));
+    assert!(proof.contains("metis_swap_instructions_ok"));
+    assert!(proof.contains("metis_swap_transaction_ok"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
 }
 
 #[tokio::test]
-async fn missing_account_no_shared_retry_falls_back_to_public_builder() -> Result<()> {
+async fn missing_account_no_shared_retry_does_not_fallback_to_public_builder() -> Result<()> {
     let db_path = unique_soft_swap_test_path("missing-account-public-builder-fallback");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -149,14 +144,13 @@ async fn missing_account_no_shared_retry_falls_back_to_public_builder() -> Resul
         "/../../migrations"
     )))?;
     let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let primary_url = format!("http://{}", primary_listener.local_addr()?);
-    let public_url = format!("http://{}", public_listener.local_addr()?);
     let primary_server = tokio::spawn(async move {
         let mut buffer = [0_u8; 8192];
         for (attempt, expected_path) in [
             "POST /swap-instructions ",
             "POST /swap-instructions ",
+            "POST /swap ",
             "POST /swap ",
             "POST /swap ",
             "POST /swap ",
@@ -175,6 +169,11 @@ async fn missing_account_no_shared_retry_falls_back_to_public_builder() -> Resul
                 assert!(request.contains("\"useSharedAccounts\":false"));
                 assert!(request.contains("\"skipUserAccountsRpcCalls\":true"));
             }
+            if attempt == 5 {
+                assert!(request.contains("\"useSharedAccounts\":false"));
+                assert!(request.contains("\"skipUserAccountsRpcCalls\":true"));
+                assert!(request.contains("\"dynamicComputeUnitLimit\":false"));
+            }
             if expected_path == "POST /swap " {
                 write_soft_swap_json(&mut socket, missing_account_transaction_json()).await;
             } else {
@@ -183,35 +182,13 @@ async fn missing_account_no_shared_retry_falls_back_to_public_builder() -> Resul
             drop(socket);
         }
     });
-    let public_server = tokio::spawn(async move {
-        let mut buffer = [0_u8; 8192];
-
-        let (mut first, _) = public_listener
-            .accept()
-            .await
-            .expect("public instructions request");
-        let read = first
-            .read(&mut buffer)
-            .await
-            .expect("read public instructions");
-        let request = String::from_utf8_lossy(&buffer[..read]);
-        assert!(request.starts_with("POST /swap-instructions "));
-        write_soft_swap_json(&mut first, valid_soft_swap_instructions_json()).await;
-        drop(first);
-
-        let (mut second, _) = public_listener.accept().await.expect("public swap request");
-        let read = second.read(&mut buffer).await.expect("read public swap");
-        let request = String::from_utf8_lossy(&buffer[..read]);
-        assert!(request.starts_with("POST /swap "));
-        write_soft_swap_json(&mut second, valid_soft_swap_transaction_json()).await;
-    });
     let now = Utc::now();
     let signal = soft_swap_signal(now);
     store.insert_copy_signal(&signal)?;
     record_soft_swap_quote(&store, &signal, now)?;
     let mut config = soft_swap_config(primary_url);
     config.quote_canary_public_parallel_enabled = true;
-    config.quote_canary_public_base_url = public_url;
+    config.quote_canary_public_base_url = "http://127.0.0.1:9".to_string();
     let adapter =
         crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let state_machine =
@@ -221,18 +198,17 @@ async fn missing_account_no_shared_retry_falls_back_to_public_builder() -> Resul
         .process_buy_candidate(&store, &signal, now)
         .await?;
     primary_server.await?;
-    public_server.await?;
     let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .expect("order should exist");
 
     assert_eq!(summary.simulated, 1);
-    assert_eq!(summary.signing_envelope_built, 1);
-    assert_eq!(summary.submit_disabled, 1);
-    assert_eq!(summary.failed, 0);
+    assert_eq!(summary.failed, 1);
     let proof = order.simulation_error.as_deref().unwrap_or_default();
-    assert!(proof.contains("metis_swap_instructions_public_fallback_ok"));
-    assert!(proof.contains("metis_swap_transaction_public_fallback_ok"));
+    assert!(proof.contains("swap transaction dry-run simulation error"));
+    assert!(proof.contains("no_shared_accounts_ok"));
+    assert!(proof.contains("skip_user_accounts_rpc_calls=true"));
+    assert!(proof.contains("dynamic_compute_unit_limit=false"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())

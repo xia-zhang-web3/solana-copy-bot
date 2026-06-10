@@ -113,7 +113,7 @@ fn mark_failed_buy_simulation_order(
     )?;
     store
         .mark_execution_canary_built(&reserve.order.order_id, now + chrono::Duration::seconds(1))?;
-    let error = "swap transaction dry-run simulation error source=metis_fallback_no_shared_accounts shared_accounts_disabled=true: {\"error\":\"Error processing Instruction 5: An account required by the instruction is missing\",\"errorCode\":\"TRANSACTION_ERROR\"}";
+    let error = "swap transaction dry-run simulation error source=metis_no_shared_accounts shared_accounts_disabled=true: {\"error\":\"Error processing Instruction 5: An account required by the instruction is missing\",\"errorCode\":\"TRANSACTION_ERROR\"}";
     store.mark_execution_canary_simulated(
         &reserve.order.order_id,
         now + chrono::Duration::seconds(2),

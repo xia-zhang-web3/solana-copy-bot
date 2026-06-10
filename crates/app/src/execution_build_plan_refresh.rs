@@ -6,7 +6,7 @@ use crate::execution_quote_canary_helpers::{
 };
 use crate::execution_quote_http::fetch_quote_sample_from_base_url;
 use crate::execution_quote_provider_selection::{
-    QUOTE_SOURCE_GENERIC_METIS, QUOTE_SOURCE_GENERIC_PUBLIC, QUOTE_SOURCE_PUMP_FUN_PAID,
+    QUOTE_SOURCE_GENERIC_METIS, QUOTE_SOURCE_PUMP_FUN_PAID,
 };
 use crate::execution_submit_adapter::ExecutionBuildPlanMetadata;
 use anyhow::Result;
@@ -94,18 +94,8 @@ pub(crate) async fn refresh_tiny_buy_build_plan_metadata(
 
 fn generic_refresh_source<'a>(
     config: &'a ExecutionConfig,
-    metadata: &ExecutionBuildPlanMetadata,
+    _metadata: &ExecutionBuildPlanMetadata,
 ) -> (&'static str, &'a str, &'a str) {
-    if metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_GENERIC_PUBLIC)
-        && config.quote_canary_public_parallel_enabled
-        && !config.quote_canary_public_base_url.trim().is_empty()
-    {
-        return (
-            QUOTE_SOURCE_GENERIC_PUBLIC,
-            &config.quote_canary_public_base_url,
-            "",
-        );
-    }
     (
         QUOTE_SOURCE_GENERIC_METIS,
         &config.quote_canary_base_url,
