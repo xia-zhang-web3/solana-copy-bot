@@ -15,6 +15,7 @@ use copybot_storage_core::SqliteStore;
 
 mod tiny_submit;
 mod tiny_submit_buy_retry;
+mod tiny_submit_candidate_cleanup;
 mod tiny_submit_expiry;
 mod tiny_submit_orphan_recovery;
 mod tiny_submit_request;

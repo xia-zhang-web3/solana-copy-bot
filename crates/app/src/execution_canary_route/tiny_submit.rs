@@ -1,6 +1,7 @@
 use super::tiny_submit_buy_retry::{
     buy_retry_decision_for_signal, next_failed_buy_retry_signal, BuyRetryDecision,
 };
+use super::tiny_submit_candidate_cleanup::expire_stale_tiny_submit_candidates;
 use super::tiny_submit_request::build_submit_request;
 use super::tiny_submit_retry::{
     is_tiny_submit_retry_ready, retry_existing_simulated_tiny_submit_order,
@@ -88,7 +89,6 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
         }
         return Ok(summary);
     }
-
     let order = if let Some(order) = retry_order {
         summary.last_order_id = Some(order.order_id.clone());
         order
@@ -103,7 +103,6 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
         summary.reserved = 1;
         reserve.order
     };
-
     let request = build_submit_request(config, signal, &order, metadata);
     let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let Some(envelope) =
@@ -174,6 +173,9 @@ pub(crate) async fn process_tiny_submit_reconciliation_sweep_for_route(
         reconcile_existing_tiny_submit_order(config, store, &order, now, &mut summary).await?;
     }
     if summary.existing > 0 {
+        return Ok(summary);
+    }
+    if expire_stale_tiny_submit_candidates(config, store, now, limit, &mut summary)? {
         return Ok(summary);
     }
     if let Some(signal) = next_failed_buy_retry_signal(config, store, limit)? {
