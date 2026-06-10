@@ -2,8 +2,8 @@ use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_signing_envelope::validate_serialized_transaction_base64;
 use crate::execution_submit_adapter::ExecutionTransactionPlan;
 use crate::execution_swap_http_request::{
-    disable_shared_accounts, enable_skip_user_accounts_rpc_calls,
-    is_missing_account_simulation_error, post_no_shared_skip_user_accounts_json_with_retry,
+    disable_shared_accounts, is_missing_account_simulation_error,
+    post_no_shared_skip_user_accounts_json_with_retry,
     post_no_shared_skip_user_accounts_static_cu_json_with_retry, primary_swap_builder_endpoint,
     simulation_error_text, swap_request_body, SwapBuilderSource,
 };
@@ -35,7 +35,6 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
         .ok_or_else(|| anyhow!("missing user public key for swap transaction dry-run"))?;
     let mut body = swap_request_body(plan, user_pubkey, "swap transaction")?;
     disable_shared_accounts(&mut body);
-    enable_skip_user_accounts_rpc_calls(&mut body);
     let primary = primary_swap_builder_endpoint(config, plan, "swap", "swap transaction")?;
     let timeout = StdDuration::from_millis(config.quote_canary_timeout_ms.max(1));
     let response = post_swap_json_with_retry(
@@ -145,7 +144,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
                 retry.attempts,
                 endpoint.source,
                 true,
-                true,
+                false,
                 true,
                 timeout,
             )
@@ -161,7 +160,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
             response.attempts,
             endpoint.source,
             true,
-            true,
+            false,
             true,
             timeout,
         )

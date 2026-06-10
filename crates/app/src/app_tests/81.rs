@@ -74,11 +74,11 @@ async fn generic_public_metadata_uses_paid_metis_transaction_builder() -> Result
     .expect("proof should exist");
     metis_server.await?;
 
-    assert_eq!(proof.source, "metis_no_shared_accounts_skip_user_accounts");
+    assert_eq!(proof.source, "metis_no_shared_accounts");
     assert!(proof
         .summary
         .contains("metis_swap_transaction_no_shared_accounts_ok"));
-    assert!(proof.summary.contains("skip_user_accounts_rpc_calls=true"));
+    assert!(proof.summary.contains("skip_user_accounts_rpc_calls=false"));
     Ok(())
 }
 
@@ -329,7 +329,7 @@ async fn write_alternate_builder_status(
 
 fn assert_no_shared_builder_request(request: &str) {
     assert!(request.contains("\"useSharedAccounts\":false"));
-    assert!(request.contains("\"skipUserAccountsRpcCalls\":true"));
+    assert!(!request.contains("\"skipUserAccountsRpcCalls\":true"));
     assert!(request.contains("\"dynamicComputeUnitLimit\":true"));
 }
 
