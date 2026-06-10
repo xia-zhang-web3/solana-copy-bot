@@ -101,6 +101,10 @@ pub(crate) fn user_volume_accumulator_pda(user: &PubkeyBytes) -> PubkeyBytes {
     pda(&[b"user_volume_accumulator", user], &pump_amm_program_id())
 }
 
+pub(crate) fn global_volume_accumulator_pda() -> PubkeyBytes {
+    pda(&[b"global_volume_accumulator"], &pump_amm_program_id())
+}
+
 pub(crate) fn coin_creator_vault_authority_pda(coin_creator: &PubkeyBytes) -> PubkeyBytes {
     pda(&[b"creator_vault", coin_creator], &pump_amm_program_id())
 }

@@ -1,6 +1,6 @@
 use crate::execution_pump_fun_swap_instructions_http::fetch_pump_fun_swap_instructions_dry_run;
 use crate::execution_pump_fun_swap_transaction_http::fetch_pump_fun_swap_transaction_dry_run;
-use crate::execution_pumpswap_direct_builder::fetch_pumpswap_direct_buy_transaction_dry_run;
+use crate::execution_pumpswap_direct_builder::fetch_pumpswap_direct_transaction_dry_run;
 use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID;
 use crate::execution_route_plan::route_plan_has_pump_fun_amm;
@@ -533,7 +533,7 @@ async fn pumpswap_direct_simulation_result(
     config: &ExecutionConfig,
     plan: &ExecutionTransactionPlan,
 ) -> Result<Option<ExecutionSimulationResult>> {
-    let transaction = fetch_pumpswap_direct_buy_transaction_dry_run(http, config, plan).await?;
+    let transaction = fetch_pumpswap_direct_transaction_dry_run(http, config, plan).await?;
     if let Some(transaction) = transaction.as_ref() {
         if let Some(slot) = plan.serialized_transaction_payload_slot.as_ref() {
             slot.store(ExecutionSerializedTransactionPayload {

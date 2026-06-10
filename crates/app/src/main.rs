@@ -58,6 +58,7 @@ mod execution_pump_fun_swap_instructions_http;
 mod execution_pump_fun_swap_transaction_http;
 mod execution_pumpswap_accounts;
 mod execution_pumpswap_direct_builder;
+mod execution_pumpswap_direct_instructions;
 mod execution_quote_canary;
 mod execution_quote_canary_helpers;
 mod execution_quote_canary_priority_fee;
