@@ -34,14 +34,13 @@ impl ShadowService {
             .as_ref()
             .and_then(|row| row.token_age_seconds)
             .unwrap_or(proxy_age_seconds);
-        let holders = rpc_quality
-            .as_ref()
-            .and_then(|row| row.holders)
-            .unwrap_or(stats.holders_proxy);
+        let rpc_holders = rpc_quality.as_ref().and_then(|row| row.holders);
+        let holders = holders_for_quality_gate(rpc_holders, stats.holders_proxy);
         let liquidity_sol = rpc_quality
             .as_ref()
             .and_then(|row| row.liquidity_sol)
             .unwrap_or(stats.liquidity_sol_proxy);
+        let holders_source = holders_source(rpc_holders, stats.holders_proxy);
         let quality_source = if let Some(row) = rpc_quality.as_ref() {
             if now - row.fetched_at <= Duration::seconds(QUALITY_CACHE_TTL_SECONDS) {
                 "rpc_cache"
@@ -54,6 +53,7 @@ impl ShadowService {
         info!(
             token = %token,
             quality_source,
+            holders_source,
             token_age_seconds,
             holders,
             liquidity_sol,
@@ -152,6 +152,22 @@ impl ShadowService {
             max_signature_pages,
             min_age_hint_seconds,
         )
+    }
+}
+
+fn holders_for_quality_gate(rpc_holders: Option<u64>, proxy_holders: u64) -> u64 {
+    match rpc_holders {
+        Some(0) if proxy_holders > 0 => proxy_holders,
+        Some(value) => value,
+        None => proxy_holders,
+    }
+}
+
+fn holders_source(rpc_holders: Option<u64>, proxy_holders: u64) -> &'static str {
+    match rpc_holders {
+        Some(0) if proxy_holders > 0 => "db_proxy_rpc_zero",
+        Some(_) => "rpc_cache",
+        None => "db_proxy",
     }
 }
 
