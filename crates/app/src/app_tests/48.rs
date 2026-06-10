@@ -121,8 +121,8 @@ async fn swap_transaction_dry_run_missing_transaction_fails_simulation() -> Resu
 }
 
 #[tokio::test]
-async fn swap_transaction_dry_run_simulation_error_fails_before_submit() -> Result<()> {
-    let db_path = unique_swap_transaction_test_path("http-simulation-error");
+async fn swap_transaction_dry_run_payload_with_simulation_error_stays_buildable() -> Result<()> {
+    let db_path = unique_swap_transaction_test_path("http-simulation-warning");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -141,7 +141,7 @@ async fn swap_transaction_dry_run_simulation_error_fails_before_submit() -> Resu
         .await;
     });
     let now = Utc::now();
-    let signal = swap_transaction_signal("http-simulation-error", now);
+    let signal = swap_transaction_signal("http-simulation-warning", now);
     store.insert_copy_signal(&signal)?;
     record_swap_transaction_quote(&store, &signal, now)?;
     let config = swap_transaction_config(base_url, true);
@@ -159,17 +159,22 @@ async fn swap_transaction_dry_run_simulation_error_fails_before_submit() -> Resu
         .expect("order should exist");
 
     assert_eq!(summary.simulated, 1);
-    assert_eq!(summary.failed, 1);
-    assert_eq!(summary.submit_disabled, 0);
+    assert_eq!(summary.signing_envelope_built, 1);
+    assert_eq!(summary.submit_disabled, 1);
     assert_eq!(
         order.simulation_status.as_deref(),
-        Some(copybot_storage_core::EXECUTION_SIMULATION_STATUS_FAILED)
+        Some(copybot_storage_core::EXECUTION_SIMULATION_STATUS_PASSED)
     );
     assert!(order
         .simulation_error
         .as_deref()
         .unwrap_or_default()
-        .contains("swap transaction dry-run simulation error"));
+        .contains("metis_swap_transaction_ok"));
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("Slippage tolerance exceeded"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())

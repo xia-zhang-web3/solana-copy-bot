@@ -12,14 +12,11 @@ use crate::execution_swap_http_retry::{
 };
 #[path = "execution_swap_transaction_builder_fallback.rs"]
 mod builder_fallback;
-#[path = "execution_swap_transaction_pump_fun_fallback.rs"]
-mod pump_fun_fallback;
 use anyhow::{anyhow, Result};
 use builder_fallback::{
     retry_metis_swap_transaction_builder, retry_public_swap_transaction_builder,
 };
 use copybot_config::ExecutionConfig;
-use pump_fun_fallback::retry_on_pump_fun_amm_builder_error;
 use serde_json::Value;
 use std::time::Duration as StdDuration;
 
@@ -70,8 +67,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
             {
                 Ok(response) => response,
                 Err(error) => {
-                    return retry_on_pump_fun_amm_builder_error(Err(error), http, config, plan)
-                        .await;
+                    return Err(error);
                 }
             };
             (fallback, fallback_response)
@@ -90,14 +86,13 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
             {
                 Ok(response) => response,
                 Err(error) => {
-                    return retry_on_pump_fun_amm_builder_error(Err(error), http, config, plan)
-                        .await;
+                    return Err(error);
                 }
             };
             (fallback, fallback_response)
         }
         Err(error) => {
-            return retry_on_pump_fun_amm_builder_error(Err(error), http, config, plan).await;
+            return Err(error);
         }
     };
     if is_missing_account_simulation_error(&response.value) {
@@ -140,14 +135,14 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
         {
             let result =
                 retry_public_swap_transaction_builder(http, config, &body, timeout, "swap").await;
-            return retry_on_pump_fun_amm_builder_error(result, http, config, plan).await;
+            return result;
         }
         if is_missing_account_simulation_error(&retry.value)
             && can_use_metis_builder_fallback(config, endpoint.source)
         {
             let result =
                 retry_metis_swap_transaction_builder(http, config, &body, timeout, "swap").await;
-            return retry_on_pump_fun_amm_builder_error(result, http, config, plan).await;
+            return result;
         }
         let result = swap_transaction_response_summary(
             retry.value,
@@ -158,7 +153,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
             false,
         )
         .map(Some);
-        return retry_on_pump_fun_amm_builder_error(result, http, config, plan).await;
+        return result;
     }
     let result = swap_transaction_response_summary(
         response.value,
@@ -169,7 +164,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
         false,
     )
     .map(Some);
-    retry_on_pump_fun_amm_builder_error(result, http, config, plan).await
+    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,18 +185,6 @@ fn swap_transaction_response_summary(
     if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
         return Err(anyhow!(
             "swap transaction dry-run error source={} shared_accounts_disabled={} skip_user_accounts_rpc_calls={}: {}",
-            source.summary_tag(shared_accounts_disabled),
-            shared_accounts_disabled,
-            skip_user_accounts_rpc_calls,
-            truncate_for_log(&error.to_string(), 240)
-        ));
-    }
-    if let Some(error) = value
-        .get("simulationError")
-        .filter(|error| !error.is_null())
-    {
-        return Err(anyhow!(
-            "swap transaction dry-run simulation error source={} shared_accounts_disabled={} skip_user_accounts_rpc_calls={}: {}",
             source.summary_tag(shared_accounts_disabled),
             shared_accounts_disabled,
             skip_user_accounts_rpc_calls,

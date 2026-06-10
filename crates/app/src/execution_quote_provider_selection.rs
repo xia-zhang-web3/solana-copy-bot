@@ -70,16 +70,25 @@ fn preferred_generic_provider_sample<'a>(
     generic: &'a Option<ExecutionQuoteCanaryProviderSampleInsert>,
     public: &'a Option<ExecutionQuoteCanaryProviderSampleInsert>,
 ) -> Option<(&'static str, &'a ExecutionQuoteCanaryProviderSampleInsert)> {
-    if let Some(sample) = generic
+    let generic = generic
         .as_ref()
-        .filter(|sample| provider_quote_has_finite_slippage(sample))
-    {
-        return Some((QUOTE_SOURCE_GENERIC_METIS, sample));
+        .filter(|sample| provider_quote_has_finite_slippage(sample));
+    let public = public
+        .as_ref()
+        .filter(|sample| provider_quote_has_finite_slippage(sample));
+    if let Some(public) = public {
+        if generic
+            .and_then(|sample| sample.slippage_bps)
+            .is_none_or(|generic_slippage| {
+                public
+                    .slippage_bps
+                    .is_some_and(|public_slippage| public_slippage < generic_slippage)
+            })
+        {
+            return Some((QUOTE_SOURCE_GENERIC_PUBLIC, public));
+        }
     }
-    public
-        .as_ref()
-        .filter(|sample| provider_quote_has_finite_slippage(sample))
-        .map(|sample| (QUOTE_SOURCE_GENERIC_PUBLIC, sample))
+    generic.map(|sample| (QUOTE_SOURCE_GENERIC_METIS, sample))
 }
 
 fn provider_quote_has_finite_slippage(sample: &ExecutionQuoteCanaryProviderSampleInsert) -> bool {

@@ -231,7 +231,7 @@ async fn pump_fun_swap_transaction_simulation_error_marks_order_failed() -> Resu
 }
 
 #[tokio::test]
-async fn generic_pump_fun_amm_missing_token_program_uses_paid_pump_fun_transaction() -> Result<()> {
+async fn generic_pump_fun_amm_missing_token_program_keeps_generic_failure() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
@@ -260,8 +260,6 @@ async fn generic_pump_fun_amm_missing_token_program_uses_paid_pump_fun_transacti
             r#"{"error":"Missing token program for TokenMint"}"#,
         )
         .await;
-
-        assert_pump_fun_request(read_http_request(&listener).await, "/pump-fun/swap").await;
     });
     let mut config = pump_fun_swap_config(&base_url);
     config.quote_canary_pump_fun_parallel_enabled = true;
@@ -270,23 +268,19 @@ async fn generic_pump_fun_amm_missing_token_program_uses_paid_pump_fun_transacti
     let request = generic_pump_fun_submit_request(&config);
     let plan = adapter.build_transaction_plan(&request)?;
 
-    let result = adapter.simulate_transaction_plan(&plan).await?;
+    let error = adapter
+        .simulate_transaction_plan(&plan)
+        .await
+        .expect_err("generic missing token program should stay visible");
     server.await?;
 
-    assert_eq!(
-        result.status,
-        copybot_storage_core::EXECUTION_SIMULATION_STATUS_PASSED
-    );
-    let proof = result.error.unwrap_or_default();
-    assert!(proof.contains("metis_swap_instructions_missing_token_program_soft_failed"));
-    assert!(proof.contains("pump_fun_swap_transaction_ok"));
+    assert!(error.to_string().contains("Missing token program"));
     let payload = plan
         .serialized_transaction_payload_slot
         .as_ref()
         .expect("serialized payload slot")
-        .load()?
-        .expect("serialized payload");
-    assert_eq!(payload.source, "pump_fun_paid");
+        .load()?;
+    assert!(payload.is_none());
     Ok(())
 }
 

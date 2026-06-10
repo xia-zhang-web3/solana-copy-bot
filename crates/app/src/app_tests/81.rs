@@ -218,31 +218,25 @@ async fn selected_public_missing_account_retries_metis_skip_user_accounts_transa
 }
 
 #[tokio::test]
-async fn pump_fun_amm_missing_account_retries_paid_pump_fun_transaction_builder() -> Result<()> {
+async fn pump_fun_amm_missing_account_uses_generic_transaction_payload_without_paid_fallback(
+) -> Result<()> {
     let metis_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let metis_url = format!("http://{}", metis_listener.local_addr()?);
     let public_url = format!("http://{}", public_listener.local_addr()?);
     let metis_server = tokio::spawn(async move {
         let mut buffer = [0_u8; 4096];
-        for attempt in 0..4 {
+        for attempt in 0..3 {
             let (mut socket, _) = metis_listener.accept().await.expect("metis request");
             let read = socket.read(&mut buffer).await.expect("read metis request");
             let request = String::from_utf8_lossy(&buffer[..read]);
-            if attempt < 3 {
-                assert!(request.starts_with("POST /swap "));
-                match attempt {
-                    0 => assert_default_builder_request(&request),
-                    1 => assert_no_shared_builder_request(&request),
-                    _ => assert_no_shared_skip_user_accounts_request(&request),
-                }
-                write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
-            } else {
-                assert!(request.starts_with("POST /pump-fun/swap "));
-                assert!(request.contains("\"type\":\"BUY\""));
-                assert!(request.contains("\"mint\":\"TokenMint\""));
-                write_alternate_builder_json(&mut socket, valid_pump_fun_transaction_json()).await;
+            assert!(request.starts_with("POST /swap "));
+            match attempt {
+                0 => assert_default_builder_request(&request),
+                1 => assert_no_shared_builder_request(&request),
+                _ => assert_no_shared_skip_user_accounts_request(&request),
             }
+            write_alternate_builder_json(&mut socket, missing_account_transaction_json()).await;
         }
     });
     let public_server = tokio::spawn(async move {
@@ -279,13 +273,16 @@ async fn pump_fun_amm_missing_account_retries_paid_pump_fun_transaction_builder(
     metis_server.await?;
     public_server.await?;
 
-    assert_eq!(proof.source, "pump_fun_paid");
-    assert!(proof.summary.contains("pump_fun_swap_transaction_ok"));
+    assert_eq!(proof.source, "public_fallback_skip_user_accounts");
+    assert!(proof
+        .summary
+        .contains("metis_swap_transaction_public_fallback_no_shared_accounts_ok"));
+    assert!(proof.summary.contains("skip_user_accounts_rpc_calls=true"));
     Ok(())
 }
 
 #[tokio::test]
-async fn pump_fun_amm_no_route_retries_paid_pump_fun_transaction_builder() -> Result<()> {
+async fn pump_fun_amm_no_route_keeps_generic_no_route_failure() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
@@ -303,17 +300,6 @@ async fn pump_fun_amm_no_route_retries_paid_pump_fun_transaction_builder() -> Re
             r#"{"error":"No routes found","errorCode":"NO_ROUTES_FOUND"}"#,
         )
         .await;
-
-        let (mut socket, _) = listener.accept().await.expect("pump.fun request");
-        let read = socket
-            .read(&mut buffer)
-            .await
-            .expect("read pump.fun request");
-        let request = String::from_utf8_lossy(&buffer[..read]);
-        assert!(request.starts_with("POST /pump-fun/swap "));
-        assert!(request.contains("\"type\":\"BUY\""));
-        assert!(request.contains("\"mint\":\"TokenMint\""));
-        write_alternate_builder_json(&mut socket, valid_pump_fun_transaction_json()).await;
     });
     let mut config = alternate_builder_config(base_url);
     config.quote_canary_pump_fun_parallel_enabled = true;
@@ -322,17 +308,16 @@ async fn pump_fun_amm_no_route_retries_paid_pump_fun_transaction_builder() -> Re
         crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS,
     )?;
 
-    let proof = crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run(
+    let error = crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run(
         &reqwest::Client::new(),
         &config,
         &plan,
     )
-    .await?
-    .expect("proof should exist");
+    .await
+    .expect_err("generic no-route should stay visible");
     server.await?;
 
-    assert_eq!(proof.source, "pump_fun_paid");
-    assert!(proof.summary.contains("pump_fun_swap_transaction_ok"));
+    assert!(error.to_string().contains("No routes found"));
     Ok(())
 }
 
@@ -442,10 +427,6 @@ fn valid_alternate_instructions_json() -> &'static str {
 
 fn valid_alternate_transaction_json() -> &'static str {
     r#"{"swapTransaction":"AQIDBA==","simulationError":null}"#
-}
-
-fn valid_pump_fun_transaction_json() -> &'static str {
-    r#"{"tx":"AQIDBA=="}"#
 }
 
 fn missing_account_transaction_json() -> &'static str {

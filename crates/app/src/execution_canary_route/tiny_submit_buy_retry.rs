@@ -97,6 +97,7 @@ fn transient_buy_simulation_error(error: Option<&str>) -> bool {
     };
     let lower = error.to_ascii_lowercase();
     is_missing_account_error_text(&lower)
+        || lower.contains("missing token program")
         || lower.contains("market not found")
         || (lower.contains("market ") && lower.contains(" not found"))
         || pump_fun_paid_simulation_retryable(&lower)
