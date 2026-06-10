@@ -182,6 +182,60 @@ fn failed_build_sell_retry_ignores_sell_quote_before_position_opened() -> Result
     Ok(())
 }
 
+#[test]
+fn sell_no_route_retry_queries_prefer_fresh_orders() -> Result<()> {
+    let store = open_migrated_store("sell-no-route-fresh-first")?;
+    let now = ts("2026-06-10T02:20:00Z");
+    let token = "TokenMint";
+
+    let buy_order_id = confirmed_buy_order(&store, "buy-fresh-no-route", token, now)?;
+    store.record_execution_canary_open_position(
+        &buy_order_id,
+        token,
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        now + Duration::seconds(6),
+    )?;
+    let old = failed_build_sell_order(
+        &store,
+        "sell-no-route-old",
+        "quote:no-route-old",
+        token,
+        now + Duration::seconds(10),
+    )?;
+    let fresh = failed_build_sell_order(
+        &store,
+        "sell-no-route-fresh",
+        "quote:no-route-fresh",
+        token,
+        now + Duration::seconds(60),
+    )?;
+
+    assert_eq!(
+        store.list_failed_build_sell_execution_quote_event_ids_for_route(ROUTE, 1)?,
+        vec!["quote:no-route-fresh".to_string()]
+    );
+
+    store.mark_execution_canary_terminal_sell_no_route_blocked(
+        &old,
+        "terminal_failed_sell_no_route_written_off",
+    )?;
+    store.mark_execution_canary_terminal_sell_no_route_blocked(
+        &fresh,
+        "terminal_failed_sell_no_route_written_off",
+    )?;
+    assert_eq!(
+        store.list_terminal_no_route_sell_execution_quote_event_ids_for_route(
+            ROUTE,
+            now + Duration::seconds(700),
+            1,
+        )?,
+        vec!["quote:no-route-fresh".to_string()]
+    );
+    Ok(())
+}
+
 fn confirmed_buy_order(
     store: &SqliteStore,
     signal_id: &str,
@@ -205,6 +259,31 @@ fn confirmed_buy_order(
         &format!("tx-{signal_id}"),
     )?;
     store.mark_execution_canary_confirmed(&reserve.order.order_id, now + Duration::seconds(5))?;
+    Ok(reserve.order.order_id)
+}
+
+fn failed_build_sell_order(
+    store: &SqliteStore,
+    signal_id: &str,
+    quote_event_id: &str,
+    token: &str,
+    now: DateTime<Utc>,
+) -> Result<String> {
+    let sell = signal(signal_id, "sell", token, now);
+    store.insert_copy_signal(&sell)?;
+    store.record_execution_quote_canary_event(&sell_quote_event(
+        quote_event_id,
+        &sell,
+        now + Duration::seconds(1),
+    ))?;
+    let reserve =
+        store.reserve_execution_canary_order(&sell.signal_id, ROUTE, now + Duration::seconds(2))?;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        now + Duration::seconds(3),
+        EXECUTION_ERROR_BUILD_FAILED,
+        "owned_sell_quote_failed: NO_ROUTES_FOUND",
+    )?;
     Ok(reserve.order.order_id)
 }
 

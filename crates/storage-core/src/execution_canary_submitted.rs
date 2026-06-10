@@ -107,7 +107,7 @@ impl SqliteDiscoveryStore {
                           AND pos.accounting_bucket = ?4
                           AND pos.state = ?5
                    )
-                 ORDER BY orders.submit_ts ASC, orders.order_id ASC
+                 ORDER BY orders.submit_ts DESC, orders.order_id DESC
                  LIMIT ?6",
             )
             .context("failed to prepare failed simulation sell order query")?;
@@ -219,7 +219,7 @@ impl SqliteDiscoveryStore {
                               )
                           )
                    )
-                 ORDER BY orders.submit_ts ASC, event.request_ts DESC, event.event_id DESC
+                 ORDER BY orders.submit_ts DESC, event.request_ts DESC, event.event_id DESC
                  LIMIT ?10",
             )
             .context("failed to prepare retry candidate sell quote event query")?;
@@ -285,7 +285,7 @@ impl SqliteDiscoveryStore {
                               )
                           )
                    )
-                 ORDER BY orders.submit_ts ASC, event.request_ts DESC, event.event_id DESC
+                 ORDER BY orders.submit_ts DESC, event.request_ts DESC, event.event_id DESC
                  LIMIT ?9",
             )
             .context("failed to prepare failed build sell quote event query")?;
@@ -352,7 +352,7 @@ impl SqliteDiscoveryStore {
                               )
                           )
                    )
-                 ORDER BY COALESCE(orders.confirm_ts, orders.submit_ts) ASC,
+                 ORDER BY COALESCE(orders.confirm_ts, orders.submit_ts) DESC,
                           event.request_ts DESC,
                           event.event_id DESC
                  LIMIT ?10",

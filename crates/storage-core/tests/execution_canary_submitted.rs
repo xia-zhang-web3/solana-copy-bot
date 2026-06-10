@@ -299,6 +299,64 @@ fn failed_simulation_buy_retry_query_prefers_fresh_orders() -> Result<()> {
 }
 
 #[test]
+fn failed_simulation_sell_retry_queries_prefer_fresh_orders() -> Result<()> {
+    let store = open_migrated_store("failed-sell-simulation-fresh-first")?;
+    let now = ts("2026-06-10T02:10:00Z");
+    let route = "metis-swap-instructions-dry-run";
+    let buy_order_id = submitted_order(
+        &store,
+        "buy-for-sell-fresh-first",
+        route,
+        "tx-buy-for-sell-fresh-first",
+        now - Duration::seconds(10),
+    )?;
+    store.record_execution_canary_open_position(
+        &buy_order_id,
+        "TokenMint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        now,
+    )?;
+    let old = failed_sell_simulation_order(
+        &store,
+        "failed-sell-old",
+        "quote:failed-sell-old",
+        route,
+        now + Duration::seconds(10),
+    )?;
+    let fresh = failed_sell_simulation_order(
+        &store,
+        "failed-sell-fresh",
+        "quote:failed-sell-fresh",
+        route,
+        now + Duration::seconds(60),
+    )?;
+
+    let failed = store.list_failed_simulation_sell_execution_canary_orders_for_route(route, 1)?;
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].order_id, fresh);
+
+    store.mark_execution_canary_failed_simulation_retry_candidate(
+        &old,
+        now + Duration::seconds(70),
+        "retry_failed_sell_with_owned_position_amount",
+    )?;
+    store.mark_execution_canary_failed_simulation_retry_candidate(
+        &fresh,
+        now + Duration::seconds(80),
+        "retry_failed_sell_with_owned_position_amount",
+    )?;
+    let events = store.list_retry_candidate_sell_execution_quote_event_ids_for_route(
+        route,
+        "retry_failed_sell_with_owned_position_amount",
+        1,
+    )?;
+    assert_eq!(events, vec!["quote:failed-sell-fresh".to_string()]);
+    Ok(())
+}
+
+#[test]
 fn retry_candidate_sell_event_lookup_includes_existing_retry_candidate_order() -> Result<()> {
     let store = open_migrated_store("retry-candidate-sell-event")?;
     let now = ts("2026-06-08T12:30:00Z");
@@ -527,6 +585,41 @@ fn failed_buy_simulation_order(
         now + Duration::seconds(3),
         EXECUTION_ERROR_SIMULATION_FAILED,
         error,
+    )?;
+    Ok(reserve.order.order_id)
+}
+
+fn failed_sell_simulation_order(
+    store: &SqliteStore,
+    signal_id: &str,
+    quote_event_id: &str,
+    route: &str,
+    now: DateTime<Utc>,
+) -> Result<String> {
+    let sell_signal = CopySignalRow {
+        side: "sell".to_string(),
+        ..signal(signal_id, now)
+    };
+    store.insert_copy_signal(&sell_signal)?;
+    store.record_execution_quote_canary_event(&sell_quote_event(
+        quote_event_id,
+        &sell_signal,
+        now + Duration::seconds(1),
+    ))?;
+    let reserve =
+        store.reserve_execution_canary_order(signal_id, route, now + Duration::seconds(2))?;
+    store.mark_execution_canary_built(&reserve.order.order_id, now + Duration::seconds(3))?;
+    store.mark_execution_canary_simulated(
+        &reserve.order.order_id,
+        now + Duration::seconds(4),
+        EXECUTION_SIMULATION_STATUS_FAILED,
+        Some("sell simulation failed"),
+    )?;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        now + Duration::seconds(5),
+        EXECUTION_ERROR_SIMULATION_FAILED,
+        "sell simulation failed",
     )?;
     Ok(reserve.order.order_id)
 }
