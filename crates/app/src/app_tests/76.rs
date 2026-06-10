@@ -134,6 +134,63 @@ async fn owned_sell_metadata_falls_back_to_pump_fun_paid_after_generic_no_route(
     Ok(())
 }
 
+#[tokio::test]
+async fn owned_sell_metadata_falls_back_to_generic_after_selected_pump_fun_error() -> Result<()> {
+    let db_path = unique_pump_fun_owned_sell_test_path("selected-pump-error");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    store.record_execution_canary_open_position(
+        "existing-buy",
+        "TokenMint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.8,
+        now,
+    )?;
+    let (base_url, server) = serve_owned_sell_balance_pump_error_then_generic_quote().await?;
+    let mut metadata = crate::execution_submit_adapter::ExecutionBuildPlanMetadata::default();
+    metadata.quote_source =
+        Some(crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID.to_string());
+    metadata.quote_event_id = Some("quote:owned-close:test".to_string());
+    metadata.priority_fee_status = Some("ok".to_string());
+    metadata.priority_fee_lamports = Some(22_000);
+    metadata.decision_status = Some("would_execute".to_string());
+    metadata.decision_reason = Some("owned_position".to_string());
+
+    let refreshed = crate::execution_canary_route::owned_position_sell_metadata(
+        &pump_fun_submit_config(&base_url),
+        &store,
+        "TokenMint",
+        metadata,
+    )
+    .await?;
+    server.await?;
+
+    assert_eq!(
+        refreshed.quote_source.as_deref(),
+        Some(crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS)
+    );
+    assert_eq!(
+        refreshed.quote_event_id.as_deref(),
+        Some("quote:owned-close:test")
+    );
+    assert_eq!(refreshed.priority_fee_lamports, Some(22_000));
+    assert_eq!(refreshed.quote_in_amount_raw.as_deref(), Some("10000"));
+    assert_eq!(refreshed.quote_out_amount_raw.as_deref(), Some("900000000"));
+    assert!(refreshed
+        .route_plan_json
+        .as_deref()
+        .unwrap_or_default()
+        .contains("Pump.fun Amm"));
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
 async fn serve_owned_sell_generic_no_route_then_pump_quote(
 ) -> Result<(String, tokio::task::JoinHandle<()>)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -189,6 +246,41 @@ async fn serve_owned_sell_balance_generic_no_route_then_pump_quote(
         assert!(pump.body.contains("type=SELL"));
         assert!(pump.body.contains("amount=10000"));
         write_owned_sell_http_response(pump.socket, "200 OK", pump_fun_sell_quote_json()).await;
+    });
+    Ok((base_url, server))
+}
+
+async fn serve_owned_sell_balance_pump_error_then_generic_quote(
+) -> Result<(String, tokio::task::JoinHandle<()>)> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let balance = read_owned_sell_http_request(&listener).await;
+        assert!(balance
+            .body
+            .contains("\"method\":\"getTokenAccountsByOwner\""));
+        write_owned_sell_http_response(
+            balance.socket,
+            "200 OK",
+            r#"{"jsonrpc":"2.0","id":"execution-canary-owned-sell-balance","result":{"value":[{"account":{"data":{"parsed":{"info":{"tokenAmount":{"amount":"10000","decimals":3}}}}}}]}}"#,
+        )
+        .await;
+
+        let pump = read_owned_sell_http_request(&listener).await;
+        assert!(pump.body.starts_with("GET /pump-fun/quote?"));
+        assert!(pump.body.contains("type=SELL"));
+        assert!(pump.body.contains("amount=10000"));
+        write_owned_sell_http_response(
+            pump.socket,
+            "400 Bad Request",
+            r#"{"error":"Bonding curve for mint not found","errorCode":"NOT_FOUND"}"#,
+        )
+        .await;
+
+        let generic = read_owned_sell_http_request(&listener).await;
+        assert!(generic.body.starts_with("GET /quote?"));
+        assert!(generic.body.contains("amount=10000"));
+        write_owned_sell_http_response(generic.socket, "200 OK", generic_sell_quote_json()).await;
     });
     Ok((base_url, server))
 }
@@ -259,6 +351,10 @@ fn pump_fun_submit_config(base_url: &str) -> ExecutionConfig {
 
 fn pump_fun_sell_quote_json() -> &'static str {
     r#"{"quote":{"mint":"TokenMint","type":"SELL","inAmount":"10000","inTokenAddress":"TokenMint","outAmount":"1200000000","outTokenAddress":"So11111111111111111111111111111111111111112","meta":{"isCompleted":false,"inDecimals":3,"outDecimals":9},"priceImpactPct":"0.01"}}"#
+}
+
+fn generic_sell_quote_json() -> &'static str {
+    r#"{"inputMint":"TokenMint","inAmount":"10000","outputMint":"So11111111111111111111111111111111111111112","outAmount":"900000000","priceImpactPct":"0.02","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#
 }
 
 fn unique_pump_fun_owned_sell_test_path(name: &str) -> PathBuf {

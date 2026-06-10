@@ -27,13 +27,15 @@ pub(crate) async fn owned_position_sell_metadata(
     let http = reqwest::Client::new();
     let amount_raw = owned_position_amount_raw(config, &http, token, &position).await?;
     let prefer_pump_fun = metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_PUMP_FUN_PAID);
+    let mut pump_fun_preferred_error = None;
 
     if prefer_pump_fun {
-        if let Some(pump_fun_metadata) =
-            pump_fun_owned_sell_metadata(config, &http, token, &position, &amount_raw, &metadata)
-                .await?
+        match pump_fun_owned_sell_metadata(config, &http, token, &position, &amount_raw, &metadata)
+            .await
         {
-            return Ok(pump_fun_metadata);
+            Ok(Some(pump_fun_metadata)) => return Ok(pump_fun_metadata),
+            Ok(None) => {}
+            Err(error) => pump_fun_preferred_error = Some(error),
         }
     }
 
@@ -59,7 +61,15 @@ pub(crate) async fn owned_position_sell_metadata(
                 )),
             }
         }
-        Err(error) => Err(error),
+        Err(generic_error) => {
+            if let Some(pump_fun_error) = pump_fun_preferred_error {
+                Err(anyhow!(
+                    "owned sell pump.fun preferred quote failed: {pump_fun_error}; generic owned sell fallback failed: {generic_error}"
+                ))
+            } else {
+                Err(generic_error)
+            }
+        }
     }
 }
 
