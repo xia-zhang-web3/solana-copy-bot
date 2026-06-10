@@ -265,6 +265,40 @@ fn failed_simulation_retry_candidate_clears_stale_build_metadata() -> Result<()>
 }
 
 #[test]
+fn failed_simulation_buy_retry_query_prefers_fresh_orders() -> Result<()> {
+    let store = open_migrated_store("failed-buy-simulation-fresh-first")?;
+    let now = ts("2026-06-10T01:50:00Z");
+    let route = "metis-swap-instructions-dry-run";
+    let old = failed_buy_simulation_order(
+        &store,
+        "failed-buy-old",
+        route,
+        now,
+        "old non retryable simulation failure",
+    )?;
+    let fresh = failed_buy_simulation_order(
+        &store,
+        "failed-buy-fresh",
+        route,
+        now + Duration::seconds(60),
+        "swap transaction dry-run simulation error: an account required by the instruction is missing",
+    )?;
+
+    let one = store.list_failed_simulation_buy_execution_canary_orders_for_route(route, 1)?;
+    let all = store.list_failed_simulation_buy_execution_canary_orders_for_route(route, 10)?;
+
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].order_id, fresh);
+    assert_eq!(
+        all.iter()
+            .map(|order| order.order_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![fresh.as_str(), old.as_str()]
+    );
+    Ok(())
+}
+
+#[test]
 fn retry_candidate_sell_event_lookup_includes_existing_retry_candidate_order() -> Result<()> {
     let store = open_migrated_store("retry-candidate-sell-event")?;
     let now = ts("2026-06-08T12:30:00Z");
@@ -331,8 +365,15 @@ fn failed_build_sell_retry_candidate_increments_attempt_and_reuses_close_event()
     let now = ts("2026-06-08T12:45:00Z");
     let signal_id = "sell-failed-build";
     let route = "metis-swap-instructions-dry-run";
+    let buy_order_id = submitted_order(
+        &store,
+        "buy-failed-build-position",
+        route,
+        "tx-buy-failed-build-position",
+        now - Duration::seconds(10),
+    )?;
     store.record_execution_canary_open_position(
-        "exec-canary:buy-filled",
+        &buy_order_id,
         "TokenMint",
         10.0,
         Some(TokenQuantity::new(10_000, 3)),
@@ -461,6 +502,31 @@ fn submitted_without_signature(
         &reserve.order.order_id,
         now + Duration::seconds(3),
         "timeout_without_signature",
+    )?;
+    Ok(reserve.order.order_id)
+}
+
+fn failed_buy_simulation_order(
+    store: &SqliteStore,
+    signal_id: &str,
+    route: &str,
+    now: DateTime<Utc>,
+    error: &str,
+) -> Result<String> {
+    store.insert_copy_signal(&signal(signal_id, now))?;
+    let reserve = store.reserve_execution_canary_order(signal_id, route, now)?;
+    store.mark_execution_canary_built(&reserve.order.order_id, now + Duration::seconds(1))?;
+    store.mark_execution_canary_simulated(
+        &reserve.order.order_id,
+        now + Duration::seconds(2),
+        EXECUTION_SIMULATION_STATUS_FAILED,
+        Some(error),
+    )?;
+    store.mark_execution_canary_failed(
+        &reserve.order.order_id,
+        now + Duration::seconds(3),
+        EXECUTION_ERROR_SIMULATION_FAILED,
+        error,
     )?;
     Ok(reserve.order.order_id)
 }

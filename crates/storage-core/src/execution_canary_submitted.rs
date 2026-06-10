@@ -157,7 +157,7 @@ impl SqliteDiscoveryStore {
                    AND orders.err_code = ?3
                    AND (orders.tx_signature IS NULL OR TRIM(orders.tx_signature) = '')
                    AND lower(copy_signals.side) = 'buy'
-                 ORDER BY orders.submit_ts ASC, orders.order_id ASC
+                 ORDER BY orders.submit_ts DESC, orders.order_id DESC
                  LIMIT ?4",
             )
             .context("failed to prepare failed simulation buy order query")?;
