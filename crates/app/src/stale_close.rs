@@ -4,11 +4,11 @@ use crate::stale_close_quote::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_storage_core::{
-    is_fatal_sqlite_anyhow_error, ShadowLotRow, SqliteStore, SHADOW_CLOSE_CONTEXT_MARKET,
-    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
-    SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE, STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES,
-    STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES, STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL,
-    STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
+    is_fatal_sqlite_anyhow_error, ShadowLotRow, SqliteStore,
+    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE, SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE,
+    SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE, SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+    STALE_CLOSE_RELIABLE_PRICE_MAX_SAMPLES, STALE_CLOSE_RELIABLE_PRICE_MIN_SAMPLES,
+    STALE_CLOSE_RELIABLE_PRICE_MIN_SOL_NOTIONAL, STALE_CLOSE_RELIABLE_PRICE_WINDOW_MINUTES,
 };
 use std::collections::HashSet;
 use tracing::warn;
@@ -63,7 +63,9 @@ pub(crate) async fn close_stale_shadow_lots(
         let (exit_price_sol, close_context) = match store
             .reliable_token_sol_price_for_stale_close(&lot.token, now)?
         {
-            Some(price) if price > STALE_CLOSE_EPS => (price, SHADOW_CLOSE_CONTEXT_MARKET),
+            Some(price) if price > STALE_CLOSE_EPS => {
+                (price, SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE)
+            }
             _ => {
                 let quote_attempt = match quote_pricer {
                     Some(pricer) => pricer.quote_exit_price(&lot).await,

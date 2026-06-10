@@ -79,7 +79,7 @@ async fn quote_canary_sweeps_owned_stale_close_for_open_position() -> Result<()>
         0.2,
         0.0001,
         -0.1999,
-        copybot_storage_core::SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
+        copybot_storage_core::SHADOW_CLOSE_CONTEXT_MARKET,
         opened,
         closed,
     )?;

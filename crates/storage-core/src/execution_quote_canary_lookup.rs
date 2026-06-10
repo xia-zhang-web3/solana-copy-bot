@@ -3,8 +3,9 @@ use crate::{
     observed_timestamp::parse_rfc3339_utc, schema::column_exists, ExecutionCanaryCloseCandidate,
     ExecutionQuoteCanaryEventInsert, SqliteDiscoveryStore,
     EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET, EXECUTION_CANARY_POSITION_STATE_OPEN,
-    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE, SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE,
-    SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE, SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
+    SHADOW_CLOSE_CONTEXT_MARKET, SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
+    SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
+    SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -353,13 +354,13 @@ impl SqliteDiscoveryStore {
                  FROM shadow_closed_trades AS closed
                  WHERE closed.closed_ts >= ?1
                    AND closed.signal_id LIKE 'stale-close-%'
-                   AND COALESCE(closed.close_context, '') IN (?2, ?3, ?4, ?5)
+                   AND COALESCE(closed.close_context, '') IN (?2, ?3, ?4, ?5, ?6)
                    AND EXISTS (
                         SELECT 1
                         FROM positions AS pos
                         WHERE pos.token = closed.token
-                          AND pos.accounting_bucket = ?6
-                          AND pos.state = ?7
+                          AND pos.accounting_bucket = ?7
+                          AND pos.state = ?8
                           AND closed.closed_ts >= COALESCE((
                               SELECT MAX(COALESCE(latest_buy_signal.ts, latest_buy_order.submit_ts))
                               FROM orders AS latest_buy_order
@@ -388,7 +389,7 @@ impl SqliteDiscoveryStore {
                         WHERE orders.signal_id = closed.signal_id
                    )
                  ORDER BY closed.closed_ts ASC, closed.id ASC
-                 LIMIT ?8",
+                 LIMIT ?9",
             )
             .context("failed to prepare owned stale close quote canary candidate query")?;
         let rows = stmt
@@ -399,6 +400,7 @@ impl SqliteDiscoveryStore {
                     SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
                     SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
                     SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
+                    SHADOW_CLOSE_CONTEXT_MARKET,
                     EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
                     EXECUTION_CANARY_POSITION_STATE_OPEN,
                     i64::from(limit.max(1)),

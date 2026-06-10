@@ -52,7 +52,7 @@
             ts_utc: now - chrono::Duration::minutes(1),
             exact_amounts: None,
         })?;
-        store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
+        let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
         let stats =
@@ -71,6 +71,13 @@
             pnl < 2.0,
             "stale-close pnl must stay in realistic band and ignore micro-swap outlier (got {})",
             pnl
+        );
+        let signal_id = format!("stale-close-{}-{}", lot_id, now.timestamp_millis());
+        assert_eq!(
+            store.shadow_closed_trade_close_context(&signal_id)?,
+            Some(
+                copybot_storage_core::SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE.to_string()
+            )
         );
 
         let _ = std::fs::remove_file(db_path);

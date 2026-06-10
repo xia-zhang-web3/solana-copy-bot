@@ -1,6 +1,6 @@
 # Live Canary Report Runbook
 
-Updated: `2026-06-06`
+Updated: `2026-06-10`
 
 This is the current production report runbook for shadow trading, quote canary,
 Metis swap dry-run proof, tiny execution readiness, and stale-close triage. It
@@ -16,8 +16,9 @@ is not an approval to change production state.
   `swap_transaction_dry_run_enabled=true`.
 - Public-vs-paid generic quote comparison is measured when
   `quote_canary_public_parallel_enabled=true`; it compares public Jupiter/Metis
-  `/quote` against paid/private Metis `/quote` on the same event. Runtime now
-  selects the lower-slippage OK generic provider for migrated AMM routes.
+  `/quote` against paid/private Metis `/quote` on the same event. Guarded tiny
+  execution prefers a buildable paid Metis generic quote; public generic is a
+  fallback when Metis is unavailable, not buildable, or errors.
 - Paid Metis Pump.fun quote comparison is measured when
   `quote_canary_pump_fun_parallel_enabled=true`; it compares the old generic
   Metis/Jupiter `/quote` result against paid `/pump-fun/quote` on the same
@@ -37,9 +38,16 @@ is not an approval to change production state.
   public Jupiter and records `metis_swap_*_public_fallback_ok` in simulation
   proof. This fallback is dry-run only.
 - Priority Fee API is measured and included in quote PnL after fee.
-- Tiny execution gate is report-only until a separate explicit rollout.
+- Guarded tiny execution may submit real tiny trades when
+  `execution.canary_tiny_submit_enabled=true` and
+  `execution.canary_entry_submit_enabled=true`. Broad `execution.enabled` is a
+  separate production cutover and must remain off unless explicitly approved.
 - Tiny execution gate now loads the live execution config when the report is
   run with `--config`; use that mode for readiness/preflight checks.
+- Treat `tiny_execution_gate.runtime_status`, `can_open_new_tiny_entries`,
+  `can_process_tiny_sells`, `runtime_blockers`, and `why_not_trading_now` as
+  the live on/off proof. `startup_readiness_status` is a startup/readiness
+  aggregate and can be blocked while runtime tiny live remains enabled.
 - Main quote PnL now includes `buy_shadow_gate`: quote-approved BUYs are split
   into `shadow_recorded`, `shadow_dropped`, and `shadow_pending`. This is the
   source of truth for whether a good quote would actually become a shadow entry.
@@ -53,7 +61,7 @@ rolling 24h window as the main answer unless the user asks for it.
 ## Rules
 
 - Do not enable `execution.enabled`.
-- Do not submit trades.
+- Do not manually submit trades outside the daemon path.
 - Do not restart the daemon for read-only reports.
 - Do not run release builds on production for reports.
 - Do not mix stale/rug-like closes into normal market PnL.
