@@ -254,6 +254,12 @@ fn simulation_error_class(value: Option<&str>) -> String {
     if lower.contains("insufficient funds") {
         return "insufficient_funds".to_string();
     }
+    if lower.contains("account required") && lower.contains("missing")
+        || lower.contains("missing account")
+        || lower.contains("not enough account")
+    {
+        return "missing_account".to_string();
+    }
     if lower.contains("account not found") || lower.contains("could not find account") {
         return "account_not_found".to_string();
     }

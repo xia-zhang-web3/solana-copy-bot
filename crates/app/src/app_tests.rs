@@ -135,6 +135,8 @@ mod execution_swap_instructions_soft_failure_contract;
 mod execution_tiny_buy_simulation_retry_contract;
 #[path = "app_tests/87.rs"]
 mod execution_tiny_provider_selection_contract;
+#[path = "app_tests/88.rs"]
+mod execution_tiny_stale_quote_materialize_contract;
 #[path = "app_tests/85.rs"]
 mod execution_tiny_terminal_dust_no_route;
 #[path = "app_tests/84.rs"]

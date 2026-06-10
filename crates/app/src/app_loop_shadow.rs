@@ -172,6 +172,7 @@ pub(super) async fn handle_shadow_interval_tick(
     stale_lot_max_hold_hours: u32,
     stale_lot_terminal_zero_price_hours: u32,
     stale_lot_recovery_zero_price_enabled: bool,
+    materialize_execution_canary_quote_loss: bool,
     stale_close_quote_pricer: &StaleCloseQuotePricer,
 ) -> Result<()> {
     if shadow_strategy_fail_closed {
@@ -184,6 +185,7 @@ pub(super) async fn handle_shadow_interval_tick(
         stale_lot_max_hold_hours,
         stale_lot_terminal_zero_price_hours,
         stale_lot_recovery_zero_price_enabled,
+        materialize_execution_canary_quote_loss,
         Some(stale_close_quote_pricer),
         cleanup_now,
     )

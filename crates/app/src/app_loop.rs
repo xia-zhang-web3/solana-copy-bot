@@ -103,6 +103,8 @@ pub(super) async fn run_app_loop(
     )?;
     let mut runtime_follow_reload_interval =
         runtime_follow_reload_interval(discovery_fetch_refresh_seconds);
+    let materialize_execution_canary_quote_loss =
+        execution_config.canary_enabled && execution_config.canary_tiny_submit_enabled;
     let stale_close_quote_pricer = StaleCloseQuotePricer::new(execution_config.clone());
     let execution_canary_runner = ExecutionCanaryRunner::new(execution_config);
     execution_canary_runner.log_startup_status();
@@ -402,6 +404,7 @@ pub(super) async fn run_app_loop(
                     stale_lot_max_hold_hours,
                     stale_lot_terminal_zero_price_hours,
                     stale_lot_recovery_zero_price_enabled,
+                    materialize_execution_canary_quote_loss,
                     &stale_close_quote_pricer,
                 ).await?;
             }

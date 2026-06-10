@@ -56,7 +56,8 @@
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
         let stats =
-            close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, None, now).await?;
+            close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, false, None, now)
+                .await?;
 
         assert_eq!(stats.closed_priced, 1);
         assert_eq!(stats.terminal_zero_closed, 0);
@@ -109,7 +110,8 @@
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
         let stats =
-            close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, None, now).await?;
+            close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, false, None, now)
+                .await?;
 
         assert_eq!(stats.closed_priced, 0);
         assert_eq!(stats.terminal_zero_closed, 0);
@@ -181,6 +183,7 @@
             6,
             12,
             false,
+            true,
             Some(&quote_pricer),
             now,
         )
@@ -265,6 +268,7 @@
             6,
             12,
             false,
+            false,
             Some(&quote_pricer),
             now,
         )
@@ -320,7 +324,7 @@
         )?;
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
-        let error = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, None, now)
+        let error = close_stale_shadow_lots(&store, &mut open_pairs, 8, 0, false, false, None, now)
             .await
             .expect_err("fatal stale-close risk event write must abort cleanup");
         let error_text = format!("{error:#}");
@@ -370,7 +374,8 @@
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
         let stats =
-            close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, true, None, now).await?;
+            close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, true, false, None, now)
+                .await?;
 
         assert_eq!(stats.closed_priced, 0);
         assert_eq!(stats.recovery_zero_closed, 1);
@@ -427,7 +432,8 @@
 
         let mut open_pairs = store.list_shadow_open_pairs()?;
         let stats =
-            close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, false, None, now).await?;
+            close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, false, false, None, now)
+                .await?;
 
         assert_eq!(stats.closed_priced, 0);
         assert_eq!(stats.terminal_zero_closed, 1);

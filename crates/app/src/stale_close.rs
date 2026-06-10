@@ -33,6 +33,7 @@ pub(crate) async fn close_stale_shadow_lots(
     max_hold_hours: u32,
     terminal_zero_price_hours: u32,
     recovery_zero_price_enabled: bool,
+    materialize_execution_canary_quote_loss: bool,
     quote_pricer: Option<&StaleCloseQuotePricer>,
     now: DateTime<Utc>,
 ) -> Result<StaleLotCleanupStats> {
@@ -73,11 +74,18 @@ pub(crate) async fn close_stale_shadow_lots(
                 };
                 match quote_attempt {
                     StaleCloseQuoteAttempt::Priced(quote) => {
-                        if should_defer_stale_quote_loss(
+                        let defer_loss = should_defer_stale_quote_loss(
                             &lot,
                             &quote,
                             terminal_zero_cutoff.as_ref(),
-                        ) {
+                        );
+                        if defer_loss
+                            && !should_materialize_stale_quote_loss_for_execution_canary(
+                                store,
+                                &lot,
+                                materialize_execution_canary_quote_loss,
+                            )?
+                        {
                             record_stale_quote_loss_deferred_event(
                                 store,
                                 now,
@@ -261,6 +269,19 @@ fn should_defer_stale_quote_loss(
         .map(|cutoff| lot.opened_ts > *cutoff)
         .unwrap_or(true);
     before_terminal_window && quote.quote_out_sol + STALE_CLOSE_EPS < lot.cost_sol
+}
+
+fn should_materialize_stale_quote_loss_for_execution_canary(
+    store: &SqliteStore,
+    lot: &ShadowLotRow,
+    enabled: bool,
+) -> Result<bool> {
+    if !enabled {
+        return Ok(false);
+    }
+    Ok(store
+        .load_execution_canary_open_position(&lot.token)?
+        .is_some())
 }
 
 fn record_stale_quote_loss_deferred_event(

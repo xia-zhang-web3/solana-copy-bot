@@ -22,7 +22,8 @@ async fn stale_lot_cleanup_recovery_zero_price_does_not_override_terminal_close_
     let lot_id = store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
     let mut open_pairs = store.list_shadow_open_pairs()?;
-    let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, true, None, now).await?;
+    let stats =
+        close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, true, false, None, now).await?;
 
     assert_eq!(stats.closed_priced, 0);
     assert_eq!(stats.recovery_zero_closed, 0);
@@ -76,7 +77,8 @@ async fn stale_lot_cleanup_terminal_zero_price_preserves_exact_qty_sidecars() ->
     )?;
 
     let mut open_pairs = store.list_shadow_open_pairs()?;
-    let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, false, None, now).await?;
+    let stats =
+        close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, false, false, None, now).await?;
 
     assert_eq!(stats.closed_priced, 0);
     assert_eq!(stats.terminal_zero_closed, 1);
@@ -121,7 +123,8 @@ async fn risk_guard_ignores_terminal_zero_price_stale_close_losses_for_hard_stop
     store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
     let mut open_pairs = store.list_shadow_open_pairs()?;
-    let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, false, None, now).await?;
+    let stats =
+        close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, false, false, None, now).await?;
     assert_eq!(stats.terminal_zero_closed, 1);
 
     let (all_trades, all_pnl) = store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;
@@ -175,7 +178,8 @@ async fn risk_guard_ignores_recovery_zero_price_stale_close_losses_for_hard_stop
     store.insert_shadow_lot("wallet-a", "token-a", 500.0, 0.25, opened_ts)?;
 
     let mut open_pairs = store.list_shadow_open_pairs()?;
-    let stats = close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, true, None, now).await?;
+    let stats =
+        close_stale_shadow_lots(&store, &mut open_pairs, 6, 12, true, false, None, now).await?;
     assert_eq!(stats.recovery_zero_closed, 1);
 
     let (all_trades, all_pnl) = store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;

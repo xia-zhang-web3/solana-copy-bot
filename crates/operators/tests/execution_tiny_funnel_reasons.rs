@@ -147,6 +147,58 @@ fn quality_includes_failed_entry_order_samples() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn quality_classifies_missing_account_entry_failure() -> Result<()> {
+    let dir = tempdir()?;
+    let db_path = dir.path().join("runtime.db");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+
+    let signal_ts = ts("2026-06-09T12:20:00Z");
+    insert_signal(
+        &store,
+        "buy-missing-account",
+        "buy",
+        "TokenMissingAccount",
+        signal_ts,
+    )?;
+    store.record_execution_quote_canary_event(&buy_quote(
+        "missing-account",
+        "buy-missing-account",
+        "TokenMissingAccount",
+        signal_ts,
+        "would_execute",
+    ))?;
+    record_failed_buy_order_with_error(
+        &store,
+        "buy-missing-account",
+        signal_ts,
+        "swap transaction dry-run simulation error source=public_fallback_no_shared_accounts_ok shared_accounts_disabled=true skip_user_accounts_rpc_calls=true: {\"error\":\"Error processing Instruction 5: An account required by the instruction is missing\",\"errorCode\":\"TRANSACTION_ERROR\"}",
+    )?;
+    drop(store);
+
+    let report = build_report_from_db_path(&db_path, ts("2026-06-09T13:00:00Z"));
+    let quality = report
+        .tiny_execution_quality
+        .as_ref()
+        .unwrap_or_else(|| panic!("tiny quality missing: {:?}", report.error));
+
+    assert_eq!(quality.failed_entry_order_samples.len(), 1);
+    assert_eq!(
+        quality.failed_entry_order_samples[0].simulation_error_class,
+        "missing_account"
+    );
+    assert!(quality.top_flow_blockers.iter().any(|blocker| {
+        blocker.stage == "entry_order"
+            && blocker.reason == "simulation_failed:missing_account"
+            && blocker.count == 1
+    }));
+    Ok(())
+}
+
 fn record_buy_drop(
     store: &SqliteStore,
     suffix: &str,
@@ -238,6 +290,20 @@ fn record_failed_buy_order(
     signal_id: &str,
     signal_ts: DateTime<Utc>,
 ) -> Result<String> {
+    record_failed_buy_order_with_error(
+        store,
+        signal_id,
+        signal_ts,
+        "Transaction simulation failed: market not found",
+    )
+}
+
+fn record_failed_buy_order_with_error(
+    store: &SqliteStore,
+    signal_id: &str,
+    signal_ts: DateTime<Utc>,
+    error: &str,
+) -> Result<String> {
     let reserve = store.reserve_execution_canary_order(signal_id, ROUTE, signal_ts)?;
     store.record_execution_canary_build_plan_metadata(&ExecutionCanaryBuildPlanMetadata {
         order_id: reserve.order.order_id.clone(),
@@ -269,13 +335,13 @@ fn record_failed_buy_order(
         &reserve.order.order_id,
         signal_ts + Duration::milliseconds(40),
         EXECUTION_SIMULATION_STATUS_FAILED,
-        Some("Transaction simulation failed: market not found"),
+        Some(error),
     )?;
     store.mark_execution_canary_failed(
         &reserve.order.order_id,
         signal_ts + Duration::milliseconds(60),
         EXECUTION_ERROR_SIMULATION_FAILED,
-        "Transaction simulation failed: market not found",
+        error,
     )?;
     Ok(reserve.order.order_id)
 }
