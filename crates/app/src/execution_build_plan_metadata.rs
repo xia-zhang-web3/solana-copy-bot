@@ -30,6 +30,7 @@ pub(crate) fn record_execution_build_plan_metadata(
         recorded_ts: now,
         quote_source: metadata.quote_source.clone(),
         quote_event_id: metadata.quote_event_id.clone(),
+        quote_request_ts: metadata.quote_request_ts,
         quote_status: metadata.quote_status.clone(),
         quote_in_amount_raw: metadata.quote_in_amount_raw.clone(),
         quote_out_amount_raw: metadata.quote_out_amount_raw.clone(),

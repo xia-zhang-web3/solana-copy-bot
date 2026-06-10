@@ -169,6 +169,7 @@ fn swap_blueprint_request(
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_source: Some("execution_quote_canary_event".to_string()),
             quote_event_id: Some("quote:entry:direct".to_string()),
+            quote_request_ts: None,
             quote_status: Some("ok".to_string()),
             quote_in_amount_raw: Some("10000000".to_string()),
             quote_out_amount_raw: Some("123456".to_string()),

@@ -1,6 +1,4 @@
-use crate::execution_pump_fun_swap_instructions_http::fetch_pump_fun_swap_instructions_dry_run;
-use crate::execution_pump_fun_swap_transaction_http::fetch_pump_fun_swap_transaction_dry_run;
-use crate::execution_pumpswap_direct_builder::fetch_pumpswap_direct_transaction_dry_run;
+use crate::execution_pump_fun_migration_fallback::refresh_pump_fun_paid_sell_to_generic_pumpswap_plan;
 use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID;
 use crate::execution_route_plan::route_plan_has_pump_fun_amm;
@@ -19,8 +17,8 @@ use crate::execution_swap_http_request::is_missing_account_error_text;
 use crate::execution_swap_http_retry::is_missing_token_program_error;
 use crate::execution_swap_instructions_http::fetch_swap_instructions_dry_run;
 use crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run;
-use crate::telemetry::format_error_chain;
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
     EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_SIMULATION_STATUS_SKIPPED_NO_SUBMIT,
@@ -31,6 +29,8 @@ use std::pin::Pin;
 mod confirmation;
 mod confirmation_boundary;
 mod confirmed_fill;
+mod diagnostics;
+mod direct_builders;
 mod file_signer;
 mod rpc_confirmation;
 mod rpc_confirmed_fill;
@@ -55,6 +55,13 @@ pub(crate) use self::confirmation_boundary::{
 pub(crate) use self::confirmed_fill::{
     record_confirmed_fill_accounting, ExecutionConfirmedBuyFill, ExecutionConfirmedFill,
     ExecutionConfirmedSellFill,
+};
+use self::diagnostics::{
+    execution_error_for_plan, execution_error_text_for_plan,
+    should_try_pump_fun_paid_sell_migration_fallback,
+};
+use self::direct_builders::{
+    pump_fun_simulation_result, pumpswap_direct_simulation_result, result_with_soft_pump_fun_error,
 };
 pub(crate) use self::file_signer::sign_serialized_transaction_from_config;
 pub(crate) use self::rpc_confirmation::fetch_rpc_signature_confirmation;
@@ -87,6 +94,7 @@ const EXECUTION_SUBMIT_ROUTE_RPC_DRY_RUN: &str = "rpc_dry_run";
 pub(crate) struct ExecutionBuildPlanMetadata {
     pub(crate) quote_source: Option<String>,
     pub(crate) quote_event_id: Option<String>,
+    pub(crate) quote_request_ts: Option<DateTime<Utc>>,
     pub(crate) quote_status: Option<String>,
     pub(crate) quote_in_amount_raw: Option<String>,
     pub(crate) quote_out_amount_raw: Option<String>,
@@ -108,6 +116,7 @@ impl Default for ExecutionBuildPlanMetadata {
         Self {
             quote_source: Some("not_available".to_string()),
             quote_event_id: None,
+            quote_request_ts: None,
             quote_status: None,
             quote_in_amount_raw: None,
             quote_out_amount_raw: None,
@@ -344,6 +353,7 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
             let mut pumpswap_direct_tried = false;
             let mut pump_fun_direct_error = None;
             let mut pumpswap_direct_error = None;
+            let mut generic_fallback_plan = None;
             if direct_pumpswap_first {
                 pumpswap_direct_tried = true;
                 match pumpswap_direct_simulation_result(&self.http, &self.config, plan).await {
@@ -355,6 +365,32 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
             if direct_pump_fun {
                 match pump_fun_simulation_result(&self.http, &self.config, plan).await {
                     Ok(result) => return Ok(result),
+                    Err(error)
+                        if plan.metadata.quote_source.as_deref()
+                            == Some(QUOTE_SOURCE_PUMP_FUN_PAID)
+                            && should_try_pump_fun_paid_sell_migration_fallback(plan, &error) =>
+                    {
+                        pump_fun_direct_error = Some(error);
+                        let fallback = refresh_pump_fun_paid_sell_to_generic_pumpswap_plan(
+                            &self.http,
+                            &self.config,
+                            plan,
+                        )
+                        .await?;
+                        match pumpswap_direct_simulation_result(&self.http, &self.config, &fallback)
+                            .await
+                        {
+                            Ok(Some(result)) => {
+                                return Ok(result_with_soft_pump_fun_error(
+                                    result,
+                                    pump_fun_direct_error.as_ref(),
+                                ));
+                            }
+                            Ok(None) => {}
+                            Err(error) => pumpswap_direct_error = Some(error),
+                        }
+                        generic_fallback_plan = Some(fallback);
+                    }
                     Err(error)
                         if plan.metadata.quote_source.as_deref()
                             == Some(QUOTE_SOURCE_PUMP_FUN_PAID) =>
@@ -371,8 +407,10 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                     }
                 }
             }
+            let generic_plan = generic_fallback_plan.as_ref().unwrap_or(plan);
             let instructions_proof =
-                match fetch_swap_instructions_dry_run(&self.http, &self.config, plan).await {
+                match fetch_swap_instructions_dry_run(&self.http, &self.config, generic_plan).await
+                {
                     Ok(proof) => proof,
                     Err(error) => {
                         let Some(proof) = soft_swap_instructions_failure_proof(&error) else {
@@ -384,7 +422,7 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
             let transaction_dry_run = match fetch_swap_transaction_dry_run(
                 &self.http,
                 &self.config,
-                plan,
+                generic_plan,
             )
             .await
             {
@@ -394,22 +432,22 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                         if let Some(pump_fun_error) = pump_fun_direct_error {
                             return Err(anyhow!(
                                 "pump.fun direct swap failed: {}; PumpSwap direct build failed: {}; generic Metis swap failed: {}",
-                                truncate_for_log(&format_error_chain(&pump_fun_error), 140),
-                                truncate_for_log(&format_error_chain(&pumpswap_error), 140),
-                                truncate_for_log(&error.to_string(), 240)
+                                execution_error_for_plan(plan, &pump_fun_error, 140),
+                                execution_error_for_plan(generic_plan, &pumpswap_error, 140),
+                                execution_error_text_for_plan(generic_plan, &error.to_string(), 240)
                             ));
                         }
                         return Err(anyhow!(
                             "PumpSwap direct build failed: {}; generic Metis swap failed: {}",
-                            truncate_for_log(&format_error_chain(&pumpswap_error), 180),
-                            truncate_for_log(&error.to_string(), 240)
+                            execution_error_for_plan(generic_plan, &pumpswap_error, 180),
+                            execution_error_text_for_plan(generic_plan, &error.to_string(), 240)
                         ));
                     }
                     if let Some(pump_fun_error) = pump_fun_direct_error {
                         return Err(anyhow!(
                             "pump.fun direct swap failed: {}; generic Metis swap failed: {}",
-                            truncate_for_log(&format_error_chain(&pump_fun_error), 180),
-                            truncate_for_log(&error.to_string(), 240)
+                            execution_error_for_plan(plan, &pump_fun_error, 180),
+                            execution_error_text_for_plan(generic_plan, &error.to_string(), 240)
                         ));
                     }
                     return Err(error);
@@ -431,7 +469,7 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 proof = combined_simulation_proof(
                     Some(format!(
                         "pump_fun_direct_swap_soft_failed error={}",
-                        truncate_for_log(&format_error_chain(&error), 180)
+                        execution_error_for_plan(plan, &error, 180)
                     )),
                     proof,
                 );
@@ -440,7 +478,7 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 proof = combined_simulation_proof(
                     Some(format!(
                         "pumpswap_direct_build_soft_failed error={}",
-                        truncate_for_log(&format_error_chain(&error), 180)
+                        execution_error_for_plan(generic_plan, &error, 180)
                     )),
                     proof,
                 );
@@ -502,52 +540,6 @@ fn should_try_pumpswap_direct_before_pump_fun(plan: &ExecutionTransactionPlan) -
         && route_plan_has_pump_fun_amm(plan.metadata.route_plan_json.as_deref())
 }
 
-async fn pump_fun_simulation_result(
-    http: &reqwest::Client,
-    config: &ExecutionConfig,
-    plan: &ExecutionTransactionPlan,
-) -> Result<ExecutionSimulationResult> {
-    let instructions_proof =
-        match fetch_pump_fun_swap_instructions_dry_run(http, config, plan).await {
-            Ok(proof) => proof,
-            Err(error) => Some(soft_pump_fun_swap_instructions_failure_proof(&error)),
-        };
-    let transaction_dry_run = fetch_pump_fun_swap_transaction_dry_run(http, config, plan).await?;
-    if let Some(transaction) = transaction_dry_run.as_ref() {
-        if let Some(slot) = plan.serialized_transaction_payload_slot.as_ref() {
-            slot.store(ExecutionSerializedTransactionPayload {
-                source: transaction.source.clone(),
-                serialized_transaction_base64: transaction.serialized_transaction_base64.clone(),
-            })?;
-        }
-    }
-    let transaction_proof = transaction_dry_run.map(|transaction| transaction.summary);
-    Ok(ExecutionSimulationResult {
-        status: EXECUTION_SIMULATION_STATUS_PASSED.to_string(),
-        error: combined_simulation_proof(instructions_proof, transaction_proof),
-    })
-}
-
-async fn pumpswap_direct_simulation_result(
-    http: &reqwest::Client,
-    config: &ExecutionConfig,
-    plan: &ExecutionTransactionPlan,
-) -> Result<Option<ExecutionSimulationResult>> {
-    let transaction = fetch_pumpswap_direct_transaction_dry_run(http, config, plan).await?;
-    if let Some(transaction) = transaction.as_ref() {
-        if let Some(slot) = plan.serialized_transaction_payload_slot.as_ref() {
-            slot.store(ExecutionSerializedTransactionPayload {
-                source: transaction.source.clone(),
-                serialized_transaction_base64: transaction.serialized_transaction_base64.clone(),
-            })?;
-        }
-    }
-    Ok(transaction.map(|transaction| ExecutionSimulationResult {
-        status: EXECUTION_SIMULATION_STATUS_PASSED.to_string(),
-        error: Some(transaction.summary),
-    }))
-}
-
 fn soft_swap_instructions_failure_proof(error: &anyhow::Error) -> Option<String> {
     let message = error.to_string();
     if is_missing_account_error_text(&message) {
@@ -563,11 +555,4 @@ fn soft_swap_instructions_failure_proof(error: &anyhow::Error) -> Option<String>
         ));
     }
     None
-}
-
-fn soft_pump_fun_swap_instructions_failure_proof(error: &anyhow::Error) -> String {
-    format!(
-        "pump_fun_swap_instructions_soft_failed error={}",
-        truncate_for_log(&error.to_string(), 180)
-    )
 }

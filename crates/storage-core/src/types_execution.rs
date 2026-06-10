@@ -149,6 +149,7 @@ pub struct ExecutionCanaryBuildPlanMetadata {
     pub recorded_ts: DateTime<Utc>,
     pub quote_source: Option<String>,
     pub quote_event_id: Option<String>,
+    pub quote_request_ts: Option<DateTime<Utc>>,
     pub quote_status: Option<String>,
     pub quote_in_amount_raw: Option<String>,
     pub quote_out_amount_raw: Option<String>,

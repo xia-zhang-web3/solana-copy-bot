@@ -456,6 +456,7 @@ fn generic_pump_fun_submit_request(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
             ),
             quote_event_id: Some("quote:entry:generic-pump-fun".to_string()),
+            quote_request_ts: None,
             quote_status: Some("ok".to_string()),
             quote_in_amount_raw: Some("10000000".to_string()),
             quote_out_amount_raw: Some("123456".to_string()),

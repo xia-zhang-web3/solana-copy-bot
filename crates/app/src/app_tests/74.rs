@@ -78,6 +78,7 @@ fn partial_sell_request(
         wallet_pubkey: "ExecutorPubkey".to_string(),
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_event_id: Some("quote:partial-sell".to_string()),
+            quote_request_ts: None,
             quote_status: Some("ok".to_string()),
             quote_in_amount_raw: Some("4000".to_string()),
             quote_out_amount_raw: Some("480000000".to_string()),

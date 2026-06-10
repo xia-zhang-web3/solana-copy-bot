@@ -112,6 +112,7 @@ fn metadata_for_order(
         recorded_ts,
         quote_source: Some("test".to_string()),
         quote_event_id: Some("quote:old".to_string()),
+        quote_request_ts: None,
         quote_status: Some("ok".to_string()),
         quote_in_amount_raw: Some("200000".to_string()),
         quote_out_amount_raw: Some("1000".to_string()),

@@ -1,3 +1,4 @@
+use crate::execution_build_plan_age::quote_age_ms_summary_field;
 use crate::execution_pumpswap_accounts::{
     associated_token_address, decode_global_config_account, decode_pool_account, format_pubkey,
     global_config_pda, parse_pubkey, wsol_mint,
@@ -55,12 +56,14 @@ pub(crate) async fn fetch_pumpswap_direct_transaction_dry_run(
         PUMPSWAP_DIRECT_SOURCE,
         timeout,
     )
-    .await?;
+    .await
+    .map_err(|error| anyhow!("{error}{}", quote_age_ms_summary_field(&plan.metadata)))?;
     let summary = format!(
-        "pumpswap_direct_{}_transaction_ok base64_len={} serialized_transaction_base64_ready=true latency_ms={} rpc_simulation=passed",
+        "pumpswap_direct_{}_transaction_ok base64_len={} serialized_transaction_base64_ready=true latency_ms={} rpc_simulation=passed{}",
         side,
         transaction.serialized_transaction_base64.len(),
-        started.elapsed().as_millis()
+        started.elapsed().as_millis(),
+        quote_age_ms_summary_field(&plan.metadata)
     );
     Ok(Some(SwapTransactionDryRunResult {
         summary: truncate_for_log(&summary, 500),

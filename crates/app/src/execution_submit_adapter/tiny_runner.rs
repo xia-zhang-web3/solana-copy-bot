@@ -202,6 +202,7 @@ fn build_plan_metadata_from_storage(
     super::ExecutionBuildPlanMetadata {
         quote_source: metadata.quote_source,
         quote_event_id: metadata.quote_event_id,
+        quote_request_ts: metadata.quote_request_ts,
         quote_status: metadata.quote_status,
         quote_in_amount_raw: metadata.quote_in_amount_raw,
         quote_out_amount_raw: metadata.quote_out_amount_raw,

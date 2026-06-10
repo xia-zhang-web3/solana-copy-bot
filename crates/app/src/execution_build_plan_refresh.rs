@@ -10,6 +10,7 @@ use crate::execution_quote_provider_selection::{
 };
 use crate::execution_submit_adapter::ExecutionBuildPlanMetadata;
 use anyhow::Result;
+use chrono::Utc;
 use copybot_config::ExecutionConfig;
 use copybot_core_types::CopySignalRow;
 use serde_json::{Map, Number, Value};
@@ -188,6 +189,7 @@ fn apply_fresh_quote(
     );
 
     metadata.quote_source = Some(quote_source.to_string());
+    metadata.quote_request_ts = Some(Utc::now());
     metadata.quote_status = Some(QUOTE_STATUS_OK.to_string());
     metadata.quote_in_amount_raw = Some(quote.in_amount);
     metadata.quote_out_amount_raw = Some(quote.out_amount);

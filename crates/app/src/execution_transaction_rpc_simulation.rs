@@ -1,3 +1,4 @@
+use crate::execution_pumpswap_error::annotate_pumpswap_custom_errors;
 use crate::execution_quote_canary_helpers::truncate_for_log;
 use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
@@ -68,10 +69,15 @@ pub(crate) async fn verify_serialized_transaction_rpc_simulation(
             .and_then(|item| item.get("logs"))
             .map(|logs| truncate_for_log(&logs.to_string(), 260))
             .unwrap_or_else(|| "[]".to_string());
+        let error_text = if source == "pumpswap_direct" {
+            annotate_pumpswap_custom_errors(&error.to_string())
+        } else {
+            error.to_string()
+        };
         return Err(anyhow!(
             "swap transaction RPC simulation failed source={} err={} logs={}",
             source,
-            truncate_for_log(&error.to_string(), 180),
+            truncate_for_log(&error_text, 220),
             logs
         ));
     }

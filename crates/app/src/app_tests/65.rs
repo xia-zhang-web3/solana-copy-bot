@@ -350,6 +350,7 @@ fn record_tiny_timeout_build_metadata(
             recorded_ts: now,
             quote_source: Some("test".to_string()),
             quote_event_id: Some(format!("quote:entry:{}", signal.signal_id)),
+            quote_request_ts: None,
             quote_status: Some("ok".to_string()),
             quote_in_amount_raw: Some("10000000".to_string()),
             quote_out_amount_raw: Some("10000".to_string()),

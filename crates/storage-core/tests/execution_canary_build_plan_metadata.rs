@@ -91,6 +91,10 @@ fn execution_canary_build_plan_metadata_records_and_reports_latest() -> Result<(
     );
     assert_eq!(loaded.order_id, new.order.order_id);
     assert_eq!(loaded.quote_event_id.as_deref(), Some("quote:buy-new"));
+    assert_eq!(
+        loaded.quote_request_ts,
+        Some(now + Duration::milliseconds(750))
+    );
     assert_eq!(loaded.quote_in_amount_raw.as_deref(), Some("10000000"));
     assert_eq!(loaded.quote_out_amount_raw.as_deref(), Some("654321"));
     assert_eq!(
@@ -206,6 +210,7 @@ fn metadata_for_order(
         recorded_ts,
         quote_source: Some("execution_quote_canary_event".to_string()),
         quote_event_id: Some(format!("quote:{signal_id}")),
+        quote_request_ts: Some(recorded_ts - Duration::milliseconds(250)),
         quote_status: Some("ok".to_string()),
         quote_in_amount_raw: Some("10000000".to_string()),
         quote_out_amount_raw: Some("123456".to_string()),

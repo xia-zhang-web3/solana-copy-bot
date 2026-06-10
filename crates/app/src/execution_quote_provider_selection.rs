@@ -130,6 +130,7 @@ pub(crate) fn metadata_from_quote_event(
             .or(Some(QUOTE_SOURCE_EVENT))
             .map(ToString::to_string),
         quote_event_id: Some(event.event_id),
+        quote_request_ts: Some(event.request_ts),
         quote_status: Some(event.quote_status),
         quote_in_amount_raw: event.quote_in_amount_raw,
         quote_out_amount_raw: event.quote_out_amount_raw,

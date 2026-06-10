@@ -189,6 +189,120 @@ async fn migrated_pumpswap_sell_uses_direct_builder_before_generic_swap() -> Res
 }
 
 #[tokio::test]
+async fn pump_fun_paid_sell_bonding_curve_miss_falls_back_to_pumpswap_direct() -> Result<()> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let token = "FNVhryGP7Epjbr9iWLv75ABCYzY3au4icYHNdExn9jZ3";
+    let pool = "FhmcZfBdmvaYdphQ4qcd8qjs6wUv1Viic4UkiWqiZxxd";
+    let server = tokio::spawn(async move {
+        let pump_instructions = read_http_request(&listener).await;
+        assert!(pump_instructions.starts_with("POST /pump-fun/swap-instructions "));
+        assert!(pump_instructions.contains("\"type\":\"SELL\""));
+        assert!(pump_instructions.contains(token));
+        assert!(pump_instructions.contains("\"inAmount\":\"123456\""));
+        write_http_json(
+            pump_instructions.into_socket,
+            r#"{"instructions":[{"keys":[],"programId":"ComputeBudget111111111111111111111111111111","data":[2]}]}"#,
+        )
+        .await;
+
+        let pump_swap = read_http_request(&listener).await;
+        assert!(pump_swap.starts_with("POST /pump-fun/swap "));
+        write_http_status(
+            pump_swap.into_socket,
+            400,
+            r#"{"status":"error","message":"Bonding curve account not found: migrated"}"#,
+        )
+        .await;
+
+        let quote = read_http_request(&listener).await;
+        assert!(quote.starts_with("GET /quote?"));
+        assert!(quote.contains(token));
+        write_http_json(quote.into_socket, &generic_sell_quote_json(token, pool)).await;
+
+        let pool_accounts = read_http_request(&listener).await;
+        assert!(pool_accounts.contains("\"method\":\"getMultipleAccounts\""));
+        assert!(pool_accounts.contains(pool));
+        write_http_json(
+            pool_accounts.into_socket,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":"execution-pumpswap-direct-get-multiple-accounts","result":{{"value":[{},{}]}}}}"#,
+                rpc_account_json(
+                    &pumpswap_global_config_data(),
+                    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+                ),
+                rpc_account_json(
+                    &pumpswap_pool_data(token),
+                    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+                )
+            ),
+        )
+        .await;
+
+        let mint_accounts = read_http_request(&listener).await;
+        assert!(mint_accounts.contains("\"method\":\"getMultipleAccounts\""));
+        write_http_json(
+            mint_accounts.into_socket,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":"execution-pumpswap-direct-get-multiple-accounts","result":{{"value":[{},{}]}}}}"#,
+                rpc_account_json(&[], "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+                rpc_account_json(&[], "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+            ),
+        )
+        .await;
+
+        let blockhash = read_http_request(&listener).await;
+        assert!(blockhash.contains("getLatestBlockhash"));
+        write_http_json(
+            blockhash.into_socket,
+            r#"{"jsonrpc":"2.0","id":"execution-pumpswap-direct-latest-blockhash","result":{"value":{"blockhash":"11111111111111111111111111111111","lastValidBlockHeight":1}}}"#,
+        )
+        .await;
+
+        let simulation = read_http_request(&listener).await;
+        assert!(simulation.contains("\"method\":\"simulateTransaction\""));
+        write_http_json(
+            simulation.into_socket,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":null,"logs":[]}}}"#,
+        )
+        .await;
+    });
+    let mut config = pump_fun_direct_config(&base_url);
+    config.canary_tiny_submit_enabled = true;
+    config.submit_adapter_http_url = base_url.clone();
+    config.quote_canary_pump_fun_parallel_enabled = true;
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let request = pump_fun_paid_migrated_pumpswap_sell_request(&config, token);
+    let plan = adapter.build_transaction_plan(&request)?;
+
+    let result = adapter.simulate_transaction_plan(&plan).await?;
+    server.await?;
+    let payload = plan
+        .serialized_transaction_payload_slot
+        .as_ref()
+        .expect("serialized payload slot")
+        .load()?
+        .expect("serialized payload");
+    let proof = result.error.as_deref().unwrap_or_default();
+
+    assert!(proof.contains("pump_fun_direct_swap_soft_failed"));
+    assert!(proof.contains("pumpswap_direct_sell_transaction_ok"));
+    assert!(proof.contains("quote_age_ms_at_build="));
+    assert_eq!(payload.source, "pumpswap_direct");
+    Ok(())
+}
+
+#[test]
+fn pumpswap_custom_errors_are_named_in_diagnostics() {
+    let text = r#"err={"InstructionError":[6,{"Custom":6004}]} fallback={"Custom":6001}"#;
+    let annotated = crate::execution_pumpswap_error::annotate_pumpswap_custom_errors(text);
+
+    assert!(annotated.contains("6004:ExceededSlippage"));
+    assert!(annotated.contains("6001:ZeroBaseAmount"));
+}
+
+#[tokio::test]
 async fn migrated_pumpswap_direct_failure_is_kept_when_generic_build_fails() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base_url = format!("http://{}", listener.local_addr()?);
@@ -405,6 +519,7 @@ fn generic_migrated_pumpswap_request(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
             ),
             quote_event_id: Some("quote:entry:migrated-pumpswap".to_string()),
+            quote_request_ts: None,
             quote_status: Some("ok".to_string()),
             quote_in_amount_raw: Some("10000000".to_string()),
             quote_out_amount_raw: Some("123456".to_string()),
@@ -448,6 +563,7 @@ fn generic_migrated_pumpswap_sell_request(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
             ),
             quote_event_id: Some("quote:exit:migrated-pumpswap".to_string()),
+            quote_request_ts: None,
             quote_status: Some("ok".to_string()),
             quote_in_amount_raw: Some("123456".to_string()),
             quote_out_amount_raw: Some("10000".to_string()),
@@ -466,6 +582,54 @@ fn generic_migrated_pumpswap_sell_request(
             decision_reason: Some("within_slippage_limit".to_string()),
         },
     }
+}
+
+fn pump_fun_paid_migrated_pumpswap_sell_request(
+    config: &ExecutionConfig,
+    token: &str,
+) -> crate::execution_submit_adapter::ExecutionSubmitRequest {
+    crate::execution_submit_adapter::ExecutionSubmitRequest {
+        order_id: "order-pump-fun-paid-migrated-pumpswap-sell".to_string(),
+        signal_id: "signal-pump-fun-paid-migrated-pumpswap-sell".to_string(),
+        client_order_id: "client-pump-fun-paid-migrated-pumpswap-sell".to_string(),
+        attempt: 1,
+        route: config.canary_route.clone(),
+        wallet_id: "leader-wallet".to_string(),
+        token: token.to_string(),
+        side: "sell".to_string(),
+        buy_size_sol: 0.01,
+        slippage_tolerance_bps: 500,
+        wallet_pubkey: config.canary_wallet_pubkey.clone(),
+        metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            quote_source: Some(
+                crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID.to_string(),
+            ),
+            quote_event_id: Some("quote:exit:pump-fun-paid-migrated".to_string()),
+            quote_request_ts: None,
+            quote_status: Some("ok".to_string()),
+            quote_in_amount_raw: Some("123456".to_string()),
+            quote_out_amount_raw: Some("10000".to_string()),
+            quote_response_json: Some(format!(
+                r#"{{"quote":{{"mint":"{token}","type":"SELL","inAmount":"123456","inTokenAddress":"{token}","outAmount":"10000","outTokenAddress":"So11111111111111111111111111111111111111112","meta":{{"isCompleted":false,"inDecimals":6,"outDecimals":9}}}}}}"#
+            )),
+            quote_price_sol: Some(0.081),
+            price_impact_pct: Some(0.01),
+            route_plan_json: Some(r#"[{"swapInfo":{"label":"Pump.fun Paid"}}]"#.to_string()),
+            priority_fee_source: Some("test".to_string()),
+            priority_fee_status: Some("ok".to_string()),
+            priority_fee_lamports: Some(22_000),
+            priority_fee_json: Some(r#"{"recommended":22000}"#.to_string()),
+            slippage_bps: Some(125.0),
+            decision_status: Some("would_execute".to_string()),
+            decision_reason: Some("within_slippage_limit".to_string()),
+        },
+    }
+}
+
+fn generic_sell_quote_json(token: &str, pool: &str) -> String {
+    format!(
+        r#"{{"inputMint":"{token}","inAmount":"123456","outputMint":"So11111111111111111111111111111111111111112","outAmount":"10000","otherAmountThreshold":"9500","swapMode":"ExactIn","slippageBps":500,"priceImpactPct":"0.01","routePlan":[{{"swapInfo":{{"ammKey":"{pool}","label":"Pump.fun Amm"}}}}]}}"#
+    )
 }
 
 fn rpc_account_json(data: &[u8], owner: &str) -> String {
@@ -572,6 +736,7 @@ fn generic_pump_fun_amm_request(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
             ),
             quote_event_id: Some("quote:entry:generic-pump-fun-amm".to_string()),
+            quote_request_ts: None,
             quote_status: Some("ok".to_string()),
             quote_in_amount_raw: Some("10000000".to_string()),
             quote_out_amount_raw: Some("123456".to_string()),

@@ -63,11 +63,12 @@ impl SqliteDiscoveryStore {
                         priority_fee_json,
                         slippage_bps,
                         decision_status,
-                        decision_reason
+                        decision_reason,
+                        quote_request_ts
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
                         ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                        ?17, ?18, ?19, ?20
+                        ?17, ?18, ?19, ?20, ?21
                     )
                     ON CONFLICT(order_id) DO UPDATE SET
                         signal_id = excluded.signal_id,
@@ -88,7 +89,8 @@ impl SqliteDiscoveryStore {
                         priority_fee_json = excluded.priority_fee_json,
                         slippage_bps = excluded.slippage_bps,
                         decision_status = excluded.decision_status,
-                        decision_reason = excluded.decision_reason",
+                        decision_reason = excluded.decision_reason,
+                        quote_request_ts = excluded.quote_request_ts",
                 params![
                     &metadata.order_id,
                     &metadata.signal_id,
@@ -110,6 +112,7 @@ impl SqliteDiscoveryStore {
                     metadata.slippage_bps,
                     metadata.decision_status.as_deref(),
                     metadata.decision_reason.as_deref(),
+                    metadata.quote_request_ts.map(|ts| ts.to_rfc3339()),
                 ],
             )
         })
@@ -195,6 +198,12 @@ fn ensure_execution_canary_build_plan_metadata_table(store: &SqliteDiscoveryStor
         "decision_reason",
         "TEXT",
     )?;
+    ensure_column(
+        store,
+        "execution_canary_build_plan_metadata",
+        "quote_request_ts",
+        "TEXT",
+    )?;
     Ok(())
 }
 
@@ -205,11 +214,13 @@ fn build_plan_metadata_columns(store: &SqliteDiscoveryStore) -> Result<String> {
          {BUILD_PLAN_METADATA_SUFFIX_COLUMNS},
          {},
          {},
+         {},
          {}",
         optional_column_expr(store, "quote_response_json")?,
         optional_column_expr(store, "slippage_bps")?,
         optional_column_expr(store, "decision_status")?,
         optional_column_expr(store, "decision_reason")?,
+        optional_column_expr(store, "quote_request_ts")?,
     ))
 }
 
@@ -260,6 +271,8 @@ fn read_execution_canary_build_plan_metadata_row(
     row: &rusqlite::Row<'_>,
 ) -> Result<ExecutionCanaryBuildPlanMetadata> {
     let recorded_ts_raw: String = row.get(3).context("failed reading recorded_ts")?;
+    let quote_request_ts_raw: Option<String> =
+        row.get(20).context("failed reading quote_request_ts")?;
     let priority_fee_lamports = optional_i64_to_u64(
         "execution_canary_build_plan_metadata.priority_fee_lamports",
         row.get(15)
@@ -275,6 +288,12 @@ fn read_execution_canary_build_plan_metadata_row(
         )?,
         quote_source: row.get(4).context("failed reading quote_source")?,
         quote_event_id: row.get(5).context("failed reading quote_event_id")?,
+        quote_request_ts: quote_request_ts_raw
+            .as_deref()
+            .map(|raw| {
+                parse_rfc3339_utc(raw, "execution_canary_build_plan_metadata.quote_request_ts")
+            })
+            .transpose()?,
         quote_status: row.get(6).context("failed reading quote_status")?,
         quote_in_amount_raw: row.get(7).context("failed reading quote_in_amount_raw")?,
         quote_out_amount_raw: row.get(8).context("failed reading quote_out_amount_raw")?,
@@ -334,7 +353,8 @@ CREATE TABLE IF NOT EXISTS execution_canary_build_plan_metadata (
     priority_fee_json TEXT,
     slippage_bps REAL,
     decision_status TEXT,
-    decision_reason TEXT
+    decision_reason TEXT,
+    quote_request_ts TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_execution_canary_build_plan_signal
     ON execution_canary_build_plan_metadata(signal_id);
