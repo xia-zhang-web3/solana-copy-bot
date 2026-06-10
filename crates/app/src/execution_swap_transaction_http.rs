@@ -10,7 +10,7 @@ use crate::execution_swap_http_request::{
 use crate::execution_swap_http_retry::post_swap_json_with_retry;
 use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::time::Duration as StdDuration;
 
 pub(crate) async fn fetch_swap_transaction_dry_run(
@@ -77,15 +77,21 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
             )
             .await?;
             if !is_missing_account_simulation_error(&skip_retry.value) {
-                return Ok(Some(swap_transaction_response_summary(
-                    skip_retry.value,
-                    skip_retry.elapsed_ms,
-                    skip_retry.attempts,
-                    endpoint.source,
-                    true,
-                    true,
-                    true,
-                )?));
+                return Ok(Some(
+                    verified_swap_transaction_response_summary(
+                        http,
+                        config,
+                        skip_retry.value,
+                        skip_retry.elapsed_ms,
+                        skip_retry.attempts,
+                        endpoint.source,
+                        true,
+                        true,
+                        true,
+                        timeout,
+                    )
+                    .await?,
+                ));
             }
             let static_cu_retry = post_no_shared_skip_user_accounts_static_cu_json_with_retry(
                 http,
@@ -97,7 +103,26 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
             )
             .await?;
             if !is_missing_account_simulation_error(&static_cu_retry.value) {
-                return Ok(Some(swap_transaction_response_summary(
+                return Ok(Some(
+                    verified_swap_transaction_response_summary(
+                        http,
+                        config,
+                        static_cu_retry.value,
+                        static_cu_retry.elapsed_ms,
+                        static_cu_retry.attempts,
+                        endpoint.source,
+                        true,
+                        true,
+                        false,
+                        timeout,
+                    )
+                    .await?,
+                ));
+            }
+            return Ok(Some(
+                verified_swap_transaction_response_summary(
+                    http,
+                    config,
                     static_cu_retry.value,
                     static_cu_retry.elapsed_ms,
                     static_cu_retry.attempts,
@@ -105,42 +130,42 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
                     true,
                     true,
                     false,
-                )?));
-            }
-            return swap_transaction_response_summary(
-                static_cu_retry.value,
-                static_cu_retry.elapsed_ms,
-                static_cu_retry.attempts,
+                    timeout,
+                )
+                .await?,
+            ));
+        }
+        return Ok(Some(
+            verified_swap_transaction_response_summary(
+                http,
+                config,
+                retry.value,
+                retry.elapsed_ms,
+                retry.attempts,
                 endpoint.source,
                 true,
                 true,
-                false,
+                true,
+                timeout,
             )
-            .map(Some);
-        }
-        let result = swap_transaction_response_summary(
-            retry.value,
-            retry.elapsed_ms,
-            retry.attempts,
+            .await?,
+        ));
+    }
+    Ok(Some(
+        verified_swap_transaction_response_summary(
+            http,
+            config,
+            response.value,
+            response.elapsed_ms,
+            response.attempts,
             endpoint.source,
             true,
             true,
             true,
+            timeout,
         )
-        .map(Some);
-        return result;
-    }
-    let result = swap_transaction_response_summary(
-        response.value,
-        response.elapsed_ms,
-        response.attempts,
-        endpoint.source,
-        true,
-        true,
-        true,
-    )
-    .map(Some);
-    result
+        .await?,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +231,104 @@ fn swap_transaction_response_summary(
         serialized_transaction_base64: swap_transaction.to_string(),
         source: payload_source.to_string(),
     })
+}
+
+async fn verified_swap_transaction_response_summary(
+    http: &reqwest::Client,
+    config: &ExecutionConfig,
+    value: Value,
+    elapsed_ms: u64,
+    attempts: usize,
+    source: SwapBuilderSource,
+    shared_accounts_disabled: bool,
+    skip_user_accounts_rpc_calls: bool,
+    dynamic_compute_unit_limit: bool,
+    timeout: StdDuration,
+) -> Result<SwapTransactionDryRunResult> {
+    let result = swap_transaction_response_summary(
+        value,
+        elapsed_ms,
+        attempts,
+        source,
+        shared_accounts_disabled,
+        skip_user_accounts_rpc_calls,
+        dynamic_compute_unit_limit,
+    )?;
+    verify_rpc_simulation(http, config, result, timeout).await
+}
+
+async fn verify_rpc_simulation(
+    http: &reqwest::Client,
+    config: &ExecutionConfig,
+    mut result: SwapTransactionDryRunResult,
+    timeout: StdDuration,
+) -> Result<SwapTransactionDryRunResult> {
+    if !config.canary_tiny_submit_enabled {
+        return Ok(result);
+    }
+    let rpc_url = config.submit_adapter_http_url.trim();
+    if rpc_url.is_empty() {
+        return Ok(result);
+    }
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": "execution-swap-transaction-simulate",
+        "method": "simulateTransaction",
+        "params": [
+            result.serialized_transaction_base64,
+            {
+                "encoding": "base64",
+                "sigVerify": false,
+                "replaceRecentBlockhash": true,
+                "commitment": "confirmed",
+            }
+        ],
+    });
+    let response = http
+        .post(rpc_url)
+        .timeout(timeout)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|error| anyhow!("swap transaction RPC simulation request failed: {error}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| anyhow!("swap transaction RPC simulation body read failed: {error}"))?;
+    if !status.is_success() {
+        return Err(anyhow!(
+            "swap transaction RPC simulation returned HTTP {status}: {}",
+            truncate_for_log(&body, 240)
+        ));
+    }
+    let value: Value = serde_json::from_str(&body)
+        .map_err(|error| anyhow!("swap transaction RPC simulation JSON decode failed: {error}"))?;
+    if let Some(error) = value.get("error") {
+        return Err(anyhow!(
+            "swap transaction RPC simulation error source={}: {}",
+            result.source,
+            truncate_for_log(&error.to_string(), 240)
+        ));
+    }
+    let simulation = value.pointer("/result/value");
+    if let Some(error) = simulation
+        .and_then(|item| item.get("err"))
+        .filter(|item| !item.is_null())
+    {
+        let logs = simulation
+            .and_then(|item| item.get("logs"))
+            .map(|logs| truncate_for_log(&logs.to_string(), 260))
+            .unwrap_or_else(|| "[]".to_string());
+        return Err(anyhow!(
+            "swap transaction RPC simulation failed source={} err={} logs={}",
+            result.source,
+            truncate_for_log(&error.to_string(), 180),
+            logs
+        ));
+    }
+    result.summary = truncate_for_log(&format!("{} rpc_simulation=passed", result.summary), 500);
+    Ok(result)
 }
 
 fn payload_source(

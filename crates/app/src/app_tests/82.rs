@@ -155,6 +155,16 @@ async fn serve_buy_retry_build_submit_and_confirm(
         )
         .await;
 
+        let rpc_simulation = read_buy_retry_http_request(&listener).await;
+        assert!(rpc_simulation
+            .body
+            .contains("\"method\":\"simulateTransaction\""));
+        write_buy_retry_http_response(
+            rpc_simulation.socket,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":null,"logs":[]}}}"#,
+        )
+        .await;
+
         let submit = read_buy_retry_http_request(&listener).await;
         assert!(submit.body.contains("\"method\":\"sendTransaction\""));
         write_buy_retry_http_response(

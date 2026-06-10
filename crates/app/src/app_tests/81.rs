@@ -252,6 +252,61 @@ async fn pump_fun_amm_no_route_keeps_generic_no_route_failure() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn tiny_submit_enabled_rejects_swap_transaction_when_rpc_simulation_fails() -> Result<()> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (mut swap_socket, _) = listener.accept().await.expect("swap request");
+        let mut buffer = [0_u8; 4096];
+        let read = swap_socket
+            .read(&mut buffer)
+            .await
+            .expect("read swap request");
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        assert!(request.starts_with("POST /swap "));
+        assert_no_shared_builder_request(&request);
+        write_alternate_builder_json(&mut swap_socket, valid_alternate_transaction_json()).await;
+
+        let (mut rpc_socket, _) = listener.accept().await.expect("rpc simulation request");
+        let read = rpc_socket
+            .read(&mut buffer)
+            .await
+            .expect("read rpc request");
+        let request = String::from_utf8_lossy(&buffer[..read]);
+        assert!(request.starts_with("POST / "));
+        assert!(request.contains("\"method\":\"simulateTransaction\""));
+        assert!(request.contains("\"sigVerify\":false"));
+        assert!(request.contains("\"replaceRecentBlockhash\":true"));
+        write_alternate_builder_json(
+            &mut rpc_socket,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":{"InstructionError":[6,"MissingAccount"]},"logs":["Program JUP6 failed: An account required by the instruction is missing"]}}}"#,
+        )
+        .await;
+    });
+    let mut config = alternate_builder_config(base_url.clone());
+    config.canary_tiny_submit_enabled = true;
+    config.submit_adapter_http_url = base_url;
+    let plan = alternate_builder_plan(
+        &config,
+        crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS,
+    )?;
+
+    let error = crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run(
+        &reqwest::Client::new(),
+        &config,
+        &plan,
+    )
+    .await
+    .expect_err("RPC simulation failure should block submit payload");
+    server.await?;
+
+    let error = error.to_string();
+    assert!(error.contains("swap transaction RPC simulation failed"));
+    assert!(error.contains("MissingAccount"));
+    Ok(())
+}
+
 async fn write_alternate_builder_json(socket: &mut tokio::net::TcpStream, body: &str) {
     write_alternate_builder_status(socket, 200, body).await;
 }
