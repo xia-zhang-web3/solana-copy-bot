@@ -339,18 +339,19 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
             };
             validate_execution_swap_blueprint_for_simulation(blueprint)?;
             let direct_pump_fun = should_use_direct_pump_fun_builder(&self.config, plan);
+            let direct_pumpswap_first = should_try_pumpswap_direct_before_pump_fun(plan);
             let mut pumpswap_direct_tried = false;
             let mut pump_fun_direct_error = None;
             let mut pumpswap_direct_error = None;
-            if direct_pump_fun {
-                if should_try_pumpswap_direct_before_pump_fun(plan) {
-                    pumpswap_direct_tried = true;
-                    match pumpswap_direct_simulation_result(&self.http, &self.config, plan).await {
-                        Ok(Some(result)) => return Ok(result),
-                        Ok(None) => {}
-                        Err(error) => pumpswap_direct_error = Some(error),
-                    }
+            if direct_pumpswap_first {
+                pumpswap_direct_tried = true;
+                match pumpswap_direct_simulation_result(&self.http, &self.config, plan).await {
+                    Ok(Some(result)) => return Ok(result),
+                    Ok(None) => {}
+                    Err(error) => pumpswap_direct_error = Some(error),
                 }
+            }
+            if direct_pump_fun {
                 match pump_fun_simulation_result(&self.http, &self.config, plan).await {
                     Ok(result) => return Ok(result),
                     Err(error)

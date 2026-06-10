@@ -67,7 +67,7 @@ async fn migrated_pumpswap_uses_direct_builder_before_pump_fun_endpoints() -> Re
     let mut config = pump_fun_direct_config(&base_url);
     config.canary_tiny_submit_enabled = true;
     config.submit_adapter_http_url = base_url.clone();
-    config.quote_canary_pump_fun_parallel_enabled = true;
+    config.quote_canary_pump_fun_parallel_enabled = false;
     let adapter =
         crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let request = generic_migrated_pumpswap_request(&config, token, pool);

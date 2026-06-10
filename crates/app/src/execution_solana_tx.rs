@@ -64,10 +64,21 @@ fn compile_legacy_message(
     instructions: &[SolanaInstruction],
 ) -> Result<Vec<u8>> {
     let account_keys = compile_account_keys(payer, instructions)?;
+    let required_signers = account_keys.iter().filter(|entry| entry.is_signer).count();
+    let readonly_signed = account_keys
+        .iter()
+        .filter(|entry| entry.is_signer && !entry.is_writable)
+        .count();
     let readonly_unsigned = account_keys
         .iter()
         .filter(|entry| !entry.is_signer && !entry.is_writable)
         .count();
+    if required_signers == 0 || required_signers > u8::MAX as usize {
+        anyhow::bail!("legacy transaction has invalid signer count");
+    }
+    if readonly_signed > u8::MAX as usize {
+        anyhow::bail!("legacy transaction has too many readonly signed accounts");
+    }
     if readonly_unsigned > u8::MAX as usize {
         anyhow::bail!("legacy transaction has too many readonly unsigned accounts");
     }
@@ -77,8 +88,8 @@ fn compile_legacy_message(
         .map(|(index, entry)| (entry.pubkey, index))
         .collect::<BTreeMap<_, _>>();
     let mut message = Vec::new();
-    message.push(1);
-    message.push(0);
+    message.push(required_signers as u8);
+    message.push(readonly_signed as u8);
     message.push(readonly_unsigned as u8);
     encode_shortvec(account_keys.len(), &mut message)?;
     for entry in &account_keys {
