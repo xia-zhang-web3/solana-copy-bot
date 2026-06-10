@@ -5,6 +5,8 @@ use copybot_storage_core::{
 };
 use serde::Serialize;
 
+use crate::execution_canary_quote_pnl_error_class::simulation_error_class;
+
 const CONFIRMED: &str = "execution_canary_confirmed";
 const DECISION_WOULD_EXECUTE: &str = "would_execute";
 const DECISION_WOULD_FORCE_EXIT: &str = "would_force_exit";
@@ -37,8 +39,12 @@ pub struct TinyExecutionQualityReport {
     pub tiny_exit_missing_orders: u64,
     pub exit_confirmed_coverage_pct: f64,
     pub tiny_closed_positions: u64,
+    pub tiny_unique_closed_positions: u64,
+    pub tiny_closed_shadow_match_rows: u64,
+    pub tiny_duplicate_closed_position_matches: u64,
     pub tiny_open_positions: u64,
     pub tiny_position_close_coverage_pct: f64,
+    pub tiny_unique_position_close_coverage_pct: f64,
     pub shadow_pnl_sol: f64,
     pub quote_adjusted_pnl_after_priority_fee_sol: f64,
     pub tiny_realized_pnl_sol: f64,
@@ -147,9 +153,17 @@ pub fn build_tiny_execution_quality(
             proof_summary.canary_exit_would_execute_trades,
         ),
         tiny_closed_positions: proof_summary.tiny_closed_positions,
+        tiny_unique_closed_positions: proof_summary.tiny_unique_closed_positions,
+        tiny_closed_shadow_match_rows: proof_summary.tiny_closed_shadow_match_rows,
+        tiny_duplicate_closed_position_matches: proof_summary
+            .tiny_duplicate_closed_position_matches,
         tiny_open_positions: proof_summary.tiny_open_positions,
         tiny_position_close_coverage_pct: pct(
             proof_summary.tiny_closed_positions,
+            proof_summary.tiny_entry_confirmed_trades,
+        ),
+        tiny_unique_position_close_coverage_pct: pct(
+            proof_summary.tiny_unique_closed_positions,
             proof_summary.tiny_entry_confirmed_trades,
         ),
         shadow_pnl_sol: proof_summary.shadow_pnl_sol,
@@ -336,57 +350,6 @@ fn order_sample(order: &ExecutionTinyProofOrder) -> TinyExecutionQualityOrderSam
         priority_fee_lamports: order.priority_fee_lamports,
         submit_ts: order.submit_ts,
     }
-}
-
-fn simulation_error_class(value: Option<&str>) -> String {
-    let Some(raw) = value.map(str::trim).filter(|value| !value.is_empty()) else {
-        return "missing".to_string();
-    };
-    let lower = raw.to_ascii_lowercase();
-    if lower.contains("no_routes_found")
-        || lower.contains("no routes found")
-        || lower.contains("terminal_failed_sell_no_route")
-        || lower.contains("terminal_sell_no_route")
-    {
-        return "terminal_no_route".to_string();
-    }
-    if lower.contains("bonding curve for mint not found") {
-        return "pump_fun_bonding_curve_not_found".to_string();
-    }
-    if lower.contains("market not found")
-        || (lower.contains("market ") && lower.contains(" not found"))
-    {
-        return "market_not_found".to_string();
-    }
-    if let Some(hex) = custom_program_error_code(&lower) {
-        return format!("custom_program_error:{hex}");
-    }
-    if lower.contains("insufficient funds") {
-        return "insufficient_funds".to_string();
-    }
-    if lower.contains("account not found") || lower.contains("could not find account") {
-        return "account_not_found".to_string();
-    }
-    if lower.contains("blockhash") {
-        return "blockhash".to_string();
-    }
-    if lower.contains("slippage") {
-        return "slippage".to_string();
-    }
-    "other".to_string()
-}
-
-fn custom_program_error_code(lower: &str) -> Option<String> {
-    let marker = "custom program error:";
-    let (_, tail) = lower.split_once(marker)?;
-    let code = tail
-        .trim_start()
-        .split(|ch: char| ch.is_whitespace() || ch == ',' || ch == ';' || ch == '}')
-        .next()?
-        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '.' || ch == ':');
-    code.strip_prefix("0x")
-        .filter(|hex| !hex.is_empty() && hex.chars().all(|ch| ch.is_ascii_hexdigit()))
-        .map(|hex| format!("0x{hex}"))
 }
 
 fn pct(numerator: u64, denominator: u64) -> f64 {

@@ -1,5 +1,6 @@
 pub mod execution_canary_quote_pnl;
 pub(crate) mod execution_canary_quote_pnl_context;
+pub(crate) mod execution_canary_quote_pnl_error_class;
 pub(crate) mod execution_canary_quote_pnl_gate;
 pub(crate) mod execution_canary_quote_pnl_gate_runtime;
 pub(crate) mod execution_canary_quote_pnl_metis;

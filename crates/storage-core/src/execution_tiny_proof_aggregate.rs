@@ -1,10 +1,10 @@
 use crate::{
     execution_tiny_order_failures::order_failure_counts, execution_tiny_proof_rows::ProofRow,
     ExecutionTinyEntryFunnel, ExecutionTinyProofLatencyStats, ExecutionTinyProofLatencySummary,
-    ExecutionTinyProofOpenPosition, ExecutionTinyProofOrder, ExecutionTinyProofReasonCount,
-    ExecutionTinyProofReport, ExecutionTinyProofSummary, ExecutionTinyProofTrade,
-    EXECUTION_CANARY_POSITION_STATE_CLOSED, EXECUTION_CANARY_POSITION_STATE_OPEN,
-    EXECUTION_STATUS_CANARY_CONFIRMED,
+    ExecutionTinyProofOpenPosition, ExecutionTinyProofOrder, ExecutionTinyProofPositionMatch,
+    ExecutionTinyProofReasonCount, ExecutionTinyProofReport, ExecutionTinyProofSummary,
+    ExecutionTinyProofTrade, EXECUTION_CANARY_POSITION_STATE_CLOSED,
+    EXECUTION_CANARY_POSITION_STATE_OPEN, EXECUTION_STATUS_CANARY_CONFIRMED,
 };
 use chrono::{DateTime, Utc};
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,7 +24,7 @@ pub(crate) fn build_report(
     open_positions: Vec<ExecutionTinyProofOpenPosition>,
 ) -> ExecutionTinyProofReport {
     let mut acc = ProofAccumulator::default();
-    let trades = rows
+    let trades: Vec<_> = rows
         .into_iter()
         .map(|row| {
             let trade = classify_trade(row);
@@ -33,6 +33,7 @@ pub(crate) fn build_report(
         })
         .collect();
     let reason_counts = acc.reason_counts();
+    let position_matches = position_matches(&trades);
     let order_failure_counts = order_failure_counts(&recent_orders);
     let latency = acc.latency.finish();
     let mut summary = acc.summary;
@@ -48,6 +49,7 @@ pub(crate) fn build_report(
         reason_counts,
         order_failure_counts,
         trades,
+        position_matches,
         recent_orders,
         open_positions,
     }
@@ -96,9 +98,12 @@ impl ProofAccumulator {
         }
         if trade.tiny_position_state.as_deref() == Some(EXECUTION_CANARY_POSITION_STATE_CLOSED) {
             self.summary.tiny_closed_positions += 1;
+            self.summary.tiny_closed_shadow_match_rows += 1;
             if self.record_unique_closed_position(trade) {
                 self.summary.tiny_unique_closed_positions += 1;
                 self.summary.tiny_realized_pnl_sol += trade.tiny_realized_pnl_sol.unwrap_or(0.0);
+            } else {
+                self.summary.tiny_duplicate_closed_position_matches += 1;
             }
         }
         self.latency.record(trade);
@@ -124,6 +129,89 @@ impl ProofAccumulator {
                 trades: *trades,
             })
             .collect()
+    }
+}
+
+fn position_matches(trades: &[ExecutionTinyProofTrade]) -> Vec<ExecutionTinyProofPositionMatch> {
+    let mut by_position = BTreeMap::<String, PositionMatchAccumulator>::new();
+    for trade in trades {
+        let Some(position_id) = trade.tiny_position_id.as_ref() else {
+            continue;
+        };
+        by_position
+            .entry(position_id.clone())
+            .or_insert_with(|| PositionMatchAccumulator::from_trade(position_id, trade))
+            .record(trade);
+    }
+    by_position
+        .into_values()
+        .map(PositionMatchAccumulator::finish)
+        .collect()
+}
+
+struct PositionMatchAccumulator {
+    position_id: String,
+    token: String,
+    state: Option<String>,
+    opened_ts: Option<DateTime<Utc>>,
+    closed_ts: Option<DateTime<Utc>>,
+    cost_sol: Option<f64>,
+    tiny_realized_pnl_sol: Option<f64>,
+    shadow_closed_trade_ids: Vec<i64>,
+    shadow_pnl_sol: f64,
+    buy_order_ids: BTreeSet<String>,
+    sell_order_ids: BTreeSet<String>,
+}
+
+impl PositionMatchAccumulator {
+    fn from_trade(position_id: &str, trade: &ExecutionTinyProofTrade) -> Self {
+        Self {
+            position_id: position_id.to_string(),
+            token: trade.token.clone(),
+            state: trade.tiny_position_state.clone(),
+            opened_ts: trade.tiny_position_opened_ts,
+            closed_ts: trade.tiny_position_closed_ts,
+            cost_sol: trade.tiny_position_cost_sol,
+            tiny_realized_pnl_sol: trade.tiny_realized_pnl_sol,
+            shadow_closed_trade_ids: Vec::new(),
+            shadow_pnl_sol: 0.0,
+            buy_order_ids: BTreeSet::new(),
+            sell_order_ids: BTreeSet::new(),
+        }
+    }
+
+    fn record(&mut self, trade: &ExecutionTinyProofTrade) {
+        self.shadow_closed_trade_ids
+            .push(trade.shadow_closed_trade_id);
+        self.shadow_pnl_sol += trade.shadow_pnl_sol;
+        if let Some(order) = &trade.tiny_buy_order {
+            self.buy_order_ids.insert(order.order_id.clone());
+        }
+        if let Some(order) = &trade.tiny_sell_order {
+            self.sell_order_ids.insert(order.order_id.clone());
+        }
+    }
+
+    fn finish(self) -> ExecutionTinyProofPositionMatch {
+        let shadow_closed_trade_count = self.shadow_closed_trade_ids.len() as u64;
+        ExecutionTinyProofPositionMatch {
+            position_id: self.position_id,
+            token: self.token,
+            state: self.state,
+            opened_ts: self.opened_ts,
+            closed_ts: self.closed_ts,
+            cost_sol: self.cost_sol,
+            tiny_realized_pnl_sol: self.tiny_realized_pnl_sol,
+            shadow_closed_trade_count,
+            duplicate_shadow_match_count: shadow_closed_trade_count.saturating_sub(1),
+            shadow_closed_trade_ids: self.shadow_closed_trade_ids,
+            shadow_pnl_sol: self.shadow_pnl_sol,
+            tiny_vs_shadow_delta_sol: self
+                .tiny_realized_pnl_sol
+                .map(|tiny_pnl| tiny_pnl - self.shadow_pnl_sol),
+            buy_order_ids: self.buy_order_ids.into_iter().collect(),
+            sell_order_ids: self.sell_order_ids.into_iter().collect(),
+        }
     }
 }
 

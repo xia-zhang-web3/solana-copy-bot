@@ -179,6 +179,18 @@ fn quality_does_not_flag_missing_exit_when_position_is_already_closed() -> Resul
         opened_ts,
         closed_ts,
     )?;
+    store.insert_shadow_closed_trade_exact(
+        "sell-other-close",
+        "leader-wallet",
+        "TokenMarketNotFound",
+        100.0,
+        None,
+        0.10,
+        0.105,
+        0.005,
+        opened_ts,
+        closed_ts + Duration::seconds(5),
+    )?;
     let close_id = store
         .list_execution_quote_canary_close_candidates_for_signal("sell-merged-close", 10)?
         .into_iter()
@@ -232,11 +244,30 @@ fn quality_does_not_flag_missing_exit_when_position_is_already_closed() -> Resul
         .tiny_execution_proof
         .as_ref()
         .unwrap_or_else(|| panic!("proof report missing: {:?}", report.error));
-    let trade = proof.trades.first().expect("proof trade");
+    let trade = proof
+        .trades
+        .iter()
+        .find(|trade| trade.signal_id == "sell-merged-close")
+        .expect("matched proof trade");
 
     assert_eq!(trade.proof_status, "tiny_closed");
     assert_eq!(trade.proof_reason, "closed_without_matched_exit_order");
+    assert_eq!(proof.summary.tiny_closed_positions, 2);
     assert_eq!(proof.summary.tiny_unique_closed_positions, 1);
+    assert_eq!(proof.summary.tiny_closed_shadow_match_rows, 2);
+    assert_eq!(proof.summary.tiny_duplicate_closed_position_matches, 1);
+    assert_eq!(quality.tiny_closed_positions, 2);
+    assert_eq!(quality.tiny_unique_closed_positions, 1);
+    assert_eq!(quality.tiny_closed_shadow_match_rows, 2);
+    assert_eq!(quality.tiny_duplicate_closed_position_matches, 1);
+    assert_eq!(quality.tiny_position_close_coverage_pct, 100.0);
+    assert_eq!(quality.tiny_unique_position_close_coverage_pct, 50.0);
+    assert_eq!(proof.position_matches.len(), 1);
+    let position_match = proof.position_matches.first().expect("position match");
+    assert_eq!(position_match.shadow_closed_trade_count, 2);
+    assert_eq!(position_match.duplicate_shadow_match_count, 1);
+    assert_eq!(position_match.buy_order_ids.len(), 1);
+    assert_eq!(position_match.sell_order_ids.len(), 0);
     assert_eq!(quality.tiny_exit_missing_orders, 0);
     assert!(!quality.top_flow_blockers.iter().any(|blocker| {
         blocker.stage == "exit_order"

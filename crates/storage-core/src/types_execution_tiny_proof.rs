@@ -12,6 +12,7 @@ pub struct ExecutionTinyProofReport {
     pub reason_counts: Vec<ExecutionTinyProofReasonCount>,
     pub order_failure_counts: Vec<ExecutionTinyOrderFailureCount>,
     pub trades: Vec<ExecutionTinyProofTrade>,
+    pub position_matches: Vec<ExecutionTinyProofPositionMatch>,
     pub recent_orders: Vec<ExecutionTinyProofOrder>,
     pub open_positions: Vec<ExecutionTinyProofOpenPosition>,
 }
@@ -27,6 +28,8 @@ pub struct ExecutionTinyProofSummary {
     pub tiny_exit_confirmed_trades: u64,
     pub tiny_closed_positions: u64,
     pub tiny_unique_closed_positions: u64,
+    pub tiny_closed_shadow_match_rows: u64,
+    pub tiny_duplicate_closed_position_matches: u64,
     pub tiny_open_positions: u64,
     pub shadow_pnl_sol: f64,
     pub tiny_realized_pnl_sol: f64,
@@ -157,6 +160,24 @@ pub struct ExecutionTinyProofTrade {
     pub exit_priority_fee_lamports: Option<u64>,
     pub tiny_buy_order: Option<ExecutionTinyProofOrder>,
     pub tiny_sell_order: Option<ExecutionTinyProofOrder>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ExecutionTinyProofPositionMatch {
+    pub position_id: String,
+    pub token: String,
+    pub state: Option<String>,
+    pub opened_ts: Option<DateTime<Utc>>,
+    pub closed_ts: Option<DateTime<Utc>>,
+    pub cost_sol: Option<f64>,
+    pub tiny_realized_pnl_sol: Option<f64>,
+    pub shadow_closed_trade_count: u64,
+    pub duplicate_shadow_match_count: u64,
+    pub shadow_closed_trade_ids: Vec<i64>,
+    pub shadow_pnl_sol: f64,
+    pub tiny_vs_shadow_delta_sol: Option<f64>,
+    pub buy_order_ids: Vec<String>,
+    pub sell_order_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

@@ -51,8 +51,9 @@ pub use types_execution_tiny_proof::{
     ExecutionTinyEntryFunnel, ExecutionTinyEntryFunnelBucket,
     ExecutionTinyEntryFunnelDropReasonCount, ExecutionTinyOrderFailureCount,
     ExecutionTinyProofLatencyStats, ExecutionTinyProofLatencySummary,
-    ExecutionTinyProofOpenPosition, ExecutionTinyProofOrder, ExecutionTinyProofReasonCount,
-    ExecutionTinyProofReport, ExecutionTinyProofSummary, ExecutionTinyProofTrade,
+    ExecutionTinyProofOpenPosition, ExecutionTinyProofOrder, ExecutionTinyProofPositionMatch,
+    ExecutionTinyProofReasonCount, ExecutionTinyProofReport, ExecutionTinyProofSummary,
+    ExecutionTinyProofTrade,
 };
 pub use types_history_retention::{
     ExecutionHistoryRetentionSummary, HistoryRetentionCutoffs, HistoryRetentionSummary,
