@@ -17,6 +17,7 @@ use copybot_core_types::{Lamports, SignedLamports, TokenQuantity};
 use rusqlite::{params, Connection, OptionalExtension};
 
 const EXECUTION_CANARY_POSITION_CLOSE_EPS: f64 = 1e-12;
+const EXECUTION_CANARY_POSITION_RAW_DUST_UNITS: u64 = 1;
 
 impl SqliteDiscoveryStore {
     pub fn close_execution_canary_open_position(
@@ -195,7 +196,8 @@ fn plan_position_close(
     let capped_qty = target_qty.min(position.qty);
     let projected_remaining = (position.qty - capped_qty).max(0.0);
     let dust_limit = dust_qty_epsilon.max(EXECUTION_CANARY_POSITION_CLOSE_EPS);
-    let dust_close = projected_remaining > 0.0 && projected_remaining <= dust_limit;
+    let dust_close = (projected_remaining > 0.0 && projected_remaining <= dust_limit)
+        || exact_raw_dust_remaining(position.qty_exact, target_qty_exact);
     let closing = projected_remaining <= EXECUTION_CANARY_POSITION_CLOSE_EPS || dust_close;
     let closed_qty = if closing { position.qty } else { capped_qty };
     let remaining_qty = if closing {
@@ -237,7 +239,7 @@ fn plan_position_close(
     let pnl_lamports = SignedLamports::new(
         i128::from(exit_value_lamports.as_u64()) - i128::from(entry_cost_lamports.as_u64()),
     );
-    let close_status = if dust_close {
+    let close_status = if dust_close || exact_raw_position_dust(position.qty_exact) {
         EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED
     } else if closing {
         EXECUTION_CANARY_POSITION_CLOSE_CLOSED
@@ -258,6 +260,24 @@ fn plan_position_close(
         entry_cost_lamports,
         exit_value_lamports,
         pnl_lamports,
+    })
+}
+
+fn exact_raw_dust_remaining(current: Option<TokenQuantity>, target: Option<TokenQuantity>) -> bool {
+    let (Some(current), Some(target)) = (current, target) else {
+        return false;
+    };
+    if current.decimals() != target.decimals() || current.decimals() == 0 {
+        return false;
+    }
+    let closed_raw = target.raw().min(current.raw());
+    let remaining_raw = current.raw().saturating_sub(closed_raw);
+    remaining_raw > 0 && remaining_raw <= EXECUTION_CANARY_POSITION_RAW_DUST_UNITS
+}
+
+fn exact_raw_position_dust(qty: Option<TokenQuantity>) -> bool {
+    qty.is_some_and(|qty| {
+        qty.decimals() > 0 && qty.raw() > 0 && qty.raw() <= EXECUTION_CANARY_POSITION_RAW_DUST_UNITS
     })
 }
 

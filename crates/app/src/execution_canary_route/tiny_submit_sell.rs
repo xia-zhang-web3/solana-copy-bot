@@ -25,6 +25,8 @@ use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
     ExecutionCanaryOrder, ExecutionCanaryRecordOutcome, SqliteStore,
+    EXECUTION_CANARY_POSITION_CLOSE_CLOSED, EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED,
+    EXECUTION_CANARY_POSITION_CLOSE_NO_POSITION, EXECUTION_CANARY_POSITION_CLOSE_PARTIAL,
     EXECUTION_CANARY_SELL_DECISION_EXECUTE, EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT,
     EXECUTION_CANARY_SELL_DECISION_NO_POSITION, EXECUTION_ERROR_BUILD_FAILED,
 };
@@ -175,6 +177,17 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
         Err(error) => {
             let error = format!("owned_sell_quote_failed: {error}");
             record_owned_sell_quote_failure(store, &order, now, &error, &mut summary)?;
+            if write_off_dust_no_route_position(
+                store,
+                &order,
+                &signal.token,
+                signal.ts,
+                now,
+                &mut summary,
+                &error,
+            )? {
+                return Ok(Some(summary));
+            }
             summary.skipped_reason = Some("owned_sell_quote_error");
             summary.last_error = Some(error);
             return Ok(Some(summary));
@@ -285,4 +298,80 @@ fn record_owned_sell_quote_failure(
     summary.failed = 1;
     summary.last_order_id = Some(order.order_id.clone());
     Ok(())
+}
+
+fn write_off_dust_no_route_position(
+    store: &SqliteStore,
+    order: &ExecutionCanaryOrder,
+    token: &str,
+    signal_ts: DateTime<Utc>,
+    now: DateTime<Utc>,
+    summary: &mut ExecutionCanaryStateMachineSummary,
+    error: &str,
+) -> Result<bool> {
+    if !error.contains("NO_ROUTES_FOUND") {
+        return Ok(false);
+    }
+    let Some(position) = store.load_execution_canary_open_position(token)? else {
+        return Ok(false);
+    };
+    if !is_exact_raw_dust_position(&position) {
+        return Ok(false);
+    }
+    if signal_ts < position.opened_ts {
+        return Ok(false);
+    }
+    if let Some(latest_buy_ts) = store.latest_live_execution_canary_buy_signal_ts(token)? {
+        if signal_ts < latest_buy_ts {
+            return Ok(false);
+        }
+    }
+
+    let terminal_order = store.mark_execution_canary_terminal_sell_no_route_blocked(
+        &order.order_id,
+        "terminal_failed_sell_no_route_written_off",
+    )?;
+    let close_result = store.close_execution_canary_open_position(
+        token,
+        position.qty,
+        position.qty_exact,
+        0.0,
+        1e-12,
+        now,
+    )?;
+    summary.last_close_status = Some(close_result.close_status.clone());
+    summary.last_closed_qty = close_result.closed_qty;
+    summary.last_pnl_sol = close_result.pnl_sol;
+    match close_result.close_status.as_str() {
+        EXECUTION_CANARY_POSITION_CLOSE_NO_POSITION => {
+            summary.sell_no_position = 1;
+            summary.skipped_reason = Some("no_owned_position");
+        }
+        EXECUTION_CANARY_POSITION_CLOSE_PARTIAL => {
+            summary.sell_closed = 1;
+            summary.sell_partial = 1;
+            summary.skipped_reason = Some("terminal_failed_sell_no_route_written_off");
+        }
+        EXECUTION_CANARY_POSITION_CLOSE_CLOSED => {
+            summary.sell_closed = 1;
+            summary.skipped_reason = Some("terminal_failed_sell_no_route_written_off");
+        }
+        EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED => {
+            summary.sell_closed = 1;
+            summary.sell_dust_closed = 1;
+            summary.skipped_reason = Some("terminal_failed_sell_no_route_written_off");
+        }
+        _ => summary.skipped_reason = Some("unsupported_terminal_write_off_close_status"),
+    }
+    summary.open_positions = store.execution_canary_open_position_count()?;
+    summary.last_error = terminal_order.simulation_error;
+    Ok(true)
+}
+
+fn is_exact_raw_dust_position(
+    position: &copybot_storage_core::ExecutionCanaryOwnedPosition,
+) -> bool {
+    position
+        .qty_exact
+        .is_some_and(|qty| qty.decimals() > 0 && qty.raw() == 1)
 }

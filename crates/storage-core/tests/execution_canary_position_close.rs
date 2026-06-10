@@ -123,6 +123,42 @@ fn execution_canary_position_close_dust_closes_remaining_tail() -> Result<()> {
 }
 
 #[test]
+fn execution_canary_position_close_raw_unit_tail_is_dust() -> Result<()> {
+    let store = open_migrated_store("execution-canary-close-raw-dust")?;
+    store.record_execution_canary_open_position(
+        "exec-canary:buy-raw-dust",
+        "RawDustMint",
+        10.000001,
+        Some(TokenQuantity::new(10_000_001, 6)),
+        1.0,
+        ts("2026-06-01T08:00:00Z"),
+    )?;
+
+    let result = store.close_execution_canary_open_position(
+        "RawDustMint",
+        10.0,
+        Some(TokenQuantity::new(10_000_000, 6)),
+        0.1,
+        1e-12,
+        ts("2026-06-01T09:00:00Z"),
+    )?;
+    let open_after = store.load_execution_canary_open_position("RawDustMint")?;
+
+    assert_eq!(
+        result.close_status,
+        EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED
+    );
+    assert_close(result.closed_qty, 10.000001);
+    assert_eq!(
+        result.closed_qty_exact,
+        Some(TokenQuantity::new(10_000_001, 6))
+    );
+    assert_close(result.remaining_qty, 0.0);
+    assert!(open_after.is_none());
+    Ok(())
+}
+
+#[test]
 fn execution_canary_position_close_reports_no_position() -> Result<()> {
     let store = open_migrated_store("execution-canary-close-none")?;
 
