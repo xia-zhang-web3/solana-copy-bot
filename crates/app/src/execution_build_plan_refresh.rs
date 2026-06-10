@@ -59,7 +59,7 @@ pub(crate) async fn refresh_tiny_buy_build_plan_metadata(
     }
 
     let (quote_source, base_url, api_key) = generic_refresh_source(config, &metadata);
-    let quote = match fetch_quote_sample_from_base_url(
+    match fetch_quote_sample_from_base_url(
         http,
         base_url,
         api_key,
@@ -71,16 +71,25 @@ pub(crate) async fn refresh_tiny_buy_build_plan_metadata(
     )
     .await
     {
-        Ok(quote) => quote,
-        Err(_) => return Ok(fresh_quote_error_metadata(metadata, quote_source)),
-    };
-
-    Ok(apply_fresh_quote(
-        metadata,
-        quote,
-        max_slippage_bps,
-        quote_source,
-    ))
+        Ok(quote) => Ok(apply_fresh_quote(
+            metadata,
+            quote,
+            max_slippage_bps,
+            quote_source,
+        )),
+        Err(_) => {
+            retry_fresh_pump_fun_quote_or_error(
+                http,
+                config,
+                signal,
+                metadata,
+                amount_raw,
+                max_slippage_bps,
+                quote_source,
+            )
+            .await
+        }
+    }
 }
 
 fn generic_refresh_source<'a>(
@@ -125,6 +134,55 @@ fn fresh_quote_error_metadata(
     metadata.decision_status = Some(DECISION_UNKNOWN.to_string());
     metadata.decision_reason = Some(FRESH_SUBMIT_QUOTE_ERROR.to_string());
     metadata
+}
+
+async fn retry_fresh_pump_fun_quote_or_error(
+    http: &reqwest::Client,
+    config: &ExecutionConfig,
+    signal: &CopySignalRow,
+    metadata: ExecutionBuildPlanMetadata,
+    amount_raw: String,
+    max_slippage_bps: u64,
+    quote_source: &str,
+) -> Result<ExecutionBuildPlanMetadata> {
+    if !should_retry_fresh_pump_fun_quote(config, &metadata) {
+        return Ok(fresh_quote_error_metadata(metadata, quote_source));
+    }
+    match fetch_pump_fun_quote_sample(http, config, SIDE_BUY, &signal.token, &amount_raw).await {
+        Ok(quote) if pump_fun_quote_is_completed(&quote.response_json) != Some(true) => {
+            Ok(apply_fresh_quote(
+                metadata,
+                quote,
+                max_slippage_bps,
+                QUOTE_SOURCE_PUMP_FUN_PAID,
+            ))
+        }
+        _ => Ok(fresh_quote_error_metadata(metadata, quote_source)),
+    }
+}
+
+fn should_retry_fresh_pump_fun_quote(
+    config: &ExecutionConfig,
+    metadata: &ExecutionBuildPlanMetadata,
+) -> bool {
+    config.quote_canary_pump_fun_parallel_enabled
+        && route_plan_has_pump_fun_amm(metadata.route_plan_json.as_deref())
+}
+
+fn route_plan_has_pump_fun_amm(route_plan_json: Option<&str>) -> bool {
+    let Some(raw) = route_plan_json.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return false;
+    };
+    value.as_array().is_some_and(|items| {
+        items.iter().any(|item| {
+            item.pointer("/swapInfo/label")
+                .and_then(Value::as_str)
+                .is_some_and(|label| label.eq_ignore_ascii_case("Pump.fun Amm"))
+        })
+    })
 }
 
 fn apply_fresh_quote(
