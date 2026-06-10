@@ -1,4 +1,5 @@
 use super::*;
+use crate::execution_submit_adapter::ExecutionSubmitAdapter;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
@@ -229,6 +230,66 @@ async fn pump_fun_swap_transaction_simulation_error_marks_order_failed() -> Resu
     Ok(())
 }
 
+#[tokio::test]
+async fn generic_pump_fun_amm_missing_token_program_uses_paid_pump_fun_transaction() -> Result<()> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let request = read_http_request(&listener).await;
+        assert!(request.starts_with("POST /swap-instructions "));
+        assert!(!request.contains("\"useSharedAccounts\":false"));
+        write_http_json(
+            request.into_socket,
+            r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":{"error":"Error processing Instruction 5: An account required by the instruction is missing"}}"#,
+        )
+        .await;
+
+        let request = read_http_request(&listener).await;
+        assert!(request.starts_with("POST /swap-instructions "));
+        assert!(request.contains("\"useSharedAccounts\":false"));
+        write_http_json(
+            request.into_socket,
+            r#"{"error":"Missing token program for TokenMint"}"#,
+        )
+        .await;
+
+        let request = read_http_request(&listener).await;
+        assert!(request.starts_with("POST /swap "));
+        write_http_json(
+            request.into_socket,
+            r#"{"error":"Missing token program for TokenMint"}"#,
+        )
+        .await;
+
+        assert_pump_fun_request(read_http_request(&listener).await, "/pump-fun/swap").await;
+    });
+    let mut config = pump_fun_swap_config(&base_url);
+    config.quote_canary_pump_fun_parallel_enabled = true;
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let request = generic_pump_fun_submit_request(&config);
+    let plan = adapter.build_transaction_plan(&request)?;
+
+    let result = adapter.simulate_transaction_plan(&plan).await?;
+    server.await?;
+
+    assert_eq!(
+        result.status,
+        copybot_storage_core::EXECUTION_SIMULATION_STATUS_PASSED
+    );
+    let proof = result.error.unwrap_or_default();
+    assert!(proof.contains("metis_swap_instructions_missing_token_program_soft_failed"));
+    assert!(proof.contains("pump_fun_swap_transaction_ok"));
+    let payload = plan
+        .serialized_transaction_payload_slot
+        .as_ref()
+        .expect("serialized payload slot")
+        .load()?
+        .expect("serialized payload");
+    assert_eq!(payload.source, "pump_fun_paid");
+    Ok(())
+}
+
 async fn assert_pump_fun_request(request: CapturedRequest, path: &str) {
     assert!(request.starts_with(&format!("POST {path} ")));
     assert!(request.contains("\"wallet\":\"11111111111111111111111111111111\""));
@@ -360,4 +421,42 @@ fn unique_pump_fun_swap_test_path(name: &str) -> PathBuf {
         "copybot-app-pump-fun-swap-{name}-{}-{nanos}.db",
         std::process::id()
     ))
+}
+
+fn generic_pump_fun_submit_request(
+    config: &ExecutionConfig,
+) -> crate::execution_submit_adapter::ExecutionSubmitRequest {
+    crate::execution_submit_adapter::ExecutionSubmitRequest {
+        order_id: "order-generic-pump-fun-missing-token-program".to_string(),
+        signal_id: "signal-generic-pump-fun-missing-token-program".to_string(),
+        client_order_id: "client-generic-pump-fun-missing-token-program".to_string(),
+        attempt: 1,
+        route: config.canary_route.clone(),
+        wallet_id: "leader-wallet".to_string(),
+        token: "TokenMint".to_string(),
+        side: "buy".to_string(),
+        buy_size_sol: 0.01,
+        slippage_tolerance_bps: 500,
+        wallet_pubkey: config.canary_wallet_pubkey.clone(),
+        metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            quote_source: Some(
+                crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
+            ),
+            quote_event_id: Some("quote:entry:generic-pump-fun".to_string()),
+            quote_status: Some("ok".to_string()),
+            quote_in_amount_raw: Some("10000000".to_string()),
+            quote_out_amount_raw: Some("123456".to_string()),
+            quote_response_json: None,
+            quote_price_sol: Some(0.081),
+            price_impact_pct: Some(0.01),
+            route_plan_json: Some(r#"[{"swapInfo":{"label":"Pump.fun Amm"}}]"#.to_string()),
+            priority_fee_source: Some("test".to_string()),
+            priority_fee_status: Some("ok".to_string()),
+            priority_fee_lamports: Some(22_000),
+            priority_fee_json: Some(r#"{"recommended":22000}"#.to_string()),
+            slippage_bps: Some(125.0),
+            decision_status: Some("would_execute".to_string()),
+            decision_reason: Some("within_slippage_limit".to_string()),
+        },
+    }
 }

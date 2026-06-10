@@ -160,14 +160,16 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
         .map(Some);
         return retry_on_pump_fun_amm_builder_error(result, http, config, plan).await;
     }
-    Ok(Some(swap_transaction_response_summary(
+    let result = swap_transaction_response_summary(
         response.value,
         response.elapsed_ms,
         response.attempts,
         endpoint.source,
         false,
         false,
-    )?))
+    )
+    .map(Some);
+    retry_on_pump_fun_amm_builder_error(result, http, config, plan).await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

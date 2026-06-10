@@ -47,6 +47,7 @@ fn should_retry_pump_fun_amm(
 fn retryable_pump_fun_amm_builder_error(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     is_missing_account_error_text(error)
+        || lower.contains("missing token program")
         || lower.contains("market_not_found")
         || (lower.contains("market") && lower.contains("not found"))
         || lower.contains("no_routes_found")

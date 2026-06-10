@@ -14,6 +14,7 @@ use crate::execution_swap_blueprint::{
     ExecutionSwapBlueprint,
 };
 use crate::execution_swap_http_request::is_missing_account_error_text;
+use crate::execution_swap_http_retry::is_missing_token_program_error;
 use crate::execution_swap_instructions_http::fetch_swap_instructions_dry_run;
 use crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run;
 use anyhow::Result;
@@ -429,13 +430,19 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
 
 fn soft_swap_instructions_failure_proof(error: &anyhow::Error) -> Option<String> {
     let message = error.to_string();
-    if !is_missing_account_error_text(&message) {
-        return None;
+    if is_missing_account_error_text(&message) {
+        return Some(format!(
+            "metis_swap_instructions_missing_account_soft_failed error={}",
+            truncate_for_log(&message, 180)
+        ));
     }
-    Some(format!(
-        "metis_swap_instructions_missing_account_soft_failed error={}",
-        truncate_for_log(&message, 180)
-    ))
+    if is_missing_token_program_error(error) {
+        return Some(format!(
+            "metis_swap_instructions_missing_token_program_soft_failed error={}",
+            truncate_for_log(&message, 180)
+        ));
+    }
+    None
 }
 
 fn soft_pump_fun_swap_instructions_failure_proof(error: &anyhow::Error) -> String {
