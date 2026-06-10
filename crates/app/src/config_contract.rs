@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
 
-const EXECUTION_CANARY_MAX_DAILY_LOSS_SOL_CAP: f64 = 2.00;
+const EXECUTION_CANARY_MAX_DAILY_LOSS_SOL_CAP: f64 = 5.00;
 
 pub(crate) fn contains_placeholder_value(value: &str) -> bool {
     value.to_ascii_uppercase().contains("REPLACE_ME")
