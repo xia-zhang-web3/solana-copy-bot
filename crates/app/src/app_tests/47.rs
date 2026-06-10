@@ -21,6 +21,7 @@ async fn swap_instructions_dry_run_posts_http_before_submit_disabled() -> Result
         assert!(request.contains("\"quoteResponse\""));
         assert!(request.contains("\"loadedLongtailToken\":true"));
         assert!(request.contains("\"prioritizationFeeLamports\":22000"));
+        assert!(request.contains("\"useSharedAccounts\":false"));
         let body = r#"{"computeBudgetInstructions":[{}],"setupInstructions":[{}],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":["alt"],"simulationError":null}"#;
         write_http_json(&mut socket, body).await;
     });
@@ -52,7 +53,7 @@ async fn swap_instructions_dry_run_posts_http_before_submit_disabled() -> Result
         .simulation_error
         .as_deref()
         .unwrap_or_default()
-        .contains("metis_swap_instructions_ok"));
+        .contains("metis_swap_instructions_no_shared_accounts_ok"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())

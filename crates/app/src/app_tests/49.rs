@@ -121,7 +121,7 @@ async fn pump_fun_not_found_keeps_generic_metis_swap_instructions() -> Result<()
         .simulation_error
         .as_deref()
         .unwrap_or_default()
-        .contains("metis_swap_instructions_ok"));
+        .contains("metis_swap_instructions_no_shared_accounts_ok"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -209,7 +209,7 @@ async fn generic_public_platform_fee_does_not_replace_buildable_metis_quote() ->
         .simulation_error
         .as_deref()
         .unwrap_or_default()
-        .contains("metis_swap_instructions_ok"));
+        .contains("metis_swap_instructions_no_shared_accounts_ok"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())

@@ -21,6 +21,7 @@ async fn swap_transaction_dry_run_posts_http_before_submit_disabled() -> Result<
         assert!(request.contains("\"quoteResponse\""));
         assert!(request.contains("\"loadedLongtailToken\":true"));
         assert!(request.contains("\"prioritizationFeeLamports\":22000"));
+        assert!(request.contains("\"useSharedAccounts\":false"));
         write_swap_transaction_http_json(&mut socket, valid_swap_transaction_json()).await;
     });
     let now = Utc::now();
@@ -58,7 +59,7 @@ async fn swap_transaction_dry_run_posts_http_before_submit_disabled() -> Result<
         .simulation_error
         .as_deref()
         .unwrap_or_default()
-        .contains("metis_swap_transaction_ok"));
+        .contains("metis_swap_transaction_no_shared_accounts_ok"));
     assert!(order
         .simulation_error
         .as_deref()

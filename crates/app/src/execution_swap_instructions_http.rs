@@ -29,7 +29,8 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("missing user public key for swap-instructions dry-run"))?;
-    let body = swap_request_body(plan, user_pubkey, "swap-instructions")?;
+    let mut body = swap_request_body(plan, user_pubkey, "swap-instructions")?;
+    disable_shared_accounts(&mut body);
     let primary =
         primary_swap_builder_endpoint(config, plan, "swap-instructions", "swap-instructions")?;
     let timeout = StdDuration::from_millis(config.quote_canary_timeout_ms.max(1));
@@ -71,7 +72,7 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
         response.elapsed_ms,
         response.attempts,
         endpoint.source,
-        false,
+        true,
     )?))
 }
 

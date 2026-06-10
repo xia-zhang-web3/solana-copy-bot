@@ -237,7 +237,7 @@ async fn generic_pump_fun_amm_missing_token_program_keeps_generic_failure() -> R
     let server = tokio::spawn(async move {
         let request = read_http_request(&listener).await;
         assert!(request.starts_with("POST /swap-instructions "));
-        assert!(!request.contains("\"useSharedAccounts\":false"));
+        assert!(request.contains("\"useSharedAccounts\":false"));
         write_http_json(
             request.into_socket,
             r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":{"error":"Error processing Instruction 5: An account required by the instruction is missing"}}"#,

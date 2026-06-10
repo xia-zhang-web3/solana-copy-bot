@@ -32,7 +32,8 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("missing user public key for swap transaction dry-run"))?;
-    let body = swap_request_body(plan, user_pubkey, "swap transaction")?;
+    let mut body = swap_request_body(plan, user_pubkey, "swap transaction")?;
+    disable_shared_accounts(&mut body);
     let primary = primary_swap_builder_endpoint(config, plan, "swap", "swap transaction")?;
     let timeout = StdDuration::from_millis(config.quote_canary_timeout_ms.max(1));
     let response = post_swap_json_with_retry(
@@ -133,7 +134,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
         response.elapsed_ms,
         response.attempts,
         endpoint.source,
-        false,
+        true,
         false,
         true,
     )

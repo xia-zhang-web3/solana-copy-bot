@@ -67,7 +67,7 @@ async fn swap_instructions_missing_account_allows_swap_transaction_proof() -> Re
     );
     let proof = order.simulation_error.as_deref().unwrap_or_default();
     assert!(proof.contains("metis_swap_instructions_missing_account_soft_failed"));
-    assert!(proof.contains("metis_swap_transaction_ok"));
+    assert!(proof.contains("metis_swap_transaction_no_shared_accounts_ok"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -128,8 +128,8 @@ async fn selected_public_quote_uses_paid_metis_builder() -> Result<()> {
     assert_eq!(summary.submit_disabled, 1);
     assert_eq!(summary.failed, 0);
     let proof = order.simulation_error.as_deref().unwrap_or_default();
-    assert!(proof.contains("metis_swap_instructions_ok"));
-    assert!(proof.contains("metis_swap_transaction_ok"));
+    assert!(proof.contains("metis_swap_instructions_no_shared_accounts_ok"));
+    assert!(proof.contains("metis_swap_transaction_no_shared_accounts_ok"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())

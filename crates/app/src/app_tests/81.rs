@@ -74,8 +74,10 @@ async fn generic_public_metadata_uses_paid_metis_transaction_builder() -> Result
     .expect("proof should exist");
     metis_server.await?;
 
-    assert_eq!(proof.source, "metis");
-    assert!(proof.summary.contains("metis_swap_transaction_ok"));
+    assert_eq!(proof.source, "metis_no_shared_accounts");
+    assert!(proof
+        .summary
+        .contains("metis_swap_transaction_no_shared_accounts_ok"));
     Ok(())
 }
 
@@ -110,7 +112,7 @@ async fn generic_public_metadata_uses_paid_metis_instructions_builder() -> Resul
     .expect("proof should exist");
     metis_server.await?;
 
-    assert!(proof.contains("metis_swap_instructions_ok"));
+    assert!(proof.contains("metis_swap_instructions_no_shared_accounts_ok"));
     Ok(())
 }
 
@@ -126,7 +128,7 @@ async fn pump_fun_amm_missing_account_uses_static_cu_transaction_fallback() -> R
             let request = String::from_utf8_lossy(&buffer[..read]);
             assert!(request.starts_with("POST /swap "));
             match attempt {
-                0 => assert_default_builder_request(&request),
+                0 => assert_no_shared_builder_request(&request),
                 1 => assert_no_shared_builder_request(&request),
                 2 => assert_no_shared_skip_user_accounts_request(&request),
                 _ => assert_no_shared_skip_user_accounts_static_cu_request(&request),
@@ -175,7 +177,7 @@ async fn pump_fun_amm_missing_account_keeps_generic_simulation_failure_without_p
             let request = String::from_utf8_lossy(&buffer[..read]);
             assert!(request.starts_with("POST /swap "));
             match attempt {
-                0 => assert_default_builder_request(&request),
+                0 => assert_no_shared_builder_request(&request),
                 1 => assert_no_shared_builder_request(&request),
                 2 => assert_no_shared_skip_user_accounts_request(&request),
                 _ => assert_no_shared_skip_user_accounts_static_cu_request(&request),
@@ -267,11 +269,6 @@ async fn write_alternate_builder_status(
         .write_all(response.as_bytes())
         .await
         .expect("write response");
-}
-
-fn assert_default_builder_request(request: &str) {
-    assert!(!request.contains("\"useSharedAccounts\":false"));
-    assert!(!request.contains("\"skipUserAccountsRpcCalls\":true"));
 }
 
 fn assert_no_shared_builder_request(request: &str) {
