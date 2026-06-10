@@ -56,6 +56,51 @@ async fn tiny_submit_sweep_retries_transient_failed_buy_simulation() -> Result<(
     Ok(())
 }
 
+#[tokio::test]
+async fn tiny_submit_sweep_skips_failed_buy_retry_after_later_sell_signal() -> Result<()> {
+    let db_path = unique_buy_retry_test_path("stale-after-sell");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let signal = buy_retry_signal("stale-after-sell", now);
+    store.insert_copy_signal(&signal)?;
+    record_buy_retry_quote(&store, &signal, now)?;
+    let order_id = mark_failed_buy_simulation_order(&store, &signal, now)?;
+    store.insert_copy_signal(&CopySignalRow {
+        signal_id: "shadow:sig-buy-retry-stale-after-sell:leader-wallet:sell:TokenMint".to_string(),
+        side: "sell".to_string(),
+        ts: now + chrono::Duration::seconds(4),
+        ..signal.clone()
+    })?;
+
+    let config = buy_retry_config("http://127.0.0.1:1");
+    let summary = crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
+        &config,
+        &store,
+        now + chrono::Duration::seconds(5),
+    )
+    .await?
+    .expect("tiny submit route should run reconciliation sweep");
+    let order = store
+        .load_execution_canary_order(&order_id)?
+        .expect("failed order should remain present");
+
+    assert_eq!(summary.existing, 0);
+    assert_eq!(summary.simulated, 0);
+    assert_eq!(
+        order.status,
+        copybot_storage_core::EXECUTION_STATUS_CANARY_FAILED
+    );
+    assert_eq!(order.attempt, 1);
+    assert_eq!(store.execution_canary_open_position_count()?, 0);
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
 fn mark_failed_buy_simulation_order(
     store: &SqliteStore,
     signal: &CopySignalRow,

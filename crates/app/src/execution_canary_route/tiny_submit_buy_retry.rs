@@ -31,6 +31,9 @@ pub(super) fn buy_retry_decision_for_signal(
         return Ok(BuyRetryDecision::Retry(existing));
     }
     if failed_buy_simulation_retry_ready(config, &existing) {
+        if failed_buy_retry_is_stale_after_sell(store, &existing)? {
+            return Ok(BuyRetryDecision::Reconcile(existing));
+        }
         let retry = store.mark_execution_canary_failed_simulation_retry_candidate(
             &existing.order_id,
             now,
@@ -55,6 +58,9 @@ pub(super) fn next_failed_buy_retry_signal(
             continue;
         }
         if let Some(signal) = store.load_copy_signal_by_signal_id(&order.signal_id)? {
+            if store.has_later_copy_sell_signal(&signal.token, signal.ts)? {
+                continue;
+            }
             return Ok(Some(signal));
         }
     }
@@ -104,4 +110,14 @@ fn pump_fun_paid_simulation_retryable(lower_error: &str) -> bool {
             || lower_error.contains("custom program error: 0x1788")
             || lower_error.contains("too much sol")
             || lower_error.contains("too little sol"))
+}
+
+fn failed_buy_retry_is_stale_after_sell(
+    store: &SqliteStore,
+    order: &ExecutionCanaryOrder,
+) -> Result<bool> {
+    let Some(signal) = store.load_copy_signal_by_signal_id(&order.signal_id)? else {
+        return Ok(false);
+    };
+    store.has_later_copy_sell_signal(&signal.token, signal.ts)
 }

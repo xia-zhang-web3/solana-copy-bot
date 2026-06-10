@@ -38,4 +38,24 @@ impl SqliteDiscoveryStore {
             .map(|ts| parse_rfc3339_utc(ts, "latest live execution canary buy signal ts"))
             .transpose()
     }
+
+    pub fn has_later_copy_sell_signal(
+        &self,
+        token: &str,
+        buy_signal_ts: DateTime<Utc>,
+    ) -> Result<bool> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM copy_signals
+                 WHERE token = ?1
+                   AND lower(side) = 'sell'
+                   AND ts > ?2",
+                params![token, buy_signal_ts.to_rfc3339()],
+                |row| row.get(0),
+            )
+            .context("failed checking later copy sell signal")?;
+        Ok(count > 0)
+    }
 }
