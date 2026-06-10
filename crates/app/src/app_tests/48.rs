@@ -121,7 +121,7 @@ async fn swap_transaction_dry_run_missing_transaction_fails_simulation() -> Resu
 }
 
 #[tokio::test]
-async fn swap_transaction_dry_run_payload_with_simulation_error_stays_buildable() -> Result<()> {
+async fn swap_transaction_dry_run_payload_with_simulation_error_fails_simulation() -> Result<()> {
     let db_path = unique_swap_transaction_test_path("http-simulation-warning");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -159,17 +159,22 @@ async fn swap_transaction_dry_run_payload_with_simulation_error_stays_buildable(
         .expect("order should exist");
 
     assert_eq!(summary.simulated, 1);
-    assert_eq!(summary.signing_envelope_built, 1);
-    assert_eq!(summary.submit_disabled, 1);
+    assert_eq!(summary.failed, 1);
+    assert_eq!(summary.signing_envelope_built, 0);
+    assert_eq!(summary.submit_disabled, 0);
     assert_eq!(
         order.simulation_status.as_deref(),
-        Some(copybot_storage_core::EXECUTION_SIMULATION_STATUS_PASSED)
+        Some(copybot_storage_core::EXECUTION_SIMULATION_STATUS_FAILED)
+    );
+    assert_eq!(
+        order.err_code.as_deref(),
+        Some(copybot_storage_core::EXECUTION_ERROR_SIMULATION_FAILED)
     );
     assert!(order
         .simulation_error
         .as_deref()
         .unwrap_or_default()
-        .contains("metis_swap_transaction_ok"));
+        .contains("swap transaction dry-run simulation error"));
     assert!(order
         .simulation_error
         .as_deref()

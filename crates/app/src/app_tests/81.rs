@@ -218,7 +218,7 @@ async fn selected_public_missing_account_retries_metis_skip_user_accounts_transa
 }
 
 #[tokio::test]
-async fn pump_fun_amm_missing_account_uses_generic_transaction_payload_without_paid_fallback(
+async fn pump_fun_amm_missing_account_keeps_generic_simulation_failure_without_paid_fallback(
 ) -> Result<()> {
     let metis_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let public_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -263,21 +263,20 @@ async fn pump_fun_amm_missing_account_uses_generic_transaction_payload_without_p
         crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS,
     )?;
 
-    let proof = crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run(
+    let error = crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run(
         &reqwest::Client::new(),
         &config,
         &plan,
     )
-    .await?
-    .expect("proof should exist");
+    .await
+    .expect_err("generic missing-account simulation error should stay visible");
     metis_server.await?;
     public_server.await?;
 
-    assert_eq!(proof.source, "public_fallback_skip_user_accounts");
-    assert!(proof
-        .summary
-        .contains("metis_swap_transaction_public_fallback_no_shared_accounts_ok"));
-    assert!(proof.summary.contains("skip_user_accounts_rpc_calls=true"));
+    let error = error.to_string();
+    assert!(error.contains("swap transaction dry-run simulation error"));
+    assert!(error.contains("public_fallback_no_shared_accounts_ok"));
+    assert!(error.contains("skip_user_accounts_rpc_calls=true"));
     Ok(())
 }
 

@@ -191,13 +191,21 @@ fn swap_transaction_response_summary(
             truncate_for_log(&error.to_string(), 240)
         ));
     }
+    if let Some(error) = simulation_error_text(&value) {
+        return Err(anyhow!(
+            "swap transaction dry-run simulation error source={} shared_accounts_disabled={} skip_user_accounts_rpc_calls={}: {}",
+            source.summary_tag(shared_accounts_disabled),
+            shared_accounts_disabled,
+            skip_user_accounts_rpc_calls,
+            truncate_for_log(&error, 240)
+        ));
+    }
     let swap_transaction = value
         .get("swapTransaction")
         .and_then(Value::as_str)
         .filter(|item| !item.trim().is_empty())
         .ok_or_else(|| anyhow!("swap transaction dry-run missing swapTransaction"))?;
     validate_serialized_transaction_base64(swap_transaction)?;
-    let simulation_error = simulation_error_text(&value).map(|item| truncate_for_log(&item, 180));
     let payload_source = payload_source(
         source,
         shared_accounts_disabled,
@@ -210,7 +218,7 @@ fn swap_transaction_response_summary(
         elapsed_ms,
         attempts,
         skip_user_accounts_rpc_calls,
-        simulation_error.unwrap_or_else(|| "none".to_string())
+        "none"
     );
     Ok(SwapTransactionDryRunResult {
         summary: truncate_for_log(&summary, 500),
