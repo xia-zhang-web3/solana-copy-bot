@@ -1,6 +1,99 @@
 use super::*;
 use crate::execution_submit_adapter::ExecutionSubmitAdapter;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::test]
+async fn migrated_pumpswap_uses_direct_builder_before_pump_fun_endpoints() -> Result<()> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let token = "FNVhryGP7Epjbr9iWLv75ABCYzY3au4icYHNdExn9jZ3";
+    let pool = "FhmcZfBdmvaYdphQ4qcd8qjs6wUv1Viic4UkiWqiZxxd";
+    let server = tokio::spawn(async move {
+        let pool_accounts = read_http_request(&listener).await;
+        assert!(pool_accounts.contains("\"method\":\"getMultipleAccounts\""));
+        assert!(pool_accounts.contains(pool));
+        write_http_json(
+            pool_accounts.into_socket,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":"execution-pumpswap-direct-get-multiple-accounts","result":{{"value":[{},{}]}}}}"#,
+                rpc_account_json(
+                    &pumpswap_global_config_data(),
+                    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+                ),
+                rpc_account_json(
+                    &pumpswap_pool_data(token),
+                    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+                )
+            ),
+        )
+        .await;
+
+        let mint_accounts = read_http_request(&listener).await;
+        assert!(mint_accounts.contains("\"method\":\"getMultipleAccounts\""));
+        assert!(mint_accounts.contains(token));
+        write_http_json(
+            mint_accounts.into_socket,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":"execution-pumpswap-direct-get-multiple-accounts","result":{{"value":[{},{}]}}}}"#,
+                rpc_account_json(&[], "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+                rpc_account_json(&[], "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+            ),
+        )
+        .await;
+
+        let blockhash = read_http_request(&listener).await;
+        assert!(
+            blockhash.contains("getLatestBlockhash"),
+            "{}",
+            blockhash.body
+        );
+        write_http_json(
+            blockhash.into_socket,
+            r#"{"jsonrpc":"2.0","id":"execution-pumpswap-direct-latest-blockhash","result":{"value":{"blockhash":"11111111111111111111111111111111","lastValidBlockHeight":1}}}"#,
+        )
+        .await;
+
+        let simulation = read_http_request(&listener).await;
+        assert!(simulation.contains("\"method\":\"simulateTransaction\""));
+        assert!(simulation.contains("\"sigVerify\":false"));
+        write_http_json(
+            simulation.into_socket,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":null,"logs":[]}}}"#,
+        )
+        .await;
+    });
+    let mut config = pump_fun_direct_config(&base_url);
+    config.canary_tiny_submit_enabled = true;
+    config.submit_adapter_http_url = base_url.clone();
+    config.quote_canary_pump_fun_parallel_enabled = true;
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let request = generic_migrated_pumpswap_request(&config, token, pool);
+    let plan = adapter.build_transaction_plan(&request)?;
+
+    let result = adapter.simulate_transaction_plan(&plan).await?;
+    server.await?;
+    let payload = plan
+        .serialized_transaction_payload_slot
+        .as_ref()
+        .expect("serialized payload slot")
+        .load()?
+        .expect("serialized payload");
+
+    assert_eq!(
+        result.status,
+        copybot_storage_core::EXECUTION_SIMULATION_STATUS_PASSED
+    );
+    assert!(result
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("pumpswap_direct_buy_transaction_ok"));
+    assert_eq!(payload.source, "pumpswap_direct");
+    Ok(())
+}
 
 #[tokio::test]
 async fn generic_pump_fun_amm_route_uses_direct_pump_fun_swap_builder() -> Result<()> {
@@ -125,8 +218,12 @@ async fn read_http_request(listener: &tokio::net::TcpListener) -> CapturedReques
 }
 
 async fn write_http_json(socket: tokio::net::TcpStream, body: &str) {
+    write_http_status(socket, 200, body).await;
+}
+
+async fn write_http_status(socket: tokio::net::TcpStream, status: u16, body: &str) {
     let response = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+        "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
         body.len(),
         body
     );
@@ -135,6 +232,112 @@ async fn write_http_json(socket: tokio::net::TcpStream, body: &str) {
         .write_all(response.as_bytes())
         .await
         .expect("write response");
+}
+
+fn generic_migrated_pumpswap_request(
+    config: &ExecutionConfig,
+    token: &str,
+    pool: &str,
+) -> crate::execution_submit_adapter::ExecutionSubmitRequest {
+    let route_plan = format!(r#"[{{"swapInfo":{{"ammKey":"{pool}","label":"Pump.fun Amm"}}}}]"#);
+    crate::execution_submit_adapter::ExecutionSubmitRequest {
+        order_id: "order-migrated-pumpswap".to_string(),
+        signal_id: "signal-migrated-pumpswap".to_string(),
+        client_order_id: "client-migrated-pumpswap".to_string(),
+        attempt: 1,
+        route: config.canary_route.clone(),
+        wallet_id: "leader-wallet".to_string(),
+        token: token.to_string(),
+        side: "buy".to_string(),
+        buy_size_sol: 0.01,
+        slippage_tolerance_bps: 500,
+        wallet_pubkey: config.canary_wallet_pubkey.clone(),
+        metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            quote_source: Some(
+                crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
+            ),
+            quote_event_id: Some("quote:entry:migrated-pumpswap".to_string()),
+            quote_status: Some("ok".to_string()),
+            quote_in_amount_raw: Some("10000000".to_string()),
+            quote_out_amount_raw: Some("123456".to_string()),
+            quote_response_json: Some(format!(
+                r#"{{"inputMint":"So11111111111111111111111111111111111111112","inAmount":"10000000","outputMint":"{token}","outAmount":"123456","otherAmountThreshold":"117283","swapMode":"ExactIn","slippageBps":500,"routePlan":{route_plan}}}"#
+            )),
+            quote_price_sol: Some(0.081),
+            price_impact_pct: Some(0.01),
+            route_plan_json: Some(route_plan),
+            priority_fee_source: Some("test".to_string()),
+            priority_fee_status: Some("ok".to_string()),
+            priority_fee_lamports: Some(22_000),
+            priority_fee_json: Some(r#"{"recommended":22000}"#.to_string()),
+            slippage_bps: Some(125.0),
+            decision_status: Some("would_execute".to_string()),
+            decision_reason: Some("within_slippage_limit".to_string()),
+        },
+    }
+}
+
+fn rpc_account_json(data: &[u8], owner: &str) -> String {
+    format!(
+        r#"{{"data":["{}","base64"],"executable":false,"lamports":1,"owner":"{owner}","rentEpoch":0,"space":{}}}"#,
+        BASE64_STANDARD.encode(data),
+        data.len()
+    )
+}
+
+fn pumpswap_global_config_data() -> Vec<u8> {
+    let recipient = pubkey_bytes("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM");
+    let mut data = vec![149, 8, 156, 202, 160, 252, 176, 217];
+    data.extend_from_slice(&recipient);
+    data.extend_from_slice(&20_u64.to_le_bytes());
+    data.extend_from_slice(&5_u64.to_le_bytes());
+    data.push(0);
+    for _ in 0..8 {
+        data.extend_from_slice(&recipient);
+    }
+    data.extend_from_slice(&5_u64.to_le_bytes());
+    data.extend_from_slice(&recipient);
+    data.extend_from_slice(&recipient);
+    data.extend_from_slice(&recipient);
+    data.push(0);
+    for _ in 0..7 {
+        data.extend_from_slice(&recipient);
+    }
+    data.push(0);
+    for _ in 0..8 {
+        data.extend_from_slice(&recipient);
+    }
+    data.extend_from_slice(&0_u64.to_le_bytes());
+    data
+}
+
+fn pumpswap_pool_data(token: &str) -> Vec<u8> {
+    let creator = pubkey_bytes("11111111111111111111111111111111");
+    let quote_mint = pubkey_bytes(token);
+    let lp_mint = pubkey_bytes("pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn");
+    let pool_base = pubkey_bytes("8WjPNmbxm4rPDLgeTf8GuK26gqtb23txhGb3pwaFSKJT");
+    let pool_quote = pubkey_bytes("3B2QRQdRn79FK7MyYZ57yGW3ieK2cS5q13S8Kjjorn7x");
+    let coin_creator = pubkey_bytes("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM");
+    let mut data = vec![241, 154, 109, 4, 17, 177, 109, 188];
+    data.push(255);
+    data.extend_from_slice(&0_u16.to_le_bytes());
+    data.extend_from_slice(&creator);
+    data.extend_from_slice(&pubkey_bytes("So11111111111111111111111111111111111111112"));
+    data.extend_from_slice(&quote_mint);
+    data.extend_from_slice(&lp_mint);
+    data.extend_from_slice(&pool_base);
+    data.extend_from_slice(&pool_quote);
+    data.extend_from_slice(&1_000_000_u64.to_le_bytes());
+    data.extend_from_slice(&coin_creator);
+    data.push(0);
+    data.push(0);
+    data.resize(300, 0);
+    data
+}
+
+fn pubkey_bytes(value: &str) -> [u8; 32] {
+    crate::execution_pumpswap_accounts::parse_pubkey(value, "test pubkey")
+        .expect("valid test pubkey")
 }
 
 fn pump_fun_direct_config(base_url: &str) -> ExecutionConfig {

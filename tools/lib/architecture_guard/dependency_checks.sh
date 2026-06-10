@@ -21,10 +21,15 @@ check_app_dependency_growth() {
 allowed_app_dependency_specs() {
   # Live execution signer boundary only. These are not operator/report deps and
   # must stay narrowly tied to signing serialized Solana transactions.
+  # PumpSwap direct execution needs SHA-256 PDA derivation and ed25519 curve
+  # checks in the live daemon; keep these dependencies scoped to transaction
+  # assembly, not reporting or operator tooling.
   cat <<'EOF'
 dependencies.base64->base64::"0.22.1"
 dependencies.bs58->bs58::"0.5.1"
+dependencies.curve25519-dalek->curve25519-dalek::"4.1.3"
 dependencies.ed25519-dalek->ed25519-dalek::"2.1.1"
+dependencies.sha2->sha2::"0.10.9"
 EOF
 }
 

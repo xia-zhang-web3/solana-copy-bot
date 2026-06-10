@@ -56,6 +56,8 @@ mod execution_canary_summary;
 mod execution_pump_fun_quote_http;
 mod execution_pump_fun_swap_instructions_http;
 mod execution_pump_fun_swap_transaction_http;
+mod execution_pumpswap_accounts;
+mod execution_pumpswap_direct_builder;
 mod execution_quote_canary;
 mod execution_quote_canary_helpers;
 mod execution_quote_canary_priority_fee;
@@ -66,6 +68,7 @@ mod execution_route_plan;
 mod execution_serialized_transaction_slot;
 mod execution_signing_envelope;
 mod execution_simulation_proof;
+mod execution_solana_tx;
 #[allow(dead_code)]
 mod execution_submit_adapter;
 mod execution_swap_blueprint;
