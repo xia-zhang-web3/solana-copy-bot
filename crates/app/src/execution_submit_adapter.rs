@@ -19,6 +19,7 @@ use crate::execution_swap_http_request::is_missing_account_error_text;
 use crate::execution_swap_http_retry::is_missing_token_program_error;
 use crate::execution_swap_instructions_http::fetch_swap_instructions_dry_run;
 use crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run;
+use crate::telemetry::format_error_chain;
 use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{
@@ -389,19 +390,26 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
             {
                 Ok(result) => result,
                 Err(error) => {
-                    if let Some(pump_fun_error) = pump_fun_direct_error {
-                        if let Some(pumpswap_error) = pumpswap_direct_error {
+                    if let Some(pumpswap_error) = pumpswap_direct_error {
+                        if let Some(pump_fun_error) = pump_fun_direct_error {
                             return Err(anyhow!(
-                                    "pump.fun direct swap failed: {}; PumpSwap direct build failed: {}; generic Metis swap failed: {}",
-                                    truncate_for_log(&pump_fun_error.to_string(), 140),
-                                    truncate_for_log(&pumpswap_error.to_string(), 140),
-                                    truncate_for_log(&error.to_string(), 140)
-                                ));
+                                "pump.fun direct swap failed: {}; PumpSwap direct build failed: {}; generic Metis swap failed: {}",
+                                truncate_for_log(&format_error_chain(&pump_fun_error), 140),
+                                truncate_for_log(&format_error_chain(&pumpswap_error), 140),
+                                truncate_for_log(&error.to_string(), 240)
+                            ));
                         }
                         return Err(anyhow!(
+                            "PumpSwap direct build failed: {}; generic Metis swap failed: {}",
+                            truncate_for_log(&format_error_chain(&pumpswap_error), 180),
+                            truncate_for_log(&error.to_string(), 240)
+                        ));
+                    }
+                    if let Some(pump_fun_error) = pump_fun_direct_error {
+                        return Err(anyhow!(
                             "pump.fun direct swap failed: {}; generic Metis swap failed: {}",
-                            truncate_for_log(&pump_fun_error.to_string(), 180),
-                            truncate_for_log(&error.to_string(), 180)
+                            truncate_for_log(&format_error_chain(&pump_fun_error), 180),
+                            truncate_for_log(&error.to_string(), 240)
                         ));
                     }
                     return Err(error);
@@ -423,7 +431,7 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 proof = combined_simulation_proof(
                     Some(format!(
                         "pump_fun_direct_swap_soft_failed error={}",
-                        truncate_for_log(&error.to_string(), 180)
+                        truncate_for_log(&format_error_chain(&error), 180)
                     )),
                     proof,
                 );
@@ -432,7 +440,7 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 proof = combined_simulation_proof(
                     Some(format!(
                         "pumpswap_direct_build_soft_failed error={}",
-                        truncate_for_log(&error.to_string(), 180)
+                        truncate_for_log(&format_error_chain(&error), 180)
                     )),
                     proof,
                 );

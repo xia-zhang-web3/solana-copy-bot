@@ -51,18 +51,26 @@ pub(crate) fn serialize_unsigned_legacy_transaction(
     instructions: &[SolanaInstruction],
 ) -> Result<Vec<u8>> {
     let message = compile_legacy_message(payer, recent_blockhash, instructions)?;
-    let mut transaction = Vec::with_capacity(1 + SIGNATURE_BYTES + message.len());
-    encode_shortvec(1, &mut transaction)?;
+    if message.required_signers != 1 {
+        anyhow::bail!("unsigned legacy transaction serializer supports exactly one signer");
+    }
+    let mut transaction = Vec::with_capacity(1 + SIGNATURE_BYTES + message.bytes.len());
+    encode_shortvec(message.required_signers, &mut transaction)?;
     transaction.extend_from_slice(&[0_u8; SIGNATURE_BYTES]);
-    transaction.extend_from_slice(&message);
+    transaction.extend_from_slice(&message.bytes);
     Ok(transaction)
+}
+
+struct CompiledLegacyMessage {
+    bytes: Vec<u8>,
+    required_signers: usize,
 }
 
 fn compile_legacy_message(
     payer: PubkeyBytes,
     recent_blockhash: PubkeyBytes,
     instructions: &[SolanaInstruction],
-) -> Result<Vec<u8>> {
+) -> Result<CompiledLegacyMessage> {
     let account_keys = compile_account_keys(payer, instructions)?;
     let required_signers = account_keys.iter().filter(|entry| entry.is_signer).count();
     let readonly_signed = account_keys
@@ -112,7 +120,10 @@ fn compile_legacy_message(
         encode_shortvec(instruction.data.len(), &mut message)?;
         message.extend_from_slice(&instruction.data);
     }
-    Ok(message)
+    Ok(CompiledLegacyMessage {
+        bytes: message,
+        required_signers,
+    })
 }
 
 #[derive(Debug, Clone)]

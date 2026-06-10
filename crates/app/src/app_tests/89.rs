@@ -96,6 +96,61 @@ async fn migrated_pumpswap_uses_direct_builder_before_pump_fun_endpoints() -> Re
 }
 
 #[tokio::test]
+async fn migrated_pumpswap_direct_failure_is_kept_when_generic_build_fails() -> Result<()> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}", listener.local_addr()?);
+    let token = "FNVhryGP7Epjbr9iWLv75ABCYzY3au4icYHNdExn9jZ3";
+    let pool = "FhmcZfBdmvaYdphQ4qcd8qjs6wUv1Viic4UkiWqiZxxd";
+    let server = tokio::spawn(async move {
+        let direct_accounts = read_http_request(&listener).await;
+        assert!(direct_accounts.contains("\"method\":\"getMultipleAccounts\""));
+        assert!(direct_accounts.contains(pool));
+        write_http_json(
+            direct_accounts.into_socket,
+            r#"{"jsonrpc":"2.0","id":"execution-pumpswap-direct-get-multiple-accounts","error":{"message":"direct account read failed"}}"#,
+        )
+        .await;
+
+        let instructions = read_http_request(&listener).await;
+        assert!(instructions.starts_with("POST /swap-instructions "));
+        write_http_json(
+            instructions.into_socket,
+            r#"{"swapInstruction":{},"computeBudgetInstructions":[],"setupInstructions":[],"otherInstructions":[],"addressLookupTableAddresses":[],"cleanupInstruction":null}"#,
+        )
+        .await;
+
+        let swap = read_http_request(&listener).await;
+        assert!(swap.starts_with("POST /swap "));
+        write_http_json(
+            swap.into_socket,
+            r#"{"error":"generic metis build failed"}"#,
+        )
+        .await;
+    });
+    let mut config = pump_fun_direct_config(&base_url);
+    config.canary_tiny_submit_enabled = true;
+    config.submit_adapter_http_url = base_url.clone();
+    config.quote_canary_pump_fun_parallel_enabled = false;
+    let adapter =
+        crate::execution_submit_adapter::JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    let request = generic_migrated_pumpswap_request(&config, token, pool);
+    let plan = adapter.build_transaction_plan(&request)?;
+
+    let error = adapter
+        .simulate_transaction_plan(&plan)
+        .await
+        .expect_err("PumpSwap direct and generic build failure should be visible");
+    server.await?;
+    let error = error.to_string();
+
+    assert!(error.contains("PumpSwap direct build failed"));
+    assert!(error.contains("direct account read failed"));
+    assert!(error.contains("generic Metis swap failed"));
+    assert!(error.contains("generic metis build failed"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn generic_pump_fun_amm_route_uses_direct_pump_fun_swap_builder() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base_url = format!("http://{}", listener.local_addr()?);
