@@ -144,6 +144,18 @@ fn quality_includes_failed_entry_order_samples() -> Result<()> {
         Some("execution_quote_canary_provider:generic_metis")
     );
     assert_eq!(sample.decision_reason.as_deref(), Some("fresh_entry"));
+    assert_eq!(sample.attempt, 1);
+    assert_eq!(sample.signal_ts, Some(signal_ts));
+    assert_eq!(
+        sample.quote_request_ts,
+        Some(signal_ts + Duration::milliseconds(10))
+    );
+    assert_eq!(
+        sample.build_recorded_ts,
+        Some(signal_ts + Duration::milliseconds(10))
+    );
+    assert_eq!(sample.signal_to_quote_ms, Some(10));
+    assert_eq!(sample.quote_to_build_ms, Some(0));
     Ok(())
 }
 
@@ -316,7 +328,7 @@ fn record_failed_buy_order_with_error(
         quote_in_amount_raw: Some("10000000".to_string()),
         quote_out_amount_raw: Some("500000".to_string()),
         quote_response_json: None,
-        quote_request_ts: None,
+        quote_request_ts: Some(signal_ts + Duration::milliseconds(10)),
         quote_price_sol: Some(0.0001),
         price_impact_pct: Some(0.01),
         route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),

@@ -302,6 +302,39 @@ fn pumpswap_custom_errors_are_named_in_diagnostics() {
     assert!(annotated.contains("6001:ZeroBaseAmount"));
 }
 
+#[test]
+fn pumpswap_custom_errors_survive_outer_truncation() {
+    let plan = crate::execution_submit_adapter::ExecutionTransactionPlan {
+        plan_id: "plan".to_string(),
+        order_id: "order".to_string(),
+        signal_id: "signal".to_string(),
+        client_order_id: "client".to_string(),
+        attempt: 1,
+        route: "metis".to_string(),
+        token: "TokenMint".to_string(),
+        side: "buy".to_string(),
+        buy_size_sol: 0.01,
+        slippage_tolerance_bps: 500,
+        wallet_pubkey: "Wallet1111111111111111111111111111111111".to_string(),
+        metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            route_plan_json: Some(r#"[{"swapInfo":{"label":"Pump.fun Amm"}}]"#.to_string()),
+            ..crate::execution_submit_adapter::ExecutionBuildPlanMetadata::default()
+        },
+        swap_blueprint: None,
+        serialized_transaction_payload_slot: None,
+        submit_enabled: true,
+    };
+    let error = format!(
+        "{} err={{\"InstructionError\":[6,{{\"Custom\":6004}}]}}",
+        "long-prefix-".repeat(30)
+    );
+    let text =
+        crate::execution_submit_adapter::test_execution_error_text_for_plan(&plan, &error, 96);
+
+    assert!(text.contains("pamm_custom_errors=6004:ExceededSlippage"));
+    assert!(text.contains("quote_age_ms_at_build=unknown"));
+}
+
 #[tokio::test]
 async fn migrated_pumpswap_direct_failure_is_kept_when_generic_build_fails() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;

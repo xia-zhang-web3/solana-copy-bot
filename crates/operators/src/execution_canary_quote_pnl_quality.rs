@@ -79,7 +79,18 @@ pub struct TinyExecutionQualityOrderSample {
     pub quote_source: Option<String>,
     pub quote_event_id: Option<String>,
     pub priority_fee_lamports: Option<u64>,
+    pub attempt: u32,
+    pub signal_ts: Option<DateTime<Utc>>,
+    pub quote_request_ts: Option<DateTime<Utc>>,
+    pub build_recorded_ts: Option<DateTime<Utc>>,
     pub submit_ts: DateTime<Utc>,
+    pub confirm_ts: Option<DateTime<Utc>>,
+    pub signal_to_quote_ms: Option<i64>,
+    pub quote_to_build_ms: Option<i64>,
+    pub build_to_submit_ms: Option<i64>,
+    pub signal_to_submit_ms: Option<i64>,
+    pub quote_to_submit_ms: Option<i64>,
+    pub submit_to_confirm_ms: Option<i64>,
 }
 
 pub fn build_tiny_execution_quality(
@@ -348,7 +359,18 @@ fn order_sample(order: &ExecutionTinyProofOrder) -> TinyExecutionQualityOrderSam
         quote_source: order.quote_source.clone(),
         quote_event_id: order.quote_event_id.clone(),
         priority_fee_lamports: order.priority_fee_lamports,
+        attempt: order.attempt,
+        signal_ts: order.signal_ts,
+        quote_request_ts: order.quote_request_ts,
+        build_recorded_ts: order.build_recorded_ts,
         submit_ts: order.submit_ts,
+        confirm_ts: order.confirm_ts,
+        signal_to_quote_ms: order.signal_to_quote_ms,
+        quote_to_build_ms: order.quote_to_build_ms,
+        build_to_submit_ms: order.build_to_submit_ms,
+        signal_to_submit_ms: order.signal_to_submit_ms,
+        quote_to_submit_ms: order.quote_to_submit_ms,
+        submit_to_confirm_ms: order.submit_to_confirm_ms,
     }
 }
 

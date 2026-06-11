@@ -1,13 +1,23 @@
 pub(crate) fn annotate_pumpswap_custom_errors(message: &str) -> String {
+    if message.contains("pamm_custom_errors=") {
+        return message.to_string();
+    }
+    let Some(summary) = pumpswap_custom_errors_summary_field(message) else {
+        return message.to_string();
+    };
+    format!("{message}{summary}")
+}
+
+pub(crate) fn pumpswap_custom_errors_summary_field(message: &str) -> Option<String> {
+    if let Some(existing) = existing_pumpswap_custom_errors_field(message) {
+        return Some(format!(" {existing}"));
+    }
     let matches = PUMPSWAP_ERRORS
         .iter()
         .filter(|(code, _)| message_contains_custom_code(message, *code))
         .map(|(code, name)| format!("{code}:{name}"))
         .collect::<Vec<_>>();
-    if matches.is_empty() || message.contains("pamm_custom_errors=") {
-        return message.to_string();
-    }
-    format!("{message} pamm_custom_errors={}", matches.join(","))
+    (!matches.is_empty()).then(|| format!(" pamm_custom_errors={}", matches.join(",")))
 }
 
 pub(crate) fn is_pump_fun_bonding_curve_not_found(message: &str) -> bool {
@@ -22,6 +32,15 @@ fn message_contains_custom_code(message: &str, code: u64) -> bool {
         || message
             .to_ascii_lowercase()
             .contains(&format!("custom program error: 0x{code:x}"))
+}
+
+fn existing_pumpswap_custom_errors_field(message: &str) -> Option<&str> {
+    let start = message.find("pamm_custom_errors=")?;
+    let field = message[start..]
+        .split_whitespace()
+        .next()
+        .unwrap_or(&message[start..]);
+    (!field.trim().is_empty()).then_some(field)
 }
 
 const PUMPSWAP_ERRORS: &[(u64, &str)] = &[

@@ -1,4 +1,4 @@
-use super::{record_confirmed_fill_accounting, ExecutionConfirmedFill};
+use super::{record_confirmed_fill_accounting_and_status, ExecutionConfirmedFill};
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use copybot_storage_core::{
@@ -141,9 +141,8 @@ pub(crate) fn record_confirmation_tracker_outcome(
         }
         ExecutionConfirmationTrackerOutcome::Confirmed(proof) => {
             validate_confirmation_signature(request, &proof.tx_signature)?;
-            let order =
-                store.mark_execution_canary_confirmed(&request.order_id, proof.confirmed_at)?;
-            let fill_accounting = record_confirmed_fill_accounting(store, fill)?;
+            let (order, fill_accounting) =
+                record_confirmed_fill_accounting_and_status(store, fill, proof.confirmed_at)?;
             Ok(ExecutionConfirmationTrackerRecordOutcome {
                 confirmed: usize::from(order.status == EXECUTION_STATUS_CANARY_CONFIRMED),
                 confirmation_status: Some(proof.confirmation_status),

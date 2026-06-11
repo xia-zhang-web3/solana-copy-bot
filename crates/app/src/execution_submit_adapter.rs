@@ -53,9 +53,11 @@ pub(crate) use self::confirmation_boundary::{
     record_execution_rpc_confirmation_boundary, ExecutionConfirmationBoundaryOutcome,
 };
 pub(crate) use self::confirmed_fill::{
-    record_confirmed_fill_accounting, ExecutionConfirmedBuyFill, ExecutionConfirmedFill,
-    ExecutionConfirmedSellFill,
+    record_confirmed_fill_accounting, record_confirmed_fill_accounting_and_status,
+    ExecutionConfirmedBuyFill, ExecutionConfirmedFill, ExecutionConfirmedSellFill,
 };
+#[cfg(test)]
+pub(crate) use self::diagnostics::execution_error_text_for_plan as test_execution_error_text_for_plan;
 use self::diagnostics::{
     execution_error_for_plan, execution_error_text_for_plan,
     should_try_pump_fun_paid_sell_migration_fallback,

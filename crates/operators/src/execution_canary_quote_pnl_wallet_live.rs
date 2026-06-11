@@ -140,7 +140,11 @@ fn rpc_token_accounts(
             client,
             rpc_url,
             "getTokenAccountsByOwner",
-            json!([owner, {"programId": program_id}, {"encoding": "jsonParsed"}]),
+            json!([
+                owner,
+                {"programId": program_id},
+                {"encoding": "jsonParsed", "commitment": "confirmed"}
+            ]),
         )?;
         let accounts = result
             .get("value")

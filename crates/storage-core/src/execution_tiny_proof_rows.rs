@@ -136,6 +136,7 @@ fn metadata_query_is_available(store: &SqliteDiscoveryStore) -> Result<bool> {
         "decision_status",
         "decision_reason",
         "recorded_ts",
+        "quote_request_ts",
     ] {
         if !column_exists(store, "execution_canary_build_plan_metadata", column)? {
             return Ok(false);
@@ -212,12 +213,20 @@ fn read_order_side(
         attempt,
         submit_ts,
         confirm_ts,
+        signal_ts,
+        quote_request_ts: quote_ts,
+        build_recorded_ts: None,
         tx_signature_present: tx_signature
             .as_deref()
             .is_some_and(|sig| !sig.trim().is_empty()),
         simulation_status: row.get(base + 6)?,
         simulation_error: row.get(base + 7)?,
         submit_to_confirm_ms: confirm_ts.map(|confirm_ts| delta_ms(submit_ts, confirm_ts)),
+        signal_to_quote_ms: signal_ts
+            .zip(quote_ts)
+            .map(|(signal, quote)| delta_ms(signal, quote)),
+        quote_to_build_ms: None,
+        build_to_submit_ms: None,
         signal_to_submit_ms: signal_ts.map(|signal_ts| delta_ms(signal_ts, submit_ts)),
         quote_to_submit_ms: quote_ts.map(|quote_ts| delta_ms(quote_ts, submit_ts)),
         quote_source: row.get(base + 12)?,
@@ -251,7 +260,8 @@ fn read_recent_order(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionTinyP
         )
     })?;
     let signal_ts = optional_ts(row, 18)?;
-    let metadata_ts = optional_ts(row, 19)?;
+    let quote_request_ts = optional_ts(row, 19)?;
+    let metadata_ts = optional_ts(row, 20)?;
     Ok(ExecutionTinyProofOrder {
         order_id: row.get(0)?,
         signal_id: row.get(1)?,
@@ -262,6 +272,9 @@ fn read_recent_order(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionTinyP
         route: row.get(6)?,
         submit_ts,
         confirm_ts,
+        signal_ts,
+        quote_request_ts,
+        build_recorded_ts: metadata_ts,
         tx_signature_present: tx_signature
             .as_deref()
             .is_some_and(|sig| !sig.trim().is_empty()),
@@ -269,8 +282,15 @@ fn read_recent_order(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionTinyP
         simulation_error: row.get(11)?,
         attempt,
         submit_to_confirm_ms: confirm_ts.map(|confirm_ts| delta_ms(submit_ts, confirm_ts)),
+        signal_to_quote_ms: signal_ts
+            .zip(quote_request_ts)
+            .map(|(signal, quote)| delta_ms(signal, quote)),
+        quote_to_build_ms: quote_request_ts
+            .zip(metadata_ts)
+            .map(|(quote, metadata)| delta_ms(quote, metadata)),
+        build_to_submit_ms: metadata_ts.map(|metadata_ts| delta_ms(metadata_ts, submit_ts)),
         signal_to_submit_ms: signal_ts.map(|signal_ts| delta_ms(signal_ts, submit_ts)),
-        quote_to_submit_ms: metadata_ts.map(|metadata_ts| delta_ms(metadata_ts, submit_ts)),
+        quote_to_submit_ms: quote_request_ts.map(|quote_ts| delta_ms(quote_ts, submit_ts)),
         quote_source: row.get(13)?,
         quote_event_id: row.get(14)?,
         priority_fee_lamports: optional_i64_to_u64_sql(row.get(15)?, 15)?,
@@ -459,6 +479,7 @@ SELECT
     metadata.decision_status,
     metadata.decision_reason,
     copy_signals.ts,
+    metadata.quote_request_ts,
     metadata.recorded_ts
 FROM orders
 LEFT JOIN copy_signals ON copy_signals.signal_id = orders.signal_id
@@ -490,6 +511,7 @@ SELECT
     NULL AS decision_status,
     NULL AS decision_reason,
     copy_signals.ts,
+    NULL AS quote_request_ts,
     NULL AS recorded_ts
 FROM orders
 LEFT JOIN copy_signals ON copy_signals.signal_id = orders.signal_id

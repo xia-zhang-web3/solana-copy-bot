@@ -30,68 +30,7 @@ impl SqliteDiscoveryStore {
         let result = self.with_immediate_transaction_retry(
             "execution canary open position record",
             |conn| {
-                if fill_exists(conn, order_id)? {
-                    let position = load_existing_fill_position(conn, &position_id, token)?
-                        .ok_or_else(|| {
-                            anyhow!(
-                                "missing execution canary position for existing fill {order_id}"
-                            )
-                        })?;
-                    return Ok(ExecutionCanaryOwnedPositionRecordResult {
-                        outcome: ExecutionCanaryPositionRecordOutcome::Existing,
-                        position,
-                    });
-                }
-                if let Some(position) = load_position_by_id(conn, &position_id)? {
-                    insert_fill_marker_if_order_exists(
-                        conn,
-                        order_id,
-                        token,
-                        qty,
-                        qty_exact,
-                        cost_sol,
-                        cost_lamports,
-                    )?;
-                    return Ok(ExecutionCanaryOwnedPositionRecordResult {
-                        outcome: ExecutionCanaryPositionRecordOutcome::Existing,
-                        position,
-                    });
-                }
-                if let Some(position) = load_open_position_by_token(conn, token)? {
-                    merge_open_position(conn, &position, qty, qty_exact, cost_sol, cost_lamports)?;
-                    insert_fill_marker_if_order_exists(
-                        conn,
-                        order_id,
-                        token,
-                        qty,
-                        qty_exact,
-                        cost_sol,
-                        cost_lamports,
-                    )?;
-                    let position =
-                        load_position_by_id(conn, &position.position_id)?.ok_or_else(|| {
-                            anyhow!(
-                                "missing merged execution canary position {}",
-                                position.position_id
-                            )
-                        })?;
-                    return Ok(ExecutionCanaryOwnedPositionRecordResult {
-                        outcome: ExecutionCanaryPositionRecordOutcome::Merged,
-                        position,
-                    });
-                }
-
-                insert_open_position(
-                    conn,
-                    &position_id,
-                    token,
-                    qty,
-                    qty_exact,
-                    cost_sol,
-                    cost_lamports,
-                    &opened_ts_raw,
-                )?;
-                insert_fill_marker_if_order_exists(
+                record_execution_canary_open_position_on_conn(
                     conn,
                     order_id,
                     token,
@@ -99,18 +38,100 @@ impl SqliteDiscoveryStore {
                     qty_exact,
                     cost_sol,
                     cost_lamports,
-                )?;
-                let position = load_position_by_id(conn, &position_id)?.ok_or_else(|| {
-                    anyhow!("missing execution canary position for order {order_id}")
-                })?;
-                Ok(ExecutionCanaryOwnedPositionRecordResult {
-                    outcome: ExecutionCanaryPositionRecordOutcome::Inserted,
-                    position,
-                })
+                    &position_id,
+                    &opened_ts_raw,
+                )
             },
         )?;
         Ok(result)
     }
+}
+
+pub(crate) fn record_execution_canary_open_position_on_conn(
+    conn: &Connection,
+    order_id: &str,
+    token: &str,
+    qty: f64,
+    qty_exact: Option<TokenQuantity>,
+    cost_sol: f64,
+    cost_lamports: Lamports,
+    position_id: &str,
+    opened_ts_raw: &str,
+) -> Result<ExecutionCanaryOwnedPositionRecordResult> {
+    validate_position_inputs(order_id, token, qty, cost_sol)?;
+    let qty_exact = reject_zero_raw_exact_qty(qty_exact, "execution canary open position")?;
+    if fill_exists(conn, order_id)? {
+        let position = load_existing_fill_position(conn, position_id, token)?.ok_or_else(|| {
+            anyhow!("missing execution canary position for existing fill {order_id}")
+        })?;
+        return Ok(ExecutionCanaryOwnedPositionRecordResult {
+            outcome: ExecutionCanaryPositionRecordOutcome::Existing,
+            position,
+        });
+    }
+    if let Some(position) = load_position_by_id(conn, position_id)? {
+        insert_fill_marker_if_order_exists(
+            conn,
+            order_id,
+            token,
+            qty,
+            qty_exact,
+            cost_sol,
+            cost_lamports,
+        )?;
+        return Ok(ExecutionCanaryOwnedPositionRecordResult {
+            outcome: ExecutionCanaryPositionRecordOutcome::Existing,
+            position,
+        });
+    }
+    if let Some(position) = load_open_position_by_token(conn, token)? {
+        merge_open_position(conn, &position, qty, qty_exact, cost_sol, cost_lamports)?;
+        insert_fill_marker_if_order_exists(
+            conn,
+            order_id,
+            token,
+            qty,
+            qty_exact,
+            cost_sol,
+            cost_lamports,
+        )?;
+        let position = load_position_by_id(conn, &position.position_id)?.ok_or_else(|| {
+            anyhow!(
+                "missing merged execution canary position {}",
+                position.position_id
+            )
+        })?;
+        return Ok(ExecutionCanaryOwnedPositionRecordResult {
+            outcome: ExecutionCanaryPositionRecordOutcome::Merged,
+            position,
+        });
+    }
+
+    insert_open_position(
+        conn,
+        position_id,
+        token,
+        qty,
+        qty_exact,
+        cost_sol,
+        cost_lamports,
+        opened_ts_raw,
+    )?;
+    insert_fill_marker_if_order_exists(
+        conn,
+        order_id,
+        token,
+        qty,
+        qty_exact,
+        cost_sol,
+        cost_lamports,
+    )?;
+    let position = load_position_by_id(conn, position_id)?
+        .ok_or_else(|| anyhow!("missing execution canary position for order {order_id}"))?;
+    Ok(ExecutionCanaryOwnedPositionRecordResult {
+        outcome: ExecutionCanaryPositionRecordOutcome::Inserted,
+        position,
+    })
 }
 
 fn load_existing_fill_position(
@@ -360,6 +381,6 @@ fn merge_buy_qty_exact(
     }
 }
 
-fn execution_canary_position_id(order_id: &str) -> String {
+pub(crate) fn execution_canary_position_id(order_id: &str) -> String {
     format!("exec-canary-pos:{order_id}")
 }

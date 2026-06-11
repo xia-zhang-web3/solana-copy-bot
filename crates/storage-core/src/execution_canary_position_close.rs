@@ -1,4 +1,5 @@
 use crate::{
+    execution_canary_fill_marker::{fill_exists, insert_fill_marker_if_order_exists},
     execution_canary_positions::execution_canary_position_from_row,
     money::{
         merge_position_qty_exact_on_sell, signed_lamports_to_sol, signed_lamports_to_sql_i64,
@@ -35,18 +36,16 @@ impl SqliteDiscoveryStore {
         let mut result = self.with_immediate_transaction_retry(
             "execution canary open position close",
             |conn| {
-                let Some(position) = load_open_position_for_close(conn, token)? else {
-                    return Ok(no_position_close_result(token));
-                };
-                let plan = plan_position_close(
-                    &position,
+                close_execution_canary_open_position_on_conn(
+                    conn,
+                    None,
+                    token,
                     target_qty,
                     target_qty_exact,
                     exit_price_sol,
                     dust_qty_epsilon,
-                )?;
-                apply_position_close(conn, &position, &plan, closed_ts)?;
-                Ok(plan.into_result(&position, token))
+                    closed_ts,
+                )
             },
         )?;
         if result.close_status == EXECUTION_CANARY_POSITION_CLOSE_PARTIAL {
@@ -54,6 +53,48 @@ impl SqliteDiscoveryStore {
         }
         Ok(result)
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn close_execution_canary_open_position_on_conn(
+    conn: &Connection,
+    order_id: Option<&str>,
+    token: &str,
+    target_qty: f64,
+    target_qty_exact: Option<TokenQuantity>,
+    exit_price_sol: f64,
+    dust_qty_epsilon: f64,
+    closed_ts: DateTime<Utc>,
+) -> Result<ExecutionCanaryPositionCloseResult> {
+    validate_close_inputs(token, target_qty, exit_price_sol, dust_qty_epsilon)?;
+    let target_qty_exact =
+        reject_zero_raw_exact_qty(target_qty_exact, "execution canary close target qty")?;
+    if let Some(order_id) = order_id {
+        if fill_exists(conn, order_id)? {
+            return Ok(no_position_close_result(token));
+        }
+    }
+    let Some(position) = load_open_position_for_close(conn, token)? else {
+        insert_no_position_sell_fill_marker(
+            conn,
+            order_id,
+            token,
+            target_qty,
+            target_qty_exact,
+            exit_price_sol,
+        )?;
+        return Ok(no_position_close_result(token));
+    };
+    let plan = plan_position_close(
+        &position,
+        target_qty,
+        target_qty_exact,
+        exit_price_sol,
+        dust_qty_epsilon,
+    )?;
+    apply_position_close(conn, &position, &plan, closed_ts)?;
+    insert_position_sell_fill_marker(conn, order_id, token, &plan)?;
+    Ok(plan.into_result(&position, token))
 }
 
 fn validate_close_inputs(
@@ -81,6 +122,51 @@ fn validate_close_inputs(
         ));
     }
     Ok(())
+}
+
+fn insert_no_position_sell_fill_marker(
+    conn: &Connection,
+    order_id: Option<&str>,
+    token: &str,
+    target_qty: f64,
+    target_qty_exact: Option<TokenQuantity>,
+    exit_price_sol: f64,
+) -> Result<()> {
+    let Some(order_id) = order_id else {
+        return Ok(());
+    };
+    let exit_value_sol = target_qty * exit_price_sol;
+    let exit_value_lamports =
+        sol_to_lamports_floor(exit_value_sol, "execution canary sell fill exit_value_sol")?;
+    insert_fill_marker_if_order_exists(
+        conn,
+        order_id,
+        token,
+        target_qty,
+        target_qty_exact,
+        exit_value_sol,
+        exit_value_lamports,
+    )
+}
+
+fn insert_position_sell_fill_marker(
+    conn: &Connection,
+    order_id: Option<&str>,
+    token: &str,
+    plan: &PlannedPositionClose,
+) -> Result<()> {
+    let Some(order_id) = order_id else {
+        return Ok(());
+    };
+    insert_fill_marker_if_order_exists(
+        conn,
+        order_id,
+        token,
+        plan.closed_qty,
+        plan.closed_qty_exact,
+        plan.exit_value_sol,
+        plan.exit_value_lamports,
+    )
 }
 
 fn load_open_position_for_close(

@@ -67,6 +67,55 @@ pub(crate) fn record_confirmed_fill_accounting(
     }
 }
 
+pub(crate) fn record_confirmed_fill_accounting_and_status(
+    store: &SqliteStore,
+    fill: ExecutionConfirmedFill,
+    confirmed_at: DateTime<Utc>,
+) -> Result<(
+    copybot_storage_core::ExecutionCanaryOrder,
+    ExecutionConfirmedFillAccountingOutcome,
+)> {
+    match fill {
+        ExecutionConfirmedFill::Buy(fill) => {
+            let (order, result) = store.confirm_execution_canary_buy_fill(
+                &fill.order_id,
+                &fill.token,
+                fill.qty,
+                fill.qty_exact,
+                fill.cost_sol,
+                fill.fill_ts,
+                confirmed_at,
+            )?;
+            Ok((
+                order,
+                ExecutionConfirmedFillAccountingOutcome {
+                    buy_opened: usize::from(
+                        result.outcome == ExecutionCanaryPositionRecordOutcome::Inserted,
+                    ),
+                    buy_existing: usize::from(
+                        result.outcome != ExecutionCanaryPositionRecordOutcome::Inserted,
+                    ),
+                    position_id: Some(result.position.position_id),
+                    ..ExecutionConfirmedFillAccountingOutcome::default()
+                },
+            ))
+        }
+        ExecutionConfirmedFill::Sell(fill) => {
+            let (order, result) = store.confirm_execution_canary_sell_fill(
+                &fill.order_id,
+                &fill.token,
+                fill.target_qty,
+                fill.target_qty_exact,
+                fill.exit_price_sol,
+                fill.dust_qty_epsilon,
+                fill.fill_ts,
+                confirmed_at,
+            )?;
+            Ok((order, sell_fill_accounting_outcome(result)))
+        }
+    }
+}
+
 fn record_confirmed_buy_fill_accounting(
     store: &SqliteStore,
     fill: ExecutionConfirmedBuyFill,
@@ -100,6 +149,12 @@ fn record_confirmed_sell_fill_accounting(
         fill.dust_qty_epsilon,
         fill.fill_ts,
     )?;
+    Ok(sell_fill_accounting_outcome(result))
+}
+
+fn sell_fill_accounting_outcome(
+    result: copybot_storage_core::ExecutionCanaryPositionCloseResult,
+) -> ExecutionConfirmedFillAccountingOutcome {
     let mut outcome = ExecutionConfirmedFillAccountingOutcome {
         position_id: result.position_id,
         close_status: Some(result.close_status.clone()),
@@ -120,5 +175,5 @@ fn record_confirmed_sell_fill_accounting(
         }
         _ => {}
     }
-    Ok(outcome)
+    outcome
 }

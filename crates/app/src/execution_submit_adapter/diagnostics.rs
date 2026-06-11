@@ -1,7 +1,7 @@
 use super::ExecutionTransactionPlan;
 use crate::execution_build_plan_age::quote_age_ms_summary_field;
 use crate::execution_pumpswap_error::{
-    annotate_pumpswap_custom_errors, is_pump_fun_bonding_curve_not_found,
+    is_pump_fun_bonding_curve_not_found, pumpswap_custom_errors_summary_field,
 };
 use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_route_plan::route_plan_has_pump_fun_amm;
@@ -23,17 +23,24 @@ pub(super) fn execution_error_for_plan(
     execution_error_text_for_plan(plan, &format_error_chain(error), max_len)
 }
 
-pub(super) fn execution_error_text_for_plan(
+pub(crate) fn execution_error_text_for_plan(
     plan: &ExecutionTransactionPlan,
     message: &str,
     max_len: usize,
 ) -> String {
-    let text = if route_plan_has_pump_fun_amm(plan.metadata.route_plan_json.as_deref()) {
-        annotate_pumpswap_custom_errors(message)
+    let pamm_errors = if route_plan_has_pump_fun_amm(plan.metadata.route_plan_json.as_deref()) {
+        pumpswap_custom_errors_summary_field(message).unwrap_or_default()
     } else {
-        message.to_string()
+        String::new()
     };
     let quote_age = quote_age_ms_summary_field(&plan.metadata);
-    let text_len = max_len.saturating_sub(quote_age.len()).max(1);
-    format!("{}{}", truncate_for_log(&text, text_len), quote_age)
+    let suffix_len = pamm_errors.len().saturating_add(quote_age.len());
+    let text_len = max_len.saturating_sub(suffix_len).max(1);
+    let text = truncate_for_log(message, text_len);
+    let pamm_errors = if text.contains("pamm_custom_errors=") {
+        ""
+    } else {
+        pamm_errors.as_str()
+    };
+    format!("{text}{pamm_errors}{quote_age}")
 }

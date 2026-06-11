@@ -305,3 +305,69 @@ fn confirmed_sell_fill_without_owned_position_reports_no_position() -> Result<()
     assert_eq!(result.pnl_sol, 0.0);
     Ok(())
 }
+
+#[test]
+fn submitted_sell_fill_confirm_closes_position_and_writes_fill_marker() -> Result<()> {
+    let dir = tempdir()?;
+    let db_path = dir
+        .keep()
+        .join("execution-canary-submitted-sell-confirm.db");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = ts("2026-06-06T08:00:00Z");
+    let buy_order_id = confirmed_order(&store, "buy-confirm-sell-marker", "buy", now)?;
+    store.record_execution_canary_confirmed_buy_fill(
+        &buy_order_id,
+        "TokenMint",
+        1.0,
+        Some(TokenQuantity::new(1_000_000, 6)),
+        0.2,
+        now + Duration::seconds(5),
+    )?;
+    let sell_order_id = simulated_order(
+        &store,
+        "sell-confirm-sell-marker",
+        "sell",
+        now + Duration::minutes(1),
+    )?;
+    store.mark_execution_canary_submitted(
+        &sell_order_id,
+        now + Duration::minutes(1) + Duration::seconds(3),
+        "tx-sell-marker",
+    )?;
+
+    let (order, result) = store.confirm_execution_canary_sell_fill(
+        &sell_order_id,
+        "TokenMint",
+        1.0,
+        Some(TokenQuantity::new(1_000_000, 6)),
+        0.3,
+        0.001,
+        now + Duration::minutes(1) + Duration::seconds(4),
+        now + Duration::minutes(1) + Duration::seconds(5),
+    )?;
+
+    assert_eq!(
+        order.status,
+        copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED
+    );
+    assert_eq!(result.close_status, EXECUTION_CANARY_POSITION_CLOSE_CLOSED);
+    assert!(store
+        .load_execution_canary_open_position("TokenMint")?
+        .is_none());
+    assert_eq!(fill_count_for_order(&db_path, &sell_order_id)?, 1);
+    Ok(())
+}
+
+fn fill_count_for_order(db_path: &std::path::Path, order_id: &str) -> Result<i64> {
+    let conn = rusqlite::Connection::open(db_path)?;
+    let count = conn.query_row(
+        "SELECT COUNT(*) FROM fills WHERE order_id = ?1",
+        [order_id],
+        |row| row.get(0),
+    )?;
+    Ok(count)
+}

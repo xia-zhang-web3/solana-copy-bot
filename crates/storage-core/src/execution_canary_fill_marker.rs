@@ -21,13 +21,17 @@ pub(crate) fn insert_fill_marker_if_order_exists(
     token: &str,
     qty: f64,
     qty_exact: Option<TokenQuantity>,
-    cost_sol: f64,
-    cost_lamports: Lamports,
+    notional_sol: f64,
+    notional_lamports: Lamports,
 ) -> Result<()> {
     if !order_exists(conn, order_id)? {
         return Ok(());
     }
-    let avg_price = if cost_sol > 0.0 { cost_sol / qty } else { 0.0 };
+    let avg_price = if notional_sol > 0.0 && qty > 0.0 {
+        notional_sol / qty
+    } else {
+        0.0
+    };
     conn.execute(
         "INSERT OR IGNORE INTO fills(
             order_id,
@@ -46,7 +50,7 @@ pub(crate) fn insert_fill_marker_if_order_exists(
             token,
             qty,
             avg_price,
-            u64_to_sql_i64("fills.notional_lamports", cost_lamports.as_u64())?,
+            u64_to_sql_i64("fills.notional_lamports", notional_lamports.as_u64())?,
             qty_exact.map(|value| value.raw().to_string()),
             qty_exact.map(|value| i64::from(value.decimals())),
         ],
