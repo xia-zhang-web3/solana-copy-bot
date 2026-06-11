@@ -1,7 +1,7 @@
 # Artifact Deploy
 
 Status: mandatory deployment policy
-Date: 2026-05-03
+Date: 2026-06-09
 
 This document defines the deployment path that replaces production-local
 release builds.
@@ -10,15 +10,18 @@ release builds.
 
 Production receives artifacts. Production does not compile by default.
 
-Normal deploy path:
+Normal production deploy path:
 
-1. build elsewhere,
-2. test elsewhere,
-3. package artifacts,
-4. upload artifacts,
-5. verify checksums on production,
-6. install exact binaries,
-7. restart only affected services.
+1. commit the accepted change,
+2. push the commit,
+3. wait for `.github/workflows/operator-artifacts.yml`,
+4. download the artifact for the exact git SHA,
+5. verify manifest and checksums locally,
+6. upload the artifact to production,
+7. verify checksums on production,
+8. install only the affected package/binaries,
+9. restart only affected services when required,
+10. collect bounded live proof.
 
 ## 2. Artifact Layout
 
@@ -37,7 +40,12 @@ must include locked package tests plus both architecture guard modes.
 
 Production artifact source of truth: commit the accepted change, push to GitHub,
 wait for `.github/workflows/operator-artifacts.yml`, download artifacts for that
-exact commit SHA, and verify them before uploading to production. Do not deploy local Docker or release-build artifacts unless the emergency fallback is invoked.
+exact commit SHA, and verify them before uploading to production. Do not deploy
+local Docker or release-build artifacts unless the emergency fallback is
+invoked and recorded.
+
+The package binary set is authoritative. `tools/package_bins.py --package
+<package>` must match the artifact. Partial package artifacts are rejected.
 
 Discovery V2 operators:
 
@@ -49,7 +57,7 @@ Discovery scheduled operators:
 
 ```bash
 PACKAGE=copybot-discovery-ops \
-WANTED_BINS="discovery_runtime_export discovery_recent_raw_snapshot" \
+WANTED_BINS="discovery_runtime_export discovery_recent_raw_snapshot discovery_v2_watchdog" \
 tools/build_operator_artifacts.sh
 ```
 
@@ -126,26 +134,11 @@ and the daemon migration bundle checksum.
 ## 6. Config Rollout Review
 
 Artifact install does not approve config semantics by itself. A daemon rollout
-must carry an explicit config acceptance note before restart.
+must carry an explicit config acceptance note before restart. If the batch does
+not change config, say that explicitly.
 
-The current refactor branch intentionally changes the live/prod config surface:
-
-1. `configs/live.toml` uses `state/live_runtime.db`,
-2. live/prod/template Discovery V2 `min_active_days` is `1`,
-3. live/prod/template metric snapshot cadence is `1800` seconds,
-4. live/prod/template observed-swap retention is `7` days,
-5. live/prod/template define `[recent_raw_journal]` and `[runtime_restore_ops]`
-   as active operational surfaces,
-6. live/prod/template set runtime restore bootstrap snapshot age and cadence gates,
-7. live config carries lower shadow/risk caps than prod and must be accepted
-   explicitly before daemon restart,
-8. live/prod/template execution remains disabled and must not be relaxed,
-9. live/prod/template aggregate/materialized discovery readiness remains
-   rejected as a production readiness path,
-10. live/prod/template runtime artifact/publication freshness gates must stay
-   bound to Discovery V2 source, policy fingerprint, and runtime cursor.
-
-Before daemon rollout, review every delta in:
+Before daemon rollout, review active server config plus every relevant repo
+delta in:
 
 1. `configs/live.toml`,
 2. `configs/prod.toml`,
@@ -155,16 +148,28 @@ Before daemon rollout, review every delta in:
 6. `ops/server_templates/*.timer`,
 7. `migrations/**` when the daemon artifact includes migration changes.
 
-Before daemon rollout, the rollout note must explicitly choose one of:
+The rollout note must explicitly choose one of:
 
 1. accept these config values as part of the daemon rollout,
 2. split them into a config-only rollout with separate proof,
-3. revert the config deltas before packaging the daemon artifact.
+3. revert the config deltas before packaging the daemon artifact,
+4. record that there are no config changes in scope.
 
 The note must record date, operator, commit, artifact id, exact config files,
-chosen option, and whether production remains fail-closed. A green production
-state can only be recorded by the postflight live proof section, not by config
-review, code review, local tests, devnet, or operator observability.
+chosen option, and the intended execution mode.
+
+Current live execution semantics:
+
+1. `execution.canary_tiny_submit_enabled=true` may submit real guarded tiny
+   canary trades when signer, wallet, risk, priority-fee, and open-position
+   gates pass.
+2. `execution.enabled` is the broader production execution path. It is not
+   required for tiny canary trading and must only change in an explicit
+   production cutover with config proof, rollback path, and live proof.
+3. Do not manually submit trades outside the daemon path.
+
+A green production state can only be recorded by postflight live proof, not by
+config review, code review, local tests, devnet, or operator observability.
 
 Read-only operator rollout does not imply daemon config acceptance.
 
@@ -178,10 +183,10 @@ Production preflight for any install or rollback:
 4. verify no production-local cargo/rustc build is running,
 5. state the exact artifact path or rollback id, package, binary, and service
    to touch,
-6. verify `execution.enabled` remains disabled when the daemon package is in
-   scope,
-7. verify config deltas were accepted, split, or reverted when the daemon
-   package is in scope.
+6. when the daemon package is in scope, verify `execution.enabled` and
+   `execution.canary_tiny_submit_enabled` match the intended rollout mode,
+7. verify config deltas were accepted, split, reverted, or declared absent when
+   the daemon package is in scope.
 
 Install Discovery V2 status/publish operators:
 
@@ -254,8 +259,8 @@ Daemon restart preflight:
 3. verify disk and memory headroom,
 4. verify no production-local cargo build is running,
 5. state the exact artifact path, package, binary, and service to touch,
-6. verify `execution.enabled` remains disabled in the active config,
-7. verify config deltas were accepted, split, or reverted.
+6. verify active execution config matches the intended mode,
+7. verify config deltas were accepted, split, reverted, or declared absent.
 
 Restart after preflight and install:
 
@@ -268,8 +273,12 @@ Daemon restart postflight:
 1. verify `systemctl is-active solana-copy-bot.service`,
 2. record `NRestarts` / restart counter,
 3. inspect recent logs for startup publication truth and fatal errors,
-4. run bounded Discovery V2/runtime status proof,
-5. record whether runtime remains fail-closed or has live V2 green proof.
+4. run bounded live proof for the affected surface,
+5. for tiny execution, record submit-risk, buy/sell confirmation state,
+   open-position count, quote/simulation/submit failure counts, and wallet
+   balance,
+6. record whether runtime is fail-closed, guarded tiny-live, or broader
+   production execution.
 
 ## 8. Rollback
 
@@ -331,48 +340,20 @@ Before any emergency build command:
 4. check memory,
 5. verify no other `cargo` or `rustc` build is running,
 6. check service pressure,
-7. verify `execution.enabled = false` when the daemon is in scope,
+7. verify active execution config matches the intended mode when the daemon is
+   in scope,
 8. explain why artifact deploy cannot be used.
 
-Operator emergency build:
+Operator emergency build pattern:
 
 ```bash
 CARGO_BUILD_JOBS=1 cargo build --profile operator-release \
-  -p copybot-discovery-v2 \
-  --bin discovery_v2_status
+  -p <operator-package> \
+  --bin <operator-binary>
 ```
 
-Source operator emergency build:
-
-```bash
-CARGO_BUILD_JOBS=1 cargo build --profile operator-release \
-  -p copybot-operators \
-  --bin copybot_execution_canary_quote_pnl
-```
-
-Live operator emergency build:
-
-```bash
-CARGO_BUILD_JOBS=1 cargo build --profile operator-release \
-  -p copybot-live-ops \
-  --bin copybot_operator_emergency_stop
-```
-
-Storage operator emergency build:
-
-```bash
-CARGO_BUILD_JOBS=1 cargo build --profile operator-release \
-  -p copybot-storage-ops \
-  --bin copybot_runtime_sqlite_wal_pressure_report
-```
-
-Discovery scheduled operator emergency build:
-
-```bash
-CARGO_BUILD_JOBS=1 cargo build --profile operator-release \
-  -p copybot-discovery-ops \
-  --bin discovery_runtime_export
-```
+Choose package and binary from the package command section above. Build only
+the affected binary.
 
 Daemon emergency build:
 
