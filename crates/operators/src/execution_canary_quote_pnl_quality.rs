@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use copybot_storage_core::{
     ExecutionCanaryQuotePnlSummary, ExecutionTinyProofLatencyStats, ExecutionTinyProofOrder,
-    ExecutionTinyProofReport,
+    ExecutionTinyProofReport, ExecutionTinyProofTrade,
 };
 use serde::Serialize;
 
@@ -56,6 +56,7 @@ pub struct TinyExecutionQualityReport {
     pub top_flow_blockers: Vec<TinyExecutionQualityBlocker>,
     pub failed_entry_order_samples: Vec<TinyExecutionQualityOrderSample>,
     pub failed_exit_order_samples: Vec<TinyExecutionQualityOrderSample>,
+    pub missing_exit_order_samples: Vec<TinyExecutionQualityMissingExitSample>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -91,6 +92,29 @@ pub struct TinyExecutionQualityOrderSample {
     pub signal_to_submit_ms: Option<i64>,
     pub quote_to_submit_ms: Option<i64>,
     pub submit_to_confirm_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TinyExecutionQualityMissingExitSample {
+    pub shadow_closed_trade_id: i64,
+    pub signal_id: String,
+    pub token: String,
+    pub opened_ts: DateTime<Utc>,
+    pub closed_ts: DateTime<Utc>,
+    pub exit_signal_ts: Option<DateTime<Utc>>,
+    pub exit_quote_request_ts: Option<DateTime<Utc>>,
+    pub exit_quote_event_id: Option<String>,
+    pub exit_decision_status: Option<String>,
+    pub exit_decision_reason: Option<String>,
+    pub tiny_position_id: Option<String>,
+    pub tiny_position_state: Option<String>,
+    pub tiny_position_opened_ts: Option<DateTime<Utc>>,
+    pub tiny_position_cost_sol: Option<f64>,
+    pub buy_order_id: Option<String>,
+    pub buy_order_status: Option<String>,
+    pub buy_confirm_ts: Option<DateTime<Utc>>,
+    pub buy_quote_source: Option<String>,
+    pub buy_quote_event_id: Option<String>,
 }
 
 pub fn build_tiny_execution_quality(
@@ -189,6 +213,7 @@ pub fn build_tiny_execution_quality(
         top_flow_blockers,
         failed_entry_order_samples: failed_order_samples(proof, "buy"),
         failed_exit_order_samples: failed_order_samples(proof, "sell"),
+        missing_exit_order_samples: missing_exit_order_samples(proof),
     }
 }
 
@@ -215,18 +240,20 @@ fn missing_exit_orders(proof: &ExecutionTinyProofReport) -> u64 {
     proof
         .trades
         .iter()
-        .filter(|trade| {
-            matches!(
-                trade.exit_decision_status.as_deref(),
-                Some(DECISION_WOULD_EXECUTE | DECISION_WOULD_FORCE_EXIT)
-            ) && trade
-                .tiny_buy_order
-                .as_ref()
-                .is_some_and(|order| order.status == CONFIRMED)
-                && trade.tiny_sell_order.is_none()
-                && trade.proof_status != PROOF_STATUS_CLOSED
-        })
+        .filter(|trade| missing_exit_order_trade(trade))
         .count() as u64
+}
+
+fn missing_exit_order_trade(trade: &ExecutionTinyProofTrade) -> bool {
+    matches!(
+        trade.exit_decision_status.as_deref(),
+        Some(DECISION_WOULD_EXECUTE | DECISION_WOULD_FORCE_EXIT)
+    ) && trade
+        .tiny_buy_order
+        .as_ref()
+        .is_some_and(|order| order.status == CONFIRMED)
+        && trade.tiny_sell_order.is_none()
+        && trade.proof_status != PROOF_STATUS_CLOSED
 }
 
 fn sample_status(shadow_market_closed_trades: u64) -> String {
@@ -343,6 +370,43 @@ fn failed_order_samples(
         .take(FAILED_ORDER_SAMPLE_LIMIT)
         .map(order_sample)
         .collect()
+}
+
+fn missing_exit_order_samples(
+    proof: &ExecutionTinyProofReport,
+) -> Vec<TinyExecutionQualityMissingExitSample> {
+    proof
+        .trades
+        .iter()
+        .filter(|trade| missing_exit_order_trade(trade))
+        .take(FAILED_ORDER_SAMPLE_LIMIT)
+        .map(missing_exit_sample)
+        .collect()
+}
+
+fn missing_exit_sample(trade: &ExecutionTinyProofTrade) -> TinyExecutionQualityMissingExitSample {
+    let buy_order = trade.tiny_buy_order.as_ref();
+    TinyExecutionQualityMissingExitSample {
+        shadow_closed_trade_id: trade.shadow_closed_trade_id,
+        signal_id: trade.signal_id.clone(),
+        token: trade.token.clone(),
+        opened_ts: trade.opened_ts,
+        closed_ts: trade.closed_ts,
+        exit_signal_ts: trade.exit_signal_ts,
+        exit_quote_request_ts: trade.exit_quote_request_ts,
+        exit_quote_event_id: trade.exit_quote_event_id.clone(),
+        exit_decision_status: trade.exit_decision_status.clone(),
+        exit_decision_reason: trade.exit_decision_reason.clone(),
+        tiny_position_id: trade.tiny_position_id.clone(),
+        tiny_position_state: trade.tiny_position_state.clone(),
+        tiny_position_opened_ts: trade.tiny_position_opened_ts,
+        tiny_position_cost_sol: trade.tiny_position_cost_sol,
+        buy_order_id: buy_order.map(|order| order.order_id.clone()),
+        buy_order_status: buy_order.map(|order| order.status.clone()),
+        buy_confirm_ts: buy_order.and_then(|order| order.confirm_ts),
+        buy_quote_source: buy_order.and_then(|order| order.quote_source.clone()),
+        buy_quote_event_id: buy_order.and_then(|order| order.quote_event_id.clone()),
+    }
 }
 
 fn order_sample(order: &ExecutionTinyProofOrder) -> TinyExecutionQualityOrderSample {

@@ -98,6 +98,49 @@ async fn execution_canary_state_machine_persists_build_plan_metadata() -> Result
     Ok(())
 }
 
+#[test]
+fn execution_build_plan_metadata_never_precedes_refreshed_quote_timestamp() -> Result<()> {
+    let db_path = unique_execution_build_metadata_test_path("refreshed-quote-ts");
+    let store = SqliteStore::open(&db_path)?;
+    let now = Utc::now();
+    let quote_request_ts = now + chrono::Duration::milliseconds(280);
+    let plan = crate::execution_submit_adapter::ExecutionTransactionPlan {
+        plan_id: "plan-refreshed-quote-ts".to_string(),
+        order_id: "exec-canary:refreshed-quote-ts".to_string(),
+        signal_id: "shadow:sig-build-metadata:leader-wallet:buy:TokenMint".to_string(),
+        client_order_id: "client-refreshed-quote-ts".to_string(),
+        attempt: 1,
+        route: "metis-canary".to_string(),
+        token: "TokenMint".to_string(),
+        side: "buy".to_string(),
+        buy_size_sol: 0.01,
+        slippage_tolerance_bps: 500,
+        wallet_pubkey: "WalletPubkey".to_string(),
+        metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            quote_event_id: Some("quote:entry:refreshed".to_string()),
+            quote_request_ts: Some(quote_request_ts),
+            quote_status: Some("ok".to_string()),
+            decision_status: Some("would_execute".to_string()),
+            decision_reason: Some("fresh_submit_quote_within_slippage_limit".to_string()),
+            ..crate::execution_submit_adapter::ExecutionBuildPlanMetadata::default()
+        },
+        swap_blueprint: None,
+        serialized_transaction_payload_slot: None,
+        submit_enabled: false,
+    };
+
+    crate::execution_build_plan_metadata::record_execution_build_plan_metadata(&store, &plan, now)?;
+    let metadata = store
+        .load_execution_canary_build_plan_metadata(&plan.order_id)?
+        .expect("build metadata should be persisted");
+
+    assert_eq!(metadata.quote_request_ts, Some(quote_request_ts));
+    assert_eq!(metadata.recorded_ts, quote_request_ts);
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
 fn unique_execution_build_metadata_test_path(name: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

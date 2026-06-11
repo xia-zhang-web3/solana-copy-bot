@@ -6,6 +6,7 @@ pub(crate) mod execution_canary_quote_pnl_gate_runtime;
 pub(crate) mod execution_canary_quote_pnl_metis;
 pub(crate) mod execution_canary_quote_pnl_quality;
 pub mod execution_canary_quote_pnl_sell_side;
+pub(crate) mod execution_canary_quote_pnl_upstream;
 pub mod execution_canary_quote_pnl_wallet;
 pub(crate) mod execution_canary_quote_pnl_wallet_live;
 pub mod execution_canary_readiness;

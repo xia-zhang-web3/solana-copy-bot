@@ -153,6 +153,37 @@ fn quality_summary_flags_exit_flow_loss() -> Result<()> {
     assert_eq!(quality.quote_canary_exit_would_execute_trades, 1);
     assert_eq!(quality.tiny_exit_ordered_trades, 0);
     assert_eq!(quality.tiny_exit_missing_orders, 1);
+    assert_eq!(quality.missing_exit_order_samples.len(), 1);
+    let sample = &quality.missing_exit_order_samples[0];
+    assert_eq!(sample.token, "TokenMarketNotFound");
+    assert_eq!(sample.signal_id, "sell-exit-missing");
+    assert_eq!(
+        sample.exit_quote_event_id.as_deref(),
+        Some("quote:exit:exit-missing")
+    );
+    assert_eq!(
+        sample.exit_decision_status.as_deref(),
+        Some("would_execute")
+    );
+    assert_eq!(
+        sample.exit_decision_reason.as_deref(),
+        Some("fresh_submit_quote_within_slippage_limit")
+    );
+    assert_eq!(sample.exit_signal_ts, Some(closed_ts));
+    assert_eq!(
+        sample.exit_quote_request_ts,
+        Some(closed_ts + Duration::milliseconds(10))
+    );
+    assert_eq!(sample.buy_order_id.as_deref(), Some(buy_order_id.as_str()));
+    assert_eq!(
+        sample.buy_order_status.as_deref(),
+        Some("execution_canary_confirmed")
+    );
+    let expected_position_id = format!("exec-canary-pos:{buy_order_id}");
+    assert_eq!(
+        sample.tiny_position_id.as_deref(),
+        Some(expected_position_id.as_str())
+    );
     assert!(quality.top_flow_blockers.iter().any(|blocker| {
         blocker.stage == "exit_order"
             && blocker.reason == "missing_tiny_sell_order_after_would_execute"

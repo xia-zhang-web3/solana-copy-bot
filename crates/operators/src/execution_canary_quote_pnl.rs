@@ -21,6 +21,7 @@ use crate::execution_canary_quote_pnl_quality::{
 use crate::execution_canary_quote_pnl_sell_side::{
     build_sell_side_diagnostics, SellSideDiagnosticsReport,
 };
+use crate::execution_canary_quote_pnl_upstream::load_tiny_execution_upstream_state;
 use crate::execution_canary_quote_pnl_wallet::WalletReconciliationReport;
 use crate::execution_canary_quote_pnl_wallet_live::build_live_wallet_reconciliation;
 
@@ -340,11 +341,22 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         }
     };
     let runtime_root = runtime_root_from_db_path(&context.db_path);
+    let upstream_state = match load_tiny_execution_upstream_state(&store, as_of) {
+        Ok(state) => state,
+        Err(error) => {
+            return CanaryQuotePnlOperatorReport::failed(
+                REASON_DB_UNREADABLE,
+                Some(error.to_string()),
+                as_of,
+            );
+        }
+    };
     let tiny_execution_gate = build_tiny_execution_gate(
         &summary,
         &canary_status,
         &canary_readiness,
         &submit_risk,
+        upstream_state,
         recent_loss,
         as_of,
         context.config.as_ref().map(|config| &config.execution),

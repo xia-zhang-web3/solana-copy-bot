@@ -178,6 +178,68 @@ fn tiny_execution_gate_status_reports_runtime_not_startup_readiness() -> Result<
     Ok(())
 }
 
+#[test]
+fn tiny_execution_gate_reports_upstream_shadow_risk_pause() -> Result<()> {
+    let dir = tempdir()?;
+    let state_dir = dir.path().join("state");
+    fs::create_dir(&state_dir)?;
+    let db_path = state_dir.join("runtime.db");
+    let signer_path = dir.path().join("tiny-signer.json");
+    let submit_token_path = dir.path().join("submit-adapter.token");
+    let signer_pubkey = write_test_keypair(&signer_path)?;
+    fs::write(&submit_token_path, "test-token")?;
+
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = ts("2026-06-08T12:00:00Z");
+    store.record_execution_quote_canary_event(&quote_event(now))?;
+    store.insert_risk_event(
+        "shadow_risk_pause",
+        "warn",
+        now + Duration::seconds(5),
+        Some(
+            r#"{"pause_type":"drawdown_1h","detail":"pnl_1h=-0.950000 <= stop=-0.700000","until":"2026-06-08T12:15:00+00:00"}"#,
+        ),
+    )?;
+    drop(store);
+
+    let config_path = dir.path().join("live.toml");
+    fs::write(
+        &config_path,
+        tiny_config(&db_path, &signer_path, &submit_token_path, &signer_pubkey),
+    )?;
+    let report = build_report_from_config_path(&config_path, now + Duration::seconds(40));
+    let gate = report
+        .tiny_execution_gate
+        .as_ref()
+        .unwrap_or_else(|| panic!("tiny execution gate should exist: {:?}", report.error));
+
+    assert_eq!(gate.status, "entries_paused");
+    assert_eq!(gate.runtime_status, "ready");
+    assert_eq!(gate.upstream_status, "entries_paused");
+    assert!(!gate.live_trading_enabled);
+    assert!(!gate.can_start_tiny_execution);
+    assert!(!gate.can_open_new_tiny_entries);
+    assert!(!gate.can_receive_upstream_entries);
+    assert!(gate.can_process_tiny_sells);
+    assert_eq!(gate.runtime_blocker_count, 0);
+    assert_eq!(gate.upstream_blocker_count, 1);
+    assert_eq!(gate.entry_upstream_blocker_count, 1);
+    assert_eq!(gate.blocker_count, 1);
+    assert!(gate
+        .upstream_blockers
+        .iter()
+        .any(|check| check.name == "upstream_shadow_risk_pause"));
+    assert!(gate
+        .why_not_trading_now
+        .iter()
+        .any(|reason| reason.contains("drawdown_1h")));
+    Ok(())
+}
+
 fn mark_submitted_order(
     store: &SqliteStore,
     name: &str,

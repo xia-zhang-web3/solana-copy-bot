@@ -8,6 +8,7 @@ use serde::Serialize;
 use std::path::Path;
 
 use crate::execution_canary_quote_pnl_gate_runtime::classify_runtime_gate;
+use crate::execution_canary_quote_pnl_upstream::TinyExecutionUpstreamState;
 use crate::execution_canary_tiny_config_checks::push_config_checks;
 
 const DEFAULT_TINY_MAX_RECENT_LOSS_SOL_24H: f64 = 0.05;
@@ -21,19 +22,24 @@ pub struct TinyExecutionGate {
     pub startup_readiness_status: String,
     pub runtime_status: String,
     pub runtime_mode: String,
+    pub upstream_status: String,
     pub can_start_tiny_execution: bool,
     pub can_continue_tiny_execution: bool,
     pub can_open_new_tiny_entries: bool,
     pub can_process_tiny_sells: bool,
+    pub can_receive_upstream_entries: bool,
     pub blocker_count: u64,
     pub startup_blocker_count: u64,
     pub runtime_blocker_count: u64,
     pub entry_runtime_blocker_count: u64,
     pub sell_runtime_blocker_count: u64,
+    pub upstream_blocker_count: u64,
+    pub entry_upstream_blocker_count: u64,
     pub warning_count: u64,
     pub runtime_blockers: Vec<TinyExecutionGateCheck>,
     pub entry_runtime_blockers: Vec<TinyExecutionGateCheck>,
     pub sell_runtime_blockers: Vec<TinyExecutionGateCheck>,
+    pub upstream_blockers: Vec<TinyExecutionGateCheck>,
     pub why_not_trading_now: Vec<String>,
     pub quote_gate_status: String,
     pub latest_order_id: Option<String>,
@@ -62,6 +68,7 @@ pub(crate) fn build_tiny_execution_gate(
     canary_status: &ExecutionCanaryStatusReport,
     canary_readiness: &ExecutionCanaryReadinessSummary,
     submit_risk: &ExecutionCanarySubmitRiskSummary,
+    upstream_state: TinyExecutionUpstreamState,
     recent_loss_sol_24h: f64,
     as_of: DateTime<Utc>,
     config: Option<&ExecutionConfig>,
@@ -175,6 +182,7 @@ pub(crate) fn build_tiny_execution_gate(
         latest_simulation_status,
         metadata_age_seconds,
         submit_risk,
+        upstream_state,
         recent_loss_sol_24h,
         checks,
     )
@@ -224,6 +232,7 @@ fn finish_gate(
     latest_simulation_status: Option<String>,
     metadata_age_seconds: Option<i64>,
     submit_risk: &ExecutionCanarySubmitRiskSummary,
+    upstream_state: TinyExecutionUpstreamState,
     recent_loss_sol_24h: f64,
     checks: Vec<TinyExecutionGateCheck>,
 ) -> TinyExecutionGate {
@@ -244,31 +253,43 @@ fn finish_gate(
         warning_count,
         summary.readiness_gate.open_position_count,
     );
+    let can_open_new_tiny_entries =
+        runtime.can_open_new_tiny_entries && upstream_state.can_open_new_tiny_entries;
+    let can_process_tiny_sells = runtime.can_process_tiny_sells;
+    let blocker_count = runtime.runtime_blocker_count + upstream_state.blocker_count;
+    let mut why_not_trading_now = runtime.why_not_trading_now.clone();
+    why_not_trading_now.extend(upstream_state.why_not_trading_now.clone());
 
     TinyExecutionGate {
-        status: runtime.runtime_status.clone(),
-        live_trading_enabled: runtime.can_open_new_tiny_entries && runtime.can_process_tiny_sells,
-        live_trading_status: live_trading_status(
-            runtime.can_open_new_tiny_entries,
-            runtime.can_process_tiny_sells,
+        status: combined_status(
+            can_open_new_tiny_entries,
+            can_process_tiny_sells,
+            warning_count,
         ),
+        live_trading_enabled: can_open_new_tiny_entries && can_process_tiny_sells,
+        live_trading_status: live_trading_status(can_open_new_tiny_entries, can_process_tiny_sells),
         startup_readiness_status: startup_readiness_status.to_string(),
         runtime_status: runtime.runtime_status,
         runtime_mode: runtime.runtime_mode,
-        can_start_tiny_execution: runtime.can_open_new_tiny_entries,
-        can_continue_tiny_execution: runtime.can_process_tiny_sells,
-        can_open_new_tiny_entries: runtime.can_open_new_tiny_entries,
-        can_process_tiny_sells: runtime.can_process_tiny_sells,
-        blocker_count: runtime.runtime_blocker_count,
+        upstream_status: upstream_state.status,
+        can_start_tiny_execution: can_open_new_tiny_entries,
+        can_continue_tiny_execution: can_process_tiny_sells,
+        can_open_new_tiny_entries,
+        can_process_tiny_sells,
+        can_receive_upstream_entries: upstream_state.can_open_new_tiny_entries,
+        blocker_count,
         startup_blocker_count,
         runtime_blocker_count: runtime.runtime_blocker_count,
         entry_runtime_blocker_count: runtime.entry_runtime_blocker_count,
         sell_runtime_blocker_count: runtime.sell_runtime_blocker_count,
+        upstream_blocker_count: upstream_state.blocker_count,
+        entry_upstream_blocker_count: upstream_state.entry_blocker_count,
         warning_count,
         runtime_blockers: runtime.runtime_blockers,
         entry_runtime_blockers: runtime.entry_runtime_blockers,
         sell_runtime_blockers: runtime.sell_runtime_blockers,
-        why_not_trading_now: runtime.why_not_trading_now,
+        upstream_blockers: upstream_state.blockers,
+        why_not_trading_now,
         quote_gate_status: summary.readiness_gate.status.clone(),
         latest_order_id: latest_order.map(|order| order.order_id.clone()),
         latest_order_status: latest_order.map(|order| order.status.clone()),
@@ -281,6 +302,21 @@ fn finish_gate(
         recent_realized_loss_sol_24h: recent_loss_sol_24h,
         checks,
     }
+}
+
+fn combined_status(can_open_entries: bool, can_process_sells: bool, warning_count: u64) -> String {
+    if can_open_entries && can_process_sells {
+        return if warning_count > 0 {
+            "ready_with_warnings"
+        } else {
+            "ready"
+        }
+        .to_string();
+    }
+    if !can_open_entries && can_process_sells {
+        return "entries_paused".to_string();
+    }
+    "blocked".to_string()
 }
 
 fn live_trading_status(can_open_entries: bool, can_process_sells: bool) -> String {

@@ -27,7 +27,7 @@ pub(crate) fn record_execution_build_plan_metadata(
         order_id: plan.order_id.clone(),
         signal_id: plan.signal_id.clone(),
         client_order_id: plan.client_order_id.clone(),
-        recorded_ts: now,
+        recorded_ts: metadata_recorded_ts(now, metadata.quote_request_ts),
         quote_source: metadata.quote_source.clone(),
         quote_event_id: metadata.quote_event_id.clone(),
         quote_request_ts: metadata.quote_request_ts,
@@ -46,4 +46,13 @@ pub(crate) fn record_execution_build_plan_metadata(
         decision_status: metadata.decision_status.clone(),
         decision_reason: metadata.decision_reason.clone(),
     })
+}
+
+fn metadata_recorded_ts(
+    fallback: DateTime<Utc>,
+    quote_request_ts: Option<DateTime<Utc>>,
+) -> DateTime<Utc> {
+    quote_request_ts
+        .filter(|quote_request_ts| *quote_request_ts > fallback)
+        .unwrap_or(fallback)
 }
