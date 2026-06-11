@@ -1,4 +1,5 @@
 use super::ExecutionTransactionPlan;
+use crate::execution_build_plan_age::quote_age_ms_summary_field;
 use crate::execution_pumpswap_error::{
     annotate_pumpswap_custom_errors, is_pump_fun_bonding_curve_not_found,
 };
@@ -32,5 +33,7 @@ pub(super) fn execution_error_text_for_plan(
     } else {
         message.to_string()
     };
-    truncate_for_log(&text, max_len)
+    let quote_age = quote_age_ms_summary_field(&plan.metadata);
+    let text_len = max_len.saturating_sub(quote_age.len()).max(1);
+    format!("{}{}", truncate_for_log(&text, text_len), quote_age)
 }

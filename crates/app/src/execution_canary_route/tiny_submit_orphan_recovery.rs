@@ -9,7 +9,9 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-const TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+const TOKEN_ACCOUNT_PROGRAM_IDS: [&str; 2] = [SPL_TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID];
 const ORPHAN_RECOVERY_TERMINAL_WRITE_OFF_COOLDOWN_HOURS: i64 = 24;
 const ORPHAN_RECOVERY_TERMINAL_WRITE_OFF_REASON: &str = "orphan_recovery_recent_terminal_write_off";
 
@@ -199,6 +201,20 @@ fn reconcile_recovery_orphan_positions(
 }
 
 async fn fetch_wallet_token_balances(config: &ExecutionConfig) -> Result<Vec<WalletTokenBalance>> {
+    let mut by_mint: BTreeMap<String, WalletTokenBalance> = BTreeMap::new();
+    for program_id in TOKEN_ACCOUNT_PROGRAM_IDS {
+        merge_wallet_token_balances(
+            &mut by_mint,
+            fetch_wallet_token_balances_for_program(config, program_id).await?,
+        )?;
+    }
+    Ok(by_mint.into_values().collect())
+}
+
+async fn fetch_wallet_token_balances_for_program(
+    config: &ExecutionConfig,
+    program_id: &str,
+) -> Result<Vec<WalletTokenBalance>> {
     let response = reqwest::Client::new()
         .post(config.priority_fee_canary_rpc_url.trim())
         .timeout(Duration::from_millis(config.quote_canary_timeout_ms.max(1)))
@@ -208,7 +224,7 @@ async fn fetch_wallet_token_balances(config: &ExecutionConfig) -> Result<Vec<Wal
             "method": "getTokenAccountsByOwner",
             "params": [
                 config.canary_wallet_pubkey.as_str(),
-                {"programId": TOKEN_PROGRAM_ID},
+                {"programId": program_id},
                 {"encoding": "jsonParsed", "commitment": "confirmed"}
             ]
         }))
@@ -228,6 +244,34 @@ async fn fetch_wallet_token_balances(config: &ExecutionConfig) -> Result<Vec<Wal
     parse_wallet_token_balances(
         serde_json::from_str(&body).context("wallet token account RPC JSON decode failed")?,
     )
+}
+
+fn merge_wallet_token_balances(
+    by_mint: &mut BTreeMap<String, WalletTokenBalance>,
+    balances: Vec<WalletTokenBalance>,
+) -> Result<()> {
+    for balance in balances {
+        let entry = by_mint
+            .entry(balance.mint.clone())
+            .or_insert(WalletTokenBalance {
+                mint: balance.mint.clone(),
+                raw: 0,
+                decimals: balance.decimals,
+            });
+        if entry.decimals != balance.decimals {
+            return Err(anyhow!(
+                "wallet token account decimals mismatch for {}",
+                balance.mint
+            ));
+        }
+        entry.raw = entry.raw.checked_add(balance.raw).ok_or_else(|| {
+            anyhow!(
+                "wallet token account raw amount overflow for {}",
+                balance.mint
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn parse_wallet_token_balances(value: Value) -> Result<Vec<WalletTokenBalance>> {

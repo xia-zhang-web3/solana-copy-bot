@@ -14,6 +14,8 @@ use crate::execution_canary_quote_pnl_wallet::{
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const SPL_TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+const TOKEN_ACCOUNT_PROGRAMS: [&str; 2] = [SPL_TOKEN_PROGRAM, TOKEN_2022_PROGRAM];
 
 pub(crate) fn build_live_wallet_reconciliation(
     config: &ExecutionConfig,
@@ -132,30 +134,33 @@ fn rpc_token_accounts(
     rpc_url: &str,
     owner: &str,
 ) -> Result<Vec<WalletTokenBalance>, String> {
-    let result = rpc_call(
-        client,
-        rpc_url,
-        "getTokenAccountsByOwner",
-        json!([owner, {"programId": SPL_TOKEN_PROGRAM}, {"encoding": "jsonParsed"}]),
-    )?;
-    let accounts = result
-        .get("value")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "getTokenAccountsByOwner missing result.value".to_string())?;
-    Ok(accounts
-        .iter()
-        .map(|account| {
-            let info = &account["account"]["data"]["parsed"]["info"];
-            let amount = &info["tokenAmount"];
-            WalletTokenBalance {
-                token_account: string_field(account, "pubkey").unwrap_or_default(),
-                mint: string_field(info, "mint").unwrap_or_default(),
-                amount_raw: string_field(amount, "amount").unwrap_or_default(),
-                ui_amount_string: string_field(amount, "uiAmountString").unwrap_or_default(),
-                decimals: amount.get("decimals").and_then(Value::as_u64).unwrap_or(0) as u8,
-            }
-        })
-        .collect())
+    let mut balances = Vec::new();
+    for program_id in TOKEN_ACCOUNT_PROGRAMS {
+        let result = rpc_call(
+            client,
+            rpc_url,
+            "getTokenAccountsByOwner",
+            json!([owner, {"programId": program_id}, {"encoding": "jsonParsed"}]),
+        )?;
+        let accounts = result
+            .get("value")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "getTokenAccountsByOwner missing result.value".to_string())?;
+        balances.extend(accounts.iter().map(parse_wallet_token_balance));
+    }
+    Ok(balances)
+}
+
+fn parse_wallet_token_balance(account: &Value) -> WalletTokenBalance {
+    let info = &account["account"]["data"]["parsed"]["info"];
+    let amount = &info["tokenAmount"];
+    WalletTokenBalance {
+        token_account: string_field(account, "pubkey").unwrap_or_default(),
+        mint: string_field(info, "mint").unwrap_or_default(),
+        amount_raw: string_field(amount, "amount").unwrap_or_default(),
+        ui_amount_string: string_field(amount, "uiAmountString").unwrap_or_default(),
+        decimals: amount.get("decimals").and_then(Value::as_u64).unwrap_or(0) as u8,
+    }
 }
 
 fn rpc_call(client: &Client, rpc_url: &str, method: &str, params: Value) -> Result<Value, String> {

@@ -352,6 +352,7 @@ async fn migrated_pumpswap_direct_failure_is_kept_when_generic_build_fails() -> 
 
     assert!(error.contains("PumpSwap direct build failed"));
     assert!(error.contains("direct account read failed"));
+    assert!(error.contains("quote_age_ms_at_build="));
     assert!(error.contains("generic Metis swap failed"));
     assert!(error.contains("generic metis build failed"));
     Ok(())

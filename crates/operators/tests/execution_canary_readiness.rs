@@ -29,6 +29,7 @@ fn execution_canary_readiness_operator_reports_latest_metadata() -> Result<()> {
         quote_in_amount_raw: Some("10000000".to_string()),
         quote_out_amount_raw: Some("123456".to_string()),
         quote_response_json: None,
+        quote_request_ts: None,
         quote_price_sol: Some(0.000081),
         price_impact_pct: Some(0.04),
         route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),

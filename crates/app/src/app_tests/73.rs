@@ -139,6 +139,59 @@ async fn orphan_position_recovery_skips_recent_terminal_write_off_token() -> Res
 }
 
 #[tokio::test]
+async fn orphan_position_recovery_restores_token_2022_balance() -> Result<()> {
+    let db_path = unique_orphan_recovery_test_path("token-2022-known-token");
+    let mut store = SqliteStore::open(&db_path)?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    let now = Utc::now();
+    let historical_opened_ts = now - chrono::Duration::minutes(20);
+    store.record_execution_canary_open_position(
+        "old-confirmed-buy",
+        "Token2022Mint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.01,
+        historical_opened_ts,
+    )?;
+    store.close_execution_canary_open_position(
+        "Token2022Mint",
+        10.0,
+        Some(TokenQuantity::new(10_000, 3)),
+        0.001,
+        1e-9,
+        now - chrono::Duration::minutes(10),
+    )?;
+    let token_2022_body = r#"{"jsonrpc":"2.0","id":"execution-canary-orphan-recovery","result":{"value":[{"account":{"data":{"parsed":{"info":{"mint":"Token2022Mint","tokenAmount":{"amount":"12345","decimals":3,"uiAmountString":"12.345"}}}}}}]}}"#;
+    let (rpc_url, server) =
+        serve_orphan_token_accounts_bodies(EMPTY_ORPHAN_TOKEN_ACCOUNTS_BODY, token_2022_body)
+            .await?;
+    let config = orphan_recovery_config(&rpc_url);
+
+    let summary =
+        crate::execution_canary_route::process_tiny_submit_orphan_position_recovery_sweep(
+            &config, &store, now,
+        )
+        .await?
+        .expect("orphan recovery should run");
+    server.await??;
+    let known = store
+        .load_execution_canary_open_position("Token2022Mint")?
+        .expect("known Token-2022 token should be recovered");
+
+    assert_eq!(summary.orphan_recovery_checked, 1);
+    assert_eq!(summary.orphan_recovery_recovered, 1);
+    assert_eq!(summary.open_positions, 1);
+    assert_eq!(known.qty_exact, Some(TokenQuantity::new(12_345, 3)));
+    assert_eq!(known.opened_ts, historical_opened_ts);
+
+    let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+#[tokio::test]
 async fn orphan_position_recovery_retimestamps_existing_recovery_position() -> Result<()> {
     let db_path = unique_orphan_recovery_test_path("retimestamp-existing");
     let mut store = SqliteStore::open(&db_path)?;
@@ -252,23 +305,35 @@ async fn serve_orphan_token_accounts() -> Result<(String, tokio::task::JoinHandl
     serve_orphan_token_accounts_body(body).await
 }
 
+const EMPTY_ORPHAN_TOKEN_ACCOUNTS_BODY: &str =
+    r#"{"jsonrpc":"2.0","id":"execution-canary-orphan-recovery","result":{"value":[]}}"#;
+
 async fn serve_orphan_token_accounts_body(
     body: &'static str,
+) -> Result<(String, tokio::task::JoinHandle<Result<()>>)> {
+    serve_orphan_token_accounts_bodies(body, EMPTY_ORPHAN_TOKEN_ACCOUNTS_BODY).await
+}
+
+async fn serve_orphan_token_accounts_bodies(
+    spl_token_body: &'static str,
+    token_2022_body: &'static str,
 ) -> Result<(String, tokio::task::JoinHandle<Result<()>>)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let rpc_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await?;
-        let mut buffer = [0_u8; 4096];
-        let read = socket.read(&mut buffer).await?;
-        let request = String::from_utf8_lossy(&buffer[..read]);
-        assert!(request.contains("getTokenAccountsByOwner"));
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        socket.write_all(response.as_bytes()).await?;
+        for body in [spl_token_body, token_2022_body] {
+            let (mut socket, _) = listener.accept().await?;
+            let mut buffer = [0_u8; 4096];
+            let read = socket.read(&mut buffer).await?;
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.contains("getTokenAccountsByOwner"));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await?;
+        }
         Ok(())
     });
     Ok((rpc_url, server))
