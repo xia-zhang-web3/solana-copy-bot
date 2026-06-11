@@ -6,8 +6,10 @@ use crate::execution_pumpswap_accounts::{
 use crate::execution_pumpswap_direct_instructions::{
     build_buy_with_sol_instructions, build_sell_for_sol_instructions, PumpSwapInstructionInputs,
 };
+use crate::execution_pumpswap_route_context::{
+    extract_pumpswap_amm_key, plan_has_pumpswap_direct_route,
+};
 use crate::execution_quote_canary_helpers::truncate_for_log;
-use crate::execution_route_plan::route_plan_has_pump_fun_amm;
 use crate::execution_solana_tx::{serialize_unsigned_legacy_transaction, PubkeyBytes};
 use crate::execution_submit_adapter::ExecutionTransactionPlan;
 use crate::execution_swap_transaction_http::SwapTransactionDryRunResult;
@@ -37,7 +39,7 @@ pub(crate) async fn fetch_pumpswap_direct_transaction_dry_run(
     config: &ExecutionConfig,
     plan: &ExecutionTransactionPlan,
 ) -> Result<Option<SwapTransactionDryRunResult>> {
-    if !config.swap_transaction_dry_run_enabled || !should_try_pumpswap_direct(plan) {
+    if !config.swap_transaction_dry_run_enabled || !plan_has_pumpswap_direct_route(plan) {
         return Ok(None);
     }
     let timeout = StdDuration::from_millis(config.quote_canary_timeout_ms.max(1));
@@ -70,11 +72,6 @@ pub(crate) async fn fetch_pumpswap_direct_transaction_dry_run(
         serialized_transaction_base64: transaction.serialized_transaction_base64,
         source: PUMPSWAP_DIRECT_SOURCE.to_string(),
     }))
-}
-
-fn should_try_pumpswap_direct(plan: &ExecutionTransactionPlan) -> bool {
-    (plan.side.eq_ignore_ascii_case("buy") || plan.side.eq_ignore_ascii_case("sell"))
-        && route_plan_has_pump_fun_amm(plan.metadata.route_plan_json.as_deref())
 }
 
 struct PumpSwapDirectTransaction {
@@ -199,42 +196,6 @@ async fn build_pumpswap_direct_sell_transaction(
     Ok(PumpSwapDirectTransaction {
         serialized_transaction_base64: BASE64_STANDARD.encode(raw),
     })
-}
-
-fn extract_pumpswap_amm_key(plan: &ExecutionTransactionPlan) -> Result<PubkeyBytes> {
-    for raw in [
-        plan.metadata.route_plan_json.as_deref(),
-        plan.metadata.quote_response_json.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if let Some(key) = extract_amm_key_from_json(raw)? {
-            return parse_pubkey(&key, "PumpSwap ammKey");
-        }
-    }
-    anyhow::bail!("PumpSwap direct builder missing route ammKey")
-}
-
-fn extract_amm_key_from_json(raw: &str) -> Result<Option<String>> {
-    let value: Value = serde_json::from_str(raw)
-        .map_err(|error| anyhow!("invalid PumpSwap route JSON: {error}"))?;
-    let route_plan = value
-        .as_array()
-        .or_else(|| value.get("routePlan").and_then(Value::as_array));
-    let Some(items) = route_plan else {
-        return Ok(None);
-    };
-    Ok(items.iter().find_map(|item| {
-        let swap = item.get("swapInfo")?;
-        let label = swap.get("label").and_then(Value::as_str)?;
-        if !label.eq_ignore_ascii_case("Pump.fun Amm") {
-            return None;
-        }
-        swap.get("ammKey")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    }))
 }
 
 fn output_threshold(plan: &ExecutionTransactionPlan) -> Result<u64> {

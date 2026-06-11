@@ -1,4 +1,5 @@
 use crate::execution_pump_fun_migration_fallback::refresh_pump_fun_paid_sell_to_generic_pumpswap_plan;
+use crate::execution_pumpswap_route_context::plan_has_pumpswap_direct_route;
 use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID;
 use crate::execution_route_plan::route_plan_has_pump_fun_amm;
@@ -56,11 +57,14 @@ pub(crate) use self::confirmed_fill::{
     record_confirmed_fill_accounting, record_confirmed_fill_accounting_and_status,
     ExecutionConfirmedBuyFill, ExecutionConfirmedFill, ExecutionConfirmedSellFill,
 };
-#[cfg(test)]
-pub(crate) use self::diagnostics::execution_error_text_for_plan as test_execution_error_text_for_plan;
 use self::diagnostics::{
-    execution_error_for_plan, execution_error_text_for_plan,
+    execution_error_for_plan, execution_error_text_for_plan, pumpswap_direct_error_for_plan,
     should_try_pump_fun_paid_sell_migration_fallback,
+};
+#[cfg(test)]
+pub(crate) use self::diagnostics::{
+    execution_error_text_for_plan as test_execution_error_text_for_plan,
+    pumpswap_direct_error_for_plan as test_pumpswap_direct_error_for_plan,
 };
 use self::direct_builders::{
     pump_fun_simulation_result, pumpswap_direct_simulation_result, result_with_soft_pump_fun_error,
@@ -150,6 +154,7 @@ pub(crate) struct ExecutionSubmitRequest {
     pub(crate) buy_size_sol: f64,
     pub(crate) slippage_tolerance_bps: u64,
     pub(crate) wallet_pubkey: String,
+    pub(crate) entry_route_plan_json: Option<String>,
     pub(crate) metadata: ExecutionBuildPlanMetadata,
 }
 
@@ -180,6 +185,7 @@ pub(crate) struct ExecutionTransactionPlan {
     pub(crate) buy_size_sol: f64,
     pub(crate) slippage_tolerance_bps: u64,
     pub(crate) wallet_pubkey: String,
+    pub(crate) entry_route_plan_json: Option<String>,
     pub(crate) metadata: ExecutionBuildPlanMetadata,
     pub(crate) swap_blueprint: Option<ExecutionSwapBlueprint>,
     pub(crate) serialized_transaction_payload_slot:
@@ -269,6 +275,7 @@ impl ExecutionSubmitAdapter for NoSubmitExecutionAdapter {
             buy_size_sol: request.buy_size_sol,
             slippage_tolerance_bps: request.slippage_tolerance_bps,
             wallet_pubkey: request.wallet_pubkey.clone(),
+            entry_route_plan_json: request.entry_route_plan_json.clone(),
             metadata: request.metadata.clone(),
             swap_blueprint: None,
             serialized_transaction_payload_slot: None,
@@ -332,6 +339,7 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
             buy_size_sol: request.buy_size_sol,
             slippage_tolerance_bps: request.slippage_tolerance_bps,
             wallet_pubkey: request.wallet_pubkey.clone(),
+            entry_route_plan_json: request.entry_route_plan_json.clone(),
             metadata: request.metadata.clone(),
             swap_blueprint: Some(swap_blueprint),
             serialized_transaction_payload_slot: Some(
@@ -435,13 +443,13 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                             return Err(anyhow!(
                                 "pump.fun direct swap failed: {}; PumpSwap direct build failed: {}; generic Metis swap failed: {}",
                                 execution_error_for_plan(plan, &pump_fun_error, 140),
-                                execution_error_for_plan(generic_plan, &pumpswap_error, 140),
+                                pumpswap_direct_error_for_plan(generic_plan, &pumpswap_error, 140),
                                 execution_error_text_for_plan(generic_plan, &error.to_string(), 240)
                             ));
                         }
                         return Err(anyhow!(
                             "PumpSwap direct build failed: {}; generic Metis swap failed: {}",
-                            execution_error_for_plan(generic_plan, &pumpswap_error, 180),
+                            pumpswap_direct_error_for_plan(generic_plan, &pumpswap_error, 180),
                             execution_error_text_for_plan(generic_plan, &error.to_string(), 240)
                         ));
                     }
@@ -480,7 +488,7 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 proof = combined_simulation_proof(
                     Some(format!(
                         "pumpswap_direct_build_soft_failed error={}",
-                        execution_error_for_plan(generic_plan, &error, 180)
+                        pumpswap_direct_error_for_plan(generic_plan, &error, 180)
                     )),
                     proof,
                 );
@@ -539,7 +547,7 @@ fn should_use_direct_pump_fun_builder(
 
 fn should_try_pumpswap_direct_before_pump_fun(plan: &ExecutionTransactionPlan) -> bool {
     plan.metadata.quote_source.as_deref() != Some(QUOTE_SOURCE_PUMP_FUN_PAID)
-        && route_plan_has_pump_fun_amm(plan.metadata.route_plan_json.as_deref())
+        && plan_has_pumpswap_direct_route(plan)
 }
 
 fn soft_swap_instructions_failure_proof(error: &anyhow::Error) -> Option<String> {

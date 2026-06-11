@@ -166,6 +166,7 @@ fn swap_blueprint_request(
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: "DryRunWallet11111111111111111111111111111111".to_string(),
+        entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_source: Some("execution_quote_canary_event".to_string()),
             quote_event_id: Some("quote:entry:direct".to_string()),

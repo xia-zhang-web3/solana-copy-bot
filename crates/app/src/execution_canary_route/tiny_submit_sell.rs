@@ -20,6 +20,7 @@ use crate::execution_submit_adapter::{
     record_execution_tiny_submit_confirm_path, JupiterMetisDryRunExecutionAdapter,
     RpcExecutionSubmitTransport,
 };
+use crate::execution_tiny_entry_route::load_entry_route_plan_json_for_sell;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
@@ -200,7 +201,9 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
         return Ok(Some(summary));
     }
 
-    let request = build_submit_request(config, &signal, &order, metadata);
+    let entry_route_plan_json =
+        load_entry_route_plan_json_for_sell(store, &signal.token, signal.side.as_str())?;
+    let request = build_submit_request(config, &signal, &order, metadata, entry_route_plan_json);
     let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let Some(envelope) =
         build_simulated_signed_envelope(store, &adapter, &request, now, &mut summary).await?

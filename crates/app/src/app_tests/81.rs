@@ -376,6 +376,7 @@ fn alternate_builder_plan(
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
+        entry_route_plan_json: None,
         metadata: alternate_builder_metadata(quote_source),
     };
     let adapter =

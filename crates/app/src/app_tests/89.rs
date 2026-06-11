@@ -316,6 +316,7 @@ fn pumpswap_custom_errors_survive_outer_truncation() {
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: "Wallet1111111111111111111111111111111111".to_string(),
+        entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             route_plan_json: Some(r#"[{"swapInfo":{"label":"Pump.fun Amm"}}]"#.to_string()),
             ..crate::execution_submit_adapter::ExecutionBuildPlanMetadata::default()
@@ -490,8 +491,8 @@ async fn assert_pump_fun_request(request: CapturedRequest, path: &str) {
     write_http_json(request.into_socket, body).await;
 }
 
-struct CapturedRequest {
-    into_socket: tokio::net::TcpStream,
+pub(super) struct CapturedRequest {
+    pub(super) into_socket: tokio::net::TcpStream,
     body: String,
 }
 
@@ -503,7 +504,7 @@ impl std::ops::Deref for CapturedRequest {
     }
 }
 
-async fn read_http_request(listener: &tokio::net::TcpListener) -> CapturedRequest {
+pub(super) async fn read_http_request(listener: &tokio::net::TcpListener) -> CapturedRequest {
     let (mut socket, _) = listener.accept().await.expect("http request");
     let mut buffer = [0_u8; 8192];
     let read = socket.read(&mut buffer).await.expect("read request");
@@ -513,7 +514,7 @@ async fn read_http_request(listener: &tokio::net::TcpListener) -> CapturedReques
     }
 }
 
-async fn write_http_json(socket: tokio::net::TcpStream, body: &str) {
+pub(super) async fn write_http_json(socket: tokio::net::TcpStream, body: &str) {
     write_http_status(socket, 200, body).await;
 }
 
@@ -548,6 +549,7 @@ fn generic_migrated_pumpswap_request(
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
+        entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_source: Some(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
@@ -592,6 +594,7 @@ fn generic_migrated_pumpswap_sell_request(
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
+        entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_source: Some(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
@@ -634,6 +637,7 @@ fn pump_fun_paid_migrated_pumpswap_sell_request(
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
+        entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_source: Some(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID.to_string(),
@@ -666,7 +670,7 @@ fn generic_sell_quote_json(token: &str, pool: &str) -> String {
     )
 }
 
-fn rpc_account_json(data: &[u8], owner: &str) -> String {
+pub(super) fn rpc_account_json(data: &[u8], owner: &str) -> String {
     format!(
         r#"{{"data":["{}","base64"],"executable":false,"lamports":1,"owner":"{owner}","rentEpoch":0,"space":{}}}"#,
         BASE64_STANDARD.encode(data),
@@ -674,7 +678,7 @@ fn rpc_account_json(data: &[u8], owner: &str) -> String {
     )
 }
 
-fn pumpswap_global_config_data() -> Vec<u8> {
+pub(super) fn pumpswap_global_config_data() -> Vec<u8> {
     let recipient = pubkey_bytes("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM");
     let mut data = vec![149, 8, 156, 202, 160, 252, 176, 217];
     data.extend_from_slice(&recipient);
@@ -700,7 +704,7 @@ fn pumpswap_global_config_data() -> Vec<u8> {
     data
 }
 
-fn pumpswap_pool_data(token: &str) -> Vec<u8> {
+pub(super) fn pumpswap_pool_data(token: &str) -> Vec<u8> {
     let creator = pubkey_bytes("11111111111111111111111111111111");
     let quote_mint = pubkey_bytes(token);
     let lp_mint = pubkey_bytes("pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn");
@@ -735,7 +739,7 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-fn pump_fun_direct_config(base_url: &str) -> ExecutionConfig {
+pub(super) fn pump_fun_direct_config(base_url: &str) -> ExecutionConfig {
     let mut config = ExecutionConfig::default();
     config.canary_enabled = true;
     config.canary_dry_run = true;
@@ -765,6 +769,7 @@ fn generic_pump_fun_amm_request(
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
+        entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_source: Some(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),

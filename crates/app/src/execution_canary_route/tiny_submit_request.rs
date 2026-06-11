@@ -11,6 +11,7 @@ pub(super) fn build_submit_request(
     signal: &CopySignalRow,
     order: &ExecutionCanaryOrder,
     metadata: ExecutionBuildPlanMetadata,
+    entry_route_plan_json: Option<String>,
 ) -> ExecutionSubmitRequest {
     let metadata = cap_execution_priority_fee_lamports(config, metadata);
     ExecutionSubmitRequest {
@@ -25,6 +26,7 @@ pub(super) fn build_submit_request(
         buy_size_sol: config.canary_buy_size_sol,
         slippage_tolerance_bps: quote_canary_slippage_limit_bps(config, signal.side.as_str()),
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
+        entry_route_plan_json,
         metadata,
     }
 }

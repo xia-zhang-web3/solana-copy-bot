@@ -67,6 +67,8 @@ mod execution_pump_fun_owned_sell_contract;
 mod execution_pump_fun_swap_transaction_contract;
 #[path = "app_tests/91.rs"]
 mod execution_pumpswap_direct_live_probe;
+#[path = "app_tests/92.rs"]
+mod execution_pumpswap_entry_route_contract;
 #[path = "app_tests/43.rs"]
 mod execution_quote_canary_hot_observed;
 #[path = "app_tests/50.rs"]

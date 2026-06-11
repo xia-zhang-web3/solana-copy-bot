@@ -116,6 +116,7 @@ fn execution_build_plan_metadata_never_precedes_refreshed_quote_timestamp() -> R
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: "WalletPubkey".to_string(),
+        entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_event_id: Some("quote:entry:refreshed".to_string()),
             quote_request_ts: Some(quote_request_ts),

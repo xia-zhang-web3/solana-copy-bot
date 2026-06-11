@@ -177,6 +177,7 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
                 signal.side.as_str(),
             ),
             wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
+            entry_route_plan_json: None,
             metadata,
         };
         let plan = match self.adapter.build_transaction_plan(&request) {

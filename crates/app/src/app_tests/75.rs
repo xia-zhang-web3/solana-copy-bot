@@ -451,6 +451,7 @@ fn generic_pump_fun_submit_request(
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
+        entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_source: Some(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),

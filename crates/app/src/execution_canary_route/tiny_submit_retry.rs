@@ -146,7 +146,9 @@ async fn build_retry_submit_request(
         summary.last_error = Some(error);
         return Ok(None);
     }
-    Ok(Some(build_submit_request(config, &signal, order, metadata)))
+    Ok(Some(build_submit_request(
+        config, &signal, order, metadata, None,
+    )))
 }
 
 async fn build_retry_signed_envelope(

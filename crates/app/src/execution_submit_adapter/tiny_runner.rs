@@ -12,6 +12,7 @@ use crate::execution_canary_submit_contract::{
     record_execution_tiny_submit_plan, ExecutionSubmitPlanOutcome, ExecutionTinySubmitGate,
 };
 use crate::execution_signing_envelope::ExecutionSigningEnvelope;
+use crate::execution_tiny_entry_route::load_entry_route_plan_json_for_sell;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
@@ -176,6 +177,8 @@ pub(crate) fn build_tiny_submit_reconciliation_request(
         .ok_or_else(|| anyhow::anyhow!("missing build metadata for {}", order.order_id))?;
     let metadata =
         cap_execution_priority_fee_lamports(config, build_plan_metadata_from_storage(metadata));
+    let entry_route_plan_json =
+        load_entry_route_plan_json_for_sell(store, &signal.token, signal.side.as_str())?;
     Ok(ExecutionSubmitRequest {
         order_id: order.order_id.clone(),
         signal_id: order.signal_id.clone(),
@@ -192,6 +195,7 @@ pub(crate) fn build_tiny_submit_reconciliation_request(
                 &signal.side,
             ),
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
+        entry_route_plan_json,
         metadata,
     })
 }

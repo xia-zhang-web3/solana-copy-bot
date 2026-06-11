@@ -103,7 +103,7 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
         summary.reserved = 1;
         reserve.order
     };
-    let request = build_submit_request(config, signal, &order, metadata);
+    let request = build_submit_request(config, signal, &order, metadata, None);
     let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let Some(envelope) =
         build_simulated_signed_envelope(store, &adapter, &request, now, &mut summary).await?

@@ -93,6 +93,7 @@ fn live_pumpswap_direct_request(
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: wallet.to_string(),
+        entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_source: Some(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
@@ -140,6 +141,7 @@ fn live_pumpswap_direct_sell_request(
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: wallet.to_string(),
+        entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_source: Some(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),

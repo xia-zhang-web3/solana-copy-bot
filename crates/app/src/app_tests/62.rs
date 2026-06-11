@@ -342,6 +342,7 @@ fn tiny_path_request(
         buy_size_sol: 0.1,
         slippage_tolerance_bps: 500,
         wallet_pubkey: "DryRunWallet11111111111111111111111111111111".to_string(),
+        entry_route_plan_json: None,
         metadata: tiny_path_metadata(quote_price_sol),
     })
 }

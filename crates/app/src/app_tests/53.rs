@@ -365,6 +365,7 @@ fn file_signer_submit_request(
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: "DryRunWallet11111111111111111111111111111111".to_string(),
+        entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata::default(),
     }
 }

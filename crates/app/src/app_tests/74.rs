@@ -76,6 +76,7 @@ fn partial_sell_request(
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
         wallet_pubkey: "ExecutorPubkey".to_string(),
+        entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
             quote_event_id: Some("quote:partial-sell".to_string()),
             quote_request_ts: None,

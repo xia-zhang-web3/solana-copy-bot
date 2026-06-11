@@ -23,12 +23,40 @@ pub(super) fn execution_error_for_plan(
     execution_error_text_for_plan(plan, &format_error_chain(error), max_len)
 }
 
+pub(crate) fn pumpswap_direct_error_for_plan(
+    plan: &ExecutionTransactionPlan,
+    error: &anyhow::Error,
+    max_len: usize,
+) -> String {
+    execution_error_text_with_pamm_context(
+        plan,
+        &format_error_chain(error),
+        max_len,
+        route_plan_has_pump_fun_amm(plan.metadata.route_plan_json.as_deref())
+            || route_plan_has_pump_fun_amm(plan.entry_route_plan_json.as_deref()),
+    )
+}
+
 pub(crate) fn execution_error_text_for_plan(
     plan: &ExecutionTransactionPlan,
     message: &str,
     max_len: usize,
 ) -> String {
-    let pamm_errors = if route_plan_has_pump_fun_amm(plan.metadata.route_plan_json.as_deref()) {
+    execution_error_text_with_pamm_context(
+        plan,
+        message,
+        max_len,
+        route_plan_has_pump_fun_amm(plan.metadata.route_plan_json.as_deref()),
+    )
+}
+
+fn execution_error_text_with_pamm_context(
+    plan: &ExecutionTransactionPlan,
+    message: &str,
+    max_len: usize,
+    include_pamm_errors: bool,
+) -> String {
+    let pamm_errors = if include_pamm_errors {
         pumpswap_custom_errors_summary_field(message).unwrap_or_default()
     } else {
         String::new()
