@@ -36,6 +36,32 @@ fn tiny_economics_cli_defaults_to_five_hour_live_wallet_report() {
     assert_eq!(cli.since_hours, 5);
     assert_eq!(cli.limit, 200);
     assert!(cli.live_wallet);
+    assert!(!cli.include_stale_decay);
+}
+
+#[test]
+fn tiny_economics_cli_enables_stale_decay_only_by_flag() {
+    let cli = parse_economics_args([
+        "--config",
+        "/tmp/live.toml",
+        "--json",
+        "--include-stale-decay",
+        "--stale-decay-window-minutes",
+        "15",
+        "--stale-decay-min-sol-notional",
+        "0.001",
+        "--stale-decay-min-samples",
+        "2",
+        "--stale-decay-max-samples",
+        "20",
+    ])
+    .unwrap();
+
+    assert!(cli.include_stale_decay);
+    assert_eq!(cli.stale_decay_window_minutes, 15);
+    assert_eq!(cli.stale_decay_min_sol_notional, 0.001);
+    assert_eq!(cli.stale_decay_min_samples, 2);
+    assert_eq!(cli.stale_decay_max_samples, 20);
 }
 
 #[test]

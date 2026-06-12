@@ -37,6 +37,7 @@ mod execution_quote_canary_route_samples;
 mod execution_quote_canary_shadow_gate;
 mod execution_quote_provider_lookup;
 mod execution_quote_provider_selection_report;
+mod execution_stale_decay;
 mod execution_tiny_entry_funnel;
 mod execution_tiny_order_failures;
 mod execution_tiny_proof;
@@ -99,6 +100,10 @@ pub use execution_quote_canary_route_samples::{
 };
 pub use execution_quote_canary_shadow_gate::{
     EXECUTION_QUOTE_CANARY_SHADOW_GATE_DROPPED, EXECUTION_QUOTE_CANARY_SHADOW_GATE_RECORDED,
+};
+pub use execution_stale_decay::{
+    ExecutionStaleDecayCheckpointSummary, ExecutionStaleDecayPoint, ExecutionStaleDecayReport,
+    ExecutionStaleDecayTrade,
 };
 pub use migrations::SqliteStartupBootstrapResult;
 pub use money::{lamports_to_sol, signed_lamports_to_sol};

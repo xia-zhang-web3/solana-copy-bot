@@ -1,7 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{load_from_path, AppConfig};
-use copybot_storage_core::{ExecutionCanaryQuotePnlSummary, ExecutionTinyProofReport, SqliteStore};
+use copybot_storage_core::{
+    ExecutionCanaryQuotePnlSummary, ExecutionStaleDecayReport, ExecutionTinyProofReport,
+    SqliteStore,
+};
 use serde::Serialize;
 use std::env;
 use std::path::PathBuf;
@@ -18,9 +21,13 @@ const DEFAULT_SINCE_HOURS: i64 = 5;
 const MAX_SINCE_HOURS: i64 = 168;
 const DEFAULT_LIMIT: u32 = 200;
 const MAX_LIMIT: u32 = 1000;
+const DEFAULT_STALE_DECAY_WINDOW_MINUTES: i64 = 30;
+const DEFAULT_STALE_DECAY_MIN_SOL_NOTIONAL: f64 = 0.01;
+const DEFAULT_STALE_DECAY_MIN_SAMPLES: usize = 1;
+const DEFAULT_STALE_DECAY_MAX_SAMPLES: usize = 60;
 const ZERO_TOKEN_ACCOUNT_RENT_LAMPORTS: u64 = 2_039_280;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Cli {
     pub config_path: Option<PathBuf>,
     pub db_path: Option<PathBuf>,
@@ -29,6 +36,11 @@ pub struct Cli {
     pub since_hours: i64,
     pub limit: u32,
     pub live_wallet: bool,
+    pub include_stale_decay: bool,
+    pub stale_decay_window_minutes: i64,
+    pub stale_decay_min_sol_notional: f64,
+    pub stale_decay_min_samples: usize,
+    pub stale_decay_max_samples: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -44,6 +56,7 @@ pub struct TinyEconomicsReport {
     pub open_mark_to_quote: Option<OpenMarkToQuoteReport>,
     pub equity_view: Option<EquityViewReport>,
     pub follower_gap: Option<FollowerGapReport>,
+    pub stale_decay: Option<ExecutionStaleDecayReport>,
 }
 
 #[derive(Debug, Serialize)]
@@ -106,6 +119,7 @@ impl TinyEconomicsReport {
             open_mark_to_quote: None,
             equity_view: None,
             follower_gap: None,
+            stale_decay: None,
         }
     }
 
@@ -140,6 +154,11 @@ where
     let mut since_hours = DEFAULT_SINCE_HOURS;
     let mut limit = DEFAULT_LIMIT;
     let mut live_wallet = true;
+    let mut include_stale_decay = false;
+    let mut stale_decay_window_minutes = DEFAULT_STALE_DECAY_WINDOW_MINUTES;
+    let mut stale_decay_min_sol_notional = DEFAULT_STALE_DECAY_MIN_SOL_NOTIONAL;
+    let mut stale_decay_min_samples = DEFAULT_STALE_DECAY_MIN_SAMPLES;
+    let mut stale_decay_max_samples = DEFAULT_STALE_DECAY_MAX_SAMPLES;
     let mut iter = args.into_iter().map(Into::into);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -151,6 +170,23 @@ where
             }
             "--limit" => limit = parse_limit(&next_value(&mut iter, "--limit")?)?,
             "--no-live-wallet" => live_wallet = false,
+            "--include-stale-decay" => include_stale_decay = true,
+            "--stale-decay-window-minutes" => {
+                stale_decay_window_minutes =
+                    parse_stale_decay_window_minutes(&next_value(&mut iter, &arg)?)?
+            }
+            "--stale-decay-min-sol-notional" => {
+                stale_decay_min_sol_notional =
+                    parse_stale_decay_min_sol_notional(&next_value(&mut iter, &arg)?)?
+            }
+            "--stale-decay-min-samples" => {
+                stale_decay_min_samples =
+                    parse_stale_decay_sample_count(&next_value(&mut iter, &arg)?)?
+            }
+            "--stale-decay-max-samples" => {
+                stale_decay_max_samples =
+                    parse_stale_decay_sample_count(&next_value(&mut iter, &arg)?)?
+            }
             "--json" => json = true,
             other => return Err(anyhow!("unknown argument: {other}")),
         }
@@ -166,6 +202,11 @@ where
         since_hours,
         limit,
         live_wallet,
+        include_stale_decay,
+        stale_decay_window_minutes,
+        stale_decay_min_sol_notional,
+        stale_decay_min_samples,
+        stale_decay_max_samples,
     })
 }
 
@@ -198,6 +239,18 @@ fn build_report_result(cli: Cli, as_of: DateTime<Utc>) -> Result<TinyEconomicsRe
         open_mark.quoted_value_sol,
         wallet.as_ref(),
     );
+    let stale_decay = if cli.include_stale_decay {
+        Some(store.execution_stale_quote_decay_report(
+            since,
+            cli.limit,
+            cli.stale_decay_window_minutes,
+            cli.stale_decay_min_sol_notional,
+            cli.stale_decay_min_samples,
+            cli.stale_decay_max_samples,
+        )?)
+    } else {
+        None
+    };
     Ok(TinyEconomicsReport {
         as_of,
         since,
@@ -210,6 +263,7 @@ fn build_report_result(cli: Cli, as_of: DateTime<Utc>) -> Result<TinyEconomicsRe
         open_mark_to_quote: Some(open_mark),
         equity_view: Some(equity_view),
         follower_gap: follower_gap_from_trades(&summary.trades),
+        stale_decay,
     })
 }
 
@@ -365,6 +419,36 @@ fn parse_since_hours(value: &str) -> Result<i64> {
         .with_context(|| format!("invalid --since-hours: {value}"))?;
     if parsed <= 0 || parsed > MAX_SINCE_HOURS {
         anyhow::bail!("--since-hours must be between 1 and {MAX_SINCE_HOURS}");
+    }
+    Ok(parsed)
+}
+
+fn parse_stale_decay_window_minutes(value: &str) -> Result<i64> {
+    let parsed = value
+        .parse::<i64>()
+        .with_context(|| format!("invalid --stale-decay-window-minutes: {value}"))?;
+    if parsed <= 0 || parsed > 120 {
+        anyhow::bail!("--stale-decay-window-minutes must be between 1 and 120");
+    }
+    Ok(parsed)
+}
+
+fn parse_stale_decay_min_sol_notional(value: &str) -> Result<f64> {
+    let parsed = value
+        .parse::<f64>()
+        .with_context(|| format!("invalid --stale-decay-min-sol-notional: {value}"))?;
+    if !parsed.is_finite() || parsed < 0.0 || parsed > 1.0 {
+        anyhow::bail!("--stale-decay-min-sol-notional must be between 0 and 1");
+    }
+    Ok(parsed)
+}
+
+fn parse_stale_decay_sample_count(value: &str) -> Result<usize> {
+    let parsed = value
+        .parse::<usize>()
+        .with_context(|| format!("invalid stale decay sample count: {value}"))?;
+    if parsed == 0 || parsed > 200 {
+        anyhow::bail!("stale decay sample count must be between 1 and 200");
     }
     Ok(parsed)
 }
