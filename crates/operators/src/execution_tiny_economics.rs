@@ -10,6 +10,7 @@ use crate::execution_canary_quote_pnl_sell_side::build_sell_side_diagnostics;
 use crate::execution_canary_quote_pnl_wallet::WalletReconciliationReport;
 use crate::execution_canary_quote_pnl_wallet_live::build_live_wallet_reconciliation;
 use crate::execution_tiny_economics_gap::{follower_gap_from_trades, FollowerGapReport};
+use crate::execution_tiny_equity::{build_equity_view, EquityViewReport};
 
 const REASON_OK: &str = "execution_tiny_economics_loaded";
 const REASON_ERROR: &str = "execution_tiny_economics_error";
@@ -41,6 +42,7 @@ pub struct TinyEconomicsReport {
     pub canary: Option<CanaryEconomics>,
     pub tiny: Option<TinyRealizedEconomics>,
     pub open_mark_to_quote: Option<OpenMarkToQuoteReport>,
+    pub equity_view: Option<EquityViewReport>,
     pub follower_gap: Option<FollowerGapReport>,
 }
 
@@ -102,6 +104,7 @@ impl TinyEconomicsReport {
             canary: None,
             tiny: None,
             open_mark_to_quote: None,
+            equity_view: None,
             follower_gap: None,
         }
     }
@@ -188,6 +191,13 @@ fn build_report_result(cli: Cli, as_of: DateTime<Utc>) -> Result<TinyEconomicsRe
             build_live_wallet_reconciliation(&config.execution, &proof, &sell_side, as_of)
         })
     });
+    let open_mark = open_mark_to_quote(&proof, wallet.as_ref());
+    let equity_view = build_equity_view(
+        proof.summary.tiny_open_positions,
+        open_mark.open_cost_sol,
+        open_mark.quoted_value_sol,
+        wallet.as_ref(),
+    );
     Ok(TinyEconomicsReport {
         as_of,
         since,
@@ -197,7 +207,8 @@ fn build_report_result(cli: Cli, as_of: DateTime<Utc>) -> Result<TinyEconomicsRe
         shadow: Some(shadow_economics(&summary, config.as_ref())),
         canary: Some(canary_economics(&summary, config.as_ref())),
         tiny: Some(tiny_economics(&proof, wallet.as_ref())),
-        open_mark_to_quote: Some(open_mark_to_quote(&proof, wallet.as_ref())),
+        open_mark_to_quote: Some(open_mark),
+        equity_view: Some(equity_view),
         follower_gap: follower_gap_from_trades(&summary.trades),
     })
 }

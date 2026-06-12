@@ -1,8 +1,12 @@
 use chrono::{TimeZone, Utc};
 use copybot_operators::execution_ata_sweep::parse_args_from as parse_sweep_args;
 use copybot_operators::execution_canary_manual_writeoff::parse_args_from as parse_writeoff_args;
+use copybot_operators::execution_canary_quote_pnl_wallet::{
+    WalletReconciliationReport, WalletSellQuoteProof, WalletTokenReconciliation,
+};
 use copybot_operators::execution_tiny_economics::parse_args_from as parse_economics_args;
 use copybot_operators::execution_tiny_economics_gap::follower_gap_from_trades;
+use copybot_operators::execution_tiny_equity::build_equity_view;
 use copybot_storage_core::ExecutionCanaryQuotePnlTrade;
 
 #[test]
@@ -121,6 +125,46 @@ fn follower_gap_tracks_tail_and_sign_flips() {
     assert_eq!(report.quote_after_fee_negative, 2);
 }
 
+#[test]
+fn equity_view_combines_liquid_open_dust_and_recoverable_rent() {
+    let wallet = WalletReconciliationReport {
+        as_of: Utc.with_ymd_and_hms(2026, 6, 12, 0, 0, 0).unwrap(),
+        owner_pubkey: "wallet".to_string(),
+        source_status: "ok".to_string(),
+        errors: Vec::new(),
+        sol_balance_lamports: Some(1_500_000_000),
+        sol_balance_sol: Some(1.5),
+        token_account_count: 5,
+        zero_token_account_count: 2,
+        nonzero_token_account_count: 3,
+        bot_open_position_count: 1,
+        matched_open_position_count: 1,
+        unmatched_open_position_count: 0,
+        unmatched_open_position_tokens: Vec::new(),
+        terminal_no_route_leftover_count: 1,
+        failed_sell_leftover_count: 0,
+        untracked_nonzero_count: 1,
+        quote_ok_count: 3,
+        quote_no_route_count: 0,
+        near_zero_quote_count: 0,
+        near_zero_lamports_threshold: 10_000,
+        balances: vec![
+            balance("bot_open_position", Some(0.03)),
+            balance("untracked_wallet_balance", Some(0.02)),
+            balance("terminal_no_route_leftover", Some(0.01)),
+        ],
+    };
+
+    let report = build_equity_view(1, 0.05, Some(0.03), Some(&wallet));
+
+    assert_eq!(report.liquid_sol, Some(1.5));
+    assert_eq!(report.open_unrealized_pnl_sol, Some(-0.020000000000000004));
+    assert_eq!(report.untracked_quote_value_sol, Some(0.02));
+    assert_eq!(report.terminal_leftover_quote_value_sol, Some(0.01));
+    assert_eq!(report.recoverable_zero_ata_rent_sol, Some(0.00407856));
+    assert_eq!(report.wallet_mark_value_sol, Some(1.56407856));
+}
+
 fn trade(
     shadow_pnl_sol: f64,
     quote_pnl_after_fee: Option<f64>,
@@ -173,5 +217,28 @@ fn trade(
         entry_route_labels: Vec::new(),
         exit_route_labels: Vec::new(),
         priority_fee_lamports_total: None,
+    }
+}
+
+fn balance(classification: &str, out_sol: Option<f64>) -> WalletTokenReconciliation {
+    WalletTokenReconciliation {
+        mint: format!("{classification}-mint"),
+        token_account: format!("{classification}-ata"),
+        amount_raw: "1".to_string(),
+        ui_amount_string: "1".to_string(),
+        decimals: 6,
+        classification: classification.to_string(),
+        bot_open_position: None,
+        sell_failure: None,
+        sell_quote: Some(WalletSellQuoteProof {
+            status: "ok".to_string(),
+            http_status: Some(200),
+            error: None,
+            error_code: None,
+            out_amount_raw: None,
+            out_sol,
+            price_impact_pct: None,
+            route_labels: Vec::new(),
+        }),
     }
 }

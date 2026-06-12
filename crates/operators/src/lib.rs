@@ -19,5 +19,6 @@ pub(crate) mod execution_signer_adapter_preflight;
 pub(crate) mod execution_signer_keypair_preflight;
 pub mod execution_tiny_economics;
 pub mod execution_tiny_economics_gap;
+pub mod execution_tiny_equity;
 pub(crate) mod solana_tx;
 pub mod yellowstone_probe;
