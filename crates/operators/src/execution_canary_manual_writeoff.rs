@@ -54,6 +54,7 @@ pub struct TinyWriteOffCandidate {
     pub qty: f64,
     pub cost_sol: f64,
     pub quote_status: String,
+    pub quote_error_code: Option<String>,
     pub quote_out_sol: Option<f64>,
     pub selected: bool,
     pub decision_reason: String,
@@ -209,12 +210,24 @@ fn candidate_from_position(
 ) -> TinyWriteOffCandidate {
     let age_minutes = (as_of - position.opened_ts).num_minutes();
     let wallet = wallet_by_token.get(position.token.as_str()).copied();
-    let (quote_status, quote_out_sol) = wallet
+    let (quote_status, quote_error_code, quote_out_sol) = wallet
         .and_then(|row| row.sell_quote.as_ref())
-        .map(|quote| (quote.status.clone(), quote.out_sol))
-        .unwrap_or_else(|| ("missing".to_string(), None));
-    let decision_reason =
-        write_off_decision_reason(cli, position, age_minutes, &quote_status, quote_out_sol);
+        .map(|quote| {
+            (
+                quote.status.clone(),
+                quote.error_code.clone(),
+                quote.out_sol,
+            )
+        })
+        .unwrap_or_else(|| ("missing".to_string(), None, None));
+    let decision_reason = write_off_decision_reason(
+        cli,
+        position,
+        age_minutes,
+        &quote_status,
+        quote_error_code.as_deref(),
+        quote_out_sol,
+    );
     let selected = write_off_decision_is_selected(&decision_reason);
     TinyWriteOffCandidate {
         token: position.token.clone(),
@@ -224,6 +237,7 @@ fn candidate_from_position(
         qty: position.qty,
         cost_sol: position.cost_sol,
         quote_status,
+        quote_error_code,
         quote_out_sol,
         selected,
         decision_reason,
@@ -235,12 +249,17 @@ fn write_off_decision_reason(
     position: &ExecutionCanaryOwnedPosition,
     age_minutes: i64,
     quote_status: &str,
+    quote_error_code: Option<&str>,
     quote_out_sol: Option<f64>,
 ) -> String {
     let explicit_no_route = cli.no_route_tokens.contains(&position.token);
-    let token_requested = cli.tokens.is_empty() && cli.no_route_tokens.is_empty()
+    let explicit_threshold_error = cli.threshold_error_tokens.contains(&position.token);
+    let token_requested = cli.tokens.is_empty()
+        && cli.no_route_tokens.is_empty()
+        && cli.threshold_error_tokens.is_empty()
         || cli.tokens.contains(&position.token)
-        || explicit_no_route;
+        || explicit_no_route
+        || explicit_threshold_error;
     if !token_requested {
         return "token_not_requested".to_string();
     }
@@ -250,6 +269,12 @@ fn write_off_decision_reason(
     if quote_status != "ok" {
         if quote_status == "no_route" && explicit_no_route {
             return "selected_no_route_explicit_token".to_string();
+        }
+        if quote_status == "error"
+            && explicit_threshold_error
+            && quote_error_code == Some("CANNOT_COMPUTE_OTHER_AMOUNT_THRESHOLD")
+        {
+            return "selected_threshold_error_explicit_token".to_string();
         }
         return format!("quote_status_{quote_status}");
     }
@@ -263,7 +288,10 @@ fn write_off_decision_reason(
 }
 
 fn write_off_decision_is_selected(reason: &str) -> bool {
-    matches!(reason, "selected" | "selected_no_route_explicit_token")
+    matches!(
+        reason,
+        "selected" | "selected_no_route_explicit_token" | "selected_threshold_error_explicit_token"
+    )
 }
 
 fn write_off_selected(

@@ -21,6 +21,7 @@ pub struct Cli {
     pub max_total_quote_sol: f64,
     pub tokens: BTreeSet<String>,
     pub no_route_tokens: BTreeSet<String>,
+    pub threshold_error_tokens: BTreeSet<String>,
 }
 
 pub fn parse_args_from<I>(args: I) -> Result<Cli>
@@ -37,6 +38,7 @@ where
     let mut max_total_quote_sol = DEFAULT_MAX_TOTAL_QUOTE_SOL;
     let mut tokens = BTreeSet::new();
     let mut no_route_tokens = BTreeSet::new();
+    let mut threshold_error_tokens = BTreeSet::new();
     let mut iter = args.into_iter().map(Into::into);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -62,6 +64,10 @@ where
             }
             "--allow-no-route-token" => {
                 no_route_tokens.insert(next_value(&mut iter, "--allow-no-route-token")?);
+            }
+            "--allow-threshold-error-token" => {
+                threshold_error_tokens
+                    .insert(next_value(&mut iter, "--allow-threshold-error-token")?);
             }
             other => return Err(anyhow!("unknown argument: {other}")),
         }
@@ -89,6 +95,7 @@ where
         max_total_quote_sol,
         tokens,
         no_route_tokens,
+        threshold_error_tokens,
     })
 }
 

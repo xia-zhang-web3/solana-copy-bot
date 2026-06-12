@@ -76,6 +76,20 @@ fn tiny_writeoff_cli_accepts_explicit_no_route_tokens() {
 }
 
 #[test]
+fn tiny_writeoff_cli_accepts_explicit_threshold_error_tokens() {
+    let cli = parse_writeoff_args([
+        "--config",
+        "/tmp/live.toml",
+        "--json",
+        "--allow-threshold-error-token",
+        "ThresholdMint",
+    ])
+    .unwrap();
+
+    assert!(cli.threshold_error_tokens.contains("ThresholdMint"));
+}
+
+#[test]
 fn tiny_writeoff_cli_rejects_large_quote_guards() {
     let error = parse_writeoff_args([
         "--config",
