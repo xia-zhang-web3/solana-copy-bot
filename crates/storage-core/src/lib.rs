@@ -6,6 +6,7 @@ mod execution_canary_build_plan_metadata;
 mod execution_canary_buy_retry_candidates;
 mod execution_canary_confirmed_fill;
 mod execution_canary_fill_marker;
+mod execution_canary_manual_writeoff;
 mod execution_canary_position_close;
 mod execution_canary_position_open;
 mod execution_canary_positions;
@@ -111,22 +112,23 @@ pub use types::{
     DiscoveryV2QualityEvidenceAggregate, DiscoveryV2QualityPrepareState,
     DiscoveryV2QualityPrepareUpsert, ExecutionCanaryBuildPlanMetadata,
     ExecutionCanaryBuildPlanMetadataRecordOutcome, ExecutionCanaryCloseCandidate,
-    ExecutionCanaryConfirmTimeoutDecision, ExecutionCanaryObservedLeg, ExecutionCanaryOrder,
-    ExecutionCanaryOwnedPosition, ExecutionCanaryOwnedPositionRecordResult,
-    ExecutionCanaryPositionCloseResult, ExecutionCanaryPositionRecordOutcome,
-    ExecutionCanaryQuoteBucketSummary, ExecutionCanaryQuoteDiagnosticsSummary,
-    ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlThresholdSummary,
-    ExecutionCanaryQuotePnlTrade, ExecutionCanaryQuoteReadinessCheck,
-    ExecutionCanaryQuoteReadinessGate, ExecutionCanaryQuoteRouteCount,
-    ExecutionCanaryQuoteShadowGateReasonCount, ExecutionCanaryQuoteShadowGateSummary,
-    ExecutionCanaryQuoteSideDiagnostics, ExecutionCanaryQuoteStatusCount,
-    ExecutionCanaryQuoteThresholdCandidate, ExecutionCanaryReadinessCount,
-    ExecutionCanaryReadinessLatestOrder, ExecutionCanaryReadinessSummary,
-    ExecutionCanaryReadinessWindowSummary, ExecutionCanaryRecordOutcome,
-    ExecutionCanaryReserveResult, ExecutionCanarySellDecision, ExecutionCanarySellReserveResult,
-    ExecutionCanaryShadowCloseBreakdown, ExecutionCanaryShadowCloseContextSummary,
-    ExecutionCanaryStatusReport, ExecutionCanarySubmitRiskOrder, ExecutionCanarySubmitRiskSummary,
-    ExecutionDryRunOrder, ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
+    ExecutionCanaryConfirmTimeoutDecision, ExecutionCanaryManualWriteOffResult,
+    ExecutionCanaryObservedLeg, ExecutionCanaryOrder, ExecutionCanaryOwnedPosition,
+    ExecutionCanaryOwnedPositionRecordResult, ExecutionCanaryPositionCloseResult,
+    ExecutionCanaryPositionRecordOutcome, ExecutionCanaryQuoteBucketSummary,
+    ExecutionCanaryQuoteDiagnosticsSummary, ExecutionCanaryQuotePnlSummary,
+    ExecutionCanaryQuotePnlThresholdSummary, ExecutionCanaryQuotePnlTrade,
+    ExecutionCanaryQuoteReadinessCheck, ExecutionCanaryQuoteReadinessGate,
+    ExecutionCanaryQuoteRouteCount, ExecutionCanaryQuoteShadowGateReasonCount,
+    ExecutionCanaryQuoteShadowGateSummary, ExecutionCanaryQuoteSideDiagnostics,
+    ExecutionCanaryQuoteStatusCount, ExecutionCanaryQuoteThresholdCandidate,
+    ExecutionCanaryReadinessCount, ExecutionCanaryReadinessLatestOrder,
+    ExecutionCanaryReadinessSummary, ExecutionCanaryReadinessWindowSummary,
+    ExecutionCanaryRecordOutcome, ExecutionCanaryReserveResult, ExecutionCanarySellDecision,
+    ExecutionCanarySellReserveResult, ExecutionCanaryShadowCloseBreakdown,
+    ExecutionCanaryShadowCloseContextSummary, ExecutionCanaryStatusReport,
+    ExecutionCanarySubmitRiskOrder, ExecutionCanarySubmitRiskSummary, ExecutionDryRunOrder,
+    ExecutionDryRunRecordOutcome, ExecutionHistoryRetentionSummary,
     ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderComparisonEvent,
     ExecutionQuoteCanaryProviderComparisonSummary, ExecutionQuoteCanaryProviderSampleInsert,
     ExecutionQuoteCanaryProviderSelectionEvent, ExecutionQuoteCanaryProviderSelectionSummary,

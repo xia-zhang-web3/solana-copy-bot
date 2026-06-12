@@ -1,5 +1,6 @@
 use chrono::{TimeZone, Utc};
 use copybot_operators::execution_ata_sweep::parse_args_from as parse_sweep_args;
+use copybot_operators::execution_canary_manual_writeoff::parse_args_from as parse_writeoff_args;
 use copybot_operators::execution_tiny_economics::parse_args_from as parse_economics_args;
 use copybot_operators::execution_tiny_economics_gap::follower_gap_from_trades;
 use copybot_storage_core::ExecutionCanaryQuotePnlTrade;
@@ -31,6 +32,33 @@ fn tiny_economics_cli_defaults_to_five_hour_live_wallet_report() {
     assert_eq!(cli.since_hours, 5);
     assert_eq!(cli.limit, 200);
     assert!(cli.live_wallet);
+}
+
+#[test]
+fn tiny_writeoff_cli_defaults_to_dry_run_with_guards() {
+    let cli = parse_writeoff_args(["--config", "/tmp/live.toml", "--json"]).unwrap();
+
+    assert_eq!(cli.config_path.to_string_lossy(), "/tmp/live.toml");
+    assert!(!cli.commit);
+    assert_eq!(cli.max_positions, 20);
+    assert_eq!(cli.min_age_minutes, 60);
+    assert_eq!(cli.max_position_quote_sol, 0.001);
+    assert_eq!(cli.max_total_quote_sol, 0.002);
+}
+
+#[test]
+fn tiny_writeoff_cli_rejects_unbounded_position_count() {
+    let error = parse_writeoff_args([
+        "--config",
+        "/tmp/live.toml",
+        "--json",
+        "--max-positions",
+        "101",
+    ])
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("--max-positions must be between 1 and 100"));
 }
 
 #[test]

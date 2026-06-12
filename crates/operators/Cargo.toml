@@ -27,6 +27,10 @@ path = "src/bin/copybot_execution_ata_sweep.rs"
 name = "copybot_execution_tiny_economics"
 path = "src/bin/copybot_execution_tiny_economics.rs"
 
+[[bin]]
+name = "copybot_execution_tiny_writeoff"
+path = "src/bin/copybot_execution_tiny_writeoff.rs"
+
 [dependencies]
 anyhow.workspace = true
 base64 = "0.22.1"

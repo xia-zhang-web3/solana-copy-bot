@@ -1,5 +1,7 @@
 pub mod execution_ata_sweep;
 pub(crate) mod execution_ata_sweep_rpc;
+pub mod execution_canary_manual_writeoff;
+pub(crate) mod execution_canary_manual_writeoff_cli;
 pub mod execution_canary_quote_pnl;
 pub(crate) mod execution_canary_quote_pnl_context;
 pub(crate) mod execution_canary_quote_pnl_error_class;

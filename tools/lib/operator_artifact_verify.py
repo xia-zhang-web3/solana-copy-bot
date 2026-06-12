@@ -32,6 +32,7 @@ EXPECTED_PACKAGE_BINARIES = {
         "copybot_execution_canary_quote_pnl",
         "copybot_execution_canary_readiness",
         "copybot_execution_tiny_economics",
+        "copybot_execution_tiny_writeoff",
         "copybot_yellowstone_source_probe",
     },
     "copybot-storage-ops": {

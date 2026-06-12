@@ -1,10 +1,10 @@
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::{Lamports, TokenQuantity};
 use copybot_storage_core::{
     ExecutionCanaryPositionRecordOutcome, SqliteStore, EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
     EXECUTION_CANARY_SELL_DECISION_EXECUTE, EXECUTION_CANARY_SELL_DECISION_FORCE_EXIT,
-    EXECUTION_CANARY_SELL_DECISION_NO_POSITION,
+    EXECUTION_CANARY_SELL_DECISION_NO_POSITION, EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE,
 };
 use tempfile::tempdir;
 
@@ -112,6 +112,53 @@ fn execution_canary_open_position_recording_merges_same_token_new_order() -> Res
     assert_eq!(loaded.qty_exact, Some(TokenQuantity::new(3_234_567, 6)));
     assert_eq!(loaded.cost_lamports, Some(Lamports::new(500_000_000)));
     assert_eq!(store.execution_canary_open_position_count()?, 1);
+    Ok(())
+}
+
+#[test]
+fn manual_terminal_write_off_closes_position_and_marks_recent() -> Result<()> {
+    let store = open_migrated_store("execution-canary-manual-writeoff")?;
+    let now = ts("2026-06-12T08:00:00Z");
+    let token = "ManualWriteOffMint";
+    store.record_execution_canary_open_position(
+        "exec-canary:buy-manual-writeoff",
+        token,
+        12.345,
+        Some(TokenQuantity::new(12_345, 3)),
+        0.01,
+        now,
+    )?;
+
+    let result = store.record_execution_canary_manual_terminal_write_off(
+        token,
+        "metis-swap-instructions-dry-run",
+        "test_cleanup",
+        now + Duration::minutes(90),
+    )?;
+
+    assert_eq!(result.close_results.len(), 1);
+    assert_eq!(result.close_results[0].entry_cost_sol, 0.01);
+    assert_eq!(result.close_results[0].exit_value_sol, 0.0);
+    assert!(store.load_execution_canary_open_position(token)?.is_none());
+    assert!(
+        store.has_recent_execution_canary_terminal_write_off_for_token(
+            token,
+            now + Duration::minutes(89)
+        )?
+    );
+    let order = store
+        .load_execution_canary_order(&result.order_id)?
+        .expect("manual write-off order should exist");
+    assert_eq!(
+        order.err_code.as_deref(),
+        Some(EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE)
+    );
+    assert!(order.tx_signature.as_deref().unwrap_or("").is_empty());
+    assert!(order
+        .simulation_error
+        .as_deref()
+        .unwrap_or("")
+        .contains("terminal_failed_sell_no_route_written_off"));
     Ok(())
 }
 

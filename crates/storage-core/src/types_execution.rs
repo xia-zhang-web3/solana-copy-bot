@@ -125,6 +125,13 @@ pub struct ExecutionCanaryPositionCloseResult {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ExecutionCanaryManualWriteOffResult {
+    pub signal_id: String,
+    pub order_id: String,
+    pub close_results: Vec<ExecutionCanaryPositionCloseResult>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionCanarySellDecision {
     pub decision_status: String,
     pub decision_reason: String,
