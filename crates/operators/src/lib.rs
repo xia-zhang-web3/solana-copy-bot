@@ -1,3 +1,5 @@
+pub mod execution_ata_sweep;
+pub(crate) mod execution_ata_sweep_rpc;
 pub mod execution_canary_quote_pnl;
 pub(crate) mod execution_canary_quote_pnl_context;
 pub(crate) mod execution_canary_quote_pnl_error_class;
@@ -13,4 +15,7 @@ pub mod execution_canary_readiness;
 pub(crate) mod execution_canary_tiny_config_checks;
 pub(crate) mod execution_signer_adapter_preflight;
 pub(crate) mod execution_signer_keypair_preflight;
+pub mod execution_tiny_economics;
+pub mod execution_tiny_economics_gap;
+pub(crate) mod solana_tx;
 pub mod yellowstone_probe;

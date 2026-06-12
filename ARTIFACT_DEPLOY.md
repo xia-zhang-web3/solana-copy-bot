@@ -64,9 +64,7 @@ tools/build_operator_artifacts.sh
 Source operators:
 
 ```bash
-PACKAGE=copybot-operators \
-WANTED_BINS="copybot_execution_canary_quote_pnl copybot_execution_canary_readiness copybot_yellowstone_source_probe" \
-tools/build_operator_artifacts.sh
+PACKAGE=copybot-operators tools/build_operator_artifacts.sh
 ```
 
 Live operators:

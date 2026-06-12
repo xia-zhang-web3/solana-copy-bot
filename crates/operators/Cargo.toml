@@ -19,8 +19,17 @@ path = "src/bin/copybot_execution_canary_readiness.rs"
 name = "copybot_execution_canary_quote_pnl"
 path = "src/bin/copybot_execution_canary_quote_pnl.rs"
 
+[[bin]]
+name = "copybot_execution_ata_sweep"
+path = "src/bin/copybot_execution_ata_sweep.rs"
+
+[[bin]]
+name = "copybot_execution_tiny_economics"
+path = "src/bin/copybot_execution_tiny_economics.rs"
+
 [dependencies]
 anyhow.workspace = true
+base64 = "0.22.1"
 bs58 = "0.5.1"
 chrono.workspace = true
 copybot-config = { path = "../config" }

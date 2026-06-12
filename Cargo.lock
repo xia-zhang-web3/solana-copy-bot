@@ -314,6 +314,7 @@ name = "copybot-operators"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bs58",
  "chrono",
  "copybot-config",
