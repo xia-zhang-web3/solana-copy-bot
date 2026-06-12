@@ -9,11 +9,24 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
 
 impl SqliteDiscoveryStore {
+    pub fn has_execution_canary_terminal_write_off_for_token(&self, token: &str) -> Result<bool> {
+        self.execution_canary_terminal_write_off_for_token_query(token, None)
+    }
+
     pub fn has_recent_execution_canary_terminal_write_off_for_token(
         &self,
         token: &str,
         since: DateTime<Utc>,
     ) -> Result<bool> {
+        self.execution_canary_terminal_write_off_for_token_query(token, Some(since))
+    }
+
+    fn execution_canary_terminal_write_off_for_token_query(
+        &self,
+        token: &str,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<bool> {
+        let since_filter = since.map(|since| since.to_rfc3339());
         let found: Option<i64> = self
             .conn
             .query_row(
@@ -24,7 +37,7 @@ impl SqliteDiscoveryStore {
                    AND copy_signals.token = ?1
                    AND orders.err_code IN (?2, ?3)
                    AND (orders.tx_signature IS NULL OR TRIM(orders.tx_signature) = '')
-                   AND COALESCE(orders.confirm_ts, orders.submit_ts) >= ?4
+                   AND (?4 IS NULL OR COALESCE(orders.confirm_ts, orders.submit_ts) >= ?4)
                    AND (
                        orders.simulation_error LIKE '%terminal_failed_sell_no_route_written_off%'
                        OR orders.simulation_error LIKE '%terminal_failed_sell_simulation_written_off%'
@@ -34,12 +47,12 @@ impl SqliteDiscoveryStore {
                     token,
                     EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE,
                     EXECUTION_ERROR_TERMINAL_SELL_SIMULATION_FAILED,
-                    since.to_rfc3339(),
+                    since_filter,
                 ],
                 |row| row.get(0),
             )
             .optional()
-            .context("failed checking recent execution canary terminal write-off")?;
+            .context("failed checking execution canary terminal write-off")?;
         Ok(found.is_some())
     }
 

@@ -62,6 +62,35 @@ fn tiny_writeoff_cli_rejects_unbounded_position_count() {
 }
 
 #[test]
+fn tiny_writeoff_cli_accepts_explicit_no_route_tokens() {
+    let cli = parse_writeoff_args([
+        "--config",
+        "/tmp/live.toml",
+        "--json",
+        "--allow-no-route-token",
+        "NoRouteMint",
+    ])
+    .unwrap();
+
+    assert!(cli.no_route_tokens.contains("NoRouteMint"));
+}
+
+#[test]
+fn tiny_writeoff_cli_rejects_large_quote_guards() {
+    let error = parse_writeoff_args([
+        "--config",
+        "/tmp/live.toml",
+        "--json",
+        "--max-position-quote-sol",
+        "0.02",
+    ])
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("--max-position-quote-sol must be <= 0.01"));
+}
+
+#[test]
 fn follower_gap_tracks_tail_and_sign_flips() {
     let trades = vec![
         trade(0.01, Some(-0.001), Some(1.0), Some(0.5)),

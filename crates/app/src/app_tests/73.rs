@@ -60,7 +60,7 @@ async fn orphan_position_recovery_restores_only_known_execution_token() -> Resul
 }
 
 #[tokio::test]
-async fn orphan_position_recovery_skips_recent_terminal_write_off_token() -> Result<()> {
+async fn orphan_position_recovery_skips_terminal_write_off_token_after_cooldown() -> Result<()> {
     let db_path = unique_orphan_recovery_test_path("terminal-write-off-skip");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -69,7 +69,7 @@ async fn orphan_position_recovery_skips_recent_terminal_write_off_token() -> Res
     )))?;
     let now = Utc::now();
     let token = "TerminalMint";
-    let historical_opened_ts = now - chrono::Duration::hours(3);
+    let historical_opened_ts = now - chrono::Duration::hours(30);
     store.record_execution_canary_open_position(
         "old-confirmed-buy",
         token,
@@ -84,18 +84,18 @@ async fn orphan_position_recovery_skips_recent_terminal_write_off_token() -> Res
         Some(TokenQuantity::new(12_345, 3)),
         0.001,
         1e-9,
-        now - chrono::Duration::hours(2),
+        now - chrono::Duration::hours(29),
     )?;
-    let signal = terminal_sell_signal(token, now - chrono::Duration::hours(1));
+    let signal = terminal_sell_signal(token, now - chrono::Duration::hours(26));
     store.insert_copy_signal(&signal)?;
     let reserve = store.reserve_execution_canary_order(
         &signal.signal_id,
         crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN,
-        now - chrono::Duration::minutes(50),
+        now - chrono::Duration::hours(25),
     )?;
     store.mark_execution_canary_failed(
         &reserve.order.order_id,
-        now - chrono::Duration::minutes(49),
+        now - chrono::Duration::hours(25) + chrono::Duration::minutes(1),
         copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,
         "owned_sell_quote_failed: NO_ROUTES_FOUND",
     )?;
@@ -129,7 +129,7 @@ async fn orphan_position_recovery_skips_recent_terminal_write_off_token() -> Res
     assert_eq!(summary.orphan_recovery_reconciled, 1);
     assert_eq!(
         summary.skipped_reason.as_deref(),
-        Some("orphan_recovery_recent_terminal_write_off")
+        Some("orphan_recovery_terminal_write_off")
     );
     assert_eq!(summary.open_positions, 0);
     assert!(open.is_none());

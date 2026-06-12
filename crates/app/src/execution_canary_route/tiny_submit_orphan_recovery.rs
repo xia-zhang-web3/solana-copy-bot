@@ -1,7 +1,7 @@
 use super::tiny_submit::tiny_submit_runtime_block_reason;
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
 use copybot_core_types::TokenQuantity;
 use copybot_storage_core::{ExecutionCanaryPositionRecordOutcome, SqliteStore};
@@ -12,8 +12,7 @@ use std::time::Duration;
 const SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 const TOKEN_ACCOUNT_PROGRAM_IDS: [&str; 2] = [SPL_TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID];
-const ORPHAN_RECOVERY_TERMINAL_WRITE_OFF_COOLDOWN_HOURS: i64 = 24;
-const ORPHAN_RECOVERY_TERMINAL_WRITE_OFF_REASON: &str = "orphan_recovery_recent_terminal_write_off";
+const ORPHAN_RECOVERY_TERMINAL_WRITE_OFF_REASON: &str = "orphan_recovery_terminal_write_off";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WalletTokenBalance {
@@ -53,15 +52,7 @@ pub(super) async fn process_tiny_submit_orphan_position_recovery_for_route(
         .map(|balance| (balance.mint.clone(), balance.clone()))
         .collect();
     summary.orphan_recovery_checked = balances.iter().filter(|balance| balance.raw > 0).count();
-    let terminal_write_off_since =
-        now - ChronoDuration::hours(ORPHAN_RECOVERY_TERMINAL_WRITE_OFF_COOLDOWN_HOURS);
-    reconcile_recovery_orphan_positions(
-        store,
-        &balances_by_mint,
-        terminal_write_off_since,
-        now,
-        &mut summary,
-    )?;
+    reconcile_recovery_orphan_positions(store, &balances_by_mint, now, &mut summary)?;
 
     let limit = config.canary_max_open_positions.max(1) as usize;
     for balance in balances {
@@ -89,10 +80,7 @@ pub(super) async fn process_tiny_submit_orphan_position_recovery_for_route(
             summary.orphan_recovery_skipped_no_history += 1;
             continue;
         };
-        if store.has_recent_execution_canary_terminal_write_off_for_token(
-            &balance.mint,
-            terminal_write_off_since,
-        )? {
+        if store.has_execution_canary_terminal_write_off_for_token(&balance.mint)? {
             summary.last_orphan_recovery_token = Some(balance.mint);
             summary
                 .skipped_reason
@@ -121,7 +109,6 @@ pub(super) async fn process_tiny_submit_orphan_position_recovery_for_route(
 fn reconcile_recovery_orphan_positions(
     store: &SqliteStore,
     balances_by_mint: &BTreeMap<String, WalletTokenBalance>,
-    terminal_write_off_since: DateTime<Utc>,
     now: DateTime<Utc>,
     summary: &mut ExecutionCanaryStateMachineSummary,
 ) -> Result<()> {
@@ -148,10 +135,7 @@ fn reconcile_recovery_orphan_positions(
             }
             None => 0,
         };
-        if store.has_recent_execution_canary_terminal_write_off_for_token(
-            &position.token,
-            terminal_write_off_since,
-        )? {
+        if store.has_execution_canary_terminal_write_off_for_token(&position.token)? {
             store
                 .close_execution_canary_open_position(
                     &position.token,

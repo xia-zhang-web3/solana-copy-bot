@@ -116,7 +116,7 @@ fn execution_canary_open_position_recording_merges_same_token_new_order() -> Res
 }
 
 #[test]
-fn manual_terminal_write_off_closes_position_and_marks_recent() -> Result<()> {
+fn manual_terminal_write_off_closes_position_and_marks_terminal() -> Result<()> {
     let store = open_migrated_store("execution-canary-manual-writeoff")?;
     let now = ts("2026-06-12T08:00:00Z");
     let token = "ManualWriteOffMint";
@@ -146,6 +146,7 @@ fn manual_terminal_write_off_closes_position_and_marks_recent() -> Result<()> {
             now + Duration::minutes(89)
         )?
     );
+    assert!(store.has_execution_canary_terminal_write_off_for_token(token)?);
     let order = store
         .load_execution_canary_order(&result.order_id)?
         .expect("manual write-off order should exist");

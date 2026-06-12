@@ -7,6 +7,8 @@ pub(crate) const HARD_MAX_POSITIONS: usize = 100;
 pub(crate) const DEFAULT_MIN_AGE_MINUTES: i64 = 60;
 pub(crate) const DEFAULT_MAX_POSITION_QUOTE_SOL: f64 = 0.001;
 pub(crate) const DEFAULT_MAX_TOTAL_QUOTE_SOL: f64 = 0.002;
+const HARD_MAX_POSITION_QUOTE_SOL: f64 = 0.01;
+const HARD_MAX_TOTAL_QUOTE_SOL: f64 = 0.05;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cli {
@@ -18,6 +20,7 @@ pub struct Cli {
     pub max_position_quote_sol: f64,
     pub max_total_quote_sol: f64,
     pub tokens: BTreeSet<String>,
+    pub no_route_tokens: BTreeSet<String>,
 }
 
 pub fn parse_args_from<I>(args: I) -> Result<Cli>
@@ -33,6 +36,7 @@ where
     let mut max_position_quote_sol = DEFAULT_MAX_POSITION_QUOTE_SOL;
     let mut max_total_quote_sol = DEFAULT_MAX_TOTAL_QUOTE_SOL;
     let mut tokens = BTreeSet::new();
+    let mut no_route_tokens = BTreeSet::new();
     let mut iter = args.into_iter().map(Into::into);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -56,6 +60,9 @@ where
             "--token" => {
                 tokens.insert(next_value(&mut iter, "--token")?);
             }
+            "--allow-no-route-token" => {
+                no_route_tokens.insert(next_value(&mut iter, "--allow-no-route-token")?);
+            }
             other => return Err(anyhow!("unknown argument: {other}")),
         }
     }
@@ -66,6 +73,12 @@ where
     if min_age_minutes < 0 {
         anyhow::bail!("--min-age-minutes must be >= 0");
     }
+    if max_position_quote_sol > HARD_MAX_POSITION_QUOTE_SOL {
+        anyhow::bail!("--max-position-quote-sol must be <= {HARD_MAX_POSITION_QUOTE_SOL}");
+    }
+    if max_total_quote_sol > HARD_MAX_TOTAL_QUOTE_SOL {
+        anyhow::bail!("--max-total-quote-sol must be <= {HARD_MAX_TOTAL_QUOTE_SOL}");
+    }
     Ok(Cli {
         config_path,
         json,
@@ -75,6 +88,7 @@ where
         max_position_quote_sol,
         max_total_quote_sol,
         tokens,
+        no_route_tokens,
     })
 }
 

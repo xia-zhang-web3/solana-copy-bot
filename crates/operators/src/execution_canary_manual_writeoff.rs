@@ -215,6 +215,7 @@ fn candidate_from_position(
         .unwrap_or_else(|| ("missing".to_string(), None));
     let decision_reason =
         write_off_decision_reason(cli, position, age_minutes, &quote_status, quote_out_sol);
+    let selected = write_off_decision_is_selected(&decision_reason);
     TinyWriteOffCandidate {
         token: position.token.clone(),
         position_id: position.position_id.clone(),
@@ -224,7 +225,7 @@ fn candidate_from_position(
         cost_sol: position.cost_sol,
         quote_status,
         quote_out_sol,
-        selected: decision_reason == "selected",
+        selected,
         decision_reason,
     }
 }
@@ -236,13 +237,20 @@ fn write_off_decision_reason(
     quote_status: &str,
     quote_out_sol: Option<f64>,
 ) -> String {
-    if !cli.tokens.is_empty() && !cli.tokens.contains(&position.token) {
+    let explicit_no_route = cli.no_route_tokens.contains(&position.token);
+    let token_requested = cli.tokens.is_empty() && cli.no_route_tokens.is_empty()
+        || cli.tokens.contains(&position.token)
+        || explicit_no_route;
+    if !token_requested {
         return "token_not_requested".to_string();
     }
     if age_minutes < cli.min_age_minutes {
         return "position_too_fresh".to_string();
     }
     if quote_status != "ok" {
+        if quote_status == "no_route" && explicit_no_route {
+            return "selected_no_route_explicit_token".to_string();
+        }
         return format!("quote_status_{quote_status}");
     }
     let Some(quote_out_sol) = quote_out_sol else {
@@ -252,6 +260,10 @@ fn write_off_decision_reason(
         return "quote_value_above_position_guard".to_string();
     }
     "selected".to_string()
+}
+
+fn write_off_decision_is_selected(reason: &str) -> bool {
+    matches!(reason, "selected" | "selected_no_route_explicit_token")
 }
 
 fn write_off_selected(
