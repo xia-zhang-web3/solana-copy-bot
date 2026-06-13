@@ -91,6 +91,15 @@
     }
 
     #[test]
+    fn zero_universe_empty_target_bootstrap_refill_cadence_stays_observation_grade_stage1() {
+        assert!(
+            ZERO_UNIVERSE_EMPTY_TARGET_NONCRITICAL_BEST_EFFORT_REFILL_COOLDOWN
+                <= StdDuration::from_secs(5),
+            "zero-universe fail-closed mode must keep a bounded observation-grade raw swap stream alive instead of waiting long enough for Discovery V2 windows to self-starve"
+        );
+    }
+
+    #[test]
     fn zero_universe_noncritical_best_effort_exhaustion_does_not_refill_while_writer_pressure_active_stage1(
     ) {
         let now = StdInstant::now();
