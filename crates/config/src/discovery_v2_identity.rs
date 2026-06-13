@@ -68,7 +68,13 @@ pub fn discovery_v2_policy_fingerprint(
             "shadow_feedback_fast_loss_max_roi_bits={:016x};",
             "shadow_feedback_fast_loss_max_hold_seconds={};",
             "shadow_feedback_stale_copy_min_entry_sol_bits={:016x};",
-            "shadow_feedback_stale_copy_max_roi_bits={:016x}"
+            "shadow_feedback_stale_copy_max_roi_bits={:016x};",
+            "executable_wallet_filter_version=1;",
+            "executable_wallet_filter_enabled={};",
+            "executable_wallet_filter_window_hours={};",
+            "executable_wallet_filter_min_samples={};",
+            "executable_wallet_filter_max_pnl_sol_bits={:016x};",
+            "executable_wallet_filter_max_flip_rate_bits={:016x}"
         ),
         DISCOVERY_V2_SCORING_SOURCE,
         input.window_minutes,
@@ -124,5 +130,10 @@ pub fn discovery_v2_policy_fingerprint(
         DISCOVERY_V2_SHADOW_FEEDBACK_FAST_LOSS_MAX_HOLD_SECONDS,
         DISCOVERY_V2_SHADOW_FEEDBACK_STALE_COPY_MIN_ENTRY_SOL.to_bits(),
         DISCOVERY_V2_SHADOW_FEEDBACK_STALE_COPY_MAX_ROI.to_bits(),
+        discovery.executable_wallet_filter_enabled,
+        discovery.executable_wallet_filter_window_hours,
+        discovery.executable_wallet_filter_min_samples,
+        discovery.executable_wallet_filter_max_pnl_sol.to_bits(),
+        discovery.executable_wallet_filter_max_flip_rate.to_bits(),
     )
 }

@@ -61,6 +61,29 @@ pub struct ShadowWalletFeedback {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct ExecutableWalletFeedback {
+    pub samples: u64,
+    pub quote_adjusted_pnl_after_priority_fee_sol: f64,
+    pub shadow_positive_executable_negative: u64,
+}
+
+impl ExecutableWalletFeedback {
+    pub fn record(&mut self, shadow_pnl_sol: f64, executable_pnl_after_fee_sol: f64) {
+        self.samples = self.samples.saturating_add(1);
+        self.quote_adjusted_pnl_after_priority_fee_sol += executable_pnl_after_fee_sol;
+        if shadow_pnl_sol > 0.0 && executable_pnl_after_fee_sol < 0.0 {
+            self.shadow_positive_executable_negative =
+                self.shadow_positive_executable_negative.saturating_add(1);
+        }
+    }
+
+    pub fn flip_rate(&self) -> Option<f64> {
+        (self.samples > 0)
+            .then_some(self.shadow_positive_executable_negative as f64 / self.samples as f64)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ShadowSignalSummary {
     pub buy_signals: u64,
     pub sell_signals_total: u64,

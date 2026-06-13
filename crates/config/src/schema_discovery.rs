@@ -36,6 +36,11 @@ pub struct DiscoveryConfig {
     pub max_bootstrap_snapshot_age_seconds: u64,
     pub thin_market_min_volume_sol: f64,
     pub thin_market_min_unique_traders: u32,
+    pub executable_wallet_filter_enabled: bool,
+    pub executable_wallet_filter_window_hours: u64,
+    pub executable_wallet_filter_min_samples: u32,
+    pub executable_wallet_filter_max_pnl_sol: f64,
+    pub executable_wallet_filter_max_flip_rate: f64,
     pub max_window_swaps_in_memory: usize,
     pub max_fetch_swaps_per_cycle: usize,
     pub max_fetch_pages_per_cycle: usize,
@@ -79,6 +84,11 @@ impl Default for DiscoveryConfig {
             max_bootstrap_snapshot_age_seconds: 12 * 60 * 60,
             thin_market_min_volume_sol: 3.0,
             thin_market_min_unique_traders: 10,
+            executable_wallet_filter_enabled: false,
+            executable_wallet_filter_window_hours: 48,
+            executable_wallet_filter_min_samples: 10,
+            executable_wallet_filter_max_pnl_sol: 0.0,
+            executable_wallet_filter_max_flip_rate: 0.40,
             max_window_swaps_in_memory: 60_000,
             max_fetch_swaps_per_cycle: 20_000,
             max_fetch_pages_per_cycle: 5,
@@ -185,6 +195,26 @@ impl fmt::Debug for DiscoveryConfig {
             .field(
                 "thin_market_min_unique_traders",
                 &self.thin_market_min_unique_traders,
+            )
+            .field(
+                "executable_wallet_filter_enabled",
+                &self.executable_wallet_filter_enabled,
+            )
+            .field(
+                "executable_wallet_filter_window_hours",
+                &self.executable_wallet_filter_window_hours,
+            )
+            .field(
+                "executable_wallet_filter_min_samples",
+                &self.executable_wallet_filter_min_samples,
+            )
+            .field(
+                "executable_wallet_filter_max_pnl_sol",
+                &self.executable_wallet_filter_max_pnl_sol,
+            )
+            .field(
+                "executable_wallet_filter_max_flip_rate",
+                &self.executable_wallet_filter_max_flip_rate,
             )
             .field(
                 "max_window_swaps_in_memory",

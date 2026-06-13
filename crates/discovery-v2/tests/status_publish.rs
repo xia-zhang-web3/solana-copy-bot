@@ -187,11 +187,15 @@ fn policy_fingerprint_changes_when_shadow_or_execution_identity_changes() -> Res
         discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
     assert_ne!(maturity_changed, live_portfolio_value_changed);
 
+    discovery.executable_wallet_filter_enabled = true;
+    let executable_filter_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
+    assert_ne!(live_portfolio_value_changed, executable_filter_changed);
+
     let mut execution_changed = options;
     execution_changed.execution_enabled = true;
     let execution_changed =
         discovery_v2_policy_fingerprint(&discovery, &shadow, &execution_changed);
-    assert_ne!(live_portfolio_value_changed, execution_changed);
+    assert_ne!(executable_filter_changed, execution_changed);
     Ok(())
 }
 

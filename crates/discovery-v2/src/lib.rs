@@ -1,4 +1,5 @@
 mod accumulator;
+mod executable_feedback;
 mod filters;
 mod live_portfolio;
 mod live_portfolio_rpc;

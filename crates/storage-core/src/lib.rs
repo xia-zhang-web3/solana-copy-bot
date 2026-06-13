@@ -2,6 +2,7 @@ mod connection_pragmas;
 mod copy_signals;
 mod db;
 mod discovery_rebuild_state;
+mod executable_wallet_feedback;
 mod execution_canary_build_plan_metadata;
 mod execution_canary_buy_retry_candidates;
 mod execution_canary_confirmed_fill;
@@ -115,7 +116,7 @@ pub use types::{
     DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
     DiscoveryTrustedSelectionStateRow, DiscoveryTrustedSelectionStateUpdate,
     DiscoveryV2QualityEvidenceAggregate, DiscoveryV2QualityPrepareState,
-    DiscoveryV2QualityPrepareUpsert, ExecutionCanaryBuildPlanMetadata,
+    DiscoveryV2QualityPrepareUpsert, ExecutableWalletFeedback, ExecutionCanaryBuildPlanMetadata,
     ExecutionCanaryBuildPlanMetadataRecordOutcome, ExecutionCanaryCloseCandidate,
     ExecutionCanaryConfirmTimeoutDecision, ExecutionCanaryManualWriteOffResult,
     ExecutionCanaryObservedLeg, ExecutionCanaryOrder, ExecutionCanaryOwnedPosition,

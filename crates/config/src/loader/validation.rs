@@ -90,6 +90,26 @@ fn validate_discovery_v2_float_gates(config: &AppConfig) -> Result<()> {
         "discovery.thin_market_min_volume_sol",
         config.discovery.thin_market_min_volume_sol,
     )?;
+    if config.discovery.executable_wallet_filter_window_hours == 0 {
+        return Err(anyhow!(
+            "discovery.executable_wallet_filter_window_hours ({}) must be >= 1",
+            config.discovery.executable_wallet_filter_window_hours
+        ));
+    }
+    if config.discovery.executable_wallet_filter_min_samples == 0 {
+        return Err(anyhow!(
+            "discovery.executable_wallet_filter_min_samples ({}) must be >= 1",
+            config.discovery.executable_wallet_filter_min_samples
+        ));
+    }
+    validate_finite(
+        "discovery.executable_wallet_filter_max_pnl_sol",
+        config.discovery.executable_wallet_filter_max_pnl_sol,
+    )?;
+    validate_finite_ratio(
+        "discovery.executable_wallet_filter_max_flip_rate",
+        config.discovery.executable_wallet_filter_max_flip_rate,
+    )?;
     validate_finite_non_negative(
         "shadow.min_leader_notional_sol",
         config.shadow.min_leader_notional_sol,
@@ -99,10 +119,15 @@ fn validate_discovery_v2_float_gates(config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-fn validate_finite_non_negative(label: &str, value: f64) -> Result<()> {
+fn validate_finite(label: &str, value: f64) -> Result<()> {
     if !value.is_finite() {
         return Err(anyhow!("{label} must be finite, got {value}"));
     }
+    Ok(())
+}
+
+fn validate_finite_non_negative(label: &str, value: f64) -> Result<()> {
+    validate_finite(label, value)?;
     if value < 0.0 {
         return Err(anyhow!("{label} must be >= 0, got {value}"));
     }

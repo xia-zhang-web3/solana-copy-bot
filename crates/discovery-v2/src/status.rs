@@ -1,3 +1,4 @@
+use crate::executable_feedback::{apply_executable_feedback, load_executable_wallet_feedback};
 use crate::filters::{build_budget_exhausted_filter_status, DiscoveryV2FilterStatusBuilder};
 use crate::live_portfolio::apply_live_portfolio_gate;
 use crate::maturity::{
@@ -101,6 +102,7 @@ pub fn build_discovery_v2_status(
         Vec::with_capacity(retained_metric_limit.min(window_scan.wallets.len()));
     let mut filters = DiscoveryV2FilterStatusBuilder::default();
     let shadow_feedback = load_shadow_wallet_feedback(store, options.now)?;
+    let executable_feedback = load_executable_wallet_feedback(store, discovery, options.now)?;
     let mut wallet_metrics_total = 0usize;
     let mut metric_time_budget_exhausted = false;
     for (wallet_id, acc) in window_scan.wallets {
@@ -112,6 +114,8 @@ pub fn build_discovery_v2_status(
             wallet_metric_from_accumulator(wallet_id, acc, discovery, scoring_data_now);
         let feedback = shadow_feedback.get(&metric.wallet_id);
         apply_shadow_feedback(&mut metric, feedback);
+        let feedback = executable_feedback.get(&metric.wallet_id);
+        apply_executable_feedback(&mut metric, feedback, discovery);
         wallet_metrics_total = wallet_metrics_total.saturating_add(1);
         filters.observe_metric(&metric);
         retain_top_wallet_metric(&mut wallet_metrics, metric, retained_metric_limit);
@@ -129,8 +133,10 @@ pub fn build_discovery_v2_status(
             *sampled_terminal_reject_counts
                 .entry(acc.terminal_reject_reason().to_string())
                 .or_insert(0) += 1;
-            let metric =
+            let mut metric =
                 wallet_metric_from_accumulator(wallet_id, acc, discovery, scoring_data_now);
+            let feedback = executable_feedback.get(&metric.wallet_id);
+            apply_executable_feedback(&mut metric, feedback, discovery);
             filters.observe_metric(&metric);
             retain_top_wallet_metric(&mut wallet_metrics, metric, retained_metric_limit);
         }
