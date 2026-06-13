@@ -118,7 +118,7 @@ fn materialized_status_round_trip_can_feed_publish() -> Result<()> {
         &shadow,
         &publish_options,
     )?;
-    let report = publish_discovery_v2_status(&store, status, true)?;
+    let report = publish_discovery_v2_status(&store, status, true, 168)?;
 
     assert_eq!(loaded.status_age_seconds, 30);
     assert!(report.committed);

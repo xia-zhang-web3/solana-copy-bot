@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_storage_core::{
-    SqliteStore, SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
+    RugWalletQuarantineUpsert, SqliteStore, SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
     SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
 };
 use tempfile::tempdir;
@@ -102,6 +102,39 @@ fn rug_wallet_feedback_counts_stale_terminal_tail() -> Result<()> {
     assert!(store
         .rug_wallet_feedback_between(now, now - Duration::seconds(1))
         .is_err());
+    Ok(())
+}
+
+#[test]
+fn rug_wallet_quarantine_upsert_extends_active_guard() -> Result<()> {
+    let store = open_migrated_store("rug-wallet-quarantine")?;
+    let now = ts("2026-06-13T10:00:00Z");
+    store.upsert_rug_wallet_quarantines(&[RugWalletQuarantineUpsert {
+        wallet_id: "rug-wallet".to_string(),
+        reason: "rug_feedback_stale_terminal".to_string(),
+        rejected_at: now,
+        quarantine_until: now + Duration::hours(24),
+        evidence_json: "{\"version\":1}".to_string(),
+    }])?;
+    store.upsert_rug_wallet_quarantines(&[RugWalletQuarantineUpsert {
+        wallet_id: "rug-wallet".to_string(),
+        reason: "rug_feedback_stale_terminal".to_string(),
+        rejected_at: now + Duration::hours(1),
+        quarantine_until: now + Duration::hours(72),
+        evidence_json: "{\"version\":2}".to_string(),
+    }])?;
+
+    let active = store.active_rug_wallet_quarantines("rug_feedback_stale_terminal", now)?;
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].wallet_id, "rug-wallet");
+    assert_eq!(active[0].first_rejected_at, now);
+    assert_eq!(active[0].last_rejected_at, now + Duration::hours(1));
+    assert_eq!(active[0].quarantine_until, now + Duration::hours(72));
+    assert_eq!(active[0].evidence_json, "{\"version\":2}");
+
+    let expired = store
+        .active_rug_wallet_quarantines("rug_feedback_stale_terminal", now + Duration::hours(73))?;
+    assert!(expired.is_empty());
     Ok(())
 }
 

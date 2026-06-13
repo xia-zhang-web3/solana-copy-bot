@@ -1,11 +1,13 @@
 use crate::status::{DiscoveryV2Status, DISCOVERY_V2_SCORING_SOURCE};
 use anyhow::{bail, Result};
+use chrono::Duration;
 use copybot_core_types::{WalletMetricRow, WalletUpsertRow};
 use copybot_storage_core::{
-    DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode, SqliteDiscoveryStore,
+    DiscoveryPublicationStateUpdate, DiscoveryRuntimeMode, RugWalletQuarantineUpsert,
+    SqliteDiscoveryStore,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryV2PublishReport {
@@ -17,6 +19,7 @@ pub struct DiscoveryV2PublishReport {
     pub scoring_source: String,
     pub policy_fingerprint: String,
     pub published_wallet_count: usize,
+    pub rug_quarantine_wallet_count: usize,
     pub publication_rotation: DiscoveryV2PublicationRotationReport,
     pub status: DiscoveryV2Status,
 }
@@ -34,6 +37,7 @@ pub fn publish_discovery_v2_status(
     store: &SqliteDiscoveryStore,
     status: DiscoveryV2Status,
     commit: bool,
+    rug_quarantine_hours: u64,
 ) -> Result<DiscoveryV2PublishReport> {
     let runtime_mode = if status.production_green {
         DiscoveryRuntimeMode::Healthy
@@ -51,6 +55,7 @@ pub fn publish_discovery_v2_status(
         &[]
     };
     let mut publication_rotation = publication_rotation_report(store, publishable_wallets)?;
+    let rug_quarantines = rug_quarantine_rows(&status, rug_quarantine_hours);
     if commit {
         if !status.production_green {
             bail!(
@@ -84,6 +89,7 @@ pub fn publish_discovery_v2_status(
             &update,
             status.policy_fingerprint.as_str(),
             &runtime_cursor,
+            &rug_quarantines,
         )?;
         publication_rotation.added_wallet_count = followlist_update.activated;
         publication_rotation.removed_wallet_count = followlist_update.deactivated;
@@ -107,6 +113,7 @@ pub fn publish_discovery_v2_status(
         scoring_source: DISCOVERY_V2_SCORING_SOURCE.to_string(),
         policy_fingerprint,
         published_wallet_count,
+        rug_quarantine_wallet_count: rug_quarantines.len(),
         publication_rotation,
         status: status.bounded_operator_wallet_metrics(),
     })
@@ -166,4 +173,33 @@ fn metric_rows(status: &DiscoveryV2Status) -> Vec<WalletMetricRow> {
             rug_ratio: metric.rug_ratio,
         })
         .collect()
+}
+
+fn rug_quarantine_rows(
+    status: &DiscoveryV2Status,
+    quarantine_hours: u64,
+) -> Vec<RugWalletQuarantineUpsert> {
+    let quarantine_until = status.now + Duration::hours(quarantine_hours.max(1) as i64);
+    let mut rows = BTreeMap::<String, RugWalletQuarantineUpsert>::new();
+    for candidate in &status.rug_quarantine_candidates {
+        let evidence_json = serde_json::json!({
+            "source": "discovery_v2_rug_wallet_filter",
+            "closed_trades": candidate.closed_trades,
+            "stale_terminal_closes": candidate.stale_terminal_closes,
+            "stale_terminal_rate": candidate.stale_terminal_rate,
+            "stale_terminal_pnl_sol": candidate.stale_terminal_pnl_sol,
+        })
+        .to_string();
+        rows.insert(
+            candidate.wallet_id.clone(),
+            RugWalletQuarantineUpsert {
+                wallet_id: candidate.wallet_id.clone(),
+                reason: crate::rug_feedback::RUG_FEEDBACK_REJECT_REASON.to_string(),
+                rejected_at: status.now,
+                quarantine_until,
+                evidence_json,
+            },
+        );
+    }
+    rows.into_values().collect()
 }

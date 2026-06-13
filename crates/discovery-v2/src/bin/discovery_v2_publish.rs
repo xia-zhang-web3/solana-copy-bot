@@ -114,7 +114,12 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
         )?
     };
     if !config.commit {
-        return publish_discovery_v2_status(&read_store, status, false);
+        return publish_discovery_v2_status(
+            &read_store,
+            status,
+            false,
+            loaded.discovery.rug_wallet_filter_quarantine_hours,
+        );
     }
     if !config.acknowledge_daemon_restart_required {
         bail!(
@@ -122,7 +127,12 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
         );
     }
     if !status.production_green {
-        return publish_discovery_v2_status(&read_store, status, true);
+        return publish_discovery_v2_status(
+            &read_store,
+            status,
+            true,
+            loaded.discovery.rug_wallet_filter_quarantine_hours,
+        );
     }
     drop(read_store);
 
@@ -134,7 +144,12 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
             db_path.display()
         )
     })?;
-    publish_discovery_v2_status(&write_store, status, true)
+    publish_discovery_v2_status(
+        &write_store,
+        status,
+        true,
+        loaded.discovery.rug_wallet_filter_quarantine_hours,
+    )
 }
 
 fn resolve_db_path(config_path: &Path, override_path: Option<&Path>, configured: &str) -> PathBuf {

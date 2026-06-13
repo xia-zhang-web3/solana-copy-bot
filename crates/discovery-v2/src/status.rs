@@ -7,7 +7,9 @@ use crate::maturity::{
 };
 use crate::metric::wallet_metric_from_accumulator;
 use crate::policy::{discovery_v2_policy_fingerprint, DiscoveryV2BuildOptions};
-use crate::rug_feedback::{apply_rug_feedback, load_rug_wallet_feedback};
+use crate::rug_feedback::{
+    apply_rug_feedback, load_rug_wallet_filter_state, rug_quarantine_candidate,
+};
 use crate::shadow_feedback::{apply_shadow_feedback, load_shadow_wallet_feedback};
 use crate::status::status_blockers::blockers;
 use crate::status::status_load::{load_coverage_sample, load_tail_status, scan_window_metrics};
@@ -22,8 +24,8 @@ pub use crate::filters::DiscoveryV2FilterStatus;
 pub use crate::live_portfolio::DiscoveryV2LivePortfolioStatus;
 pub use status_types::{
     DiscoveryV2BuildTiming, DiscoveryV2CoverageSample, DiscoveryV2MaturityStatus,
-    DiscoveryV2ScanStatus, DiscoveryV2ShadowSignalStatus, DiscoveryV2Status, DiscoveryV2TailStatus,
-    OPERATOR_WALLET_METRIC_LIMIT,
+    DiscoveryV2RugQuarantineCandidate, DiscoveryV2ScanStatus, DiscoveryV2ShadowSignalStatus,
+    DiscoveryV2Status, DiscoveryV2TailStatus, OPERATOR_WALLET_METRIC_LIMIT,
 };
 
 #[path = "status_blockers.rs"]
@@ -104,7 +106,8 @@ pub fn build_discovery_v2_status(
     let mut filters = DiscoveryV2FilterStatusBuilder::default();
     let shadow_feedback = load_shadow_wallet_feedback(store, options.now)?;
     let executable_feedback = load_executable_wallet_feedback(store, discovery, options.now)?;
-    let rug_feedback = load_rug_wallet_feedback(store, discovery, options.now)?;
+    let rug_feedback = load_rug_wallet_filter_state(store, discovery, options.now)?;
+    let mut rug_quarantine_candidates = Vec::new();
     let mut wallet_metrics_total = 0usize;
     let mut metric_time_budget_exhausted = false;
     for (wallet_id, acc) in window_scan.wallets {
@@ -118,8 +121,12 @@ pub fn build_discovery_v2_status(
         apply_shadow_feedback(&mut metric, feedback);
         let feedback = executable_feedback.get(&metric.wallet_id);
         apply_executable_feedback(&mut metric, feedback, discovery);
-        let feedback = rug_feedback.get(&metric.wallet_id);
-        apply_rug_feedback(&mut metric, feedback, discovery);
+        let feedback = rug_feedback.feedback(&metric.wallet_id);
+        let quarantined = rug_feedback.is_quarantined(&metric.wallet_id);
+        apply_rug_feedback(&mut metric, feedback, quarantined, discovery);
+        if let Some(candidate) = rug_quarantine_candidate(&metric) {
+            rug_quarantine_candidates.push(candidate);
+        }
         wallet_metrics_total = wallet_metrics_total.saturating_add(1);
         filters.observe_metric(&metric);
         retain_top_wallet_metric(&mut wallet_metrics, metric, retained_metric_limit);
@@ -141,8 +148,12 @@ pub fn build_discovery_v2_status(
                 wallet_metric_from_accumulator(wallet_id, acc, discovery, scoring_data_now);
             let feedback = executable_feedback.get(&metric.wallet_id);
             apply_executable_feedback(&mut metric, feedback, discovery);
-            let feedback = rug_feedback.get(&metric.wallet_id);
-            apply_rug_feedback(&mut metric, feedback, discovery);
+            let feedback = rug_feedback.feedback(&metric.wallet_id);
+            let quarantined = rug_feedback.is_quarantined(&metric.wallet_id);
+            apply_rug_feedback(&mut metric, feedback, quarantined, discovery);
+            if let Some(candidate) = rug_quarantine_candidate(&metric) {
+                rug_quarantine_candidates.push(candidate);
+            }
             filters.observe_metric(&metric);
             retain_top_wallet_metric(&mut wallet_metrics, metric, retained_metric_limit);
         }
@@ -260,6 +271,7 @@ pub fn build_discovery_v2_status(
         wallet_metrics_returned: wallet_metrics.len(),
         wallet_metrics_truncated: wallet_metrics.len() < wallet_metrics_total,
         wallet_metrics,
+        rug_quarantine_candidates,
         candidate_wallets,
         execution_enabled: options.execution_enabled,
         execution_disabled: !options.execution_enabled,
@@ -317,6 +329,7 @@ fn budget_exhausted_status(
         wallet_metrics_returned: 0,
         wallet_metrics_truncated: unique_wallets_seen > 0,
         wallet_metrics: Vec::new(),
+        rug_quarantine_candidates: Vec::new(),
         candidate_wallets,
         execution_enabled: options.execution_enabled,
         execution_disabled: !options.execution_enabled,

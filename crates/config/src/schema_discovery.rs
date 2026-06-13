@@ -46,6 +46,7 @@ pub struct DiscoveryConfig {
     pub rug_wallet_filter_min_closed_trades: u32,
     pub rug_wallet_filter_max_stale_terminal_rate: f64,
     pub rug_wallet_filter_max_stale_terminal_pnl_sol: f64,
+    pub rug_wallet_filter_quarantine_hours: u64,
     pub max_window_swaps_in_memory: usize,
     pub max_fetch_swaps_per_cycle: usize,
     pub max_fetch_pages_per_cycle: usize,
@@ -99,6 +100,7 @@ impl Default for DiscoveryConfig {
             rug_wallet_filter_min_closed_trades: 10,
             rug_wallet_filter_max_stale_terminal_rate: 0.0,
             rug_wallet_filter_max_stale_terminal_pnl_sol: 0.0,
+            rug_wallet_filter_quarantine_hours: 168,
             max_window_swaps_in_memory: 60_000,
             max_fetch_swaps_per_cycle: 20_000,
             max_fetch_pages_per_cycle: 5,
@@ -242,6 +244,10 @@ impl fmt::Debug for DiscoveryConfig {
             .field(
                 "rug_wallet_filter_max_stale_terminal_pnl_sol",
                 &self.rug_wallet_filter_max_stale_terminal_pnl_sol,
+            )
+            .field(
+                "rug_wallet_filter_quarantine_hours",
+                &self.rug_wallet_filter_quarantine_hours,
             )
             .field(
                 "max_window_swaps_in_memory",

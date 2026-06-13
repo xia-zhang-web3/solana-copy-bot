@@ -29,12 +29,23 @@ pub struct DiscoveryV2Status {
     pub wallet_metrics_returned: usize,
     pub wallet_metrics_truncated: bool,
     pub wallet_metrics: Vec<DiscoveryV2WalletMetric>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rug_quarantine_candidates: Vec<DiscoveryV2RugQuarantineCandidate>,
     pub candidate_wallets: Vec<String>,
     pub execution_enabled: bool,
     pub execution_disabled: bool,
     pub blockers: Vec<String>,
     pub production_green: bool,
     pub policy_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiscoveryV2RugQuarantineCandidate {
+    pub wallet_id: String,
+    pub closed_trades: Option<u32>,
+    pub stale_terminal_closes: Option<u32>,
+    pub stale_terminal_rate: Option<f64>,
+    pub stale_terminal_pnl_sol: Option<f64>,
 }
 
 impl DiscoveryV2Status {
@@ -46,6 +57,7 @@ impl DiscoveryV2Status {
         self.wallet_metrics_total = total;
         self.wallet_metrics_returned = self.wallet_metrics.len();
         self.wallet_metrics_truncated = self.wallet_metrics_returned < total;
+        self.rug_quarantine_candidates.clear();
         self
     }
 }

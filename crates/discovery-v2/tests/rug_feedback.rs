@@ -4,7 +4,8 @@ use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_discovery_v2::{
     build_discovery_v2_rug_feedback_distribution_report, build_discovery_v2_status,
-    DiscoveryV2BuildOptions, DiscoveryV2RugFeedbackDistributionOptions,
+    publish_discovery_v2_status, DiscoveryV2BuildOptions,
+    DiscoveryV2RugFeedbackDistributionOptions,
 };
 use copybot_storage_core::{
     ensure_discovery_v2_schema, SqliteDiscoveryStore, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
@@ -114,6 +115,129 @@ fn rug_feedback_rejects_wallet_with_stale_terminal_tail() -> Result<()> {
     assert!(bad_metric
         .rug_feedback_stale_terminal_pnl_sol
         .is_some_and(|pnl| pnl <= -0.189 && pnl >= -0.191));
+    Ok(())
+}
+
+#[test]
+fn rug_quarantine_persists_rejection_after_feedback_window_expires() -> Result<()> {
+    let dir = tempdir()?;
+    let mut store = SqliteDiscoveryStore::open(dir.path().join("runtime.db"))?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    ensure_discovery_v2_schema(&store)?;
+
+    let now = DateTime::parse_from_rfc3339("2026-05-14T10:00:00Z")?.with_timezone(&Utc);
+    let bad_wallet = "wallet_rug_quarantine_bad";
+    let good_wallet = "wallet_rug_quarantine_good";
+    let replacement_wallet = "wallet_rug_quarantine_replacement";
+    let token_a = "RugQuarantineBadToken111111111111";
+    let token_b = "RugQuarantineGoodToken2222222222";
+    let token_c = "RugQuarantineReplacementToken333";
+
+    seed_candidate_swaps_with_tail(
+        &store,
+        now,
+        "rug-quarantine-initial",
+        [
+            (bad_wallet, token_a, "sig-rug-quarantine-bad-1", 10),
+            (good_wallet, token_b, "sig-rug-quarantine-good-1", 20),
+            (
+                replacement_wallet,
+                token_c,
+                "sig-rug-quarantine-replacement-1",
+                30,
+            ),
+        ],
+    )?;
+    for token in [token_a, token_b, token_c] {
+        store.upsert_token_quality_cache(token, Some(5), Some(1.0), Some(60), now)?;
+    }
+    for index in 0..9 {
+        let opened = now - Duration::hours(1) + Duration::seconds(index);
+        store.insert_shadow_closed_trade(
+            &format!("rug-quarantine-market-close-{index}"),
+            bad_wallet,
+            token_a,
+            1000.0,
+            0.20,
+            0.21,
+            0.01,
+            opened,
+            opened + Duration::seconds(30),
+        )?;
+    }
+    let opened = now - Duration::minutes(30);
+    store.insert_shadow_closed_trade_exact_with_context(
+        "stale-close-rug-quarantine",
+        bad_wallet,
+        token_a,
+        1000.0,
+        None,
+        0.20,
+        0.01,
+        -0.19,
+        SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
+        opened,
+        opened + Duration::minutes(30),
+    )?;
+
+    let (mut discovery, shadow) = strict_policy();
+    discovery.follow_top_n = 2;
+    discovery.rug_wallet_filter_enabled = true;
+    discovery.rug_wallet_filter_min_closed_trades = 10;
+    discovery.rug_wallet_filter_max_stale_terminal_rate = 0.0;
+    discovery.rug_wallet_filter_max_stale_terminal_pnl_sol = 0.0;
+    discovery.rug_wallet_filter_quarantine_hours = 168;
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+    let report = publish_discovery_v2_status(&store, status, true, 168)?;
+    assert_eq!(report.rug_quarantine_wallet_count, 1);
+
+    let later = now + Duration::hours(49);
+    seed_candidate_swaps_with_tail(
+        &store,
+        later,
+        "rug-quarantine-later",
+        [
+            (bad_wallet, token_a, "sig-rug-quarantine-bad-2", 110),
+            (good_wallet, token_b, "sig-rug-quarantine-good-2", 120),
+            (
+                replacement_wallet,
+                token_c,
+                "sig-rug-quarantine-replacement-2",
+                130,
+            ),
+        ],
+    )?;
+    for token in [token_a, token_b, token_c] {
+        store.upsert_token_quality_cache(token, Some(5), Some(1.0), Some(60), later)?;
+    }
+
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(later))?;
+    assert!(status.production_green, "{:?}", status.blockers);
+    assert!(!status.candidate_wallets.contains(&bad_wallet.to_string()));
+    assert_eq!(
+        status
+            .filters
+            .reject_breakdown
+            .get("rug_feedback_stale_terminal"),
+        Some(&1)
+    );
+    let bad_metric = status
+        .wallet_metrics
+        .iter()
+        .find(|metric| metric.wallet_id == bad_wallet)
+        .expect("bad wallet metric retained");
+    assert_eq!(bad_metric.rug_feedback_closed_trades, None);
+    assert!(bad_metric
+        .reject_reasons
+        .contains(&"rug_feedback_stale_terminal".to_string()));
+
+    discovery.rug_wallet_filter_enabled = false;
+    discovery.follow_top_n = 3;
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(later))?;
+    assert!(status.candidate_wallets.contains(&bad_wallet.to_string()));
     Ok(())
 }
 
@@ -240,6 +364,39 @@ fn seed_candidate_swaps<const N: usize>(
         "tail_wallet",
         candidates[0].1,
         "sig-rug-feedback-tail",
+        99,
+        now - Duration::minutes(2),
+    ));
+    store.insert_observed_swaps_batch(&swaps)?;
+    Ok(())
+}
+
+fn seed_candidate_swaps_with_tail<const N: usize>(
+    store: &SqliteDiscoveryStore,
+    now: DateTime<Utc>,
+    tail_prefix: &str,
+    candidates: [(&str, &str, &str, u64); N],
+) -> Result<()> {
+    let mut swaps = vec![swap(
+        "tail_wallet",
+        candidates[0].1,
+        &format!("sig-{tail_prefix}-coverage"),
+        1,
+        now - Duration::hours(25),
+    )];
+    for (wallet, token, signature, slot) in candidates {
+        swaps.push(swap(
+            wallet,
+            token,
+            signature,
+            slot,
+            now - Duration::minutes(10) + Duration::seconds(slot as i64),
+        ));
+    }
+    swaps.push(swap(
+        "tail_wallet",
+        candidates[0].1,
+        &format!("sig-{tail_prefix}-tail"),
         99,
         now - Duration::minutes(2),
     ));

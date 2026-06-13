@@ -80,7 +80,8 @@ pub fn discovery_v2_policy_fingerprint(
             "rug_wallet_filter_window_hours={};",
             "rug_wallet_filter_min_closed_trades={};",
             "rug_wallet_filter_max_stale_terminal_rate_bits={:016x};",
-            "rug_wallet_filter_max_stale_terminal_pnl_sol_bits={:016x}"
+            "rug_wallet_filter_max_stale_terminal_pnl_sol_bits={:016x};",
+            "rug_wallet_filter_quarantine_hours={}"
         ),
         DISCOVERY_V2_SCORING_SOURCE,
         input.window_minutes,
@@ -150,5 +151,6 @@ pub fn discovery_v2_policy_fingerprint(
         discovery
             .rug_wallet_filter_max_stale_terminal_pnl_sol
             .to_bits(),
+        discovery.rug_wallet_filter_quarantine_hours,
     )
 }

@@ -2,7 +2,7 @@ use crate::{
     DiscoveryPublicationFreshnessGate, DiscoveryPublicationStateRow,
     DiscoveryPublicationStateUpdate, DiscoveryRuntimeArtifact, DiscoveryRuntimeCursor,
     DiscoveryRuntimeMode, FollowlistUpdateResult, PersistedWalletMetricSnapshotRow,
-    SqliteDiscoveryStore, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
+    RugWalletQuarantineUpsert, SqliteDiscoveryStore, DISCOVERY_RUNTIME_ARTIFACT_FORMAT_VERSION,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -10,6 +10,7 @@ use copybot_core_types::{WalletMetricRow, WalletUpsertRow};
 use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 
+use crate::rug_wallet_quarantine::upsert_rug_wallet_quarantines_on_conn;
 use publication_artifact::{
     load_discovery_runtime_cursor_on_conn, runtime_artifact_export_truth_detail,
     validate_runtime_artifact_snapshot_shape,
@@ -178,11 +179,13 @@ impl SqliteDiscoveryStore {
         update: &DiscoveryPublicationStateUpdate,
         policy_fingerprint: &str,
         runtime_cursor: &DiscoveryRuntimeCursor,
+        rug_quarantines: &[RugWalletQuarantineUpsert],
     ) -> Result<FollowlistUpdateResult> {
         crate::schema::ensure_discovery_v2_schema(self)?;
         let tx = self.conn.unchecked_transaction()?;
         upsert_wallets(&tx, wallets)?;
         insert_metrics(&tx, metrics)?;
+        upsert_rug_wallet_quarantines_on_conn(&tx, rug_quarantines)?;
         let result = update_followlist(&tx, desired_wallets, true, true, now, reason)?;
         write_publication_state_on_conn(
             &tx,

@@ -30,6 +30,9 @@ fn run(config: WalletReportCliConfig) -> Result<serde_json::Value> {
         .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
     if config.simulate_rug_filter {
         loaded.discovery.rug_wallet_filter_enabled = true;
+        if let Some(min_closed_trades) = config.rug_filter_min_closed_trades {
+            loaded.discovery.rug_wallet_filter_min_closed_trades = min_closed_trades;
+        }
         if let Some(rate) = config.rug_filter_max_stale_terminal_rate {
             loaded.discovery.rug_wallet_filter_max_stale_terminal_rate = rate;
         }

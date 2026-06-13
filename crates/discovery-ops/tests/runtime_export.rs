@@ -181,6 +181,7 @@ fn persist_publication_with_mode(
         &publication_update(now, window_start, runtime_mode, reason),
         fingerprint,
         &cursor,
+        &[],
     )?;
     Ok(cursor)
 }

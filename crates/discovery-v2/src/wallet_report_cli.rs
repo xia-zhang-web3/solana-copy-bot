@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 pub(crate) const USAGE: &str = "usage: discovery_v2_wallet_report --config <path> \
     [--db-path <path>] [--top <n>] [--include-rejected] [--live-rebuild] \
-    [--simulate-rug-filter] [--rug-filter-max-stale-terminal-rate <ratio>] \
+    [--simulate-rug-filter] [--rug-filter-min-closed-trades <n>] \
+    [--rug-filter-max-stale-terminal-rate <ratio>] \
     [--rug-filter-max-stale-terminal-pnl-sol <sol>] \
     [--rug-feedback-since <rfc3339>] [--rug-feedback-until <rfc3339>] \
     [--rug-feedback-min-closed-trades <n>] \
@@ -20,6 +21,7 @@ pub(crate) struct WalletReportCliConfig {
     pub(crate) include_rejected: bool,
     pub(crate) live_rebuild: bool,
     pub(crate) simulate_rug_filter: bool,
+    pub(crate) rug_filter_min_closed_trades: Option<u32>,
     pub(crate) rug_filter_max_stale_terminal_rate: Option<f64>,
     pub(crate) rug_filter_max_stale_terminal_pnl_sol: Option<f64>,
     pub(crate) rug_feedback_since: Option<DateTime<Utc>>,
@@ -44,6 +46,7 @@ where
     let mut include_rejected = false;
     let mut live_rebuild = false;
     let mut simulate_rug_filter = false;
+    let mut rug_filter_min_closed_trades = None;
     let mut rug_filter_max_stale_terminal_rate = None;
     let mut rug_filter_max_stale_terminal_pnl_sol = None;
     let mut rug_feedback_since = None;
@@ -63,6 +66,9 @@ where
             "--include-rejected" => include_rejected = true,
             "--live-rebuild" => live_rebuild = true,
             "--simulate-rug-filter" => simulate_rug_filter = true,
+            "--rug-filter-min-closed-trades" => {
+                rug_filter_min_closed_trades = Some(parse_u32_arg(&arg, args.next())?)
+            }
             "--rug-filter-max-stale-terminal-rate" => {
                 rug_filter_max_stale_terminal_rate = Some(parse_ratio_arg(&arg, args.next())?)
             }
@@ -96,13 +102,15 @@ where
         }
     }
     if (simulate_rug_filter
+        || rug_filter_min_closed_trades.is_some()
         || rug_filter_max_stale_terminal_rate.is_some()
         || rug_filter_max_stale_terminal_pnl_sol.is_some())
         && !live_rebuild
     {
         bail!("rug filter simulation requires --live-rebuild");
     }
-    if (rug_filter_max_stale_terminal_rate.is_some()
+    if (rug_filter_min_closed_trades.is_some()
+        || rug_filter_max_stale_terminal_rate.is_some()
         || rug_filter_max_stale_terminal_pnl_sol.is_some())
         && !simulate_rug_filter
     {
@@ -128,6 +136,7 @@ where
         include_rejected,
         live_rebuild,
         simulate_rug_filter,
+        rug_filter_min_closed_trades,
         rug_filter_max_stale_terminal_rate,
         rug_filter_max_stale_terminal_pnl_sol,
         rug_feedback_since,

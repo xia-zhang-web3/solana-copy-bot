@@ -195,11 +195,15 @@ fn policy_fingerprint_changes_when_shadow_or_execution_identity_changes() -> Res
     let rug_filter_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
     assert_ne!(executable_filter_changed, rug_filter_changed);
 
+    discovery.rug_wallet_filter_quarantine_hours += 1;
+    let rug_quarantine_changed = discovery_v2_policy_fingerprint(&discovery, &shadow, &options);
+    assert_ne!(rug_filter_changed, rug_quarantine_changed);
+
     let mut execution_changed = options;
     execution_changed.execution_enabled = true;
     let execution_changed =
         discovery_v2_policy_fingerprint(&discovery, &shadow, &execution_changed);
-    assert_ne!(rug_filter_changed, execution_changed);
+    assert_ne!(rug_quarantine_changed, execution_changed);
     Ok(())
 }
 
@@ -379,7 +383,7 @@ fn publish_commit_writes_followlist_and_publication_state_when_green() -> Result
     let (discovery, shadow) = strict_policy();
     let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
 
-    let report = publish_discovery_v2_status(&store, status, true)?;
+    let report = publish_discovery_v2_status(&store, status, true, 168)?;
 
     assert!(report.committed);
     assert_eq!(
@@ -442,7 +446,7 @@ fn publish_report_bounds_operator_wallet_metrics_without_losing_totals() -> Resu
     assert!(status.wallet_metrics_truncated);
     assert_eq!(status.wallet_metrics.len(), OPERATOR_WALLET_METRIC_LIMIT);
 
-    let report = publish_discovery_v2_status(&store, status, false)?;
+    let report = publish_discovery_v2_status(&store, status, false, 168)?;
 
     assert_eq!(report.status.filters.total_wallets, total_wallets);
     assert_eq!(report.status.scan.unique_wallets, total_wallets);
@@ -466,7 +470,7 @@ fn publish_commit_refuses_to_mutate_when_blocked() -> Result<()> {
     let (discovery, shadow) = strict_policy();
     let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
 
-    let err = publish_discovery_v2_status(&store, status, true).expect_err("blocked publish");
+    let err = publish_discovery_v2_status(&store, status, true, 168).expect_err("blocked publish");
 
     assert!(err
         .to_string()

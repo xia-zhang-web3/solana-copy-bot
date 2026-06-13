@@ -22,6 +22,7 @@ pub struct DiscoveryV2WalletFilterImpact {
     pub rug_filter_min_closed_trades: u32,
     pub rug_filter_max_stale_terminal_rate: f64,
     pub rug_filter_max_stale_terminal_pnl_sol: f64,
+    pub rug_filter_quarantine_hours: u64,
 }
 
 pub(crate) fn wallet_filter_impact(
@@ -67,6 +68,7 @@ pub(crate) fn wallet_filter_impact(
         rug_filter_max_stale_terminal_rate: discovery.rug_wallet_filter_max_stale_terminal_rate,
         rug_filter_max_stale_terminal_pnl_sol: discovery
             .rug_wallet_filter_max_stale_terminal_pnl_sol,
+        rug_filter_quarantine_hours: discovery.rug_wallet_filter_quarantine_hours,
     }
 }
 

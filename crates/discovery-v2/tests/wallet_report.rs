@@ -114,6 +114,7 @@ fn status(now: DateTime<Utc>) -> DiscoveryV2Status {
         wallet_metrics_returned: 2,
         wallet_metrics_truncated: false,
         wallet_metrics: vec![accepted, rejected],
+        rug_quarantine_candidates: Vec::new(),
         candidate_wallets: vec!["wallet-a".to_string()],
         execution_enabled: false,
         execution_disabled: true,

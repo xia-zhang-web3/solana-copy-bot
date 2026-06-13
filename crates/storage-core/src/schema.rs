@@ -332,6 +332,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_followlist_one_active_wallet
     ON followlist(wallet_id)
     WHERE active = 1;
 
+CREATE TABLE IF NOT EXISTS discovery_v2_wallet_quarantine (
+    wallet_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    first_rejected_at TEXT NOT NULL,
+    last_rejected_at TEXT NOT NULL,
+    quarantine_until TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY(wallet_id, reason)
+);
+CREATE INDEX IF NOT EXISTS idx_discovery_v2_wallet_quarantine_active
+    ON discovery_v2_wallet_quarantine(reason, quarantine_until);
+
 CREATE TABLE IF NOT EXISTS discovery_strategy_state (
     id INTEGER PRIMARY KEY CHECK(id = 1),
     trusted_selection_bootstrap_required INTEGER NOT NULL DEFAULT 0,

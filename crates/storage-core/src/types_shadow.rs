@@ -98,6 +98,25 @@ impl RugWalletFeedback {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RugWalletQuarantineRow {
+    pub wallet_id: String,
+    pub reason: String,
+    pub first_rejected_at: DateTime<Utc>,
+    pub last_rejected_at: DateTime<Utc>,
+    pub quarantine_until: DateTime<Utc>,
+    pub evidence_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RugWalletQuarantineUpsert {
+    pub wallet_id: String,
+    pub reason: String,
+    pub rejected_at: DateTime<Utc>,
+    pub quarantine_until: DateTime<Utc>,
+    pub evidence_json: String,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ShadowSignalSummary {
     pub buy_signals: u64,
