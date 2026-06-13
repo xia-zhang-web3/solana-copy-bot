@@ -62,6 +62,7 @@ mod publication_compat;
 mod quality;
 mod quality_evidence_write;
 mod recent_raw;
+mod rug_wallet_feedback;
 mod schema;
 mod schema_indexes;
 mod shadow_close;
@@ -147,9 +148,9 @@ pub use types::{
     ExecutionTinyProofTrade, FollowlistUpdateResult, HistoryRetentionCutoffs,
     HistoryRetentionSummary, ObservedSolLegSwap, ObservedSwapBatchWriteMetrics,
     ObservedSwapCursorPage, PersistedWalletMetricSnapshotRow, RecentRawJournalStateRow,
-    RecentRawJournalWriteSummary, RiskEventRow, ShadowCloseOutcome, ShadowLotRow,
-    ShadowSignalSummary, ShadowTokenLossCooldown, ShadowTokenRecentClose, ShadowWalletFeedback,
-    ShadowWalletTokenFastLossCooldown, SqliteBatchedDeleteSummary,
+    RecentRawJournalWriteSummary, RiskEventRow, RugWalletFeedback, ShadowCloseOutcome,
+    ShadowLotRow, ShadowSignalSummary, ShadowTokenLossCooldown, ShadowTokenRecentClose,
+    ShadowWalletFeedback, ShadowWalletTokenFastLossCooldown, SqliteBatchedDeleteSummary,
     SqliteBatchedDeleteSummaryWithCompletion, SqliteContentionSnapshot,
     SqliteSnapshotDeferredReason, SqliteSnapshotOutcome, SqliteSnapshotPolicy,
     SqliteSnapshotRetryReason, SqliteSnapshotSourceMetrics, SqliteSnapshotSummary,

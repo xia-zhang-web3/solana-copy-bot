@@ -7,6 +7,7 @@ use crate::maturity::{
 };
 use crate::metric::wallet_metric_from_accumulator;
 use crate::policy::{discovery_v2_policy_fingerprint, DiscoveryV2BuildOptions};
+use crate::rug_feedback::{apply_rug_feedback, load_rug_wallet_feedback};
 use crate::shadow_feedback::{apply_shadow_feedback, load_shadow_wallet_feedback};
 use crate::status::status_blockers::blockers;
 use crate::status::status_load::{load_coverage_sample, load_tail_status, scan_window_metrics};
@@ -103,6 +104,7 @@ pub fn build_discovery_v2_status(
     let mut filters = DiscoveryV2FilterStatusBuilder::default();
     let shadow_feedback = load_shadow_wallet_feedback(store, options.now)?;
     let executable_feedback = load_executable_wallet_feedback(store, discovery, options.now)?;
+    let rug_feedback = load_rug_wallet_feedback(store, discovery, options.now)?;
     let mut wallet_metrics_total = 0usize;
     let mut metric_time_budget_exhausted = false;
     for (wallet_id, acc) in window_scan.wallets {
@@ -116,6 +118,8 @@ pub fn build_discovery_v2_status(
         apply_shadow_feedback(&mut metric, feedback);
         let feedback = executable_feedback.get(&metric.wallet_id);
         apply_executable_feedback(&mut metric, feedback, discovery);
+        let feedback = rug_feedback.get(&metric.wallet_id);
+        apply_rug_feedback(&mut metric, feedback, discovery);
         wallet_metrics_total = wallet_metrics_total.saturating_add(1);
         filters.observe_metric(&metric);
         retain_top_wallet_metric(&mut wallet_metrics, metric, retained_metric_limit);
@@ -137,6 +141,8 @@ pub fn build_discovery_v2_status(
                 wallet_metric_from_accumulator(wallet_id, acc, discovery, scoring_data_now);
             let feedback = executable_feedback.get(&metric.wallet_id);
             apply_executable_feedback(&mut metric, feedback, discovery);
+            let feedback = rug_feedback.get(&metric.wallet_id);
+            apply_rug_feedback(&mut metric, feedback, discovery);
             filters.observe_metric(&metric);
             retain_top_wallet_metric(&mut wallet_metrics, metric, retained_metric_limit);
         }

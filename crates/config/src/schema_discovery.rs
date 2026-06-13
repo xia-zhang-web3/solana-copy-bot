@@ -41,6 +41,11 @@ pub struct DiscoveryConfig {
     pub executable_wallet_filter_min_samples: u32,
     pub executable_wallet_filter_max_pnl_sol: f64,
     pub executable_wallet_filter_max_flip_rate: f64,
+    pub rug_wallet_filter_enabled: bool,
+    pub rug_wallet_filter_window_hours: u64,
+    pub rug_wallet_filter_min_closed_trades: u32,
+    pub rug_wallet_filter_max_stale_terminal_rate: f64,
+    pub rug_wallet_filter_max_stale_terminal_pnl_sol: f64,
     pub max_window_swaps_in_memory: usize,
     pub max_fetch_swaps_per_cycle: usize,
     pub max_fetch_pages_per_cycle: usize,
@@ -89,6 +94,11 @@ impl Default for DiscoveryConfig {
             executable_wallet_filter_min_samples: 10,
             executable_wallet_filter_max_pnl_sol: 0.0,
             executable_wallet_filter_max_flip_rate: 0.40,
+            rug_wallet_filter_enabled: false,
+            rug_wallet_filter_window_hours: 48,
+            rug_wallet_filter_min_closed_trades: 10,
+            rug_wallet_filter_max_stale_terminal_rate: 0.0,
+            rug_wallet_filter_max_stale_terminal_pnl_sol: 0.0,
             max_window_swaps_in_memory: 60_000,
             max_fetch_swaps_per_cycle: 20_000,
             max_fetch_pages_per_cycle: 5,
@@ -215,6 +225,23 @@ impl fmt::Debug for DiscoveryConfig {
             .field(
                 "executable_wallet_filter_max_flip_rate",
                 &self.executable_wallet_filter_max_flip_rate,
+            )
+            .field("rug_wallet_filter_enabled", &self.rug_wallet_filter_enabled)
+            .field(
+                "rug_wallet_filter_window_hours",
+                &self.rug_wallet_filter_window_hours,
+            )
+            .field(
+                "rug_wallet_filter_min_closed_trades",
+                &self.rug_wallet_filter_min_closed_trades,
+            )
+            .field(
+                "rug_wallet_filter_max_stale_terminal_rate",
+                &self.rug_wallet_filter_max_stale_terminal_rate,
+            )
+            .field(
+                "rug_wallet_filter_max_stale_terminal_pnl_sol",
+                &self.rug_wallet_filter_max_stale_terminal_pnl_sol,
             )
             .field(
                 "max_window_swaps_in_memory",

@@ -74,7 +74,13 @@ pub fn discovery_v2_policy_fingerprint(
             "executable_wallet_filter_window_hours={};",
             "executable_wallet_filter_min_samples={};",
             "executable_wallet_filter_max_pnl_sol_bits={:016x};",
-            "executable_wallet_filter_max_flip_rate_bits={:016x}"
+            "executable_wallet_filter_max_flip_rate_bits={:016x};",
+            "rug_wallet_filter_version=1;",
+            "rug_wallet_filter_enabled={};",
+            "rug_wallet_filter_window_hours={};",
+            "rug_wallet_filter_min_closed_trades={};",
+            "rug_wallet_filter_max_stale_terminal_rate_bits={:016x};",
+            "rug_wallet_filter_max_stale_terminal_pnl_sol_bits={:016x}"
         ),
         DISCOVERY_V2_SCORING_SOURCE,
         input.window_minutes,
@@ -135,5 +141,14 @@ pub fn discovery_v2_policy_fingerprint(
         discovery.executable_wallet_filter_min_samples,
         discovery.executable_wallet_filter_max_pnl_sol.to_bits(),
         discovery.executable_wallet_filter_max_flip_rate.to_bits(),
+        discovery.rug_wallet_filter_enabled,
+        discovery.rug_wallet_filter_window_hours,
+        discovery.rug_wallet_filter_min_closed_trades,
+        discovery
+            .rug_wallet_filter_max_stale_terminal_rate
+            .to_bits(),
+        discovery
+            .rug_wallet_filter_max_stale_terminal_pnl_sol
+            .to_bits(),
     )
 }

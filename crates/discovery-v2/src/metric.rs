@@ -50,6 +50,14 @@ pub struct DiscoveryV2WalletMetric {
     pub executable_feedback_pnl_after_fee_sol: Option<f64>,
     #[serde(default)]
     pub executable_feedback_flip_rate: Option<f64>,
+    #[serde(default)]
+    pub rug_feedback_closed_trades: Option<u32>,
+    #[serde(default)]
+    pub rug_feedback_stale_terminal_closes: Option<u32>,
+    #[serde(default)]
+    pub rug_feedback_stale_terminal_rate: Option<f64>,
+    #[serde(default)]
+    pub rug_feedback_stale_terminal_pnl_sol: Option<f64>,
     pub eligible: bool,
     pub reject_reasons: Vec<String>,
     pub first_seen: DateTime<Utc>,
@@ -158,6 +166,10 @@ pub(crate) fn wallet_metric_from_accumulator(
         executable_feedback_samples: None,
         executable_feedback_pnl_after_fee_sol: None,
         executable_feedback_flip_rate: None,
+        rug_feedback_closed_trades: None,
+        rug_feedback_stale_terminal_closes: None,
+        rug_feedback_stale_terminal_rate: None,
+        rug_feedback_stale_terminal_pnl_sol: None,
         eligible: reject_reasons.is_empty(),
         reject_reasons,
         first_seen: acc.first_seen,

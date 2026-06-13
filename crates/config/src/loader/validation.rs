@@ -110,6 +110,28 @@ fn validate_discovery_v2_float_gates(config: &AppConfig) -> Result<()> {
         "discovery.executable_wallet_filter_max_flip_rate",
         config.discovery.executable_wallet_filter_max_flip_rate,
     )?;
+    if config.discovery.rug_wallet_filter_window_hours == 0 {
+        return Err(anyhow!(
+            "discovery.rug_wallet_filter_window_hours ({}) must be >= 1",
+            config.discovery.rug_wallet_filter_window_hours
+        ));
+    }
+    if config.discovery.rug_wallet_filter_min_closed_trades == 0 {
+        return Err(anyhow!(
+            "discovery.rug_wallet_filter_min_closed_trades ({}) must be >= 1",
+            config.discovery.rug_wallet_filter_min_closed_trades
+        ));
+    }
+    validate_finite_ratio(
+        "discovery.rug_wallet_filter_max_stale_terminal_rate",
+        config.discovery.rug_wallet_filter_max_stale_terminal_rate,
+    )?;
+    validate_finite(
+        "discovery.rug_wallet_filter_max_stale_terminal_pnl_sol",
+        config
+            .discovery
+            .rug_wallet_filter_max_stale_terminal_pnl_sol,
+    )?;
     validate_finite_non_negative(
         "shadow.min_leader_notional_sol",
         config.shadow.min_leader_notional_sol,

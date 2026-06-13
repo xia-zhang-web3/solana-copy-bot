@@ -10,6 +10,7 @@ mod policy;
 mod publish;
 mod quality_prepare;
 mod quality_prepare_incremental;
+mod rug_feedback;
 mod shadow_feedback;
 mod status;
 mod token_market;

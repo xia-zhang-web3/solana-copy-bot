@@ -84,6 +84,21 @@ impl ExecutableWalletFeedback {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct RugWalletFeedback {
+    pub closed_trades: u64,
+    pub stale_terminal_closes: u64,
+    pub stale_terminal_pnl_sol: f64,
+    pub stale_terminal_entry_cost_sol: f64,
+}
+
+impl RugWalletFeedback {
+    pub fn stale_terminal_rate(&self) -> Option<f64> {
+        (self.closed_trades > 0)
+            .then_some(self.stale_terminal_closes as f64 / self.closed_trades as f64)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ShadowSignalSummary {
     pub buy_signals: u64,
     pub sell_signals_total: u64,

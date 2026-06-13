@@ -79,8 +79,8 @@ pub use types_runtime::{
     DiscoveryPublicationStateUpdate, DiscoveryRuntimeCursor, DiscoveryRuntimeMode,
 };
 pub use types_shadow::{
-    ExecutableWalletFeedback, ShadowCloseOutcome, ShadowLotRow, ShadowSignalSummary,
-    ShadowTokenLossCooldown, ShadowTokenRecentClose, ShadowWalletFeedback,
+    ExecutableWalletFeedback, RugWalletFeedback, ShadowCloseOutcome, ShadowLotRow,
+    ShadowSignalSummary, ShadowTokenLossCooldown, ShadowTokenRecentClose, ShadowWalletFeedback,
     ShadowWalletTokenFastLossCooldown, TokenMarketStats,
     POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER, POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER,
     SHADOW_CLOSE_CONTEXT_MARKET, SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
