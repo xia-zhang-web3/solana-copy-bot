@@ -193,6 +193,9 @@ fn rug_quarantine_persists_rejection_after_feedback_window_expires() -> Result<(
     let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
     let report = publish_discovery_v2_status(&store, status, true, 168)?;
     assert_eq!(report.rug_quarantine_wallet_count, 1);
+    let active = store.active_rug_wallet_quarantines("rug_feedback_stale_terminal", now)?;
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].quarantine_until, now + Duration::hours(168));
 
     let later = now + Duration::hours(49);
     seed_candidate_swaps_with_tail(
@@ -217,6 +220,7 @@ fn rug_quarantine_persists_rejection_after_feedback_window_expires() -> Result<(
     let status = build_discovery_v2_status(&store, &discovery, &shadow, options(later))?;
     assert!(status.production_green, "{:?}", status.blockers);
     assert!(!status.candidate_wallets.contains(&bad_wallet.to_string()));
+    assert!(status.rug_quarantine_candidates.is_empty());
     assert_eq!(
         status
             .filters
@@ -233,6 +237,11 @@ fn rug_quarantine_persists_rejection_after_feedback_window_expires() -> Result<(
     assert!(bad_metric
         .reject_reasons
         .contains(&"rug_feedback_stale_terminal".to_string()));
+    let report = publish_discovery_v2_status(&store, status, true, 168)?;
+    assert_eq!(report.rug_quarantine_wallet_count, 0);
+    let active = store.active_rug_wallet_quarantines("rug_feedback_stale_terminal", later)?;
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].quarantine_until, now + Duration::hours(168));
 
     discovery.rug_wallet_filter_enabled = false;
     discovery.follow_top_n = 3;

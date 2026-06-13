@@ -138,6 +138,12 @@ fn validate_discovery_v2_float_gates(config: &AppConfig) -> Result<()> {
             config.discovery.rug_wallet_filter_quarantine_hours
         ));
     }
+    if config.discovery.rug_wallet_filter_quarantine_hours > 8_760 {
+        return Err(anyhow!(
+            "discovery.rug_wallet_filter_quarantine_hours ({}) must be <= 8760",
+            config.discovery.rug_wallet_filter_quarantine_hours
+        ));
+    }
     validate_finite_non_negative(
         "shadow.min_leader_notional_sol",
         config.shadow.min_leader_notional_sol,

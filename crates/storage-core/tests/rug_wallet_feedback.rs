@@ -121,7 +121,7 @@ fn rug_wallet_quarantine_upsert_extends_active_guard() -> Result<()> {
         reason: "rug_feedback_stale_terminal".to_string(),
         rejected_at: now + Duration::hours(1),
         quarantine_until: now + Duration::hours(72),
-        evidence_json: "{\"version\":2}".to_string(),
+        evidence_json: "{}".to_string(),
     }])?;
 
     let active = store.active_rug_wallet_quarantines("rug_feedback_stale_terminal", now)?;
@@ -130,11 +130,18 @@ fn rug_wallet_quarantine_upsert_extends_active_guard() -> Result<()> {
     assert_eq!(active[0].first_rejected_at, now);
     assert_eq!(active[0].last_rejected_at, now + Duration::hours(1));
     assert_eq!(active[0].quarantine_until, now + Duration::hours(72));
-    assert_eq!(active[0].evidence_json, "{\"version\":2}");
+    assert_eq!(active[0].evidence_json, "{\"version\":1}");
 
+    let pruned = store.prune_expired_rug_wallet_quarantines("rug_feedback_stale_terminal", now)?;
+    assert_eq!(pruned, 0);
     let expired = store
         .active_rug_wallet_quarantines("rug_feedback_stale_terminal", now + Duration::hours(73))?;
     assert!(expired.is_empty());
+    let pruned = store.prune_expired_rug_wallet_quarantines(
+        "rug_feedback_stale_terminal",
+        now + Duration::hours(73),
+    )?;
+    assert_eq!(pruned, 1);
     Ok(())
 }
 

@@ -54,7 +54,7 @@ pub(super) fn apply_rug_feedback(
     feedback: Option<&RugWalletFeedback>,
     quarantined: bool,
     discovery: &DiscoveryConfig,
-) {
+) -> bool {
     let rejects = feedback.is_some_and(|feedback| {
         metric.rug_feedback_closed_trades =
             Some(feedback.closed_trades.min(u64::from(u32::MAX)) as u32);
@@ -67,6 +67,7 @@ pub(super) fn apply_rug_feedback(
     if quarantined || rejects {
         reject_wallet_metric(metric, RUG_FEEDBACK_REJECT_REASON);
     }
+    rejects
 }
 
 pub(super) fn rug_quarantine_candidate(

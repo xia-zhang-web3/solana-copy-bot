@@ -89,6 +89,7 @@ pub fn publish_discovery_v2_status(
             &update,
             status.policy_fingerprint.as_str(),
             &runtime_cursor,
+            Some(crate::rug_feedback::RUG_FEEDBACK_REJECT_REASON),
             &rug_quarantines,
         )?;
         publication_rotation.added_wallet_count = followlist_update.activated;

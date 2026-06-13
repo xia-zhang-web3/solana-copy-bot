@@ -123,9 +123,11 @@ pub fn build_discovery_v2_status(
         apply_executable_feedback(&mut metric, feedback, discovery);
         let feedback = rug_feedback.feedback(&metric.wallet_id);
         let quarantined = rug_feedback.is_quarantined(&metric.wallet_id);
-        apply_rug_feedback(&mut metric, feedback, quarantined, discovery);
-        if let Some(candidate) = rug_quarantine_candidate(&metric) {
-            rug_quarantine_candidates.push(candidate);
+        let fresh_rug_reject = apply_rug_feedback(&mut metric, feedback, quarantined, discovery);
+        if fresh_rug_reject {
+            if let Some(candidate) = rug_quarantine_candidate(&metric) {
+                rug_quarantine_candidates.push(candidate);
+            }
         }
         wallet_metrics_total = wallet_metrics_total.saturating_add(1);
         filters.observe_metric(&metric);
@@ -150,9 +152,12 @@ pub fn build_discovery_v2_status(
             apply_executable_feedback(&mut metric, feedback, discovery);
             let feedback = rug_feedback.feedback(&metric.wallet_id);
             let quarantined = rug_feedback.is_quarantined(&metric.wallet_id);
-            apply_rug_feedback(&mut metric, feedback, quarantined, discovery);
-            if let Some(candidate) = rug_quarantine_candidate(&metric) {
-                rug_quarantine_candidates.push(candidate);
+            let fresh_rug_reject =
+                apply_rug_feedback(&mut metric, feedback, quarantined, discovery);
+            if fresh_rug_reject {
+                if let Some(candidate) = rug_quarantine_candidate(&metric) {
+                    rug_quarantine_candidates.push(candidate);
+                }
             }
             filters.observe_metric(&metric);
             retain_top_wallet_metric(&mut wallet_metrics, metric, retained_metric_limit);

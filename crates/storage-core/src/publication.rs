@@ -10,7 +10,9 @@ use copybot_core_types::{WalletMetricRow, WalletUpsertRow};
 use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
 
-use crate::rug_wallet_quarantine::upsert_rug_wallet_quarantines_on_conn;
+use crate::rug_wallet_quarantine::{
+    prune_expired_rug_wallet_quarantines_on_conn, upsert_rug_wallet_quarantines_on_conn,
+};
 use publication_artifact::{
     load_discovery_runtime_cursor_on_conn, runtime_artifact_export_truth_detail,
     validate_runtime_artifact_snapshot_shape,
@@ -179,12 +181,16 @@ impl SqliteDiscoveryStore {
         update: &DiscoveryPublicationStateUpdate,
         policy_fingerprint: &str,
         runtime_cursor: &DiscoveryRuntimeCursor,
+        rug_quarantine_prune_reason: Option<&str>,
         rug_quarantines: &[RugWalletQuarantineUpsert],
     ) -> Result<FollowlistUpdateResult> {
         crate::schema::ensure_discovery_v2_schema(self)?;
         let tx = self.conn.unchecked_transaction()?;
         upsert_wallets(&tx, wallets)?;
         insert_metrics(&tx, metrics)?;
+        if let Some(reason) = rug_quarantine_prune_reason {
+            prune_expired_rug_wallet_quarantines_on_conn(&tx, reason, now)?;
+        }
         upsert_rug_wallet_quarantines_on_conn(&tx, rug_quarantines)?;
         let result = update_followlist(&tx, desired_wallets, true, true, now, reason)?;
         write_publication_state_on_conn(

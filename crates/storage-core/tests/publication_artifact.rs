@@ -99,6 +99,7 @@ fn v2_publication_persists_runtime_cursor_for_artifact_export() -> Result<()> {
         &publication_update(now, window_start),
         V2_FINGERPRINT,
         &cursor,
+        None,
         &[],
     )?;
 
@@ -143,6 +144,7 @@ fn repeated_v2_publication_does_not_duplicate_active_follow_rows() -> Result<()>
             &publication_update(now + Duration::seconds(offset), window_start),
             V2_FINGERPRINT,
             &cursor,
+            None,
             &[],
         )?;
     }
@@ -195,6 +197,7 @@ fn runtime_export_rejects_bad_publication_runtime_cursor() -> Result<()> {
             &publication_update(now, window_start),
             V2_FINGERPRINT,
             &publication_cursor,
+            None,
             &[],
         )?;
         let runtime_signature = if case_name == "drift" {
@@ -232,6 +235,7 @@ fn runtime_export_rejects_future_dated_publication_time() -> Result<()> {
         &publication_update(future_published_at, window_start),
         V2_FINGERPRINT,
         &cursor,
+        None,
         &[],
     )?;
 
@@ -260,6 +264,7 @@ fn runtime_export_rejects_future_dated_publication_window() -> Result<()> {
         &publication_update(now, future_window_start),
         V2_FINGERPRINT,
         &cursor,
+        None,
         &[],
     )?;
 
@@ -289,6 +294,7 @@ fn runtime_export_rejects_publication_identity_mismatch() -> Result<()> {
         &publication_update(now, window_start),
         "different-fingerprint",
         &cursor,
+        None,
         &[],
     )?;
 
@@ -319,6 +325,7 @@ fn runtime_export_rejects_fail_closed_publication_state() -> Result<()> {
         &update,
         V2_FINGERPRINT,
         &cursor,
+        None,
         &[],
     )?;
 
@@ -347,6 +354,7 @@ fn runtime_export_rejects_gate_without_expected_identity() -> Result<()> {
         &publication_update(now, window_start),
         V2_FINGERPRINT,
         &cursor,
+        None,
         &[],
     )?;
     let mut gate = v2_gate();
@@ -377,6 +385,7 @@ fn runtime_artifact_snapshot_shape_rejects_extra_metric_rows() -> Result<()> {
         &publication_update(now, window_start),
         V2_FINGERPRINT,
         &cursor,
+        None,
         &[],
     )?;
     let mut artifact = store.export_discovery_runtime_artifact(now, v2_gate())?;
@@ -410,6 +419,7 @@ fn runtime_artifact_snapshot_shape_rejects_duplicate_metric_rows() -> Result<()>
         &publication_update(now, window_start),
         V2_FINGERPRINT,
         &cursor,
+        None,
         &[],
     )?;
     let mut artifact = store.export_discovery_runtime_artifact(now, v2_gate())?;
@@ -439,6 +449,7 @@ fn runtime_artifact_snapshot_shape_rejects_duplicate_published_wallet_ids() -> R
         &publication_update(now, window_start),
         V2_FINGERPRINT,
         &cursor,
+        None,
         &[],
     )?;
     let mut artifact = store.export_discovery_runtime_artifact(now, v2_gate())?;

@@ -19,6 +19,17 @@ impl SqliteDiscoveryStore {
         crate::schema::ensure_discovery_v2_schema(self)?;
         upsert_rug_wallet_quarantines_on_conn(&self.conn, rows)
     }
+
+    pub fn prune_expired_rug_wallet_quarantines(
+        &self,
+        reason: &str,
+        now: DateTime<Utc>,
+    ) -> Result<usize> {
+        if !self.sqlite_table_exists("discovery_v2_wallet_quarantine")? {
+            return Ok(0);
+        }
+        prune_expired_rug_wallet_quarantines_on_conn(&self.conn, reason, now)
+    }
 }
 
 pub(crate) fn active_rug_wallet_quarantines_on_conn(
@@ -77,7 +88,12 @@ pub(crate) fn upsert_rug_wallet_quarantines_on_conn(
                     THEN excluded.quarantine_until
                     ELSE discovery_v2_wallet_quarantine.quarantine_until
                 END,
-            evidence_json = excluded.evidence_json",
+            evidence_json =
+                CASE
+                    WHEN excluded.evidence_json != '' AND excluded.evidence_json != '{}'
+                    THEN excluded.evidence_json
+                    ELSE discovery_v2_wallet_quarantine.evidence_json
+                END",
     )?;
     for row in rows {
         stmt.execute(params![
@@ -89,6 +105,19 @@ pub(crate) fn upsert_rug_wallet_quarantines_on_conn(
         ])?;
     }
     Ok(())
+}
+
+pub(crate) fn prune_expired_rug_wallet_quarantines_on_conn(
+    conn: &rusqlite::Connection,
+    reason: &str,
+    now: DateTime<Utc>,
+) -> Result<usize> {
+    conn.execute(
+        "DELETE FROM discovery_v2_wallet_quarantine
+         WHERE reason = ?1 AND quarantine_until <= ?2",
+        params![reason, now.to_rfc3339()],
+    )
+    .context("failed pruning expired rug wallet quarantines")
 }
 
 fn parse_ts(raw: String) -> rusqlite::Result<DateTime<Utc>> {
