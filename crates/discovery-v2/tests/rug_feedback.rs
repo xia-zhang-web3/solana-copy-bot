@@ -2,7 +2,10 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
-use copybot_discovery_v2::{build_discovery_v2_status, DiscoveryV2BuildOptions};
+use copybot_discovery_v2::{
+    build_discovery_v2_rug_feedback_distribution_report, build_discovery_v2_status,
+    DiscoveryV2BuildOptions, DiscoveryV2RugFeedbackDistributionOptions,
+};
 use copybot_storage_core::{
     ensure_discovery_v2_schema, SqliteDiscoveryStore, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
 };
@@ -111,6 +114,83 @@ fn rug_feedback_rejects_wallet_with_stale_terminal_tail() -> Result<()> {
     assert!(bad_metric
         .rug_feedback_stale_terminal_pnl_sol
         .is_some_and(|pnl| pnl <= -0.189 && pnl >= -0.191));
+    Ok(())
+}
+
+#[test]
+fn rug_feedback_distribution_counts_full_feedback_window() -> Result<()> {
+    let dir = tempdir()?;
+    let mut store = SqliteDiscoveryStore::open(dir.path().join("runtime.db"))?;
+    store.run_migrations(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    ensure_discovery_v2_schema(&store)?;
+
+    let now = DateTime::parse_from_rfc3339("2026-05-14T10:00:00Z")?.with_timezone(&Utc);
+    for index in 0..9 {
+        let opened = now - Duration::hours(2) + Duration::seconds(index);
+        store.insert_shadow_closed_trade(
+            &format!("rug-dist-bad-market-{index}"),
+            "bad-wallet",
+            "RugDistBadToken",
+            1000.0,
+            0.20,
+            0.21,
+            0.01,
+            opened,
+            opened + Duration::seconds(30),
+        )?;
+    }
+    let opened = now - Duration::minutes(40);
+    store.insert_shadow_closed_trade_exact_with_context(
+        "rug-dist-bad-stale",
+        "bad-wallet",
+        "RugDistDeadToken",
+        1000.0,
+        None,
+        0.20,
+        0.01,
+        -0.19,
+        SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
+        opened,
+        opened + Duration::minutes(30),
+    )?;
+    for index in 0..10 {
+        let opened = now - Duration::hours(1) + Duration::seconds(index);
+        store.insert_shadow_closed_trade(
+            &format!("rug-dist-good-market-{index}"),
+            "good-wallet",
+            "RugDistGoodToken",
+            1000.0,
+            0.20,
+            0.21,
+            0.01,
+            opened,
+            opened + Duration::seconds(30),
+        )?;
+    }
+
+    let report = build_discovery_v2_rug_feedback_distribution_report(
+        &store,
+        DiscoveryV2RugFeedbackDistributionOptions {
+            generated_at: now,
+            since: now - Duration::hours(48),
+            until: now,
+            min_closed_trades: 10,
+            max_stale_terminal_rate: 0.05,
+            max_stale_terminal_pnl_sol: -0.05,
+            limit: 10,
+        },
+    )?;
+
+    assert_eq!(report.wallet_feedback_count, 2);
+    assert_eq!(report.eligible_wallet_count, 2);
+    assert_eq!(report.threshold_rejected_wallet_count, 1);
+    assert_eq!(report.rate_rejected_wallet_count, 1);
+    assert_eq!(report.pnl_rejected_wallet_count, 1);
+    assert_eq!(report.worst_wallets[0].wallet_id, "bad-wallet");
+    assert!(report.worst_wallets[0].rejected);
     Ok(())
 }
 

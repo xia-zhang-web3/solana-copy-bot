@@ -1,11 +1,16 @@
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::{DateTime, Utc};
 use std::env;
 use std::path::PathBuf;
 
 pub(crate) const USAGE: &str = "usage: discovery_v2_wallet_report --config <path> \
     [--db-path <path>] [--top <n>] [--include-rejected] [--live-rebuild] \
     [--simulate-rug-filter] [--rug-filter-max-stale-terminal-rate <ratio>] \
-    [--rug-filter-max-stale-terminal-pnl-sol <sol>]";
+    [--rug-filter-max-stale-terminal-pnl-sol <sol>] \
+    [--rug-feedback-since <rfc3339>] [--rug-feedback-until <rfc3339>] \
+    [--rug-feedback-min-closed-trades <n>] \
+    [--rug-feedback-rate-threshold <ratio>] \
+    [--rug-feedback-pnl-threshold-sol <sol>]";
 
 #[derive(Debug, Clone)]
 pub(crate) struct WalletReportCliConfig {
@@ -17,6 +22,11 @@ pub(crate) struct WalletReportCliConfig {
     pub(crate) simulate_rug_filter: bool,
     pub(crate) rug_filter_max_stale_terminal_rate: Option<f64>,
     pub(crate) rug_filter_max_stale_terminal_pnl_sol: Option<f64>,
+    pub(crate) rug_feedback_since: Option<DateTime<Utc>>,
+    pub(crate) rug_feedback_until: Option<DateTime<Utc>>,
+    pub(crate) rug_feedback_min_closed_trades: Option<u32>,
+    pub(crate) rug_feedback_rate_threshold: Option<f64>,
+    pub(crate) rug_feedback_pnl_threshold_sol: Option<f64>,
 }
 
 pub(crate) fn parse_args() -> Result<Option<WalletReportCliConfig>> {
@@ -36,6 +46,11 @@ where
     let mut simulate_rug_filter = false;
     let mut rug_filter_max_stale_terminal_rate = None;
     let mut rug_filter_max_stale_terminal_pnl_sol = None;
+    let mut rug_feedback_since = None;
+    let mut rug_feedback_until = None;
+    let mut rug_feedback_min_closed_trades = None;
+    let mut rug_feedback_rate_threshold = None;
+    let mut rug_feedback_pnl_threshold_sol = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--config" => {
@@ -53,6 +68,21 @@ where
             }
             "--rug-filter-max-stale-terminal-pnl-sol" => {
                 rug_filter_max_stale_terminal_pnl_sol = Some(parse_f64_arg(&arg, args.next())?)
+            }
+            "--rug-feedback-since" => {
+                rug_feedback_since = Some(parse_datetime_arg(&arg, args.next())?)
+            }
+            "--rug-feedback-until" => {
+                rug_feedback_until = Some(parse_datetime_arg(&arg, args.next())?)
+            }
+            "--rug-feedback-min-closed-trades" => {
+                rug_feedback_min_closed_trades = Some(parse_u32_arg(&arg, args.next())?)
+            }
+            "--rug-feedback-rate-threshold" => {
+                rug_feedback_rate_threshold = Some(parse_ratio_arg(&arg, args.next())?)
+            }
+            "--rug-feedback-pnl-threshold-sol" => {
+                rug_feedback_pnl_threshold_sol = Some(parse_f64_arg(&arg, args.next())?)
             }
             "--window-minutes"
             | "--max-tail-lag-seconds"
@@ -78,6 +108,19 @@ where
     {
         bail!("rug threshold overrides require --simulate-rug-filter");
     }
+    if rug_feedback_until.is_some() && rug_feedback_since.is_none() {
+        bail!("--rug-feedback-until requires --rug-feedback-since");
+    }
+    if (rug_feedback_min_closed_trades.is_some()
+        || rug_feedback_rate_threshold.is_some()
+        || rug_feedback_pnl_threshold_sol.is_some())
+        && rug_feedback_since.is_none()
+    {
+        bail!("rug feedback overrides require --rug-feedback-since");
+    }
+    if rug_feedback_since.is_some() && (live_rebuild || simulate_rug_filter) {
+        bail!("rug feedback distribution cannot be combined with --live-rebuild or --simulate-rug-filter");
+    }
     Ok(Some(WalletReportCliConfig {
         config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
         db_path,
@@ -87,6 +130,11 @@ where
         simulate_rug_filter,
         rug_filter_max_stale_terminal_rate,
         rug_filter_max_stale_terminal_pnl_sol,
+        rug_feedback_since,
+        rug_feedback_until,
+        rug_feedback_min_closed_trades,
+        rug_feedback_rate_threshold,
+        rug_feedback_pnl_threshold_sol,
     }))
 }
 
@@ -127,4 +175,22 @@ fn parse_f64_arg(flag: &str, value: Option<String>) -> Result<f64> {
         bail!("{flag} must be finite");
     }
     Ok(parsed)
+}
+
+fn parse_u32_arg(flag: &str, value: Option<String>) -> Result<u32> {
+    let raw = parse_string_arg(flag, value)?;
+    let parsed = raw
+        .parse::<u32>()
+        .with_context(|| format!("invalid {flag} value: {raw}"))?;
+    if parsed == 0 {
+        bail!("{flag} must be >= 1");
+    }
+    Ok(parsed)
+}
+
+fn parse_datetime_arg(flag: &str, value: Option<String>) -> Result<DateTime<Utc>> {
+    let raw = parse_string_arg(flag, value)?;
+    DateTime::parse_from_rfc3339(&raw)
+        .with_context(|| format!("invalid {flag} timestamp: {raw}"))
+        .map(|ts| ts.with_timezone(&Utc))
 }

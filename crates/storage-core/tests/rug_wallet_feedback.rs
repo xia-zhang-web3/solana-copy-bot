@@ -91,6 +91,17 @@ fn rug_wallet_feedback_counts_stale_terminal_tail() -> Result<()> {
     assert_close(rug.stale_terminal_rate().expect("rate"), 2.0 / 11.0);
     assert_close(rug.stale_terminal_pnl_sol, -0.39);
     assert_close(rug.stale_terminal_entry_cost_sol, 0.40);
+
+    let before_terminal =
+        store.rug_wallet_feedback_between(now - Duration::hours(48), now - Duration::seconds(1))?;
+    let rug = before_terminal
+        .get("rug-wallet")
+        .expect("bounded feedback keeps earlier market rows");
+    assert_eq!(rug.closed_trades, 8);
+    assert_eq!(rug.stale_terminal_closes, 0);
+    assert!(store
+        .rug_wallet_feedback_between(now, now - Duration::seconds(1))
+        .is_err());
     Ok(())
 }
 

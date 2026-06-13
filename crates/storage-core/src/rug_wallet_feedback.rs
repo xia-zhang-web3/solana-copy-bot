@@ -13,9 +13,29 @@ impl SqliteDiscoveryStore {
         &self,
         since: DateTime<Utc>,
     ) -> Result<HashMap<String, RugWalletFeedback>> {
+        self.rug_wallet_feedback_window(since, None)
+    }
+
+    pub fn rug_wallet_feedback_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> Result<HashMap<String, RugWalletFeedback>> {
+        if until <= since {
+            anyhow::bail!("rug wallet feedback until must be after since");
+        }
+        self.rug_wallet_feedback_window(since, Some(until))
+    }
+
+    fn rug_wallet_feedback_window(
+        &self,
+        since: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<HashMap<String, RugWalletFeedback>> {
         if !self.sqlite_table_exists("shadow_closed_trades")? {
             return Ok(HashMap::new());
         }
+        let until_raw = until.map(|until| until.to_rfc3339());
 
         let mut stmt = self
             .conn
@@ -26,12 +46,13 @@ impl SqliteDiscoveryStore {
                         entry_cost_sol,
                         pnl_sol,
                         CASE
-                            WHEN COALESCE(close_context, 'market') IN (?3, ?4, ?5)
+                            WHEN COALESCE(close_context, 'market') IN (?4, ?5, ?6)
                             THEN 1 ELSE 0
                         END AS stale_terminal
                     FROM shadow_closed_trades
                     WHERE closed_ts >= ?1
-                      AND COALESCE(close_context, 'market') != ?2
+                      AND (?2 IS NULL OR closed_ts < ?2)
+                      AND COALESCE(close_context, 'market') != ?3
                  )
                  SELECT
                     wallet_id,
@@ -48,6 +69,7 @@ impl SqliteDiscoveryStore {
         let mut rows = stmt
             .query(params![
                 since.to_rfc3339(),
+                until_raw.as_deref(),
                 SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
                 SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
                 SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
