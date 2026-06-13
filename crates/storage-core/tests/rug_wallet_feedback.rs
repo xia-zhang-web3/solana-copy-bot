@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_storage_core::{
     SqliteStore, SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
-    SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
+    SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
 };
 use tempfile::tempdir;
 
@@ -41,6 +41,20 @@ fn rug_wallet_feedback_counts_stale_terminal_tail() -> Result<()> {
             opened + Duration::seconds(30),
         )?;
     }
+    let opened = now - Duration::minutes(40);
+    store.insert_shadow_closed_trade_exact_with_context(
+        "stale-market-1",
+        "rug-wallet",
+        "ObservedPriceToken",
+        1000.0,
+        None,
+        0.20,
+        0.35,
+        0.15,
+        SHADOW_CLOSE_CONTEXT_STALE_MARKET_PRICE,
+        opened,
+        opened + Duration::minutes(40),
+    )?;
     let opened = now - Duration::minutes(30);
     store.insert_shadow_closed_trade_exact_with_context(
         "stale-close-1",
@@ -72,9 +86,9 @@ fn rug_wallet_feedback_counts_stale_terminal_tail() -> Result<()> {
 
     let feedback = store.rug_wallet_feedback_since(now - Duration::hours(48))?;
     let rug = feedback.get("rug-wallet").expect("rug wallet feedback");
-    assert_eq!(rug.closed_trades, 10);
+    assert_eq!(rug.closed_trades, 11);
     assert_eq!(rug.stale_terminal_closes, 2);
-    assert_close(rug.stale_terminal_rate().expect("rate"), 0.2);
+    assert_close(rug.stale_terminal_rate().expect("rate"), 2.0 / 11.0);
     assert_close(rug.stale_terminal_pnl_sol, -0.39);
     assert_close(rug.stale_terminal_entry_cost_sol, 0.40);
     Ok(())

@@ -1,6 +1,7 @@
 use crate::{
     RugWalletFeedback, SqliteDiscoveryStore, SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
-    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
+    SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
+    SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -25,9 +26,7 @@ impl SqliteDiscoveryStore {
                         entry_cost_sol,
                         pnl_sol,
                         CASE
-                            WHEN COALESCE(close_context, 'market') LIKE 'stale_%'
-                              OR COALESCE(close_context, 'market') = ?3
-                              OR signal_id LIKE 'stale-close-%'
+                            WHEN COALESCE(close_context, 'market') IN (?3, ?4, ?5)
                             THEN 1 ELSE 0
                         END AS stale_terminal
                     FROM shadow_closed_trades
@@ -50,6 +49,8 @@ impl SqliteDiscoveryStore {
             .query(params![
                 since.to_rfc3339(),
                 SHADOW_CLOSE_CONTEXT_QUARANTINED_LEGACY,
+                SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE,
+                SHADOW_CLOSE_CONTEXT_STALE_TERMINAL_ZERO_PRICE,
                 SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE,
             ])
             .context("failed querying rug wallet feedback")?;

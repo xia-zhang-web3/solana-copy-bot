@@ -1,4 +1,7 @@
-use anyhow::{anyhow, bail, Context, Result};
+#[path = "../wallet_report_cli.rs"]
+mod wallet_report_cli;
+
+use anyhow::{Context, Result};
 use chrono::Utc;
 use copybot_config::load_from_path;
 use copybot_discovery_v2::{
@@ -8,11 +11,8 @@ use copybot_discovery_v2::{
     DiscoveryV2WalletReport, DiscoveryV2WalletReportOptions,
 };
 use copybot_storage_core::{validate_discovery_v2_status_schema_read_only, SqliteDiscoveryStore};
-use std::env;
 use std::path::{Path, PathBuf};
-
-const USAGE: &str = "usage: discovery_v2_wallet_report --config <path> [--db-path <path>] \
-                     [--top <n>] [--include-rejected] [--live-rebuild]";
+use wallet_report_cli::{parse_args, WalletReportCliConfig, USAGE};
 
 fn main() -> Result<()> {
     let Some(config) = parse_args()? else {
@@ -24,63 +24,20 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone)]
-struct Config {
-    config_path: PathBuf,
-    db_path: Option<PathBuf>,
-    top: usize,
-    include_rejected: bool,
-    live_rebuild: bool,
-}
-
-fn parse_args() -> Result<Option<Config>> {
-    parse_args_from(env::args().skip(1))
-}
-
-fn parse_args_from<I>(args: I) -> Result<Option<Config>>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut args = args.into_iter();
-    let mut config_path = None;
-    let mut db_path = None;
-    let mut top = 15usize;
-    let mut include_rejected = false;
-    let mut live_rebuild = false;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--config" => {
-                config_path = Some(PathBuf::from(parse_string_arg("--config", args.next())?))
-            }
-            "--db-path" => {
-                db_path = Some(PathBuf::from(parse_string_arg("--db-path", args.next())?))
-            }
-            "--top" => top = parse_top(args.next())?,
-            "--include-rejected" => include_rejected = true,
-            "--live-rebuild" => live_rebuild = true,
-            "--window-minutes"
-            | "--max-tail-lag-seconds"
-            | "--max-rows"
-            | "--time-budget-ms"
-            | "--now" => bail!(
-                "{arg} is not accepted by production wallet report; use config values and wall clock"
-            ),
-            "--help" | "-h" => return Ok(None),
-            other => bail!("unknown argument: {other}"),
+fn run(config: WalletReportCliConfig) -> Result<DiscoveryV2WalletReport> {
+    let mut loaded = load_from_path(&config.config_path)
+        .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
+    if config.simulate_rug_filter {
+        loaded.discovery.rug_wallet_filter_enabled = true;
+        if let Some(rate) = config.rug_filter_max_stale_terminal_rate {
+            loaded.discovery.rug_wallet_filter_max_stale_terminal_rate = rate;
+        }
+        if let Some(pnl) = config.rug_filter_max_stale_terminal_pnl_sol {
+            loaded
+                .discovery
+                .rug_wallet_filter_max_stale_terminal_pnl_sol = pnl;
         }
     }
-    Ok(Some(Config {
-        config_path: config_path.ok_or_else(|| anyhow!("missing required --config"))?,
-        db_path,
-        top,
-        include_rejected,
-        live_rebuild,
-    }))
-}
-
-fn run(config: Config) -> Result<DiscoveryV2WalletReport> {
-    let loaded = load_from_path(&config.config_path)
-        .with_context(|| format!("failed loading config {}", config.config_path.display()))?;
     let db_path = resolve_db_path(
         &config.config_path,
         config.db_path.as_deref(),
@@ -149,24 +106,4 @@ fn resolve_db_path(config_path: &Path, override_path: Option<&Path>, configured:
             .unwrap_or_else(|| Path::new("."))
             .join(configured)
     }
-}
-
-fn parse_string_arg(flag: &str, value: Option<String>) -> Result<String> {
-    let raw = value.ok_or_else(|| anyhow!("missing value for {flag}"))?;
-    let trimmed = raw.trim().to_string();
-    if trimmed.is_empty() {
-        bail!("{flag} cannot be empty");
-    }
-    Ok(trimmed)
-}
-
-fn parse_top(value: Option<String>) -> Result<usize> {
-    let raw = parse_string_arg("--top", value)?;
-    let top = raw
-        .parse::<usize>()
-        .with_context(|| format!("invalid --top value: {raw}"))?;
-    if top == 0 || top > 250 {
-        bail!("--top must be between 1 and 250");
-    }
-    Ok(top)
 }

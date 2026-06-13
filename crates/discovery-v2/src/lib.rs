@@ -15,6 +15,7 @@ mod shadow_feedback;
 mod status;
 mod token_market;
 mod tradability;
+mod wallet_filter_impact;
 mod wallet_report;
 
 pub use crate::materialized_status::{
@@ -36,7 +37,8 @@ pub use crate::status::{
     DISCOVERY_V2_SCORING_SOURCE, OPERATOR_WALLET_METRIC_LIMIT,
 };
 pub use crate::wallet_report::{
-    build_discovery_v2_wallet_report, DiscoveryV2WalletFilterEvidence, DiscoveryV2WalletReport,
-    DiscoveryV2WalletReportOptions, DiscoveryV2WalletReportRow, DiscoveryV2WalletReportThresholds,
+    build_discovery_v2_wallet_report, DiscoveryV2WalletFilterEvidence,
+    DiscoveryV2WalletFilterImpact, DiscoveryV2WalletReport, DiscoveryV2WalletReportOptions,
+    DiscoveryV2WalletReportRow, DiscoveryV2WalletReportThresholds,
 };
 pub use metric::DiscoveryV2WalletMetric;

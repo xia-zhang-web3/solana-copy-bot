@@ -206,6 +206,15 @@ fn wallet_report_shows_active_follow_and_filter_evidence() -> Result<()> {
         Some(8)
     );
     assert_eq!(report.wallets.len(), 1);
+    assert_eq!(report.filter_impact.publish_min_candidate_wallets, 1);
+    assert_eq!(report.filter_impact.candidate_wallet_count, 1);
+    assert!(!report.filter_impact.below_publish_floor);
+    assert_eq!(report.filter_impact.wallet_metrics_total, 2);
+    assert_eq!(report.filter_impact.wallet_metrics_returned, 2);
+    assert!(!report.filter_impact.wallet_metrics_truncated);
+    assert_eq!(report.filter_impact.eligible_returned, 1);
+    assert_eq!(report.filter_impact.executable_rejected_returned, 0);
+    assert_eq!(report.filter_impact.rug_rejected_returned, 0);
     assert_eq!(report.wallets[0].wallet_id, "wallet-a");
     assert_eq!(report.wallets[0].shadow_pnl_sol_24h, Some(-0.01));
     assert!(report.wallets[0].active_follow);

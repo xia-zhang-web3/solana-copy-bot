@@ -1,3 +1,4 @@
+use crate::wallet_filter_impact::wallet_filter_impact;
 use crate::{
     DiscoveryV2LivePortfolioStatus, DiscoveryV2MaturityStatus, DiscoveryV2ShadowSignalStatus,
     DiscoveryV2Status, DiscoveryV2WalletMetric,
@@ -8,6 +9,8 @@ use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_storage_core::SqliteDiscoveryStore;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+
+pub use crate::wallet_filter_impact::DiscoveryV2WalletFilterImpact;
 
 #[derive(Debug, Clone)]
 pub struct DiscoveryV2WalletReportOptions {
@@ -36,6 +39,7 @@ pub struct DiscoveryV2WalletReport {
     pub wallet_metrics_truncated: bool,
     pub candidate_wallet_count: usize,
     pub active_follow_wallet_count: usize,
+    pub filter_impact: DiscoveryV2WalletFilterImpact,
     pub wallets: Vec<DiscoveryV2WalletReportRow>,
     pub top_rejected_wallets: Vec<DiscoveryV2WalletReportRow>,
 }
@@ -175,6 +179,7 @@ pub fn build_discovery_v2_wallet_report(
     } else {
         Vec::new()
     };
+    let filter_impact = wallet_filter_impact(&status, discovery);
     Ok(DiscoveryV2WalletReport {
         source: status.source,
         generated_at: options.now,
@@ -194,6 +199,7 @@ pub fn build_discovery_v2_wallet_report(
         wallet_metrics_truncated: status.wallet_metrics_truncated,
         candidate_wallet_count: status.candidate_wallets.len(),
         active_follow_wallet_count: active_follow_wallets.len(),
+        filter_impact,
         wallets,
         top_rejected_wallets,
     })
