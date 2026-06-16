@@ -86,7 +86,9 @@ fn rebuild_attached(
 ) -> Result<RebuildReport> {
     conn.execute_batch(&format!(
         "PRAGMA {}.foreign_keys = OFF;
+         PRAGMA {}.auto_vacuum = INCREMENTAL;
          PRAGMA {}.synchronous = NORMAL;",
+        quote_ident(COMPACT_SCHEMA),
         quote_ident(COMPACT_SCHEMA),
         quote_ident(COMPACT_SCHEMA)
     ))
@@ -105,7 +107,19 @@ fn rebuild_attached(
     set_output_pragmas(conn)?;
     report.integrity_check = integrity_check(conn)?;
     report.foreign_key_violations = foreign_key_violations(conn)?;
+    enforce_compact_verification(&report)?;
     Ok(report)
+}
+
+fn enforce_compact_verification(report: &RebuildReport) -> Result<()> {
+    if report.integrity_check != "ok" || report.foreign_key_violations != 0 {
+        bail!(
+            "compact rebuild verification failed: integrity_check={} foreign_key_violations={}",
+            report.integrity_check,
+            report.foreign_key_violations
+        );
+    }
+    Ok(())
 }
 
 fn create_schema_objects(

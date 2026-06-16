@@ -68,6 +68,7 @@ fn rebuild_into_creates_compact_retained_copy_without_mutating_source() -> Resul
         &output_path,
         "idx_execution_quote_canary_events_request_ts_only"
     )?);
+    assert_eq!(auto_vacuum_mode(&output_path)?, 2);
 
     let conn = Connection::open(&output_path)?;
     insert_observed(&conn, "trigger-check", "2026-06-16T00:01:00+00:00")?;
@@ -117,6 +118,23 @@ fn rebuild_into_rejects_source_mutation_flags() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn rebuild_into_fails_loud_on_compact_foreign_key_violations() -> Result<()> {
+    let db_path = setup_fk_retention_db("rebuild-fk")?;
+    let output_path = sibling_path(&db_path, "compact");
+    let _ = std::fs::remove_file(&output_path);
+    let output = run_rebuild_operator_allow_failure(&db_path, &output_path)?;
+
+    assert!(!output.status.success());
+    let parsed = parse_output(output.stdout)?;
+    assert_eq!(parsed["maintenance_outcome"], "failed_unproven");
+    assert!(parsed["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("compact rebuild verification failed"));
+    Ok(())
+}
+
 fn run_operator(db_path: &Path, commit: bool, active_state: &str) -> Result<Value> {
     let output = run_operator_raw(db_path, commit, active_state)?;
     if !output.status.success() {
@@ -136,6 +154,22 @@ fn run_operator_allow_failure(db_path: &Path, commit: bool, active_state: &str) 
 }
 
 fn run_rebuild_operator(db_path: &Path, output_path: &Path) -> Result<Value> {
+    let output = run_rebuild_operator_allow_failure(db_path, output_path)?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "rebuild operator failed: status={:?} stderr={} stdout={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+    parse_output(output.stdout)
+}
+
+fn run_rebuild_operator_allow_failure(
+    db_path: &Path,
+    output_path: &Path,
+) -> Result<std::process::Output> {
     let fake_bin = fake_systemctl_dir("inactive")?;
     let binary = env!("CARGO_BIN_EXE_copybot_runtime_sqlite_retention_maintenance");
     let path = format!(
@@ -143,7 +177,7 @@ fn run_rebuild_operator(db_path: &Path, output_path: &Path) -> Result<Value> {
         fake_bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let output = Command::new(binary)
+    Command::new(binary)
         .args([
             "--config",
             "dummy.toml",
@@ -160,16 +194,7 @@ fn run_rebuild_operator(db_path: &Path, output_path: &Path) -> Result<Value> {
         ])
         .env("PATH", path)
         .output()
-        .context("failed running rebuild retention operator")?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "rebuild operator failed: status={:?} stderr={} stdout={}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr),
-            String::from_utf8_lossy(&output.stdout)
-        );
-    }
-    parse_output(output.stdout)
+        .context("failed running rebuild retention operator")
 }
 
 fn run_operator_raw(
@@ -315,6 +340,42 @@ fn setup_db(name: &str) -> Result<PathBuf> {
     Ok(db_path)
 }
 
+fn setup_fk_retention_db(name: &str) -> Result<PathBuf> {
+    let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
+    let db_path =
+        std::env::temp_dir().join(format!("copybot-retention-maintenance-{name}-{id}.db"));
+    let _ = std::fs::remove_file(&db_path);
+    let conn = Connection::open(&db_path)?;
+    conn.execute_batch(
+        "CREATE TABLE observed_swaps (
+            signature TEXT PRIMARY KEY,
+            wallet_id TEXT NOT NULL,
+            token_in TEXT NOT NULL,
+            token_out TEXT NOT NULL,
+            amount_in REAL NOT NULL,
+            amount_out REAL NOT NULL,
+            slot INTEGER NOT NULL,
+            ts TEXT NOT NULL
+        );
+        CREATE INDEX idx_observed_swaps_ts_slot_signature
+            ON observed_swaps(ts, slot, signature);
+        CREATE TABLE observed_notes (
+            id INTEGER PRIMARY KEY,
+            signature TEXT NOT NULL REFERENCES observed_swaps(signature)
+        );",
+    )?;
+    conn.execute(
+        "INSERT INTO observed_swaps(signature, wallet_id, token_in, token_out, amount_in, amount_out, slot, ts)
+         VALUES ('old', 'wallet', 'SOL', 'TOKEN', 1.0, 2.0, 1, '2026-06-01T00:00:00+00:00')",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO observed_notes(id, signature) VALUES (1, 'old')",
+        [],
+    )?;
+    Ok(db_path)
+}
+
 fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
     let mut value = path.as_os_str().to_os_string();
     value.push(".");
@@ -353,4 +414,9 @@ fn index_exists(db_path: &Path, index: &str) -> Result<bool> {
         |row| row.get(0),
     )?;
     Ok(exists != 0)
+}
+
+fn auto_vacuum_mode(db_path: &Path) -> Result<i64> {
+    let conn = Connection::open(db_path)?;
+    Ok(conn.query_row("PRAGMA auto_vacuum", [], |row| row.get(0))?)
 }
