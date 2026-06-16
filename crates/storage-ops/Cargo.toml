@@ -15,6 +15,10 @@ path = "src/bin/copybot_runtime_sqlite_wal_maintenance.rs"
 name = "copybot_runtime_sqlite_wal_pressure_report"
 path = "src/bin/copybot_runtime_sqlite_wal_pressure_report.rs"
 
+[[bin]]
+name = "copybot_runtime_sqlite_retention_maintenance"
+path = "src/bin/copybot_runtime_sqlite_retention_maintenance.rs"
+
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true

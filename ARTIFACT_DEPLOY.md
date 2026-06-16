@@ -79,7 +79,7 @@ Storage operators:
 
 ```bash
 PACKAGE=copybot-storage-ops \
-WANTED_BINS="copybot_runtime_sqlite_wal_maintenance copybot_runtime_sqlite_wal_pressure_report" \
+WANTED_BINS="copybot_runtime_sqlite_retention_maintenance copybot_runtime_sqlite_wal_maintenance copybot_runtime_sqlite_wal_pressure_report" \
 tools/build_operator_artifacts.sh
 ```
 

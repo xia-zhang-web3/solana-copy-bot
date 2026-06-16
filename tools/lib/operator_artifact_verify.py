@@ -36,6 +36,7 @@ EXPECTED_PACKAGE_BINARIES = {
         "copybot_yellowstone_source_probe",
     },
     "copybot-storage-ops": {
+        "copybot_runtime_sqlite_retention_maintenance",
         "copybot_runtime_sqlite_wal_maintenance",
         "copybot_runtime_sqlite_wal_pressure_report",
     },
