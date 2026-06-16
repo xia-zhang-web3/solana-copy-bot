@@ -46,6 +46,77 @@ fn commit_deletes_only_rows_older_than_cutoffs() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn rebuild_into_creates_compact_retained_copy_without_mutating_source() -> Result<()> {
+    let db_path = setup_db("rebuild")?;
+    let output_path = sibling_path(&db_path, "compact");
+    let _ = std::fs::remove_file(&output_path);
+    let output = run_rebuild_operator(&db_path, &output_path)?;
+
+    assert_eq!(output["maintenance_outcome"], "completed");
+    assert_eq!(output["rebuild_attempted"], true);
+    assert_eq!(output["rebuild_integrity_check"], "ok");
+    assert_eq!(output["rebuild_foreign_key_violations"], 0);
+    assert_eq!(count_rows(&db_path, "observed_swaps")?, 2);
+    assert_eq!(count_rows(&output_path, "observed_swaps")?, 1);
+    assert_eq!(count_rows(&output_path, "observed_sol_leg_swaps")?, 1);
+    assert_eq!(
+        count_rows(&output_path, "execution_quote_canary_events")?,
+        1
+    );
+    assert!(index_exists(
+        &output_path,
+        "idx_execution_quote_canary_events_request_ts_only"
+    )?);
+
+    let conn = Connection::open(&output_path)?;
+    insert_observed(&conn, "trigger-check", "2026-06-16T00:01:00+00:00")?;
+    assert_eq!(count_rows(&output_path, "observed_swaps")?, 2);
+    assert_eq!(count_rows(&output_path, "observed_sol_leg_swaps")?, 2);
+    Ok(())
+}
+
+#[test]
+fn rebuild_into_rejects_source_mutation_flags() -> Result<()> {
+    let db_path = setup_db("rebuild-guard")?;
+    let output_path = sibling_path(&db_path, "compact");
+    let _ = std::fs::remove_file(&output_path);
+    let fake_bin = fake_systemctl_dir("inactive")?;
+    let binary = env!("CARGO_BIN_EXE_copybot_runtime_sqlite_retention_maintenance");
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(binary)
+        .args([
+            "--config",
+            "dummy.toml",
+            "--db-path",
+            &db_path.display().to_string(),
+            "--json",
+            "--commit",
+            "--max-observed-rows",
+            "1",
+            "--rebuild-into",
+            &output_path.display().to_string(),
+        ])
+        .env("PATH", path)
+        .output()
+        .context("failed running rebuild guard operator")?;
+    let parsed = parse_output(output.stdout)?;
+
+    assert!(!output.status.success());
+    assert_eq!(parsed["maintenance_outcome"], "failed_unproven");
+    assert!(parsed["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("cannot be combined"));
+    assert!(!output_path.exists());
+    assert_eq!(count_rows(&db_path, "observed_swaps")?, 2);
+    Ok(())
+}
+
 fn run_operator(db_path: &Path, commit: bool, active_state: &str) -> Result<Value> {
     let output = run_operator_raw(db_path, commit, active_state)?;
     if !output.status.success() {
@@ -61,6 +132,43 @@ fn run_operator(db_path: &Path, commit: bool, active_state: &str) -> Result<Valu
 
 fn run_operator_allow_failure(db_path: &Path, commit: bool, active_state: &str) -> Result<Value> {
     let output = run_operator_raw(db_path, commit, active_state)?;
+    parse_output(output.stdout)
+}
+
+fn run_rebuild_operator(db_path: &Path, output_path: &Path) -> Result<Value> {
+    let fake_bin = fake_systemctl_dir("inactive")?;
+    let binary = env!("CARGO_BIN_EXE_copybot_runtime_sqlite_retention_maintenance");
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(binary)
+        .args([
+            "--config",
+            "dummy.toml",
+            "--db-path",
+            &db_path.display().to_string(),
+            "--json",
+            "--observed-retention-days",
+            "3",
+            "--canary-retention-days",
+            "30",
+            "--commit",
+            "--rebuild-into",
+            &output_path.display().to_string(),
+        ])
+        .env("PATH", path)
+        .output()
+        .context("failed running rebuild retention operator")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "rebuild operator failed: status={:?} stderr={} stdout={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
     parse_output(output.stdout)
 }
 
@@ -207,6 +315,13 @@ fn setup_db(name: &str) -> Result<PathBuf> {
     Ok(db_path)
 }
 
+fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(".");
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
 fn insert_observed(conn: &Connection, signature: &str, ts: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO observed_swaps(signature, wallet_id, token_in, token_out, amount_in, amount_out, slot, ts)
@@ -228,4 +343,14 @@ fn count_rows(db_path: &Path, table: &str) -> Result<i64> {
             row.get(0)
         })?,
     )
+}
+
+fn index_exists(db_path: &Path, index: &str) -> Result<bool> {
+    let conn = Connection::open(db_path)?;
+    let exists: i64 = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+        [index],
+        |row| row.get(0),
+    )?;
+    Ok(exists != 0)
 }

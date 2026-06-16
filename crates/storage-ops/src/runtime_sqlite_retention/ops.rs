@@ -4,6 +4,7 @@ use rusqlite::{params, Connection, OpenFlags};
 use std::path::Path;
 
 use super::cli::Cli;
+use super::rebuild::{execute_rebuild, RebuildReport};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct DeleteTotals {
@@ -28,6 +29,7 @@ pub(super) struct ExecutedMaintenance {
     pub(super) canary_ts_indexes_created: bool,
     pub(super) checkpoint: Option<CheckpointResult>,
     pub(super) vacuum_attempted: bool,
+    pub(super) rebuild: Option<RebuildReport>,
 }
 
 pub(super) fn execute_commit(
@@ -85,6 +87,16 @@ pub(super) fn execute_commit(
     if let Some(output) = &cli.vacuum_into {
         vacuum_into(&conn, output)?;
     }
+    let rebuild = if let Some(output) = &cli.rebuild_into {
+        Some(execute_rebuild(
+            db_path,
+            output,
+            observed_cutoff,
+            canary_cutoff,
+        )?)
+    } else {
+        None
+    };
     Ok(ExecutedMaintenance {
         observed_cutoff,
         canary_cutoff,
@@ -95,6 +107,7 @@ pub(super) fn execute_commit(
         canary_ts_indexes_created,
         checkpoint,
         vacuum_attempted: cli.vacuum_into.is_some(),
+        rebuild,
     })
 }
 

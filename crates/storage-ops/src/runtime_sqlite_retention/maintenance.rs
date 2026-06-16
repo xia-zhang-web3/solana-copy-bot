@@ -9,6 +9,7 @@ use super::cli::{
 };
 use super::common::{compact_error, inspect_runtime_db_files, RuntimeDbFiles};
 use super::ops::{execute_commit, ExecutedMaintenance};
+use super::rebuild::RebuildReport;
 
 const OUTCOME_COMPLETED: &str = "completed";
 const OUTCOME_DRY_RUN: &str = "dry_run";
@@ -183,6 +184,9 @@ fn completed_report(
         report.checkpoint_checkpointed_frames = Some(checkpoint.checkpointed_frames);
     }
     report.vacuum_attempted = executed.vacuum_attempted;
+    if let Some(rebuild) = executed.rebuild {
+        apply_rebuild_report(&mut report, rebuild);
+    }
     report
 }
 
@@ -192,6 +196,24 @@ fn action_requested(cli: &Cli) -> bool {
         || cli.create_canary_ts_indexes
         || cli.checkpoint_truncate
         || cli.vacuum_into.is_some()
+        || cli.rebuild_into.is_some()
+}
+
+fn apply_rebuild_report(report: &mut RuntimeSqliteRetentionReport, rebuild: RebuildReport) {
+    report.rebuild_attempted = true;
+    report.rebuild_tables_copied = rebuild.tables_copied;
+    report.rebuild_rows_copied = rebuild.rows_copied;
+    report.rebuild_observed_rows_copied = rebuild.observed_rows_copied;
+    report.rebuild_sol_leg_rows_copied = rebuild.sol_leg_rows_copied;
+    report.rebuild_canary_rows_copied = rebuild.canary_rows_copied;
+    report.rebuild_indexes_created = rebuild.indexes_created;
+    report.rebuild_triggers_created = rebuild.triggers_created;
+    report.rebuild_views_created = rebuild.views_created;
+    report.rebuild_integrity_check = Some(rebuild.integrity_check);
+    report.rebuild_foreign_key_violations = Some(rebuild.foreign_key_violations);
+    report.service_safe_next_action =
+        "verify compact output DB, then swap manually during maintenance window; source DB was not auto-swapped"
+            .to_string();
 }
 
 fn base_report(
@@ -237,6 +259,21 @@ fn base_report(
             .as_ref()
             .map(|path| path.display().to_string()),
         vacuum_attempted: false,
+        rebuild_into: cli
+            .rebuild_into
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        rebuild_attempted: false,
+        rebuild_tables_copied: 0,
+        rebuild_rows_copied: 0,
+        rebuild_observed_rows_copied: 0,
+        rebuild_sol_leg_rows_copied: 0,
+        rebuild_canary_rows_copied: 0,
+        rebuild_indexes_created: 0,
+        rebuild_triggers_created: 0,
+        rebuild_views_created: 0,
+        rebuild_integrity_check: None,
+        rebuild_foreign_key_violations: None,
         maintenance_outcome: outcome.to_string(),
         reason: reason.to_string(),
         service_safe_next_action: action.to_string(),

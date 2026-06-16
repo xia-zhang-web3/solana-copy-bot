@@ -6,7 +6,7 @@ use std::process::Command;
 
 use super::common::resolve_db_path;
 
-pub(super) const USAGE: &str = "usage: copybot_runtime_sqlite_retention_maintenance --config <path> --json [--db-path <path>] [--service-name <name>] [--allow-service-active] [--commit] [--observed-retention-days <n>] [--observed-batch-size <n>] [--max-observed-rows <n>] [--canary-retention-days <n>] [--canary-batch-size <n>] [--max-canary-rows <n>] [--create-canary-ts-indexes] [--checkpoint-truncate] [--vacuum-into <path>]";
+pub(super) const USAGE: &str = "usage: copybot_runtime_sqlite_retention_maintenance --config <path> --json [--db-path <path>] [--service-name <name>] [--allow-service-active] [--commit] [--observed-retention-days <n>] [--observed-batch-size <n>] [--max-observed-rows <n>] [--canary-retention-days <n>] [--canary-batch-size <n>] [--max-canary-rows <n>] [--create-canary-ts-indexes] [--checkpoint-truncate] [--vacuum-into <path>] [--rebuild-into <path>]";
 
 const DEFAULT_SERVICE_NAME: &str = "solana-copy-bot.service";
 const DEFAULT_OBSERVED_BATCH_SIZE: u64 = 10_000;
@@ -31,6 +31,7 @@ pub(super) struct Cli {
     pub(super) create_canary_ts_indexes: bool,
     pub(super) checkpoint_truncate: bool,
     pub(super) vacuum_into: Option<PathBuf>,
+    pub(super) rebuild_into: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +71,18 @@ pub(super) struct RuntimeSqliteRetentionReport {
     pub(super) checkpoint_checkpointed_frames: Option<i64>,
     pub(super) vacuum_into: Option<String>,
     pub(super) vacuum_attempted: bool,
+    pub(super) rebuild_into: Option<String>,
+    pub(super) rebuild_attempted: bool,
+    pub(super) rebuild_tables_copied: u64,
+    pub(super) rebuild_rows_copied: u64,
+    pub(super) rebuild_observed_rows_copied: u64,
+    pub(super) rebuild_sol_leg_rows_copied: u64,
+    pub(super) rebuild_canary_rows_copied: u64,
+    pub(super) rebuild_indexes_created: u64,
+    pub(super) rebuild_triggers_created: u64,
+    pub(super) rebuild_views_created: u64,
+    pub(super) rebuild_integrity_check: Option<String>,
+    pub(super) rebuild_foreign_key_violations: Option<u64>,
     pub(super) maintenance_outcome: String,
     pub(super) reason: String,
     pub(super) service_safe_next_action: String,
@@ -103,6 +116,7 @@ impl Cli {
             create_canary_ts_indexes: false,
             checkpoint_truncate: false,
             vacuum_into: None,
+            rebuild_into: None,
         }
     }
 }
@@ -147,6 +161,10 @@ where
             "--vacuum-into" => {
                 cli.vacuum_into = Some(PathBuf::from(parse_string("--vacuum-into", args.next())?));
             }
+            "--rebuild-into" => {
+                cli.rebuild_into =
+                    Some(PathBuf::from(parse_string("--rebuild-into", args.next())?));
+            }
             "--help" | "-h" => return Ok(None),
             other => bail!("unknown argument: {other}"),
         }
@@ -184,6 +202,27 @@ pub(super) fn validate_cli(cli: &Cli) -> Result<()> {
             .is_none_or(|parent| parent.as_os_str().is_empty())
         {
             bail!("--vacuum-into must include an output directory");
+        }
+    }
+    if let Some(path) = &cli.rebuild_into {
+        if path.exists() {
+            bail!("--rebuild-into output already exists: {}", path.display());
+        }
+        if path
+            .parent()
+            .is_none_or(|parent| parent.as_os_str().is_empty())
+        {
+            bail!("--rebuild-into must include an output directory");
+        }
+        if cli.vacuum_into.is_some() {
+            bail!("--rebuild-into cannot be combined with --vacuum-into");
+        }
+        if cli.max_observed_rows > 0
+            || cli.max_canary_rows > 0
+            || cli.create_canary_ts_indexes
+            || cli.checkpoint_truncate
+        {
+            bail!("--rebuild-into cannot be combined with delete, index, or checkpoint mutations");
         }
     }
     Ok(())
