@@ -94,6 +94,18 @@ pub(in crate::observed_swap_writer) fn recent_raw_journal_writer_loop(
         })();
         telemetry.note_journal_writer_inflight_finished();
         write_result?;
+        match maybe_prune_recent_raw_journal(&store, &config, &telemetry, completed_at) {
+            Ok(Some(deleted_rows)) if deleted_rows > 0 => {
+                info!(
+                    retention_days = config.retention_days,
+                    deleted_rows, "recent raw journal retention prune applied"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warn!(error = %error, "recent raw journal retention prune failed");
+            }
+        }
         let contention_after = sqlite_contention_snapshot();
         telemetry.note_journal_sqlite_contention_delta(contention_before, contention_after);
         telemetry

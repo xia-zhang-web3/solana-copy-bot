@@ -13,6 +13,7 @@ impl SqliteStore {
             usize::MAX,
             usize::MAX,
             usize::MAX,
+            usize::MAX,
         )
     }
 
@@ -24,6 +25,7 @@ impl SqliteStore {
         max_execution_order_batches: usize,
         max_copy_signal_batches: usize,
         max_shadow_closed_trade_batches: usize,
+        _max_execution_quote_canary_batches: usize,
     ) -> Result<HistoryRetentionSummary> {
         let risk_events = self
             .delete_risk_events_before_batched(
@@ -57,10 +59,16 @@ impl SqliteStore {
             orders_deleted: execution_history.orders_deleted,
             fills_deleted: execution_history.fills_deleted,
             shadow_closed_trades_deleted: shadow_closed_trades.deleted_rows as u64,
+            execution_quote_canary_events_deleted: 0,
+            execution_quote_canary_provider_samples_deleted: 0,
+            execution_quote_canary_shadow_gate_events_deleted: 0,
             risk_events_batches: risk_events.batches,
             execution_order_batches: execution_history.order_batches,
             copy_signals_batches: execution_history.copy_signal_batches,
             shadow_closed_trades_batches: shadow_closed_trades.batches,
+            execution_quote_canary_event_batches: 0,
+            execution_quote_canary_provider_sample_batches: 0,
+            execution_quote_canary_shadow_gate_batches: 0,
             completed_full_sweep: risk_events.completed_full_sweep
                 && execution_history.orders_completed_full_sweep
                 && execution_history.copy_signals_completed_full_sweep

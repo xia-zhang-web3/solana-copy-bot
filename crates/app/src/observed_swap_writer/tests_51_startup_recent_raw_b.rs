@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn recent_raw_journal_startup_prune_stays_out_of_hot_writer_stage1() -> Result<()> {
+fn recent_raw_journal_startup_prune_waits_for_hot_writer_stage1() -> Result<()> {
     let _phase_guard = super::recent_raw_journal_phase_test_guard();
     let unique = format!(
         "copybot-app-recent-raw-journal-deferred-startup-prune-{}-{}",
@@ -114,23 +114,20 @@ fn recent_raw_journal_startup_prune_stays_out_of_hot_writer_stage1() -> Result<(
         .load_observed_swaps_since(journal_now - ChronoDuration::days(30))?;
     assert_eq!(
         rows_after_write.len(),
-        2,
-        "hot writer must persist live rows without pruning stale recent_raw rows"
+        1,
+        "hot writer must persist live rows and prune stale recent_raw rows after startup"
     );
-    assert!(rows_after_write
-        .iter()
-        .any(|row| row.signature == "sig-recent-raw-journal-startup-prune-stale"));
     assert!(rows_after_write
         .iter()
         .any(|row| row.signature == "sig-recent-raw-journal-startup-prune-fresh"));
     let journal_state = journal_store_after_write.recent_raw_journal_state()?;
     assert_eq!(
-        journal_state.row_count, 2,
-        "journal state must reflect committed rows without hot-path pruning"
+        journal_state.row_count, 1,
+        "journal state must reflect committed rows after hot-path pruning"
     );
     assert!(
-        journal_state.last_pruned_at.is_none(),
-        "hot writer must leave recent_raw retention state untouched"
+        journal_state.last_pruned_at.is_some(),
+        "hot writer must update recent_raw retention state after pruning"
     );
 
     remove_sqlite_test_files(&journal_db_path);

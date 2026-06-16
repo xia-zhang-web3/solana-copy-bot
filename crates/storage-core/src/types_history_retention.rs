@@ -6,6 +6,7 @@ pub struct HistoryRetentionCutoffs {
     pub copy_signals_before: DateTime<Utc>,
     pub orders_before: DateTime<Utc>,
     pub shadow_closed_trades_before: DateTime<Utc>,
+    pub execution_quote_canary_before: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -15,10 +16,16 @@ pub struct HistoryRetentionSummary {
     pub orders_deleted: u64,
     pub fills_deleted: u64,
     pub shadow_closed_trades_deleted: u64,
+    pub execution_quote_canary_events_deleted: u64,
+    pub execution_quote_canary_provider_samples_deleted: u64,
+    pub execution_quote_canary_shadow_gate_events_deleted: u64,
     pub risk_events_batches: usize,
     pub execution_order_batches: usize,
     pub copy_signals_batches: usize,
     pub shadow_closed_trades_batches: usize,
+    pub execution_quote_canary_event_batches: usize,
+    pub execution_quote_canary_provider_sample_batches: usize,
+    pub execution_quote_canary_shadow_gate_batches: usize,
     pub completed_full_sweep: bool,
 }
 
@@ -40,5 +47,8 @@ impl HistoryRetentionSummary {
             && self.orders_deleted == 0
             && self.fills_deleted == 0
             && self.shadow_closed_trades_deleted == 0
+            && self.execution_quote_canary_events_deleted == 0
+            && self.execution_quote_canary_provider_samples_deleted == 0
+            && self.execution_quote_canary_shadow_gate_events_deleted == 0
     }
 }

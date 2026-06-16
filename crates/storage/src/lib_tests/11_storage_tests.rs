@@ -107,6 +107,7 @@ fn apply_history_retention_deletes_terminal_execution_history_child_first() -> R
             copy_signals_before: fresh_ts - Duration::days(1),
             orders_before: fresh_ts - Duration::days(1),
             shadow_closed_trades_before: fresh_ts - Duration::days(1),
+            execution_quote_canary_before: fresh_ts - Duration::days(1),
         },
         false,
     )?;
@@ -187,6 +188,7 @@ fn apply_history_retention_deletes_old_shadow_closed_trades() -> Result<()> {
             copy_signals_before: fresh_closed - Duration::days(1),
             orders_before: fresh_closed - Duration::days(1),
             shadow_closed_trades_before: fresh_closed - Duration::days(1),
+            execution_quote_canary_before: fresh_closed - Duration::days(1),
         },
         false,
     )?;
@@ -237,6 +239,7 @@ fn apply_history_retention_batches_risk_events() -> Result<()> {
             copy_signals_before: fresh_ts - Duration::days(1),
             orders_before: fresh_ts - Duration::days(1),
             shadow_closed_trades_before: fresh_ts - Duration::days(1),
+            execution_quote_canary_before: fresh_ts - Duration::days(1),
         },
         false,
     )?;
@@ -308,6 +311,7 @@ fn apply_history_retention_batches_execution_history() -> Result<()> {
             copy_signals_before: fresh_ts - Duration::days(1),
             orders_before: fresh_ts - Duration::days(1),
             shadow_closed_trades_before: fresh_ts - Duration::days(1),
+            execution_quote_canary_before: fresh_ts - Duration::days(1),
         },
         false,
     )?;
@@ -371,8 +375,10 @@ fn apply_history_retention_bounded_stops_after_batch_budget() -> Result<()> {
             copy_signals_before: fresh_ts - Duration::days(1),
             orders_before: fresh_ts - Duration::days(1),
             shadow_closed_trades_before: fresh_ts - Duration::days(1),
+            execution_quote_canary_before: fresh_ts - Duration::days(1),
         },
         false,
+        1,
         1,
         1,
         1,
@@ -440,6 +446,7 @@ fn apply_history_retention_batches_shadow_closed_trades() -> Result<()> {
             copy_signals_before: fresh_closed - Duration::days(1),
             orders_before: fresh_closed - Duration::days(1),
             shadow_closed_trades_before: fresh_closed - Duration::days(1),
+            execution_quote_canary_before: fresh_closed - Duration::days(1),
         },
         false,
     )?;

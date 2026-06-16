@@ -39,10 +39,10 @@ fn recent_raw_journal_prune_due_stays_paused_while_overflow_backlog_exists_stage
             !should_prune,
             "recent_raw journal prune must stay paused while overflow backlog still represents unflushed hot-path work"
         );
-    let inflight_telemetry = ObservedSwapWriterTelemetry::default();
-    inflight_telemetry.note_journal_queue_enqueued(1);
-    inflight_telemetry.note_journal_writer_inflight_started(4);
-    let should_prune_while_inflight = recent_raw_journal_prune_due(
+    let light_queue_telemetry = ObservedSwapWriterTelemetry::default();
+    light_queue_telemetry.note_journal_queue_enqueued(1);
+    light_queue_telemetry.note_journal_writer_inflight_started(4);
+    let should_prune_while_light_queue_exists = recent_raw_journal_prune_due(
         &journal_store,
         &ObservedSwapRecentRawJournalConfig {
             sqlite_path: journal_db_path
@@ -56,13 +56,39 @@ fn recent_raw_journal_prune_due_stays_paused_while_overflow_backlog_exists_stage
             skip_prune_while_backlogged: true,
             skip_startup_prune: true,
         },
-        &inflight_telemetry,
+        &light_queue_telemetry,
         now,
     )?;
     assert!(
-            !should_prune_while_inflight,
-            "recent_raw journal prune/check must stay paused while a hot-path journal write is still inflight"
-        );
+        should_prune_while_light_queue_exists,
+        "recent_raw journal prune must not be vetoed forever by a small steady-state queue"
+    );
+    let heavy_queue_telemetry = ObservedSwapWriterTelemetry::default();
+    for _ in 0..8 {
+        heavy_queue_telemetry.note_journal_queue_enqueued(1);
+    }
+    heavy_queue_telemetry.note_journal_writer_inflight_started(4);
+    let should_prune_while_heavy_queue_exists = recent_raw_journal_prune_due(
+        &journal_store,
+        &ObservedSwapRecentRawJournalConfig {
+            sqlite_path: journal_db_path
+                .to_str()
+                .context("journal sqlite path must be valid utf-8")?
+                .to_string(),
+            retention_days: 8,
+            writer_queue_capacity_batches: 16,
+            write_coalesce_max_batches: 1,
+            overflow_capacity_batches: 64,
+            skip_prune_while_backlogged: true,
+            skip_startup_prune: true,
+        },
+        &heavy_queue_telemetry,
+        now,
+    )?;
+    assert!(
+        !should_prune_while_heavy_queue_exists,
+        "recent_raw journal prune must stay paused under material queue pressure"
+    );
     let _ = std::fs::remove_file(journal_db_path);
     Ok(())
 }

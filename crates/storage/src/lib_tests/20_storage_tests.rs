@@ -41,6 +41,7 @@ fn apply_history_retention_preserves_undelivered_warn_events_after_cursor() -> R
             copy_signals_before: fresh_ts - Duration::days(1),
             orders_before: fresh_ts - Duration::days(1),
             shadow_closed_trades_before: fresh_ts - Duration::days(1),
+            execution_quote_canary_before: fresh_ts - Duration::days(1),
         },
         true,
     )?;
@@ -115,6 +116,7 @@ fn apply_history_retention_preserves_warn_events_before_first_alert_delivery() -
             copy_signals_before: fresh_ts - Duration::days(1),
             orders_before: fresh_ts - Duration::days(1),
             shadow_closed_trades_before: fresh_ts - Duration::days(1),
+            execution_quote_canary_before: fresh_ts - Duration::days(1),
         },
         true,
     )?;

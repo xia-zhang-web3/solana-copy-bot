@@ -26,12 +26,34 @@ impl SqliteStore {
                     params![&cutoff_ts, batch_limit],
                 )
                 .context("failed deleting recent raw journal retention slice")?;
-            let mut state = recent_raw_journal_state_query(conn)?;
-            state.last_pruned_rows = deleted.max(0) as usize;
+            let deleted = deleted.max(0) as usize;
+            let mut state = recent_raw_journal_state_cached_query(conn)?;
+            state.row_count = state.row_count.saturating_sub(deleted);
+            if state.row_count == 0 {
+                state.covered_since = None;
+                state.covered_through_cursor = None;
+            } else if deleted > 0 {
+                let covered_since_raw: Option<String> = conn
+                    .query_row(
+                        "SELECT ts
+                         FROM observed_swaps
+                         ORDER BY ts ASC
+                         LIMIT 1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .context("failed loading recent raw journal covered_since after prune")?;
+                state.covered_since = covered_since_raw
+                    .as_deref()
+                    .map(|raw| parse_rfc3339_utc(raw, "recent_raw_journal_state.covered_since_ts"))
+                    .transpose()?;
+            }
+            state.last_pruned_rows = deleted;
             state.last_pruned_at = Some(pruned_at);
             state.updated_at = Some(pruned_at);
             upsert_recent_raw_journal_state_on_conn(conn, &state)?;
-            Ok(deleted.max(0) as usize)
+            Ok(deleted)
         })
     }
 }

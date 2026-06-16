@@ -25,6 +25,7 @@ fn cutoffs(reference: DateTime<Utc>) -> HistoryRetentionCutoffs {
         copy_signals_before: reference - Duration::days(1),
         orders_before: reference - Duration::days(1),
         shadow_closed_trades_before: reference - Duration::days(1),
+        execution_quote_canary_before: reference - Duration::days(1),
     }
 }
 
@@ -117,7 +118,7 @@ fn bounded_run_stops_before_full_sweep_when_budget_exhausts() -> Result<()> {
         )?;
     }
 
-    let summary = store.apply_history_retention_bounded(cutoffs(fresh), false, 1, 1, 1, 1)?;
+    let summary = store.apply_history_retention_bounded(cutoffs(fresh), false, 1, 1, 1, 1, 1)?;
     assert_eq!(summary.risk_events_deleted, 500);
     assert_eq!(summary.risk_events_batches, 1);
     assert!(!summary.completed_full_sweep);
@@ -140,6 +141,34 @@ fn deletes_shadow_closed_trades_in_batches() -> Result<()> {
     assert_eq!(summary.shadow_closed_trades_deleted, 501);
     assert_eq!(summary.shadow_closed_trades_batches, 2);
     assert_eq!(count_rows(&conn, "shadow_closed_trades")?, 1);
+    Ok(())
+}
+
+#[test]
+fn deletes_execution_quote_canary_history_in_batches() -> Result<()> {
+    let (store, conn) = open_test_store("quote-canary-retention")?;
+    let stale = ts("2026-03-01T12:00:00Z");
+    let fresh = ts("2026-03-06T12:00:00Z");
+    seed_quote_canary_event(&conn, "event-old", "sig-old", stale)?;
+    seed_quote_canary_event(&conn, "event-fresh", "sig-fresh", fresh)?;
+    seed_quote_canary_provider_sample(&conn, "event-old", "generic", stale)?;
+    seed_quote_canary_provider_sample(&conn, "event-fresh", "generic", fresh)?;
+    seed_quote_canary_shadow_gate(&conn, "sig-old", stale)?;
+    seed_quote_canary_shadow_gate(&conn, "sig-fresh", fresh)?;
+
+    let summary = store.apply_history_retention(cutoffs(fresh), false)?;
+    assert_eq!(summary.execution_quote_canary_events_deleted, 1);
+    assert_eq!(summary.execution_quote_canary_provider_samples_deleted, 1);
+    assert_eq!(summary.execution_quote_canary_shadow_gate_events_deleted, 1);
+    assert_eq!(count_rows(&conn, "execution_quote_canary_events")?, 1);
+    assert_eq!(
+        count_rows(&conn, "execution_quote_canary_provider_samples")?,
+        1
+    );
+    assert_eq!(
+        count_rows(&conn, "execution_quote_canary_shadow_gate_events")?,
+        1
+    );
     Ok(())
 }
 
@@ -199,6 +228,50 @@ fn seed_shadow_closed_trade(
             pnl_sol, opened_ts, closed_ts
          ) VALUES (?1, 'wallet-1', 'token-1', 10.0, 0.10, 0.12, 0.02, ?2, ?3)",
         params![signal_id, opened.to_rfc3339(), closed.to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+fn seed_quote_canary_event(
+    conn: &Connection,
+    event_id: &str,
+    signal_id: &str,
+    request_ts: DateTime<Utc>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO execution_quote_canary_events(
+            event_id, signal_id, wallet_id, token, side, quote_status, request_ts
+         ) VALUES (?1, ?2, 'wallet-1', 'token-1', 'buy', 'ok', ?3)",
+        params![event_id, signal_id, request_ts.to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+fn seed_quote_canary_provider_sample(
+    conn: &Connection,
+    event_id: &str,
+    provider: &str,
+    request_ts: DateTime<Utc>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO execution_quote_canary_provider_samples(
+            event_id, provider, side, quote_status, request_ts
+         ) VALUES (?1, ?2, 'buy', 'ok', ?3)",
+        params![event_id, provider, request_ts.to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+fn seed_quote_canary_shadow_gate(
+    conn: &Connection,
+    signal_id: &str,
+    recorded_ts: DateTime<Utc>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO execution_quote_canary_shadow_gate_events(
+            signal_id, wallet_id, token, side, status, recorded_ts
+         ) VALUES (?1, 'wallet-1', 'token-1', 'buy', 'shadow_recorded', ?2)",
+        params![signal_id, recorded_ts.to_rfc3339()],
     )?;
     Ok(())
 }

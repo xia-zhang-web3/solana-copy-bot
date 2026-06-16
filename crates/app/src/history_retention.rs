@@ -7,6 +7,7 @@ const HISTORY_RETENTION_MAX_RISK_EVENT_BATCHES_PER_RUN: usize = 4;
 const HISTORY_RETENTION_MAX_EXECUTION_ORDER_BATCHES_PER_RUN: usize = 4;
 const HISTORY_RETENTION_MAX_COPY_SIGNAL_BATCHES_PER_RUN: usize = 4;
 const HISTORY_RETENTION_MAX_SHADOW_CLOSED_TRADE_BATCHES_PER_RUN: usize = 4;
+const HISTORY_RETENTION_MAX_EXECUTION_QUOTE_CANARY_BATCHES_PER_RUN: usize = 4;
 
 #[derive(Debug, Clone)]
 pub(crate) struct HistoryRetentionRunner {
@@ -50,6 +51,10 @@ impl HistoryRetentionRunner {
                         .shadow_closed_trades_days
                         .max(protected_history_days) as i64,
                 ),
+            execution_quote_canary_before: now
+                - ChronoDuration::days(
+                    self.config.copy_signals_days.max(protected_history_days) as i64
+                ),
         };
         store.apply_history_retention_bounded(
             cutoffs,
@@ -58,6 +63,7 @@ impl HistoryRetentionRunner {
             HISTORY_RETENTION_MAX_EXECUTION_ORDER_BATCHES_PER_RUN,
             HISTORY_RETENTION_MAX_COPY_SIGNAL_BATCHES_PER_RUN,
             HISTORY_RETENTION_MAX_SHADOW_CLOSED_TRADE_BATCHES_PER_RUN,
+            HISTORY_RETENTION_MAX_EXECUTION_QUOTE_CANARY_BATCHES_PER_RUN,
         )
     }
 }

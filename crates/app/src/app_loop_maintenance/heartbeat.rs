@@ -111,6 +111,18 @@ pub(crate) async fn handle_app_heartbeat_tick(
                             fills_deleted = summary.fills_deleted,
                             shadow_closed_trades_deleted = summary.shadow_closed_trades_deleted,
                             shadow_closed_trades_batches = summary.shadow_closed_trades_batches,
+                            execution_quote_canary_events_deleted =
+                                summary.execution_quote_canary_events_deleted,
+                            execution_quote_canary_provider_samples_deleted =
+                                summary.execution_quote_canary_provider_samples_deleted,
+                            execution_quote_canary_shadow_gate_events_deleted =
+                                summary.execution_quote_canary_shadow_gate_events_deleted,
+                            execution_quote_canary_event_batches =
+                                summary.execution_quote_canary_event_batches,
+                            execution_quote_canary_provider_sample_batches =
+                                summary.execution_quote_canary_provider_sample_batches,
+                            execution_quote_canary_shadow_gate_batches =
+                                summary.execution_quote_canary_shadow_gate_batches,
                             completed_full_sweep = summary.completed_full_sweep,
                             "history retention sweep applied"
                         );

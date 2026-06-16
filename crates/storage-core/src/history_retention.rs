@@ -1,6 +1,8 @@
 use crate::{
-    execution_quote_canary::ensure_execution_quote_canary_tables, ExecutionHistoryRetentionSummary,
-    HistoryRetentionCutoffs, HistoryRetentionSummary, SqliteDiscoveryStore,
+    execution_quote_canary::ensure_execution_quote_canary_tables,
+    execution_quote_canary_shadow_gate::ensure_execution_quote_canary_shadow_gate_table,
+    ExecutionHistoryRetentionSummary, HistoryRetentionCutoffs, HistoryRetentionSummary,
+    SqliteDiscoveryStore,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -16,6 +18,7 @@ const RISK_EVENTS_BATCH_SIZE: usize = 500;
 const EXECUTION_ORDER_BATCH_SIZE: usize = 250;
 const COPY_SIGNALS_BATCH_SIZE: usize = 250;
 const SHADOW_CLOSED_TRADES_BATCH_SIZE: usize = 500;
+const EXECUTION_QUOTE_CANARY_BATCH_SIZE: usize = 1_000;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct DeleteSummary {
@@ -87,6 +90,7 @@ impl SqliteDiscoveryStore {
         })
         .context("failed ensuring history retention tables exist")?;
         ensure_execution_quote_canary_tables(self)?;
+        ensure_execution_quote_canary_shadow_gate_table(self)?;
         Ok(())
     }
 
@@ -102,6 +106,7 @@ impl SqliteDiscoveryStore {
             usize::MAX,
             usize::MAX,
             usize::MAX,
+            usize::MAX,
         )
     }
 
@@ -113,6 +118,7 @@ impl SqliteDiscoveryStore {
         max_execution_order_batches: usize,
         max_copy_signal_batches: usize,
         max_shadow_closed_trade_batches: usize,
+        max_execution_quote_canary_batches: usize,
     ) -> Result<HistoryRetentionSummary> {
         self.ensure_history_retention_tables()?;
         let risk_events = self
@@ -140,6 +146,27 @@ impl SqliteDiscoveryStore {
                 max_shadow_closed_trade_batches,
             )
             .context("failed to apply shadow closed trade retention")?;
+        let quote_canary_provider_samples = self
+            .delete_execution_quote_canary_provider_samples_before_batched(
+                cutoffs.execution_quote_canary_before,
+                EXECUTION_QUOTE_CANARY_BATCH_SIZE,
+                max_execution_quote_canary_batches,
+            )
+            .context("failed to apply execution quote canary provider sample retention")?;
+        let quote_canary_shadow_gate = self
+            .delete_execution_quote_canary_shadow_gate_before_batched(
+                cutoffs.execution_quote_canary_before,
+                EXECUTION_QUOTE_CANARY_BATCH_SIZE,
+                max_execution_quote_canary_batches,
+            )
+            .context("failed to apply execution quote canary shadow gate retention")?;
+        let quote_canary_events = self
+            .delete_execution_quote_canary_events_before_batched(
+                cutoffs.execution_quote_canary_before,
+                EXECUTION_QUOTE_CANARY_BATCH_SIZE,
+                max_execution_quote_canary_batches,
+            )
+            .context("failed to apply execution quote canary event retention")?;
 
         Ok(HistoryRetentionSummary {
             risk_events_deleted: risk_events.deleted_rows as u64,
@@ -147,14 +174,25 @@ impl SqliteDiscoveryStore {
             orders_deleted: execution_history.orders_deleted,
             fills_deleted: execution_history.fills_deleted,
             shadow_closed_trades_deleted: shadow_closed_trades.deleted_rows as u64,
+            execution_quote_canary_events_deleted: quote_canary_events.deleted_rows as u64,
+            execution_quote_canary_provider_samples_deleted: quote_canary_provider_samples
+                .deleted_rows as u64,
+            execution_quote_canary_shadow_gate_events_deleted: quote_canary_shadow_gate.deleted_rows
+                as u64,
             risk_events_batches: risk_events.batches,
             execution_order_batches: execution_history.order_batches,
             copy_signals_batches: execution_history.copy_signal_batches,
             shadow_closed_trades_batches: shadow_closed_trades.batches,
+            execution_quote_canary_event_batches: quote_canary_events.batches,
+            execution_quote_canary_provider_sample_batches: quote_canary_provider_samples.batches,
+            execution_quote_canary_shadow_gate_batches: quote_canary_shadow_gate.batches,
             completed_full_sweep: risk_events.completed_full_sweep
                 && execution_history.orders_completed_full_sweep
                 && execution_history.copy_signals_completed_full_sweep
-                && shadow_closed_trades.completed_full_sweep,
+                && shadow_closed_trades.completed_full_sweep
+                && quote_canary_events.completed_full_sweep
+                && quote_canary_provider_samples.completed_full_sweep
+                && quote_canary_shadow_gate.completed_full_sweep,
         })
     }
 
@@ -376,6 +414,92 @@ impl SqliteDiscoveryStore {
                     )
                 })
                 .context("failed deleting retained shadow closed trades")?;
+            if deleted == 0 {
+                summary.completed_full_sweep = true;
+                break;
+            }
+            summary.deleted_rows += deleted;
+            summary.batches += 1;
+        }
+        Ok(summary)
+    }
+
+    fn delete_execution_quote_canary_events_before_batched(
+        &self,
+        cutoff: DateTime<Utc>,
+        batch_size: usize,
+        max_batches: usize,
+    ) -> Result<DeleteSummary> {
+        ensure_execution_quote_canary_tables(self)?;
+        self.delete_timestamped_table_before_batched(
+            "execution_quote_canary_events",
+            "request_ts",
+            cutoff,
+            batch_size,
+            max_batches,
+        )
+    }
+
+    fn delete_execution_quote_canary_provider_samples_before_batched(
+        &self,
+        cutoff: DateTime<Utc>,
+        batch_size: usize,
+        max_batches: usize,
+    ) -> Result<DeleteSummary> {
+        ensure_execution_quote_canary_tables(self)?;
+        self.delete_timestamped_table_before_batched(
+            "execution_quote_canary_provider_samples",
+            "request_ts",
+            cutoff,
+            batch_size,
+            max_batches,
+        )
+    }
+
+    fn delete_execution_quote_canary_shadow_gate_before_batched(
+        &self,
+        cutoff: DateTime<Utc>,
+        batch_size: usize,
+        max_batches: usize,
+    ) -> Result<DeleteSummary> {
+        ensure_execution_quote_canary_shadow_gate_table(self)?;
+        self.delete_timestamped_table_before_batched(
+            "execution_quote_canary_shadow_gate_events",
+            "recorded_ts",
+            cutoff,
+            batch_size,
+            max_batches,
+        )
+    }
+
+    fn delete_timestamped_table_before_batched(
+        &self,
+        table: &'static str,
+        ts_column: &'static str,
+        cutoff: DateTime<Utc>,
+        batch_size: usize,
+        max_batches: usize,
+    ) -> Result<DeleteSummary> {
+        let cutoff = cutoff.to_rfc3339();
+        let batch_limit = batch_size.max(1).min(i64::MAX as usize) as i64;
+        let max_batches = max_batches.max(1);
+        let mut summary = DeleteSummary::default();
+        loop {
+            if summary.batches >= max_batches {
+                break;
+            }
+            let sql = format!(
+                "DELETE FROM {table}
+                 WHERE rowid IN (
+                    SELECT rowid FROM {table}
+                    WHERE {ts_column} < ?1
+                    ORDER BY {ts_column} ASC, rowid ASC
+                    LIMIT ?2
+                 )"
+            );
+            let deleted = self
+                .execute_with_retry(|conn| conn.execute(&sql, params![&cutoff, batch_limit]))
+                .with_context(|| format!("failed deleting retained rows from {table}"))?;
             if deleted == 0 {
                 summary.completed_full_sweep = true;
                 break;
