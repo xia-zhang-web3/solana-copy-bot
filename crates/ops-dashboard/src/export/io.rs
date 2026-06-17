@@ -90,6 +90,9 @@ fn load_report_value(path: &Path, max_age: Duration) -> Result<(Value, u64, bool
 }
 
 fn report_generated_at(value: &Value) -> Option<DateTime<Utc>> {
+    if value.get("source").and_then(Value::as_str) == Some("discovery_v2_operational_window") {
+        return None;
+    }
     ["generated_at", "as_of", "now"]
         .iter()
         .find_map(|key| parse_time(value.get(*key)?.as_str()?))

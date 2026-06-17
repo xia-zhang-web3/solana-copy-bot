@@ -16,6 +16,7 @@ pub use io::InputReportStatus;
 const EXECUTION_REPORT: &str = "execution_canary_quote_pnl.json";
 const DISCOVERY_REPORT: &str = "discovery_v2_status.json";
 const WAL_REPORT: &str = "runtime_sqlite_wal_pressure.json";
+const STORAGE_CAPACITY_REPORT: &str = "storage_capacity.json";
 const STRATEGY_REPORT: &str = "strategy.json";
 
 #[derive(Debug, Clone)]
@@ -42,28 +43,33 @@ pub fn export_snapshots(options: ExportOptions) -> Result<ExportReport> {
     let execution = io::load_report(&options.input_dir, EXECUTION_REPORT, options.max_input_age);
     let discovery = io::load_report(&options.input_dir, DISCOVERY_REPORT, options.max_input_age);
     let wal = io::load_report(&options.input_dir, WAL_REPORT, options.max_input_age);
+    let capacity = io::load_report(
+        &options.input_dir,
+        STORAGE_CAPACITY_REPORT,
+        options.max_input_age,
+    );
     let strategy = io::load_report(&options.input_dir, STRATEGY_REPORT, options.max_input_age);
 
     let generated_at = Utc::now();
     let snapshots = vec![
         (
             "overview",
-            build::overview_snapshot(&execution, &discovery, &wal, &options),
+            build::overview_snapshot(&execution, &discovery, &wal, &capacity, &options),
         ),
         ("execution", build::execution_snapshot(&execution)),
         (
             "discovery",
             build::discovery_snapshot(&discovery, options.candidate_floor),
         ),
-        ("storage", build::storage_snapshot(&wal)),
+        ("storage", build::storage_snapshot(&wal, &capacity)),
         ("strategy", build::strategy_snapshot(&strategy, &execution)),
         (
             "alerts",
-            build::alerts_snapshot(&execution, &discovery, &wal, &options),
+            build::alerts_snapshot(&execution, &discovery, &wal, &capacity, &options),
         ),
         (
             "reports",
-            build::reports_snapshot(&[&execution, &discovery, &wal, &strategy]),
+            build::reports_snapshot(&[&execution, &discovery, &wal, &capacity, &strategy]),
         ),
     ];
 
@@ -83,6 +89,7 @@ pub fn export_snapshots(options: ExportOptions) -> Result<ExportReport> {
             execution.status,
             discovery.status,
             wal.status,
+            capacity.status,
             strategy.status,
         ],
     })

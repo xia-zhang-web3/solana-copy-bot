@@ -13,6 +13,7 @@ pub(super) fn overview_snapshot(
     execution: &InputReport,
     discovery: &InputReport,
     wal: &InputReport,
+    capacity: &InputReport,
     options: &ExportOptions,
 ) -> (bool, Value) {
     let candidates = array_len(&discovery.value, &["candidate_wallets"]);
@@ -42,7 +43,11 @@ pub(super) fn overview_snapshot(
         .map(|enabled| if enabled { "active" } else { "paused" })
         .unwrap_or("unknown");
     let wal_level = str_path(&wal.value, &["wal_pressure_level"]).unwrap_or("unknown");
-    let stale = execution.status.stale || discovery.status.stale || wal.status.stale;
+    let stale = execution.status.stale
+        || discovery.status.stale
+        || wal.status.stale
+        || capacity.status.stale;
+    let disk_runway_days = disk_runway_days(capacity);
     let status = overview_status(stale, candidates, unmatched, blockers, wal_level, options);
 
     (
@@ -52,10 +57,11 @@ pub(super) fn overview_snapshot(
             "entries": entries,
             "sells": sells,
             "open_positions": display_u64(open_positions),
-            "disk_runway_days": "unknown",
+            "disk_runway_days": disk_runway_days,
+            "disk_free_bytes": u64_path(&capacity.value, &["available_bytes"]),
             "candidates": display_u64(candidates),
             "candidate_floor": options.candidate_floor,
-            "latest_blocker": latest_blocker(execution, discovery, wal, candidates, unmatched, blockers)
+            "latest_blocker": latest_blocker(execution, discovery, wal, capacity, candidates, unmatched, blockers)
         }),
     )
 }
@@ -140,9 +146,19 @@ pub(super) fn discovery_snapshot(report: &InputReport, candidate_floor: u64) -> 
     )
 }
 
-pub(super) fn storage_snapshot(report: &InputReport) -> (bool, Value) {
+pub(super) fn storage_snapshot(report: &InputReport, capacity: &InputReport) -> (bool, Value) {
     let level = str_path(&report.value, &["wal_pressure_level"]).unwrap_or("unknown");
     let rows = vec![
+        row_bytes(
+            "volume_free",
+            u64_path(&capacity.value, &["available_bytes"]),
+            "state volume free",
+        ),
+        row(
+            "disk_runway_days",
+            disk_runway_days(capacity),
+            "free-space runway",
+        ),
         row_bytes(
             "database",
             u64_path(&report.value, &["db_bytes"]),
@@ -160,7 +176,7 @@ pub(super) fn storage_snapshot(report: &InputReport) -> (bool, Value) {
         ],
     ];
     (
-        report.status.stale,
+        report.status.stale || capacity.status.stale,
         json!({ "status": level, "rows": rows }),
     )
 }
@@ -209,6 +225,7 @@ pub(super) fn alerts_snapshot(
     execution: &InputReport,
     discovery: &InputReport,
     wal: &InputReport,
+    capacity: &InputReport,
     options: &ExportOptions,
 ) -> (bool, Value) {
     let mut events = Vec::new();
@@ -230,6 +247,13 @@ pub(super) fn alerts_snapshot(
         events.push(alert(
             "Storage snapshot stale",
             "disk/WAL state unknown",
+            "warning",
+        ));
+    }
+    if capacity.status.stale {
+        events.push(alert(
+            "Storage capacity snapshot stale",
+            "free-space runway unknown",
             "warning",
         ));
     }
@@ -255,7 +279,10 @@ pub(super) fn alerts_snapshot(
             "level": "safe"
         }));
     }
-    let stale = execution.status.stale || discovery.status.stale || wal.status.stale;
+    let stale = execution.status.stale
+        || discovery.status.stale
+        || wal.status.stale
+        || capacity.status.stale;
     (stale, json!({ "status": "available", "events": events }))
 }
 
@@ -315,6 +342,7 @@ fn latest_blocker(
     execution: &InputReport,
     discovery: &InputReport,
     wal: &InputReport,
+    capacity: &InputReport,
     candidates: Option<u64>,
     unmatched: Option<u64>,
     blockers: Option<u64>,
@@ -325,6 +353,8 @@ fn latest_blocker(
         "discovery_snapshot_stale"
     } else if wal.status.stale {
         "storage_snapshot_stale"
+    } else if capacity.status.stale {
+        "storage_capacity_snapshot_stale"
     } else if candidates.unwrap_or(0) == 0 {
         "candidate_wallets_empty"
     } else if unmatched.unwrap_or(0) > 0 {
@@ -334,6 +364,10 @@ fn latest_blocker(
     } else {
         "none_active"
     }
+}
+
+fn disk_runway_days(capacity: &InputReport) -> Option<u64> {
+    u64_path(&capacity.value, &["runway_days"])
 }
 
 fn alert(title: &str, detail: &str, level: &str) -> Value {
