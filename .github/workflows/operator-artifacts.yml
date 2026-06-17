@@ -14,6 +14,7 @@ on:
           - copybot-discovery-v2
           - copybot-discovery-ops
           - copybot-live-ops
+          - copybot-ops-dashboard
 
 permissions:
   contents: read
@@ -66,7 +67,7 @@ jobs:
             copybot-app)
               profile="release"
               ;;
-            copybot-operators | copybot-storage-ops | copybot-discovery-v2 | copybot-discovery-ops | copybot-live-ops)
+            copybot-operators | copybot-storage-ops | copybot-discovery-v2 | copybot-discovery-ops | copybot-live-ops | copybot-ops-dashboard)
               profile="operator-release"
               ;;
             *)

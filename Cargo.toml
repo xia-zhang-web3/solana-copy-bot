@@ -12,6 +12,7 @@ members = [
   "crates/live-ops",
   "crates/operators",
   "crates/shadow",
+  "crates/ops-dashboard",
   "crates/app",
 ]
 exclude = [

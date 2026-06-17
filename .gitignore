@@ -1,5 +1,7 @@
 /target
 /crates/*/target
+/ui/*/node_modules
+/ui/*/dist
 /state
 /.tmp
 /artifacts

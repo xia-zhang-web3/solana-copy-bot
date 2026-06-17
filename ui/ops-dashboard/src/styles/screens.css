@@ -1,0 +1,273 @@
+.hero-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.7fr);
+  align-items: center;
+  min-height: 128px;
+  padding: 24px 28px;
+  min-width: 0;
+}
+
+.hero-lead {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.overview-layout,
+.execution-layout,
+.strategy-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.9fr);
+  gap: 14px;
+  min-width: 0;
+}
+
+.discovery-layout,
+.storage-layout,
+.alerts-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr);
+  gap: 14px;
+  min-width: 0;
+}
+
+.discovery-left,
+.discovery-right {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  min-width: 0;
+}
+
+.floor-panel {
+  min-height: 184px;
+}
+
+.floor-value,
+.volume-value {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.floor-value strong,
+.volume-value strong {
+  color: var(--ink);
+  font-size: 42px;
+  line-height: 0.95;
+  letter-spacing: -0.03em;
+}
+
+.floor-value span,
+.volume-value span {
+  color: var(--secondary);
+  font-weight: var(--weight-semibold);
+}
+
+.floor-bar,
+.volume-bar {
+  position: relative;
+  height: 12px;
+  margin-top: 34px;
+  overflow: visible;
+  border-radius: var(--radius-pill);
+  background: #edf1f5;
+}
+
+.floor-fill,
+.volume-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--safe);
+}
+
+.floor-marker {
+  position: absolute;
+  top: -24px;
+  width: 1px;
+  height: 34px;
+  background: var(--ink);
+}
+
+.floor-marker span {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  width: max-content;
+  color: var(--secondary);
+  font-size: 10px;
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+  transform: translateX(-50%);
+}
+
+.floor-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.mini-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.guard-strip,
+.maintenance-callout {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 15px 18px;
+  border-radius: var(--radius-md);
+}
+
+.guard-strip div,
+.maintenance-callout div {
+  display: grid;
+  gap: 3px;
+}
+
+.guard-strip strong,
+.maintenance-callout strong {
+  color: var(--ink-strong);
+  font-size: 13px;
+}
+
+.guard-strip span,
+.maintenance-callout span {
+  color: var(--secondary);
+  font-size: 12px;
+}
+
+.guard-safe {
+  border: 1px solid var(--safe-100);
+  background: var(--safe-50);
+  color: var(--safe);
+}
+
+.guard-warning {
+  border: 1px solid var(--warning-100);
+  background: var(--warning-50);
+  color: var(--warning);
+}
+
+.funnel-list {
+  display: grid;
+  gap: 13px;
+}
+
+.funnel-row {
+  display: grid;
+  grid-template-columns: 92px minmax(120px, 1fr) 42px;
+  align-items: center;
+  gap: 12px;
+  color: var(--ink-strong);
+  font-size: 13px;
+  font-weight: var(--weight-semibold);
+  min-width: 0;
+}
+
+.bar-ink {
+  background: var(--ink);
+}
+
+.tall-panel,
+.timeline-panel,
+.channel-panel {
+  min-height: 420px;
+}
+
+.quarantine-empty {
+  min-height: 300px;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.quarantine-empty strong {
+  color: var(--secondary);
+}
+
+.volume-panel {
+  min-height: 154px;
+}
+
+.volume-bar {
+  height: 13px;
+  margin-top: 24px;
+}
+
+.volume-bar i {
+  background: linear-gradient(90deg, #384152 0 70%, var(--safe) 70% 100%);
+}
+
+.stores-panel {
+  min-height: 390px;
+}
+
+.store-table {
+  display: grid;
+  margin-top: 16px;
+}
+
+.store-table > div {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr 1fr 0.7fr;
+  gap: 12px;
+  align-items: center;
+  padding: 14px 0;
+  border-top: 1px solid rgba(16, 24, 40, 0.05);
+}
+
+.store-table > div:first-child {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.store-table code {
+  color: var(--ink-strong);
+  font-family: var(--font-mono);
+  font-weight: var(--weight-semibold);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.store-table span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.store-table strong {
+  text-align: right;
+}
+
+.mini-spark {
+  width: 76px;
+  height: 22px;
+}
+
+.mini-spark polyline {
+  fill: none;
+  stroke: var(--safe);
+  stroke-width: 2;
+}
+
+.maintenance-callout {
+  border: 1px solid var(--info-100);
+  background: var(--info-50);
+  color: var(--info);
+}

@@ -1,0 +1,159 @@
+:root {
+  --canvas: #f4f6fa;
+  --page: #e7ebf0;
+  --surface: #ffffff;
+  --surface-subtle: #fbfcfe;
+  --surface-muted: #f6f8fb;
+  --surface-raised: #f7f9fb;
+  --surface-control: #eef2f6;
+  --surface-active: #eef4ff;
+  --ink: #182230;
+  --ink-strong: #344054;
+  --ink-nav: #475467;
+  --ink-soft: #667085;
+  --secondary: #5f6c7b;
+  --muted: #9aa6b5;
+  --border: rgba(16, 24, 40, 0.08);
+  --primary: #2563eb;
+  --primary-50: #eff5ff;
+  --safe: #2d6a4f;
+  --safe-50: #ecfbf2;
+  --safe-100: #cfeedd;
+  --info: #3a6ea5;
+  --info-50: #eef4fb;
+  --info-100: #d6e5f4;
+  --warning: #b7791f;
+  --warning-50: #fdf6ea;
+  --warning-100: #f7e6c4;
+  --dangerous: #b42318;
+  --dangerous-50: #fef1ef;
+  --dangerous-100: #f9d5d0;
+  --brand-bg: #070b21;
+  --radius-xs: 9px;
+  --radius-sm: 11px;
+  --radius-md: 14px;
+  --radius-lg: 16px;
+  --radius-xl: 18px;
+  --radius-2xl: 22px;
+  --radius-shell: 32px;
+  --radius-pill: 999px;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 2px 8px -3px rgba(16, 24, 40, 0.06);
+  --shadow-auth: 0 1px 2px rgba(16, 24, 40, 0.04), 0 24px 70px -34px rgba(16, 24, 40, 0.38);
+  --shadow-float: 0 10px 40px -18px rgba(16, 24, 40, 0.35);
+  --shadow-popover: 0 18px 46px -22px rgba(16, 24, 40, 0.36);
+  --font-ui: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, ui-monospace, monospace;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  font-family: var(--font-ui);
+  color: var(--ink);
+  background: var(--canvas);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--canvas);
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.45;
+  overflow-x: clip;
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  min-height: 100vh;
+  overflow-x: clip;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:focus {
+  outline: none;
+}
+
+button:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.26);
+  outline-offset: 2px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.brand-mark {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  overflow: hidden;
+  border-radius: var(--radius-xs);
+  background: var(--brand-bg);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.brand-name {
+  font-size: 16px;
+  font-weight: var(--weight-bold);
+  line-height: 1.1;
+}
+
+.brand-subtitle {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.eyebrow {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: var(--weight-bold);
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.muted {
+  color: var(--secondary);
+}
+
+.text-safe {
+  color: var(--safe);
+}
+
+.text-warning {
+  color: var(--warning);
+}
+
+.text-dangerous {
+  color: var(--dangerous);
+}
+
+.text-info {
+  color: var(--info);
+}

@@ -1,0 +1,154 @@
+.app-shell {
+  --content-max: 1560px;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  overflow-x: clip;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px 12px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.side-nav {
+  display: grid;
+  gap: 6px;
+}
+
+.nav-button,
+.user-card {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--ink-nav);
+  text-align: left;
+}
+
+.nav-button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px;
+  border-radius: var(--radius-xs);
+  font-size: 13px;
+  font-weight: var(--weight-semibold);
+  line-height: 1.2;
+}
+
+.nav-button-active {
+  background: var(--surface-active);
+  color: #2447d8;
+}
+
+.nav-button:hover {
+  background: var(--surface-muted);
+}
+
+.user-card {
+  margin-top: auto;
+  display: grid;
+  grid-template-columns: 30px 1fr 16px;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.avatar {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface-control);
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: var(--weight-bold);
+}
+
+.user-card strong,
+.user-card small {
+  display: block;
+}
+
+.user-card small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.app-main {
+  min-width: 0;
+  width: 100%;
+  padding-bottom: 24px;
+}
+
+.page-header {
+  height: 56px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(252, 253, 254, 0.82);
+  backdrop-filter: blur(16px);
+}
+
+.page-header-inner {
+  width: min(calc(100% - 56px), var(--content-max));
+  height: 100%;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.page-header-inner > div:first-child {
+  min-width: 0;
+}
+
+.page-header h1 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.page-header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.page-header-inner > div:first-child span {
+  display: block;
+  max-width: min(58vw, 620px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--ink-soft);
+  min-width: 0;
+}
+
+.screen {
+  width: min(calc(100% - 56px), var(--content-max));
+  margin: 0 auto;
+  padding: 24px 0;
+  display: grid;
+  gap: 18px;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.bottom-nav {
+  display: none;
+}
