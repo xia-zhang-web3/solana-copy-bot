@@ -40,6 +40,10 @@ EXPECTED_PACKAGE_BINARIES = {
         "copybot_runtime_sqlite_wal_maintenance",
         "copybot_runtime_sqlite_wal_pressure_report",
     },
+    "copybot-ops-dashboard": {
+        "copybot_ops_dashboard",
+        "copybot_ops_dashboard_snapshot_export",
+    },
 }
 
 
