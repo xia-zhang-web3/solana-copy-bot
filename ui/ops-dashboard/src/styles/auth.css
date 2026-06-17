@@ -1,7 +1,9 @@
 .login-page {
   min-height: 100vh;
+  min-height: 100svh;
   display: grid;
-  place-items: center;
+  align-items: center;
+  justify-items: center;
   padding: 24px;
   background: var(--page);
 }
@@ -45,11 +47,14 @@
 
 .login-form input {
   width: 100%;
+  min-height: 58px;
   padding: 14px 15px;
   border: 1px solid rgba(16, 24, 40, 0.16);
   border-radius: var(--radius-sm);
   background: white;
   color: var(--ink);
+  font-size: 16px;
+  line-height: 1.2;
   outline: none;
 }
 
@@ -64,6 +69,7 @@
   border-radius: var(--radius-sm);
   background: var(--primary);
   color: white;
+  font-size: 16px;
   font-weight: var(--weight-bold);
 }
 
@@ -82,4 +88,48 @@
   color: var(--dangerous);
   font-size: 12px;
   font-weight: var(--weight-bold);
+}
+
+@media (max-width: 520px) {
+  .login-page {
+    align-items: start;
+    padding: max(92px, calc(56px + env(safe-area-inset-top))) 22px 28px;
+  }
+
+  .login-card {
+    width: 100%;
+    min-height: 0;
+    gap: 28px;
+    padding: 34px 24px 28px;
+    border-radius: 26px;
+  }
+
+  .login-heading h1 {
+    font-size: 34px;
+    line-height: 1.05;
+    letter-spacing: 0;
+  }
+
+  .login-form {
+    gap: 17px;
+  }
+
+  .login-form label {
+    font-size: 13px;
+  }
+
+  .login-form button {
+    min-height: 56px;
+  }
+}
+
+@media (max-height: 720px) and (max-width: 520px) {
+  .login-page {
+    padding-top: max(68px, calc(34px + env(safe-area-inset-top)));
+  }
+
+  .login-card {
+    gap: 22px;
+    padding-top: 28px;
+  }
 }
