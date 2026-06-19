@@ -30,7 +30,7 @@ pub(super) fn discovery_snapshot(
             "observed swaps tail",
         ),
     ];
-    rows.extend(discovery_filter_rows(report, wallet_report));
+    rows.extend(discovery_filter_rows(wallet_report));
     let status = if report.status.stale {
         "unknown"
     } else if candidates.unwrap_or(0) < candidate_floor {
@@ -44,7 +44,7 @@ pub(super) fn discovery_snapshot(
     )
 }
 
-fn discovery_filter_rows(report: &InputReport, wallet_report: &InputReport) -> Vec<Vec<String>> {
+fn discovery_filter_rows(wallet_report: &InputReport) -> Vec<Vec<String>> {
     let filter = wallet_report
         .value
         .as_ref()
@@ -101,7 +101,7 @@ fn discovery_filter_rows(report: &InputReport, wallet_report: &InputReport) -> V
     ));
     rows.push(row(
         "rug_quarantine_candidates",
-        array_len(&report.value, &["rug_quarantine_candidates"]),
+        u64_path_ref(filter, &["rug_quarantine_candidate_count"]),
         "new quarantine candidates",
     ));
     rows

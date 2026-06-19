@@ -3,8 +3,9 @@ use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig, DISCOVERY_V2_SCORING_SOURCE};
 use copybot_discovery_v2::{
     build_discovery_v2_wallet_report, DiscoveryV2FilterStatus, DiscoveryV2LivePortfolioStatus,
-    DiscoveryV2MaturityStatus, DiscoveryV2ScanStatus, DiscoveryV2ShadowSignalStatus,
-    DiscoveryV2Status, DiscoveryV2WalletMetric, DiscoveryV2WalletReportOptions,
+    DiscoveryV2MaturityStatus, DiscoveryV2RugQuarantineCandidate, DiscoveryV2ScanStatus,
+    DiscoveryV2ShadowSignalStatus, DiscoveryV2Status, DiscoveryV2WalletMetric,
+    DiscoveryV2WalletReportOptions,
 };
 use copybot_storage_core::{ensure_discovery_v2_schema, SqliteDiscoveryStore};
 use tempfile::tempdir;
@@ -185,11 +186,29 @@ fn wallet_report_shows_active_follow_and_filter_evidence() -> Result<()> {
     store.activate_follow_wallet("wallet-a", now, "test")?;
     let (discovery, shadow) = policy();
 
+    let mut status = status(now);
+    status.rug_quarantine_candidates = vec![
+        DiscoveryV2RugQuarantineCandidate {
+            wallet_id: "wallet-rug-a".to_string(),
+            closed_trades: Some(7),
+            stale_terminal_closes: Some(3),
+            stale_terminal_rate: Some(0.43),
+            stale_terminal_pnl_sol: Some(-0.34),
+        },
+        DiscoveryV2RugQuarantineCandidate {
+            wallet_id: "wallet-rug-b".to_string(),
+            closed_trades: Some(9),
+            stale_terminal_closes: Some(2),
+            stale_terminal_rate: Some(0.22),
+            stale_terminal_pnl_sol: Some(-0.31),
+        },
+    ];
+
     let report = build_discovery_v2_wallet_report(
         &store,
         &discovery,
         &shadow,
-        status(now),
+        status,
         DiscoveryV2WalletReportOptions {
             now: now + Duration::seconds(30),
             limit: 5,
@@ -216,6 +235,7 @@ fn wallet_report_shows_active_follow_and_filter_evidence() -> Result<()> {
     assert_eq!(report.filter_impact.eligible_returned, 1);
     assert_eq!(report.filter_impact.executable_rejected_returned, 0);
     assert_eq!(report.filter_impact.rug_rejected_returned, 0);
+    assert_eq!(report.filter_impact.rug_quarantine_candidate_count, 2);
     assert_eq!(report.wallets[0].wallet_id, "wallet-a");
     assert_eq!(report.wallets[0].shadow_pnl_sol_24h, Some(-0.01));
     assert!(report.wallets[0].active_follow);
