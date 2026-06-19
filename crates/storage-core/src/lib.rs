@@ -31,6 +31,8 @@ mod execution_canary_stale_candidates;
 mod execution_canary_state;
 mod execution_canary_submit_risk;
 mod execution_canary_submitted;
+mod execution_exit_policy_sim;
+mod execution_exit_policy_types;
 mod execution_orders;
 mod execution_quote_canary;
 mod execution_quote_canary_lookup;
@@ -98,6 +100,10 @@ pub use crate::startup_progress::{
     run_observed_startup_step_with_completion_detail,
 };
 pub use crate::status_snapshot::DiscoveryV2StatusSnapshotRow;
+pub use execution_exit_policy_types::{
+    ExecutionExitPolicyBaseline, ExecutionExitPolicyContextSummary, ExecutionExitPolicySimConfig,
+    ExecutionExitPolicySimParams, ExecutionExitPolicySimReport, ExecutionExitPolicySummary,
+};
 pub use execution_quote_canary_route_samples::{
     PROVIDER_GENERIC_METIS, PROVIDER_GENERIC_PUBLIC, PROVIDER_PUMP_FUN_PAID,
 };

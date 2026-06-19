@@ -31,6 +31,10 @@ path = "src/bin/copybot_execution_tiny_economics.rs"
 name = "copybot_execution_tiny_writeoff"
 path = "src/bin/copybot_execution_tiny_writeoff.rs"
 
+[[bin]]
+name = "copybot_exit_policy_sim"
+path = "src/bin/copybot_exit_policy_sim.rs"
+
 [dependencies]
 anyhow.workspace = true
 base64 = "0.22.1"
