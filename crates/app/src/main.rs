@@ -83,6 +83,7 @@ mod execution_swap_instructions_http;
 mod execution_swap_transaction_http;
 mod execution_tiny_entry_route;
 mod execution_transaction_rpc_simulation;
+mod exit_policy_shadow_quote;
 mod history_retention;
 mod irrelevant_backpressure;
 mod irrelevant_persistence;
@@ -118,6 +119,7 @@ use crate::config_contract::{
 };
 use crate::discovery_runtime::{DiscoveryService, RuntimePublicationTruthResolution};
 use crate::execution_canary::ExecutionCanaryRunner;
+use crate::exit_policy_shadow_quote::ExitPolicyShadowQuoteDiagnostic;
 use crate::history_retention::HistoryRetentionRunner;
 use crate::irrelevant_backpressure::*;
 use crate::irrelevant_persistence::*;

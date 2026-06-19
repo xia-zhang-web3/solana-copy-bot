@@ -174,6 +174,7 @@ pub(super) async fn handle_shadow_interval_tick(
     stale_lot_recovery_zero_price_enabled: bool,
     materialize_execution_canary_quote_loss: bool,
     stale_close_quote_pricer: &StaleCloseQuotePricer,
+    exit_policy_shadow_quote: &ExitPolicyShadowQuoteDiagnostic,
 ) -> Result<()> {
     if shadow_strategy_fail_closed {
         return Ok(());
@@ -218,6 +219,29 @@ pub(super) async fn handle_shadow_interval_tick(
                 return Err(error).context("stale lot cleanup failed with fatal sqlite I/O");
             }
             warn!(error = %error, "stale lot cleanup failed");
+        }
+    }
+    match exit_policy_shadow_quote
+        .process_tick(store, Utc::now())
+        .await
+    {
+        Ok(summary) if summary.has_activity() => {
+            info!(
+                checked = summary.checked,
+                inserted = summary.inserted,
+                existing = summary.existing,
+                quote_ok = summary.quote_ok,
+                quote_error = summary.quote_error,
+                last_event_id = summary.last_event_id.as_deref().unwrap_or("none"),
+                "exit policy shadow quote diagnostic tick"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            warn!(
+                error = %error,
+                "exit policy shadow quote diagnostic failed"
+            );
         }
     }
     if shadow_scheduler.shadow_snapshot_handle.is_some() {

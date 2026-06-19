@@ -92,6 +92,9 @@ pub struct ExecutionConfig {
     pub quote_canary_slippage_bps: u64,
     pub quote_canary_buy_slippage_bps: u64,
     pub quote_canary_sell_slippage_bps: u64,
+    pub exit_policy_shadow_quote_enabled: bool,
+    pub exit_policy_shadow_quote_hold_minutes: u64,
+    pub exit_policy_shadow_quote_batch_limit: u32,
     pub priority_fee_canary_enabled: bool,
     pub priority_fee_canary_rpc_url: String,
     pub priority_fee_canary_timeout_ms: u64,
@@ -142,6 +145,9 @@ impl Default for ExecutionConfig {
             quote_canary_slippage_bps: 100,
             quote_canary_buy_slippage_bps: 0,
             quote_canary_sell_slippage_bps: 0,
+            exit_policy_shadow_quote_enabled: false,
+            exit_policy_shadow_quote_hold_minutes: 30,
+            exit_policy_shadow_quote_batch_limit: 5,
             priority_fee_canary_enabled: false,
             priority_fee_canary_rpc_url: String::new(),
             priority_fee_canary_timeout_ms: 1_500,
@@ -241,6 +247,18 @@ impl fmt::Debug for ExecutionConfig {
             .field(
                 "quote_canary_sell_slippage_bps",
                 &self.quote_canary_sell_slippage_bps,
+            )
+            .field(
+                "exit_policy_shadow_quote_enabled",
+                &self.exit_policy_shadow_quote_enabled,
+            )
+            .field(
+                "exit_policy_shadow_quote_hold_minutes",
+                &self.exit_policy_shadow_quote_hold_minutes,
+            )
+            .field(
+                "exit_policy_shadow_quote_batch_limit",
+                &self.exit_policy_shadow_quote_batch_limit,
             )
             .field(
                 "priority_fee_canary_enabled",

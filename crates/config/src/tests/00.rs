@@ -110,6 +110,9 @@ fn execution_defaults_are_fail_closed_and_canary_dry_run_only() {
     assert_eq!(execution.quote_canary_slippage_bps, 100);
     assert_eq!(execution.quote_canary_buy_slippage_bps, 0);
     assert_eq!(execution.quote_canary_sell_slippage_bps, 0);
+    assert!(!execution.exit_policy_shadow_quote_enabled);
+    assert_eq!(execution.exit_policy_shadow_quote_hold_minutes, 30);
+    assert_eq!(execution.exit_policy_shadow_quote_batch_limit, 5);
     assert!(!execution.priority_fee_canary_enabled);
     assert!(execution.priority_fee_canary_rpc_url.is_empty());
     assert_eq!(execution.priority_fee_canary_timeout_ms, 1_500);

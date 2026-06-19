@@ -21,6 +21,9 @@ pub(crate) fn validate_execution_runtime_contract(
 }
 
 pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Result<()> {
+    if config.exit_policy_shadow_quote_enabled {
+        validate_exit_policy_shadow_quote_contract(config)?;
+    }
     if !config.canary_enabled {
         return Ok(());
     }
@@ -81,18 +84,9 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
         ));
     }
     if config.quote_canary_enabled {
-        if config.quote_canary_base_url.trim().is_empty()
-            || contains_placeholder_value(&config.quote_canary_base_url)
-        {
-            return Err(anyhow!(
-                "execution.quote_canary_base_url must be configured when quote canary is enabled"
-            ));
-        }
-        if config.quote_canary_timeout_ms < 100 || config.quote_canary_timeout_ms > 10_000 {
-            return Err(anyhow!(
-                "execution.quote_canary_timeout_ms must be within 100..=10000"
-            ));
-        }
+        validate_quote_endpoint_contract(config)?;
+    }
+    if config.quote_canary_enabled {
         if !config.quote_canary_buy_size_sol.is_finite()
             || config.quote_canary_buy_size_sol <= 0.0
             || config.quote_canary_buy_size_sol > 1.0
@@ -170,6 +164,56 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
                 "execution.priority_fee_canary_last_n_blocks must be within 1..=1000"
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_exit_policy_shadow_quote_contract(config: &ExecutionConfig) -> Result<()> {
+    validate_quote_endpoint_contract(config)?;
+    if config.exit_policy_shadow_quote_hold_minutes == 0
+        || config.exit_policy_shadow_quote_hold_minutes > 240
+    {
+        return Err(anyhow!(
+            "execution.exit_policy_shadow_quote_hold_minutes must be within 1..=240"
+        ));
+    }
+    if config.exit_policy_shadow_quote_batch_limit == 0
+        || config.exit_policy_shadow_quote_batch_limit > 25
+    {
+        return Err(anyhow!(
+            "execution.exit_policy_shadow_quote_batch_limit must be within 1..=25"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_quote_endpoint_contract(config: &ExecutionConfig) -> Result<()> {
+    if config.quote_canary_base_url.trim().is_empty()
+        || contains_placeholder_value(&config.quote_canary_base_url)
+    {
+        return Err(anyhow!(
+            "execution.quote_canary_base_url must be configured when quote diagnostics are enabled"
+        ));
+    }
+    if config.quote_canary_timeout_ms < 100 || config.quote_canary_timeout_ms > 10_000 {
+        return Err(anyhow!(
+            "execution.quote_canary_timeout_ms must be within 100..=10000"
+        ));
+    }
+    if config.quote_canary_slippage_bps > 5_000 {
+        return Err(anyhow!(
+            "execution.quote_canary_slippage_bps must be <= 5000"
+        ));
+    }
+    if config.quote_canary_buy_slippage_bps > 5_000 {
+        return Err(anyhow!(
+            "execution.quote_canary_buy_slippage_bps must be <= 5000"
+        ));
+    }
+    if config.quote_canary_sell_slippage_bps > 5_000 {
+        return Err(anyhow!(
+            "execution.quote_canary_sell_slippage_bps must be <= 5000"
+        ));
     }
     Ok(())
 }

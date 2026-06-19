@@ -155,6 +155,20 @@ fn execution_canary_contract_accepts_live_tiny_daily_loss_budget() {
 }
 
 #[test]
+fn exit_policy_shadow_quote_contract_runs_without_canary_enabled() {
+    let mut config = copybot_config::ExecutionConfig::default();
+    config.exit_policy_shadow_quote_enabled = true;
+    config.exit_policy_shadow_quote_hold_minutes = 0;
+
+    let error = crate::config_contract::validate_execution_canary_contract(&config)
+        .expect_err("exit policy quote diagnostics must validate outside canary mode");
+
+    assert!(error
+        .to_string()
+        .contains("exit_policy_shadow_quote_hold_minutes"));
+}
+
+#[test]
 fn swap_transaction_dry_run_requires_quote_canary_metadata() {
     let mut config = copybot_config::ExecutionConfig::default();
     config.canary_enabled = true;

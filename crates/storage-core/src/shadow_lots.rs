@@ -1,4 +1,5 @@
 use crate::{
+    execution_quote_canary::ensure_execution_quote_canary_tables,
     money::{sol_to_lamports_ceil, token_quantity_from_sql, u64_to_sql_i64},
     ShadowLotRow, SqliteDiscoveryStore, POSITION_ACCOUNTING_BUCKET_EXACT_POST_CUTOVER,
     POSITION_ACCOUNTING_BUCKET_LEGACY_PRE_CUTOVER, SHADOW_LOT_OPEN_EPS, SHADOW_RISK_CONTEXT_MARKET,
@@ -158,6 +159,46 @@ impl SqliteDiscoveryStore {
             .context("failed querying stale shadow lots")?;
         let mut lots = Vec::new();
         while let Some(row) = rows.next().context("failed iterating stale shadow lots")? {
+            lots.push(read_shadow_lot_row(row)?);
+        }
+        Ok(lots)
+    }
+
+    pub fn list_exit_policy_shadow_quote_candidates(
+        &self,
+        cutoff: DateTime<Utc>,
+        event_id_prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<ShadowLotRow>> {
+        ensure_execution_quote_canary_tables(self)?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, wallet_id, token, accounting_bucket, risk_context, qty, qty_raw, qty_decimals, cost_sol, cost_lamports, opened_ts
+                 FROM shadow_lots
+                 WHERE qty > ?1
+                   AND opened_ts <= ?2
+                   AND NOT EXISTS (
+                        SELECT 1 FROM execution_quote_canary_events
+                        WHERE event_id = ?3 || shadow_lots.id
+                   )
+                 ORDER BY opened_ts ASC, id ASC
+                 LIMIT ?4",
+            )
+            .context("failed to prepare exit policy shadow quote candidate query")?;
+        let mut rows = stmt
+            .query(params![
+                SHADOW_LOT_OPEN_EPS,
+                cutoff.to_rfc3339(),
+                event_id_prefix,
+                limit.max(1) as i64
+            ])
+            .context("failed querying exit policy shadow quote candidates")?;
+        let mut lots = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .context("failed iterating exit policy shadow quote candidates")?
+        {
             lots.push(read_shadow_lot_row(row)?);
         }
         Ok(lots)

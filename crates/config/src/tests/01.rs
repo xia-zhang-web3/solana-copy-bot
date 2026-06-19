@@ -452,6 +452,18 @@ fn load_from_env_applies_execution_canary_overrides() {
                     "500",
                 ),
                 (
+                    "SOLANA_COPY_BOT_EXECUTION_EXIT_POLICY_SHADOW_QUOTE_ENABLED",
+                    "true",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_EXIT_POLICY_SHADOW_QUOTE_HOLD_MINUTES",
+                    "45",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_EXIT_POLICY_SHADOW_QUOTE_BATCH_LIMIT",
+                    "7",
+                ),
+                (
                     "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_ENABLED",
                     "true",
                 ),
@@ -511,6 +523,9 @@ fn load_from_env_applies_execution_canary_overrides() {
             assert_eq!(config.execution.quote_canary_slippage_bps, 120);
             assert_eq!(config.execution.quote_canary_buy_slippage_bps, 150);
             assert_eq!(config.execution.quote_canary_sell_slippage_bps, 500);
+            assert!(config.execution.exit_policy_shadow_quote_enabled);
+            assert_eq!(config.execution.exit_policy_shadow_quote_hold_minutes, 45);
+            assert_eq!(config.execution.exit_policy_shadow_quote_batch_limit, 7);
             assert!(config.execution.priority_fee_canary_enabled);
             assert_eq!(
                 config.execution.priority_fee_canary_rpc_url,

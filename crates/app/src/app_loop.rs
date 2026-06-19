@@ -106,6 +106,7 @@ pub(super) async fn run_app_loop(
     let materialize_execution_canary_quote_loss =
         execution_config.canary_enabled && execution_config.canary_tiny_submit_enabled;
     let stale_close_quote_pricer = StaleCloseQuotePricer::new(execution_config.clone());
+    let exit_policy_shadow_quote = ExitPolicyShadowQuoteDiagnostic::new(execution_config.clone());
     let execution_canary_runner = ExecutionCanaryRunner::new(execution_config);
     execution_canary_runner.log_startup_status();
     let mut execution_canary_interval = time::interval(Duration::from_secs(
@@ -406,6 +407,7 @@ pub(super) async fn run_app_loop(
                     stale_lot_recovery_zero_price_enabled,
                     materialize_execution_canary_quote_loss,
                     &stale_close_quote_pricer,
+                    &exit_policy_shadow_quote,
                 ).await?;
             }
             _ = tokio::signal::ctrl_c() => {
