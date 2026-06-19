@@ -58,6 +58,13 @@ discovery_v2_status \
   mv "$REPORT_IN/discovery_v2_status.json.tmp" \
      "$REPORT_IN/discovery_v2_status.json"
 
+discovery_v2_wallet_report \
+  --config "$CONFIG" \
+  --top 15 \
+  > "$REPORT_IN/discovery_v2_wallet_report.json.tmp" && \
+  mv "$REPORT_IN/discovery_v2_wallet_report.json.tmp" \
+     "$REPORT_IN/discovery_v2_wallet_report.json"
+
 copybot_runtime_sqlite_wal_pressure_report \
   --config "$CONFIG" \
   --json \

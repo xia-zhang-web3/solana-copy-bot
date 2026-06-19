@@ -73,6 +73,15 @@ pub(super) fn row_float(label: &str, value: Option<f64>, detail: &str) -> Vec<St
     ]
 }
 
+pub(super) fn row_text(label: &str, value: &str, detail: &str, level: &str) -> Vec<String> {
+    vec![
+        label.to_string(),
+        value.to_string(),
+        detail.to_string(),
+        level.to_string(),
+    ]
+}
+
 pub(super) fn row_bytes(label: &str, value: Option<u64>, detail: &str) -> Vec<String> {
     vec![
         label.to_string(),

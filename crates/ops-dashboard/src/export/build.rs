@@ -112,40 +112,6 @@ pub(super) fn execution_snapshot(report: &InputReport) -> (bool, Value) {
     )
 }
 
-pub(super) fn discovery_snapshot(report: &InputReport, candidate_floor: u64) -> (bool, Value) {
-    let candidates = array_len(&report.value, &["candidate_wallets"]);
-    let rows = vec![
-        row("candidates", candidates, "published candidate wallets"),
-        row("floor", Some(candidate_floor), "configured dashboard floor"),
-        row(
-            "eligible_wallets",
-            u64_path(&report.value, &["wallet_metrics_total"]),
-            "wallet metrics total",
-        ),
-        row(
-            "scan_rows",
-            u64_path(&report.value, &["scan", "rows_scanned"]),
-            "discovery scan",
-        ),
-        row(
-            "tail_lag_seconds",
-            u64_path(&report.value, &["max_tail_lag_seconds"]),
-            "observed swaps tail",
-        ),
-    ];
-    let status = if report.status.stale {
-        "unknown"
-    } else if candidates.unwrap_or(0) < candidate_floor {
-        "below_floor"
-    } else {
-        "healthy"
-    };
-    (
-        report.status.stale,
-        json!({ "status": status, "rows": rows }),
-    )
-}
-
 pub(super) fn storage_snapshot(report: &InputReport, capacity: &InputReport) -> (bool, Value) {
     let level = str_path(&report.value, &["wal_pressure_level"]).unwrap_or("unknown");
     let rows = vec![

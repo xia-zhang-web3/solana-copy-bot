@@ -1,5 +1,7 @@
 #[path = "export/build.rs"]
 mod build;
+#[path = "export/discovery.rs"]
+mod discovery;
 #[path = "export/io.rs"]
 mod io;
 #[path = "export/json.rs"]
@@ -15,6 +17,7 @@ pub use io::InputReportStatus;
 
 const EXECUTION_REPORT: &str = "execution_canary_quote_pnl.json";
 const DISCOVERY_REPORT: &str = "discovery_v2_status.json";
+const DISCOVERY_WALLET_REPORT: &str = "discovery_v2_wallet_report.json";
 const WAL_REPORT: &str = "runtime_sqlite_wal_pressure.json";
 const STORAGE_CAPACITY_REPORT: &str = "storage_capacity.json";
 const STRATEGY_REPORT: &str = "strategy.json";
@@ -42,6 +45,11 @@ pub fn export_snapshots(options: ExportOptions) -> Result<ExportReport> {
 
     let execution = io::load_report(&options.input_dir, EXECUTION_REPORT, options.max_input_age);
     let discovery = io::load_report(&options.input_dir, DISCOVERY_REPORT, options.max_input_age);
+    let discovery_wallet = io::load_report(
+        &options.input_dir,
+        DISCOVERY_WALLET_REPORT,
+        options.max_input_age,
+    );
     let wal = io::load_report(&options.input_dir, WAL_REPORT, options.max_input_age);
     let capacity = io::load_report(
         &options.input_dir,
@@ -59,7 +67,7 @@ pub fn export_snapshots(options: ExportOptions) -> Result<ExportReport> {
         ("execution", build::execution_snapshot(&execution)),
         (
             "discovery",
-            build::discovery_snapshot(&discovery, options.candidate_floor),
+            discovery::discovery_snapshot(&discovery, &discovery_wallet, options.candidate_floor),
         ),
         ("storage", build::storage_snapshot(&wal, &capacity)),
         ("strategy", build::strategy_snapshot(&strategy, &execution)),
@@ -69,7 +77,14 @@ pub fn export_snapshots(options: ExportOptions) -> Result<ExportReport> {
         ),
         (
             "reports",
-            build::reports_snapshot(&[&execution, &discovery, &wal, &capacity, &strategy]),
+            build::reports_snapshot(&[
+                &execution,
+                &discovery,
+                &discovery_wallet,
+                &wal,
+                &capacity,
+                &strategy,
+            ]),
         ),
     ];
 
@@ -88,6 +103,7 @@ pub fn export_snapshots(options: ExportOptions) -> Result<ExportReport> {
         inputs: vec![
             execution.status,
             discovery.status,
+            discovery_wallet.status,
             wal.status,
             capacity.status,
             strategy.status,

@@ -18,11 +18,16 @@ Expected files:
 
 - `execution_canary_quote_pnl.json`
 - `discovery_v2_status.json`
+- `discovery_v2_wallet_report.json`
 - `runtime_sqlite_wal_pressure.json`
 - optional: `strategy.json`
 
 These files should be produced by existing operators, outside the dashboard web
 request path.
+
+`discovery_v2_wallet_report.json` is used only to display filter state such as
+the rug-filter thresholds and quarantine readiness. The dashboard must show
+`not reported` when it is missing or stale; it must not invent filter status.
 
 ## Output Directory
 

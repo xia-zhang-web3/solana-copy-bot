@@ -13,7 +13,15 @@ export function Discovery() {
   const eligible = numberValue(rows, "eligible_wallets", 0);
   const scanRows = numberValue(rows, "scan_rows", 0);
   const tailLag = numberValue(rows, "tail_lag_seconds", 0);
+  const rugFilter = stringValue(rows, "rug_filter", "not_reported");
+  const rugMinClosed = stringValue(rows, "rug_min_closed", "unknown");
+  const rugRate = stringValue(rows, "rug_rate", "unknown");
+  const rugPnlFloor = stringValue(rows, "rug_pnl_floor", "unknown");
+  const rugQuarantineHours = stringValue(rows, "rug_quarantine_hours", "unknown");
+  const rugRejected = numberValue(rows, "rug_rejected_returned", 0);
+  const rugCandidates = numberValue(rows, "rug_quarantine_candidates", 0);
   const aboveFloor = candidates >= floor;
+  const rugFilterOn = rugFilter === "on";
 
   return (
     <>
@@ -61,15 +69,30 @@ export function Discovery() {
               <div className="funnel-list">
                 <FunnelRow label="discovered" value={Math.max(eligible, candidates)} max={Math.max(eligible, candidates, 1)} tone="info" />
                 <FunnelRow label="executable" value={Math.max(candidates * 4, candidates)} max={Math.max(eligible, candidates, 1)} tone="info" />
-                <FunnelRow label="non-rug" value={Math.max(candidates * 3, candidates)} max={Math.max(eligible, candidates, 1)} tone="safe" />
+                <FunnelRow
+                  label="non-rug"
+                  value={Math.max(eligible - rugRejected, candidates)}
+                  max={Math.max(eligible, candidates, 1)}
+                  tone="safe"
+                />
                 <FunnelRow label="published" value={candidates} max={Math.max(eligible, candidates, 1)} tone="ink" />
               </div>
             </Panel>
 
-            <Panel className="tall-panel" eyebrow="Quarantine" meta="rug filter off">
+            <Panel className="tall-panel" eyebrow="Quarantine" meta={rugFilterOn ? "rug filter on" : rugFilter}>
               <div className="quarantine-empty">
-                <strong>No active quarantine surfaced</strong>
-                <span>sticky quarantine is ready; rug thresholds remain disabled.</span>
+                <strong>{rugFilterOn ? "Rug filter active" : "No active quarantine surfaced"}</strong>
+                <span>
+                  {rugFilterOn
+                    ? `${rugCandidates} new quarantine candidates · ${rugRejected} rejected in returned metrics`
+                    : "sticky quarantine is ready; rug thresholds are not active."}
+                </span>
+                <div className="chip-stack">
+                  <span>min {rugMinClosed} closes</span>
+                  <span>rate {rugRate}</span>
+                  <span>pnl {rugPnlFloor}</span>
+                  <span>{rugQuarantineHours}h hold</span>
+                </div>
               </div>
             </Panel>
           </div>
@@ -108,6 +131,10 @@ function numberValue(rows: RowsSnapshot["rows"], label: string, fallback: number
   const raw = rows.find(([rowLabel]) => rowLabel.toLowerCase() === label.toLowerCase())?.[1];
   const parsed = Number(String(raw ?? "").replace(/,/g, ""));
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function stringValue(rows: RowsSnapshot["rows"], label: string, fallback: string) {
+  return rows.find(([rowLabel]) => rowLabel.toLowerCase() === label.toLowerCase())?.[1] ?? fallback;
 }
 
 function compactNumber(value: number) {
