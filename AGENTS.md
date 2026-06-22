@@ -26,6 +26,14 @@ The current architecture redesign document is:
 
 Treat that document as the roadmap for build and deployment architecture.
 
+The current strategy experiment ledger is:
+
+- `STRATEGY_EXPERIMENT_LEDGER.md`
+
+Read that ledger before reopening strategy ideas, filters, exit policies, or
+green-criterion debates. It records tested hypotheses, negative results,
+active diagnostics, and what must not be re-litigated without new evidence.
+
 ## Non-Negotiable Rules
 
 - Do not weaken fail-closed behavior.
