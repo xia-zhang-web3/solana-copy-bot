@@ -24,8 +24,10 @@ pub struct OutcomeSummary {
     pub winner_events: u64,
     pub loser_events: u64,
     pub rug_like_events: u64,
+    pub rug_like_rate: Option<f64>,
     pub stale_market_events: u64,
     pub market_events: u64,
+    pub market_winner_events: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,6 +36,9 @@ pub struct GateReport {
     pub threshold: String,
     pub rejected: OutcomeSummary,
     pub kept: OutcomeSummary,
+    pub tail_rate_delta_if_rejected: Option<f64>,
+    pub market_winner_rejected_events: u64,
+    pub market_winner_rejected_rate: Option<f64>,
     pub shadow_delta_if_rejected_sol: f64,
     pub rejection_rate: f64,
     pub note: String,
@@ -60,6 +65,7 @@ pub(crate) struct SummaryParams {
 #[derive(Debug, Serialize)]
 pub struct BacktestSummary {
     pub metric_basis: String,
+    pub secondary_metric_basis: String,
     pub point_in_time: bool,
     pub baseline: OutcomeSummary,
     pub data_quality: DataQuality,
@@ -117,7 +123,8 @@ pub(crate) fn summarize_entry_side_filters(
     let baseline = summarize_outcomes(trades.iter().map(|row| &row.trade));
     let gates = build_gate_reports(trades, params);
     BacktestSummary {
-        metric_basis: "shadow_outcome_not_executable".to_string(),
+        metric_basis: "close_context_tail_rate_primary".to_string(),
+        secondary_metric_basis: "shadow_outcome_not_executable_diagnostic_only".to_string(),
         point_in_time: true,
         baseline,
         data_quality: data_quality(trades, params.min_wallet_history_closes),
@@ -220,15 +227,28 @@ where
         .collect::<Vec<_>>();
     let rejected_summary = summarize_outcomes(rejected.iter().map(|row| &row.trade));
     let kept_summary = summarize_outcomes(kept.iter().map(|row| &row.trade));
+    let baseline_summary = summarize_outcomes(trades.iter().map(|row| &row.trade));
     let rejection_rate = if trades.is_empty() {
         0.0
     } else {
         rejected.len() as f64 / trades.len() as f64
     };
+    let tail_rate_delta_if_rejected =
+        match (kept_summary.rug_like_rate, baseline_summary.rug_like_rate) {
+            (Some(kept), Some(baseline)) => Some(kept - baseline),
+            _ => None,
+        };
+    let market_winner_rejected_rate = rate(
+        rejected_summary.market_winner_events,
+        baseline_summary.market_winner_events,
+    );
     GateReport {
         gate: gate.to_string(),
         threshold: threshold.to_string(),
         shadow_delta_if_rejected_sol: -rejected_summary.pnl_sol,
+        tail_rate_delta_if_rejected,
+        market_winner_rejected_events: rejected_summary.market_winner_events,
+        market_winner_rejected_rate,
         rejected: rejected_summary,
         kept: kept_summary,
         rejection_rate,
@@ -241,6 +261,10 @@ fn summarize_outcomes<'a>(trades: impl Iterator<Item = &'a ClosedTrade>) -> Outc
     let pnl_values = rows.iter().map(|row| row.pnl_sol).collect::<Vec<_>>();
     let pnl_sol = pnl_values.iter().sum::<f64>();
     let event_count = rows.len() as u64;
+    let rug_like_events = rows
+        .iter()
+        .filter(|row| is_rug_like(&row.close_context))
+        .count() as u64;
     OutcomeSummary {
         event_count,
         pnl_sol,
@@ -249,10 +273,8 @@ fn summarize_outcomes<'a>(trades: impl Iterator<Item = &'a ClosedTrade>) -> Outc
         median_pnl_sol: median(pnl_values),
         winner_events: rows.iter().filter(|row| row.pnl_sol > 0.0).count() as u64,
         loser_events: rows.iter().filter(|row| row.pnl_sol < 0.0).count() as u64,
-        rug_like_events: rows
-            .iter()
-            .filter(|row| is_rug_like(&row.close_context))
-            .count() as u64,
+        rug_like_events,
+        rug_like_rate: rate(rug_like_events, event_count),
         stale_market_events: rows
             .iter()
             .filter(|row| row.close_context == "stale_market_price")
@@ -260,6 +282,10 @@ fn summarize_outcomes<'a>(trades: impl Iterator<Item = &'a ClosedTrade>) -> Outc
         market_events: rows
             .iter()
             .filter(|row| row.close_context == "market")
+            .count() as u64,
+        market_winner_events: rows
+            .iter()
+            .filter(|row| row.close_context == "market" && row.pnl_sol > 0.0)
             .count() as u64,
     }
 }
@@ -284,6 +310,10 @@ fn data_quality(trades: &[EnrichedTrade], min_wallet_history_closes: u64) -> Dat
 
 fn wallet_rate(count: u64, total: u64, params: &SummaryParams) -> Option<f64> {
     (total >= params.min_wallet_history_closes).then_some(count as f64 / total as f64)
+}
+
+fn rate(count: u64, total: u64) -> Option<f64> {
+    (total > 0).then_some(count as f64 / total as f64)
 }
 
 fn is_rug_like(close_context: &str) -> bool {

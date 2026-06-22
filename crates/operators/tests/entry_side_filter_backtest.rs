@@ -137,7 +137,7 @@ fn backtest_uses_prior_evidence_without_future_leakage() {
             signal_id: "eval-token-d",
             wallet_id: "wallet-d",
             token: "token-d",
-            close_context: "market",
+            close_context: "stale_quote_price",
             pnl_sol: -0.60,
             opened_ts: eval_d_opened,
             closed_ts: eval_d_opened + Duration::minutes(30),
@@ -173,16 +173,23 @@ fn backtest_uses_prior_evidence_without_future_leakage() {
     let summary = &report_json["summary"];
 
     assert_eq!(summary["point_in_time"], true);
-    assert_eq!(summary["metric_basis"], "shadow_outcome_not_executable");
+    assert_eq!(summary["metric_basis"], "close_context_tail_rate_primary");
+    assert_eq!(
+        summary["secondary_metric_basis"],
+        "shadow_outcome_not_executable_diagnostic_only"
+    );
     assert_eq!(summary["baseline"]["event_count"], 5);
 
     let wallet_rug = find_gate(summary, "wallet_rug_rate");
     assert_eq!(wallet_rug["rejected"]["event_count"], 1);
     assert!((wallet_rug["shadow_delta_if_rejected_sol"].as_f64().unwrap() - 0.30).abs() < 0.000001);
+    assert!(wallet_rug["tail_rate_delta_if_rejected"].as_f64().is_some());
 
     let token_bad = find_gate(summary, "token_seen_before_bad");
     assert_eq!(token_bad["rejected"]["event_count"], 1);
     assert!((token_bad["shadow_delta_if_rejected_sol"].as_f64().unwrap() - 0.60).abs() < 0.000001);
+    assert!(token_bad["tail_rate_delta_if_rejected"].as_f64().unwrap() < 0.0);
+    assert_eq!(token_bad["market_winner_rejected_events"], 0);
 }
 
 fn find_gate<'a>(summary: &'a serde_json::Value, gate: &str) -> &'a serde_json::Value {
