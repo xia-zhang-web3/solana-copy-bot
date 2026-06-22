@@ -28,7 +28,7 @@ fn report_summarizes_blind_and_conditional_benefit() {
         trigger + Duration::minutes(10),
         10.0,
         5.0,
-        "stale_quote",
+        "stale_quote_price",
     );
 
     let opened2 = opened + Duration::minutes(1);
@@ -52,11 +52,32 @@ fn report_summarizes_blind_and_conditional_benefit() {
         "market",
     );
 
-    let trigger3 = opened + Duration::minutes(32);
+    let opened3 = opened + Duration::minutes(2);
+    let trigger3 = opened3 + Duration::minutes(30);
     insert_event(
         &conn,
         "quote:exit-policy:backstop30m:3",
         trigger3,
+        "ok",
+        None,
+        Some(0.4),
+        Some(1.0),
+        Some(10_000),
+    );
+    insert_close(
+        &conn,
+        "sig-3",
+        trigger3 + Duration::minutes(10),
+        10.0,
+        0.0,
+        "stale_terminal_zero_price",
+    );
+
+    let trigger4 = opened + Duration::minutes(32);
+    insert_event(
+        &conn,
+        "quote:exit-policy:backstop30m:4",
+        trigger4,
         "error",
         Some("NO_ROUTES_FOUND"),
         None,
@@ -80,20 +101,34 @@ fn report_summarizes_blind_and_conditional_benefit() {
     .unwrap();
     let report = build_report(cli, Utc.with_ymd_and_hms(2026, 6, 20, 14, 0, 0).unwrap());
 
-    let counts = report.counts.unwrap();
-    assert_eq!(counts.total_events, 3);
-    assert_eq!(counts.ok_events, 2);
+    let counts = report.counts.as_ref().unwrap();
+    assert_eq!(counts.total_events, 4);
+    assert_eq!(counts.ok_events, 3);
     assert_eq!(counts.error_events, 1);
-    assert_eq!(counts.future_close_matched_events, 2);
+    assert_eq!(counts.future_close_matched_events, 3);
 
-    let benefit = report.benefit.unwrap();
-    assert_eq!(benefit.event_count, 2);
-    assert!((benefit.gross_benefit_sol - 2.0).abs() < 0.000001);
+    let benefit = report.benefit.as_ref().unwrap();
+    assert_eq!(benefit.event_count, 3);
+    assert!((benefit.gross_benefit_sol - 6.0).abs() < 0.000001);
 
     let sweep = &report.conditional_sweeps[0];
-    assert_eq!(sweep.all.event_count, 1);
-    assert!((sweep.all.gross_benefit_sol - 3.0).abs() < 0.000001);
+    assert_eq!(sweep.all.event_count, 2);
+    assert!((sweep.all.gross_benefit_sol - 7.0).abs() < 0.000001);
+    let report_json = serde_json::to_value(&report).unwrap();
+    assert_bucket(&report_json, "executable_vs_executable", 1);
+    assert_bucket(&report_json, "executable_vs_paper", 1);
+    assert_bucket(&report_json, "executable_vs_zero", 1);
     assert_eq!(report.by_error_class[0].error_class, "no_route");
+}
+
+fn assert_bucket(report_json: &serde_json::Value, name: &str, event_count: u64) {
+    let bucket = report_json["by_comparability_bucket"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|bucket| bucket["bucket"] == name)
+        .unwrap_or_else(|| panic!("missing bucket {name}"));
+    assert_eq!(bucket["event_count"], event_count);
 }
 
 fn create_schema(conn: &Connection) {

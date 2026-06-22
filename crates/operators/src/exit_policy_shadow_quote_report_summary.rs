@@ -55,6 +55,7 @@ pub(crate) struct FullSummary {
     pub(crate) benefit: BenefitReport,
     pub(crate) steady_benefit: BenefitReport,
     pub(crate) by_close_context: Vec<BenefitSummary>,
+    pub(crate) by_comparability_bucket: Vec<BenefitSummary>,
     pub(crate) by_error_class: Vec<ErrorClassCount>,
     pub(crate) conditional_sweeps: Vec<ConditionalSweepReport>,
 }
@@ -64,6 +65,7 @@ struct EventBenefit {
     benefit_sol: f64,
     quote_to_entry_ratio: Option<f64>,
     close_context: String,
+    comparability_bucket: String,
     steady: bool,
 }
 
@@ -130,6 +132,7 @@ pub(crate) fn summarize_exit_policy_shadow_quotes(
         .cloned()
         .collect::<Vec<_>>();
     let by_close_context = summarize_by_context(&benefits, exit_cost_sol);
+    let by_comparability_bucket = summarize_by_comparability(&benefits, exit_cost_sol);
     let conditional_sweeps = thresholds
         .iter()
         .copied()
@@ -141,6 +144,7 @@ pub(crate) fn summarize_exit_policy_shadow_quotes(
         benefit: summarize_benefits(&benefits, exit_cost_sol),
         steady_benefit: summarize_benefits(&steady_benefits, exit_cost_sol),
         by_close_context,
+        by_comparability_bucket,
         by_error_class: error_classes
             .into_iter()
             .map(|(error_class, count)| ErrorClassCount { error_class, count })
@@ -169,11 +173,13 @@ fn event_benefit(event: &DiagnosticEvent, steady: bool) -> Option<EventBenefit> 
         return None;
     }
     let close_context = close_context_bucket(event);
+    let comparability_bucket = comparability_bucket(&close_context);
     let quote_to_entry_ratio = (shadow_price > 0.0).then_some(quote_price / shadow_price);
     Some(EventBenefit {
         benefit_sol: quote_price * future_qty - future_exit_value_sol,
         quote_to_entry_ratio,
         close_context,
+        comparability_bucket,
         steady,
     })
 }
@@ -190,6 +196,17 @@ fn close_context_bucket(event: &DiagnosticEvent) -> String {
         return first.close_context.clone();
     }
     "mixed".to_string()
+}
+
+fn comparability_bucket(close_context: &str) -> String {
+    match close_context {
+        "stale_quote_price" => "executable_vs_executable",
+        "stale_terminal_zero_price" | "recovery_terminal_zero_price" => "executable_vs_zero",
+        "market" | "stale_market_price" | "quarantined_legacy" => "executable_vs_paper",
+        "mixed" => "mixed",
+        _ => "other",
+    }
+    .to_string()
 }
 
 fn conditional_sweep(
@@ -224,6 +241,26 @@ fn summarize_by_context(benefits: &[EventBenefit], exit_cost_sol: f64) -> Vec<Be
     for event in benefits {
         buckets
             .entry(event.close_context.clone())
+            .or_default()
+            .push(event.clone());
+    }
+    buckets
+        .into_iter()
+        .map(|(bucket, values)| BenefitSummary {
+            bucket,
+            benefit: summarize_benefits(&values, exit_cost_sol),
+        })
+        .collect()
+}
+
+fn summarize_by_comparability(
+    benefits: &[EventBenefit],
+    exit_cost_sol: f64,
+) -> Vec<BenefitSummary> {
+    let mut buckets = BTreeMap::<String, Vec<EventBenefit>>::new();
+    for event in benefits {
+        buckets
+            .entry(event.comparability_bucket.clone())
             .or_default()
             .push(event.clone());
     }
