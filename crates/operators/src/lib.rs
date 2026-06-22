@@ -1,3 +1,6 @@
+pub mod entry_side_filter_backtest;
+pub(crate) mod entry_side_filter_backtest_db;
+pub(crate) mod entry_side_filter_backtest_summary;
 pub mod execution_ata_sweep;
 pub(crate) mod execution_ata_sweep_rpc;
 pub mod execution_canary_manual_writeoff;

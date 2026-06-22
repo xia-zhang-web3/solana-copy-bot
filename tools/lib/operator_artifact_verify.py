@@ -28,6 +28,7 @@ EXPECTED_PACKAGE_BINARIES = {
         "copybot_operator_emergency_stop",
     },
     "copybot-operators": {
+        "copybot_entry_side_filter_backtest",
         "copybot_execution_ata_sweep",
         "copybot_execution_canary_quote_pnl",
         "copybot_execution_canary_readiness",

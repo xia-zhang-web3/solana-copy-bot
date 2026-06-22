@@ -39,6 +39,10 @@ path = "src/bin/copybot_exit_policy_sim.rs"
 name = "copybot_exit_policy_shadow_quote_report"
 path = "src/bin/copybot_exit_policy_shadow_quote_report.rs"
 
+[[bin]]
+name = "copybot_entry_side_filter_backtest"
+path = "src/bin/copybot_entry_side_filter_backtest.rs"
+
 [dependencies]
 anyhow.workspace = true
 base64 = "0.22.1"
