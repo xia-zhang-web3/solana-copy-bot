@@ -42,6 +42,7 @@ mod app_loop_shadow;
 mod app_loop_shutdown;
 mod config_contract;
 mod discovery_runtime;
+mod entry_quote_shadow_diagnostic;
 mod execution_build_plan_age;
 mod execution_build_plan_metadata;
 mod execution_build_plan_refresh;
@@ -118,6 +119,7 @@ use crate::config_contract::{
     validate_execution_runtime_contract, validate_live_ingestion_source_contract,
 };
 use crate::discovery_runtime::{DiscoveryService, RuntimePublicationTruthResolution};
+use crate::entry_quote_shadow_diagnostic::EntryQuoteShadowDiagnostic;
 use crate::execution_canary::ExecutionCanaryRunner;
 use crate::exit_policy_shadow_quote::ExitPolicyShadowQuoteDiagnostic;
 use crate::history_retention::HistoryRetentionRunner;

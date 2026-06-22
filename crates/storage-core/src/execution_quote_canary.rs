@@ -83,7 +83,7 @@ impl SqliteDiscoveryStore {
                    AND lower(side) = 'buy'
                    AND NOT EXISTS (
                         SELECT 1 FROM execution_quote_canary_events
-                        WHERE execution_quote_canary_events.signal_id = copy_signals.signal_id
+                        WHERE execution_quote_canary_events.event_id = 'quote:entry:' || copy_signals.signal_id
                           AND lower(execution_quote_canary_events.side) = 'buy'
                    )
                  ORDER BY ts ASC
@@ -132,6 +132,7 @@ impl SqliteDiscoveryStore {
                  JOIN execution_quote_canary_events AS event
                    ON event.signal_id = signal.signal_id
                   AND lower(event.side) = 'buy'
+                  AND event.event_id = 'quote:entry:' || signal.signal_id
                  WHERE signal.status = ?1
                    AND signal.ts >= ?2
                    AND lower(signal.side) = 'buy'

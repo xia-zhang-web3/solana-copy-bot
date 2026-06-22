@@ -207,6 +207,25 @@ pub(super) fn apply_discovery_shadow_execution_env_overrides(config: &mut AppCon
         config.execution.quote_canary_sell_slippage_bps = quote_canary_sell_slippage_bps;
     }
     if let Some(enabled) =
+        parse_env_bool("SOLANA_COPY_BOT_EXECUTION_ENTRY_QUOTE_SHADOW_DIAGNOSTIC_ENABLED")?
+    {
+        config.execution.entry_quote_shadow_diagnostic_enabled = enabled;
+    }
+    if let Some(batch_limit) = parse_env_number::<u32>(
+        "SOLANA_COPY_BOT_EXECUTION_ENTRY_QUOTE_SHADOW_DIAGNOSTIC_BATCH_LIMIT",
+        "u32",
+    )? {
+        config.execution.entry_quote_shadow_diagnostic_batch_limit = batch_limit;
+    }
+    if let Some(max_age_seconds) = parse_env_number::<u64>(
+        "SOLANA_COPY_BOT_EXECUTION_ENTRY_QUOTE_SHADOW_DIAGNOSTIC_MAX_SIGNAL_AGE_SECONDS",
+        "u64",
+    )? {
+        config
+            .execution
+            .entry_quote_shadow_diagnostic_max_signal_age_seconds = max_age_seconds;
+    }
+    if let Some(enabled) =
         parse_env_bool("SOLANA_COPY_BOT_EXECUTION_EXIT_POLICY_SHADOW_QUOTE_ENABLED")?
     {
         config.execution.exit_policy_shadow_quote_enabled = enabled;

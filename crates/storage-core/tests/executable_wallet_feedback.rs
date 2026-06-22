@@ -41,9 +41,10 @@ fn executable_wallet_feedback_aggregates_follower_pnl_and_flips() -> Result<()> 
             closed,
         )?;
         let close_id = close_id_for_signal(&store, &signal_id)?;
+        let buy_signal_id = format!("buy-signal-{index}");
         store.record_execution_quote_canary_event(&quote_event(
-            &format!("buy-{index}"),
-            Some(format!("buy-signal-{index}")),
+            &format!("quote:entry:{buy_signal_id}"),
+            Some(buy_signal_id),
             None,
             "bad-wallet",
             &token,

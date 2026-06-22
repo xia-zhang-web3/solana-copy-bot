@@ -107,6 +107,7 @@ impl SqliteDiscoveryStore {
                     SELECT signal_id, decision_status, request_ts, event_id
                     FROM execution_quote_canary_events
                     WHERE lower(side) = 'buy'
+                      AND event_id NOT LIKE 'quote:entry-shadow-diag:%'
                       AND request_ts >= ?1
                     ORDER BY request_ts DESC, event_id DESC
                     LIMIT ?2

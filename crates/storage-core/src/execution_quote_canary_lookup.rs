@@ -174,6 +174,7 @@ impl SqliteDiscoveryStore {
                  FROM execution_quote_canary_events
                  WHERE signal_id = ?1
                    AND lower(side) = 'buy'
+                   AND event_id NOT LIKE 'quote:entry-shadow-diag:%'
                  ORDER BY request_ts DESC, event_id DESC
                  LIMIT 1",
                     quote_response_json_expr(self)?

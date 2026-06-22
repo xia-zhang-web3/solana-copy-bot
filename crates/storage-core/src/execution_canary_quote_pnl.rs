@@ -108,6 +108,7 @@ impl SqliteDiscoveryStore {
                         SELECT candidate.event_id
                         FROM execution_quote_canary_events AS candidate
                         WHERE lower(candidate.side) = 'buy'
+                          AND candidate.event_id NOT LIKE 'quote:entry-shadow-diag:%'
                           AND candidate.wallet_id = closed.wallet_id
                           AND candidate.token = closed.token
                           AND substr(candidate.signal_ts, 1, 19) = substr(closed.opened_ts, 1, 19)

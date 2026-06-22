@@ -24,6 +24,9 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
     if config.exit_policy_shadow_quote_enabled {
         validate_exit_policy_shadow_quote_contract(config)?;
     }
+    if config.entry_quote_shadow_diagnostic_enabled {
+        validate_entry_quote_shadow_diagnostic_contract(config)?;
+    }
     if !config.canary_enabled {
         return Ok(());
     }
@@ -182,6 +185,25 @@ fn validate_exit_policy_shadow_quote_contract(config: &ExecutionConfig) -> Resul
     {
         return Err(anyhow!(
             "execution.exit_policy_shadow_quote_batch_limit must be within 1..=25"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_entry_quote_shadow_diagnostic_contract(config: &ExecutionConfig) -> Result<()> {
+    validate_quote_endpoint_contract(config)?;
+    if config.entry_quote_shadow_diagnostic_batch_limit == 0
+        || config.entry_quote_shadow_diagnostic_batch_limit > 25
+    {
+        return Err(anyhow!(
+            "execution.entry_quote_shadow_diagnostic_batch_limit must be within 1..=25"
+        ));
+    }
+    if config.entry_quote_shadow_diagnostic_max_signal_age_seconds == 0
+        || config.entry_quote_shadow_diagnostic_max_signal_age_seconds > 3_600
+    {
+        return Err(anyhow!(
+            "execution.entry_quote_shadow_diagnostic_max_signal_age_seconds must be within 1..=3600"
         ));
     }
     Ok(())

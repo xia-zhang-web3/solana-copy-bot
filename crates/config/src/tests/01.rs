@@ -452,6 +452,18 @@ fn load_from_env_applies_execution_canary_overrides() {
                     "500",
                 ),
                 (
+                    "SOLANA_COPY_BOT_EXECUTION_ENTRY_QUOTE_SHADOW_DIAGNOSTIC_ENABLED",
+                    "true",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_ENTRY_QUOTE_SHADOW_DIAGNOSTIC_BATCH_LIMIT",
+                    "9",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_ENTRY_QUOTE_SHADOW_DIAGNOSTIC_MAX_SIGNAL_AGE_SECONDS",
+                    "240",
+                ),
+                (
                     "SOLANA_COPY_BOT_EXECUTION_EXIT_POLICY_SHADOW_QUOTE_ENABLED",
                     "true",
                 ),
@@ -523,6 +535,14 @@ fn load_from_env_applies_execution_canary_overrides() {
             assert_eq!(config.execution.quote_canary_slippage_bps, 120);
             assert_eq!(config.execution.quote_canary_buy_slippage_bps, 150);
             assert_eq!(config.execution.quote_canary_sell_slippage_bps, 500);
+            assert!(config.execution.entry_quote_shadow_diagnostic_enabled);
+            assert_eq!(config.execution.entry_quote_shadow_diagnostic_batch_limit, 9);
+            assert_eq!(
+                config
+                    .execution
+                    .entry_quote_shadow_diagnostic_max_signal_age_seconds,
+                240
+            );
             assert!(config.execution.exit_policy_shadow_quote_enabled);
             assert_eq!(config.execution.exit_policy_shadow_quote_hold_minutes, 45);
             assert_eq!(config.execution.exit_policy_shadow_quote_batch_limit, 7);

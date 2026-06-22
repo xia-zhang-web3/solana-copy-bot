@@ -31,6 +31,7 @@ mod execution_canary_stale_candidates;
 mod execution_canary_state;
 mod execution_canary_submit_risk;
 mod execution_canary_submitted;
+mod execution_entry_quote_shadow_diagnostic;
 mod execution_exit_policy_sim;
 mod execution_exit_policy_types;
 mod execution_orders;

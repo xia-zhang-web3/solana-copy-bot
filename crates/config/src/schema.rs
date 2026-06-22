@@ -92,6 +92,9 @@ pub struct ExecutionConfig {
     pub quote_canary_slippage_bps: u64,
     pub quote_canary_buy_slippage_bps: u64,
     pub quote_canary_sell_slippage_bps: u64,
+    pub entry_quote_shadow_diagnostic_enabled: bool,
+    pub entry_quote_shadow_diagnostic_batch_limit: u32,
+    pub entry_quote_shadow_diagnostic_max_signal_age_seconds: u64,
     pub exit_policy_shadow_quote_enabled: bool,
     pub exit_policy_shadow_quote_hold_minutes: u64,
     pub exit_policy_shadow_quote_batch_limit: u32,
@@ -145,6 +148,9 @@ impl Default for ExecutionConfig {
             quote_canary_slippage_bps: 100,
             quote_canary_buy_slippage_bps: 0,
             quote_canary_sell_slippage_bps: 0,
+            entry_quote_shadow_diagnostic_enabled: false,
+            entry_quote_shadow_diagnostic_batch_limit: 5,
+            entry_quote_shadow_diagnostic_max_signal_age_seconds: 300,
             exit_policy_shadow_quote_enabled: false,
             exit_policy_shadow_quote_hold_minutes: 30,
             exit_policy_shadow_quote_batch_limit: 5,
@@ -247,6 +253,18 @@ impl fmt::Debug for ExecutionConfig {
             .field(
                 "quote_canary_sell_slippage_bps",
                 &self.quote_canary_sell_slippage_bps,
+            )
+            .field(
+                "entry_quote_shadow_diagnostic_enabled",
+                &self.entry_quote_shadow_diagnostic_enabled,
+            )
+            .field(
+                "entry_quote_shadow_diagnostic_batch_limit",
+                &self.entry_quote_shadow_diagnostic_batch_limit,
+            )
+            .field(
+                "entry_quote_shadow_diagnostic_max_signal_age_seconds",
+                &self.entry_quote_shadow_diagnostic_max_signal_age_seconds,
             )
             .field(
                 "exit_policy_shadow_quote_enabled",

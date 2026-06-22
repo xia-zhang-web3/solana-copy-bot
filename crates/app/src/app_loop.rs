@@ -106,6 +106,7 @@ pub(super) async fn run_app_loop(
     let materialize_execution_canary_quote_loss =
         execution_config.canary_enabled && execution_config.canary_tiny_submit_enabled;
     let stale_close_quote_pricer = StaleCloseQuotePricer::new(execution_config.clone());
+    let entry_quote_shadow_diagnostic = EntryQuoteShadowDiagnostic::new(execution_config.clone());
     let exit_policy_shadow_quote = ExitPolicyShadowQuoteDiagnostic::new(execution_config.clone());
     let execution_canary_runner = ExecutionCanaryRunner::new(execution_config);
     execution_canary_runner.log_startup_status();
@@ -407,6 +408,7 @@ pub(super) async fn run_app_loop(
                     stale_lot_recovery_zero_price_enabled,
                     materialize_execution_canary_quote_loss,
                     &stale_close_quote_pricer,
+                    &entry_quote_shadow_diagnostic,
                     &exit_policy_shadow_quote,
                 ).await?;
             }
