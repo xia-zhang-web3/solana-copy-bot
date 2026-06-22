@@ -353,6 +353,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
