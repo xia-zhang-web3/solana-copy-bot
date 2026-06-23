@@ -155,6 +155,8 @@ mod execution_tiny_terminal_stale_signal_guard;
 mod execution_tiny_terminal_token_not_tradable;
 #[path = "app_tests/83.rs"]
 mod execution_tiny_tick_ordering_contract;
+#[path = "app_tests/94.rs"]
+mod market_exit_shadow_quote_contract;
 #[path = "app_tests/42.rs"]
 mod priority_fee_canary_transient;
 #[path = "app_tests/36_restart_recovery.rs"]

@@ -27,6 +27,9 @@ pub(crate) fn validate_execution_canary_contract(config: &ExecutionConfig) -> Re
     if config.entry_quote_shadow_diagnostic_enabled {
         validate_entry_quote_shadow_diagnostic_contract(config)?;
     }
+    if config.market_exit_shadow_quote_enabled {
+        validate_market_exit_shadow_quote_contract(config)?;
+    }
     if !config.canary_enabled {
         return Ok(());
     }
@@ -204,6 +207,25 @@ fn validate_entry_quote_shadow_diagnostic_contract(config: &ExecutionConfig) -> 
     {
         return Err(anyhow!(
             "execution.entry_quote_shadow_diagnostic_max_signal_age_seconds must be within 1..=3600"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_market_exit_shadow_quote_contract(config: &ExecutionConfig) -> Result<()> {
+    validate_quote_endpoint_contract(config)?;
+    if config.market_exit_shadow_quote_batch_limit == 0
+        || config.market_exit_shadow_quote_batch_limit > 25
+    {
+        return Err(anyhow!(
+            "execution.market_exit_shadow_quote_batch_limit must be within 1..=25"
+        ));
+    }
+    if config.market_exit_shadow_quote_max_close_age_seconds == 0
+        || config.market_exit_shadow_quote_max_close_age_seconds > 3_600
+    {
+        return Err(anyhow!(
+            "execution.market_exit_shadow_quote_max_close_age_seconds must be within 1..=3600"
         ));
     }
     Ok(())

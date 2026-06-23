@@ -34,6 +34,7 @@ mod execution_canary_submitted;
 mod execution_entry_quote_shadow_diagnostic;
 mod execution_exit_policy_sim;
 mod execution_exit_policy_types;
+mod execution_market_exit_shadow_quote;
 mod execution_orders;
 mod execution_quote_canary;
 mod execution_quote_canary_lookup;

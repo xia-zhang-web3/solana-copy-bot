@@ -368,7 +368,7 @@ Repeatable split report (`copybot_track_b_entry_quote_report`, `1478eeb7`):
 - price impact weak; quote/shadow ratio catches more stale_quote cases but cuts
   many market/mixed events.
 
-Status: no filter enable; needs multi-regime/executable market-exit data; entries OFF.
+Status: no filter enable; market-exit quote diagnostic is implemented to collect executable SELL quotes for the hybrid market bucket; entries OFF.
 
 ## Do Not Reopen Without New Evidence
 

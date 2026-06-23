@@ -176,6 +176,7 @@ pub(super) async fn handle_shadow_interval_tick(
     stale_close_quote_pricer: &StaleCloseQuotePricer,
     entry_quote_shadow_diagnostic: &EntryQuoteShadowDiagnostic,
     exit_policy_shadow_quote: &ExitPolicyShadowQuoteDiagnostic,
+    market_exit_shadow_quote: &MarketExitShadowQuoteDiagnostic,
 ) -> Result<()> {
     if shadow_strategy_fail_closed {
         return Ok(());
@@ -265,6 +266,29 @@ pub(super) async fn handle_shadow_interval_tick(
             warn!(
                 error = %error,
                 "exit policy shadow quote diagnostic failed"
+            );
+        }
+    }
+    match market_exit_shadow_quote
+        .process_tick(store, Utc::now())
+        .await
+    {
+        Ok(summary) if summary.has_activity() => {
+            info!(
+                checked = summary.checked,
+                inserted = summary.inserted,
+                existing = summary.existing,
+                quote_ok = summary.quote_ok,
+                quote_error = summary.quote_error,
+                last_event_id = summary.last_event_id.as_deref().unwrap_or("none"),
+                "market exit shadow quote diagnostic tick"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            warn!(
+                error = %error,
+                "market exit shadow quote diagnostic failed"
             );
         }
     }

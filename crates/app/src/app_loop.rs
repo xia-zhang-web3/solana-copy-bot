@@ -108,6 +108,7 @@ pub(super) async fn run_app_loop(
     let stale_close_quote_pricer = StaleCloseQuotePricer::new(execution_config.clone());
     let entry_quote_shadow_diagnostic = EntryQuoteShadowDiagnostic::new(execution_config.clone());
     let exit_policy_shadow_quote = ExitPolicyShadowQuoteDiagnostic::new(execution_config.clone());
+    let market_exit_shadow_quote = MarketExitShadowQuoteDiagnostic::new(execution_config.clone());
     let execution_canary_runner = ExecutionCanaryRunner::new(execution_config);
     execution_canary_runner.log_startup_status();
     let mut execution_canary_interval = time::interval(Duration::from_secs(
@@ -410,6 +411,7 @@ pub(super) async fn run_app_loop(
                     &stale_close_quote_pricer,
                     &entry_quote_shadow_diagnostic,
                     &exit_policy_shadow_quote,
+                    &market_exit_shadow_quote,
                 ).await?;
             }
             _ = tokio::signal::ctrl_c() => {

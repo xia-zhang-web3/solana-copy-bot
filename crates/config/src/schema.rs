@@ -98,6 +98,9 @@ pub struct ExecutionConfig {
     pub exit_policy_shadow_quote_enabled: bool,
     pub exit_policy_shadow_quote_hold_minutes: u64,
     pub exit_policy_shadow_quote_batch_limit: u32,
+    pub market_exit_shadow_quote_enabled: bool,
+    pub market_exit_shadow_quote_batch_limit: u32,
+    pub market_exit_shadow_quote_max_close_age_seconds: u64,
     pub priority_fee_canary_enabled: bool,
     pub priority_fee_canary_rpc_url: String,
     pub priority_fee_canary_timeout_ms: u64,
@@ -154,6 +157,9 @@ impl Default for ExecutionConfig {
             exit_policy_shadow_quote_enabled: false,
             exit_policy_shadow_quote_hold_minutes: 30,
             exit_policy_shadow_quote_batch_limit: 5,
+            market_exit_shadow_quote_enabled: false,
+            market_exit_shadow_quote_batch_limit: 5,
+            market_exit_shadow_quote_max_close_age_seconds: 300,
             priority_fee_canary_enabled: false,
             priority_fee_canary_rpc_url: String::new(),
             priority_fee_canary_timeout_ms: 1_500,
@@ -277,6 +283,18 @@ impl fmt::Debug for ExecutionConfig {
             .field(
                 "exit_policy_shadow_quote_batch_limit",
                 &self.exit_policy_shadow_quote_batch_limit,
+            )
+            .field(
+                "market_exit_shadow_quote_enabled",
+                &self.market_exit_shadow_quote_enabled,
+            )
+            .field(
+                "market_exit_shadow_quote_batch_limit",
+                &self.market_exit_shadow_quote_batch_limit,
+            )
+            .field(
+                "market_exit_shadow_quote_max_close_age_seconds",
+                &self.market_exit_shadow_quote_max_close_age_seconds,
             )
             .field(
                 "priority_fee_canary_enabled",

@@ -476,6 +476,18 @@ fn load_from_env_applies_execution_canary_overrides() {
                     "7",
                 ),
                 (
+                    "SOLANA_COPY_BOT_EXECUTION_MARKET_EXIT_SHADOW_QUOTE_ENABLED",
+                    "true",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_MARKET_EXIT_SHADOW_QUOTE_BATCH_LIMIT",
+                    "6",
+                ),
+                (
+                    "SOLANA_COPY_BOT_EXECUTION_MARKET_EXIT_SHADOW_QUOTE_MAX_CLOSE_AGE_SECONDS",
+                    "180",
+                ),
+                (
                     "SOLANA_COPY_BOT_EXECUTION_PRIORITY_FEE_CANARY_ENABLED",
                     "true",
                 ),
@@ -546,6 +558,14 @@ fn load_from_env_applies_execution_canary_overrides() {
             assert!(config.execution.exit_policy_shadow_quote_enabled);
             assert_eq!(config.execution.exit_policy_shadow_quote_hold_minutes, 45);
             assert_eq!(config.execution.exit_policy_shadow_quote_batch_limit, 7);
+            assert!(config.execution.market_exit_shadow_quote_enabled);
+            assert_eq!(config.execution.market_exit_shadow_quote_batch_limit, 6);
+            assert_eq!(
+                config
+                    .execution
+                    .market_exit_shadow_quote_max_close_age_seconds,
+                180
+            );
             assert!(config.execution.priority_fee_canary_enabled);
             assert_eq!(
                 config.execution.priority_fee_canary_rpc_url,

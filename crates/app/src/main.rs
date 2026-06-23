@@ -89,6 +89,7 @@ mod history_retention;
 mod irrelevant_backpressure;
 mod irrelevant_persistence;
 mod json_sanitize;
+mod market_exit_shadow_quote;
 mod observed_swap_writer;
 mod runtime_follow_surface;
 mod shadow_restart_recovery;
@@ -126,6 +127,7 @@ use crate::history_retention::HistoryRetentionRunner;
 use crate::irrelevant_backpressure::*;
 use crate::irrelevant_persistence::*;
 use crate::json_sanitize::sanitize_json_value;
+use crate::market_exit_shadow_quote::MarketExitShadowQuoteDiagnostic;
 #[cfg(test)]
 use crate::observed_swap_writer::OBSERVED_SWAP_WRITER_CHANNEL_CAPACITY;
 use crate::observed_swap_writer::{
