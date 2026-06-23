@@ -19,6 +19,8 @@ fn splits_exit_executability_and_excludes_contaminated_ratios() -> Result<()> {
     assert_eq!(summary.counts.closed_events, 3);
     assert_eq!(summary.counts.clean_closed_usable_events, 2);
     assert_eq!(summary.counts.contaminated_ratio_events, 1);
+    assert_eq!(summary.counts.multi_close_match_events, 1);
+    assert_eq!(summary.counts.truncated_at_close_match_limit_events, 0);
 
     let market = summary
         .by_close_bucket
@@ -94,6 +96,7 @@ fn mixed_close_context_is_reported_separately() -> Result<()> {
     let summary = report.summary.expect("report should load");
 
     assert_eq!(summary.counts.clean_closed_usable_events, 1);
+    assert_eq!(summary.counts.multi_close_match_events, 1);
     assert_eq!(summary.counts.mixed_close_context_events, 1);
     assert_eq!(
         summary
@@ -113,6 +116,31 @@ fn mixed_close_context_is_reported_separately() -> Result<()> {
             .events,
         1
     );
+    Ok(())
+}
+
+#[test]
+fn reports_close_match_limit_hits() -> Result<()> {
+    let db = NamedTempFile::new()?;
+    let conn = Connection::open(db.path())?;
+    create_schema(&conn)?;
+    insert_event(&conn, "cap", "signal-cap", "w3", "token-cap", 1.2, 1.0, 0.2)?;
+    insert_close(&conn, "sell-a", "w3", "token-cap", "market", 1.0, 1.1, 0.1)?;
+    insert_close(&conn, "sell-b", "w3", "token-cap", "market", 0.5, 0.6, 0.1)?;
+    drop(conn);
+
+    let report = build_report(
+        Cli {
+            close_match_limit: 1,
+            ..test_cli(db.path())
+        },
+        Utc.with_ymd_and_hms(2026, 6, 24, 0, 0, 0).unwrap(),
+    );
+    let summary = report.summary.expect("report should load");
+
+    assert_eq!(summary.counts.closed_events, 1);
+    assert_eq!(summary.counts.multi_close_match_events, 0);
+    assert_eq!(summary.counts.truncated_at_close_match_limit_events, 1);
     Ok(())
 }
 

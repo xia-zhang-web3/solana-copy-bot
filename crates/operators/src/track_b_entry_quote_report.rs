@@ -1,5 +1,6 @@
 use crate::track_b_entry_quote_report_db::{load_entry_quote_outcomes, open_read_only_db};
-use crate::track_b_entry_quote_report_summary::{summarize_track_b, TrackBEntryQuoteSummary};
+use crate::track_b_entry_quote_report_summary::summarize_track_b;
+use crate::track_b_entry_quote_report_types::TrackBEntryQuoteSummary;
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::load_from_path;
@@ -163,7 +164,7 @@ fn build_report_result(cli: Cli, as_of: DateTime<Utc>) -> Result<TrackBEntryQuot
             limit: cli.limit,
             close_match_limit: cli.close_match_limit,
         }),
-        summary: Some(summarize_track_b(outcomes)),
+        summary: Some(summarize_track_b(outcomes, cli.close_match_limit)),
     })
 }
 

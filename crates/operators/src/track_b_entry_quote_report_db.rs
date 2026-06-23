@@ -72,7 +72,7 @@ fn load_entry_quote_events(
                     quote_status, quote_price_sol, shadow_price_sol, price_impact_pct
              FROM execution_quote_canary_events
              INDEXED BY idx_execution_quote_canary_events_side_request_ts
-             WHERE lower(side) = 'buy'
+             WHERE side = 'buy'
                AND request_ts >= ?1
                AND request_ts < ?2
                AND event_id LIKE ?3

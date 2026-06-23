@@ -34,4 +34,5 @@ pub(crate) mod solana_tx;
 pub mod track_b_entry_quote_report;
 pub(crate) mod track_b_entry_quote_report_db;
 pub(crate) mod track_b_entry_quote_report_summary;
+pub(crate) mod track_b_entry_quote_report_types;
 pub mod yellowstone_probe;
