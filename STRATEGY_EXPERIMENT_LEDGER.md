@@ -326,12 +326,12 @@ First live run was invalid (`copybot-operators` at `ec68c454`):
 
 Observed-swaps replay run (`copybot-operators` at `866e9abf`):
 
-- Strict 720h run, min 5 leader / 5 follower closes: only 2 eligible.
+- Strict 720h, min 5 leader / 5 follower closes: only 2 eligible.
 - Exploratory min 5 / 1: 10 eligible, leader rho `-0.418`, follower rho
   `+0.103`, 3 high-leader/low-copyability candidates.
-- Directional support for objective mismatch, but still underpowered.
+- Directional objective mismatch; unlock = Track-B or cohort split.
 
-Status: active; collect follower/Track-B outcomes.
+Status: active; no scoring change yet.
 
 ### Track-B Entry Quote Diagnostic
 
