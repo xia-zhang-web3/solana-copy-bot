@@ -133,7 +133,7 @@ pub(crate) fn summarize_copyability(
         .cloned()
         .collect();
     CopyabilitySummary {
-        metric_basis: "shadow_follower_paper_relative_only".to_string(),
+        metric_basis: "leader_observed_swaps_fifo_vs_shadow_follower_paper".to_string(),
         caveats: caveats(),
         wallet_count: wallets.len() as u64,
         correlation,
@@ -149,24 +149,12 @@ fn wallet_row(
     min_follower_trades: u64,
 ) -> WalletCopyabilityRow {
     let metric = input.metric;
-    let has_leader_closes = !input.leader_closes.is_empty();
-    let leader_pnl = if has_leader_closes {
-        input
-            .leader_closes
-            .iter()
-            .map(|row| row.pnl_sol)
-            .sum::<f64>()
-    } else {
-        metric.as_ref().map(|row| row.pnl_sol).unwrap_or(0.0)
-    };
-    let leader_trades = if has_leader_closes {
-        input.leader_closes.len() as u64
-    } else {
-        metric
-            .as_ref()
-            .map(|row| row.closed_trades)
-            .unwrap_or_default()
-    };
+    let leader_pnl = input
+        .leader_closes
+        .iter()
+        .map(|row| row.pnl_sol)
+        .sum::<f64>();
+    let leader_trades = input.leader_closes.len() as u64;
     let follower_pnl = input
         .follower_closes
         .iter()
@@ -188,15 +176,11 @@ fn wallet_row(
         metric_rug_ratio: metric.as_ref().map(|row| row.rug_ratio),
         leader_pnl_sol: leader_pnl,
         leader_trades,
-        leader_win_rate: if has_leader_closes {
-            rate(
-                input.leader_closes.iter().filter(|row| row.win).count() as u64,
-                leader_trades,
-            )
-        } else {
-            metric.as_ref().map(|row| row.win_rate)
-        },
-        leader_hold_median_seconds: metric.as_ref().map(|row| row.hold_median_seconds as f64),
+        leader_win_rate: rate(
+            input.leader_closes.iter().filter(|row| row.win).count() as u64,
+            leader_trades,
+        ),
+        leader_hold_median_seconds: None,
         follower_pnl_sol: follower_pnl,
         follower_trades,
         follower_win_rate: rate(
@@ -378,8 +362,8 @@ fn rate(count: u64, total: u64) -> Option<f64> {
 
 fn caveats() -> Vec<String> {
     vec![
-        "metric_basis=shadow_follower_paper_relative_only; follower PnL is paper shadow and overstates executable, but is useful for relative wallet ranking until Track-B executable entry data matures.".to_string(),
-        "Leader PnL is own-wallet realized PnL from close facts or wallet_metrics fallback; good-for-itself, not automatically good-to-copy.".to_string(),
+        "metric_basis=leader_observed_swaps_fifo_vs_shadow_follower_paper; follower PnL is paper shadow and overstates executable, but is useful for relative wallet ranking until Track-B executable entry data matures.".to_string(),
+        "Leader PnL is own-wallet realized PnL replayed from observed_swaps in the same window; pre-window inventory is not warm-started, so only matched in-window FIFO legs are counted.".to_string(),
         "Per-wallet aggregation is directional; leader trades and follower trades are not strict one-to-one matched in this first pass.".to_string(),
         "Selection bias: this report ranks active followed wallets only; it cannot discover copyable wallets outside the followed set.".to_string(),
         "rank_vs_leader_pnl is partly tautological because Discovery score already includes leader realized PnL; interpret it as preservation through saturation/gates, while rank_vs_follower_pnl is the empirical copyability signal.".to_string(),

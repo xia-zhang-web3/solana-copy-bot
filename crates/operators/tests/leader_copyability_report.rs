@@ -4,6 +4,8 @@ use copybot_operators::leader_copyability_report::{build_report, Cli};
 use rusqlite::{params, Connection};
 use tempfile::NamedTempFile;
 
+const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+
 #[test]
 fn leader_copyability_report_marks_small_samples_underpowered() -> Result<()> {
     let db = seed_db(&[
@@ -61,7 +63,7 @@ fn candidate_lists_require_trade_eligibility() -> Result<()> {
 }
 
 #[test]
-fn leader_metrics_fallback_when_close_facts_are_empty() -> Result<()> {
+fn leader_pnl_uses_observed_swaps_fifo_when_close_facts_are_empty() -> Result<()> {
     let db = seed_db(&[
         ("w01", 10.0, 1.0, 5, 5),
         ("w02", 8.0, 0.5, 5, 5),
@@ -93,7 +95,7 @@ fn leader_metrics_fallback_when_close_facts_are_empty() -> Result<()> {
     assert!(summary
         .caveats
         .iter()
-        .any(|note| note.contains("wallet_metrics fallback")));
+        .any(|note| note.contains("observed_swaps")));
     Ok(())
 }
 
@@ -174,6 +176,18 @@ fn create_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX idx_wallet_scoring_close_facts_wallet_ts
             ON wallet_scoring_close_facts(wallet_id, closed_ts);
+        CREATE TABLE observed_swaps(
+            signature TEXT PRIMARY KEY,
+            wallet_id TEXT NOT NULL,
+            dex TEXT NOT NULL,
+            token_in TEXT NOT NULL,
+            token_out TEXT NOT NULL,
+            qty_in REAL NOT NULL,
+            qty_out REAL NOT NULL,
+            slot INTEGER NOT NULL,
+            ts TEXT NOT NULL
+        );
+        CREATE INDEX idx_observed_swaps_wallet_ts ON observed_swaps(wallet_id, ts);
         CREATE TABLE shadow_closed_trades(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             wallet_id TEXT NOT NULL,
@@ -215,22 +229,7 @@ fn seed_wallet(
             1000.0 - rank as f64
         ],
     )?;
-    for idx in 0..leader_trades {
-        conn.execute(
-            "INSERT INTO wallet_scoring_close_facts(
-                sell_signature, segment_index, wallet_id, token, closed_ts,
-                activity_day, pnl_sol, hold_seconds, win
-             ) VALUES (?1, 0, ?2, ?3, ?4, '2026-06-23', ?5, 120, ?6)",
-            params![
-                format!("{wallet}:leader:{idx}"),
-                wallet,
-                format!("{wallet}:token:{idx}"),
-                format!("2026-06-23T00:{idx:02}:00+00:00"),
-                leader_pnl / leader_trades as f64,
-                i64::from(leader_pnl > 0.0)
-            ],
-        )?;
-    }
+    seed_leader_swaps(conn, wallet, leader_pnl, leader_trades)?;
     for idx in 0..follower_trades {
         conn.execute(
             "INSERT INTO shadow_closed_trades(wallet_id, token, pnl_sol, close_context, closed_ts)
@@ -240,6 +239,49 @@ fn seed_wallet(
                 format!("{wallet}:token:{idx}"),
                 follower_pnl / follower_trades as f64,
                 format!("2026-06-23T01:{idx:02}:00+00:00")
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn seed_leader_swaps(
+    conn: &Connection,
+    wallet: &str,
+    leader_pnl: f64,
+    leader_trades: usize,
+) -> Result<()> {
+    if leader_trades == 0 {
+        return Ok(());
+    }
+    let pnl_per_trade = leader_pnl / leader_trades as f64;
+    for idx in 0..leader_trades {
+        let token = format!("{wallet}:token:{idx}");
+        conn.execute(
+            "INSERT INTO observed_swaps(
+                signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts
+             ) VALUES (?1, ?2, 'pump', ?3, ?4, 1.0, 1000.0, ?5, ?6)",
+            params![
+                format!("{wallet}:leader:buy:{idx}"),
+                wallet,
+                SOL_MINT,
+                token,
+                idx as i64 * 2,
+                format!("2026-06-23T00:{idx:02}:00+00:00")
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO observed_swaps(
+                signature, wallet_id, dex, token_in, token_out, qty_in, qty_out, slot, ts
+             ) VALUES (?1, ?2, 'pump', ?3, ?4, 1000.0, ?5, ?6, ?7)",
+            params![
+                format!("{wallet}:leader:sell:{idx}"),
+                wallet,
+                token,
+                SOL_MINT,
+                1.0 + pnl_per_trade,
+                idx as i64 * 2 + 1,
+                format!("2026-06-23T00:{idx:02}:30+00:00")
             ],
         )?;
     }

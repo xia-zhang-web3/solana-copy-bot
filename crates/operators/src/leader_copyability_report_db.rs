@@ -1,8 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OpenFlags};
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::time::Duration as StdDuration;
+
+const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
+const EPSILON_QTY: f64 = 1e-12;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveWallet {
@@ -26,6 +30,20 @@ pub(crate) struct WalletMetric {
 pub(crate) struct LeaderCloseFact {
     pub(crate) pnl_sol: f64,
     pub(crate) win: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ObservedSwapRow {
+    token_in: String,
+    token_out: String,
+    qty_in: f64,
+    qty_out: f64,
+}
+
+#[derive(Debug, Clone)]
+struct LeaderLot {
+    qty: f64,
+    cost_sol: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -153,15 +171,15 @@ pub(crate) fn load_leader_close_facts(
 ) -> Result<Vec<LeaderCloseFact>> {
     let mut stmt = conn
         .prepare(
-            "SELECT pnl_sol, win
-             FROM wallet_scoring_close_facts INDEXED BY idx_wallet_scoring_close_facts_wallet_ts
+            "SELECT token_in, token_out, qty_in, qty_out
+             FROM observed_swaps INDEXED BY idx_observed_swaps_wallet_ts
              WHERE wallet_id = ?1
-               AND closed_ts >= ?2
-               AND closed_ts < ?3
-             ORDER BY closed_ts ASC, sell_signature ASC, segment_index ASC
+               AND ts >= ?2
+               AND ts < ?3
+             ORDER BY ts ASC, slot ASC, signature ASC
              LIMIT ?4",
         )
-        .context("failed preparing leader close facts query")?;
+        .context("failed preparing leader observed swap replay query")?;
     let rows = stmt.query_map(
         params![
             wallet_id,
@@ -170,15 +188,18 @@ pub(crate) fn load_leader_close_facts(
             i64::from(limit)
         ],
         |row| {
-            let win: i64 = row.get(1)?;
-            Ok(LeaderCloseFact {
-                pnl_sol: row.get(0)?,
-                win: win != 0,
+            Ok(ObservedSwapRow {
+                token_in: row.get(0)?,
+                token_out: row.get(1)?,
+                qty_in: row.get(2)?,
+                qty_out: row.get(3)?,
             })
         },
     )?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed reading leader close facts")
+    let swaps = rows
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed reading leader observed swaps")?;
+    Ok(replay_leader_fifo(swaps))
 }
 
 pub(crate) fn load_follower_close_facts(
@@ -221,4 +242,92 @@ fn parse_ts(raw: &str, label: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .map(|value| value.with_timezone(&Utc))
         .with_context(|| format!("invalid {label}: {raw}"))
+}
+
+fn replay_leader_fifo(swaps: Vec<ObservedSwapRow>) -> Vec<LeaderCloseFact> {
+    let mut positions: HashMap<String, VecDeque<LeaderLot>> = HashMap::new();
+    let mut closes = Vec::new();
+    for swap in swaps {
+        if is_sol_buy(&swap) {
+            record_buy(&mut positions, &swap);
+        } else if is_sol_sell(&swap) {
+            record_sell(&mut positions, &swap, &mut closes);
+        }
+    }
+    closes
+}
+
+fn is_sol_buy(swap: &ObservedSwapRow) -> bool {
+    swap.token_in == SOL_MINT && swap.token_out != SOL_MINT
+}
+
+fn is_sol_sell(swap: &ObservedSwapRow) -> bool {
+    swap.token_out == SOL_MINT && swap.token_in != SOL_MINT
+}
+
+fn record_buy(positions: &mut HashMap<String, VecDeque<LeaderLot>>, swap: &ObservedSwapRow) {
+    if !swap.qty_in.is_finite()
+        || !swap.qty_out.is_finite()
+        || swap.qty_in <= EPSILON_QTY
+        || swap.qty_out <= EPSILON_QTY
+    {
+        return;
+    }
+    positions
+        .entry(swap.token_out.clone())
+        .or_default()
+        .push_back(LeaderLot {
+            qty: swap.qty_out,
+            cost_sol: swap.qty_in,
+        });
+}
+
+fn record_sell(
+    positions: &mut HashMap<String, VecDeque<LeaderLot>>,
+    swap: &ObservedSwapRow,
+    closes: &mut Vec<LeaderCloseFact>,
+) {
+    if !swap.qty_in.is_finite()
+        || !swap.qty_out.is_finite()
+        || swap.qty_in <= EPSILON_QTY
+        || swap.qty_out <= EPSILON_QTY
+    {
+        return;
+    }
+    let Some(lots) = positions.get_mut(&swap.token_in) else {
+        return;
+    };
+    let mut remaining_qty = swap.qty_in;
+    let mut matched_qty = 0.0;
+    let mut sell_pnl = 0.0;
+    while remaining_qty > EPSILON_QTY {
+        let Some(front) = lots.front_mut() else {
+            break;
+        };
+        let take_qty = remaining_qty.min(front.qty);
+        if take_qty <= EPSILON_QTY || front.qty <= EPSILON_QTY {
+            break;
+        }
+        let sell_fraction = take_qty / swap.qty_in;
+        let lot_fraction = take_qty / front.qty;
+        let proceeds_sol = swap.qty_out * sell_fraction;
+        let cost_sol = front.cost_sol * lot_fraction;
+        sell_pnl += proceeds_sol - cost_sol;
+        matched_qty += take_qty;
+        front.qty -= take_qty;
+        front.cost_sol -= cost_sol;
+        remaining_qty -= take_qty;
+        if front.qty <= EPSILON_QTY {
+            lots.pop_front();
+        }
+    }
+    if lots.is_empty() {
+        positions.remove(&swap.token_in);
+    }
+    if matched_qty > EPSILON_QTY {
+        closes.push(LeaderCloseFact {
+            pnl_sol: sell_pnl,
+            win: sell_pnl > 0.0,
+        });
+    }
 }

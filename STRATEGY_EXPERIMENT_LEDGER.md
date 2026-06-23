@@ -313,25 +313,25 @@ Status: optional, not a primary proof path.
 Purpose: test whether Discovery ranks wallets that are profitable for
 themselves or wallets whose edge survives copy-following.
 
-First live run:
+First live run was invalid:
 
 - Artifact: `copybot-operators` at `ec68c454`.
-- 720h ending 2026-06-23 11:34 UTC; 15 active followed wallets; 6 eligible
-  wallets after min 5 leader and 5 follower trades.
-- Underpowered/directional only.
-- Spearman: rank vs leader PnL `-0.486`; rank vs follower PnL `+0.314`.
+- 720h ending 2026-06-23 11:34 UTC.
+- `wallet_scoring_close_facts` is empty on live because it is a dead v1/test
+  path.
+- Fallback to `wallet_metrics` made the result non-interpretable:
+  2h leader window vs 720h follower window, near-total score tautology, and
+  eligibility gated by 2h discovery activity.
+- Do not use rank-vs-leader, copyability ratios, or candidate lists from that
+  run. rank-vs-follower `+0.314` was only a weak hint with corrupted
+  eligibility (`n=6`).
 
-Interpretation: lower rank is better. Rank partly preserves leader
-profitability, but did not translate to better follower/shadow PnL in this sample. Several high leader-PnL wallets had near-zero copyability ratios.
+Next:
 
-Caveat:
+- Replace leader source with bounded `observed_swaps` FIFO replay over the same
+  `[since, until]` window as follower closes.
 
-- Follower PnL is shadow/paper relative, not executable.
-- `wallet_scoring_close_facts` is empty on live; leader PnL falls back to
-  `wallet_metrics`.
-
-Status: active, preliminary; rerun after more follower outcomes or after
-Track-B executable entry data matures.
+Status: active; no valid live result yet.
 
 ### Track-B Entry Quote Diagnostic
 
