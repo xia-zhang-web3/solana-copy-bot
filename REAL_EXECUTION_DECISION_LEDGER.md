@@ -1,93 +1,209 @@
 # Real Execution Decision Ledger
 
-Updated: 2026-06-06
+Updated: 2026-06-23
 
 This file is the short source of truth for real execution decisions. It exists
 to prevent rediscovering the same theories every day.
 
 ## Current Objective
 
-Move to tiny real execution on the normal copy path.
+Decide whether the current copy-follow strategy has any real executable edge.
 
-Current target:
+Current trading decision:
 
-- route: selected paid Metis path:
-  - paid generic Metis `/quote` for normal AMM/Raydium/Orca/Pump.fun AMM
-  - paid `/pump-fun/quote` only for bonding-curve Pump.fun tokens
-  - public generic only as fallback/comparison
-- first size: `0.01 SOL`
-- max open positions: `1`
-- wallet: separate tiny-test Solana wallet only
-- startup mode: canary-only, fail-closed
+- real entries remain OFF
+- live SELL path must not be changed for strategy experiments
+- no filter tightening should enable trading by itself
+- current work is measurement, not a green-light path
 
-Do not start with sniper/launch-token execution.
+Current measurement target:
+
+- Track-B entry quote diagnostic
+- question: can executable entry quote quality identify trades that should be
+  skipped before committing real money?
+- required evidence: clean matched pairs:
+  `entry diagnostic quote -> eventual shadow close outcome`
+- target sample: about 300 clean closed pairs or 48h of clean post-fix data,
+  whichever comes first
+
+If Track-B is also empty, the current hypothesis "copy these wallet signals
+post-leader and recover edge with filters" should be treated as not
+actionable in this regime.
 
 ## Current Production State
 
-- latest deployed `copybot-app`: `d609ba86`
-- deployed at: 2026-06-06 11:18 UTC
+- latest deployed `copybot-app`: `414fb131`
+- deployed at: 2026-06-23 07:12 UTC
 - `execution.enabled = false`
-- `canary_enabled = true`
-- `canary_dry_run = true`
-- `canary_route = "metis-swap-instructions-dry-run"`
-- paid Metis Launch URL is configured
-- Priority Fee API Base is configured
-- paid Pump.fun quote comparison is enabled
-- selected-provider dry-run selector is implemented locally and pending rollout
+- guarded tiny submit config may exist, but entries remain strategy-paused
+- Track-B entry quote diagnostic is enabled
+- rug wallet filter is enabled as followlist hygiene
+- dashboard is live on `grindscout.com`
+- latest rollout postflight:
+  - daemon active
+  - `NRestarts = 0`
+  - site HTTP 200
+  - first post-rollout Track-B event inserted with `quote_status = ok`
+  - `quote_price_sol` was non-null and guard did not fire
 
-## Proven Facts
+## Closed Strategic Findings
 
-- BUY mint parsing is not the current bug.
+### Shadow PnL Is Not A Trading Decision Metric
+
+Shadow PnL consistently overstates copyable edge. The decision metric must be
+executable or at least close-context aware.
+
+Do not green-light entries from:
+
+- shadow PnL alone
+- discovery score alone
+- leader historical PnL
+- one favorable market window
+
+### Exit Policy Investigation
+
+Status: closed negative.
+
+What was tested:
+
+- observed 30m backstop simulation
+- executable-at-30m diagnostic
+- blind 30m backstop
+- conditional price-decay 30m trigger
+- maturity-gated context split
+- 15m/activity-silent motivation
+
+Result:
+
+- observed +5.10 SOL was an upper-bound illusion
+- clean executable-vs-executable 30m edge was near zero
+- price-decay conditioning inverted the signal
+- terminal-zero prize did not appear after maturity gating
+
+Conclusion:
+
+- practical exit timing is not the lever
+- existing 2h stale-quote close already captures most salvageable exits
+- do not build a live SELL exit layer from these tests
+
+### Track-A Reconstructable Entry Filters
+
+Status: closed negative.
+
+What was tested:
+
+- wallet rug-rate / tail-rate
+- token age
+- token-seen-before
+- leader entry lag
+- simple reconstructable entry features
+
+Result:
+
+- cheap reconstructable features did not separate rug-like losses from market
+  winners well enough
+- token-age gates cut too many winners
+- wallet-history gates had thin coverage because most candidates lacked enough
+  point-in-time history
+
+Conclusion:
+
+- do not tighten these filters for trading
+- use them only as diagnostics unless new evidence appears
+
+### Rug Wallet Filter
+
+Status: enabled as hygiene, not as a trading green-light.
+
+Current accepted shape:
+
+- minimum closes: 7
+- stale/terminal rate threshold: 20%
+- PnL catastrophic floor: `-0.30 SOL`
+- quarantine hold: 168h
+
+Conclusion:
+
+- useful for removing obvious feeder wallets
+- protects followlist quality
+- does not make the strategy profitable by itself
+- entries remain OFF
+
+### Executable Wallet Filter
+
+Status: enabled as Phase-1 hygiene.
+
+Important blind spot:
+
+- it scores clean market-context round trips
+- it cannot see the dominant stale/terminal rug tail
+
+Conclusion:
+
+- useful, but not rug protection
+- do not treat it as a green-light signal
+
+## Current Open Test: Track-B Entry Quote Diagnostic
+
+Purpose:
+
+- measure executable entry quality before trade commitment
+- produce executable entry cost for scoring entry filters on the right
+  objective
+
+Latest fix:
+
+- `414fb131`: fixed Track-B quote-price poisoning from bad decimals
+- priority is now:
+  1. decimals from quote response
+  2. saved observed-leg token decimals
+  3. RPC only if both are missing
+- inferred raw/UI decimals are no longer used for Track-B executable price
+- impossible low-impact price ratios are nulled instead of poisoning metrics
+
+What to watch:
+
+- total post-fix diagnostic events
+- `quote_status = ok`
+- `quote_price_sol IS NULL`
+- `entry_diag_price_ratio_out_of_bounds`
+- matched closed pairs
+- executable entry-adjusted PnL by bucket
+
+Decision rule:
+
+- if Track-B finds a clean executable entry-quality signal, design a gate and
+  backtest it across windows before any trading change
+- if Track-B is also empty, close the current copy-follow hypothesis as
+  not actionable in this regime
+
+## Do Not Reopen Without New Evidence
+
+- Do not enable real entries because infrastructure is healthy.
+- Do not use shadow PnL as the green criterion.
+- Do not build a live 30m/15m exit layer from the closed exit-policy tests.
+- Do not tighten Track-A reconstructable filters from the negative backtest.
+- Do not treat rug/executable wallet hygiene as permission to trade.
+- Do not increase followed wallets to accelerate stats unless the analysis
+  explicitly needs broader cohort data and RPC/write pressure is accepted.
+
+## Historical Route Notes
+
+These are older route/execution findings. They remain useful implementation
+context, but they are not a reason to enable entries.
+
+- BUY mint parsing was not the execution blocker.
 - Hot BUY quote path uses `WSOL -> swap.token_out`.
 - The same mint can return `TOKEN_NOT_TRADABLE` and later return a valid
-  `Pump.fun Amm` route.
-- Paid `/pump-fun/quote` returning `Bonding curve for mint not found` usually
-  means the token is not in the bonding-curve route stage anymore.
-- For migrated `Pump.fun Amm` tokens, normal paid Metis `/quote` is currently
+  route; this is treated as a transient provider/indexer race.
+- `Bonding curve for mint not found` usually means route-stage mismatch, not
+  local parsing failure.
+- For migrated Pump.fun AMM tokens, normal generic Metis quote is the relevant
+  route.
+- For bonding-curve Pump.fun tokens, paid Pump.fun quote/swap-instructions are
   the relevant route.
-- For bonding-curve Pump.fun tokens, paid `/pump-fun/quote` with
-  `meta.isCompleted=false` is the relevant route.
-- `Bonding curve for mint not found` is a provider route mismatch, not a local
-  parsing bug.
-- `TOKEN_NOT_TRADABLE` is treated as a transient quote provider/indexer race,
-  not a final local parsing failure.
-
-## Latest Fixes
-
-- `d609ba86`: retry transient paid Metis `/quote` `TOKEN_NOT_TRADABLE`.
-  - retry delays: `100ms`, `300ms`, `700ms`
-- `424a3651`: retry Metis dry-run responses with `Missing token program`.
-- Local pending batch:
-  - execution build metadata selects provider in this order:
-    `pump_fun_paid` bonding curve -> paid generic Metis -> public fallback
-  - Pump.fun bonding-curve selections use paid `/pump-fun/swap-instructions`
-    dry-run proof
-  - operator report exposes `provider_selection` so decisions are visible
-
-Expected effect:
-
-- fewer false `unknown`/skip outcomes when Metis sees the route shortly after
-  the first failed quote
-- no change for real rug/no-liquidity/high-slippage tokens
-
-## Active Blockers Before Funding Wallet
-
-- Fresh post-`d609ba86` BUY sample must prove the retry path does not introduce
-  new failures.
-- Pending selected-provider batch must be reviewed, tested, and rolled out
-  before using its live data as readiness evidence.
-- Submit path audit is still required:
-  - wallet key handling
-  - transaction build
-  - signing
-  - send
-  - confirm
-  - idempotency/no double-buy
-  - failure recording
-- Real owned-position accounting must be ready for SELL.
-- Kill switch and tiny loss caps must be verified.
-- Current repository rules still forbid enabling `execution.enabled` and
-  submitting trades until the user explicitly changes that rule.
+- Provider route selection and quote diagnostics are hygiene. They do not
+  override the strategy-level executable-edge gate.
 
 ## Deferred But Not Forgotten
 
@@ -131,21 +247,9 @@ Current stance:
 - use measured threshold buckets
 - do not jump blindly to very high BUY slippage
 
-## Next Engineering Step
+## Next Step
 
-Build the tiny execution preflight and submit audit report.
+Collect the clean Track-B post-`414fb131` sample, then run a bounded analysis
+of executable entry-adjusted outcomes.
 
-It must output:
-
-- `READY` / `NOT_READY`
-- exact blockers
-- target wallet
-- expected balance
-- buy size
-- max open positions
-- daily loss cap
-- kill-switch status
-- latest quote/dry-run/priority-fee status
-- whether any post-deploy `TOKEN_NOT_TRADABLE` was recovered by retry
-
-Only after that report is clean should the wallet be funded.
+Do not fund, resume, or increase real entries from this file alone.
