@@ -61,6 +61,7 @@ impl SqliteDiscoveryStore {
                     ON pump.event_id = event.event_id
                    AND pump.provider = ?4
                  WHERE event.request_ts >= ?1
+                   AND event.event_id NOT LIKE 'quote:entry-shadow-diag:%'
                  ORDER BY event.request_ts DESC, event.event_id DESC
                  LIMIT ?5",
             )

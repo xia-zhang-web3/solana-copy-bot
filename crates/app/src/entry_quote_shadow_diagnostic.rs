@@ -1,10 +1,10 @@
 use crate::execution_quote_canary_helpers::{
     apply_quote_sample_to_event, duration_ms_between, load_matching_observed_entry_leg,
-    observed_token_decimals, price_sol_per_token, quote_canary_slippage_limit_bps,
-    quote_slippage_bps_for_buy, raw_amount_to_ui, short_error, sol_to_lamports_raw,
-    QUOTE_STATUS_ERROR, QUOTE_STATUS_OK, QUOTE_STATUS_SKIPPED, SIDE_BUY, SOL_MINT,
+    price_sol_per_token, quote_canary_slippage_limit_bps, quote_slippage_bps_for_buy,
+    raw_amount_to_ui, short_error, sol_to_lamports_raw, QUOTE_STATUS_ERROR, QUOTE_STATUS_OK,
+    QUOTE_STATUS_SKIPPED, SIDE_BUY, SOL_MINT,
 };
-use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
+use crate::execution_quote_canary_rpc::fetch_spl_token_decimals;
 use crate::execution_quote_http::fetch_quote_sample;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -15,6 +15,9 @@ use copybot_storage_core::{
 };
 
 const COPY_SIGNAL_STATUS_SHADOW_RECORDED: &str = "shadow_recorded";
+const ENTRY_PRICE_RATIO_MIN: f64 = 0.1;
+const ENTRY_PRICE_RATIO_MAX: f64 = 10.0;
+const ENTRY_PRICE_SANITY_IMPACT_MAX: f64 = 0.01;
 
 #[derive(Debug, Clone)]
 pub(crate) struct EntryQuoteShadowDiagnostic {
@@ -110,7 +113,7 @@ impl EntryQuoteShadowDiagnostic {
             .quote_signal(
                 &signal,
                 &amount,
-                observed.as_ref().and_then(observed_token_decimals),
+                observed.as_ref().and_then(|leg| leg.token_decimals),
             )
             .await
         {
@@ -179,13 +182,32 @@ impl EntryQuoteShadowDiagnostic {
             limit_bps,
         )
         .await?;
-        let decimals =
-            resolve_spl_token_decimals(&self.http, &self.config, &signal.token, known_decimals)
-                .await;
+        let decimals = match sample.out_decimals {
+            Some(value) => Some(value),
+            None => {
+                self.resolve_token_decimals_hint(&signal.token, known_decimals)
+                    .await
+            }
+        };
         Ok(EntryQuote {
-            sample,
             token_decimals: decimals,
+            sample,
         })
+    }
+
+    async fn resolve_token_decimals_hint(&self, token: &str, hint: Option<u8>) -> Option<u8> {
+        if hint.is_some() {
+            return hint;
+        }
+        fetch_spl_token_decimals(
+            &self.http,
+            self.config.priority_fee_canary_rpc_url.trim(),
+            token,
+            self.config.quote_canary_timeout_ms,
+        )
+        .await
+        .ok()
+        .flatten()
     }
 }
 
@@ -211,7 +233,38 @@ fn apply_quote_to_entry_event(event: &mut ExecutionQuoteCanaryEventInsert, quote
         let quote_out_tokens = raw_amount_to_ui(event.quote_out_amount_raw.as_deref(), decimals);
         event.quote_price_sol = quote_in_sol
             .and_then(|sol| quote_out_tokens.and_then(|qty| price_sol_per_token(sol, qty)));
+        apply_entry_quote_price_sanity_guard(event);
         event.slippage_bps =
             quote_slippage_bps_for_buy(event.quote_price_sol, event.shadow_price_sol);
     }
+}
+
+fn apply_entry_quote_price_sanity_guard(event: &mut ExecutionQuoteCanaryEventInsert) {
+    let (Some(quote_price), Some(shadow_price)) = (event.quote_price_sol, event.shadow_price_sol)
+    else {
+        return;
+    };
+    if shadow_price <= 0.0 || !quote_price.is_finite() || !shadow_price.is_finite() {
+        event.quote_price_sol = None;
+        append_entry_diag_error(event, "entry_diag_invalid_quote_price".to_string());
+        return;
+    }
+    let ratio = quote_price / shadow_price;
+    let impact = event.price_impact_pct.unwrap_or(0.0).abs();
+    if impact <= ENTRY_PRICE_SANITY_IMPACT_MAX
+        && !(ENTRY_PRICE_RATIO_MIN..=ENTRY_PRICE_RATIO_MAX).contains(&ratio)
+    {
+        event.quote_price_sol = None;
+        append_entry_diag_error(
+            event,
+            format!("entry_diag_price_ratio_out_of_bounds ratio={ratio:.6} impact={impact:.6}"),
+        );
+    }
+}
+
+fn append_entry_diag_error(event: &mut ExecutionQuoteCanaryEventInsert, message: String) {
+    event.error = Some(match event.error.take() {
+        Some(current) if !current.is_empty() => format!("{current}; {message}"),
+        _ => message,
+    });
 }

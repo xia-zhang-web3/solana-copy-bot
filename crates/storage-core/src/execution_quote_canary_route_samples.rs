@@ -143,6 +143,7 @@ impl SqliteDiscoveryStore {
                     ON pump.event_id = event.event_id
                    AND pump.provider = ?3
                  WHERE event.request_ts >= ?1
+                   AND event.event_id NOT LIKE 'quote:entry-shadow-diag:%'
                    AND (generic.event_id IS NOT NULL OR pump.event_id IS NOT NULL)
                  ORDER BY event.request_ts DESC, event.event_id DESC
                  LIMIT ?4",
@@ -195,6 +196,7 @@ impl SqliteDiscoveryStore {
                     ON paid.event_id = event.event_id
                    AND paid.provider = ?3
                  WHERE event.request_ts >= ?1
+                   AND event.event_id NOT LIKE 'quote:entry-shadow-diag:%'
                    AND (public.event_id IS NOT NULL OR paid.event_id IS NOT NULL)
                  ORDER BY event.request_ts DESC, event.event_id DESC
                  LIMIT ?4",

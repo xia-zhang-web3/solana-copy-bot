@@ -119,8 +119,22 @@ fn quote_sample_from_json(value: Value, started: Instant) -> Result<QuoteSample>
             .get("routePlan")
             .map(|route| route.to_string())
             .filter(|raw| !raw.is_empty()),
-        in_decimals: None,
-        out_decimals: None,
+        in_decimals: decimal_field(value.get("inDecimals"))
+            .or_else(|| decimal_field(value.get("inputDecimals")))
+            .or_else(|| decimal_field(value.pointer("/meta/inDecimals")))
+            .or_else(|| decimal_field(value.pointer("/inputToken/decimals"))),
+        out_decimals: decimal_field(value.get("outDecimals"))
+            .or_else(|| decimal_field(value.get("outputDecimals")))
+            .or_else(|| decimal_field(value.pointer("/meta/outDecimals")))
+            .or_else(|| decimal_field(value.pointer("/outputToken/decimals"))),
         latency_ms: elapsed_ms(started),
     })
+}
+
+fn decimal_field(value: Option<&Value>) -> Option<u8> {
+    match value? {
+        Value::Number(number) => number.as_u64().and_then(|raw| u8::try_from(raw).ok()),
+        Value::String(raw) => raw.parse::<u8>().ok(),
+        _ => None,
+    }
 }
