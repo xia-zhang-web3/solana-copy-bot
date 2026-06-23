@@ -356,19 +356,19 @@ Why it matters:
   instead of shadow PnL, and tests whether bad entry quotes predict stale/rug
   tails or bad fills.
 
-First preliminary slice:
+Repeatable split report (`copybot_track_b_entry_quote_report`, `1478eeb7`):
 
-- 395 entry quote events; 368 OK; 0 NULL quote prices after decimals fix.
+- 403 entry quote events; 376 OK; 0 NULL quote prices after decimals fix.
 - Correct outcome join is wallet/token/opened_ts, not signal_id.
-- 355 clean closed usable events after excluding 11 pre-fix ratio outliers.
-- Fully executable `stale_quote_price` bucket is negative: entry-adjusted
-  `-1.91`.
-- Dominant market bucket is hybrid paper-exit; its `+10.53` is not bankable.
-- Aggregate `+9.29` is misleading because it mixes executable/paper exits.
-- price impact weak; quote/shadow ratio catches more stale_quote cases but is
-  collateral-heavy and single-window.
+- 356 clean closed usable events after excluding 11 pre-fix ratio outliers.
+- Fully executable `stale_quote_price`: 16 events, entry-adjusted `-2.35`.
+- Dominant market bucket is hybrid paper-exit: 328 events, `+10.10`, not
+  bankable.
+- 11 mixed-context events are separated, not silently folded into a bucket.
+- price impact weak; quote/shadow ratio catches more stale_quote cases but cuts
+  many market/mixed events.
 
-Status: preliminary; no filter enable; needs repeatable split report; entries OFF.
+Status: no filter enable; needs multi-regime/executable market-exit data; entries OFF.
 
 ## Do Not Reopen Without New Evidence
 
