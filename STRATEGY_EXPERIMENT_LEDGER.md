@@ -313,9 +313,7 @@ Status: optional, not a primary proof path.
 Purpose: test whether Discovery ranks wallets that are profitable for
 themselves or wallets whose edge survives copy-following.
 
-First live run was invalid:
-
-- Artifact: `copybot-operators` at `ec68c454`.
+First live run was invalid (`copybot-operators` at `ec68c454`):
 - 720h ending 2026-06-23 11:34 UTC.
 - `wallet_scoring_close_facts` is empty on live because it is a dead v1/test
   path.
@@ -326,12 +324,14 @@ First live run was invalid:
   run. rank-vs-follower `+0.314` was only a weak hint with corrupted
   eligibility (`n=6`).
 
-Next:
+Observed-swaps replay run (`copybot-operators` at `866e9abf`):
 
-- Replace leader source with bounded `observed_swaps` FIFO replay over the same
-  `[since, until]` window as follower closes.
+- Strict 720h run, min 5 leader / 5 follower closes: only 2 eligible.
+- Exploratory min 5 / 1: 10 eligible, leader rho `-0.418`, follower rho
+  `+0.103`, 3 high-leader/low-copyability candidates.
+- Directional support for objective mismatch, but still underpowered.
 
-Status: active; no valid live result yet.
+Status: active; collect follower/Track-B outcomes.
 
 ### Track-B Entry Quote Diagnostic
 
