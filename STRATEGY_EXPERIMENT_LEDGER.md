@@ -1,6 +1,6 @@
 # Strategy Experiment Ledger
 
-Status date: 2026-06-22
+Status date: 2026-06-23
 
 This file records strategic experiments and negative results so the project does
 not keep re-litigating the same ideas from memory.
@@ -9,12 +9,10 @@ not keep re-litigating the same ideas from memory.
 
 - Entries remain OFF.
 - Broader execution remains OFF.
-- Rug wallet filter is ON as followlist hygiene, not as proof that trading is
-  profitable.
-- Track-B entry quote diagnostic is live and collecting executable entry quote
-  data.
-- The current open question is entry-side selection: can we reject bad entries
-  before committing capital?
+- Rug wallet filter is ON as hygiene, not as proof that trading is profitable.
+- Track-B entry quote diagnostic is live.
+- Open question: can entry-side selection reject bad entries before capital
+  commits?
 
 ## Core Findings
 
@@ -27,8 +25,8 @@ slippage, delay, no-route cases, and tail losses.
 Decision rule:
 
 - Do not use raw shadow PnL as a green-light metric.
-- Use executable or limit-matched metrics whenever possible.
-- If a report is shadow-only, treat it as directional context, not proof.
+- Prefer executable or limit-matched metrics.
+- Treat shadow-only reports as directional context, not proof.
 
 ### Strategy Is Regime-Dependent
 
@@ -40,9 +38,9 @@ Observed windows showed large swings:
 
 Conclusion:
 
-- One good window is not enough.
-- Green criterion must be multi-window and executable-based.
-- A profitable-looking window can be a market regime artifact.
+- One good window is not enough; green criterion must be multi-window and
+  executable-based.
+- A profitable-looking window can be a regime artifact.
 
 ### Follower Tail Gap Is The Main Damage
 
@@ -52,10 +50,8 @@ cases, route decay, and fast rugs.
 
 Conclusion:
 
-- The main problem is not only wallet scoring.
-- The follower enters late by design.
-- Any proposed filter must show it reduces tail losses without deleting most
-  winners.
+- Follower late-entry is structural. Any filter must reduce tail losses without
+  deleting most winners.
 
 ### Publish Floor Is A Hard Constraint On Every Filter
 
@@ -68,12 +64,10 @@ Mechanism:
 
 Implication:
 
-- Over-rejection is not a small quality cost; past the floor it can black out
-  the data pipeline.
-- Any new or tightened filter must report combined rejection rate and surviving
+- Over-rejection can black out the data pipeline.
+- Any new/tightened filter must report combined rejection rate and surviving
   candidate count before enablement.
-- Rug and executable filters compound, so joint survivor count matters more
-  than each filter's standalone reject count.
+- Rug and executable filters compound; joint survivor count matters most.
 
 ### Close-Context Pricing Is Mixed
 
@@ -87,8 +81,7 @@ Not all close marks have the same quality:
 Implication:
 
 - Mixed-context aggregate PnL is mark-asymmetric.
-- Green/no-go calls should rely on executable-vs-executable subsets whenever
-  possible.
+- Prefer executable-vs-executable subsets for green/no-go calls.
 
 ## Closed Experiments
 
@@ -299,23 +292,46 @@ Status: closed negative.
 
 Idea:
 
-- Increase followed wallets from 15 to 30 to collect more events faster.
+- Increase followed wallets from 15 to 30 to collect events faster.
 
 Assessment:
 
-- This can accelerate data collection.
-- It also changes the sample from top-15 strategy to top-15 plus ranks 16-30.
-- Mixed data would contaminate conclusions about the current strategy.
+- Faster collection, but changes the sample from top-15 to top-15 plus ranks
+  16-30. Mixed data contaminates conclusions about the current strategy.
 
 Safe use:
 
-- Only as a separate observation experiment.
-- Must split cohorts: rank 1-15 vs rank 16-30.
-- Do not use mixed results as proof for current top-15 strategy.
+- Only as a separate observation experiment with cohorts split: rank 1-15 vs
+  rank 16-30.
 
 Status: optional, not a primary proof path.
 
 ## Active Experiment
+
+### Leader Copyability Report
+
+Purpose: test whether Discovery ranks wallets that are profitable for
+themselves or wallets whose edge survives copy-following.
+
+First live run:
+
+- Artifact: `copybot-operators` at `ec68c454`.
+- 720h ending 2026-06-23 11:34 UTC; 15 active followed wallets; 6 eligible
+  wallets after min 5 leader and 5 follower trades.
+- Underpowered/directional only.
+- Spearman: rank vs leader PnL `-0.486`; rank vs follower PnL `+0.314`.
+
+Interpretation: lower rank is better. Rank partly preserves leader
+profitability, but did not translate to better follower/shadow PnL in this sample. Several high leader-PnL wallets had near-zero copyability ratios.
+
+Caveat:
+
+- Follower PnL is shadow/paper relative, not executable.
+- `wallet_scoring_close_facts` is empty on live; leader PnL falls back to
+  `wallet_metrics`.
+
+Status: active, preliminary; rerun after more follower outcomes or after
+Track-B executable entry data matures.
 
 ### Track-B Entry Quote Diagnostic
 
@@ -326,33 +342,25 @@ Purpose:
 
 What it records:
 
-- signal_id-linked BUY quote
-- quote price
-- price impact
-- slippage
-- route plan
-- quote output amount
+- signal_id-linked BUY quote, quote price, price impact, slippage, route plan,
+  and quote output amount.
 
 Safety:
 
-- Quote-only.
-- No submit.
-- No sign.
-- No fill.
-- No order or position accounting.
-- Diagnostic events use prefix `quote:entry-shadow-diag:`.
-- Decision consumers exclude that prefix.
+- Quote-only: no submit, sign, fill, order, or position accounting.
+- Diagnostic events use prefix `quote:entry-shadow-diag:` and decision
+  consumers exclude that prefix.
 
 Why it matters:
 
-- It gives executable entry cost.
-- It lets us rescore entry filters on the real objective instead of shadow PnL.
-- It can test whether bad entry quotes predict stale/rug tails or bad fills.
+- It gives executable entry cost, lets us rescore filters on the real objective
+  instead of shadow PnL, and tests whether bad entry quotes predict stale/rug
+  tails or bad fills.
 
 Current data target:
 
 - Below 50 completed diagnostic-linked trades: mostly noise.
-- Around 100-150 completed diagnostic-linked trades: first useful read.
+- 100-150: first useful read.
 - 300+ across multiple regimes: stronger confidence.
 
 Important:
@@ -382,19 +390,11 @@ Status: active, collecting.
 
 After enough Track-B samples:
 
-1. Join each entry diagnostic quote to the eventual shadow outcome.
-2. Compute executable entry-adjusted PnL.
-3. Sweep entry quote quality thresholds:
-   - price impact
-   - slippage
-   - no-route / weak route
-   - route plan quality
-4. Measure:
-   - tail reduction
-   - winner loss
-   - executable PnL delta
-   - floor/candidate safety
-5. Only consider any entry filter if it improves executable economics without
-   cutting too many winners.
+1. Join each entry quote to the eventual shadow outcome and compute executable
+   entry-adjusted PnL.
+2. Sweep price impact, slippage, no-route/weak-route, and route quality.
+3. Measure tail reduction, winner loss, executable PnL delta, and floor safety.
+4. Only consider filters that improve executable economics without cutting too
+   many winners.
 
 Until then, entries remain OFF.
