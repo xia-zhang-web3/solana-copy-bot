@@ -357,19 +357,16 @@ Why it matters:
   instead of shadow PnL, and tests whether bad entry quotes predict stale/rug
   tails or bad fills.
 
-Current data target:
+First preliminary slice:
 
-- Below 50 completed diagnostic-linked trades: mostly noise.
-- 100-150: first useful read.
-- 300+ across multiple regimes: stronger confidence.
+- 395 entry quote events; 368 OK; 0 NULL quote prices after decimals fix.
+- Correct outcome join is wallet/token/opened_ts, not signal_id.
+- 355 clean closed usable events after excluding 11 pre-fix ratio outliers.
+- Shadow PnL `+7.84`; entry-adjusted PnL `+9.29`.
+- stale_quote bucket flips from shadow `+2.72` to entry-adjusted `-1.91`.
+- price impact weak; quote/shadow ratio stronger but still single-window.
 
-Important:
-
-- We need both the entry quote and the later trade outcome.
-- Calendar days are only a proxy. The real target is completed diagnostic-linked
-  samples.
-
-Status: active, collecting.
+Status: preliminary; no filter enable; repeat across regimes; entries OFF.
 
 ## Do Not Reopen Without New Evidence
 
