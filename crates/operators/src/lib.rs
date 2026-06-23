@@ -27,5 +27,8 @@ pub mod exit_policy_shadow_quote_report;
 pub(crate) mod exit_policy_shadow_quote_report_db;
 pub(crate) mod exit_policy_shadow_quote_report_summary;
 pub mod exit_policy_sim;
+pub mod leader_copyability_report;
+pub(crate) mod leader_copyability_report_db;
+pub(crate) mod leader_copyability_report_summary;
 pub(crate) mod solana_tx;
 pub mod yellowstone_probe;
