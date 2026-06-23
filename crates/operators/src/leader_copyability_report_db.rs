@@ -25,7 +25,6 @@ pub(crate) struct WalletMetric {
 #[derive(Debug, Clone)]
 pub(crate) struct LeaderCloseFact {
     pub(crate) pnl_sol: f64,
-    pub(crate) hold_seconds: i64,
     pub(crate) win: bool,
 }
 
@@ -154,7 +153,7 @@ pub(crate) fn load_leader_close_facts(
 ) -> Result<Vec<LeaderCloseFact>> {
     let mut stmt = conn
         .prepare(
-            "SELECT pnl_sol, hold_seconds, win
+            "SELECT pnl_sol, win
              FROM wallet_scoring_close_facts INDEXED BY idx_wallet_scoring_close_facts_wallet_ts
              WHERE wallet_id = ?1
                AND closed_ts >= ?2
@@ -171,11 +170,9 @@ pub(crate) fn load_leader_close_facts(
             i64::from(limit)
         ],
         |row| {
-            let hold_seconds: i64 = row.get(1)?;
-            let win: i64 = row.get(2)?;
+            let win: i64 = row.get(1)?;
             Ok(LeaderCloseFact {
                 pnl_sol: row.get(0)?,
-                hold_seconds: hold_seconds.max(0),
                 win: win != 0,
             })
         },

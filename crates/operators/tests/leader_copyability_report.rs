@@ -60,6 +60,43 @@ fn candidate_lists_require_trade_eligibility() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn leader_metrics_fallback_when_close_facts_are_empty() -> Result<()> {
+    let db = seed_db(&[
+        ("w01", 10.0, 1.0, 5, 5),
+        ("w02", 8.0, 0.5, 5, 5),
+        ("w03", 6.0, -0.2, 5, 5),
+        ("w04", 4.0, 0.1, 5, 5),
+        ("w05", 3.0, 0.2, 5, 5),
+        ("w06", 2.0, 0.1, 5, 5),
+        ("w07", 1.0, 0.2, 5, 5),
+        ("w08", 0.5, 0.1, 5, 5),
+    ])?;
+    let conn = Connection::open(db.path())?;
+    conn.execute("DELETE FROM wallet_scoring_close_facts", [])?;
+    drop(conn);
+
+    let report = build_report(
+        test_cli(db.path()),
+        Utc.with_ymd_and_hms(2026, 6, 24, 0, 0, 0).unwrap(),
+    );
+    let summary = report.summary.expect("report should load");
+    let first = summary
+        .wallets
+        .iter()
+        .find(|row| row.wallet_id == "w01")
+        .expect("seeded wallet should be reported");
+
+    assert_eq!(summary.correlation.eligible_wallets, 8);
+    assert_eq!(first.leader_trades, 5);
+    assert_eq!(first.leader_pnl_sol, 10.0);
+    assert!(summary
+        .caveats
+        .iter()
+        .any(|note| note.contains("wallet_metrics fallback")));
+    Ok(())
+}
+
 fn test_cli(path: &std::path::Path) -> Cli {
     Cli {
         db_path: Some(path.to_path_buf()),

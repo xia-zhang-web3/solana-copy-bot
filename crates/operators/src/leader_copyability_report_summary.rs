@@ -148,12 +148,25 @@ fn wallet_row(
     min_leader_trades: u64,
     min_follower_trades: u64,
 ) -> WalletCopyabilityRow {
-    let leader_pnl = input
-        .leader_closes
-        .iter()
-        .map(|row| row.pnl_sol)
-        .sum::<f64>();
-    let leader_trades = input.leader_closes.len() as u64;
+    let metric = input.metric;
+    let has_leader_closes = !input.leader_closes.is_empty();
+    let leader_pnl = if has_leader_closes {
+        input
+            .leader_closes
+            .iter()
+            .map(|row| row.pnl_sol)
+            .sum::<f64>()
+    } else {
+        metric.as_ref().map(|row| row.pnl_sol).unwrap_or(0.0)
+    };
+    let leader_trades = if has_leader_closes {
+        input.leader_closes.len() as u64
+    } else {
+        metric
+            .as_ref()
+            .map(|row| row.closed_trades)
+            .unwrap_or_default()
+    };
     let follower_pnl = input
         .follower_closes
         .iter()
@@ -163,7 +176,6 @@ fn wallet_row(
     let split = close_context_split(&input.follower_closes);
     let follower_gap = follower_pnl - leader_pnl;
     let copyability_ratio = (leader_pnl > 0.0).then_some(follower_pnl / leader_pnl);
-    let metric = input.metric;
     WalletCopyabilityRow {
         wallet_id: input.wallet_id,
         discovery_rank: metric.as_ref().map(|row| row.rank),
@@ -176,17 +188,15 @@ fn wallet_row(
         metric_rug_ratio: metric.as_ref().map(|row| row.rug_ratio),
         leader_pnl_sol: leader_pnl,
         leader_trades,
-        leader_win_rate: rate(
-            input.leader_closes.iter().filter(|row| row.win).count() as u64,
-            leader_trades,
-        ),
-        leader_hold_median_seconds: median(
-            input
-                .leader_closes
-                .iter()
-                .map(|row| row.hold_seconds as f64)
-                .collect(),
-        ),
+        leader_win_rate: if has_leader_closes {
+            rate(
+                input.leader_closes.iter().filter(|row| row.win).count() as u64,
+                leader_trades,
+            )
+        } else {
+            metric.as_ref().map(|row| row.win_rate)
+        },
+        leader_hold_median_seconds: metric.as_ref().map(|row| row.hold_median_seconds as f64),
         follower_pnl_sol: follower_pnl,
         follower_trades,
         follower_win_rate: rate(
@@ -362,10 +372,6 @@ fn percentile(mut values: Vec<f64>, q: f64) -> Option<f64> {
     values.get(idx).copied()
 }
 
-fn median(values: Vec<f64>) -> Option<f64> {
-    percentile(values, 0.50)
-}
-
 fn rate(count: u64, total: u64) -> Option<f64> {
     (total > 0).then_some(count as f64 / total as f64)
 }
@@ -373,7 +379,7 @@ fn rate(count: u64, total: u64) -> Option<f64> {
 fn caveats() -> Vec<String> {
     vec![
         "metric_basis=shadow_follower_paper_relative_only; follower PnL is paper shadow and overstates executable, but is useful for relative wallet ranking until Track-B executable entry data matures.".to_string(),
-        "Leader PnL is own-wallet realized PnL from wallet_scoring_close_facts: good-for-itself, not automatically good-to-copy.".to_string(),
+        "Leader PnL is own-wallet realized PnL from close facts or wallet_metrics fallback; good-for-itself, not automatically good-to-copy.".to_string(),
         "Per-wallet aggregation is directional; leader trades and follower trades are not strict one-to-one matched in this first pass.".to_string(),
         "Selection bias: this report ranks active followed wallets only; it cannot discover copyable wallets outside the followed set.".to_string(),
         "rank_vs_leader_pnl is partly tautological because Discovery score already includes leader realized PnL; interpret it as preservation through saturation/gates, while rank_vs_follower_pnl is the empirical copyability signal.".to_string(),
