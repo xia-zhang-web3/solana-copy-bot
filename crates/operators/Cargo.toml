@@ -47,6 +47,10 @@ path = "src/bin/copybot_entry_side_filter_backtest.rs"
 name = "copybot_leader_copyability_report"
 path = "src/bin/copybot_leader_copyability_report.rs"
 
+[[bin]]
+name = "copybot_track_b_entry_quote_report"
+path = "src/bin/copybot_track_b_entry_quote_report.rs"
+
 [dependencies]
 anyhow.workspace = true
 base64 = "0.22.1"

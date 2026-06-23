@@ -267,7 +267,7 @@ Important correction:
 
 - The first Track-A version used shadow PnL, which was the wrong objective.
 - It was corrected to a close-context tail objective:
-  stale_quote_price, stale_terminal_zero_price, recovery_terminal_zero_price.
+  stale_quote_price plus terminal contexts.
 
 Result after objective correction:
 
@@ -342,8 +342,7 @@ Purpose:
 
 What it records:
 
-- signal_id-linked BUY quote, quote price, price impact, slippage, route plan,
-  and quote output amount.
+- signal_id-linked BUY quote, quote price, impact, route, and output amount.
 
 Safety:
 
@@ -362,11 +361,14 @@ First preliminary slice:
 - 395 entry quote events; 368 OK; 0 NULL quote prices after decimals fix.
 - Correct outcome join is wallet/token/opened_ts, not signal_id.
 - 355 clean closed usable events after excluding 11 pre-fix ratio outliers.
-- Shadow PnL `+7.84`; entry-adjusted PnL `+9.29`.
-- stale_quote bucket flips from shadow `+2.72` to entry-adjusted `-1.91`.
-- price impact weak; quote/shadow ratio stronger but still single-window.
+- Fully executable `stale_quote_price` bucket is negative: entry-adjusted
+  `-1.91`.
+- Dominant market bucket is hybrid paper-exit; its `+10.53` is not bankable.
+- Aggregate `+9.29` is misleading because it mixes executable/paper exits.
+- price impact weak; quote/shadow ratio catches more stale_quote cases but is
+  collateral-heavy and single-window.
 
-Status: preliminary; no filter enable; repeat across regimes; entries OFF.
+Status: preliminary; no filter enable; needs repeatable split report; entries OFF.
 
 ## Do Not Reopen Without New Evidence
 
@@ -388,10 +390,11 @@ Status: preliminary; no filter enable; repeat across regimes; entries OFF.
 After enough Track-B samples:
 
 1. Join each entry quote to the eventual shadow outcome and compute executable
-   entry-adjusted PnL.
-2. Sweep price impact, slippage, no-route/weak-route, and route quality.
-3. Measure tail reduction, winner loss, executable PnL delta, and floor safety.
-4. Only consider filters that improve executable economics without cutting too
+   entry-adjusted PnL split by exit executability.
+2. Sweep price impact, slippage, no-route/weak-route, route quality, and
+   quote/shadow ratio.
+3. Measure tail reduction, winner loss, real-vs-hybrid delta, and floor safety.
+4. Only consider filters that improve real executable economics without cutting too
    many winners.
 
 Until then, entries remain OFF.

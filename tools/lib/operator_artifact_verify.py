@@ -37,6 +37,7 @@ EXPECTED_PACKAGE_BINARIES = {
         "copybot_exit_policy_shadow_quote_report",
         "copybot_exit_policy_sim",
         "copybot_leader_copyability_report",
+        "copybot_track_b_entry_quote_report",
         "copybot_yellowstone_source_probe",
     },
     "copybot-storage-ops": {
