@@ -229,6 +229,13 @@ fn create_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX idx_execution_quote_canary_events_side_request_ts
             ON execution_quote_canary_events(side, request_ts);
+        CREATE TABLE wallet_metrics(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            wallet_id TEXT NOT NULL,
+            window_start TEXT NOT NULL,
+            score REAL NOT NULL DEFAULT 0
+        );
+        CREATE INDEX idx_wallet_metrics_window_start ON wallet_metrics(window_start);
         CREATE TABLE shadow_closed_trades(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             signal_id TEXT NOT NULL,

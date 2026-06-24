@@ -4,6 +4,7 @@ pub(crate) fn track_b_caveats() -> Vec<String> {
         "Only terminal market-exit errors (not-tradable/no-route) are booked as zero-exit; transient errors and missing rows remain no-data.",
         "Fully executable calls should use rows with fully_executable_pnl_sol present, not aggregate paper buckets.",
         "Outcome join is wallet_id + token + opened_ts(signal_ts), not sell-side signal_id.",
+        "Cohort split uses point-in-time wallet_metrics rank from the latest available window at or before the entry quote request_ts.",
         "Mixed close-context events are reported separately to avoid fanout hiding.",
         "Market-exit executable quotes are delayed diagnostics; inspect market_exit_decision_delay_ms_stats before treating them as close-time exits.",
     ]

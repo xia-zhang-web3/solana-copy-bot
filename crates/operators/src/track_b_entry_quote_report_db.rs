@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OpenFlags};
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration as StdDuration;
 
@@ -13,6 +14,8 @@ pub(crate) struct EntryQuoteEvent {
     pub(crate) signal_ts: Option<DateTime<Utc>>,
     pub(crate) wallet_id: String,
     pub(crate) token: String,
+    pub(crate) discovery_rank: Option<u64>,
+    pub(crate) discovery_window_start: Option<DateTime<Utc>>,
     pub(crate) quote_status: String,
     pub(crate) quote_price_sol: Option<f64>,
     pub(crate) shadow_price_sol: Option<f64>,
@@ -44,6 +47,12 @@ pub(crate) struct EntryQuoteOutcome {
     pub(crate) closes: Vec<CloseOutcome>,
 }
 
+#[derive(Debug)]
+struct RankSnapshot {
+    window_start: DateTime<Utc>,
+    ranks: HashMap<String, u64>,
+}
+
 pub(crate) fn open_read_only_db(path: &Path) -> Result<Connection> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
     let conn = Connection::open_with_flags(path, flags)
@@ -63,7 +72,11 @@ pub(crate) fn load_entry_quote_outcomes(
     limit: u32,
     close_match_limit: u32,
 ) -> Result<Vec<EntryQuoteOutcome>> {
-    let events = load_entry_quote_events(conn, since, until, limit)?;
+    let mut events = load_entry_quote_events(conn, since, until, limit)?;
+    let rank_snapshots = load_rank_snapshots(conn, until)?;
+    for event in &mut events {
+        apply_rank_snapshot(event, &rank_snapshots);
+    }
     let mut out = Vec::with_capacity(events.len());
     for event in events {
         let closes = load_matching_closes(conn, &event, until, close_match_limit)?;
@@ -110,6 +123,8 @@ fn load_entry_quote_events(
                     .transpose()?,
                 wallet_id: row.get(2)?,
                 token: row.get(3)?,
+                discovery_rank: None,
+                discovery_window_start: None,
                 quote_status: row.get(4)?,
                 quote_price_sol: row.get(5)?,
                 shadow_price_sol: row.get(6)?,
@@ -119,6 +134,74 @@ fn load_entry_quote_events(
     )?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .context("failed reading Track-B entry quote events")
+}
+
+fn load_rank_snapshots(conn: &Connection, until: DateTime<Utc>) -> Result<Vec<RankSnapshot>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT window_start
+             FROM wallet_metrics INDEXED BY idx_wallet_metrics_window_start
+             ORDER BY window_start DESC
+             LIMIT 32",
+        )
+        .context("failed preparing Track-B wallet_metrics window query")?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .context("failed querying Track-B wallet_metrics windows")?;
+    let mut windows = Vec::new();
+    for raw in rows {
+        let raw = raw?;
+        let window_start = parse_ts(&raw, "wallet_metrics.window_start")?;
+        if window_start <= until {
+            windows.push(window_start);
+        }
+    }
+    windows.sort();
+    windows.dedup();
+    let mut snapshots = Vec::with_capacity(windows.len());
+    for window_start in windows {
+        snapshots.push(RankSnapshot {
+            window_start,
+            ranks: load_rank_snapshot(conn, window_start)?,
+        });
+    }
+    Ok(snapshots)
+}
+
+fn load_rank_snapshot(
+    conn: &Connection,
+    window_start: DateTime<Utc>,
+) -> Result<HashMap<String, u64>> {
+    let canonical = window_start.to_rfc3339();
+    let legacy_z = window_start.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let mut stmt = conn
+        .prepare(
+            "SELECT wallet_id
+             FROM wallet_metrics INDEXED BY idx_wallet_metrics_window_start
+             WHERE window_start IN (?1, ?2)
+             ORDER BY score DESC, wallet_id ASC",
+        )
+        .context("failed preparing Track-B wallet_metrics rank query")?;
+    let rows = stmt
+        .query_map(params![canonical, legacy_z], |row| row.get::<_, String>(0))
+        .context("failed querying Track-B wallet_metrics ranks")?;
+    let mut ranks = HashMap::new();
+    for (index, wallet) in rows.enumerate() {
+        ranks.entry(wallet?).or_insert(index as u64 + 1);
+    }
+    Ok(ranks)
+}
+
+fn apply_rank_snapshot(event: &mut EntryQuoteEvent, snapshots: &[RankSnapshot]) {
+    let Some(snapshot) = snapshots
+        .iter()
+        .rev()
+        .find(|snapshot| snapshot.window_start <= event.request_ts)
+    else {
+        return;
+    };
+    event.discovery_window_start = Some(snapshot.window_start);
+    event.discovery_rank = snapshot.ranks.get(&event.wallet_id).copied();
 }
 
 fn load_matching_closes(

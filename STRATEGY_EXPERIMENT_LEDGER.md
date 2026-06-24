@@ -304,7 +304,11 @@ Safe use:
 - Only as a separate observation experiment with cohorts split: rank 1-15 vs
   rank 16-30.
 
-Status: optional, not a primary proof path.
+Status: approved as observation-only cohort split. Expand `follow_top_n` to 30,
+keep entries OFF, and report rank 1-15 vs rank 16-30 separately. First
+24-48h proof is data quality only: diagnostic coverage, backlog, WAL/write
+pressure, floor, and dashboard health. Roll back to 15 if coverage or load
+degrades.
 
 ## Active Experiment
 
@@ -331,7 +335,8 @@ Observed-swaps replay run (`copybot-operators` at `866e9abf`):
   `+0.103`, 3 high-leader/low-copyability candidates.
 - Directional objective mismatch; unlock = Track-B or cohort split.
 
-Status: active; no scoring change yet.
+Status: active; no scoring change yet. Cohort split is now the power-unlock:
+rank 1-15 stays baseline, rank 16-30 is observation cohort.
 
 ### Track-B Entry + Market-Exit Diagnostics
 
@@ -384,17 +389,8 @@ Status: active measurement only; no filter enable; entries OFF.
 - Do not treat the executable wallet filter as rug protection.
 - Do not re-test latency as a profit lever without a new mechanism.
 
-## Next Decision
+## Current Decision
 
-The measurement stack now says the current strategy is near break-even, not
-clearly profitable and not obviously trash.
-
-Next strategic choice:
-
-1. Keep collecting baseline windows in the background.
-2. If pursuing upside, the remaining lever is copyability/entry selection:
-   reduce rug-tail while keeping market winners.
-3. Getting enough copyability power likely requires a cohort-split followlist
-   expansion, with rank 1-15 and rank 16-30 reported separately.
-
-Until a new cohort experiment is explicitly accepted, entries remain OFF.
+User approved cohort-split expansion. Run top-30 observation with production
+filters still enabled, entries OFF, and A/B reports separated by point-in-time
+Discovery rank. Do not use blended top-30 PnL for green/no-go decisions.

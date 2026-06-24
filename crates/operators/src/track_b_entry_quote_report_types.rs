@@ -11,6 +11,7 @@ pub struct TrackBEntryQuoteSummary {
     pub market_exit_decision_delay_ms_stats: NumericStats,
     pub by_close_bucket: Vec<BucketSummary>,
     pub by_exit_executability: Vec<BucketSummary>,
+    pub by_rank_cohort: Vec<CohortSummary>,
     pub price_impact_sweep: Vec<SweepRow>,
     pub quote_shadow_ratio_sweep: Vec<SweepRow>,
 }
@@ -67,6 +68,16 @@ pub struct BucketSummary {
     pub avg_quote_shadow_ratio: Option<f64>,
     pub avg_price_impact_pct: Option<f64>,
     pub avg_market_exit_quote_shadow_ratio: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CohortSummary {
+    pub cohort: String,
+    pub rank_min: Option<u64>,
+    pub rank_max: Option<u64>,
+    pub events: u64,
+    pub by_close_bucket: Vec<BucketSummary>,
+    pub by_exit_executability: Vec<BucketSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]

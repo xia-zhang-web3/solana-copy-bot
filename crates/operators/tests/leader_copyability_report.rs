@@ -99,6 +99,51 @@ fn leader_pnl_uses_observed_swaps_fifo_when_close_facts_are_empty() -> Result<()
     Ok(())
 }
 
+#[test]
+fn reports_rank_cohort_summaries() -> Result<()> {
+    let db = seed_db(&[
+        ("w01", 10.0, 1.0, 5, 5),
+        ("w02", 9.0, 1.0, 5, 5),
+        ("w03", 8.0, 1.0, 5, 5),
+        ("w04", 7.0, 1.0, 5, 5),
+        ("w05", 6.0, 1.0, 5, 5),
+        ("w06", 5.0, 1.0, 5, 5),
+        ("w07", 4.0, 1.0, 5, 5),
+        ("w08", 3.0, 1.0, 5, 5),
+        ("w09", 2.0, 1.0, 5, 5),
+        ("w10", 1.0, 1.0, 5, 5),
+        ("w11", 0.9, 1.0, 5, 5),
+        ("w12", 0.8, 1.0, 5, 5),
+        ("w13", 0.7, 1.0, 5, 5),
+        ("w14", 0.6, 1.0, 5, 5),
+        ("w15", 0.5, 1.0, 5, 5),
+        ("w16", 0.4, 1.0, 5, 5),
+        ("w17", 0.3, 1.0, 5, 5),
+        ("w18", 0.2, 1.0, 5, 5),
+    ])?;
+    let report = build_report(
+        test_cli(db.path()),
+        Utc.with_ymd_and_hms(2026, 6, 24, 0, 0, 0).unwrap(),
+    );
+    let summary = report.summary.expect("report should load");
+    let cohort_a = summary
+        .by_rank_cohort
+        .iter()
+        .find(|row| row.cohort == "rank_1_15")
+        .expect("rank 1-15 cohort should exist");
+    let cohort_b = summary
+        .by_rank_cohort
+        .iter()
+        .find(|row| row.cohort == "rank_16_30")
+        .expect("rank 16-30 cohort should exist");
+
+    assert_eq!(cohort_a.wallet_count, 15);
+    assert_eq!(cohort_b.wallet_count, 3);
+    assert_eq!(cohort_b.eligible_wallets, 3);
+    assert_eq!(summary.wallets[15].rank_cohort, "rank_16_30");
+    Ok(())
+}
+
 fn test_cli(path: &std::path::Path) -> Cli {
     Cli {
         db_path: Some(path.to_path_buf()),

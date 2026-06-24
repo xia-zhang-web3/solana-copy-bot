@@ -78,6 +78,7 @@ fn market_exit_quote_makes_market_bucket_fully_executable() -> Result<()> {
         1.0,
         0.2,
     )?;
+    insert_metric_rank(&conn, "w4", 16)?;
     let close_id = insert_close(
         &conn,
         "sell-market-exit",
@@ -112,6 +113,12 @@ fn market_exit_quote_makes_market_bucket_fully_executable() -> Result<()> {
     assert_eq!(market.events, 1);
     assert_eq!(market.fully_executable_events, 1);
     assert_eq!(market.market_exit_quote_events, 1);
+    let rank_16_30 = summary
+        .by_rank_cohort
+        .iter()
+        .find(|row| row.cohort == "rank_16_30")
+        .expect("rank 16-30 cohort should exist");
+    assert_eq!(rank_16_30.events, 1);
     assert!((market.entry_adjusted_pnl_sol + 0.4).abs() < 1e-9);
     assert!((market.fully_executable_pnl_sol.expect("full pnl") + 0.55).abs() < 1e-9);
     assert_eq!(fully.events, 1);
@@ -318,6 +325,9 @@ fn create_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX idx_execution_quote_canary_events_side_request_ts
             ON execution_quote_canary_events(side, request_ts);
+        CREATE TABLE wallet_metrics(id INTEGER PRIMARY KEY AUTOINCREMENT,
+            wallet_id TEXT NOT NULL, window_start TEXT NOT NULL, score REAL NOT NULL DEFAULT 0);
+        CREATE INDEX idx_wallet_metrics_window_start ON wallet_metrics(window_start);
         CREATE TABLE shadow_closed_trades(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             signal_id TEXT NOT NULL,
@@ -334,6 +344,24 @@ fn create_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX idx_shadow_closed_trades_wallet_closed_ts
             ON shadow_closed_trades(wallet_id, closed_ts);
         ",
+    )?;
+    Ok(())
+}
+
+fn insert_metric_rank(conn: &Connection, wallet: &str, rank: u64) -> Result<()> {
+    for index in 1..rank {
+        conn.execute(
+            "INSERT INTO wallet_metrics(wallet_id, window_start, score) VALUES (?1, ?2, ?3)",
+            params![
+                format!("rank-before-{index:02}"),
+                "2026-06-23T00:00:00+00:00",
+                10_000.0 - index as f64
+            ],
+        )?;
+    }
+    conn.execute(
+        "INSERT INTO wallet_metrics(wallet_id, window_start, score) VALUES (?1, ?2, ?3)",
+        params![wallet, "2026-06-23T00:00:00+00:00", 1.0],
     )?;
     Ok(())
 }

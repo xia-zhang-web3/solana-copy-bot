@@ -2,8 +2,9 @@ use crate::track_b_entry_quote_report_caveats::track_b_caveats;
 use crate::track_b_entry_quote_report_db::{CloseOutcome, EntryQuoteOutcome};
 use crate::track_b_entry_quote_report_executable::fully_executable_pnl;
 use crate::track_b_entry_quote_report_stats::numeric_stats;
+use crate::track_b_entry_quote_report_sweep::{sweep_price_impact, sweep_ratio};
 use crate::track_b_entry_quote_report_types::{
-    BucketSummary, SummaryCounts, SweepRow, TrackBEntryQuoteSummary,
+    BucketSummary, CohortSummary, SummaryCounts, TrackBEntryQuoteSummary,
 };
 
 const QUOTE_OK: &str = "ok";
@@ -11,7 +12,7 @@ const CONTAMINATION_IMPACT_MAX: f64 = 0.01;
 const RATIO_MIN: f64 = 0.1;
 const RATIO_MAX: f64 = 10.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CloseBucket {
+pub(crate) enum CloseBucket {
     Open,
     Market,
     StaleQuote,
@@ -28,15 +29,52 @@ enum ExitExecutability {
     MixedAmbiguous,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RankCohort {
+    Rank1To15,
+    Rank16To30,
+    RankGt30,
+    Unranked,
+}
+
+impl RankCohort {
+    fn from_rank(rank: Option<u64>) -> Self {
+        match rank {
+            Some(1..=15) => Self::Rank1To15,
+            Some(16..=30) => Self::Rank16To30,
+            Some(_) => Self::RankGt30,
+            None => Self::Unranked,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Rank1To15 => "rank_1_15",
+            Self::Rank16To30 => "rank_16_30",
+            Self::RankGt30 => "rank_gt_30",
+            Self::Unranked => "unranked",
+        }
+    }
+
+    fn rank_bounds(self) -> (Option<u64>, Option<u64>) {
+        match self {
+            Self::Rank1To15 => (Some(1), Some(15)),
+            Self::Rank16To30 => (Some(16), Some(30)),
+            Self::RankGt30 | Self::Unranked => (None, None),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
-struct CleanEvent {
-    bucket: CloseBucket,
+pub(crate) struct CleanEvent {
+    pub(crate) cohort: RankCohort,
+    pub(crate) bucket: CloseBucket,
     exit_executability: ExitExecutability,
-    shadow_pnl_sol: f64,
-    entry_adjusted_pnl_sol: f64,
-    fully_executable_pnl_sol: Option<f64>,
-    ratio: f64,
-    price_impact_pct: Option<f64>,
+    pub(crate) shadow_pnl_sol: f64,
+    pub(crate) entry_adjusted_pnl_sol: f64,
+    pub(crate) fully_executable_pnl_sol: Option<f64>,
+    pub(crate) ratio: f64,
+    pub(crate) price_impact_pct: Option<f64>,
     market_exit_quote_events: u64,
     market_exit_error_events: u64,
     market_exit_dead_error_events: u64,
@@ -119,6 +157,7 @@ pub(crate) fn summarize_track_b(
         market_exit_decision_delay_ms_stats: numeric_stats(market_exit_delays),
         by_close_bucket: summarize_close_buckets(&clean),
         by_exit_executability: summarize_exit_executability(&clean),
+        by_rank_cohort: summarize_rank_cohorts(&clean),
         price_impact_sweep: sweep_price_impact(&clean),
         quote_shadow_ratio_sweep: sweep_ratio(&clean),
     }
@@ -158,6 +197,7 @@ fn clean_event(
         max_market_exit_delay_ms,
     );
     Some(CleanEvent {
+        cohort: RankCohort::from_rank(outcome.event.discovery_rank),
         bucket,
         exit_executability: exit_executability(bucket, executable.pnl_sol),
         shadow_pnl_sol,
@@ -260,6 +300,33 @@ fn summarize_exit_executability(events: &[CleanEvent]) -> Vec<BucketSummary> {
     .collect()
 }
 
+fn summarize_rank_cohorts(events: &[CleanEvent]) -> Vec<CohortSummary> {
+    [
+        RankCohort::Rank1To15,
+        RankCohort::Rank16To30,
+        RankCohort::RankGt30,
+        RankCohort::Unranked,
+    ]
+    .into_iter()
+    .map(|cohort| {
+        let cohort_events = events
+            .iter()
+            .filter(|event| event.cohort == cohort)
+            .cloned()
+            .collect::<Vec<_>>();
+        let (rank_min, rank_max) = cohort.rank_bounds();
+        CohortSummary {
+            cohort: cohort.label().to_string(),
+            rank_min,
+            rank_max,
+            events: cohort_events.len() as u64,
+            by_close_bucket: summarize_close_buckets(&cohort_events),
+            by_exit_executability: summarize_exit_executability(&cohort_events),
+        }
+    })
+    .collect()
+}
+
 fn summarize_bucket<'a>(
     label: &str,
     events: impl Iterator<Item = &'a CleanEvent>,
@@ -316,85 +383,4 @@ fn summarize_bucket<'a>(
             Some(market_exit_ratio_sum / market_exit_ratio_count as f64);
     }
     out
-}
-
-fn sweep_price_impact(events: &[CleanEvent]) -> Vec<SweepRow> {
-    [0.01, 0.05, 0.10, 0.20, 0.50]
-        .into_iter()
-        .map(|threshold| {
-            sweep(
-                "price_impact_pct",
-                threshold,
-                events.iter().filter(|event| {
-                    event
-                        .price_impact_pct
-                        .map(|impact| impact > threshold)
-                        .unwrap_or(false)
-                }),
-            )
-        })
-        .collect()
-}
-
-fn sweep_ratio(events: &[CleanEvent]) -> Vec<SweepRow> {
-    [1.01, 1.05, 1.10, 1.20, 1.50, 2.0]
-        .into_iter()
-        .map(|threshold| {
-            sweep(
-                "quote_shadow_ratio",
-                threshold,
-                events.iter().filter(|event| event.ratio > threshold),
-            )
-        })
-        .collect()
-}
-
-fn sweep<'a>(
-    metric: &str,
-    threshold: f64,
-    events: impl Iterator<Item = &'a CleanEvent>,
-) -> SweepRow {
-    let mut row = SweepRow {
-        metric: metric.to_string(),
-        threshold_gt: threshold,
-        rejected_events: 0,
-        rejected_market_events: 0,
-        rejected_stale_quote_events: 0,
-        rejected_stale_market_events: 0,
-        rejected_terminal_events: 0,
-        rejected_mixed_events: 0,
-        rejected_shadow_pnl_sol: 0.0,
-        rejected_entry_adjusted_pnl_sol: 0.0,
-        rejected_fully_executable_pnl_sol: None,
-        delta_if_rejected_entry_adjusted_sol: 0.0,
-        delta_if_rejected_fully_executable_sol: None,
-        warning:
-            "Rows with fully_executable_pnl_sol=null still lack executable market-exit data or use paper close marks."
-                .to_string(),
-    };
-    let mut rejected_full = 0.0;
-    let mut rejected_full_count = 0_u64;
-    for event in events {
-        row.rejected_events += 1;
-        match event.bucket {
-            CloseBucket::Market => row.rejected_market_events += 1,
-            CloseBucket::StaleQuote => row.rejected_stale_quote_events += 1,
-            CloseBucket::StaleMarket => row.rejected_stale_market_events += 1,
-            CloseBucket::Terminal => row.rejected_terminal_events += 1,
-            CloseBucket::Mixed => row.rejected_mixed_events += 1,
-            CloseBucket::Open | CloseBucket::Other => {}
-        }
-        row.rejected_shadow_pnl_sol += event.shadow_pnl_sol;
-        row.rejected_entry_adjusted_pnl_sol += event.entry_adjusted_pnl_sol;
-        if let Some(pnl) = event.fully_executable_pnl_sol {
-            rejected_full_count += 1;
-            rejected_full += pnl;
-        }
-    }
-    row.delta_if_rejected_entry_adjusted_sol = -row.rejected_entry_adjusted_pnl_sol;
-    if rejected_full_count > 0 {
-        row.rejected_fully_executable_pnl_sol = Some(rejected_full);
-        row.delta_if_rejected_fully_executable_sol = Some(-rejected_full);
-    }
-    row
 }

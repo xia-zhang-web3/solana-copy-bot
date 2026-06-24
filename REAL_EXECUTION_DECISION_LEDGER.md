@@ -227,8 +227,8 @@ Interpretation:
 - Do not build a live 30m/15m exit layer from the closed exit-policy tests.
 - Do not tighten Track-A reconstructable filters from the negative backtest.
 - Do not treat rug/executable wallet hygiene as permission to trade.
-- Do not increase followed wallets to accelerate stats unless the analysis
-  explicitly needs broader cohort data and RPC/write pressure is accepted.
+- Do not confuse observation-only followlist expansion with real-entry approval.
+  Cohort split may widen shadow collection, but entries remain OFF.
 
 ## Historical Route Notes
 
@@ -292,9 +292,8 @@ Current stance:
 
 ## Next Step
 
-Keep collecting post-enablement Track-B + market-exit pairs and rerun the
-survivorship-corrected report across windows. The key number is fully
-executable market PnL after failed market-exit quotes are booked as zero-exit,
-plus whether stale_quote losses erase it.
+Cohort split is approved as observation-only: rank 1-15 remains baseline,
+rank 16-30 is the added measurement cohort. Keep rerunning the corrected
+Track-B market report by cohort; entries remain OFF.
 
 Do not fund, resume, or increase real entries from this file alone.

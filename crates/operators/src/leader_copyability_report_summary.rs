@@ -1,3 +1,6 @@
+use crate::leader_copyability_report_cohort::{
+    rank_cohort, summarize_rank_cohorts, CopyabilityCohortSummary,
+};
 use crate::leader_copyability_report_db::{FollowerCloseFact, LeaderCloseFact, WalletMetric};
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -32,6 +35,7 @@ pub struct CloseContextSplit {
 pub struct WalletCopyabilityRow {
     pub wallet_id: String,
     pub discovery_rank: Option<u64>,
+    pub rank_cohort: String,
     pub discovery_score: Option<f64>,
     pub discovery_window_start: Option<String>,
     pub metric_leader_pnl_sol: Option<f64>,
@@ -67,6 +71,7 @@ pub struct CopyabilitySummary {
     pub caveats: Vec<String>,
     pub wallet_count: u64,
     pub correlation: CorrelationSummary,
+    pub by_rank_cohort: Vec<CopyabilityCohortSummary>,
     pub high_leader_low_copyability: Vec<WalletCopyabilityRow>,
     pub lower_rank_high_copyability: Vec<WalletCopyabilityRow>,
     pub wallets: Vec<WalletCopyabilityRow>,
@@ -137,6 +142,7 @@ pub(crate) fn summarize_copyability(
         caveats: caveats(),
         wallet_count: wallets.len() as u64,
         correlation,
+        by_rank_cohort: summarize_rank_cohorts(&wallets),
         high_leader_low_copyability,
         lower_rank_high_copyability,
         wallets,
@@ -167,6 +173,7 @@ fn wallet_row(
     WalletCopyabilityRow {
         wallet_id: input.wallet_id,
         discovery_rank: metric.as_ref().map(|row| row.rank),
+        rank_cohort: rank_cohort(metric.as_ref().map(|row| row.rank)).to_string(),
         discovery_score: metric.as_ref().map(|row| row.score),
         discovery_window_start: metric.as_ref().map(|row| row.window_start.to_rfc3339()),
         metric_leader_pnl_sol: metric.as_ref().map(|row| row.pnl_sol),
@@ -200,7 +207,7 @@ fn wallet_row(
     }
 }
 
-fn correlation_summary(wallets: &[WalletCopyabilityRow]) -> CorrelationSummary {
+pub(crate) fn correlation_summary(wallets: &[WalletCopyabilityRow]) -> CorrelationSummary {
     let eligible = wallets
         .iter()
         .filter(|row| row.eligible_for_correlation)
@@ -366,6 +373,7 @@ fn caveats() -> Vec<String> {
         "Leader PnL is own-wallet realized PnL replayed from observed_swaps in the same window; pre-window inventory is not warm-started, so only matched in-window FIFO legs are counted.".to_string(),
         "Per-wallet aggregation is directional; leader trades and follower trades are not strict one-to-one matched in this first pass.".to_string(),
         "Selection bias: this report ranks active followed wallets only; it cannot discover copyable wallets outside the followed set.".to_string(),
+        "Cohort split compares point-in-time Discovery ranks inside the followed set; rank_16_30 is an observation cohort, not proof about wallets Discovery never published.".to_string(),
         "rank_vs_leader_pnl is partly tautological because Discovery score already includes leader realized PnL; interpret it as preservation through saturation/gates, while rank_vs_follower_pnl is the empirical copyability signal.".to_string(),
         "Per-wallet rows are capped by per_wallet_limit; a wallet at the cap should be treated as a lower-bound aggregate until rerun with a higher bound.".to_string(),
     ]
