@@ -1,0 +1,3 @@
+ALTER TABLE execution_quote_canary_events ADD COLUMN discovery_rank INTEGER;
+ALTER TABLE execution_quote_canary_events ADD COLUMN discovery_rank_cohort TEXT;
+ALTER TABLE execution_quote_canary_events ADD COLUMN discovery_rank_window_start TEXT;

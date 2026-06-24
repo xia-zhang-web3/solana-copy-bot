@@ -63,16 +63,43 @@ impl EntryQuoteShadowDiagnostic {
                 self.config.entry_quote_shadow_diagnostic_batch_limit.max(1),
             )
             .context("failed loading entry quote shadow diagnostic candidates")?;
+        let wallet_ids = candidates
+            .iter()
+            .map(|signal| signal.wallet_id.clone())
+            .collect::<Vec<_>>();
+        let rank_stamps =
+            match store.load_execution_quote_canary_discovery_rank_stamps(now, &wallet_ids) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "entry quote shadow diagnostic discovery rank lookup failed"
+                    );
+                    Default::default()
+                }
+            };
         let mut summary = EntryQuoteShadowDiagnosticSummary::default();
         for signal in candidates {
             summary.checked += 1;
             let event_id = entry_quote_shadow_diagnostic_event_id(&signal.signal_id);
+            let rank_stamp = rank_stamps.get(&signal.wallet_id).cloned();
             let event = self
                 .quote_signal_event(store, signal, event_id.clone(), now)
                 .await;
             match store.record_execution_quote_canary_event(&event)? {
                 ExecutionQuoteCanaryRecordOutcome::Inserted => summary.inserted += 1,
                 ExecutionQuoteCanaryRecordOutcome::Existing => summary.existing += 1,
+            }
+            if let Some(rank_stamp) = rank_stamp.as_ref() {
+                if let Err(error) =
+                    store.stamp_execution_quote_canary_discovery_rank(&event_id, rank_stamp)
+                {
+                    tracing::warn!(
+                        error = %error,
+                        event_id = %event_id,
+                        "entry quote shadow diagnostic discovery rank stamp failed"
+                    );
+                }
             }
             if event.quote_status == QUOTE_STATUS_OK {
                 summary.quote_ok += 1;

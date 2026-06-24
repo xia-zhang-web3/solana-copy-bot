@@ -38,6 +38,7 @@ mod execution_market_exit_shadow_quote;
 mod execution_orders;
 mod execution_quote_canary;
 mod execution_quote_canary_lookup;
+mod execution_quote_canary_rank_stamp;
 mod execution_quote_canary_route_samples;
 mod execution_quote_canary_shadow_gate;
 mod execution_quote_provider_lookup;
@@ -106,6 +107,7 @@ pub use execution_exit_policy_types::{
     ExecutionExitPolicyBaseline, ExecutionExitPolicyContextSummary, ExecutionExitPolicySimConfig,
     ExecutionExitPolicySimParams, ExecutionExitPolicySimReport, ExecutionExitPolicySummary,
 };
+pub use execution_quote_canary_rank_stamp::ExecutionQuoteCanaryDiscoveryRankStamp;
 pub use execution_quote_canary_route_samples::{
     PROVIDER_GENERIC_METIS, PROVIDER_GENERIC_PUBLIC, PROVIDER_PUMP_FUN_PAID,
 };

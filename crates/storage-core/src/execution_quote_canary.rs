@@ -16,12 +16,14 @@ pub(crate) fn ensure_execution_quote_canary_tables(store: &SqliteDiscoveryStore)
         .conn
         .execute_batch(EXECUTION_QUOTE_CANARY_SCHEMA)
         .context("failed ensuring execution quote canary schema")?;
-    ensure_column(
-        store,
-        "execution_quote_canary_events",
-        "quote_response_json",
-        "TEXT",
-    )?;
+    for (column, definition) in [
+        ("quote_response_json", "TEXT"),
+        ("discovery_rank", "INTEGER"),
+        ("discovery_rank_cohort", "TEXT"),
+        ("discovery_rank_window_start", "TEXT"),
+    ] {
+        ensure_column(store, "execution_quote_canary_events", column, definition)?;
+    }
     ensure_execution_quote_canary_provider_samples_table(store)
 }
 
@@ -556,6 +558,9 @@ CREATE TABLE IF NOT EXISTS execution_quote_canary_events (
     quote_in_amount_raw TEXT,
     quote_out_amount_raw TEXT,
     quote_response_json TEXT,
+    discovery_rank INTEGER,
+    discovery_rank_cohort TEXT,
+    discovery_rank_window_start TEXT,
     quote_price_sol REAL,
     shadow_price_sol REAL,
     slippage_bps REAL,

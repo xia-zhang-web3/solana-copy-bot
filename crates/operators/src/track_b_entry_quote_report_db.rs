@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration as StdDuration;
@@ -92,9 +92,10 @@ fn load_entry_quote_events(
     limit: u32,
 ) -> Result<Vec<EntryQuoteEvent>> {
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT request_ts, signal_ts, wallet_id, token,
-                    quote_status, quote_price_sol, shadow_price_sol, price_impact_pct
+                    quote_status, quote_price_sol, shadow_price_sol, price_impact_pct,
+                    {}, {}
              FROM execution_quote_canary_events
              INDEXED BY idx_execution_quote_canary_events_side_request_ts
              WHERE side = 'buy'
@@ -103,7 +104,9 @@ fn load_entry_quote_events(
                AND event_id LIKE ?3
              ORDER BY request_ts ASC, event_id ASC
              LIMIT ?4",
-        )
+            optional_column_expr(conn, "discovery_rank")?,
+            optional_column_expr(conn, "discovery_rank_window_start")?
+        ))
         .context("failed preparing Track-B entry quote event query")?;
     let rows = stmt.query_map(
         params![
@@ -123,8 +126,17 @@ fn load_entry_quote_events(
                     .transpose()?,
                 wallet_id: row.get(2)?,
                 token: row.get(3)?,
-                discovery_rank: None,
-                discovery_window_start: None,
+                discovery_rank: optional_i64_to_u64(row.get(8)?)?,
+                discovery_window_start: row
+                    .get::<_, Option<String>>(9)?
+                    .as_deref()
+                    .map(|raw| {
+                        parse_ts(
+                            raw,
+                            "execution_quote_canary_events.discovery_rank_window_start",
+                        )
+                    })
+                    .transpose()?,
                 quote_status: row.get(4)?,
                 quote_price_sol: row.get(5)?,
                 shadow_price_sol: row.get(6)?,
@@ -193,6 +205,9 @@ fn load_rank_snapshot(
 }
 
 fn apply_rank_snapshot(event: &mut EntryQuoteEvent, snapshots: &[RankSnapshot]) {
+    if event.discovery_rank.is_some() {
+        return;
+    }
     let Some(snapshot) = snapshots
         .iter()
         .rev()
@@ -202,6 +217,40 @@ fn apply_rank_snapshot(event: &mut EntryQuoteEvent, snapshots: &[RankSnapshot]) 
     };
     event.discovery_window_start = Some(snapshot.window_start);
     event.discovery_rank = snapshot.ranks.get(&event.wallet_id).copied();
+}
+
+fn optional_column_expr(conn: &Connection, column: &str) -> Result<String> {
+    let exists = conn
+        .query_row(
+            "SELECT 1
+             FROM pragma_table_info('execution_quote_canary_events')
+             WHERE name = ?1
+             LIMIT 1",
+            params![column],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .with_context(|| format!("failed checking execution_quote_canary_events.{column} column"))?
+        .is_some();
+    if exists {
+        Ok(column.to_string())
+    } else {
+        Ok(format!("NULL AS {column}"))
+    }
+}
+
+fn optional_i64_to_u64(value: Option<i64>) -> rusqlite::Result<Option<u64>> {
+    value
+        .map(|raw| {
+            u64::try_from(raw).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    8,
+                    rusqlite::types::Type::Integer,
+                    Box::new(error),
+                )
+            })
+        })
+        .transpose()
 }
 
 fn load_matching_closes(
