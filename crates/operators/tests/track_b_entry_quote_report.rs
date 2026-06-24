@@ -134,7 +134,8 @@ fn mixed_close_context_is_reported_separately() -> Result<()> {
         1.0,
         0.2,
     )?;
-    insert_close(&conn, "sell-a", "w2", "token-m", "market", 1.0, 1.1, 0.1)?;
+    let market_close_id = insert_close(&conn, "sell-a", "w2", "token-m", "market", 1.0, 1.1, 0.1)?;
+    insert_market_exit_quote(&conn, market_close_id, "w2", "token-m", 1.0, 1.0)?;
     insert_close(
         &conn,
         "sell-b",
@@ -173,6 +174,15 @@ fn mixed_close_context_is_reported_separately() -> Result<()> {
             .expect("mixed executability bucket should exist")
             .events,
         1
+    );
+    assert_eq!(
+        summary
+            .by_exit_executability
+            .iter()
+            .find(|row| row.bucket == "fully_executable")
+            .expect("fully executable bucket should exist")
+            .events,
+        0
     );
     Ok(())
 }
@@ -419,17 +429,41 @@ fn insert_market_exit_quote(
     quote_price: f64,
     shadow_price: f64,
 ) -> Result<()> {
+    insert_market_exit_quote_status(
+        conn,
+        close_id,
+        wallet,
+        token,
+        "ok",
+        Some(quote_price),
+        Some(shadow_price),
+        2_000,
+    )
+}
+
+fn insert_market_exit_quote_status(
+    conn: &Connection,
+    close_id: i64,
+    wallet: &str,
+    token: &str,
+    status: &str,
+    quote_price: Option<f64>,
+    shadow_price: Option<f64>,
+    delay_ms: i64,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO execution_quote_canary_events(
             event_id, wallet_id, token, side, quote_status, request_ts, signal_ts,
             decision_delay_ms, quote_latency_ms, quote_price_sol, shadow_price_sol
-        ) VALUES (?1, ?2, ?3, 'sell', 'ok', ?4, ?5, 2000, 100, ?6, ?7)",
+        ) VALUES (?1, ?2, ?3, 'sell', ?4, ?5, ?6, ?7, 100, ?8, ?9)",
         params![
             format!("quote:market-exit-shadow-diag:{close_id}"),
             wallet,
             token,
+            status,
             "2026-06-23T01:00:02+00:00",
             "2026-06-23T01:00:00+00:00",
+            delay_ms,
             quote_price,
             shadow_price,
         ],

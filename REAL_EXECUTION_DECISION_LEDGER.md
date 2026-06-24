@@ -159,6 +159,8 @@ Latest fix:
 - `414fb131`: fixed Track-B quote-price poisoning from bad decimals
 - `7c240bd7`: added quote-only market-exit diagnostic
 - `7580a640`: upgraded bounded report to join entry quotes to market-exit quotes
+- next report fix: book failed market-exit quotes as zero-exit and keep missing
+  rows as no-data
 - priority is now:
   1. decimals from quote response
   2. saved observed-leg token decimals
@@ -182,27 +184,29 @@ Decision rule:
 - if the fully executable market bucket is also flat/negative across windows,
   close the current copy-follow hypothesis as not actionable in this regime
 
-Latest bounded report, 2026-06-24:
+Audited bounded report, 2026-06-24:
 
 - 24h: 328 clean usable entry events; 196 fully executable events.
-- 24h fully executable total: `+2.255 SOL`; delta vs shadow `-3.361 SOL`.
 - 24h market bucket: 302 market events, 180 fully executable market events,
   fully executable market PnL `+3.521 SOL`.
-- 24h stale_quote bucket: 13 fully executable events, `-0.852 SOL`.
 - 12h market bucket: 177 market events, 166 fully executable market events,
   fully executable market PnL `+3.255 SOL`.
 - 6h market bucket: 114 market events, 103 fully executable market events,
   fully executable market PnL `+0.898 SOL`.
+- 24h stale_quote bucket: 13 fully executable events, `-0.852 SOL`.
 - market-exit quote delay: roughly p50 33-35s, p90 56-57s, p95 about 60s.
 
 Interpretation:
 
-- This is the first evidence that the dominant market bucket may have real
-  executable edge, not just paper exit PnL.
-- It is not enough to enable entries: diagnostics are delayed, the sample is
-  one regime, and filters/scoring are still unchanged.
-- Next review should compare more windows and, if needed, add a delay-filtered
-  report view before any strategy decision.
+- NO-GO on the headline `+3.5 SOL` as evidence. The report excluded market
+  closes without OK exit quotes from fully executable PnL, so the positive
+  number is survivorship-biased toward tokens still tradable 30-60s later.
+- 24h also mixed pre/post market-exit diagnostic enablement; missing rows in
+  that window are not interpretable.
+- Correct methodology: failed market-exit quote rows (`quote_status != ok`) are
+  executable zero-exit, missing rows are no-data, mixed buckets stay ambiguous,
+  and delay-filtered runs are required before any strategy conclusion.
+- Entries remain OFF. Do not treat the old `+3.5 SOL` as proof of edge.
 
 ## Do Not Reopen Without New Evidence
 
@@ -276,8 +280,8 @@ Current stance:
 
 ## Next Step
 
-Collect more Track-B + market-exit pairs and rerun the bounded split report
-across windows. The key number is fully executable market PnL, not aggregate
-shadow or hybrid-paper PnL.
+Deploy the survivorship-corrected Track-B report, then rerun post-enablement
+and delay-filtered windows. The key number is fully executable market PnL after
+failed market-exit quotes are booked as zero-exit.
 
 Do not fund, resume, or increase real entries from this file alone.

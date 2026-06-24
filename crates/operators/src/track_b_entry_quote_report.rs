@@ -16,6 +16,7 @@ const DEFAULT_LIMIT: u32 = 2000;
 const MAX_LIMIT: u32 = 5000;
 const DEFAULT_CLOSE_MATCH_LIMIT: u32 = 16;
 const MAX_CLOSE_MATCH_LIMIT: u32 = 128;
+const MAX_MARKET_EXIT_DELAY_MS: u32 = 3_600_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Cli {
@@ -27,6 +28,7 @@ pub struct Cli {
     pub since_hours: i64,
     pub limit: u32,
     pub close_match_limit: u32,
+    pub max_market_exit_delay_ms: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -44,6 +46,7 @@ pub struct ReportParams {
     pub until: DateTime<Utc>,
     pub limit: u32,
     pub close_match_limit: u32,
+    pub max_market_exit_delay_ms: Option<u32>,
 }
 
 impl Default for Cli {
@@ -57,6 +60,7 @@ impl Default for Cli {
             since_hours: DEFAULT_SINCE_HOURS,
             limit: DEFAULT_LIMIT,
             close_match_limit: DEFAULT_CLOSE_MATCH_LIMIT,
+            max_market_exit_delay_ms: None,
         }
     }
 }
@@ -124,6 +128,14 @@ where
                     MAX_CLOSE_MATCH_LIMIT,
                 )?
             }
+            "--max-market-exit-delay-ms" => {
+                cli.max_market_exit_delay_ms = Some(parse_bounded_u32(
+                    &next_value(&mut iter, &arg)?,
+                    "--max-market-exit-delay-ms",
+                    1,
+                    MAX_MARKET_EXIT_DELAY_MS,
+                )?)
+            }
             "--json" => cli.json = true,
             other => return Err(anyhow!("unknown argument: {other}")),
         }
@@ -163,8 +175,13 @@ fn build_report_result(cli: Cli, as_of: DateTime<Utc>) -> Result<TrackBEntryQuot
             until,
             limit: cli.limit,
             close_match_limit: cli.close_match_limit,
+            max_market_exit_delay_ms: cli.max_market_exit_delay_ms,
         }),
-        summary: Some(summarize_track_b(outcomes, cli.close_match_limit)),
+        summary: Some(summarize_track_b(
+            outcomes,
+            cli.close_match_limit,
+            cli.max_market_exit_delay_ms.map(i64::from),
+        )),
     })
 }
 

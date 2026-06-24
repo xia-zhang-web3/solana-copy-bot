@@ -1,3 +1,4 @@
+use crate::track_b_entry_quote_report_caveats::track_b_caveats;
 use crate::track_b_entry_quote_report_db::{CloseOutcome, EntryQuoteOutcome};
 use crate::track_b_entry_quote_report_executable::fully_executable_pnl;
 use crate::track_b_entry_quote_report_stats::numeric_stats;
@@ -37,7 +38,9 @@ struct CleanEvent {
     ratio: f64,
     price_impact_pct: Option<f64>,
     market_exit_quote_events: u64,
+    market_exit_error_events: u64,
     market_exit_missing_quote_events: u64,
+    market_exit_zero_exit_events: u64,
     market_exit_quote_shadow_ratios: Vec<f64>,
     market_exit_decision_delay_ms: Vec<f64>,
 }
@@ -45,6 +48,7 @@ struct CleanEvent {
 pub(crate) fn summarize_track_b(
     outcomes: Vec<EntryQuoteOutcome>,
     close_match_limit: u32,
+    max_market_exit_delay_ms: Option<i64>,
 ) -> TrackBEntryQuoteSummary {
     let mut counts = SummaryCounts {
         total_events: outcomes.len() as u64,
@@ -79,7 +83,7 @@ pub(crate) fn summarize_track_b(
         if outcome.event.quote_status == QUOTE_OK && outcome.event.quote_price_sol.is_none() {
             counts.ok_null_quote_price_events += 1;
         }
-        let Some(event) = clean_event(outcome) else {
+        let Some(event) = clean_event(outcome, max_market_exit_delay_ms) else {
             if is_contaminated(outcome).unwrap_or(false) {
                 counts.contaminated_ratio_events += 1;
             }
@@ -89,7 +93,9 @@ pub(crate) fn summarize_track_b(
             counts.mixed_close_context_events += 1;
         }
         counts.market_exit_quote_events += event.market_exit_quote_events;
+        counts.market_exit_error_events += event.market_exit_error_events;
         counts.market_exit_missing_quote_events += event.market_exit_missing_quote_events;
+        counts.market_exit_zero_exit_events += event.market_exit_zero_exit_events;
         ratios.push(event.ratio);
         market_exit_ratios.extend(event.market_exit_quote_shadow_ratios.iter().copied());
         market_exit_delays.extend(event.market_exit_decision_delay_ms.iter().copied());
@@ -101,7 +107,7 @@ pub(crate) fn summarize_track_b(
     counts.clean_closed_usable_events = clean.len() as u64;
     TrackBEntryQuoteSummary {
         metric_basis: "entry_quote_with_exit_executability_split".to_string(),
-        caveats: caveats(),
+        caveats: track_b_caveats(),
         counts,
         price_ratio_stats: numeric_stats(ratios),
         price_impact_stats: numeric_stats(impacts),
@@ -114,7 +120,10 @@ pub(crate) fn summarize_track_b(
     }
 }
 
-fn clean_event(outcome: &EntryQuoteOutcome) -> Option<CleanEvent> {
+fn clean_event(
+    outcome: &EntryQuoteOutcome,
+    max_market_exit_delay_ms: Option<i64>,
+) -> Option<CleanEvent> {
     if outcome.closes.is_empty() || outcome.event.quote_status != QUOTE_OK {
         return None;
     }
@@ -138,7 +147,12 @@ fn clean_event(outcome: &EntryQuoteOutcome) -> Option<CleanEvent> {
     let entry_qty_factor = shadow_price / quote_price;
     let adjusted_exit = exit_value_sol * entry_qty_factor;
     let bucket = close_bucket(&outcome.closes);
-    let executable = fully_executable_pnl(outcome, entry_qty_factor, entry_cost_sol);
+    let executable = fully_executable_pnl(
+        outcome,
+        entry_qty_factor,
+        entry_cost_sol,
+        max_market_exit_delay_ms,
+    );
     Some(CleanEvent {
         bucket,
         exit_executability: exit_executability(bucket, executable.pnl_sol),
@@ -148,7 +162,9 @@ fn clean_event(outcome: &EntryQuoteOutcome) -> Option<CleanEvent> {
         ratio,
         price_impact_pct: outcome.event.price_impact_pct,
         market_exit_quote_events: executable.market_quote_events,
+        market_exit_error_events: executable.market_error_events,
         market_exit_missing_quote_events: executable.market_missing_events,
+        market_exit_zero_exit_events: executable.market_zero_exit_events,
         market_exit_quote_shadow_ratios: executable.market_quote_shadow_ratios,
         market_exit_decision_delay_ms: executable.market_decision_delay_ms,
     })
@@ -188,6 +204,9 @@ fn exit_executability(
     bucket: CloseBucket,
     fully_executable_pnl_sol: Option<f64>,
 ) -> ExitExecutability {
+    if bucket == CloseBucket::Mixed {
+        return ExitExecutability::MixedAmbiguous;
+    }
     if fully_executable_pnl_sol.is_some() {
         return ExitExecutability::FullyExecutable;
     }
@@ -259,7 +278,9 @@ fn summarize_bucket<'a>(
             fully_executable_pnl_sol += pnl;
         }
         out.market_exit_quote_events += event.market_exit_quote_events;
+        out.market_exit_error_events += event.market_exit_error_events;
         out.market_exit_missing_quote_events += event.market_exit_missing_quote_events;
+        out.market_exit_zero_exit_events += event.market_exit_zero_exit_events;
         ratio_sum += event.ratio;
         for ratio in &event.market_exit_quote_shadow_ratios {
             market_exit_ratio_sum += ratio;
@@ -368,18 +389,4 @@ fn sweep<'a>(
         row.delta_if_rejected_fully_executable_sol = Some(-rejected_full);
     }
     row
-}
-
-fn caveats() -> Vec<String> {
-    vec![
-        "Entry is executable Track-B quote; market exits become fully executable only when a matching market-exit diagnostic quote is present."
-            .to_string(),
-        "Fully executable calls should use rows with fully_executable_pnl_sol present, not aggregate paper buckets."
-            .to_string(),
-        "Outcome join is wallet_id + token + opened_ts(signal_ts), not sell-side signal_id."
-            .to_string(),
-        "Mixed close-context events are reported separately to avoid fanout hiding.".to_string(),
-        "Market-exit executable quotes are delayed diagnostics; inspect market_exit_decision_delay_ms_stats before treating them as close-time exits."
-            .to_string(),
-    ]
 }
