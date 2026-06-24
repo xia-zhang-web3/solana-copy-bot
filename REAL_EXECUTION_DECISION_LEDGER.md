@@ -33,8 +33,8 @@ filters" should be treated as not actionable in this regime.
 ## Current Production State
 
 - latest deployed `copybot-app`: `7c240bd7`
-- latest deployed `copybot-operators`: `7580a640`
-- latest production checks: 2026-06-24 06:42 UTC
+- latest deployed `copybot-operators`: `b22231c3`
+- latest production checks: 2026-06-24 07:37 UTC
 - `execution.enabled = false`
 - guarded tiny submit config may exist, but entries remain strategy-paused
 - Track-B entry quote diagnostic is enabled
@@ -159,8 +159,8 @@ Latest fix:
 - `414fb131`: fixed Track-B quote-price poisoning from bad decimals
 - `7c240bd7`: added quote-only market-exit diagnostic
 - `7580a640`: upgraded bounded report to join entry quotes to market-exit quotes
-- next report fix: book failed market-exit quotes as zero-exit and keep missing
-  rows as no-data
+- `b22231c3`: booked failed market-exit quotes as zero-exit, kept missing rows
+  as no-data, and added `--max-market-exit-delay-ms`
 - priority is now:
   1. decimals from quote response
   2. saved observed-leg token decimals
@@ -184,29 +184,33 @@ Decision rule:
 - if the fully executable market bucket is also flat/negative across windows,
   close the current copy-follow hypothesis as not actionable in this regime
 
-Audited bounded report, 2026-06-24:
+Survivorship-corrected bounded report, 2026-06-24:
 
-- 24h: 328 clean usable entry events; 196 fully executable events.
-- 24h market bucket: 302 market events, 180 fully executable market events,
-  fully executable market PnL `+3.521 SOL`.
-- 12h market bucket: 177 market events, 166 fully executable market events,
-  fully executable market PnL `+3.255 SOL`.
-- 6h market bucket: 114 market events, 103 fully executable market events,
-  fully executable market PnL `+0.898 SOL`.
-- 24h stale_quote bucket: 13 fully executable events, `-0.852 SOL`.
+- 24h: 318 clean usable entry events; 207 fully executable events.
+- 24h market bucket: 289 market events, 191 fully executable market events,
+  fully executable market PnL `+2.220 SOL`; 170 missing rows make this window
+  partly pre-enablement/no-data.
+- 12h post-enablement: 181 clean usable events; 177 fully executable events.
+- 12h market bucket: 168 market events, all 168 fully executable after booking
+  11 failed exits as zero-exit; market PnL `+1.661 SOL`.
+- 6h: 100 clean usable events; 97 fully executable events.
+- 6h market bucket: 93 fully executable market events; market PnL `+0.358 SOL`.
+- fully executable total: `+0.766 SOL` over 12h, `-0.441 SOL` over 6h.
+- stale_quote remains negative: 12h `-0.495 SOL`, 6h `-0.599 SOL`.
 - market-exit quote delay: roughly p50 33-35s, p90 56-57s, p95 about 60s.
+- delay-filtered 12h at 30s: only 42/168 market events remain fully
+  executable; market PnL `+2.210 SOL`, but 153 rows become no-data, so this is
+  a latency-quality view, not full bucket economics.
 
 Interpretation:
 
-- NO-GO on the headline `+3.5 SOL` as evidence. The report excluded market
-  closes without OK exit quotes from fully executable PnL, so the positive
-  number is survivorship-biased toward tokens still tradable 30-60s later.
-- 24h also mixed pre/post market-exit diagnostic enablement; missing rows in
-  that window are not interpretable.
-- Correct methodology: failed market-exit quote rows (`quote_status != ok`) are
-  executable zero-exit, missing rows are no-data, mixed buckets stay ambiguous,
-  and delay-filtered runs are required before any strategy conclusion.
-- Entries remain OFF. Do not treat the old `+3.5 SOL` as proof of edge.
+- The old `+3.5 SOL` headline is retired as survivorship-biased.
+- After correction, post-enablement market is still positive over 12h but much
+  smaller and weak over 6h. This is directional, not a green light.
+- The full strategy bucket can still go negative because stale_quote remains
+  consistently negative.
+- Entries remain OFF. Need more post-enablement/multi-regime windows before
+  scoring/filter changes.
 
 ## Do Not Reopen Without New Evidence
 
@@ -280,8 +284,9 @@ Current stance:
 
 ## Next Step
 
-Deploy the survivorship-corrected Track-B report, then rerun post-enablement
-and delay-filtered windows. The key number is fully executable market PnL after
-failed market-exit quotes are booked as zero-exit.
+Keep collecting post-enablement Track-B + market-exit pairs and rerun the
+survivorship-corrected report across windows. The key number is fully
+executable market PnL after failed market-exit quotes are booked as zero-exit,
+plus whether stale_quote losses erase it.
 
 Do not fund, resume, or increase real entries from this file alone.
