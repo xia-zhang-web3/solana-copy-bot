@@ -1,6 +1,6 @@
 # Real Execution Decision Ledger
 
-Updated: 2026-06-23
+Updated: 2026-06-24
 
 This file is the short source of truth for real execution decisions. It exists
 to prevent rediscovering the same theories every day.
@@ -18,33 +18,34 @@ Current trading decision:
 
 Current measurement target:
 
-- Track-B entry quote diagnostic
-- question: can executable entry quote quality identify trades that should be
-  skipped before committing real money?
+- Track-B entry quote diagnostic plus market-exit shadow quote diagnostic
+- question: does the dominant `market` bucket remain profitable after both
+  follower entry and follower exit are measured with executable quotes?
 - required evidence: clean matched pairs:
-  `entry diagnostic quote -> eventual shadow close outcome`
-- target sample: about 300 clean closed pairs or 48h of clean post-fix data,
-  whichever comes first
+  `entry diagnostic quote -> shadow market close -> market-exit quote`
+- current state: first 24h/12h/6h bounded report is available; it is
+  directional, not a trading green light
 
-If Track-B is also empty, the current hypothesis "copy these wallet signals
-post-leader and recover edge with filters" should be treated as not
-actionable in this regime.
+If the fully executable market bucket goes flat or negative across windows, the
+current hypothesis "copy these wallet signals post-leader and recover edge with
+filters" should be treated as not actionable in this regime.
 
 ## Current Production State
 
-- latest deployed `copybot-app`: `414fb131`
-- deployed at: 2026-06-23 07:12 UTC
+- latest deployed `copybot-app`: `7c240bd7`
+- latest deployed `copybot-operators`: `7580a640`
+- latest production checks: 2026-06-24 06:42 UTC
 - `execution.enabled = false`
 - guarded tiny submit config may exist, but entries remain strategy-paused
 - Track-B entry quote diagnostic is enabled
+- market-exit shadow quote diagnostic is enabled
 - rug wallet filter is enabled as followlist hygiene
 - dashboard is live on `grindscout.com`
 - latest rollout postflight:
   - daemon active
   - `NRestarts = 0`
   - site HTTP 200
-  - first post-rollout Track-B event inserted with `quote_status = ok`
-  - `quote_price_sol` was non-null and guard did not fire
+  - operator artifact installed without daemon restart
 
 ## Closed Strategic Findings
 
@@ -143,17 +144,21 @@ Conclusion:
 - useful, but not rug protection
 - do not treat it as a green-light signal
 
-## Current Open Test: Track-B Entry Quote Diagnostic
+## Current Open Test: Track-B Entry + Market Exit
 
 Purpose:
 
 - measure executable entry quality before trade commitment
 - produce executable entry cost for scoring entry filters on the right
   objective
+- measure executable market exits so the dominant `market` bucket is no longer
+  paper-only
 
 Latest fix:
 
 - `414fb131`: fixed Track-B quote-price poisoning from bad decimals
+- `7c240bd7`: added quote-only market-exit diagnostic
+- `7580a640`: upgraded bounded report to join entry quotes to market-exit quotes
 - priority is now:
   1. decimals from quote response
   2. saved observed-leg token decimals
@@ -174,8 +179,30 @@ Decision rule:
 
 - if Track-B finds a clean executable entry-quality signal, design a gate and
   backtest it across windows before any trading change
-- if Track-B is also empty, close the current copy-follow hypothesis as
-  not actionable in this regime
+- if the fully executable market bucket is also flat/negative across windows,
+  close the current copy-follow hypothesis as not actionable in this regime
+
+Latest bounded report, 2026-06-24:
+
+- 24h: 328 clean usable entry events; 196 fully executable events.
+- 24h fully executable total: `+2.255 SOL`; delta vs shadow `-3.361 SOL`.
+- 24h market bucket: 302 market events, 180 fully executable market events,
+  fully executable market PnL `+3.521 SOL`.
+- 24h stale_quote bucket: 13 fully executable events, `-0.852 SOL`.
+- 12h market bucket: 177 market events, 166 fully executable market events,
+  fully executable market PnL `+3.255 SOL`.
+- 6h market bucket: 114 market events, 103 fully executable market events,
+  fully executable market PnL `+0.898 SOL`.
+- market-exit quote delay: roughly p50 33-35s, p90 56-57s, p95 about 60s.
+
+Interpretation:
+
+- This is the first evidence that the dominant market bucket may have real
+  executable edge, not just paper exit PnL.
+- It is not enough to enable entries: diagnostics are delayed, the sample is
+  one regime, and filters/scoring are still unchanged.
+- Next review should compare more windows and, if needed, add a delay-filtered
+  report view before any strategy decision.
 
 ## Do Not Reopen Without New Evidence
 
@@ -249,7 +276,8 @@ Current stance:
 
 ## Next Step
 
-Collect the clean Track-B post-`414fb131` sample, then run a bounded analysis
-of executable entry-adjusted outcomes.
+Collect more Track-B + market-exit pairs and rerun the bounded split report
+across windows. The key number is fully executable market PnL, not aggregate
+shadow or hybrid-paper PnL.
 
 Do not fund, resume, or increase real entries from this file alone.
