@@ -29,7 +29,7 @@ impl SqliteDiscoveryStore {
                     closed_ts
                  FROM shadow_closed_trades
                  WHERE closed_ts >= ?1
-                   AND COALESCE(close_context, 'market') = 'market'
+                   AND close_context = 'market'
                    AND signal_id NOT LIKE 'stale-close-%'
                    AND NOT EXISTS (
                         SELECT 1 FROM execution_quote_canary_events

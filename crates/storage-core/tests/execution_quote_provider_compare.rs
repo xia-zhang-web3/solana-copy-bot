@@ -255,6 +255,41 @@ fn provider_selection_prefers_public_when_public_slippage_is_better() -> Result<
     Ok(())
 }
 
+#[test]
+fn provider_selection_excludes_shadow_diagnostic_events() -> Result<()> {
+    let store = open_migrated_store("execution-quote-provider-selection-diag-exclude")?;
+    let now = ts("2026-06-06T08:50:00Z");
+    let event = quote_event(now);
+    store.record_execution_quote_canary_event(&event)?;
+    store.record_execution_quote_canary_provider_sample(&provider_sample(
+        &event,
+        PROVIDER_GENERIC_METIS,
+        90,
+        300.0,
+        0.103,
+        None,
+    ))?;
+
+    let mut market_diag = quote_event(now);
+    market_diag.event_id = "quote:market-exit-shadow-diag:42".to_string();
+    market_diag.signal_id = None;
+    market_diag.shadow_closed_trade_id = None;
+    market_diag.side = "sell".to_string();
+    market_diag.decision_status = None;
+    market_diag.decision_reason = None;
+    store.record_execution_quote_canary_event(&market_diag)?;
+
+    let summary = store.execution_quote_canary_provider_selection_summary(
+        now,
+        now - chrono::Duration::seconds(1),
+        10,
+    )?;
+
+    assert_eq!(summary.total_events, 1);
+    assert_eq!(summary.latest[0].event_id, event.event_id);
+    Ok(())
+}
+
 fn quote_event(request_ts: DateTime<Utc>) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
         event_id: "quote:entry:provider-compare".to_string(),

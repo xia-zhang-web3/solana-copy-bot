@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration as StdDuration;
 
 const DIAG_PREFIX: &str = "quote:entry-shadow-diag:%";
+const MARKET_EXIT_DIAG_PREFIX: &str = "quote:market-exit-shadow-diag:";
 
 #[derive(Debug, Clone)]
 pub(crate) struct EntryQuoteEvent {
@@ -20,10 +21,20 @@ pub(crate) struct EntryQuoteEvent {
 
 #[derive(Debug, Clone)]
 pub(crate) struct CloseOutcome {
+    pub(crate) close_id: i64,
     pub(crate) close_context: String,
     pub(crate) entry_cost_sol: f64,
     pub(crate) exit_value_sol: f64,
     pub(crate) pnl_sol: f64,
+    pub(crate) market_exit_quote: Option<MarketExitQuote>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MarketExitQuote {
+    pub(crate) quote_status: String,
+    pub(crate) quote_price_sol: Option<f64>,
+    pub(crate) shadow_price_sol: Option<f64>,
+    pub(crate) decision_delay_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,7 +131,8 @@ fn load_matching_closes(
     };
     let mut stmt = conn
         .prepare(
-            "SELECT COALESCE(close_context, 'market') AS close_context,
+            "SELECT id,
+                    COALESCE(close_context, 'market') AS close_context,
                     entry_cost_sol, exit_value_sol, pnl_sol
              FROM shadow_closed_trades INDEXED BY idx_shadow_closed_trades_wallet_closed_ts
              WHERE wallet_id = ?1
@@ -143,15 +155,48 @@ fn load_matching_closes(
         ],
         |row| {
             Ok(CloseOutcome {
-                close_context: row.get(0)?,
-                entry_cost_sol: row.get(1)?,
-                exit_value_sol: row.get(2)?,
-                pnl_sol: row.get(3)?,
+                close_id: row.get(0)?,
+                close_context: row.get(1)?,
+                entry_cost_sol: row.get(2)?,
+                exit_value_sol: row.get(3)?,
+                pnl_sol: row.get(4)?,
+                market_exit_quote: None,
             })
         },
     )?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .context("failed reading Track-B close outcomes")
+    let mut closes = rows
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed reading Track-B close outcomes")?;
+    for close in &mut closes {
+        close.market_exit_quote = load_market_exit_quote(conn, close.close_id)?;
+    }
+    Ok(closes)
+}
+
+fn load_market_exit_quote(conn: &Connection, close_id: i64) -> Result<Option<MarketExitQuote>> {
+    let event_id = format!("{MARKET_EXIT_DIAG_PREFIX}{close_id}");
+    let mut stmt = conn
+        .prepare(
+            "SELECT quote_status, quote_price_sol, shadow_price_sol, decision_delay_ms
+             FROM execution_quote_canary_events
+             WHERE event_id = ?1",
+        )
+        .context("failed preparing Track-B market-exit quote lookup")?;
+    let mut rows = stmt
+        .query(params![event_id])
+        .context("failed querying Track-B market-exit quote")?;
+    let Some(row) = rows
+        .next()
+        .context("failed iterating Track-B market-exit quote")?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(MarketExitQuote {
+        quote_status: row.get(0)?,
+        quote_price_sol: row.get(1)?,
+        shadow_price_sol: row.get(2)?,
+        decision_delay_ms: row.get(3)?,
+    }))
 }
 
 fn parse_ts(raw: &str, label: &str) -> rusqlite::Result<DateTime<Utc>> {

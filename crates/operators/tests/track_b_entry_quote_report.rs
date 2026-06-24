@@ -47,6 +47,8 @@ fn splits_exit_executability_and_excludes_contaminated_ratios() -> Result<()> {
     assert_eq!(stale.events, 1);
     assert_eq!(fully.events, 1);
     assert_eq!(hybrid.events, 1);
+    assert_eq!(market.fully_executable_events, 0);
+    assert_eq!(market.market_exit_missing_quote_events, 2);
     assert!((stale.entry_adjusted_pnl_sol + 0.4).abs() < 1e-9);
     assert!((market.shadow_pnl_sol - 0.3).abs() < 1e-9);
 
@@ -58,6 +60,62 @@ fn splits_exit_executability_and_excludes_contaminated_ratios() -> Result<()> {
     assert_eq!(ratio_110.rejected_events, 2);
     assert_eq!(ratio_110.rejected_market_events, 1);
     assert_eq!(ratio_110.rejected_stale_quote_events, 1);
+    Ok(())
+}
+
+#[test]
+fn market_exit_quote_makes_market_bucket_fully_executable() -> Result<()> {
+    let db = NamedTempFile::new()?;
+    let conn = Connection::open(db.path())?;
+    create_schema(&conn)?;
+    insert_event(
+        &conn,
+        "market-exit",
+        "signal-market-exit",
+        "w4",
+        "token-exit",
+        2.0,
+        1.0,
+        0.2,
+    )?;
+    let close_id = insert_close(
+        &conn,
+        "sell-market-exit",
+        "w4",
+        "token-exit",
+        "market",
+        1.0,
+        1.2,
+        0.2,
+    )?;
+    insert_market_exit_quote(&conn, close_id, "w4", "token-exit", 0.75, 1.0)?;
+    drop(conn);
+
+    let report = build_report(
+        test_cli(db.path()),
+        Utc.with_ymd_and_hms(2026, 6, 24, 0, 0, 0).unwrap(),
+    );
+    let summary = report.summary.expect("report should load");
+    let market = summary
+        .by_close_bucket
+        .iter()
+        .find(|row| row.bucket == "market")
+        .expect("market bucket should exist");
+    let fully = summary
+        .by_exit_executability
+        .iter()
+        .find(|row| row.bucket == "fully_executable")
+        .expect("fully executable bucket should exist");
+
+    assert_eq!(summary.counts.market_exit_quote_events, 1);
+    assert_eq!(summary.counts.market_exit_missing_quote_events, 0);
+    assert_eq!(market.events, 1);
+    assert_eq!(market.fully_executable_events, 1);
+    assert_eq!(market.market_exit_quote_events, 1);
+    assert!((market.entry_adjusted_pnl_sol + 0.4).abs() < 1e-9);
+    assert!((market.fully_executable_pnl_sol.expect("full pnl") + 0.55).abs() < 1e-9);
+    assert_eq!(fully.events, 1);
+    assert!((fully.fully_executable_pnl_sol.expect("full bucket pnl") + 0.55).abs() < 1e-9);
     Ok(())
 }
 
@@ -332,7 +390,7 @@ fn insert_close(
     entry_cost: f64,
     exit_value: f64,
     pnl: f64,
-) -> Result<()> {
+) -> Result<i64> {
     conn.execute(
         "INSERT INTO shadow_closed_trades(
             signal_id, wallet_id, token, qty, entry_cost_sol, exit_value_sol,
@@ -348,6 +406,32 @@ fn insert_close(
             "2026-06-23T00:00:00+00:00",
             "2026-06-23T01:00:00+00:00",
             context,
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+fn insert_market_exit_quote(
+    conn: &Connection,
+    close_id: i64,
+    wallet: &str,
+    token: &str,
+    quote_price: f64,
+    shadow_price: f64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO execution_quote_canary_events(
+            event_id, wallet_id, token, side, quote_status, request_ts, signal_ts,
+            decision_delay_ms, quote_latency_ms, quote_price_sol, shadow_price_sol
+        ) VALUES (?1, ?2, ?3, 'sell', 'ok', ?4, ?5, 2000, 100, ?6, ?7)",
+        params![
+            format!("quote:market-exit-shadow-diag:{close_id}"),
+            wallet,
+            token,
+            "2026-06-23T01:00:02+00:00",
+            "2026-06-23T01:00:00+00:00",
+            quote_price,
+            shadow_price,
         ],
     )?;
     Ok(())

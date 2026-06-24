@@ -7,6 +7,8 @@ pub struct TrackBEntryQuoteSummary {
     pub counts: SummaryCounts,
     pub price_ratio_stats: NumericStats,
     pub price_impact_stats: NumericStats,
+    pub market_exit_quote_ratio_stats: NumericStats,
+    pub market_exit_decision_delay_ms_stats: NumericStats,
     pub by_close_bucket: Vec<BucketSummary>,
     pub by_exit_executability: Vec<BucketSummary>,
     pub price_impact_sweep: Vec<SweepRow>,
@@ -26,6 +28,8 @@ pub struct SummaryCounts {
     pub multi_close_match_events: u64,
     pub truncated_at_close_match_limit_events: u64,
     pub mixed_close_context_events: u64,
+    pub market_exit_quote_events: u64,
+    pub market_exit_missing_quote_events: u64,
     pub first_event_ts: Option<String>,
     pub last_event_ts: Option<String>,
 }
@@ -47,8 +51,14 @@ pub struct BucketSummary {
     pub shadow_pnl_sol: f64,
     pub entry_adjusted_pnl_sol: f64,
     pub entry_adjusted_delta_sol: f64,
+    pub fully_executable_events: u64,
+    pub fully_executable_pnl_sol: Option<f64>,
+    pub fully_executable_delta_sol: Option<f64>,
+    pub market_exit_quote_events: u64,
+    pub market_exit_missing_quote_events: u64,
     pub avg_quote_shadow_ratio: Option<f64>,
     pub avg_price_impact_pct: Option<f64>,
+    pub avg_market_exit_quote_shadow_ratio: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,6 +73,8 @@ pub struct SweepRow {
     pub rejected_mixed_events: u64,
     pub rejected_shadow_pnl_sol: f64,
     pub rejected_entry_adjusted_pnl_sol: f64,
+    pub rejected_fully_executable_pnl_sol: Option<f64>,
     pub delta_if_rejected_entry_adjusted_sol: f64,
+    pub delta_if_rejected_fully_executable_sol: Option<f64>,
     pub warning: String,
 }
