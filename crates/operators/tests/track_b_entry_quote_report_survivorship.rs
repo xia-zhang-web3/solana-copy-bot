@@ -9,7 +9,16 @@ fn market_exit_error_books_zero_exit_not_missing() -> Result<()> {
     let db = TestDb::new()?;
     db.insert_entry("dead", "signal-dead", "w5", "token-dead")?;
     let close_id = db.insert_market_close("sell-dead", "w5", "token-dead", 1.0, 1.4, 0.4)?;
-    db.insert_market_exit_quote(close_id, "w5", "token-dead", "error", None, None, 2_000)?;
+    db.insert_market_exit_quote(
+        close_id,
+        "w5",
+        "token-dead",
+        "error",
+        Some(r#"{"errorCode":"TOKEN_NOT_TRADABLE"}"#),
+        None,
+        None,
+        2_000,
+    )?;
 
     let summary = build_report(test_cli(db.path()), report_time())
         .summary
@@ -21,10 +30,48 @@ fn market_exit_error_books_zero_exit_not_missing() -> Result<()> {
         .unwrap();
 
     assert_eq!(summary.counts.market_exit_error_events, 1);
+    assert_eq!(summary.counts.market_exit_dead_error_events, 1);
+    assert_eq!(summary.counts.market_exit_transient_error_events, 0);
     assert_eq!(summary.counts.market_exit_zero_exit_events, 1);
     assert_eq!(summary.counts.market_exit_missing_quote_events, 0);
     assert_eq!(market.fully_executable_events, 1);
     assert!((market.fully_executable_pnl_sol.expect("zero exit pnl") + 1.0).abs() < 1e-9);
+    Ok(())
+}
+
+#[test]
+fn market_exit_transient_error_is_no_data_not_zero_exit() -> Result<()> {
+    let db = TestDb::new()?;
+    db.insert_entry("transient", "signal-transient", "w7", "token-transient")?;
+    let close_id =
+        db.insert_market_close("sell-transient", "w7", "token-transient", 1.0, 1.4, 0.4)?;
+    db.insert_market_exit_quote(
+        close_id,
+        "w7",
+        "token-transient",
+        "error",
+        Some(r#"{"errorCode":"CANNOT_COMPUTE_OTHER_AMOUNT_THRESHOLD"}"#),
+        None,
+        None,
+        2_000,
+    )?;
+
+    let summary = build_report(test_cli(db.path()), report_time())
+        .summary
+        .expect("report should load");
+    let market = summary
+        .by_close_bucket
+        .iter()
+        .find(|row| row.bucket == "market")
+        .unwrap();
+
+    assert_eq!(summary.counts.market_exit_error_events, 1);
+    assert_eq!(summary.counts.market_exit_dead_error_events, 0);
+    assert_eq!(summary.counts.market_exit_transient_error_events, 1);
+    assert_eq!(summary.counts.market_exit_zero_exit_events, 0);
+    assert_eq!(summary.counts.market_exit_missing_quote_events, 1);
+    assert_eq!(market.fully_executable_events, 0);
+    assert_eq!(market.fully_executable_pnl_sol, None);
     Ok(())
 }
 
@@ -38,6 +85,7 @@ fn max_market_exit_delay_excludes_late_quote_as_no_data() -> Result<()> {
         "w6",
         "token-late",
         "ok",
+        None,
         Some(1.0),
         Some(1.0),
         60_000,
@@ -132,15 +180,16 @@ impl TestDb {
         wallet: &str,
         token: &str,
         status: &str,
+        error: Option<&str>,
         quote_price: Option<f64>,
         shadow_price: Option<f64>,
         delay_ms: i64,
     ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO execution_quote_canary_events(
-                event_id, wallet_id, token, side, quote_status, request_ts, signal_ts,
-                decision_delay_ms, quote_latency_ms, quote_price_sol, shadow_price_sol
-            ) VALUES (?1, ?2, ?3, 'sell', ?4, ?5, ?6, ?7, 100, ?8, ?9)",
+            event_id, wallet_id, token, side, quote_status, request_ts, signal_ts,
+                decision_delay_ms, quote_latency_ms, quote_price_sol, shadow_price_sol, error
+            ) VALUES (?1, ?2, ?3, 'sell', ?4, ?5, ?6, ?7, 100, ?8, ?9, ?10)",
             params![
                 format!("quote:market-exit-shadow-diag:{close_id}"),
                 wallet,
@@ -151,6 +200,7 @@ impl TestDb {
                 delay_ms,
                 quote_price,
                 shadow_price,
+                error,
             ],
         )?;
         Ok(())
@@ -174,7 +224,8 @@ fn create_schema(conn: &Connection) -> Result<()> {
             quote_latency_ms INTEGER,
             quote_price_sol REAL,
             shadow_price_sol REAL,
-            price_impact_pct REAL
+            price_impact_pct REAL,
+            error TEXT
         );
         CREATE INDEX idx_execution_quote_canary_events_side_request_ts
             ON execution_quote_canary_events(side, request_ts);

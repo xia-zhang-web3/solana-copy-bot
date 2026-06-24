@@ -39,6 +39,8 @@ struct CleanEvent {
     price_impact_pct: Option<f64>,
     market_exit_quote_events: u64,
     market_exit_error_events: u64,
+    market_exit_dead_error_events: u64,
+    market_exit_transient_error_events: u64,
     market_exit_missing_quote_events: u64,
     market_exit_zero_exit_events: u64,
     market_exit_quote_shadow_ratios: Vec<f64>,
@@ -94,6 +96,8 @@ pub(crate) fn summarize_track_b(
         }
         counts.market_exit_quote_events += event.market_exit_quote_events;
         counts.market_exit_error_events += event.market_exit_error_events;
+        counts.market_exit_dead_error_events += event.market_exit_dead_error_events;
+        counts.market_exit_transient_error_events += event.market_exit_transient_error_events;
         counts.market_exit_missing_quote_events += event.market_exit_missing_quote_events;
         counts.market_exit_zero_exit_events += event.market_exit_zero_exit_events;
         ratios.push(event.ratio);
@@ -163,6 +167,8 @@ fn clean_event(
         price_impact_pct: outcome.event.price_impact_pct,
         market_exit_quote_events: executable.market_quote_events,
         market_exit_error_events: executable.market_error_events,
+        market_exit_dead_error_events: executable.market_dead_error_events,
+        market_exit_transient_error_events: executable.market_transient_error_events,
         market_exit_missing_quote_events: executable.market_missing_events,
         market_exit_zero_exit_events: executable.market_zero_exit_events,
         market_exit_quote_shadow_ratios: executable.market_quote_shadow_ratios,
@@ -279,6 +285,8 @@ fn summarize_bucket<'a>(
         }
         out.market_exit_quote_events += event.market_exit_quote_events;
         out.market_exit_error_events += event.market_exit_error_events;
+        out.market_exit_dead_error_events += event.market_exit_dead_error_events;
+        out.market_exit_transient_error_events += event.market_exit_transient_error_events;
         out.market_exit_missing_quote_events += event.market_exit_missing_quote_events;
         out.market_exit_zero_exit_events += event.market_exit_zero_exit_events;
         ratio_sum += event.ratio;

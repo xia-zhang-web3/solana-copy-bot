@@ -32,6 +32,7 @@ pub(crate) struct CloseOutcome {
 #[derive(Debug, Clone)]
 pub(crate) struct MarketExitQuote {
     pub(crate) quote_status: String,
+    pub(crate) error: Option<String>,
     pub(crate) quote_price_sol: Option<f64>,
     pub(crate) shadow_price_sol: Option<f64>,
     pub(crate) decision_delay_ms: Option<i64>,
@@ -177,7 +178,7 @@ fn load_market_exit_quote(conn: &Connection, close_id: i64) -> Result<Option<Mar
     let event_id = format!("{MARKET_EXIT_DIAG_PREFIX}{close_id}");
     let mut stmt = conn
         .prepare(
-            "SELECT quote_status, quote_price_sol, shadow_price_sol, decision_delay_ms
+            "SELECT quote_status, error, quote_price_sol, shadow_price_sol, decision_delay_ms
              FROM execution_quote_canary_events
              WHERE event_id = ?1",
         )
@@ -193,9 +194,10 @@ fn load_market_exit_quote(conn: &Connection, close_id: i64) -> Result<Option<Mar
     };
     Ok(Some(MarketExitQuote {
         quote_status: row.get(0)?,
-        quote_price_sol: row.get(1)?,
-        shadow_price_sol: row.get(2)?,
-        decision_delay_ms: row.get(3)?,
+        error: row.get(1)?,
+        quote_price_sol: row.get(2)?,
+        shadow_price_sol: row.get(3)?,
+        decision_delay_ms: row.get(4)?,
     }))
 }
 

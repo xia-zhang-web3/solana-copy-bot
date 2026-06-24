@@ -1,7 +1,7 @@
 pub(crate) fn track_b_caveats() -> Vec<String> {
     [
         "Entry is executable Track-B quote; market exits become fully executable only when a matching market-exit diagnostic quote is present.",
-        "Failed market-exit quotes are booked as zero-exit; missing rows remain no-data.",
+        "Only terminal market-exit errors (not-tradable/no-route) are booked as zero-exit; transient errors and missing rows remain no-data.",
         "Fully executable calls should use rows with fully_executable_pnl_sol present, not aggregate paper buckets.",
         "Outcome join is wallet_id + token + opened_ts(signal_ts), not sell-side signal_id.",
         "Mixed close-context events are reported separately to avoid fanout hiding.",

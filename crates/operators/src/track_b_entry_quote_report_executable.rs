@@ -7,6 +7,8 @@ pub(crate) struct FullyExecutablePnl {
     pub(crate) pnl_sol: Option<f64>,
     pub(crate) market_quote_events: u64,
     pub(crate) market_error_events: u64,
+    pub(crate) market_dead_error_events: u64,
+    pub(crate) market_transient_error_events: u64,
     pub(crate) market_missing_events: u64,
     pub(crate) market_zero_exit_events: u64,
     pub(crate) market_quote_shadow_ratios: Vec<f64>,
@@ -52,8 +54,14 @@ fn executable_exit_value(
             }
             if quote.quote_status != MARKET_EXIT_OK {
                 state.market_error_events += 1;
-                state.market_zero_exit_events += 1;
-                return Some(0.0);
+                if is_terminal_market_exit_error(quote.error.as_deref()) {
+                    state.market_dead_error_events += 1;
+                    state.market_zero_exit_events += 1;
+                    return Some(0.0);
+                }
+                state.market_transient_error_events += 1;
+                state.market_missing_events += 1;
+                return None;
             }
             let Some(ratio) = market_exit_quote_ratio(Some(quote)) else {
                 state.market_missing_events += 1;
@@ -87,6 +95,20 @@ fn market_exit_quote_ratio(quote: Option<&MarketExitQuote>) -> Option<f64> {
     let quote_price = positive(quote.quote_price_sol?)?;
     let shadow_price = positive(quote.shadow_price_sol?)?;
     Some(quote_price / shadow_price)
+}
+
+fn is_terminal_market_exit_error(error: Option<&str>) -> bool {
+    let Some(error) = error else {
+        return false;
+    };
+    let lower = error.to_ascii_lowercase();
+    lower.contains("token_not_tradable")
+        || lower.contains("not tradable")
+        || lower.contains("no_routes")
+        || lower.contains("no routes")
+        || lower.contains("no_route")
+        || lower.contains("no route")
+        || lower.contains("no route found")
 }
 
 fn positive(value: f64) -> Option<f64> {
