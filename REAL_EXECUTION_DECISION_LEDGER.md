@@ -206,6 +206,9 @@ Survivorship-corrected bounded report, 2026-06-24:
 - delay-filtered 12h at 30s: only 46/182 market events remain fully
   executable; market PnL `+2.366 SOL`, but 167 rows become no-data, so this is
   a latency-quality view, not full bucket economics.
+- sensitivity check: treating `CANNOT_COMPUTE_OTHER_AMOUNT_THRESHOLD` as a
+  terminal illiquid-exit instead of transient moved the current 12h market
+  bucket by about `-0.055 SOL`; no such events were present in the current 6h.
 
 Interpretation:
 
