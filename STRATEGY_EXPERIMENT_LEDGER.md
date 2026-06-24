@@ -1,6 +1,6 @@
 # Strategy Experiment Ledger
 
-Status date: 2026-06-23
+Status date: 2026-06-24
 
 This file records strategic experiments and negative results so the project does
 not keep re-litigating the same ideas from memory.
@@ -10,7 +10,7 @@ not keep re-litigating the same ideas from memory.
 - Entries remain OFF.
 - Broader execution remains OFF.
 - Rug wallet filter is ON as hygiene, not as proof that trading is profitable.
-- Track-B entry quote diagnostic is live.
+- Track-B entry and market-exit quote diagnostics are live.
 - Open question: can entry-side selection reject bad entries before capital
   commits?
 
@@ -333,16 +333,14 @@ Observed-swaps replay run (`copybot-operators` at `866e9abf`):
 
 Status: active; no scoring change yet.
 
-### Track-B Entry Quote Diagnostic
+### Track-B Entry + Market-Exit Diagnostics
 
 Purpose:
 
 - Measure the real executable entry price at the moment a shadow buy signal
   appears.
-
-What it records:
-
-- signal_id-linked BUY quote, quote price, impact, route, and output amount.
+- Measure executable market exits so the dominant market bucket is no longer
+  paper-only.
 
 Safety:
 
@@ -352,23 +350,24 @@ Safety:
 
 Why it matters:
 
-- It gives executable entry cost, lets us rescore filters on the real objective
-  instead of shadow PnL, and tests whether bad entry quotes predict stale/rug
-  tails or bad fills.
+- Entry quote gives executable entry cost for filter scoring.
+- Market-exit quote removes the last paper-only blind spot from market exits.
 
-Repeatable split report (`copybot_track_b_entry_quote_report`, `1478eeb7`):
+- The old market `+3.5 SOL` headline was survivorship-biased: dead exits were
+  dropped instead of booked as losses.
+- Survivorship is fixed: terminal no-route/not-tradable exits book zero-exit;
+  missing rows remain no-data.
+- Transient-as-death is fixed: provider/amount errors remain no-data. Treating
+  amount-threshold errors as dead moved current 12h market by only `-0.055 SOL`.
 
-- 403 entry quote events; 376 OK; 0 NULL quote prices after decimals fix.
-- Correct outcome join is wallet/token/opened_ts, not signal_id.
-- 356 clean closed usable events after excluding 11 pre-fix ratio outliers.
-- Fully executable `stale_quote_price`: 16 events, entry-adjusted `-2.35`.
-- Dominant market bucket is hybrid paper-exit: 328 events, `+10.10`, not
-  bankable.
-- 11 mixed-context events are separated, not silently folded into a bucket.
-- price impact weak; quote/shadow ratio catches more stale_quote cases but cuts
-  many market/mixed events.
+- Fully executable economics are near break-even and window-sensitive.
+- 12h fully executable total: about `+0.23 SOL`; fresh 6h: about `-0.45 SOL`.
+- Market bucket can be positive, but stale/rug tail remains negative and can
+  erase it.
+- Price-impact and quote/shadow filters are not enabled; they are not proven
+  robust enough.
 
-Status: no filter enable; market-exit quote diagnostic is implemented to collect executable SELL quotes for the hybrid market bucket; entries OFF.
+Status: active measurement only; no filter enable; entries OFF.
 
 ## Do Not Reopen Without New Evidence
 
@@ -387,14 +386,15 @@ Status: no filter enable; market-exit quote diagnostic is implemented to collect
 
 ## Next Decision
 
-After enough Track-B samples:
+The measurement stack now says the current strategy is near break-even, not
+clearly profitable and not obviously trash.
 
-1. Join each entry quote to the eventual shadow outcome and compute executable
-   entry-adjusted PnL split by exit executability.
-2. Sweep price impact, slippage, no-route/weak-route, route quality, and
-   quote/shadow ratio.
-3. Measure tail reduction, winner loss, real-vs-hybrid delta, and floor safety.
-4. Only consider filters that improve real executable economics without cutting too
-   many winners.
+Next strategic choice:
 
-Until then, entries remain OFF.
+1. Keep collecting baseline windows in the background.
+2. If pursuing upside, the remaining lever is copyability/entry selection:
+   reduce rug-tail while keeping market winners.
+3. Getting enough copyability power likely requires a cohort-split followlist
+   expansion, with rank 1-15 and rank 16-30 reported separately.
+
+Until a new cohort experiment is explicitly accepted, entries remain OFF.
