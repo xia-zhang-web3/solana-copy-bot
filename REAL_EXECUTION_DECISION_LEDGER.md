@@ -33,8 +33,8 @@ filters" should be treated as not actionable in this regime.
 ## Current Production State
 
 - latest deployed `copybot-app`: `7c240bd7`
-- latest deployed `copybot-operators`: `b22231c3`
-- latest production checks: 2026-06-24 07:37 UTC
+- latest deployed `copybot-operators`: `4e046a5b`
+- latest production checks: 2026-06-24 10:12 UTC
 - `execution.enabled = false`
 - guarded tiny submit config may exist, but entries remain strategy-paused
 - Track-B entry quote diagnostic is enabled
@@ -161,6 +161,8 @@ Latest fix:
 - `7580a640`: upgraded bounded report to join entry quotes to market-exit quotes
 - `b22231c3`: booked failed market-exit quotes as zero-exit, kept missing rows
   as no-data, and added `--max-market-exit-delay-ms`
+- `4e046a5b`: split market-exit errors into terminal dead/no-route errors
+  versus transient provider/amount errors; only terminal errors book zero-exit
 - priority is now:
   1. decimals from quote response
   2. saved observed-leg token decimals
@@ -186,27 +188,30 @@ Decision rule:
 
 Survivorship-corrected bounded report, 2026-06-24:
 
-- 24h: 318 clean usable entry events; 207 fully executable events.
-- 24h market bucket: 289 market events, 191 fully executable market events,
-  fully executable market PnL `+2.220 SOL`; 170 missing rows make this window
+- 24h: 324 clean usable entry events; 238 fully executable events.
+- 24h market bucket: 300 market events, 223 fully executable market events,
+  fully executable market PnL `+2.500 SOL`; 134 missing rows make this window
   partly pre-enablement/no-data.
-- 12h post-enablement: 181 clean usable events; 177 fully executable events.
-- 12h market bucket: 168 market events, all 168 fully executable after booking
-  11 failed exits as zero-exit; market PnL `+1.661 SOL`.
-- 6h: 100 clean usable events; 97 fully executable events.
-- 6h market bucket: 93 fully executable market events; market PnL `+0.358 SOL`.
-- fully executable total: `+0.766 SOL` over 12h, `-0.441 SOL` over 6h.
-- stale_quote remains negative: 12h `-0.495 SOL`, 6h `-0.599 SOL`.
+- 12h post-enablement: 196 clean usable events; 190 fully executable events.
+- 12h market-exit errors: 11 total, 8 terminal dead/no-route zero-exit,
+  3 transient no-data.
+- 12h market bucket: 182 market events, 181 fully executable market events,
+  market PnL `+2.025 SOL`.
+- 6h: 60 clean usable events; 56 fully executable events.
+- 6h market bucket: 59 market events, 56 fully executable market events,
+  market PnL `-0.452 SOL`.
+- fully executable total: `+0.227 SOL` over 12h, `-0.452 SOL` over 6h.
+- stale_quote remains negative: 12h `-0.999 SOL`, 24h `-1.294 SOL`.
 - market-exit quote delay: roughly p50 33-35s, p90 56-57s, p95 about 60s.
-- delay-filtered 12h at 30s: only 42/168 market events remain fully
-  executable; market PnL `+2.210 SOL`, but 153 rows become no-data, so this is
+- delay-filtered 12h at 30s: only 46/182 market events remain fully
+  executable; market PnL `+2.366 SOL`, but 167 rows become no-data, so this is
   a latency-quality view, not full bucket economics.
 
 Interpretation:
 
 - The old `+3.5 SOL` headline is retired as survivorship-biased.
 - After correction, post-enablement market is still positive over 12h but much
-  smaller and weak over 6h. This is directional, not a green light.
+  smaller and negative over 6h. This is directional, not a green light.
 - The full strategy bucket can still go negative because stale_quote remains
   consistently negative.
 - Entries remain OFF. Need more post-enablement/multi-regime windows before
