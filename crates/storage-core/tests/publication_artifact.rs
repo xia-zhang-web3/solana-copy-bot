@@ -94,6 +94,7 @@ fn v2_publication_persists_runtime_cursor_for_artifact_export() -> Result<()> {
         &[wallet_row(now)],
         &[metric_row(window_start)],
         &["wallet_a".to_string()],
+        None,
         now,
         "ready",
         &publication_update(now, window_start),
@@ -129,6 +130,36 @@ fn v2_publication_persists_runtime_cursor_for_artifact_export() -> Result<()> {
 }
 
 #[test]
+fn v2_publication_persists_candidate_source_rows() -> Result<()> {
+    let (_dir, store) = test_store()?;
+    let now = ts("2026-05-03T10:00:00Z")?;
+    let window_start = now - Duration::days(1);
+    let cursor = runtime_cursor(now - Duration::minutes(1), 42, "tail-sig");
+    let candidate_sources = vec![("wallet_a".to_string(), "slow_hold".to_string())];
+
+    store.persist_discovery_v2_publication(
+        &[wallet_row(now)],
+        &[metric_row(window_start)],
+        &["wallet_a".to_string()],
+        Some(&candidate_sources),
+        now,
+        "ready",
+        &publication_update(now, window_start),
+        V2_FINGERPRINT,
+        &cursor,
+        None,
+        &[],
+    )?;
+
+    let stored = store.load_execution_quote_canary_source_cohorts(&["wallet_a".to_string()])?;
+    assert_eq!(
+        stored.get("wallet_a").map(String::as_str),
+        Some("slow_hold")
+    );
+    Ok(())
+}
+
+#[test]
 fn repeated_v2_publication_does_not_duplicate_active_follow_rows() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = ts("2026-05-03T10:00:00Z")?;
@@ -139,6 +170,7 @@ fn repeated_v2_publication_does_not_duplicate_active_follow_rows() -> Result<()>
             &[wallet_row(now)],
             &[metric_row(window_start)],
             &["wallet_a".to_string()],
+            None,
             now + Duration::seconds(offset),
             "ready",
             &publication_update(now + Duration::seconds(offset), window_start),
@@ -192,6 +224,7 @@ fn runtime_export_rejects_bad_publication_runtime_cursor() -> Result<()> {
             &[wallet_row(now)],
             &[metric_row(window_start)],
             &["wallet_a".to_string()],
+            None,
             now,
             "ready",
             &publication_update(now, window_start),
@@ -230,6 +263,7 @@ fn runtime_export_rejects_future_dated_publication_time() -> Result<()> {
         &[wallet_row(now)],
         &[metric_row(window_start)],
         &["wallet_a".to_string()],
+        None,
         future_published_at,
         "future-dated",
         &publication_update(future_published_at, window_start),
@@ -259,6 +293,7 @@ fn runtime_export_rejects_future_dated_publication_window() -> Result<()> {
         &[wallet_row(now)],
         &[metric_row(future_window_start)],
         &["wallet_a".to_string()],
+        None,
         now,
         "future-window",
         &publication_update(now, future_window_start),
@@ -289,6 +324,7 @@ fn runtime_export_rejects_publication_identity_mismatch() -> Result<()> {
         &[wallet_row(now)],
         &[metric_row(window_start)],
         &["wallet_a".to_string()],
+        None,
         now,
         "ready",
         &publication_update(now, window_start),
@@ -320,6 +356,7 @@ fn runtime_export_rejects_fail_closed_publication_state() -> Result<()> {
         &[wallet_row(now)],
         &[metric_row(window_start)],
         &["wallet_a".to_string()],
+        None,
         now,
         "fail-closed",
         &update,
@@ -349,6 +386,7 @@ fn runtime_export_rejects_gate_without_expected_identity() -> Result<()> {
         &[wallet_row(now)],
         &[metric_row(window_start)],
         &["wallet_a".to_string()],
+        None,
         now,
         "ready",
         &publication_update(now, window_start),
@@ -380,6 +418,7 @@ fn runtime_artifact_snapshot_shape_rejects_extra_metric_rows() -> Result<()> {
         &[wallet_row(now)],
         &[metric_row(window_start)],
         &["wallet_a".to_string()],
+        None,
         now,
         "ready",
         &publication_update(now, window_start),
@@ -414,6 +453,7 @@ fn runtime_artifact_snapshot_shape_rejects_duplicate_metric_rows() -> Result<()>
         &[wallet_row(now)],
         &[metric_row(window_start)],
         &["wallet_a".to_string()],
+        None,
         now,
         "ready",
         &publication_update(now, window_start),
@@ -444,6 +484,7 @@ fn runtime_artifact_snapshot_shape_rejects_duplicate_published_wallet_ids() -> R
         &[wallet_row(now)],
         &[metric_row(window_start)],
         &["wallet_a".to_string()],
+        None,
         now,
         "ready",
         &publication_update(now, window_start),

@@ -78,11 +78,22 @@ impl EntryQuoteShadowDiagnostic {
                     Default::default()
                 }
             };
+        let source_cohorts = match store.load_execution_quote_canary_source_cohorts(&wallet_ids) {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "entry quote shadow diagnostic source cohort lookup failed"
+                );
+                Default::default()
+            }
+        };
         let mut summary = EntryQuoteShadowDiagnosticSummary::default();
         for signal in candidates {
             summary.checked += 1;
             let event_id = entry_quote_shadow_diagnostic_event_id(&signal.signal_id);
             let rank_stamp = rank_stamps.get(&signal.wallet_id).cloned();
+            let source_cohort = source_cohorts.get(&signal.wallet_id).cloned();
             let event = self
                 .quote_signal_event(store, signal, event_id.clone(), now)
                 .await;
@@ -98,6 +109,17 @@ impl EntryQuoteShadowDiagnostic {
                         error = %error,
                         event_id = %event_id,
                         "entry quote shadow diagnostic discovery rank stamp failed"
+                    );
+                }
+            }
+            if let Some(source_cohort) = source_cohort.as_deref() {
+                if let Err(error) =
+                    store.stamp_execution_quote_canary_source_cohort(&event_id, source_cohort)
+                {
+                    tracing::warn!(
+                        error = %error,
+                        event_id = %event_id,
+                        "entry quote shadow diagnostic source cohort stamp failed"
                     );
                 }
             }

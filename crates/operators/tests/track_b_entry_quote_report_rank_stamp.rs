@@ -13,10 +13,12 @@ fn stamped_discovery_rank_survives_empty_wallet_metrics() -> Result<()> {
         "INSERT INTO execution_quote_canary_events(
             event_id, signal_id, wallet_id, token, side, quote_status,
             request_ts, signal_ts, discovery_rank, discovery_rank_cohort,
-            discovery_rank_window_start, quote_price_sol, shadow_price_sol, price_impact_pct
+            discovery_rank_window_start, source_cohort,
+            quote_price_sol, shadow_price_sol, price_impact_pct
         ) VALUES (
             'quote:entry-shadow-diag:signal-stamped', 'signal-stamped', 'wallet-b',
-            'token-b', 'buy', 'ok', ?1, ?2, 16, 'rank_16_30', ?3, 1.1, 1.0, 0.2
+            'token-b', 'buy', 'ok', ?1, ?2, 16, 'rank_16_30', ?3, 'slow_hold',
+            1.1, 1.0, 0.2
         )",
         params![
             "2026-06-23T00:10:00+00:00",
@@ -63,6 +65,12 @@ fn stamped_discovery_rank_survives_empty_wallet_metrics() -> Result<()> {
             .all(|row| row.cohort != "unranked" || row.events == 0),
         "stamped events must not depend on wallet_metrics fallback"
     );
+    let source = summary
+        .by_source_cohort
+        .iter()
+        .find(|row| row.cohort == "slow_hold")
+        .expect("stamped source should classify into slow_hold");
+    assert_eq!(source.events, 1);
     assert!(summary
         .caveats
         .iter()
@@ -92,6 +100,7 @@ fn create_schema(conn: &Connection) -> Result<()> {
             discovery_rank INTEGER,
             discovery_rank_cohort TEXT,
             discovery_rank_window_start TEXT,
+            source_cohort TEXT,
             quote_price_sol REAL,
             shadow_price_sol REAL,
             slippage_bps REAL,

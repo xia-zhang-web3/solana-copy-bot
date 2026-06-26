@@ -41,6 +41,7 @@ mod execution_quote_canary_lookup;
 mod execution_quote_canary_rank_stamp;
 mod execution_quote_canary_route_samples;
 mod execution_quote_canary_shadow_gate;
+mod execution_quote_canary_source_cohort;
 mod execution_quote_provider_lookup;
 mod execution_quote_provider_selection_report;
 mod execution_stale_decay;

@@ -17,7 +17,9 @@ use publication_artifact::{
     load_discovery_runtime_cursor_on_conn, runtime_artifact_export_truth_detail,
     validate_runtime_artifact_snapshot_shape,
 };
-use publication_followlist::{insert_metrics, update_followlist, upsert_wallets};
+use publication_followlist::{
+    insert_metrics, replace_candidate_sources, update_followlist, upsert_wallets,
+};
 use publication_metrics::load_wallet_metric_snapshots_for_window_on_conn;
 use publication_state::{
     publication_state_query, write_discovery_runtime_cursor_on_conn,
@@ -176,6 +178,7 @@ impl SqliteDiscoveryStore {
         wallets: &[WalletUpsertRow],
         metrics: &[WalletMetricRow],
         desired_wallets: &[String],
+        candidate_sources: Option<&[(String, String)]>,
         now: DateTime<Utc>,
         reason: &str,
         update: &DiscoveryPublicationStateUpdate,
@@ -193,6 +196,14 @@ impl SqliteDiscoveryStore {
         }
         upsert_rug_wallet_quarantines_on_conn(&tx, rug_quarantines)?;
         let result = update_followlist(&tx, desired_wallets, true, true, now, reason)?;
+        if let Some(candidate_sources) = candidate_sources {
+            replace_candidate_sources(
+                &tx,
+                candidate_sources,
+                update.last_published_window_start.unwrap_or(now),
+                now,
+            )?;
+        }
         write_publication_state_on_conn(
             &tx,
             update,

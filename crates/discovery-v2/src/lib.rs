@@ -1,8 +1,10 @@
 mod accumulator;
+mod candidate_selection;
 mod executable_feedback;
 mod filters;
 mod live_portfolio;
 mod live_portfolio_rpc;
+mod live_portfolio_selection;
 mod materialized_status;
 mod maturity;
 mod metric;
@@ -13,6 +15,7 @@ mod quality_prepare_incremental;
 mod rug_feedback;
 mod rug_feedback_report;
 mod shadow_feedback;
+mod slow_hold;
 mod status;
 mod token_market;
 mod tradability;
@@ -37,11 +40,11 @@ pub use crate::rug_feedback_report::{
     DiscoveryV2RugFeedbackTotals, DiscoveryV2RugFeedbackWalletRow,
 };
 pub use crate::status::{
-    build_discovery_v2_status, load_discovery_v2_shadow_signal_status, DiscoveryV2CoverageSample,
-    DiscoveryV2FilterStatus, DiscoveryV2LivePortfolioStatus, DiscoveryV2MaturityStatus,
-    DiscoveryV2RugQuarantineCandidate, DiscoveryV2ScanStatus, DiscoveryV2ShadowSignalStatus,
-    DiscoveryV2Status, DiscoveryV2TailStatus, DISCOVERY_V2_SCORING_SOURCE,
-    OPERATOR_WALLET_METRIC_LIMIT,
+    build_discovery_v2_status, load_discovery_v2_shadow_signal_status,
+    DiscoveryV2CandidateWalletSource, DiscoveryV2CoverageSample, DiscoveryV2FilterStatus,
+    DiscoveryV2LivePortfolioStatus, DiscoveryV2MaturityStatus, DiscoveryV2RugQuarantineCandidate,
+    DiscoveryV2ScanStatus, DiscoveryV2ShadowSignalStatus, DiscoveryV2Status, DiscoveryV2TailStatus,
+    DISCOVERY_V2_SCORING_SOURCE, OPERATOR_WALLET_METRIC_LIMIT,
 };
 pub use crate::wallet_report::{
     build_discovery_v2_wallet_report, DiscoveryV2WalletFilterEvidence,

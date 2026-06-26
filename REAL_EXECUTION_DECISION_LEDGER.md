@@ -296,4 +296,10 @@ Cohort split is approved as observation-only: rank 1-15 remains baseline,
 rank 16-30 is the added measurement cohort. Keep rerunning the corrected
 Track-B market report by cohort; entries remain OFF.
 
+Slow-hold wallet pivot is approved as the next observation-only lateness test.
+It must roll out default-off first, with baseline daemon health verified before
+`slow_hold_wallets_enabled=true` is flipped. Success requires a smaller
+executable follower gap and broad-based improvement versus baseline, not only
+fat-tail winners. This does not authorize real entries.
+
 Do not fund, resume, or increase real entries from this file alone.

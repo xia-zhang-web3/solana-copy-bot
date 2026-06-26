@@ -16,6 +16,7 @@ pub(crate) struct EntryQuoteEvent {
     pub(crate) token: String,
     pub(crate) discovery_rank: Option<u64>,
     pub(crate) discovery_window_start: Option<DateTime<Utc>>,
+    pub(crate) source_cohort: Option<String>,
     pub(crate) quote_status: String,
     pub(crate) quote_price_sol: Option<f64>,
     pub(crate) shadow_price_sol: Option<f64>,
@@ -95,7 +96,7 @@ fn load_entry_quote_events(
         .prepare(&format!(
             "SELECT request_ts, signal_ts, wallet_id, token,
                     quote_status, quote_price_sol, shadow_price_sol, price_impact_pct,
-                    {}, {}
+                    {}, {}, {}
              FROM execution_quote_canary_events
              INDEXED BY idx_execution_quote_canary_events_side_request_ts
              WHERE side = 'buy'
@@ -105,7 +106,8 @@ fn load_entry_quote_events(
              ORDER BY request_ts ASC, event_id ASC
              LIMIT ?4",
             optional_column_expr(conn, "discovery_rank")?,
-            optional_column_expr(conn, "discovery_rank_window_start")?
+            optional_column_expr(conn, "discovery_rank_window_start")?,
+            optional_column_expr(conn, "source_cohort")?
         ))
         .context("failed preparing Track-B entry quote event query")?;
     let rows = stmt.query_map(
@@ -137,6 +139,7 @@ fn load_entry_quote_events(
                         )
                     })
                     .transpose()?,
+                source_cohort: row.get(10)?,
                 quote_status: row.get(4)?,
                 quote_price_sol: row.get(5)?,
                 shadow_price_sol: row.get(6)?,

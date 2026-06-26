@@ -37,6 +37,34 @@ pub(crate) enum RankCohort {
     Unranked,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceCohort {
+    Baseline,
+    SlowHold,
+    Other,
+    Unknown,
+}
+
+impl SourceCohort {
+    fn from_source(source: Option<&str>) -> Self {
+        match source {
+            Some("baseline") => Self::Baseline,
+            Some("slow_hold") => Self::SlowHold,
+            Some(_) => Self::Other,
+            None => Self::Unknown,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Baseline => "baseline",
+            Self::SlowHold => "slow_hold",
+            Self::Other => "other",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 impl RankCohort {
     fn from_rank(rank: Option<u64>) -> Self {
         match rank {
@@ -68,6 +96,7 @@ impl RankCohort {
 #[derive(Debug, Clone)]
 pub(crate) struct CleanEvent {
     pub(crate) cohort: RankCohort,
+    pub(crate) source_cohort: SourceCohort,
     pub(crate) bucket: CloseBucket,
     exit_executability: ExitExecutability,
     pub(crate) shadow_pnl_sol: f64,
@@ -158,6 +187,7 @@ pub(crate) fn summarize_track_b(
         by_close_bucket: summarize_close_buckets(&clean),
         by_exit_executability: summarize_exit_executability(&clean),
         by_rank_cohort: summarize_rank_cohorts(&clean),
+        by_source_cohort: summarize_source_cohorts(&clean),
         price_impact_sweep: sweep_price_impact(&clean),
         quote_shadow_ratio_sweep: sweep_ratio(&clean),
     }
@@ -198,6 +228,7 @@ fn clean_event(
     );
     Some(CleanEvent {
         cohort: RankCohort::from_rank(outcome.event.discovery_rank),
+        source_cohort: SourceCohort::from_source(outcome.event.source_cohort.as_deref()),
         bucket,
         exit_executability: exit_executability(bucket, executable.pnl_sol),
         shadow_pnl_sol,
@@ -319,6 +350,32 @@ fn summarize_rank_cohorts(events: &[CleanEvent]) -> Vec<CohortSummary> {
             cohort: cohort.label().to_string(),
             rank_min,
             rank_max,
+            events: cohort_events.len() as u64,
+            by_close_bucket: summarize_close_buckets(&cohort_events),
+            by_exit_executability: summarize_exit_executability(&cohort_events),
+        }
+    })
+    .collect()
+}
+
+fn summarize_source_cohorts(events: &[CleanEvent]) -> Vec<CohortSummary> {
+    [
+        SourceCohort::Baseline,
+        SourceCohort::SlowHold,
+        SourceCohort::Other,
+        SourceCohort::Unknown,
+    ]
+    .into_iter()
+    .map(|cohort| {
+        let cohort_events = events
+            .iter()
+            .filter(|event| event.source_cohort == cohort)
+            .cloned()
+            .collect::<Vec<_>>();
+        CohortSummary {
+            cohort: cohort.label().to_string(),
+            rank_min: None,
+            rank_max: None,
             events: cohort_events.len() as u64,
             by_close_bucket: summarize_close_buckets(&cohort_events),
             by_exit_executability: summarize_exit_executability(&cohort_events),

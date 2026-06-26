@@ -32,11 +32,19 @@ pub struct DiscoveryV2Status {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rug_quarantine_candidates: Vec<DiscoveryV2RugQuarantineCandidate>,
     pub candidate_wallets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_wallet_sources: Vec<DiscoveryV2CandidateWalletSource>,
     pub execution_enabled: bool,
     pub execution_disabled: bool,
     pub blockers: Vec<String>,
     pub production_green: bool,
     pub policy_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryV2CandidateWalletSource {
+    pub wallet_id: String,
+    pub source_cohort: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

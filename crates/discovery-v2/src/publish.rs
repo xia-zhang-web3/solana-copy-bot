@@ -80,10 +80,12 @@ pub fn publish_discovery_v2_status(
             published_scoring_source: Some(DISCOVERY_V2_SCORING_SOURCE.to_string()),
             published_wallet_ids: Some(status.candidate_wallets.clone()),
         };
+        let candidate_sources = candidate_source_rows(&status);
         let followlist_update = store.persist_discovery_v2_publication(
             &wallet_rows(&status),
             &metric_rows(&status),
             &status.candidate_wallets,
+            Some(&candidate_sources),
             status.now,
             reason,
             &update,
@@ -118,6 +120,14 @@ pub fn publish_discovery_v2_status(
         publication_rotation,
         status: status.bounded_operator_wallet_metrics(),
     })
+}
+
+fn candidate_source_rows(status: &DiscoveryV2Status) -> Vec<(String, String)> {
+    status
+        .candidate_wallet_sources
+        .iter()
+        .map(|source| (source.wallet_id.clone(), source.source_cohort.clone()))
+        .collect()
 }
 
 fn publication_rotation_report(

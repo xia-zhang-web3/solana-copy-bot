@@ -105,16 +105,10 @@ pub(crate) fn wallet_metric_from_accumulator(
         discovery,
         now,
     );
-    let rug = if reject_reasons.is_empty() {
-        rug_evaluation_from_accumulator(&acc)
-    } else {
-        RugEvaluation {
-            ratio: 0.0,
-            evaluated: 0,
-            unevaluated: 0,
-        }
-    };
-    push_rug_reject_reasons(&mut reject_reasons, rug.ratio, rug.unevaluated, discovery);
+    let rug = rug_evaluation_from_accumulator(&acc);
+    if reject_reasons.is_empty() {
+        push_rug_reject_reasons(&mut reject_reasons, rug.ratio, rug.unevaluated, discovery);
+    }
     let mut score = if reject_reasons.is_empty() {
         let base_score = (0.35 * tanh01(acc.realized_pnl_sol / 2.0))
             + (0.20 * tanh01(roi * 3.0))

@@ -54,6 +54,53 @@ fn stamps_execution_quote_canary_event_with_discovery_rank() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn stamps_execution_quote_canary_event_with_source_cohort() -> Result<()> {
+    let db = NamedTempFile::new()?;
+    let mut store = SqliteStore::open(db.path())?;
+    store.run_migrations(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../migrations"
+    )))?;
+    seed_source_cohort(db.path())?;
+
+    let request_ts = Utc.with_ymd_and_hms(2026, 6, 23, 0, 10, 0).unwrap();
+    assert_eq!(
+        store.record_execution_quote_canary_event(&quote_event(request_ts))?,
+        ExecutionQuoteCanaryRecordOutcome::Inserted
+    );
+    let cohorts = store.load_execution_quote_canary_source_cohorts(&["wallet-b".to_string()])?;
+    assert_eq!(
+        cohorts.get("wallet-b").map(String::as_str),
+        Some("slow_hold")
+    );
+    assert!(store
+        .stamp_execution_quote_canary_source_cohort("quote:entry-shadow-diag:sig", "slow_hold")?);
+    drop(store);
+
+    let conn = Connection::open(db.path())?;
+    let stored: String = conn.query_row(
+        "SELECT source_cohort
+         FROM execution_quote_canary_events
+         WHERE event_id = 'quote:entry-shadow-diag:sig'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(stored, "slow_hold");
+    Ok(())
+}
+
+fn seed_source_cohort(path: &Path) -> Result<()> {
+    let conn = Connection::open(path)?;
+    conn.execute(
+        "INSERT INTO discovery_candidate_sources(
+            wallet_id, source_cohort, window_start, updated_at
+         ) VALUES ('wallet-b', 'slow_hold', ?1, ?1)",
+        params!["2026-06-23T00:00:00+00:00"],
+    )?;
+    Ok(())
+}
+
 fn seed_wallet_metrics(path: &Path) -> Result<()> {
     let conn = Connection::open(path)?;
     for rank in 1..16 {

@@ -381,6 +381,99 @@ fn status_scan_prefers_still_eligible_active_wallet_to_reduce_churn() -> Result<
     Ok(())
 }
 
+#[test]
+fn slow_hold_wallets_are_additive_to_baseline_candidates() -> Result<()> {
+    let dir = tempdir()?;
+    let store = SqliteDiscoveryStore::open(dir.path().join("runtime.db"))?;
+    ensure_discovery_v2_schema(&store)?;
+    let now = ts("2026-05-16T16:00:00Z")?;
+    let baseline_token = "SlowHoldBaseline111111111111111111111111";
+    let slow_token = "SlowHoldToken1111111111111111111111111111";
+    let tail_token = "SlowHoldTail11111111111111111111111111111";
+    store.insert_observed_swaps_batch(&[
+        buy(
+            "coverage_wallet",
+            tail_token,
+            "sig-slow-hold-coverage",
+            1,
+            now - Duration::hours(25),
+        ),
+        buy(
+            "baseline_wallet",
+            baseline_token,
+            "sig-baseline-buy",
+            10,
+            now - Duration::minutes(20),
+        ),
+        sell(
+            "baseline_wallet",
+            baseline_token,
+            "sig-baseline-sell",
+            11,
+            now - Duration::minutes(19),
+        ),
+        buy(
+            "baseline_wallet",
+            baseline_token,
+            "sig-baseline-open",
+            12,
+            now - Duration::minutes(18),
+        ),
+        buy(
+            "slow_wallet",
+            slow_token,
+            "sig-slow-buy",
+            13,
+            now - Duration::minutes(90),
+        ),
+        sell(
+            "slow_wallet",
+            slow_token,
+            "sig-slow-sell",
+            14,
+            now - Duration::minutes(20),
+        ),
+        buy(
+            "tail_wallet",
+            tail_token,
+            "sig-slow-tail",
+            15,
+            now - Duration::minutes(1),
+        ),
+    ])?;
+    store.upsert_token_quality_cache(baseline_token, Some(5), Some(1.0), Some(60), now)?;
+    store.upsert_token_quality_cache(slow_token, Some(5), Some(1.0), Some(60), now)?;
+    store.upsert_token_quality_cache(tail_token, Some(5), Some(1.0), Some(60), now)?;
+    let (mut discovery, shadow) = policy();
+    discovery.follow_top_n = 1;
+    discovery.slow_hold_wallets_enabled = true;
+    discovery.slow_hold_top_m = 1;
+    discovery.slow_hold_min_hold_median_seconds = 30 * 60;
+    discovery.slow_hold_min_trades = 2;
+    discovery.slow_hold_min_buy_count = 1;
+    discovery.slow_hold_min_score = 0.0;
+
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
+
+    assert!(status.production_green, "{:?}", status.blockers);
+    assert_eq!(
+        status.candidate_wallets,
+        vec!["baseline_wallet".to_string(), "slow_wallet".to_string()]
+    );
+    assert_eq!(
+        status
+            .candidate_wallet_sources
+            .iter()
+            .map(|source| (source.wallet_id.as_str(), source.source_cohort.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("baseline_wallet", "baseline"),
+            ("slow_wallet", "slow_hold")
+        ]
+    );
+    Ok(())
+}
+
 fn policy() -> (DiscoveryConfig, ShadowConfig) {
     let mut discovery = DiscoveryConfig::default();
     discovery.min_leader_notional_sol = 0.0;

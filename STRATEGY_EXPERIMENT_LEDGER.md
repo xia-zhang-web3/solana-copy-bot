@@ -13,6 +13,9 @@ not keep re-litigating the same ideas from memory.
 - Track-B entry and market-exit quote diagnostics are live.
 - Open question: can entry-side selection reject bad entries before capital
   commits?
+- Slow-hold wallet pivot is approved as the next observation-only test of
+  follower lateness. Infrastructure is implemented default-off; rollout must
+  install it with slow-hold disabled first, then flip only after postflight.
 
 ## Core Findings
 
@@ -374,6 +377,37 @@ Why it matters:
 
 Status: active measurement only; no filter enable; entries OFF.
 
+### Slow-Hold Wallet Pivot
+
+Hypothesis:
+
+- The migrated-memecoin copy strategy is near break-even because the follower is
+  too late for fast wallets.
+- Slower-holding wallets may preserve more edge after follower delay.
+
+Design:
+
+- Add slow-hold wallets as an additive cohort, not a replacement for baseline.
+- Baseline top-N keeps its own budget; slow-hold top-M gets a separate budget.
+- The publish floor remains protected because the published set is
+  `baseline UNION slow_hold`.
+- Source cohort is stamped on entry diagnostics for later Track-B comparison.
+
+Success criteria:
+
+- Slow-hold has a smaller executable-vs-shadow follower gap than baseline.
+- Slow-hold shows broad-based improvement: positive median and ex-top3, not
+  only a few fat-tail winners.
+- Stale/rug-tail share is lower than baseline across disjoint windows.
+
+Status:
+
+- Implemented and audited default-off on 2026-06-26.
+- Do not infer a trading green light from rollout. This is observation-only;
+  entries remain OFF.
+- If slow-hold is empty or gap is unchanged, the next route is a broader
+  universe pivot rather than more wallet-ranking tweaks.
+
 ## Do Not Reopen Without New Evidence
 
 - Do not use raw shadow PnL as a trading green light.
@@ -391,6 +425,8 @@ Status: active measurement only; no filter enable; entries OFF.
 
 ## Current Decision
 
-User approved cohort-split expansion. Run top-30 observation with production
-filters still enabled, entries OFF, and A/B reports separated by point-in-time
-Discovery rank. Do not use blended top-30 PnL for green/no-go decisions.
+User approved cohort-split expansion and the slow-hold wallet pivot. Run both
+as observation-only with production filters still enabled and entries OFF. Do
+not use blended top-30 PnL for green/no-go decisions. Deploy slow-hold
+infrastructure default-off first; enable it only after daemon postflight proves
+baseline collection is healthy.

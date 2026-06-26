@@ -99,6 +99,31 @@ pub(super) fn update_followlist(
     Ok(result)
 }
 
+pub(super) fn replace_candidate_sources(
+    conn: &rusqlite::Connection,
+    candidate_sources: &[(String, String)],
+    window_start: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    conn.execute("DELETE FROM discovery_candidate_sources", [])?;
+    let mut stmt = conn.prepare_cached(
+        "INSERT INTO discovery_candidate_sources(
+            wallet_id, source_cohort, window_start, updated_at
+         ) VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    let window_start = window_start.to_rfc3339();
+    let updated_at = now.to_rfc3339();
+    for (wallet_id, source_cohort) in candidate_sources {
+        stmt.execute(params![
+            wallet_id,
+            source_cohort,
+            &window_start,
+            &updated_at
+        ])?;
+    }
+    Ok(())
+}
+
 fn active_wallets_on_conn(conn: &rusqlite::Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT wallet_id FROM followlist WHERE active = 1")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;

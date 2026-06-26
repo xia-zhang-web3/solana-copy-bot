@@ -21,6 +21,7 @@ pub(crate) fn ensure_execution_quote_canary_tables(store: &SqliteDiscoveryStore)
         ("discovery_rank", "INTEGER"),
         ("discovery_rank_cohort", "TEXT"),
         ("discovery_rank_window_start", "TEXT"),
+        ("source_cohort", "TEXT"),
     ] {
         ensure_column(store, "execution_quote_canary_events", column, definition)?;
     }
@@ -561,6 +562,7 @@ CREATE TABLE IF NOT EXISTS execution_quote_canary_events (
     discovery_rank INTEGER,
     discovery_rank_cohort TEXT,
     discovery_rank_window_start TEXT,
+    source_cohort TEXT,
     quote_price_sol REAL,
     shadow_price_sol REAL,
     slippage_bps REAL,

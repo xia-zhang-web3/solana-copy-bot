@@ -200,6 +200,26 @@ fn validate_discovery_storage_mitigation_config(config: &AppConfig) -> Result<()
             config.discovery.follow_top_n
         ));
     }
+    if config.discovery.slow_hold_wallets_enabled {
+        if config.discovery.slow_hold_top_m == 0 {
+            return Err(anyhow!(
+                "discovery.slow_hold_top_m ({}) must be >= 1 when slow-hold wallets are enabled",
+                config.discovery.slow_hold_top_m
+            ));
+        }
+        if config.discovery.slow_hold_min_hold_median_seconds == 0 {
+            return Err(anyhow!(
+                "discovery.slow_hold_min_hold_median_seconds ({}) must be >= 1 when slow-hold wallets are enabled",
+                config.discovery.slow_hold_min_hold_median_seconds
+            ));
+        }
+        if !(0.0..=1.0).contains(&config.discovery.slow_hold_min_score) {
+            return Err(anyhow!(
+                "discovery.slow_hold_min_score ({}) must be in [0, 1]",
+                config.discovery.slow_hold_min_score
+            ));
+        }
+    }
     if config.discovery.maturity_min_active_days > 0 {
         if config.discovery.maturity_window_days == 0 {
             return Err(anyhow!(

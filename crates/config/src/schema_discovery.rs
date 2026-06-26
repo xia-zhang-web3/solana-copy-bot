@@ -24,6 +24,14 @@ pub struct DiscoveryConfig {
     pub min_buy_count: u32,
     pub min_tradable_ratio: f64,
     pub require_open_positions_for_publication: bool,
+    pub slow_hold_wallets_enabled: bool,
+    pub slow_hold_top_m: u32,
+    pub slow_hold_min_hold_median_seconds: u64,
+    pub slow_hold_min_trades: u32,
+    pub slow_hold_min_buy_count: u32,
+    pub slow_hold_min_active_days: u32,
+    pub slow_hold_max_stale_days: u32,
+    pub slow_hold_min_score: f64,
     pub live_portfolio_gate_enabled: bool,
     pub min_live_sol_balance: f64,
     pub min_live_portfolio_value_sol: f64,
@@ -78,6 +86,14 @@ impl Default for DiscoveryConfig {
             min_buy_count: 10,
             min_tradable_ratio: 0.25,
             require_open_positions_for_publication: false,
+            slow_hold_wallets_enabled: false,
+            slow_hold_top_m: 15,
+            slow_hold_min_hold_median_seconds: 30 * 60,
+            slow_hold_min_trades: 3,
+            slow_hold_min_buy_count: 2,
+            slow_hold_min_active_days: 1,
+            slow_hold_max_stale_days: 7,
+            slow_hold_min_score: 0.55,
             live_portfolio_gate_enabled: false,
             min_live_sol_balance: 0.25,
             min_live_portfolio_value_sol: 0.25,
@@ -169,6 +185,17 @@ impl fmt::Debug for DiscoveryConfig {
                 "require_open_positions_for_publication",
                 &self.require_open_positions_for_publication,
             )
+            .field("slow_hold_wallets_enabled", &self.slow_hold_wallets_enabled)
+            .field("slow_hold_top_m", &self.slow_hold_top_m)
+            .field(
+                "slow_hold_min_hold_median_seconds",
+                &self.slow_hold_min_hold_median_seconds,
+            )
+            .field("slow_hold_min_trades", &self.slow_hold_min_trades)
+            .field("slow_hold_min_buy_count", &self.slow_hold_min_buy_count)
+            .field("slow_hold_min_active_days", &self.slow_hold_min_active_days)
+            .field("slow_hold_max_stale_days", &self.slow_hold_max_stale_days)
+            .field("slow_hold_min_score", &self.slow_hold_min_score)
             .field(
                 "live_portfolio_gate_enabled",
                 &self.live_portfolio_gate_enabled,

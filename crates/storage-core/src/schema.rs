@@ -128,6 +128,7 @@ fn validate_discovery_v2_schema_read_only_inner(
         "wallets",
         "wallet_metrics",
         "followlist",
+        "discovery_candidate_sources",
         "discovery_strategy_state",
     ] {
         if !store.sqlite_table_exists(table)? {
@@ -178,6 +179,10 @@ fn validate_discovery_v2_schema_read_only_inner(
         ("followlist", "removed_at"),
         ("followlist", "reason"),
         ("followlist", "active"),
+        ("discovery_candidate_sources", "wallet_id"),
+        ("discovery_candidate_sources", "source_cohort"),
+        ("discovery_candidate_sources", "window_start"),
+        ("discovery_candidate_sources", "updated_at"),
         ("discovery_strategy_state", "id"),
         ("discovery_strategy_state", "publication_runtime_mode"),
         ("discovery_strategy_state", "publication_reason"),
@@ -331,6 +336,13 @@ CREATE TABLE IF NOT EXISTS followlist (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_followlist_one_active_wallet
     ON followlist(wallet_id)
     WHERE active = 1;
+
+CREATE TABLE IF NOT EXISTS discovery_candidate_sources (
+    wallet_id TEXT PRIMARY KEY,
+    source_cohort TEXT NOT NULL,
+    window_start TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS discovery_v2_wallet_quarantine (
     wallet_id TEXT NOT NULL,

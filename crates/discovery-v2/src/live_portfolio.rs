@@ -1,14 +1,17 @@
+use crate::candidate_selection::{candidate_wallets_without_live_gate, stable_candidate_wallets};
+use crate::live_portfolio_selection::process_live_portfolio_candidate_rows;
 use crate::metric::{reject_wallet_metric, DiscoveryV2WalletMetric};
+use crate::slow_hold::{SOURCE_BASELINE, SOURCE_SLOW_HOLD};
+use crate::status::DiscoveryV2CandidateWalletSource;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig, DISCOVERY_V2_TOKEN_QUALITY_TTL_SECONDS};
 use copybot_core_types::TokenQualityCacheRow;
 use copybot_storage_core::SqliteDiscoveryStore;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use std::thread;
+use std::collections::HashMap;
 
-const LIVE_PORTFOLIO_RPC_BATCH_SIZE: usize = 8;
+pub(super) const LIVE_PORTFOLIO_RPC_BATCH_SIZE: usize = 8;
 
 #[derive(Debug, Clone)]
 pub(crate) struct LiveTokenPosition {
@@ -45,6 +48,7 @@ pub(crate) struct LivePortfolioEvaluation {
 
 pub(super) struct LivePortfolioGateResult {
     pub(super) candidate_wallets: Vec<String>,
+    pub(super) candidate_wallet_sources: Vec<DiscoveryV2CandidateWalletSource>,
     pub(super) status: Option<DiscoveryV2LivePortfolioStatus>,
     pub(super) live_reject_reasons: Vec<String>,
 }
@@ -58,12 +62,15 @@ pub(super) fn apply_live_portfolio_gate(
 ) -> Result<LivePortfolioGateResult> {
     let active_follow_wallets = store.list_active_follow_wallets()?;
     if !discovery.live_portfolio_gate_enabled {
+        let selection = candidate_wallets_without_live_gate(
+            discovery,
+            metrics,
+            &active_follow_wallets,
+            options.now,
+        );
         return Ok(LivePortfolioGateResult {
-            candidate_wallets: candidate_wallets_without_live_gate(
-                discovery,
-                metrics,
-                &active_follow_wallets,
-            ),
+            candidate_wallets: selection.wallets,
+            candidate_wallet_sources: selection.sources,
             status: None,
             live_reject_reasons: Vec::new(),
         });
@@ -107,91 +114,77 @@ pub(super) fn apply_live_portfolio_gate(
         }
         return Ok(LivePortfolioGateResult {
             candidate_wallets: candidates,
+            candidate_wallet_sources: Vec::new(),
             status: Some(status),
             live_reject_reasons,
         });
     };
 
-    let eligible_wallets = stable_eligible_wallets(
+    let eligible_wallets = stable_candidate_wallets(
         discovery,
         metrics,
         &active_follow_wallets,
         status.max_wallets,
+        live_gate_candidate_pool_limit(discovery, status.max_wallets),
+        options.now,
     );
-    for batch in eligible_wallets.chunks(LIVE_PORTFOLIO_RPC_BATCH_SIZE) {
-        let snapshots = fetch_live_portfolio_batch(client, batch);
-        for (index, snapshot) in snapshots {
-            if candidates.len() >= discovery.follow_top_n.max(1) as usize {
-                break;
-            }
-            let metric = &mut metrics[index];
-            status.checked_wallets += 1;
-            let snapshot = match snapshot {
-                Ok(snapshot) => snapshot,
-                Err(_) => {
-                    let reason = "live_portfolio_rpc_unavailable";
-                    reject_metric(metric, reason);
-                    live_reject_reasons.push(reason.to_string());
-                    status.rpc_failures += 1;
-                    status.rejected_wallets += 1;
-                    continue;
-                }
-            };
-            let quality_cache = load_live_token_quality(store, &snapshot)?;
-            let price_cache = load_live_token_prices(store, &snapshot, options.now)?;
-            let evaluation = evaluate_live_portfolio_snapshot(
-                &snapshot,
-                discovery,
-                shadow,
-                &price_cache,
-                &quality_cache,
-                options.now,
-            );
-            metric.live_sol_balance = Some(evaluation.sol_balance);
-            metric.live_token_value_sol = Some(evaluation.token_value_sol);
-            metric.live_token_positions = Some(evaluation.token_positions);
-            metric.live_tradable_token_positions = Some(evaluation.tradable_token_positions);
-            if evaluation.accepted {
-                status.accepted_wallets += 1;
-                candidates.push(metric.wallet_id.clone());
-            } else {
-                let reason = evaluation
-                    .reject_reason
-                    .unwrap_or("live_portfolio_rejected");
-                reject_metric(metric, reason);
-                live_reject_reasons.push(reason.to_string());
-                status.rejected_wallets += 1;
-            }
-        }
-        if candidates.len() >= discovery.follow_top_n.max(1) as usize {
-            break;
-        }
+    let mut candidate_sources = Vec::new();
+    let baseline_rows = eligible_wallets
+        .iter()
+        .filter(|(_, _, source)| *source == SOURCE_BASELINE)
+        .cloned()
+        .collect::<Vec<_>>();
+    process_live_portfolio_candidate_rows(
+        store,
+        client,
+        discovery,
+        shadow,
+        options,
+        metrics,
+        &baseline_rows,
+        discovery.follow_top_n.max(1) as usize,
+        SOURCE_BASELINE,
+        &mut status,
+        &mut candidates,
+        &mut candidate_sources,
+        &mut live_reject_reasons,
+    )?;
+    if discovery.slow_hold_wallets_enabled {
+        let slow_rows = eligible_wallets
+            .iter()
+            .filter(|(_, _, source)| *source == SOURCE_SLOW_HOLD)
+            .cloned()
+            .collect::<Vec<_>>();
+        process_live_portfolio_candidate_rows(
+            store,
+            client,
+            discovery,
+            shadow,
+            options,
+            metrics,
+            &slow_rows,
+            discovery.slow_hold_top_m.max(1) as usize,
+            SOURCE_SLOW_HOLD,
+            &mut status,
+            &mut candidates,
+            &mut candidate_sources,
+            &mut live_reject_reasons,
+        )?;
     }
     Ok(LivePortfolioGateResult {
         candidate_wallets: candidates,
+        candidate_wallet_sources: candidate_sources,
         status: Some(status),
         live_reject_reasons,
     })
 }
 
-fn fetch_live_portfolio_batch(
-    client: &crate::live_portfolio_rpc::LivePortfolioRpcClient,
-    batch: &[(usize, String)],
-) -> Vec<(usize, Result<LivePortfolioSnapshot>)> {
-    thread::scope(|scope| {
-        let handles = batch
-            .iter()
-            .map(|(index, wallet_id)| {
-                let client = client.clone();
-                let wallet_id = wallet_id.clone();
-                scope.spawn(move || (*index, client.fetch_snapshot(&wallet_id)))
-            })
-            .collect::<Vec<_>>();
-        handles
-            .into_iter()
-            .map(|handle| handle.join().expect("live portfolio RPC worker panicked"))
-            .collect()
-    })
+fn live_gate_candidate_pool_limit(discovery: &DiscoveryConfig, max_wallets: usize) -> usize {
+    if discovery.slow_hold_wallets_enabled {
+        max_wallets.saturating_add(discovery.slow_hold_top_m.max(1) as usize)
+    } else {
+        max_wallets
+    }
 }
 
 pub(crate) fn evaluate_live_portfolio_snapshot(
@@ -244,7 +237,7 @@ pub(crate) fn evaluate_live_portfolio_snapshot(
     )
 }
 
-fn load_live_token_quality(
+pub(super) fn load_live_token_quality(
     store: &SqliteDiscoveryStore,
     snapshot: &LivePortfolioSnapshot,
 ) -> Result<HashMap<String, TokenQualityCacheRow>> {
@@ -260,7 +253,7 @@ fn load_live_token_quality(
     Ok(rows)
 }
 
-fn load_live_token_prices(
+pub(super) fn load_live_token_prices(
     store: &SqliteDiscoveryStore,
     snapshot: &LivePortfolioSnapshot,
     now: DateTime<Utc>,
@@ -317,47 +310,8 @@ fn quality_satisfies_shadow_gate(
     true
 }
 
-fn reject_metric(metric: &mut DiscoveryV2WalletMetric, reason: &str) {
+pub(super) fn reject_metric(metric: &mut DiscoveryV2WalletMetric, reason: &str) {
     reject_wallet_metric(metric, reason);
-}
-
-fn candidate_wallets_without_live_gate(
-    discovery: &DiscoveryConfig,
-    metrics: &[DiscoveryV2WalletMetric],
-    active_follow_wallets: &HashSet<String>,
-) -> Vec<String> {
-    stable_eligible_wallets(
-        discovery,
-        metrics,
-        active_follow_wallets,
-        discovery.follow_top_n.max(1) as usize,
-    )
-    .into_iter()
-    .map(|(_, wallet_id)| wallet_id)
-    .collect()
-}
-
-fn stable_eligible_wallets(
-    discovery: &DiscoveryConfig,
-    metrics: &[DiscoveryV2WalletMetric],
-    active_follow_wallets: &HashSet<String>,
-    limit: usize,
-) -> Vec<(usize, String)> {
-    let mut ordered = Vec::new();
-    for prefer_active in [true, false] {
-        for (index, metric) in metrics.iter().enumerate() {
-            if active_follow_wallets.contains(&metric.wallet_id) != prefer_active {
-                continue;
-            }
-            if metric.eligible && metric.score >= discovery.min_score {
-                ordered.push((index, metric.wallet_id.clone()));
-                if ordered.len() >= limit {
-                    return ordered;
-                }
-            }
-        }
-    }
-    ordered
 }
 
 fn evaluation(

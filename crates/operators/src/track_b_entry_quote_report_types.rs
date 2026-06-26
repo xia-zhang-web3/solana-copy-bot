@@ -12,6 +12,7 @@ pub struct TrackBEntryQuoteSummary {
     pub by_close_bucket: Vec<BucketSummary>,
     pub by_exit_executability: Vec<BucketSummary>,
     pub by_rank_cohort: Vec<CohortSummary>,
+    pub by_source_cohort: Vec<CohortSummary>,
     pub price_impact_sweep: Vec<SweepRow>,
     pub quote_shadow_ratio_sweep: Vec<SweepRow>,
 }

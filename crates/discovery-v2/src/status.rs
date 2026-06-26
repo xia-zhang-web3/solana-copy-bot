@@ -23,9 +23,10 @@ use std::time::{Duration as StdDuration, Instant};
 pub use crate::filters::DiscoveryV2FilterStatus;
 pub use crate::live_portfolio::DiscoveryV2LivePortfolioStatus;
 pub use status_types::{
-    DiscoveryV2BuildTiming, DiscoveryV2CoverageSample, DiscoveryV2MaturityStatus,
-    DiscoveryV2RugQuarantineCandidate, DiscoveryV2ScanStatus, DiscoveryV2ShadowSignalStatus,
-    DiscoveryV2Status, DiscoveryV2TailStatus, OPERATOR_WALLET_METRIC_LIMIT,
+    DiscoveryV2BuildTiming, DiscoveryV2CandidateWalletSource, DiscoveryV2CoverageSample,
+    DiscoveryV2MaturityStatus, DiscoveryV2RugQuarantineCandidate, DiscoveryV2ScanStatus,
+    DiscoveryV2ShadowSignalStatus, DiscoveryV2Status, DiscoveryV2TailStatus,
+    OPERATOR_WALLET_METRIC_LIMIT,
 };
 
 #[path = "status_blockers.rs"]
@@ -217,6 +218,7 @@ pub fn build_discovery_v2_status(
     }
     let filters = filters.finish();
     let candidate_wallets = live_gate.candidate_wallets;
+    let candidate_wallet_sources = live_gate.candidate_wallet_sources;
     let mut maturity = maturity;
     observe_selected_maturity_tiers(&mut maturity, &wallet_metrics, &candidate_wallets);
     let live_portfolio = live_gate.status;
@@ -278,6 +280,7 @@ pub fn build_discovery_v2_status(
         wallet_metrics,
         rug_quarantine_candidates,
         candidate_wallets,
+        candidate_wallet_sources,
         execution_enabled: options.execution_enabled,
         execution_disabled: !options.execution_enabled,
         blockers,
@@ -287,8 +290,16 @@ pub fn build_discovery_v2_status(
 }
 
 fn retained_wallet_metric_limit(discovery: &DiscoveryConfig) -> usize {
+    let selection_limit = if discovery.slow_hold_wallets_enabled {
+        discovery
+            .follow_top_n
+            .max(1)
+            .saturating_add(discovery.slow_hold_top_m.max(1)) as usize
+    } else {
+        discovery.follow_top_n.max(1) as usize
+    };
     OPERATOR_WALLET_METRIC_LIMIT
-        .max(discovery.follow_top_n.max(1) as usize)
+        .max(selection_limit)
         .max(discovery.live_portfolio_max_wallets)
 }
 
@@ -336,6 +347,7 @@ fn budget_exhausted_status(
         wallet_metrics: Vec::new(),
         rug_quarantine_candidates: Vec::new(),
         candidate_wallets,
+        candidate_wallet_sources: Vec::new(),
         execution_enabled: options.execution_enabled,
         execution_disabled: !options.execution_enabled,
         blockers,
