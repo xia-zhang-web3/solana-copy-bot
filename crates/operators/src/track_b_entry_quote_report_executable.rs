@@ -1,6 +1,8 @@
 use crate::track_b_entry_quote_report_db::{CloseOutcome, EntryQuoteOutcome, MarketExitQuote};
 
 const MARKET_EXIT_OK: &str = "ok";
+const MARKET_EXIT_RATIO_MIN: f64 = 0.1;
+const MARKET_EXIT_RATIO_MAX: f64 = 10.0;
 
 #[derive(Debug, Default)]
 pub(crate) struct FullyExecutablePnl {
@@ -10,9 +12,17 @@ pub(crate) struct FullyExecutablePnl {
     pub(crate) market_dead_error_events: u64,
     pub(crate) market_transient_error_events: u64,
     pub(crate) market_missing_events: u64,
+    pub(crate) market_ratio_outlier_events: u64,
     pub(crate) market_zero_exit_events: u64,
     pub(crate) market_quote_shadow_ratios: Vec<f64>,
     pub(crate) market_decision_delay_ms: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MarketExitQuoteRatio {
+    Sane(f64),
+    Missing,
+    Outlier,
 }
 
 pub(crate) fn fully_executable_pnl(
@@ -63,9 +73,17 @@ fn executable_exit_value(
                 state.market_missing_events += 1;
                 return None;
             }
-            let Some(ratio) = market_exit_quote_ratio(Some(quote)) else {
-                state.market_missing_events += 1;
-                return None;
+            let ratio = match market_exit_quote_ratio(quote) {
+                MarketExitQuoteRatio::Sane(ratio) => ratio,
+                MarketExitQuoteRatio::Missing => {
+                    state.market_missing_events += 1;
+                    return None;
+                }
+                MarketExitQuoteRatio::Outlier => {
+                    state.market_ratio_outlier_events += 1;
+                    state.market_missing_events += 1;
+                    return None;
+                }
             };
             state.market_quote_events += 1;
             state.market_quote_shadow_ratios.push(ratio);
@@ -87,14 +105,21 @@ fn quote_exceeds_delay(quote: &MarketExitQuote, max_delay_ms: Option<i64>) -> bo
         .is_some_and(|(max, actual)| actual > max)
 }
 
-fn market_exit_quote_ratio(quote: Option<&MarketExitQuote>) -> Option<f64> {
-    let quote = quote?;
+fn market_exit_quote_ratio(quote: &MarketExitQuote) -> MarketExitQuoteRatio {
     if quote.quote_status != MARKET_EXIT_OK {
-        return None;
+        return MarketExitQuoteRatio::Missing;
     }
-    let quote_price = positive(quote.quote_price_sol?)?;
-    let shadow_price = positive(quote.shadow_price_sol?)?;
-    Some(quote_price / shadow_price)
+    let Some(quote_price) = quote.quote_price_sol.and_then(positive) else {
+        return MarketExitQuoteRatio::Missing;
+    };
+    let Some(shadow_price) = quote.shadow_price_sol.and_then(positive) else {
+        return MarketExitQuoteRatio::Missing;
+    };
+    let ratio = quote_price / shadow_price;
+    if !(MARKET_EXIT_RATIO_MIN..=MARKET_EXIT_RATIO_MAX).contains(&ratio) {
+        return MarketExitQuoteRatio::Outlier;
+    }
+    MarketExitQuoteRatio::Sane(ratio)
 }
 
 fn is_terminal_market_exit_error(error: Option<&str>) -> bool {

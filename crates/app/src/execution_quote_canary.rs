@@ -2,6 +2,7 @@ use crate::execution_quote_canary_helpers::*;
 use crate::execution_quote_canary_priority_fee::PriorityFeeSampler;
 use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
 use crate::execution_quote_http::fetch_quote_sample;
+use crate::quote_price_sanity::raw_amount_mismatch_error;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
@@ -27,29 +28,15 @@ mod provider_compare;
 mod pump_fun_parallel;
 #[path = "execution_pump_fun_quote_http.rs"]
 mod pump_fun_quote_http;
+#[path = "execution_quote_canary_summary.rs"]
+mod summary;
 
 pub(crate) use parallel_samples::append_parallel_provider_samples;
 use provider_compare::{
     buy_quote_price_and_slippage, generic_provider_sample, sell_quote_price_and_slippage,
     QuoteEventBundle,
 };
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct ExecutionQuoteCanaryTickSummary {
-    pub entry_candidates: usize,
-    pub entry_inserted: usize,
-    pub entry_existing: usize,
-    pub entry_errors: usize,
-    pub close_candidates: usize,
-    pub close_inserted: usize,
-    pub close_existing: usize,
-    pub close_errors: usize,
-    pub would_execute: usize,
-    pub would_force_exit: usize,
-    pub would_skip: usize,
-    pub decision_unknown: usize,
-    pub last_event_id: Option<String>,
-}
+pub(crate) use summary::ExecutionQuoteCanaryTickSummary;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ExecutionQuoteCanaryRunner {
@@ -507,6 +494,11 @@ impl ExecutionQuoteCanaryRunner {
             event.error = Some("missing exact close qty_raw and inferred decimals".to_string());
             return Ok(QuoteEventBundle::event_only(event));
         };
+        if let Some(error) = raw_amount_mismatch_error(&amount, decimals, close.qty, "close quote")
+        {
+            event.error = Some(error);
+            return Ok(QuoteEventBundle::event_only(event));
+        }
         event.quote_in_amount_raw = Some(amount.clone());
         let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_SELL);
         match fetch_quote_sample(

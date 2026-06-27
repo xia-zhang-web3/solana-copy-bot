@@ -4,6 +4,9 @@ use crate::execution_quote_canary_helpers::{
 };
 use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
 use crate::execution_quote_http::fetch_quote_sample;
+use crate::quote_price_sanity::{
+    quote_value_to_cost_ratio, raw_amount_mismatch_error, QUOTE_RATIO_MAX,
+};
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::ShadowLotRow;
 
@@ -18,6 +21,7 @@ pub(crate) enum StaleCloseQuoteAttempt {
     Disabled,
     MissingAmount,
     InvalidQuote { reason: String },
+    Outlier { reason: String },
     Error { error: String },
     Priced(StaleCloseQuotePrice),
 }
@@ -49,6 +53,11 @@ impl StaleCloseQuotePricer {
         let Some((amount_raw, decimals)) = self.quote_amount(lot).await else {
             return StaleCloseQuoteAttempt::MissingAmount;
         };
+        if let Some(reason) =
+            raw_amount_mismatch_error(&amount_raw, Some(decimals), lot.qty, "stale quote")
+        {
+            return StaleCloseQuoteAttempt::Outlier { reason };
+        }
         let slippage_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_SELL);
         let quote = match fetch_quote_sample(
             &self.http,
@@ -78,6 +87,26 @@ impl StaleCloseQuotePricer {
                 reason: "missing_positive_exit_price".to_string(),
             };
         };
+        if quote.in_amount != amount_raw {
+            return StaleCloseQuoteAttempt::Outlier {
+                reason: format!(
+                    "quote_input_amount_mismatch expected={amount_raw} actual={}",
+                    quote.in_amount
+                ),
+            };
+        }
+        let Some(value_ratio) =
+            quote_value_to_cost_ratio(quote_out_sol.unwrap_or(0.0), lot.cost_sol)
+        else {
+            return StaleCloseQuoteAttempt::InvalidQuote {
+                reason: "missing_quote_value_to_cost_ratio".to_string(),
+            };
+        };
+        if value_ratio > QUOTE_RATIO_MAX {
+            return StaleCloseQuoteAttempt::Outlier {
+                reason: format!("quote_value_to_cost_ratio_out_of_bounds ratio={value_ratio:.6}"),
+            };
+        }
         StaleCloseQuoteAttempt::Priced(StaleCloseQuotePrice {
             exit_price_sol,
             quote_in_amount_raw: quote.in_amount,
@@ -105,6 +134,7 @@ impl StaleCloseQuoteAttempt {
             StaleCloseQuoteAttempt::Disabled => "quote_disabled",
             StaleCloseQuoteAttempt::MissingAmount => "quote_missing_amount",
             StaleCloseQuoteAttempt::InvalidQuote { .. } => "quote_invalid_response",
+            StaleCloseQuoteAttempt::Outlier { .. } => "quote_outlier",
             StaleCloseQuoteAttempt::Error { .. } => "quote_error",
             StaleCloseQuoteAttempt::Priced(_) => "quote_priced",
         }
@@ -113,6 +143,7 @@ impl StaleCloseQuoteAttempt {
     pub(crate) fn unavailable_error(&self) -> Option<&str> {
         match self {
             StaleCloseQuoteAttempt::InvalidQuote { reason } => Some(reason),
+            StaleCloseQuoteAttempt::Outlier { reason } => Some(reason),
             StaleCloseQuoteAttempt::Error { error } => Some(error),
             _ => None,
         }

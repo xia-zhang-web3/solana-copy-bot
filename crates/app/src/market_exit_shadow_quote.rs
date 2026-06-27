@@ -5,6 +5,7 @@ use crate::execution_quote_canary_helpers::{
 };
 use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
 use crate::execution_quote_http::fetch_quote_sample;
+use crate::quote_price_sanity::{quote_ratio, quote_ratio_is_sane, raw_amount_mismatch_error};
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::ExecutionConfig;
@@ -109,6 +110,7 @@ impl MarketExitShadowQuoteDiagnostic {
         Ok(CloseQuote {
             sample,
             token_decimals,
+            amount_raw,
         })
     }
 }
@@ -161,6 +163,7 @@ fn base_event(
 struct CloseQuote {
     sample: crate::execution_quote_canary_helpers::QuoteSample,
     token_decimals: u8,
+    amount_raw: String,
 }
 
 fn apply_quote_to_close_event(
@@ -169,13 +172,42 @@ fn apply_quote_to_close_event(
     quote: CloseQuote,
 ) {
     apply_quote_sample_to_event(event, quote.sample);
+    if event.quote_in_amount_raw.as_deref() != Some(quote.amount_raw.as_str()) {
+        mark_quote_error(
+            event,
+            format!(
+                "market_exit_quote_input_amount_mismatch expected={} actual={}",
+                quote.amount_raw,
+                event.quote_in_amount_raw.as_deref().unwrap_or("<missing>")
+            ),
+        );
+        return;
+    }
     event.shadow_price_sol = price_sol_per_token(close.exit_value_sol, close.qty);
     let token_qty = raw_amount_to_ui(event.quote_in_amount_raw.as_deref(), quote.token_decimals);
     let out_sol = raw_amount_to_ui(event.quote_out_amount_raw.as_deref(), 9);
     event.quote_price_sol =
         out_sol.and_then(|sol| token_qty.and_then(|qty| price_sol_per_token(sol, qty)));
+    let Some(ratio) = quote_ratio(event.quote_price_sol, event.shadow_price_sol) else {
+        mark_quote_error(event, "market_exit_quote_ratio_missing".to_string());
+        return;
+    };
+    if !quote_ratio_is_sane(ratio) {
+        mark_quote_error(
+            event,
+            format!("market_exit_quote_ratio_out_of_bounds ratio={ratio:.6}"),
+        );
+        return;
+    }
     event.slippage_bps = quote_slippage_bps_for_sell(event.quote_price_sol, event.shadow_price_sol);
     event.leader_notional_sol = Some(close.exit_value_sol);
+}
+
+fn mark_quote_error(event: &mut ExecutionQuoteCanaryEventInsert, reason: String) {
+    event.quote_status = QUOTE_STATUS_ERROR.to_string();
+    event.error = Some(reason);
+    event.quote_price_sol = None;
+    event.slippage_bps = None;
 }
 
 async fn quote_amount(
@@ -183,13 +215,22 @@ async fn quote_amount(
     config: &ExecutionConfig,
     close: &ExecutionCanaryCloseCandidate,
 ) -> Result<(String, u8)> {
-    if let (Some(raw), Some(decimals)) = (close.qty_raw.as_ref(), close.qty_decimals) {
-        return Ok((raw.clone(), decimals));
+    let (raw, decimals) = if let (Some(raw), Some(decimals)) =
+        (close.qty_raw.as_ref(), close.qty_decimals)
+    {
+        (raw.clone(), decimals)
+    } else {
+        let decimals = resolve_spl_token_decimals(http, config, &close.token, close.qty_decimals)
+            .await
+            .ok_or_else(|| anyhow!("missing token decimals for market exit shadow quote"))?;
+        let raw = ui_amount_to_raw_string(close.qty, decimals)
+            .context("failed to convert market close quantity for quote")?;
+        (raw, decimals)
+    };
+    if let Some(error) =
+        raw_amount_mismatch_error(&raw, Some(decimals), close.qty, "market exit quote")
+    {
+        return Err(anyhow!(error));
     }
-    let decimals = resolve_spl_token_decimals(http, config, &close.token, close.qty_decimals)
-        .await
-        .ok_or_else(|| anyhow!("missing token decimals for market exit shadow quote"))?;
-    let raw = ui_amount_to_raw_string(close.qty, decimals)
-        .context("failed to convert market close quantity for quote")?;
     Ok((raw, decimals))
 }

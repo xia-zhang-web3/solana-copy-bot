@@ -111,6 +111,40 @@ fn max_market_exit_delay_excludes_late_quote_as_no_data() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn market_exit_ratio_outlier_is_no_data_not_executable() -> Result<()> {
+    let db = TestDb::new()?;
+    db.insert_entry("outlier", "signal-outlier", "w8", "token-outlier")?;
+    let close_id = db.insert_market_close("sell-outlier", "w8", "token-outlier", 1.0, 1.2, 0.2)?;
+    db.insert_market_exit_quote(
+        close_id,
+        "w8",
+        "token-outlier",
+        "ok",
+        None,
+        Some(20.0),
+        Some(1.0),
+        2_000,
+    )?;
+
+    let summary = build_report(test_cli(db.path()), report_time())
+        .summary
+        .expect("report should load");
+    let market = summary
+        .by_close_bucket
+        .iter()
+        .find(|row| row.bucket == "market")
+        .unwrap();
+
+    assert_eq!(summary.counts.market_exit_ratio_outlier_events, 1);
+    assert_eq!(summary.counts.market_exit_missing_quote_events, 1);
+    assert_eq!(summary.counts.market_exit_quote_events, 0);
+    assert_eq!(market.market_exit_ratio_outlier_events, 1);
+    assert_eq!(market.fully_executable_events, 0);
+    assert_eq!(market.fully_executable_pnl_sol, None);
+    Ok(())
+}
+
 struct TestDb {
     file: NamedTempFile,
     conn: Connection,

@@ -91,6 +91,7 @@ mod irrelevant_persistence;
 mod json_sanitize;
 mod market_exit_shadow_quote;
 mod observed_swap_writer;
+mod quote_price_sanity;
 mod runtime_follow_surface;
 mod shadow_restart_recovery;
 mod shadow_risk;

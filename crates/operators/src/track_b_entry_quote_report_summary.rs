@@ -12,7 +12,6 @@ use crate::track_b_entry_quote_report_types::{
 };
 
 const QUOTE_OK: &str = "ok";
-const CONTAMINATION_IMPACT_MAX: f64 = 0.01;
 const RATIO_MIN: f64 = 0.1;
 const RATIO_MAX: f64 = 10.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +49,7 @@ pub(crate) struct CleanEvent {
     market_exit_dead_error_events: u64,
     market_exit_transient_error_events: u64,
     market_exit_missing_quote_events: u64,
+    market_exit_ratio_outlier_events: u64,
     market_exit_zero_exit_events: u64,
     market_exit_quote_shadow_ratios: Vec<f64>,
     market_exit_decision_delay_ms: Vec<f64>,
@@ -107,6 +107,7 @@ pub(crate) fn summarize_track_b(
         counts.market_exit_dead_error_events += event.market_exit_dead_error_events;
         counts.market_exit_transient_error_events += event.market_exit_transient_error_events;
         counts.market_exit_missing_quote_events += event.market_exit_missing_quote_events;
+        counts.market_exit_ratio_outlier_events += event.market_exit_ratio_outlier_events;
         counts.market_exit_zero_exit_events += event.market_exit_zero_exit_events;
         ratios.push(event.ratio);
         market_exit_ratios.extend(event.market_exit_quote_shadow_ratios.iter().copied());
@@ -185,6 +186,7 @@ fn clean_event(
         market_exit_dead_error_events: executable.market_dead_error_events,
         market_exit_transient_error_events: executable.market_transient_error_events,
         market_exit_missing_quote_events: executable.market_missing_events,
+        market_exit_ratio_outlier_events: executable.market_ratio_outlier_events,
         market_exit_zero_exit_events: executable.market_zero_exit_events,
         market_exit_quote_shadow_ratios: executable.market_quote_shadow_ratios,
         market_exit_decision_delay_ms: executable.market_decision_delay_ms,
@@ -208,9 +210,8 @@ fn max_hold_seconds(closes: &[CloseOutcome]) -> i64 {
 fn is_contaminated(outcome: &EntryQuoteOutcome) -> Option<bool> {
     let quote_price = positive(outcome.event.quote_price_sol?)?;
     let shadow_price = positive(outcome.event.shadow_price_sol?)?;
-    let impact = outcome.event.price_impact_pct?;
     let ratio = quote_price / shadow_price;
-    Some(impact <= CONTAMINATION_IMPACT_MAX && !(RATIO_MIN..=RATIO_MAX).contains(&ratio))
+    Some(!(RATIO_MIN..=RATIO_MAX).contains(&ratio))
 }
 
 fn positive(value: f64) -> Option<f64> {
@@ -321,6 +322,7 @@ pub(crate) fn summarize_bucket<'a>(
         out.market_exit_dead_error_events += event.market_exit_dead_error_events;
         out.market_exit_transient_error_events += event.market_exit_transient_error_events;
         out.market_exit_missing_quote_events += event.market_exit_missing_quote_events;
+        out.market_exit_ratio_outlier_events += event.market_exit_ratio_outlier_events;
         out.market_exit_zero_exit_events += event.market_exit_zero_exit_events;
         ratio_sum += event.ratio;
         for ratio in &event.market_exit_quote_shadow_ratios {

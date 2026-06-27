@@ -215,7 +215,7 @@ fn seed_db() -> Result<NamedTempFile> {
         "token-c",
         100.0,
         1.0,
-        0.0,
+        0.2,
     )?;
     insert_close(
         &conn,

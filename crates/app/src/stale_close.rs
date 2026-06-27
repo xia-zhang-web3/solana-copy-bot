@@ -33,7 +33,7 @@ pub(crate) async fn close_stale_shadow_lots(
     max_hold_hours: u32,
     terminal_zero_price_hours: u32,
     recovery_zero_price_enabled: bool,
-    materialize_execution_canary_quote_loss: bool,
+    _materialize_execution_canary_quote_loss: bool,
     quote_pricer: Option<&StaleCloseQuotePricer>,
     now: DateTime<Utc>,
 ) -> Result<StaleLotCleanupStats> {
@@ -74,31 +74,13 @@ pub(crate) async fn close_stale_shadow_lots(
                 };
                 match quote_attempt {
                     StaleCloseQuoteAttempt::Priced(quote) => {
-                        let defer_loss = should_defer_stale_quote_loss(
-                            &lot,
-                            &quote,
-                            terminal_zero_cutoff.as_ref(),
-                        );
-                        if defer_loss
-                            && !should_materialize_stale_quote_loss_for_execution_canary(
-                                store,
-                                &lot,
-                                materialize_execution_canary_quote_loss,
-                            )?
-                        {
-                            record_stale_quote_loss_deferred_event(
-                                store,
-                                now,
-                                &lot,
-                                &quote,
-                                max_hold_hours,
-                                terminal_zero_price_hours,
-                            )?;
-                            stats.quote_loss_deferred = stats.quote_loss_deferred.saturating_add(1);
-                            continue;
-                        }
                         record_stale_quote_price_event(store, now, &lot, &quote)?;
                         (quote.exit_price_sol, SHADOW_CLOSE_CONTEXT_STALE_QUOTE_PRICE)
+                    }
+                    StaleCloseQuoteAttempt::Outlier { reason } => {
+                        record_stale_quote_outlier_event(store, now, &lot, &reason)?;
+                        stats.skipped_unpriced = stats.skipped_unpriced.saturating_add(1);
+                        continue;
                     }
                     quote_attempt => {
                         let terminal_zero_reason_code = if terminal_zero_cutoff.is_none() {
@@ -260,65 +242,6 @@ pub(crate) async fn close_stale_shadow_lots(
     Ok(stats)
 }
 
-fn should_defer_stale_quote_loss(
-    lot: &ShadowLotRow,
-    quote: &StaleCloseQuotePrice,
-    terminal_zero_cutoff: Option<&DateTime<Utc>>,
-) -> bool {
-    let before_terminal_window = terminal_zero_cutoff
-        .map(|cutoff| lot.opened_ts > *cutoff)
-        .unwrap_or(true);
-    before_terminal_window && quote.quote_out_sol + STALE_CLOSE_EPS < lot.cost_sol
-}
-
-fn should_materialize_stale_quote_loss_for_execution_canary(
-    store: &SqliteStore,
-    lot: &ShadowLotRow,
-    enabled: bool,
-) -> Result<bool> {
-    if !enabled {
-        return Ok(false);
-    }
-    Ok(store
-        .load_execution_canary_open_position(&lot.token)?
-        .is_some())
-}
-
-fn record_stale_quote_loss_deferred_event(
-    store: &SqliteStore,
-    now: DateTime<Utc>,
-    lot: &ShadowLotRow,
-    quote: &StaleCloseQuotePrice,
-    max_hold_hours: u32,
-    terminal_zero_price_hours: u32,
-) -> Result<()> {
-    let details_json = format!(
-        "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"close_strategy\":\"quote_loss_deferred\",\"entry_cost_sol\":{},\"quote_out_sol\":{},\"quote_pnl_sol\":{},\"quote_latency_ms\":{},\"price_impact_pct\":{},\"max_hold_hours\":{},\"terminal_zero_price_hours\":{},\"opened_ts\":\"{}\"}}",
-        sanitize_json_value(&lot.wallet_id),
-        sanitize_json_value(&lot.token),
-        lot.id,
-        sanitize_json_value(&now.to_rfc3339()),
-        lot.cost_sol,
-        quote.quote_out_sol,
-        quote.quote_out_sol - lot.cost_sol,
-        quote.quote_latency_ms,
-        option_f64_json(quote.price_impact_pct),
-        max_hold_hours,
-        terminal_zero_price_hours,
-        sanitize_json_value(&lot.opened_ts.to_rfc3339())
-    );
-    record_stale_close_risk_event_or_warn(
-        store,
-        "shadow_stale_close_quote_loss_deferred",
-        now,
-        &details_json,
-        &lot.wallet_id,
-        &lot.token,
-        lot.id,
-        "failed to record stale-close quote-loss deferred risk event",
-    )
-}
-
 fn record_stale_quote_price_event(
     store: &SqliteStore,
     now: DateTime<Utc>,
@@ -348,6 +271,35 @@ fn record_stale_quote_price_event(
         &lot.token,
         lot.id,
         "failed to record stale-close quote-price risk event",
+    )
+}
+
+fn record_stale_quote_outlier_event(
+    store: &SqliteStore,
+    now: DateTime<Utc>,
+    lot: &ShadowLotRow,
+    reason: &str,
+) -> Result<()> {
+    let details_json = format!(
+        "{{\"wallet_id\":\"{}\",\"token\":\"{}\",\"lot_id\":{},\"as_of\":\"{}\",\"close_strategy\":\"quote_outlier_skipped\",\"entry_cost_sol\":{},\"qty\":{},\"reason\":\"{}\",\"opened_ts\":\"{}\"}}",
+        sanitize_json_value(&lot.wallet_id),
+        sanitize_json_value(&lot.token),
+        lot.id,
+        sanitize_json_value(&now.to_rfc3339()),
+        lot.cost_sol,
+        lot.qty,
+        sanitize_json_value(reason),
+        sanitize_json_value(&lot.opened_ts.to_rfc3339())
+    );
+    record_stale_close_risk_event_or_warn(
+        store,
+        "shadow_stale_close_quote_outlier",
+        now,
+        &details_json,
+        &lot.wallet_id,
+        &lot.token,
+        lot.id,
+        "failed to record stale-close quote-outlier risk event",
     )
 }
 

@@ -219,10 +219,10 @@
     }
 
     #[tokio::test]
-    async fn stale_lot_cleanup_defers_lossy_quote_before_terminal_window() -> Result<()> {
+    async fn stale_lot_cleanup_materializes_lossy_quote_before_terminal_window() -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        let (store, db_path) = make_test_store("stale-lot-quote-loss-deferred")?;
+        let (store, db_path) = make_test_store("stale-lot-quote-loss-materialized")?;
         let now = DateTime::parse_from_rfc3339("2026-03-10T12:00:00Z")
             .expect("timestamp")
             .with_timezone(&Utc);
@@ -275,17 +275,21 @@
         .await?;
         quote_server.await?;
 
-        assert_eq!(stats.quote_closed, 0);
-        assert_eq!(stats.quote_loss_deferred, 1);
+        assert_eq!(stats.quote_closed, 1);
+        assert_eq!(stats.quote_loss_deferred, 0);
         assert_eq!(stats.terminal_zero_closed, 0);
-        assert!(store.has_shadow_lots("wallet-a", "token-a")?);
-        assert!(open_pairs.contains(&("wallet-a".to_string(), "token-a".to_string())));
+        assert!(!store.has_shadow_lots("wallet-a", "token-a")?);
+        assert!(!open_pairs.contains(&("wallet-a".to_string(), "token-a".to_string())));
         assert_eq!(
             store.risk_event_count_by_type("shadow_stale_close_quote_loss_deferred")?,
+            0
+        );
+        assert_eq!(
+            store.risk_event_count_by_type("shadow_stale_close_quote_price")?,
             1
         );
         let (trades, _) = store.shadow_realized_pnl_since(now - chrono::Duration::days(1))?;
-        assert_eq!(trades, 0);
+        assert_eq!(trades, 1);
 
         let _ = std::fs::remove_file(db_path);
         Ok(())
