@@ -30,6 +30,8 @@ pub(crate) struct CloseOutcome {
     pub(crate) entry_cost_sol: f64,
     pub(crate) exit_value_sol: f64,
     pub(crate) pnl_sol: f64,
+    pub(crate) opened_ts: DateTime<Utc>,
+    pub(crate) closed_ts: DateTime<Utc>,
     pub(crate) market_exit_quote: Option<MarketExitQuote>,
 }
 
@@ -269,7 +271,7 @@ fn load_matching_closes(
         .prepare(
             "SELECT id,
                     COALESCE(close_context, 'market') AS close_context,
-                    entry_cost_sol, exit_value_sol, pnl_sol
+                    entry_cost_sol, exit_value_sol, pnl_sol, opened_ts, closed_ts
              FROM shadow_closed_trades INDEXED BY idx_shadow_closed_trades_wallet_closed_ts
              WHERE wallet_id = ?1
                AND closed_ts >= ?2
@@ -296,6 +298,8 @@ fn load_matching_closes(
                 entry_cost_sol: row.get(2)?,
                 exit_value_sol: row.get(3)?,
                 pnl_sol: row.get(4)?,
+                opened_ts: parse_ts(&row.get::<_, String>(5)?, "shadow_closed_trades.opened_ts")?,
+                closed_ts: parse_ts(&row.get::<_, String>(6)?, "shadow_closed_trades.closed_ts")?,
                 market_exit_quote: None,
             })
         },

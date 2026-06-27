@@ -1,10 +1,14 @@
 use crate::track_b_entry_quote_report_caveats::track_b_caveats;
 use crate::track_b_entry_quote_report_db::{CloseOutcome, EntryQuoteOutcome};
 use crate::track_b_entry_quote_report_executable::fully_executable_pnl;
+use crate::track_b_entry_quote_report_segments::{
+    summarize_hold_time_buckets, summarize_rank_cohorts, summarize_source_cohorts, HoldTimeBucket,
+    RankCohort, SourceCohort,
+};
 use crate::track_b_entry_quote_report_stats::numeric_stats;
 use crate::track_b_entry_quote_report_sweep::{sweep_price_impact, sweep_ratio};
 use crate::track_b_entry_quote_report_types::{
-    BucketSummary, CohortSummary, SummaryCounts, TrackBEntryQuoteSummary,
+    BucketSummary, SummaryCounts, TrackBEntryQuoteSummary,
 };
 
 const QUOTE_OK: &str = "ok";
@@ -29,76 +33,13 @@ enum ExitExecutability {
     MixedAmbiguous,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RankCohort {
-    Rank1To15,
-    Rank16To30,
-    RankGt30,
-    Unranked,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SourceCohort {
-    Baseline,
-    SlowHold,
-    Other,
-    Unknown,
-}
-
-impl SourceCohort {
-    fn from_source(source: Option<&str>) -> Self {
-        match source {
-            Some("baseline") => Self::Baseline,
-            Some("slow_hold") => Self::SlowHold,
-            Some(_) => Self::Other,
-            None => Self::Unknown,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Baseline => "baseline",
-            Self::SlowHold => "slow_hold",
-            Self::Other => "other",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-impl RankCohort {
-    fn from_rank(rank: Option<u64>) -> Self {
-        match rank {
-            Some(1..=15) => Self::Rank1To15,
-            Some(16..=30) => Self::Rank16To30,
-            Some(_) => Self::RankGt30,
-            None => Self::Unranked,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Rank1To15 => "rank_1_15",
-            Self::Rank16To30 => "rank_16_30",
-            Self::RankGt30 => "rank_gt_30",
-            Self::Unranked => "unranked",
-        }
-    }
-
-    fn rank_bounds(self) -> (Option<u64>, Option<u64>) {
-        match self {
-            Self::Rank1To15 => (Some(1), Some(15)),
-            Self::Rank16To30 => (Some(16), Some(30)),
-            Self::RankGt30 | Self::Unranked => (None, None),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct CleanEvent {
     pub(crate) cohort: RankCohort,
     pub(crate) source_cohort: SourceCohort,
     pub(crate) bucket: CloseBucket,
     exit_executability: ExitExecutability,
+    pub(crate) hold_time_bucket: HoldTimeBucket,
     pub(crate) shadow_pnl_sol: f64,
     pub(crate) entry_adjusted_pnl_sol: f64,
     pub(crate) fully_executable_pnl_sol: Option<f64>,
@@ -186,6 +127,7 @@ pub(crate) fn summarize_track_b(
         market_exit_decision_delay_ms_stats: numeric_stats(market_exit_delays),
         by_close_bucket: summarize_close_buckets(&clean),
         by_exit_executability: summarize_exit_executability(&clean),
+        by_hold_time_bucket: summarize_hold_time_buckets(&clean),
         by_rank_cohort: summarize_rank_cohorts(&clean),
         by_source_cohort: summarize_source_cohorts(&clean),
         price_impact_sweep: sweep_price_impact(&clean),
@@ -220,6 +162,7 @@ fn clean_event(
     let entry_qty_factor = shadow_price / quote_price;
     let adjusted_exit = exit_value_sol * entry_qty_factor;
     let bucket = close_bucket(&outcome.closes);
+    let hold_time_bucket = HoldTimeBucket::from_seconds(max_hold_seconds(&outcome.closes));
     let executable = fully_executable_pnl(
         outcome,
         entry_qty_factor,
@@ -231,6 +174,7 @@ fn clean_event(
         source_cohort: SourceCohort::from_source(outcome.event.source_cohort.as_deref()),
         bucket,
         exit_executability: exit_executability(bucket, executable.pnl_sol),
+        hold_time_bucket,
         shadow_pnl_sol,
         entry_adjusted_pnl_sol: adjusted_exit - entry_cost_sol,
         fully_executable_pnl_sol: executable.pnl_sol,
@@ -245,6 +189,20 @@ fn clean_event(
         market_exit_quote_shadow_ratios: executable.market_quote_shadow_ratios,
         market_exit_decision_delay_ms: executable.market_decision_delay_ms,
     })
+}
+
+fn max_hold_seconds(closes: &[CloseOutcome]) -> i64 {
+    closes
+        .iter()
+        .map(|close| {
+            close
+                .closed_ts
+                .signed_duration_since(close.opened_ts)
+                .num_seconds()
+                .max(0)
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 fn is_contaminated(outcome: &EntryQuoteOutcome) -> Option<bool> {
@@ -297,7 +255,7 @@ fn exit_executability(
     }
 }
 
-fn summarize_close_buckets(events: &[CleanEvent]) -> Vec<BucketSummary> {
+pub(crate) fn summarize_close_buckets(events: &[CleanEvent]) -> Vec<BucketSummary> {
     [
         (CloseBucket::Market, "market"),
         (CloseBucket::StaleQuote, "stale_quote_price"),
@@ -313,7 +271,7 @@ fn summarize_close_buckets(events: &[CleanEvent]) -> Vec<BucketSummary> {
     .collect()
 }
 
-fn summarize_exit_executability(events: &[CleanEvent]) -> Vec<BucketSummary> {
+pub(crate) fn summarize_exit_executability(events: &[CleanEvent]) -> Vec<BucketSummary> {
     [
         (ExitExecutability::FullyExecutable, "fully_executable"),
         (ExitExecutability::HybridPaperExit, "hybrid_paper_exit"),
@@ -331,60 +289,7 @@ fn summarize_exit_executability(events: &[CleanEvent]) -> Vec<BucketSummary> {
     .collect()
 }
 
-fn summarize_rank_cohorts(events: &[CleanEvent]) -> Vec<CohortSummary> {
-    [
-        RankCohort::Rank1To15,
-        RankCohort::Rank16To30,
-        RankCohort::RankGt30,
-        RankCohort::Unranked,
-    ]
-    .into_iter()
-    .map(|cohort| {
-        let cohort_events = events
-            .iter()
-            .filter(|event| event.cohort == cohort)
-            .cloned()
-            .collect::<Vec<_>>();
-        let (rank_min, rank_max) = cohort.rank_bounds();
-        CohortSummary {
-            cohort: cohort.label().to_string(),
-            rank_min,
-            rank_max,
-            events: cohort_events.len() as u64,
-            by_close_bucket: summarize_close_buckets(&cohort_events),
-            by_exit_executability: summarize_exit_executability(&cohort_events),
-        }
-    })
-    .collect()
-}
-
-fn summarize_source_cohorts(events: &[CleanEvent]) -> Vec<CohortSummary> {
-    [
-        SourceCohort::Baseline,
-        SourceCohort::SlowHold,
-        SourceCohort::Other,
-        SourceCohort::Unknown,
-    ]
-    .into_iter()
-    .map(|cohort| {
-        let cohort_events = events
-            .iter()
-            .filter(|event| event.source_cohort == cohort)
-            .cloned()
-            .collect::<Vec<_>>();
-        CohortSummary {
-            cohort: cohort.label().to_string(),
-            rank_min: None,
-            rank_max: None,
-            events: cohort_events.len() as u64,
-            by_close_bucket: summarize_close_buckets(&cohort_events),
-            by_exit_executability: summarize_exit_executability(&cohort_events),
-        }
-    })
-    .collect()
-}
-
-fn summarize_bucket<'a>(
+pub(crate) fn summarize_bucket<'a>(
     label: &str,
     events: impl Iterator<Item = &'a CleanEvent>,
 ) -> BucketSummary {
@@ -396,7 +301,9 @@ fn summarize_bucket<'a>(
     let mut impact_sum = 0.0;
     let mut impact_count = 0_u64;
     let mut fully_executable_pnl_sol = 0.0;
+    let mut fully_executable_shadow_pnl_sol = 0.0;
     let mut fully_executable_events = 0_u64;
+    let mut fully_executable_delta_values = Vec::new();
     let mut market_exit_ratio_sum = 0.0;
     let mut market_exit_ratio_count = 0_u64;
     for event in events {
@@ -406,6 +313,8 @@ fn summarize_bucket<'a>(
         if let Some(pnl) = event.fully_executable_pnl_sol {
             fully_executable_events += 1;
             fully_executable_pnl_sol += pnl;
+            fully_executable_shadow_pnl_sol += event.shadow_pnl_sol;
+            fully_executable_delta_values.push(pnl - event.shadow_pnl_sol);
         }
         out.market_exit_quote_events += event.market_exit_quote_events;
         out.market_exit_error_events += event.market_exit_error_events;
@@ -427,10 +336,14 @@ fn summarize_bucket<'a>(
     out.fully_executable_events = fully_executable_events;
     if fully_executable_events > 0 {
         out.fully_executable_pnl_sol = Some(fully_executable_pnl_sol);
-        out.fully_executable_delta_sol = Some(fully_executable_pnl_sol - out.shadow_pnl_sol);
+        out.fully_executable_shadow_pnl_sol = Some(fully_executable_shadow_pnl_sol);
+        out.fully_executable_delta_sol =
+            Some(fully_executable_pnl_sol - fully_executable_shadow_pnl_sol);
+        out.fully_executable_delta_stats = numeric_stats(fully_executable_delta_values);
     }
     if out.events > 0 {
         out.avg_quote_shadow_ratio = Some(ratio_sum / out.events as f64);
+        out.fully_executable_coverage = Some(fully_executable_events as f64 / out.events as f64);
     }
     if impact_count > 0 {
         out.avg_price_impact_pct = Some(impact_sum / impact_count as f64);

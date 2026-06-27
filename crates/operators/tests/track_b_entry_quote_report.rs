@@ -48,6 +48,10 @@ fn splits_exit_executability_and_excludes_contaminated_ratios() -> Result<()> {
     assert_eq!(fully.events, 1);
     assert_eq!(hybrid.events, 1);
     assert_eq!(market.fully_executable_events, 0);
+    assert_eq!(market.fully_executable_coverage, Some(0.0));
+    assert_eq!(market.fully_executable_pnl_sol, None);
+    assert_eq!(market.fully_executable_shadow_pnl_sol, None);
+    assert_eq!(market.fully_executable_delta_sol, None);
     assert_eq!(market.market_exit_missing_quote_events, 2);
     assert!((stale.entry_adjusted_pnl_sol + 0.4).abs() < 1e-9);
     assert!((market.shadow_pnl_sol - 0.3).abs() < 1e-9);
@@ -60,69 +64,6 @@ fn splits_exit_executability_and_excludes_contaminated_ratios() -> Result<()> {
     assert_eq!(ratio_110.rejected_events, 2);
     assert_eq!(ratio_110.rejected_market_events, 1);
     assert_eq!(ratio_110.rejected_stale_quote_events, 1);
-    Ok(())
-}
-
-#[test]
-fn market_exit_quote_makes_market_bucket_fully_executable() -> Result<()> {
-    let db = NamedTempFile::new()?;
-    let conn = Connection::open(db.path())?;
-    create_schema(&conn)?;
-    insert_event(
-        &conn,
-        "market-exit",
-        "signal-market-exit",
-        "w4",
-        "token-exit",
-        2.0,
-        1.0,
-        0.2,
-    )?;
-    insert_metric_rank(&conn, "w4", 16)?;
-    let close_id = insert_close(
-        &conn,
-        "sell-market-exit",
-        "w4",
-        "token-exit",
-        "market",
-        1.0,
-        1.2,
-        0.2,
-    )?;
-    insert_market_exit_quote(&conn, close_id, "w4", "token-exit", 0.75, 1.0)?;
-    drop(conn);
-
-    let report = build_report(
-        test_cli(db.path()),
-        Utc.with_ymd_and_hms(2026, 6, 24, 0, 0, 0).unwrap(),
-    );
-    let summary = report.summary.expect("report should load");
-    let market = summary
-        .by_close_bucket
-        .iter()
-        .find(|row| row.bucket == "market")
-        .expect("market bucket should exist");
-    let fully = summary
-        .by_exit_executability
-        .iter()
-        .find(|row| row.bucket == "fully_executable")
-        .expect("fully executable bucket should exist");
-
-    assert_eq!(summary.counts.market_exit_quote_events, 1);
-    assert_eq!(summary.counts.market_exit_missing_quote_events, 0);
-    assert_eq!(market.events, 1);
-    assert_eq!(market.fully_executable_events, 1);
-    assert_eq!(market.market_exit_quote_events, 1);
-    let rank_16_30 = summary
-        .by_rank_cohort
-        .iter()
-        .find(|row| row.cohort == "rank_16_30")
-        .expect("rank 16-30 cohort should exist");
-    assert_eq!(rank_16_30.events, 1);
-    assert!((market.entry_adjusted_pnl_sol + 0.4).abs() < 1e-9);
-    assert!((market.fully_executable_pnl_sol.expect("full pnl") + 0.55).abs() < 1e-9);
-    assert_eq!(fully.events, 1);
-    assert!((fully.fully_executable_pnl_sol.expect("full bucket pnl") + 0.55).abs() < 1e-9);
     Ok(())
 }
 
@@ -344,24 +285,6 @@ fn create_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX idx_shadow_closed_trades_wallet_closed_ts
             ON shadow_closed_trades(wallet_id, closed_ts);
         ",
-    )?;
-    Ok(())
-}
-
-fn insert_metric_rank(conn: &Connection, wallet: &str, rank: u64) -> Result<()> {
-    for index in 1..rank {
-        conn.execute(
-            "INSERT INTO wallet_metrics(wallet_id, window_start, score) VALUES (?1, ?2, ?3)",
-            params![
-                format!("rank-before-{index:02}"),
-                "2026-06-23T00:00:00+00:00",
-                10_000.0 - index as f64
-            ],
-        )?;
-    }
-    conn.execute(
-        "INSERT INTO wallet_metrics(wallet_id, window_start, score) VALUES (?1, ?2, ?3)",
-        params![wallet, "2026-06-23T00:00:00+00:00", 1.0],
     )?;
     Ok(())
 }

@@ -8,6 +8,8 @@ pub(crate) fn track_b_caveats() -> Vec<String> {
         "Source-cohort split uses source_cohort stamped on the entry diagnostic event; legacy rows before the stamp are reported as unknown.",
         "Mixed close-context events are reported separately to avoid fanout hiding.",
         "Market-exit executable quotes are delayed diagnostics; inspect market_exit_decision_delay_ms_stats before treating them as close-time exits.",
+        "Hold-time buckets use max(closed_ts-opened_ts) across matched partial closes for the entry event.",
+        "Hold-time buckets are realized outcome-dependent; smaller gaps in slower buckets can reflect survivorship/collider bias. Treat this slice as a kill-test: weak or negative slow-bucket evidence is informative, while positive evidence needs an entry-time token-speed proxy before green-lighting a universe pivot.",
     ]
     .into_iter()
     .map(str::to_string)
