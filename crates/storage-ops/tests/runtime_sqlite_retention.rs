@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::{Duration, Utc};
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
@@ -308,33 +309,35 @@ fn setup_db(name: &str) -> Result<PathBuf> {
             recorded_ts TEXT NOT NULL
         );",
     )?;
-    insert_observed(&conn, "old", "2026-06-01T00:00:00+00:00")?;
-    insert_observed(&conn, "new", "2026-06-16T00:00:00+00:00")?;
+    let old_ts = days_ago(60);
+    let new_ts = Utc::now().to_rfc3339();
+    insert_observed(&conn, "old", &old_ts)?;
+    insert_observed(&conn, "new", &new_ts)?;
     conn.execute(
         "INSERT INTO execution_quote_canary_events(event_id, request_ts) VALUES (?1, ?2), (?3, ?4)",
         params![
             "old",
-            "2026-05-01T00:00:00+00:00",
+            &old_ts,
             "new",
-            "2026-06-16T00:00:00+00:00"
+            &new_ts
         ],
     )?;
     conn.execute(
         "INSERT INTO execution_quote_canary_provider_samples(provider, request_ts) VALUES (?1, ?2), (?3, ?4)",
         params![
             "old",
-            "2026-05-01T00:00:00+00:00",
+            &old_ts,
             "new",
-            "2026-06-16T00:00:00+00:00"
+            &new_ts
         ],
     )?;
     conn.execute(
         "INSERT INTO execution_quote_canary_shadow_gate_events(signal_id, recorded_ts) VALUES (?1, ?2), (?3, ?4)",
         params![
             "old",
-            "2026-05-01T00:00:00+00:00",
+            &old_ts,
             "new",
-            "2026-06-16T00:00:00+00:00"
+            &new_ts
         ],
     )?;
     Ok(db_path)
@@ -381,6 +384,10 @@ fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
     value.push(".");
     value.push(suffix);
     PathBuf::from(value)
+}
+
+fn days_ago(days: i64) -> String {
+    (Utc::now() - Duration::days(days)).to_rfc3339()
 }
 
 fn insert_observed(conn: &Connection, signature: &str, ts: &str) -> Result<()> {
