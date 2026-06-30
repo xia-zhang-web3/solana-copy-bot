@@ -365,7 +365,6 @@ fn scheduled_export_does_not_skip_when_db_metric_snapshot_changed() -> Result<()
         &[],
         &[drifted_metric],
         &["wallet_a".to_string()],
-        None,
         false,
         false,
         now,
