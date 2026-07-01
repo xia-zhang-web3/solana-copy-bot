@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, OpenFlags};
 use std::path::Path;
 
 use super::cli::Cli;
-use super::rebuild::{execute_rebuild, RebuildReport};
+use super::rebuild::{execute_rebuild, RebuildOptions, RebuildReport};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct DeleteTotals {
@@ -93,6 +93,9 @@ pub(super) fn execute_commit(
             output,
             observed_cutoff,
             canary_cutoff,
+            RebuildOptions {
+                defer_full_integrity: cli.defer_rebuild_integrity_check,
+            },
         )?)
     } else {
         None

@@ -315,12 +315,7 @@ fn setup_db(name: &str) -> Result<PathBuf> {
     insert_observed(&conn, "new", &new_ts)?;
     conn.execute(
         "INSERT INTO execution_quote_canary_events(event_id, request_ts) VALUES (?1, ?2), (?3, ?4)",
-        params![
-            "old",
-            &old_ts,
-            "new",
-            &new_ts
-        ],
+        params!["old", &old_ts, "new", &new_ts],
     )?;
     conn.execute(
         "INSERT INTO execution_quote_canary_provider_samples(provider, request_ts) VALUES (?1, ?2), (?3, ?4)",

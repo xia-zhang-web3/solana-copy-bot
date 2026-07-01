@@ -1,12 +1,13 @@
 use anyhow::{anyhow, bail, Context, Result};
 use copybot_config::load_from_path;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 
 use super::common::resolve_db_path;
 
-pub(super) const USAGE: &str = "usage: copybot_runtime_sqlite_retention_maintenance --config <path> --json [--db-path <path>] [--service-name <name>] [--allow-service-active] [--commit] [--observed-retention-days <n>] [--observed-batch-size <n>] [--max-observed-rows <n>] [--canary-retention-days <n>] [--canary-batch-size <n>] [--max-canary-rows <n>] [--create-canary-ts-indexes] [--checkpoint-truncate] [--vacuum-into <path>] [--rebuild-into <path>]";
+pub(super) const USAGE: &str = "usage: copybot_runtime_sqlite_retention_maintenance --config <path> --json [--db-path <path>] [--service-name <name>] [--allow-service-active] [--commit] [--observed-retention-days <n>] [--observed-batch-size <n>] [--max-observed-rows <n>] [--canary-retention-days <n>] [--canary-batch-size <n>] [--max-canary-rows <n>] [--create-canary-ts-indexes] [--checkpoint-truncate] [--vacuum-into <path>] [--rebuild-into <path>] [--defer-rebuild-integrity-check]";
 
 const DEFAULT_SERVICE_NAME: &str = "solana-copy-bot.service";
 const DEFAULT_OBSERVED_BATCH_SIZE: u64 = 10_000;
@@ -32,6 +33,7 @@ pub(super) struct Cli {
     pub(super) checkpoint_truncate: bool,
     pub(super) vacuum_into: Option<PathBuf>,
     pub(super) rebuild_into: Option<PathBuf>,
+    pub(super) defer_rebuild_integrity_check: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +85,14 @@ pub(super) struct RuntimeSqliteRetentionReport {
     pub(super) rebuild_views_created: u64,
     pub(super) rebuild_integrity_check: Option<String>,
     pub(super) rebuild_foreign_key_violations: Option<u64>,
+    pub(super) full_integrity_deferred: bool,
+    pub(super) rebuild_quick_check: Option<String>,
+    pub(super) rebuild_cheap_check_tables_checked: Option<u64>,
+    pub(super) rebuild_row_count_mismatches: Option<u64>,
+    pub(super) rebuild_schema_mismatches: Option<u64>,
+    pub(super) rebuild_critical_empty_tables: Vec<String>,
+    pub(super) rebuild_phase_timings_ms: BTreeMap<String, u64>,
+    pub(super) required_full_integrity_marker: Option<String>,
     pub(super) maintenance_outcome: String,
     pub(super) reason: String,
     pub(super) service_safe_next_action: String,
@@ -117,6 +127,7 @@ impl Cli {
             checkpoint_truncate: false,
             vacuum_into: None,
             rebuild_into: None,
+            defer_rebuild_integrity_check: false,
         }
     }
 }
@@ -165,6 +176,7 @@ where
                 cli.rebuild_into =
                     Some(PathBuf::from(parse_string("--rebuild-into", args.next())?));
             }
+            "--defer-rebuild-integrity-check" => cli.defer_rebuild_integrity_check = true,
             "--help" | "-h" => return Ok(None),
             other => bail!("unknown argument: {other}"),
         }
@@ -187,6 +199,9 @@ pub(super) fn validate_cli(cli: &Cli) -> Result<()> {
     }
     if cli.canary_retention_days == 0 {
         bail!("--canary-retention-days must be greater than zero");
+    }
+    if cli.defer_rebuild_integrity_check && cli.rebuild_into.is_none() {
+        bail!("--defer-rebuild-integrity-check requires --rebuild-into");
     }
     if let Some(days) = cli.observed_retention_days {
         if days == 0 {

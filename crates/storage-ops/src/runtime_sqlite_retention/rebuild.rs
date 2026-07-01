@@ -1,8 +1,11 @@
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OpenFlags};
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Instant;
 
+use super::rebuild_checks::{run_rebuild_cheap_checks, RebuildCheapCheckReport};
 use super::schema_sql::{
     load_schema_objects, qualify_for_schema, quote_ident, SchemaObject, SchemaObjectKind,
 };
@@ -25,8 +28,16 @@ pub(super) struct RebuildReport {
     pub(super) indexes_created: u64,
     pub(super) triggers_created: u64,
     pub(super) views_created: u64,
-    pub(super) integrity_check: String,
-    pub(super) foreign_key_violations: u64,
+    pub(super) integrity_check: Option<String>,
+    pub(super) foreign_key_violations: Option<u64>,
+    pub(super) full_integrity_deferred: bool,
+    pub(super) cheap_checks: Option<RebuildCheapCheckReport>,
+    pub(super) phase_timings_ms: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct RebuildOptions {
+    pub(super) defer_full_integrity: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -46,6 +57,7 @@ pub(super) fn execute_rebuild(
     output_path: &Path,
     observed_cutoff: DateTime<Utc>,
     canary_cutoff: DateTime<Utc>,
+    options: RebuildOptions,
 ) -> Result<RebuildReport> {
     if output_path.exists() {
         bail!("rebuild output already exists: {}", output_path.display());
@@ -69,7 +81,7 @@ pub(super) fn execute_rebuild(
     .with_context(|| format!("failed opening runtime DB {}", source_path.display()))?;
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
     attach_output(&conn, output_path)?;
-    let result = rebuild_attached(&conn, observed_cutoff, canary_cutoff);
+    let result = rebuild_attached(&conn, observed_cutoff, canary_cutoff, options);
     let detach_result =
         conn.execute_batch(&format!("DETACH DATABASE {}", quote_ident(COMPACT_SCHEMA)));
     match (result, detach_result) {
@@ -83,6 +95,7 @@ fn rebuild_attached(
     conn: &Connection,
     observed_cutoff: DateTime<Utc>,
     canary_cutoff: DateTime<Utc>,
+    options: RebuildOptions,
 ) -> Result<RebuildReport> {
     conn.execute_batch(&format!(
         "PRAGMA {}.foreign_keys = OFF;
@@ -94,32 +107,82 @@ fn rebuild_attached(
     ))
     .context("failed preparing compact rebuild pragmas")?;
 
-    let objects = load_schema_objects(conn)?;
-    create_schema_objects(conn, &objects, SchemaObjectKind::Table)?;
-    let mut report = copy_tables(conn, &objects, observed_cutoff, canary_cutoff)?;
-    copy_sqlite_sequence(conn)?;
-    report.indexes_created = create_schema_objects(conn, &objects, SchemaObjectKind::Index)?;
-    report.indexes_created = report
-        .indexes_created
-        .saturating_add(create_compact_canary_ts_indexes(conn)?);
-    report.triggers_created = create_schema_objects(conn, &objects, SchemaObjectKind::Trigger)?;
-    report.views_created = create_schema_objects(conn, &objects, SchemaObjectKind::View)?;
-    set_output_pragmas(conn)?;
-    report.integrity_check = integrity_check(conn)?;
-    report.foreign_key_violations = foreign_key_violations(conn)?;
+    let mut phase_timings_ms = BTreeMap::new();
+    let objects = timed(&mut phase_timings_ms, "load_schema", || {
+        load_schema_objects(conn)
+    })?;
+    timed(&mut phase_timings_ms, "create_tables", || {
+        create_schema_objects(conn, &objects, SchemaObjectKind::Table)
+    })?;
+    let mut report = timed(&mut phase_timings_ms, "copy_tables", || {
+        copy_tables(conn, &objects, observed_cutoff, canary_cutoff)
+    })?;
+    timed(&mut phase_timings_ms, "copy_sqlite_sequence", || {
+        copy_sqlite_sequence(conn)
+    })?;
+    report.indexes_created = timed(&mut phase_timings_ms, "create_indexes", || {
+        create_schema_objects(conn, &objects, SchemaObjectKind::Index)
+    })?;
+    let canary_indexes = timed(&mut phase_timings_ms, "create_canary_indexes", || {
+        create_compact_canary_ts_indexes(conn)
+    })?;
+    report.indexes_created = report.indexes_created.saturating_add(canary_indexes);
+    report.triggers_created = timed(&mut phase_timings_ms, "create_triggers", || {
+        create_schema_objects(conn, &objects, SchemaObjectKind::Trigger)
+    })?;
+    report.views_created = timed(&mut phase_timings_ms, "create_views", || {
+        create_schema_objects(conn, &objects, SchemaObjectKind::View)
+    })?;
+    timed(&mut phase_timings_ms, "set_output_pragmas", || {
+        set_output_pragmas(conn)
+    })?;
+    if options.defer_full_integrity {
+        let cheap_checks = timed(&mut phase_timings_ms, "cheap_checks", || {
+            run_rebuild_cheap_checks(conn, observed_cutoff, canary_cutoff)
+        })?;
+        cheap_checks.enforce()?;
+        report.cheap_checks = Some(cheap_checks);
+        report.full_integrity_deferred = true;
+    } else {
+        report.integrity_check = Some(timed(&mut phase_timings_ms, "integrity_check", || {
+            integrity_check(conn)
+        })?);
+    }
+    report.foreign_key_violations =
+        Some(timed(&mut phase_timings_ms, "foreign_key_check", || {
+            foreign_key_violations(conn)
+        })?);
+    report.phase_timings_ms = phase_timings_ms;
     enforce_compact_verification(&report)?;
     Ok(report)
 }
 
 fn enforce_compact_verification(report: &RebuildReport) -> Result<()> {
-    if report.integrity_check != "ok" || report.foreign_key_violations != 0 {
+    let integrity_ok =
+        report.full_integrity_deferred || report.integrity_check.as_deref() == Some("ok");
+    if !integrity_ok || report.foreign_key_violations != Some(0) {
         bail!(
             "compact rebuild verification failed: integrity_check={} foreign_key_violations={}",
-            report.integrity_check,
-            report.foreign_key_violations
+            report.integrity_check.as_deref().unwrap_or("deferred"),
+            report
+                .foreign_key_violations
+                .map(|count| count.to_string())
+                .unwrap_or_else(|| "not_run".to_string())
         );
     }
     Ok(())
+}
+
+fn timed<T>(
+    timings: &mut BTreeMap<String, u64>,
+    phase: &'static str,
+    work: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let started = Instant::now();
+    let result = work();
+    let elapsed = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    timings.insert(phase.to_string(), elapsed);
+    result
 }
 
 fn create_schema_objects(
@@ -153,8 +216,11 @@ fn copy_tables(
         indexes_created: 0,
         triggers_created: 0,
         views_created: 0,
-        integrity_check: String::new(),
-        foreign_key_violations: 0,
+        integrity_check: None,
+        foreign_key_violations: None,
+        full_integrity_deferred: false,
+        cheap_checks: None,
+        phase_timings_ms: BTreeMap::new(),
     };
     for object in objects
         .iter()

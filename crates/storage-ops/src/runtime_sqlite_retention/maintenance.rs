@@ -12,17 +12,21 @@ use super::ops::{execute_commit, ExecutedMaintenance};
 use super::rebuild::RebuildReport;
 
 const OUTCOME_COMPLETED: &str = "completed";
+const OUTCOME_COMPLETED_INTEGRITY_DEFERRED: &str = "completed_integrity_deferred";
 const OUTCOME_DRY_RUN: &str = "dry_run";
 const OUTCOME_FAILED_SERVICE_ACTIVE: &str = "failed_service_active";
 const OUTCOME_FAILED_UNPROVEN: &str = "failed_unproven";
 const OUTCOME_SKIPPED_NOOP: &str = "skipped_noop";
 
 const REASON_COMPLETED: &str = "runtime_sqlite_retention_maintenance_completed";
+const REASON_COMPLETED_INTEGRITY_DEFERRED: &str =
+    "runtime_sqlite_retention_rebuild_completed_integrity_deferred";
 const REASON_DRY_RUN: &str = "runtime_sqlite_retention_maintenance_dry_run";
 const REASON_NOOP: &str = "runtime_sqlite_retention_maintenance_noop";
 const REASON_SERVICE_ACTIVE: &str = "runtime_sqlite_retention_service_active";
 const REASON_SERVICE_NOT_INACTIVE: &str = "runtime_sqlite_retention_service_not_inactive";
 const ACTION_COMPLETED: &str = "verify DB size, WAL size, and restart service if it was stopped";
+const ACTION_INTEGRITY_DEFERRED: &str = "full integrity NOT run; compact DB passed cheap checks only; run async full integrity on a snapshot/copy immediately, keep precompact DB and EBS snapshot until full_integrity=ok marker exists, and do not treat this as production-green";
 const ACTION_DRY_RUN: &str = "rerun with --commit during maintenance window to execute";
 const ACTION_NOOP: &str = "no retention action requested";
 const ACTION_SERVICE_ACTIVE: &str =
@@ -187,6 +191,13 @@ fn completed_report(
     if let Some(rebuild) = executed.rebuild {
         apply_rebuild_report(&mut report, rebuild);
     }
+    if report.full_integrity_deferred {
+        report.production_green = false;
+        report.maintenance_outcome = OUTCOME_COMPLETED_INTEGRITY_DEFERRED.to_string();
+        report.reason = REASON_COMPLETED_INTEGRITY_DEFERRED.to_string();
+        report.service_safe_next_action = ACTION_INTEGRITY_DEFERRED.to_string();
+        report.required_full_integrity_marker = Some("full_integrity=ok".to_string());
+    }
     report
 }
 
@@ -209,11 +220,22 @@ fn apply_rebuild_report(report: &mut RuntimeSqliteRetentionReport, rebuild: Rebu
     report.rebuild_indexes_created = rebuild.indexes_created;
     report.rebuild_triggers_created = rebuild.triggers_created;
     report.rebuild_views_created = rebuild.views_created;
-    report.rebuild_integrity_check = Some(rebuild.integrity_check);
-    report.rebuild_foreign_key_violations = Some(rebuild.foreign_key_violations);
-    report.service_safe_next_action =
-        "verify compact output DB, then swap manually during maintenance window; source DB was not auto-swapped"
-            .to_string();
+    report.rebuild_integrity_check = rebuild.integrity_check;
+    report.rebuild_foreign_key_violations = rebuild.foreign_key_violations;
+    report.full_integrity_deferred = rebuild.full_integrity_deferred;
+    if let Some(cheap_checks) = rebuild.cheap_checks {
+        report.rebuild_quick_check = Some(cheap_checks.quick_check);
+        report.rebuild_cheap_check_tables_checked = Some(cheap_checks.tables_checked);
+        report.rebuild_row_count_mismatches = Some(cheap_checks.row_count_mismatches);
+        report.rebuild_schema_mismatches = Some(cheap_checks.schema_mismatches);
+        report.rebuild_critical_empty_tables = cheap_checks.critical_empty_tables;
+    }
+    report.rebuild_phase_timings_ms = rebuild.phase_timings_ms;
+    if !report.full_integrity_deferred {
+        report.service_safe_next_action =
+            "verify compact output DB, then swap manually during maintenance window; source DB was not auto-swapped"
+                .to_string();
+    }
 }
 
 fn base_report(
@@ -274,6 +296,14 @@ fn base_report(
         rebuild_views_created: 0,
         rebuild_integrity_check: None,
         rebuild_foreign_key_violations: None,
+        full_integrity_deferred: false,
+        rebuild_quick_check: None,
+        rebuild_cheap_check_tables_checked: None,
+        rebuild_row_count_mismatches: None,
+        rebuild_schema_mismatches: None,
+        rebuild_critical_empty_tables: Vec::new(),
+        rebuild_phase_timings_ms: Default::default(),
+        required_full_integrity_marker: None,
         maintenance_outcome: outcome.to_string(),
         reason: reason.to_string(),
         service_safe_next_action: action.to_string(),
