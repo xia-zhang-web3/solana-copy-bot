@@ -36,6 +36,7 @@ EXPECTED_PACKAGE_BINARIES = {
         "copybot_execution_tiny_writeoff",
         "copybot_exit_policy_shadow_quote_report",
         "copybot_exit_policy_sim",
+        "copybot_first_sell_full_exit_report",
         "copybot_leader_copyability_report",
         "copybot_track_b_entry_quote_report",
         "copybot_universe_de_risk_report",

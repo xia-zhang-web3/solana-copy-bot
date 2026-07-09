@@ -36,6 +36,10 @@ name = "copybot_exit_policy_sim"
 path = "src/bin/copybot_exit_policy_sim.rs"
 
 [[bin]]
+name = "copybot_first_sell_full_exit_report"
+path = "src/bin/copybot_first_sell_full_exit_report.rs"
+
+[[bin]]
 name = "copybot_exit_policy_shadow_quote_report"
 path = "src/bin/copybot_exit_policy_shadow_quote_report.rs"
 
