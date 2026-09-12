@@ -1,5 +1,5 @@
 use crate::execution_quote_canary_helpers::{
-    apply_quote_sample_to_event, duration_ms_between, finalize_quote_decision, price_sol_per_token,
+    apply_quote_sample_to_event, finalize_quote_decision, price_sol_per_token,
     quote_canary_slippage_limit_bps, quote_slippage_bps_for_sell, raw_amount_to_ui, short_error,
     ui_amount_to_raw_string, QUOTE_STATUS_ERROR, QUOTE_STATUS_OK, SIDE_SELL, SOL_MINT,
 };
@@ -86,7 +86,9 @@ impl ExitPolicyShadowQuoteDiagnostic {
         match self.quote_lot(&lot).await {
             Ok(quote) => apply_quote_to_lot_event(&lot, &mut event, quote),
             Err(error) => {
+                crate::execution_quote_timing::apply_anyhow_error_timing(&mut event, &error);
                 event.quote_status = QUOTE_STATUS_ERROR.to_string();
+                event.quote_response_available_ts = None;
                 event.error = Some(short_error(&error));
             }
         }
@@ -133,6 +135,8 @@ fn base_event(
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
         event_id,
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         signal_id: None,
         shadow_closed_trade_id: None,
         wallet_id: lot.wallet_id.clone(),
@@ -141,7 +145,7 @@ fn base_event(
         quote_status: QUOTE_STATUS_ERROR.to_string(),
         request_ts: now,
         signal_ts: Some(trigger_ts),
-        decision_delay_ms: duration_ms_between(trigger_ts, now),
+        decision_delay_ms: None,
         quote_latency_ms: None,
         leader_notional_sol: Some(lot.cost_sol),
         quote_in_amount_raw: lot.qty_exact.as_ref().map(|qty| qty.raw().to_string()),

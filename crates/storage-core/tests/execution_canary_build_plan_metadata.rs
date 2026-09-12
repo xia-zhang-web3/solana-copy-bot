@@ -204,6 +204,8 @@ fn metadata_for_order(
     recorded_ts: DateTime<Utc>,
 ) -> ExecutionCanaryBuildPlanMetadata {
     ExecutionCanaryBuildPlanMetadata {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         order_id: order_id.to_string(),
         signal_id: signal_id.to_string(),
         client_order_id: client_order_id.to_string(),

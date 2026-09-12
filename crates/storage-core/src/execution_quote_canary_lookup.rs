@@ -16,79 +16,6 @@ const DECISION_WOULD_EXECUTE: &str = "would_execute";
 const DECISION_WOULD_FORCE_EXIT: &str = "would_force_exit";
 
 impl SqliteDiscoveryStore {
-    pub fn list_execution_quote_canary_owned_sell_signal_candidate_ids(
-        &self,
-        copy_signal_status: &str,
-        since: DateTime<Utc>,
-        limit: u32,
-    ) -> Result<Vec<String>> {
-        ensure_execution_quote_canary_tables(self)?;
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT signal.signal_id
-                 FROM copy_signals AS signal
-                 WHERE signal.status = ?1
-                   AND signal.ts >= ?2
-                   AND lower(signal.side) = 'sell'
-                   AND EXISTS (
-                        SELECT 1
-                        FROM positions AS pos
-                        LEFT JOIN orders AS buy_order
-                          ON pos.position_id = 'exec-canary-pos:' || buy_order.order_id
-                        LEFT JOIN copy_signals AS buy_signal
-                          ON buy_signal.signal_id = buy_order.signal_id
-                        WHERE pos.token = signal.token
-                          AND pos.accounting_bucket = ?3
-                          AND pos.state = ?4
-                          AND signal.ts >= COALESCE((
-                              SELECT MAX(COALESCE(latest_buy_signal.ts, latest_buy_order.submit_ts))
-                              FROM orders AS latest_buy_order
-                              JOIN copy_signals AS latest_buy_signal
-                                ON latest_buy_signal.signal_id = latest_buy_order.signal_id
-                              WHERE latest_buy_order.order_id LIKE 'exec-canary:%'
-                                AND latest_buy_order.status = 'execution_canary_confirmed'
-                                AND latest_buy_order.confirm_ts IS NOT NULL
-                                AND lower(latest_buy_signal.side) = 'buy'
-                                AND latest_buy_signal.token = pos.token
-                                AND latest_buy_order.submit_ts >= pos.opened_ts
-                          ), CASE
-                              WHEN pos.position_id LIKE 'exec-canary-pos:recovery-orphan:%'
-                              THEN pos.opened_ts
-                              ELSE COALESCE(buy_signal.ts, pos.opened_ts)
-                          END)
-                   )
-                   AND NOT EXISTS (
-                        SELECT 1
-                        FROM execution_quote_canary_events AS event
-                        WHERE event.signal_id = signal.signal_id
-                          AND lower(event.side) = 'sell'
-                   )
-                   AND NOT EXISTS (
-                        SELECT 1
-                        FROM orders
-                        WHERE orders.signal_id = signal.signal_id
-                   )
-                 ORDER BY signal.ts ASC, signal.signal_id ASC
-                 LIMIT ?5",
-            )
-            .context("failed to prepare owned sell signal quote canary candidate query")?;
-        let rows = stmt
-            .query_map(
-                params![
-                    copy_signal_status,
-                    since.to_rfc3339(),
-                    EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
-                    EXECUTION_CANARY_POSITION_STATE_OPEN,
-                    i64::from(limit.max(1)),
-                ],
-                |row| row.get(0),
-            )
-            .context("failed querying owned sell signal quote canary candidates")?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed reading owned sell signal quote canary candidates")
-    }
-
     pub fn load_execution_quote_canary_event_by_id(
         &self,
         event_id: &str,
@@ -123,11 +50,20 @@ impl SqliteDiscoveryStore {
                     priority_fee_json,
                     decision_status,
                     decision_reason,
-                    error
+                    error, {}, {}
                  FROM execution_quote_canary_events
                  WHERE event_id = ?1
                  LIMIT 1",
-                    quote_response_json_expr(self)?
+                    quote_response_json_expr(self)?,
+                    crate::quote_http_started_expr(
+                        &self.conn,
+                        "execution_quote_canary_events",
+                        ""
+                    )?,
+                    crate::quote_response_availability::expr(
+                        &self.conn,
+                        "execution_quote_canary_events"
+                    )?
                 ),
                 params![event_id],
                 quote_canary_event_from_row,
@@ -170,14 +106,23 @@ impl SqliteDiscoveryStore {
                     priority_fee_json,
                     decision_status,
                     decision_reason,
-                    error
+                    error, {}, {}
                  FROM execution_quote_canary_events
                  WHERE signal_id = ?1
                    AND lower(side) = 'buy'
                    AND event_id NOT LIKE 'quote:entry-shadow-diag:%'
                  ORDER BY request_ts DESC, event_id DESC
                  LIMIT 1",
-                    quote_response_json_expr(self)?
+                    quote_response_json_expr(self)?,
+                    crate::quote_http_started_expr(
+                        &self.conn,
+                        "execution_quote_canary_events",
+                        ""
+                    )?,
+                    crate::quote_response_availability::expr(
+                        &self.conn,
+                        "execution_quote_canary_events"
+                    )?
                 ),
                 params![signal_id],
                 quote_canary_event_from_row,
@@ -191,11 +136,24 @@ impl SqliteDiscoveryStore {
         since: DateTime<Utc>,
         limit: u32,
     ) -> Result<Vec<String>> {
+        Ok(self
+            .list_execution_quote_canary_close_submit_retry_event_ids_page(since, limit, None)?
+            .into_iter()
+            .map(|r| r.event_id)
+            .collect())
+    }
+
+    pub fn list_execution_quote_canary_close_submit_retry_event_ids_page(
+        &self,
+        since: DateTime<Utc>,
+        limit: u32,
+        after: Option<&crate::ExecutionRetryCursor>,
+    ) -> Result<Vec<crate::ExecutionRetryQuote>> {
         ensure_execution_quote_canary_tables(self)?;
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT event.event_id
+                "SELECT event.event_id,event.request_ts
                  FROM execution_quote_canary_events AS event
                  WHERE lower(event.side) = 'sell'
                    AND event.request_ts >= ?1
@@ -235,6 +193,7 @@ impl SqliteDiscoveryStore {
                         FROM orders
                         WHERE orders.signal_id = event.signal_id
                    )
+                   AND (?8 IS NULL OR (event.request_ts,event.event_id)>(?8,?9))
                  ORDER BY event.request_ts ASC, event.event_id ASC
                  LIMIT ?7",
             )
@@ -249,8 +208,19 @@ impl SqliteDiscoveryStore {
                     EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
                     EXECUTION_CANARY_POSITION_STATE_OPEN,
                     i64::from(limit.max(1)),
+                    after.map(|c| c.first.as_str()),
+                    after.map(|c| c.second.as_str()),
                 ],
-                |row| row.get(0),
+                |row| {
+                    Ok(crate::ExecutionRetryQuote {
+                        event_id: row.get(0)?,
+                        cursor: crate::ExecutionRetryCursor {
+                            first: row.get(1)?,
+                            second: row.get(0)?,
+                            third: String::new(),
+                        },
+                    })
+                },
             )
             .context("failed querying execution quote canary close retry events")?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -277,7 +247,11 @@ impl SqliteDiscoveryStore {
                    AND (
                         event.priority_fee_status IS NULL
                         OR event.priority_fee_status != ?2
-                        OR event.priority_fee_lamports IS NULL
+                        OR (event.priority_fee_lamports IS NULL AND NOT CASE
+                            WHEN json_valid(event.priority_fee_json) THEN
+                                COALESCE(json_extract(event.priority_fee_json, '$.version') = 1
+                                AND json_extract(event.priority_fee_json, '$.unit') = 'micro_lamports_per_compute_unit', 0)
+                            ELSE 0 END)
                    )
                    AND EXISTS (
                         SELECT 1
@@ -430,6 +404,7 @@ fn quote_canary_event_from_row(
 }
 
 fn read_quote_canary_event_row(row: &rusqlite::Row<'_>) -> Result<ExecutionQuoteCanaryEventInsert> {
+    let actual = crate::quote_http_timing::read_http_started(row, 26)?;
     let request_ts_raw: String = row.get(7).context("failed reading request_ts")?;
     let signal_ts_raw: Option<String> = row.get(8).context("failed reading signal_ts")?;
     let priority_fee_lamports = optional_i64_to_u64(
@@ -438,6 +413,8 @@ fn read_quote_canary_event_row(row: &rusqlite::Row<'_>) -> Result<ExecutionQuote
             .context("failed reading priority_fee_lamports")?,
     )?;
     Ok(ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: actual,
+        quote_response_available_ts: crate::quote_response_availability::read(row, 27)?,
         event_id: row.get(0).context("failed reading event_id")?,
         signal_id: row.get(1).context("failed reading signal_id")?,
         shadow_closed_trade_id: row
@@ -452,14 +429,18 @@ fn read_quote_canary_event_row(row: &rusqlite::Row<'_>) -> Result<ExecutionQuote
             .as_deref()
             .map(|raw| parse_rfc3339_utc(raw, "execution_quote_canary_events.signal_ts"))
             .transpose()?,
-        decision_delay_ms: optional_i64_to_u64(
-            "execution_quote_canary_events.decision_delay_ms",
-            row.get(9).context("failed reading decision_delay_ms")?,
-        )?,
+        decision_delay_ms: crate::quote_http_timing::actual_delay_ms(
+            signal_ts_raw
+                .as_deref()
+                .map(|raw| parse_rfc3339_utc(raw, "signal_ts"))
+                .transpose()?,
+            actual,
+        ),
         quote_latency_ms: optional_i64_to_u64(
             "execution_quote_canary_events.quote_latency_ms",
             row.get(10).context("failed reading quote_latency_ms")?,
-        )?,
+        )?
+        .filter(|_| actual.is_some()),
         leader_notional_sol: row.get(11).context("failed reading leader_notional_sol")?,
         quote_in_amount_raw: row.get(12).context("failed reading quote_in_amount_raw")?,
         quote_out_amount_raw: row.get(13).context("failed reading quote_out_amount_raw")?,

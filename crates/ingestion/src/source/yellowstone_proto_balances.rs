@@ -4,20 +4,31 @@ use yellowstone_grpc_proto::prelude::{TransactionStatusMeta, UiTokenAmount};
 
 use super::{MintDelta, ParsedUiAmount, SOL_MINT};
 
+#[allow(dead_code)]
 pub(in crate::source) fn infer_swap_from_proto_balances(
     meta: &TransactionStatusMeta,
     signer_index: usize,
     signer: &str,
 ) -> Option<(String, ParsedUiAmount, String, ParsedUiAmount)> {
+    infer_swap_from_proto_balances_with_attribution(meta, signer_index, signer, || {
+        crate::source::native_attribution::Attribution::NotApplicable
+    })
+}
+
+pub(in crate::source) fn infer_swap_from_proto_balances_with_attribution(
+    meta: &TransactionStatusMeta,
+    signer_index: usize,
+    signer: &str,
+    attribution: impl FnOnce() -> crate::source::native_attribution::Attribution,
+) -> Option<(String, ParsedUiAmount, String, ParsedUiAmount)> {
+    crate::source::target_balance_rows::protobuf(meta, signer)?;
     const TOKEN_EPS: f64 = 1e-12;
     const SOL_EPS: f64 = 1e-8;
     let mut mint_deltas: HashMap<String, MintDelta> = HashMap::new();
 
     for item in &meta.pre_token_balances {
         if item.owner == signer {
-            let Some(amount) = parse_proto_ui_amount(item.ui_token_amount.as_ref()) else {
-                continue;
-            };
+            let amount = parse_proto_ui_amount(item.ui_token_amount.as_ref())?;
             mint_deltas
                 .entry(item.mint.clone())
                 .or_default()
@@ -26,9 +37,7 @@ pub(in crate::source) fn infer_swap_from_proto_balances(
     }
     for item in &meta.post_token_balances {
         if item.owner == signer {
-            let Some(amount) = parse_proto_ui_amount(item.ui_token_amount.as_ref()) else {
-                continue;
-            };
+            let amount = parse_proto_ui_amount(item.ui_token_amount.as_ref())?;
             mint_deltas
                 .entry(item.mint.clone())
                 .or_default()
@@ -45,23 +54,48 @@ pub(in crate::source) fn infer_swap_from_proto_balances(
             token_out_candidates.push((mint.clone(), delta.candidate()));
         }
     }
-    token_in_candidates.sort_by(|a, b| {
-        b.1.amount
-            .partial_cmp(&a.1.amount)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    token_out_candidates.sort_by(|a, b| {
-        b.1.amount
-            .partial_cmp(&a.1.amount)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // UI quantities of different mints are incomparable. Reject ambiguity
+    // before any WSOL/native fallback can select another pair.
+    if token_in_candidates
+        .iter()
+        .filter(|(mint, _)| mint != SOL_MINT)
+        .count()
+        > 1
+        || token_out_candidates
+            .iter()
+            .filter(|(mint, _)| mint != SOL_MINT)
+            .count()
+            > 1
+    {
+        return None;
+    }
+
+    use crate::source::native_attribution::Attribution;
+    match attribution() {
+        Attribution::Unknown => return None,
+        Attribution::Known(trade) => {
+            let (input, in_raw, in_dec, output, out_raw, out_dec) = trade.legs();
+            let amount = |raw: u64, decimals: u8| ParsedUiAmount {
+                amount: raw as f64 / 10f64.powi(i32::from(decimals)),
+                raw_amount: Some(raw.to_string()),
+                decimals: Some(decimals),
+            };
+            return Some((
+                input,
+                amount(in_raw, in_dec),
+                output,
+                amount(out_raw, out_dec),
+            ));
+        }
+        Attribution::NotApplicable => {}
+    }
 
     let sol_token_delta = mint_deltas
         .get(SOL_MINT)
         .map(|delta| delta.amount_delta)
         .unwrap_or(0.0);
     if sol_token_delta < -TOKEN_EPS {
-        if let Some((out_mint, out_amt)) = dominant_non_sol_leg(&token_out_candidates) {
+        if let Some((out_mint, out_amt)) = single_non_sol_leg(&token_out_candidates) {
             return Some((
                 SOL_MINT.to_string(),
                 ParsedUiAmount {
@@ -77,7 +111,7 @@ pub(in crate::source) fn infer_swap_from_proto_balances(
         }
     }
     if sol_token_delta > TOKEN_EPS {
-        if let Some((in_mint, in_amt)) = dominant_non_sol_leg(&token_in_candidates) {
+        if let Some((in_mint, in_amt)) = single_non_sol_leg(&token_in_candidates) {
             return Some((
                 in_mint,
                 in_amt,
@@ -101,12 +135,12 @@ pub(in crate::source) fn infer_swap_from_proto_balances(
         decimals: value.decimals,
     });
     if sol_amount < -SOL_EPS {
-        if let Some((out_mint, out_amt)) = dominant_non_sol_leg(&token_out_candidates) {
+        if let Some((out_mint, out_amt)) = single_non_sol_leg(&token_out_candidates) {
             return Some((SOL_MINT.to_string(), sol_exact.clone()?, out_mint, out_amt));
         }
     }
     if sol_amount > SOL_EPS {
-        if let Some((in_mint, in_amt)) = dominant_non_sol_leg(&token_in_candidates) {
+        if let Some((in_mint, in_amt)) = single_non_sol_leg(&token_in_candidates) {
             return Some((in_mint, in_amt, SOL_MINT.to_string(), sol_exact?));
         }
     }
@@ -192,20 +226,11 @@ pub(in crate::source) fn build_exact_swap_amounts(
     })
 }
 
-fn dominant_non_sol_leg(entries: &[(String, ParsedUiAmount)]) -> Option<(String, ParsedUiAmount)> {
+fn single_non_sol_leg(entries: &[(String, ParsedUiAmount)]) -> Option<(String, ParsedUiAmount)> {
     const EPS: f64 = 1e-12;
-    const SECOND_LEG_AMBIGUITY_RATIO: f64 = 0.15;
-    let non_sol: Vec<(String, ParsedUiAmount)> = entries
+    let mut non_sol = entries
         .iter()
-        .filter(|(mint, value)| mint != SOL_MINT && value.amount > EPS)
-        .cloned()
-        .collect();
-    let (primary_mint, primary_value) = non_sol.first()?.clone();
-    if non_sol.len() >= 2 {
-        let second_value = non_sol[1].1.amount;
-        if second_value > primary_value.amount * SECOND_LEG_AMBIGUITY_RATIO {
-            return None;
-        }
-    }
-    Some((primary_mint, primary_value))
+        .filter(|(mint, value)| mint != SOL_MINT && value.amount > EPS);
+    let single = non_sol.next()?;
+    non_sol.next().is_none().then(|| single.clone())
 }

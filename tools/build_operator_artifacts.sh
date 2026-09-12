@@ -100,29 +100,55 @@ import subprocess
 import sys
 
 package_name = sys.argv[1]
-raw = subprocess.check_output(
-    ["cargo", "metadata", "--locked", "--format-version=1", "--no-deps"],
-    text=True,
-)
-metadata = json.loads(raw)
-for package in metadata.get("packages", []):
-    if package.get("name") != package_name:
-        continue
-    has_lib = any("lib" in target.get("kind", []) for target in package.get("targets", []))
-    print("1" if has_lib else "0")
-    raise SystemExit(0)
-print(f"unknown package: {package_name}", file=sys.stderr)
+try:
+    raw = subprocess.check_output(
+        ["cargo", "metadata", "--locked", "--format-version=1", "--no-deps"],
+        text=True,
+    )
+    packages = json.loads(raw)["packages"]
+    if not isinstance(packages, list):
+        raise ValueError("packages must be an array")
+    for package in packages:
+        if not isinstance(package, dict):
+            raise ValueError("package must be an object")
+        if package.get("name") != package_name:
+            continue
+        targets = package["targets"]
+        if not isinstance(targets, list) or not targets:
+            raise ValueError("targets must be a nonempty array")
+        for target in targets:
+            kind = target["kind"]
+            if not isinstance(kind, list) or not kind or not all(isinstance(k, str) for k in kind):
+                raise ValueError("target kind must be a nonempty array of strings")
+        print("1" if any("lib" in target["kind"] for target in targets) else "0")
+        raise SystemExit(0)
+except subprocess.CalledProcessError as error:
+    print(f"cargo metadata failed for {package_name} (exit {error.returncode})", file=sys.stderr)
+except (OSError, ValueError, KeyError, TypeError) as error:
+    print(f"invalid package metadata for {package_name}: {error}", file=sys.stderr)
+else:
+    print(f"unknown package: {package_name}", file=sys.stderr)
 raise SystemExit(1)
 PY
 }
 
 test_check=""
 if [ "$RUN_CHECKS" = "1" ]; then
-  if [ -x tools/architecture_guard.sh ]; then
-    tools/architecture_guard.sh --changed
-    tools/architecture_guard.sh --all
+  if [ ! -f tools/architecture_guard.sh ] || [ ! -x tools/architecture_guard.sh ]; then
+    echo "checked build requires executable tools/architecture_guard.sh" >&2
+    exit 1
   fi
-  if [ "$(package_has_lib "$PACKAGE")" = "1" ]; then
+  tools/architecture_guard.sh --changed
+  tools/architecture_guard.sh --all
+  if ! has_lib="$(package_has_lib "$PACKAGE")"; then
+    echo "cannot determine package type for $PACKAGE; refusing checked build" >&2
+    exit 1
+  fi
+  case "$has_lib" in
+    0|1) ;;
+    *) echo "invalid package type for $PACKAGE; expected 0 or 1" >&2; exit 1 ;;
+  esac
+  if [ "$has_lib" = "1" ]; then
     test_check="cargo test --locked -p $PACKAGE --lib -- --test-threads=1; cargo test --locked -p $PACKAGE --tests -- --test-threads=1"
     cargo test --locked -p "$PACKAGE" --lib -- --test-threads=1
     cargo test --locked -p "$PACKAGE" --tests -- --test-threads=1
@@ -130,8 +156,9 @@ if [ "$RUN_CHECKS" = "1" ]; then
     test_check="cargo test --locked -p copybot-app --bin copybot-app -- --test-threads=1"
     cargo test --locked -p copybot-app --bin copybot-app -- --test-threads=1
   else
-    test_check="cargo test --locked -p $PACKAGE --bins -- --test-threads=1"
+    test_check="cargo test --locked -p $PACKAGE --bins -- --test-threads=1; cargo test --locked -p $PACKAGE --tests -- --test-threads=1"
     cargo test --locked -p "$PACKAGE" --bins -- --test-threads=1
+    cargo test --locked -p "$PACKAGE" --tests -- --test-threads=1
   fi
 fi
 
@@ -215,10 +242,8 @@ if [ -n "$migration_bundle" ]; then
   manifest_args+=(--migration-bundle "$migration_bundle")
 fi
 if [ "$RUN_CHECKS" = "1" ]; then
-  if [ -x tools/architecture_guard.sh ]; then
-    manifest_args+=(--check "tools/architecture_guard.sh --changed")
-    manifest_args+=(--check "tools/architecture_guard.sh --all")
-  fi
+  manifest_args+=(--check "tools/architecture_guard.sh --changed")
+  manifest_args+=(--check "tools/architecture_guard.sh --all")
   manifest_args+=(--check "$test_check")
 fi
 for bin in $BINS; do

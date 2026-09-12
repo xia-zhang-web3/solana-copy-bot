@@ -12,6 +12,30 @@ const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 
 #[test]
 fn executable_feedback_rejects_wallet_with_unfollowable_live_pnl() -> Result<()> {
+    check_feedback_coverage(10, 10, "9000000", true)
+}
+
+#[test]
+fn unknown_fees_do_not_create_positive_discovery_feedback() -> Result<()> {
+    check_feedback_coverage(0, 30, "10100000", false)
+}
+
+#[test]
+fn mixed_fee_coverage_does_not_override_insufficient_sample_policy() -> Result<()> {
+    check_feedback_coverage(3, 30, "9000000", false)
+}
+
+#[test]
+fn known_negative_subset_keeps_existing_discovery_rejection_policy() -> Result<()> {
+    check_feedback_coverage(10, 30, "9000000", true)
+}
+
+#[test]
+fn known_positive_subset_is_not_published_as_complete_net() -> Result<()> {
+    check_feedback_coverage(10, 30, "10100000", false)
+}
+
+fn check_feedback_coverage(known: i64, total: i64, sell_out: &str, reject: bool) -> Result<()> {
     let dir = tempdir()?;
     let mut store = SqliteDiscoveryStore::open(dir.path().join("runtime.db"))?;
     store.run_migrations(std::path::Path::new(concat!(
@@ -45,7 +69,7 @@ fn executable_feedback_rejects_wallet_with_unfollowable_live_pnl() -> Result<()>
     for token in [token_a, token_b, token_c] {
         store.upsert_token_quality_cache(token, Some(5), Some(1.0), Some(60), now)?;
     }
-    for index in 0..10 {
+    for index in 0..total {
         let opened = now - Duration::hours(1) + Duration::seconds(index);
         let closed = opened + Duration::seconds(30);
         let signal_id = format!("executable-feedback-shadow-close-{index}");
@@ -65,10 +89,11 @@ fn executable_feedback_rejects_wallet_with_unfollowable_live_pnl() -> Result<()>
             "10000000",
             "1000",
             "would_execute",
+            (index < known).then_some(0),
         ))?;
         store.record_execution_quote_canary_event(&quote_event(
             &format!("executable-feedback-sell-{index}"),
-            Some(format!("executable-feedback-sell-signal-{index}")),
+            Some(signal_id.clone()),
             Some(close_id),
             bad_wallet,
             token_a,
@@ -76,8 +101,9 @@ fn executable_feedback_rejects_wallet_with_unfollowable_live_pnl() -> Result<()>
             closed,
             Some(closed),
             "1000",
-            "9000000",
+            sell_out,
             "would_execute",
+            (index < known).then_some(0),
         ))?;
     }
 
@@ -91,32 +117,48 @@ fn executable_feedback_rejects_wallet_with_unfollowable_live_pnl() -> Result<()>
 
     assert!(status.production_green, "{:?}", status.blockers);
     assert_eq!(status.candidate_wallets.len(), 2);
-    assert!(!status.candidate_wallets.contains(&bad_wallet.to_string()));
-    assert!(status.candidate_wallets.contains(&good_wallet.to_string()));
-    assert!(status
-        .candidate_wallets
-        .contains(&replacement_wallet.to_string()));
-    assert_eq!(
-        status
-            .filters
-            .reject_breakdown
-            .get("executable_feedback_negative"),
-        Some(&1)
-    );
+    if reject {
+        assert!(!status.candidate_wallets.contains(&bad_wallet.to_string()));
+        assert!(status.candidate_wallets.contains(&good_wallet.to_string()));
+        assert!(status
+            .candidate_wallets
+            .contains(&replacement_wallet.to_string()));
+        assert_eq!(
+            status
+                .filters
+                .reject_breakdown
+                .get("executable_feedback_negative"),
+            Some(&1)
+        );
+    }
     let bad_metric = status
         .wallet_metrics
         .iter()
         .find(|metric| metric.wallet_id == bad_wallet)
         .expect("bad wallet metric retained");
-    assert!(!bad_metric.eligible);
-    assert!(bad_metric
-        .reject_reasons
-        .contains(&"executable_feedback_negative".to_string()));
-    assert_eq!(bad_metric.executable_feedback_samples, Some(10));
-    assert!(bad_metric
-        .executable_feedback_pnl_after_fee_sol
-        .is_some_and(|pnl| pnl <= -0.0099 && pnl >= -0.0101));
-    assert_eq!(bad_metric.executable_feedback_flip_rate, Some(1.0));
+    assert_eq!(bad_metric.eligible, !reject);
+    assert_eq!(
+        bad_metric
+            .reject_reasons
+            .contains(&"executable_feedback_negative".to_string()),
+        reject
+    );
+    assert_eq!(bad_metric.executable_feedback_samples, Some(known as u32));
+    assert_eq!(
+        bad_metric.executable_feedback_unknown_samples,
+        Some((total - known) as u32)
+    );
+    if known == total {
+        assert!(bad_metric
+            .executable_feedback_pnl_after_fee_sol
+            .is_some_and(|pnl| (-0.0101..=-0.0099).contains(&pnl)));
+    } else {
+        assert!(bad_metric.executable_feedback_pnl_after_fee_sol.is_none());
+    }
+    assert_eq!(
+        bad_metric.executable_feedback_flip_rate,
+        (known > 0).then_some(if sell_out == "9000000" { 1.0 } else { 0.0 })
+    );
     Ok(())
 }
 
@@ -195,8 +237,11 @@ fn quote_event(
     in_raw: &str,
     out_raw: &str,
     decision_status: &str,
+    fee: Option<u64>,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: event_id.to_string(),
         signal_id,
         shadow_closed_trade_id,
@@ -218,7 +263,7 @@ fn quote_event(
         price_impact_pct: None,
         route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
         priority_fee_status: Some("ok".to_string()),
-        priority_fee_lamports: Some(0),
+        priority_fee_lamports: fee,
         priority_fee_json: None,
         decision_status: Some(decision_status.to_string()),
         decision_reason: Some("test".to_string()),
@@ -261,3 +306,6 @@ fn strict_policy() -> (DiscoveryConfig, ShadowConfig) {
     shadow.min_unique_traders_5m = 1;
     (discovery, shadow)
 }
+
+#[path = "live_portfolio/combined_floor.rs"]
+mod combined_floor;

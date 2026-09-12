@@ -17,6 +17,19 @@ pub(crate) fn selected_execution_build_plan_metadata(
     store: &SqliteStore,
     event: ExecutionQuoteCanaryEventInsert,
 ) -> Result<ExecutionBuildPlanMetadata> {
+    let closed = copybot_storage_core::execution_quote_entry_is_closed(&event);
+    let mut metadata = select_provider_metadata(store, event.clone())?;
+    if closed {
+        metadata.decision_status = event.decision_status;
+        metadata.decision_reason = event.decision_reason;
+    }
+    Ok(metadata)
+}
+
+fn select_provider_metadata(
+    store: &SqliteStore,
+    event: ExecutionQuoteCanaryEventInsert,
+) -> Result<ExecutionBuildPlanMetadata> {
     let event_id = event.event_id.clone();
     let generic =
         store.load_execution_quote_canary_provider_sample(&event_id, PROVIDER_GENERIC_METIS)?;
@@ -100,6 +113,13 @@ fn metadata_from_provider_sample(
     source: &str,
 ) -> ExecutionBuildPlanMetadata {
     let mut metadata = metadata_from_quote_event(event.clone(), Some(source));
+    metadata.quote_response_available_ts = (sample.request_ts == event.request_ts
+        && sample.quote_status == QUOTE_STATUS_OK)
+        .then_some(sample.quote_response_available_ts)
+        .flatten();
+    metadata.http_request_started_ts = (sample.request_ts == event.request_ts)
+        .then_some(sample.http_request_started_ts)
+        .flatten();
     metadata.quote_status = Some(sample.quote_status);
     metadata.quote_in_amount_raw = sample.quote_in_amount_raw;
     metadata.quote_out_amount_raw = sample.quote_out_amount_raw;
@@ -126,6 +146,10 @@ pub(crate) fn metadata_from_quote_event(
         None
     };
     ExecutionBuildPlanMetadata {
+        owned_sell_amount: None,
+        protected_capital: None,
+        http_request_started_ts: event.http_request_started_ts,
+        quote_response_available_ts: event.quote_response_available_ts,
         quote_source: quote_source
             .or(Some(QUOTE_SOURCE_EVENT))
             .map(ToString::to_string),

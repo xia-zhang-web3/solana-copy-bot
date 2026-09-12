@@ -14,6 +14,7 @@ use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_canary_submit_contract::{
     ExecutionTinySubmitGate, TINY_SUBMIT_RETRY_AFTER_RPC_NOT_SENT_REASON,
 };
+use crate::execution_source_sell_guard as source_guard;
 use crate::execution_submit_adapter::{
     build_tiny_submit_reconciliation_request, record_execution_tiny_submit_confirm_path,
     ExecutionSubmitAdapter, ExecutionSubmitRequest, JupiterMetisDryRunExecutionAdapter,
@@ -62,6 +63,20 @@ pub(super) async fn retry_existing_simulated_tiny_submit_order(
     if !is_tiny_submit_retry_ready(order) {
         return Ok(());
     }
+    if source_guard::retry::state_result(
+        store,
+        now,
+        source_guard::existing(
+            store,
+            order,
+            &[copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED],
+        ),
+        summary,
+    )?
+    .is_none()
+    {
+        return Ok(());
+    }
     if order.attempt > config.max_submit_attempts.max(1) {
         let reason = retry_budget_exhausted_reason(order);
         let order = store.mark_execution_canary_expired(&order.order_id, now, &reason)?;
@@ -72,20 +87,41 @@ pub(super) async fn retry_existing_simulated_tiny_submit_order(
         }
         return Ok(());
     }
-    let Some(request) = build_retry_submit_request(config, store, order, now, summary).await?
+    let Some(mut request) = build_retry_submit_request(config, store, order, now, summary).await?
     else {
         return Ok(());
     };
+    if let Err(error) = crate::execution_native_floor_policy::protected::prepare_request(
+        store,
+        config,
+        &mut request,
+        now,
+    )
+    .await
+    {
+        if error.to_string() == "tiny_capital_order_changed" {
+            summary.skipped_reason = Some("tiny_capital_order_changed");
+            summary.last_error = Some(error.to_string());
+            return Ok(());
+        }
+        mark_retry_failed(
+            store,
+            &request,
+            now,
+            EXECUTION_ERROR_BUILD_FAILED,
+            error.to_string(),
+        )?;
+        summary.failed = 1;
+        summary.last_error = Some(error.to_string());
+        return Ok(());
+    }
     let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let Some(envelope) =
         build_retry_signed_envelope(store, &adapter, &request, now, summary).await?
     else {
         return Ok(());
     };
-    let submit_gate = ExecutionTinySubmitGate {
-        allow_rpc_submit: config.canary_tiny_submit_enabled,
-        submit_timeout_ms: config.submit_timeout_ms,
-    };
+    let submit_gate = ExecutionTinySubmitGate::from_config(config);
     let submit_transport = RpcExecutionSubmitTransport::new(config.submit_adapter_http_url.clone());
     let confirmation_timeout_ms = config.max_confirm_seconds.saturating_mul(1_000).max(1);
     let outcome = record_execution_tiny_submit_confirm_path(
@@ -112,9 +148,20 @@ async fn build_retry_submit_request(
     now: DateTime<Utc>,
     summary: &mut ExecutionCanaryStateMachineSummary,
 ) -> Result<Option<ExecutionSubmitRequest>> {
-    let request = build_tiny_submit_reconciliation_request(store, config, order)?;
+    let Some(request) = source_guard::retry::state_result(
+        store,
+        now,
+        build_tiny_submit_reconciliation_request(store, config, order),
+        summary,
+    )?
+    else {
+        return Ok(None);
+    };
     if !request.side.eq_ignore_ascii_case("buy") {
         return Ok(Some(request));
+    }
+    if super::tiny_submit::apply_safety(config, store, now, summary)? {
+        return Ok(None);
     }
     let signal = store
         .load_copy_signal_by_signal_id(&order.signal_id)?
@@ -158,6 +205,20 @@ async fn build_retry_signed_envelope(
     now: DateTime<Utc>,
     summary: &mut ExecutionCanaryStateMachineSummary,
 ) -> Result<Option<crate::execution_signing_envelope::ExecutionSigningEnvelope>> {
+    if source_guard::retry::state_result(
+        store,
+        now,
+        source_guard::request(
+            store,
+            request,
+            &[copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED],
+        ),
+        summary,
+    )?
+    .is_none()
+    {
+        return Ok(None);
+    }
     let plan = match adapter.build_transaction_plan(request) {
         Ok(plan) => plan,
         Err(error) => {
@@ -174,8 +235,32 @@ async fn build_retry_signed_envelope(
         }
     };
     record_execution_build_plan_metadata(store, &plan, now)?;
+    let Some(source) = source_guard::retry::state_result(
+        store,
+        now,
+        source_guard::request(
+            store,
+            request,
+            &[copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED],
+        ),
+        summary,
+    )?
+    else {
+        return Ok(None);
+    };
 
-    let simulation = match adapter.simulate_transaction_plan(&plan).await {
+    let simulation_result = adapter.simulate_transaction_plan(&plan).await;
+    if source_guard::retry::state_result(
+        store,
+        now,
+        source_guard::recheck(source.as_ref(), store),
+        summary,
+    )?
+    .is_none()
+    {
+        return Ok(None);
+    }
+    let simulation = match simulation_result {
         Ok(simulation) => simulation,
         Err(error) => {
             mark_retry_failed(
@@ -209,6 +294,10 @@ async fn build_retry_signed_envelope(
     }
 
     let signing = record_execution_signing_envelope(store, adapter, request, &plan, now)?;
+    if let Some(refusal) = signing.source_refusal.as_ref() {
+        source_guard::record_state(refusal, summary);
+        return Ok(None);
+    }
     summary.signing_envelope_built = signing.built;
     summary.last_signing_envelope_id = signing.envelope_id;
     summary.last_signing_envelope_mode = signing.envelope_mode;

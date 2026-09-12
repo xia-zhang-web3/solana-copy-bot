@@ -62,19 +62,30 @@ pub struct ShadowWalletFeedback {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExecutableWalletFeedback {
+    /// Only samples with both required priority-fee totals contribute to PnL/flip statistics.
     pub samples: u64,
-    pub quote_adjusted_pnl_after_priority_fee_sol: f64,
+    pub unknown_samples: u64,
+    pub known_sample_pnl_after_priority_fee_sol: f64,
     pub shadow_positive_executable_negative: u64,
 }
 
 impl ExecutableWalletFeedback {
-    pub fn record(&mut self, shadow_pnl_sol: f64, executable_pnl_after_fee_sol: f64) {
+    pub fn record(&mut self, shadow_pnl_sol: f64, executable_pnl_after_fee_sol: Option<f64>) {
+        let Some(executable_pnl_after_fee_sol) = executable_pnl_after_fee_sol else {
+            self.unknown_samples = self.unknown_samples.saturating_add(1);
+            return;
+        };
         self.samples = self.samples.saturating_add(1);
-        self.quote_adjusted_pnl_after_priority_fee_sol += executable_pnl_after_fee_sol;
+        self.known_sample_pnl_after_priority_fee_sol += executable_pnl_after_fee_sol;
         if shadow_pnl_sol > 0.0 && executable_pnl_after_fee_sol < 0.0 {
             self.shadow_positive_executable_negative =
                 self.shadow_positive_executable_negative.saturating_add(1);
         }
+    }
+
+    pub fn complete_pnl_after_priority_fee_sol(&self) -> Option<f64> {
+        (self.samples > 0 && self.unknown_samples == 0)
+            .then_some(self.known_sample_pnl_after_priority_fee_sol)
     }
 
     pub fn flip_rate(&self) -> Option<f64> {

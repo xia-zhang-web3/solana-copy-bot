@@ -21,6 +21,32 @@ impl ShadowService {
         follow_snapshot: &FollowSnapshot,
         now: DateTime<Utc>,
     ) -> Result<ShadowProcessOutcome> {
+        self.process_swap_inner(store, swap, follow_snapshot, now, None)
+    }
+
+    /// Return insert provenance to an in-process completion owner. The legacy
+    /// outcome and every writer call are shared with process_swap.
+    pub fn process_swap_with_buy_receipt(
+        &self,
+        store: &SqliteStore,
+        swap: &SwapEvent,
+        follow_snapshot: &FollowSnapshot,
+        now: DateTime<Utc>,
+    ) -> Result<(ShadowProcessOutcome, Option<crate::RecordedBuyLot>)> {
+        let mut receipt = None;
+        let outcome =
+            self.process_swap_inner(store, swap, follow_snapshot, now, Some(&mut receipt))?;
+        Ok((outcome, receipt))
+    }
+
+    fn process_swap_inner(
+        &self,
+        store: &SqliteStore,
+        swap: &SwapEvent,
+        follow_snapshot: &FollowSnapshot,
+        now: DateTime<Utc>,
+        receipt: Option<&mut Option<crate::RecordedBuyLot>>,
+    ) -> Result<ShadowProcessOutcome> {
         if !self.config.enabled {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::Disabled));
         }
@@ -51,9 +77,9 @@ impl ShadowService {
             );
         }
         let is_followed = temporal_followed;
-        let is_unfollowed_sell_exit = !is_followed
-            && candidate.side == "sell"
-            && store.has_shadow_lots(&swap.wallet, &candidate.token)?;
+        let is_open_lot_sell_exit = candidate.side == "sell"
+            && store.has_shadow_lots_at(&swap.wallet, &candidate.token, swap.ts_utc)?;
+        let is_unfollowed_sell_exit = !is_followed && is_open_lot_sell_exit;
         if is_followed {
             info!(
                 wallet = %swap.wallet,
@@ -87,7 +113,7 @@ impl ShadowService {
             } else {
                 candidate.leader_notional_sol < self.config.min_leader_notional_sol
             };
-        if !is_unfollowed_sell_exit && below_notional {
+        if !is_open_lot_sell_exit && below_notional {
             log_gate_drop(
                 "notional",
                 ShadowDropReason::BelowNotional,
@@ -103,7 +129,7 @@ impl ShadowService {
             ));
         }
 
-        if !is_unfollowed_sell_exit
+        if !is_open_lot_sell_exit
             && latency_ms > (self.config.max_signal_lag_seconds as i64 * 1_000)
         {
             log_gate_drop(
@@ -119,6 +145,20 @@ impl ShadowService {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::LagExceeded));
         }
         if candidate.side == "buy" {
+            // Compare exact timestamps: sub-millisecond future events also refuse entry.
+            if swap.ts_utc > now {
+                log_gate_drop(
+                    "future_event",
+                    ShadowDropReason::LagExceeded,
+                    swap,
+                    &candidate,
+                    latency_ms,
+                    runtime_followed,
+                    temporal_followed,
+                    is_unfollowed_sell_exit,
+                );
+                return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::LagExceeded));
+            }
             if self.config.recent_sell_cooldown_enabled
                 && self.config.recent_sell_cooldown_minutes > 0
                 && store.has_recent_copy_signal_for_wallet_token_side(
@@ -266,14 +306,18 @@ impl ShadowService {
             "buy" => {
                 let qty = copy_notional_sol / candidate.price_sol_per_token;
                 if qty > EPS {
-                    let _ = store.insert_shadow_lot_exact(
-                        &swap.wallet,
-                        &candidate.token,
+                    let lot_id = store.insert_shadow_buy_lot(
+                        swap,
+                        &signal_id,
                         qty,
                         exact_qty,
                         copy_notional_sol,
-                        swap.ts_utc,
                     )?;
+                    if let Some(receipt) = receipt {
+                        *receipt =
+                            crate::RecordedBuyLot::inserted(store, &signal, lot_id, qty, exact_qty)
+                                .ok();
+                    }
                 }
                 (ShadowCloseOutcome::default(), Some(true))
             }
@@ -337,7 +381,7 @@ impl ShadowService {
                 ShadowDropReason::UnsupportedSide,
             ));
         }
-        if !store.has_shadow_lots(&swap.wallet, &candidate.token)? {
+        if !store.has_shadow_lots_at(&swap.wallet, &candidate.token, swap.ts_utc)? {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotFollowed));
         }
 

@@ -1,5 +1,4 @@
 use super::*;
-use crate::execution_submit_adapter::ExecutionSubmitAdapter;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
@@ -15,9 +14,15 @@ async fn tiny_submit_gate_disabled_records_not_sent_without_http() -> Result<()>
     let adapter = TinySubmitReadyAdapter {
         tx_signature_hint: Some("tx-hint-gate-disabled"),
     };
-    let envelope = tiny_submit_envelope(&request)?;
+    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
+        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
+            &request.wallet_pubkey,
+        )),
         allow_rpc_submit: false,
+        pretrade_max_priority_fee_lamports: 500_000,
+        pretrade_min_sol_reserve: 0.05,
+        execution_wallet_pubkey: request.wallet_pubkey.clone(),
         submit_timeout_ms: 1_000,
     };
     let transport =
@@ -60,9 +65,14 @@ async fn tiny_submit_gate_allowed_records_rpc_signature() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let rpc_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
+        super::initial_sol_rpc_fixture::serve_three(&listener)
+            .await
+            .expect("BUY funding RPC");
         let request = read_tiny_submit_request(&listener).await;
         assert!(request.body.contains("\"method\":\"sendTransaction\""));
-        assert!(request.body.contains("\"AQIDBA==\""));
+        assert!(request.body.contains(
+            &crate::app_tests::priority_fee_fixture::guarded_transaction([7; 32], 200_000, 10_000)
+        ));
         write_tiny_submit_status(
             request.socket,
             200,
@@ -75,9 +85,15 @@ async fn tiny_submit_gate_allowed_records_rpc_signature() -> Result<()> {
     let adapter = TinySubmitReadyAdapter {
         tx_signature_hint: Some("tx-hint-rpc-ok"),
     };
-    let envelope = tiny_submit_envelope(&request)?;
+    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
+        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
+            &request.wallet_pubkey,
+        )),
         allow_rpc_submit: true,
+        pretrade_max_priority_fee_lamports: 500_000,
+        pretrade_min_sol_reserve: 0.05,
+        execution_wallet_pubkey: request.wallet_pubkey.clone(),
         submit_timeout_ms: 1_000,
     };
     let transport = crate::execution_submit_adapter::RpcExecutionSubmitTransport::new(rpc_url);
@@ -114,6 +130,9 @@ async fn tiny_submit_gate_allowed_records_rpc_error_as_retry_ready() -> Result<(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let rpc_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
+        super::initial_sol_rpc_fixture::serve_three(&listener)
+            .await
+            .expect("BUY funding RPC");
         let request = read_tiny_submit_request(&listener).await;
         assert!(request.body.contains("\"sendTransaction\""));
         write_tiny_submit_status(
@@ -128,9 +147,15 @@ async fn tiny_submit_gate_allowed_records_rpc_error_as_retry_ready() -> Result<(
     let adapter = TinySubmitReadyAdapter {
         tx_signature_hint: Some("tx-hint-rpc-error"),
     };
-    let envelope = tiny_submit_envelope(&request)?;
+    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
+        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
+            &request.wallet_pubkey,
+        )),
         allow_rpc_submit: true,
+        pretrade_max_priority_fee_lamports: 500_000,
+        pretrade_min_sol_reserve: 0.05,
+        execution_wallet_pubkey: request.wallet_pubkey.clone(),
         submit_timeout_ms: 1_000,
     };
     let transport = crate::execution_submit_adapter::RpcExecutionSubmitTransport::new(rpc_url);
@@ -182,6 +207,9 @@ async fn tiny_submit_gate_timeout_with_hint_records_submitted_unknown() -> Resul
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let rpc_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
+        super::initial_sol_rpc_fixture::serve_three(&listener)
+            .await
+            .expect("BUY funding RPC");
         let request = read_tiny_submit_request(&listener).await;
         assert!(request.body.contains("\"sendTransaction\""));
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -197,9 +225,15 @@ async fn tiny_submit_gate_timeout_with_hint_records_submitted_unknown() -> Resul
     let adapter = TinySubmitReadyAdapter {
         tx_signature_hint: Some("tx-hint-timeout"),
     };
-    let envelope = tiny_submit_envelope(&request)?;
+    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
+        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
+            &request.wallet_pubkey,
+        )),
         allow_rpc_submit: true,
+        pretrade_max_priority_fee_lamports: 500_000,
+        pretrade_min_sol_reserve: 0.05,
+        execution_wallet_pubkey: request.wallet_pubkey.clone(),
         submit_timeout_ms: 20,
     };
     let transport = crate::execution_submit_adapter::RpcExecutionSubmitTransport::new(rpc_url);
@@ -328,25 +362,10 @@ fn tiny_submit_request(
         side: signal.side,
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
-        wallet_pubkey: "DryRunWallet11111111111111111111111111111111".to_string(),
+        wallet_pubkey: bs58::encode([7; 32]).into_string(),
         entry_route_plan_json: None,
-        metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata::default(),
+        metadata: crate::app_tests::priority_fee_fixture::metadata(),
     })
-}
-
-fn tiny_submit_envelope(
-    request: &crate::execution_submit_adapter::ExecutionSubmitRequest,
-) -> Result<crate::execution_signing_envelope::ExecutionSigningEnvelope> {
-    let plan = crate::execution_submit_adapter::NoSubmitExecutionAdapter
-        .build_transaction_plan(request)?;
-    crate::execution_signing_envelope::build_signed_transaction_execution_envelope(
-        request,
-        &plan,
-        crate::execution_signing_envelope::ExecutionSignedTransactionPayload {
-            signed_transaction_base64: "AQIDBA==".to_string(),
-            tx_signature_hint: Some("tx-hint-from-envelope".to_string()),
-        },
-    )
 }
 
 fn tiny_submit_signal(

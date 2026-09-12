@@ -1,5 +1,10 @@
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionQuoteCanaryTickSummary {
+    pub(crate) source_sell_refusals: crate::execution_canary_summary::SourceSellWriteOffRefusals,
+    pub strict_running: usize,
+    pub strict_completed: usize,
+    pub strict_errors: usize,
+    pub strict_capacity_refused: usize,
     pub entry_candidates: usize,
     pub entry_inserted: usize,
     pub entry_existing: usize,
@@ -13,4 +18,6 @@ pub(crate) struct ExecutionQuoteCanaryTickSummary {
     pub would_skip: usize,
     pub decision_unknown: usize,
     pub last_event_id: Option<String>,
+    pub last_error: Option<String>,
+    pub last_owned_sell_recovery_error: Option<crate::telemetry::OwnedSellRecoveryError>,
 }

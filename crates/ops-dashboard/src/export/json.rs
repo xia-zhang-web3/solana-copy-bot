@@ -64,7 +64,7 @@ pub(super) fn row_float(label: &str, value: Option<f64>, detail: &str) -> Vec<St
             .map(|n| format!("{n:.6} SOL"))
             .unwrap_or_else(|| "unknown".to_string()),
         detail.to_string(),
-        if value.unwrap_or(0.0) >= 0.0 {
+        if value.is_some_and(|value| value >= 0.0) {
             "safe"
         } else {
             "warning"

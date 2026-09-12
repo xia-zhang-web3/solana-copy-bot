@@ -28,6 +28,11 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionCanaryStateMachineSummary {
+    pub(crate) buy_blocker: crate::execution_canary_summary::BuyBlocker,
+    pub(crate) source_sell_refusals: crate::execution_canary_summary::SourceSellWriteOffRefusals,
+    pub(crate) pre_submit_refusals: crate::execution_submit_refusal::PreSubmitRefusals,
+    pub(crate) source_sell_write_off_refusals:
+        crate::execution_canary_summary::SourceSellWriteOffRefusals,
     pub(crate) candidates: usize,
     pub(crate) reserved: usize,
     pub(crate) existing: usize,
@@ -41,6 +46,7 @@ pub(crate) struct ExecutionCanaryStateMachineSummary {
     pub(crate) entry_gate_blocked: usize,
     pub(crate) open_positions: u64,
     pub(crate) daily_loss_sol: f64,
+    pub(crate) entry_cost: Option<copybot_storage_core::ExecutionCanaryEntryCost>,
     pub(crate) expired: usize,
     pub(crate) submit_timeout_candidates: usize,
     pub(crate) submit_timeout_wait: usize,
@@ -139,7 +145,9 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
         let safety = pre_submit_safety_snapshot(&self.config, store, now)?;
         summary.open_positions = safety.open_positions;
         summary.daily_loss_sol = safety.daily_loss_sol;
+        summary.entry_cost = safety.entry_cost;
         if let Some(reason) = safety.blocked_reason {
+            summary.buy_blocker = safety.buy_blocker;
             summary.safety_blocked = 1;
             summary.skipped_reason = Some(reason);
             return Ok(summary);
@@ -251,6 +259,10 @@ impl<A: ExecutionSubmitAdapter> ExecutionCanaryStateMachine<A> {
 
         let signing_outcome =
             record_execution_signing_envelope(store, &self.adapter, &request, &plan, now)?;
+        if let Some(refusal) = signing_outcome.source_refusal.as_ref() {
+            crate::execution_source_sell_guard::record_state(refusal, &mut summary);
+            return Ok(summary);
+        }
         summary.signing_envelope_built = signing_outcome.built;
         summary.last_signing_envelope_id = signing_outcome.envelope_id;
         summary.last_signing_envelope_mode = signing_outcome.envelope_mode;

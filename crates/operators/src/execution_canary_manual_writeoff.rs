@@ -5,7 +5,6 @@ use copybot_storage_core::{
     ExecutionCanaryManualWriteOffResult, ExecutionCanaryOwnedPosition, SqliteStore,
 };
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::env;
 use std::path::PathBuf;
 
@@ -14,9 +13,7 @@ use crate::execution_canary_manual_writeoff_cli::{
     Cli, DEFAULT_MAX_POSITION_QUOTE_SOL, DEFAULT_MAX_TOTAL_QUOTE_SOL, DEFAULT_MIN_AGE_MINUTES,
 };
 use crate::execution_canary_quote_pnl_sell_side::build_sell_side_diagnostics;
-use crate::execution_canary_quote_pnl_wallet::{
-    WalletReconciliationReport, WalletTokenReconciliation,
-};
+use crate::execution_canary_quote_pnl_wallet::WalletReconciliationReport;
 use crate::execution_canary_quote_pnl_wallet_live::build_live_wallet_reconciliation;
 
 const REASON_OK: &str = "execution_tiny_writeoff_loaded";
@@ -141,7 +138,8 @@ fn build_report_result(cli: Cli, as_of: DateTime<Utc>) -> Result<TinyWriteOffRep
         proof_limit.max(1),
     )?;
     let sell_side = build_sell_side_diagnostics(&proof);
-    let wallet = build_live_wallet_reconciliation(&config.execution, &proof, &sell_side, as_of);
+    let wallet =
+        build_live_wallet_reconciliation(&config.execution, &read_store, &sell_side, as_of);
     let candidates = candidates_from_positions(&cli, as_of, &open_positions, &wallet);
     let selected_quote_sol = candidates
         .iter()
@@ -190,15 +188,10 @@ fn candidates_from_positions(
     positions: &[ExecutionCanaryOwnedPosition],
     wallet: &WalletReconciliationReport,
 ) -> Vec<TinyWriteOffCandidate> {
-    let wallet_by_token: BTreeMap<_, _> = wallet
-        .balances
-        .iter()
-        .map(|balance| (balance.mint.as_str(), balance))
-        .collect();
     positions
         .iter()
         .take(cli.max_positions)
-        .map(|position| candidate_from_position(cli, as_of, position, &wallet_by_token))
+        .map(|position| candidate_from_position(cli, as_of, position, wallet))
         .collect()
 }
 
@@ -206,11 +199,29 @@ fn candidate_from_position(
     cli: &Cli,
     as_of: DateTime<Utc>,
     position: &ExecutionCanaryOwnedPosition,
-    wallet_by_token: &BTreeMap<&str, &WalletTokenReconciliation>,
+    wallet: &WalletReconciliationReport,
 ) -> TinyWriteOffCandidate {
     let age_minutes = (as_of - position.opened_ts).num_minutes();
-    let wallet = wallet_by_token.get(position.token.as_str()).copied();
-    let (quote_status, quote_error_code, quote_out_sol) = wallet
+    let mark = wallet
+        .bot_remainder_mark
+        .positions
+        .iter()
+        .find(|p| p.position_id == position.position_id);
+    let binding = mark
+        .filter(|p| p.binding_reason.is_none() && p.token == position.token)
+        .filter(|p| {
+            position.qty_exact.as_ref().is_some_and(|q| {
+                p.amount_raw.as_deref() == Some(q.raw().to_string().as_str())
+                    && p.decimals == Some(q.decimals())
+            })
+        });
+    let row = binding.and_then(|p| {
+        wallet
+            .balances
+            .iter()
+            .find(|r| Some(&r.token_account) == p.token_account.as_ref())
+    });
+    let (quote_status, quote_error_code, quote_out_sol) = row
         .and_then(|row| row.sell_quote.as_ref())
         .map(|quote| {
             (
@@ -220,14 +231,18 @@ fn candidate_from_position(
             )
         })
         .unwrap_or_else(|| ("missing".to_string(), None, None));
-    let decision_reason = write_off_decision_reason(
-        cli,
-        position,
-        age_minutes,
-        &quote_status,
-        quote_error_code.as_deref(),
-        quote_out_sol,
-    );
+    let decision_reason = if binding.is_none() {
+        "quote_binding_unknown".into()
+    } else {
+        write_off_decision_reason(
+            cli,
+            position,
+            age_minutes,
+            &quote_status,
+            quote_error_code.as_deref(),
+            quote_out_sol,
+        )
+    };
     let selected = write_off_decision_is_selected(&decision_reason);
     TinyWriteOffCandidate {
         token: position.token.clone(),

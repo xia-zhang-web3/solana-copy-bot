@@ -214,7 +214,7 @@ fn expected_submit_key(client_order_id: &str) -> String {
 }
 
 fn signed_transaction_payload() -> String {
-    "AQIDBA==".to_string()
+    crate::app_tests::priority_fee_fixture::transaction([7; 32], 200_000, 10_000)
 }
 
 fn tx_signature_hint() -> String {
@@ -245,6 +245,8 @@ fn record_submit_contract_quote(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,
@@ -267,7 +269,7 @@ fn record_submit_contract_quote(
             route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(12_345),
-            priority_fee_json: Some("{\"recommended\":12345}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(12_345)),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
             error: None,
@@ -304,7 +306,7 @@ impl crate::execution_submit_adapter::ExecutionSubmitAdapter for SubmitReadyAdap
         request: &crate::execution_submit_adapter::ExecutionSubmitRequest,
         plan: &crate::execution_submit_adapter::ExecutionTransactionPlan,
     ) -> Result<crate::execution_signing_envelope::ExecutionSigningEnvelope> {
-        crate::execution_signing_envelope::build_signed_transaction_execution_envelope(
+        crate::app_tests::priority_fee_fixture::proven_envelope(
             request,
             plan,
             crate::execution_signing_envelope::ExecutionSignedTransactionPayload {
@@ -360,6 +362,7 @@ impl crate::execution_submit_adapter::ExecutionSubmitAdapter for BadSigningEnvel
     ) -> Result<crate::execution_signing_envelope::ExecutionSigningEnvelope> {
         Ok(
             crate::execution_signing_envelope::ExecutionSigningEnvelope {
+                priority_fee_proof: None,
                 envelope_id: "copybot:sign:bad".to_string(),
                 idempotency_key: "wrong-key".to_string(),
                 mode: crate::execution_signing_envelope::EXECUTION_SIGNING_ENVELOPE_MODE_DRY_RUN
@@ -448,7 +451,7 @@ impl crate::execution_submit_adapter::ExecutionSubmitAdapter
         request: &crate::execution_submit_adapter::ExecutionSubmitRequest,
         plan: &crate::execution_submit_adapter::ExecutionTransactionPlan,
     ) -> Result<crate::execution_signing_envelope::ExecutionSigningEnvelope> {
-        crate::execution_signing_envelope::build_signed_transaction_execution_envelope(
+        crate::app_tests::priority_fee_fixture::proven_envelope(
             request,
             plan,
             crate::execution_signing_envelope::ExecutionSignedTransactionPayload {

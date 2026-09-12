@@ -100,6 +100,10 @@ async fn owned_sell_metadata_falls_back_to_pump_fun_paid_after_generic_no_route(
     metadata.decision_status = Some("would_execute".to_string());
     metadata.decision_reason = Some("owned_position".to_string());
 
+    let before_quote = Utc::now();
+    let original_correlation = before_quote - chrono::Duration::seconds(60);
+    metadata.quote_request_ts = Some(original_correlation);
+    metadata.http_request_started_ts = Some(original_correlation);
     let refreshed = crate::execution_canary_route::owned_position_sell_metadata(
         &pump_fun_submit_config(&base_url),
         &store,
@@ -107,7 +111,10 @@ async fn owned_sell_metadata_falls_back_to_pump_fun_paid_after_generic_no_route(
         metadata,
     )
     .await?;
-    server.await?;
+    tokio::time::timeout(std::time::Duration::from_secs(3), server).await??;
+    assert!(refreshed.http_request_started_ts.unwrap() >= before_quote);
+    assert!(refreshed.http_request_started_ts.unwrap() <= Utc::now());
+    assert_eq!(refreshed.quote_request_ts, Some(original_correlation));
 
     assert_eq!(
         refreshed.quote_source.as_deref(),
@@ -161,6 +168,10 @@ async fn owned_sell_metadata_falls_back_to_generic_after_selected_pump_fun_error
     metadata.decision_status = Some("would_execute".to_string());
     metadata.decision_reason = Some("owned_position".to_string());
 
+    let before_quote = Utc::now();
+    let original_correlation = before_quote - chrono::Duration::seconds(60);
+    metadata.quote_request_ts = Some(original_correlation);
+    metadata.http_request_started_ts = Some(original_correlation);
     let refreshed = crate::execution_canary_route::owned_position_sell_metadata(
         &pump_fun_submit_config(&base_url),
         &store,
@@ -168,7 +179,10 @@ async fn owned_sell_metadata_falls_back_to_generic_after_selected_pump_fun_error
         metadata,
     )
     .await?;
-    server.await?;
+    tokio::time::timeout(std::time::Duration::from_secs(3), server).await??;
+    assert!(refreshed.http_request_started_ts.unwrap() >= before_quote);
+    assert!(refreshed.http_request_started_ts.unwrap() <= Utc::now());
+    assert_eq!(refreshed.quote_request_ts, Some(original_correlation));
 
     assert_eq!(
         refreshed.quote_source.as_deref(),

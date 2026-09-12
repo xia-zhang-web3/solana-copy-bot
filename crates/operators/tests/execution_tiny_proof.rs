@@ -196,8 +196,10 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
     assert_eq!(proof.summary.tiny_unique_closed_positions, 1);
     assert_eq!(proof.summary.tiny_open_positions, 0);
     assert_close(proof.summary.shadow_pnl_sol, 0.05);
-    assert_close(proof.summary.tiny_realized_pnl_sol, 0.00112);
-    assert_close(proof.summary.tiny_vs_shadow_delta_sol, -0.04888);
+    assert_close(proof.summary.legacy_recorded_pnl_sol.unwrap(), 0.00112);
+    assert_eq!(proof.summary.tiny_realized_pnl_sol, None);
+    assert_eq!(proof.summary.tiny_vs_shadow_delta_sol, None);
+    assert_eq!(proof.summary.economic_pnl_basis, "unresolved");
     assert_eq!(proof.entry_funnel.total_buy_quote_events, 2);
     assert_eq!(proof.entry_funnel.quote_would_execute_events, 1);
     assert_eq!(proof.entry_funnel.quote_would_skip_events, 1);
@@ -226,15 +228,25 @@ fn execution_quote_pnl_report_includes_tiny_execution_proof() -> Result<()> {
     assert_reason(proof, "position", "tiny_closed", 1);
     assert_reason(proof, "entry_decision", "entry_decision:would_skip", 1);
     assert_eq!(proof.latency.entry_quote_latency_ms.samples, 2);
-    assert_eq!(proof.latency.entry_quote_latency_ms.max_ms, 40);
-    assert_close(proof.latency.entry_quote_latency_ms.avg_ms, 35.0);
+    assert_eq!(proof.latency.entry_quote_latency_ms.max_ms, Some(40));
+    assert_close(
+        proof
+            .latency
+            .entry_quote_latency_ms
+            .avg_ms
+            .expect("actual samples"),
+        35.0,
+    );
     assert_eq!(proof.latency.exit_quote_latency_ms.samples, 1);
-    assert_eq!(proof.latency.entry_signal_to_submit_ms.avg_ms, 500.0);
-    assert_eq!(proof.latency.entry_quote_to_submit_ms.avg_ms, 490.0);
-    assert_eq!(proof.latency.entry_submit_to_confirm_ms.avg_ms, 1000.0);
-    assert_eq!(proof.latency.exit_signal_to_submit_ms.avg_ms, 500.0);
-    assert_eq!(proof.latency.exit_quote_to_submit_ms.avg_ms, 490.0);
-    assert_eq!(proof.latency.exit_submit_to_confirm_ms.avg_ms, 1000.0);
+    assert_eq!(proof.latency.entry_signal_to_submit_ms.avg_ms, Some(500.0));
+    assert_eq!(proof.latency.entry_quote_to_submit_ms.avg_ms, Some(490.0));
+    assert_eq!(
+        proof.latency.entry_submit_to_confirm_ms.avg_ms,
+        Some(1000.0)
+    );
+    assert_eq!(proof.latency.exit_signal_to_submit_ms.avg_ms, Some(500.0));
+    assert_eq!(proof.latency.exit_quote_to_submit_ms.avg_ms, Some(490.0));
+    assert_eq!(proof.latency.exit_submit_to_confirm_ms.avg_ms, Some(1000.0));
     let win = proof
         .trades
         .iter()
@@ -318,6 +330,8 @@ fn record_confirmed_order(
     let reserve_ts = signal_ts + Duration::milliseconds(100);
     let reserve = store.reserve_execution_canary_order(signal_id, ROUTE, reserve_ts)?;
     store.record_execution_canary_build_plan_metadata(&ExecutionCanaryBuildPlanMetadata {
+        http_request_started_ts: Some(signal_ts + Duration::milliseconds(10)),
+        quote_response_available_ts: None,
         order_id: reserve.order.order_id.clone(),
         signal_id: reserve.order.signal_id.clone(),
         client_order_id: reserve.order.client_order_id.clone(),
@@ -372,6 +386,8 @@ fn record_failed_simulation_order(
     let reserve_ts = signal_ts + Duration::milliseconds(100);
     let reserve = store.reserve_execution_canary_order(signal_id, ROUTE, reserve_ts)?;
     store.record_execution_canary_build_plan_metadata(&ExecutionCanaryBuildPlanMetadata {
+        http_request_started_ts: Some(signal_ts + Duration::milliseconds(10)),
+        quote_response_available_ts: None,
         order_id: reserve.order.order_id.clone(),
         signal_id: reserve.order.signal_id.clone(),
         client_order_id: reserve.order.client_order_id.clone(),
@@ -463,6 +479,8 @@ fn quote_event(
     quote_latency_ms: u64,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: Some(signal_ts + Duration::milliseconds(10)),
+        quote_response_available_ts: None,
         event_id: event_id.to_string(),
         signal_id: signal_id.map(ToString::to_string),
         shadow_closed_trade_id: close_id,

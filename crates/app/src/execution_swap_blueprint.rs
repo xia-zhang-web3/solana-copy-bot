@@ -15,7 +15,7 @@ pub(crate) struct ExecutionSwapBlueprint {
     pub(crate) input_amount_raw: String,
     pub(crate) output_amount_raw: String,
     pub(crate) slippage_bps: f64,
-    pub(crate) priority_fee_lamports: u64,
+    pub(crate) priority_fee: crate::execution_priority_fee::PriorityFee,
     pub(crate) route_labels: Vec<String>,
 }
 
@@ -37,9 +37,7 @@ pub(crate) fn build_execution_swap_blueprint(
         return Err(anyhow!("invalid slippage_tolerance_bps for swap blueprint"));
     }
     let slippage_bps = request.slippage_tolerance_bps as f64;
-    let priority_fee_lamports = metadata
-        .priority_fee_lamports
-        .ok_or_else(|| anyhow!("missing priority_fee_lamports for swap blueprint"))?;
+    let priority_fee = crate::execution_priority_fee::metadata_fee(metadata)?;
     let route_plan_json =
         required_metadata_string(metadata.route_plan_json.as_deref(), "route_plan_json")?;
     let route_labels = extract_route_labels(&route_plan_json)?;
@@ -60,7 +58,7 @@ pub(crate) fn build_execution_swap_blueprint(
         input_amount_raw,
         output_amount_raw,
         slippage_bps,
-        priority_fee_lamports,
+        priority_fee,
         route_labels,
     })
 }

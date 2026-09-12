@@ -147,7 +147,7 @@ impl<'a> EvidenceIndex<'a> {
                 .signals_by_origin
                 .get(&(entry.wallet_id.as_str(), entry.token.as_str())),
         }?;
-        let ready = entry.entry_ready_ts?;
+        let ready = entry.modeled_entry_ready_ts?;
         let index = candidates.partition_point(|signal| signal.ts < ready);
         candidates.get(index).copied()
     }
@@ -157,7 +157,7 @@ impl<'a> EvidenceIndex<'a> {
         entry: &EntryEvidence,
         policy: ReplayPolicy,
     ) -> Option<&'a CloseEvidence> {
-        let ready = entry.entry_ready_ts?;
+        let ready = entry.modeled_entry_ready_ts?;
         let origin = self
             .closes_by_entry
             .get(&(

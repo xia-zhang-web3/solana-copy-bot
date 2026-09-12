@@ -79,7 +79,27 @@ pub(crate) async fn persist_relevant_observed_swap(
     recent_signature_order: &mut VecDeque<String>,
     swap: &SwapEvent,
 ) -> Result<bool> {
-    match observed_swap_writer.write(swap).await {
+    persist_relevant_observed_swap_with_candidate(
+        observed_swap_writer,
+        recent_signatures,
+        recent_signature_order,
+        swap,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn persist_relevant_observed_swap_with_candidate(
+    observed_swap_writer: &ObservedSwapWriter,
+    recent_signatures: &mut HashSet<String>,
+    recent_signature_order: &mut VecDeque<String>,
+    swap: &SwapEvent,
+    candidate: Option<copybot_storage_core::SourceSellCandidate>,
+) -> Result<bool> {
+    match observed_swap_writer
+        .write_with_candidate(swap, candidate)
+        .await
+    {
         Ok(inserted) => Ok(inserted),
         Err(error) => {
             forget_recent_swap_signature(

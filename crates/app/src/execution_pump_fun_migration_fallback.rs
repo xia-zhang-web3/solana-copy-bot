@@ -39,6 +39,8 @@ pub(crate) async fn refresh_pump_fun_paid_sell_to_generic_pumpswap_plan(
     metadata.quote_status = Some(QUOTE_STATUS_OK.to_string());
     metadata.quote_in_amount_raw = Some(quote.in_amount);
     metadata.quote_out_amount_raw = Some(quote.out_amount.clone());
+    metadata.http_request_started_ts = quote.http_request_started_ts;
+    metadata.quote_response_available_ts = quote.quote_response_available_ts;
     metadata.quote_response_json = Some(quote.response_json);
     metadata.price_impact_pct = quote.price_impact_pct;
     metadata.route_plan_json = quote.route_plan_json;

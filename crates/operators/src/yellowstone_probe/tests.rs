@@ -238,3 +238,6 @@ fn subscribe_request_empty_then_send_shape_is_default_empty() {
     assert!(request.ping.is_none());
     assert!(request.from_slot.is_none());
 }
+
+#[path = "capture_tests/mod.rs"]
+mod capture_tests;

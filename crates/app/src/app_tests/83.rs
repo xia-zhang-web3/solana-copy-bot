@@ -82,6 +82,8 @@ fn mark_tiny_tick_ordering_submitted_order(
     )?;
     store.record_execution_canary_build_plan_metadata(
         &copybot_storage_core::ExecutionCanaryBuildPlanMetadata {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             order_id: reserve.order.order_id.clone(),
             signal_id: signal.signal_id.clone(),
             client_order_id: reserve.order.client_order_id.clone(),
@@ -102,7 +104,7 @@ fn mark_tiny_tick_ordering_submitted_order(
             priority_fee_source: Some("test".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some("{\"recommended\":22000}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             slippage_bps: Some(100.0),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),

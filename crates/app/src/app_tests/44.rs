@@ -347,6 +347,8 @@ fn record_entry_gate_quote_with_amount_and_response(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,
@@ -369,7 +371,8 @@ fn record_entry_gate_quote_with_amount_and_response(
             route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
             priority_fee_status: priority_fee_status.map(str::to_string),
             priority_fee_lamports,
-            priority_fee_json: Some("{\"recommended\":12345}".to_string()),
+            priority_fee_json: priority_fee_lamports
+                .map(crate::app_tests::priority_fee_fixture::total_json),
             decision_status: Some(decision_status.to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
             error: None,

@@ -1,7 +1,11 @@
+use crate::execution_wallet_marks::{bot_marks, bound_quote, quote_reason, quote_value};
+pub use crate::execution_wallet_marks::{BotRemainderMark, QuoteCoverage};
+use crate::execution_wallet_quote::raw_amount;
+pub use crate::execution_wallet_quote::WalletQuoteRequest;
 use chrono::{DateTime, Utc};
-use copybot_storage_core::ExecutionTinyProofOpenPosition;
+use copybot_storage_core::ExecutionCanaryOwnedPosition;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::execution_canary_quote_pnl_sell_side::SellSideDiagnosticsReport;
 
@@ -30,6 +34,9 @@ pub struct WalletReconciliationReport {
     pub near_zero_quote_count: u64,
     pub near_zero_lamports_threshold: u64,
     pub balances: Vec<WalletTokenReconciliation>,
+    pub inventory_complete: bool,
+    pub wallet_account_mark: QuoteCoverage,
+    pub bot_remainder_mark: BotRemainderMark,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -73,6 +80,7 @@ pub struct WalletTokenBalance {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WalletSellQuoteProof {
+    pub request: WalletQuoteRequest,
     pub status: String,
     pub http_status: Option<u16>,
     pub error: Option<String>,
@@ -89,18 +97,48 @@ pub fn build_wallet_reconciliation_from_parts(
     sol_balance_lamports: Option<u64>,
     token_account_count: u64,
     balances: Vec<WalletTokenBalance>,
-    open_positions: &[ExecutionTinyProofOpenPosition],
+    open_positions: Result<&[ExecutionCanaryOwnedPosition], &str>,
     sell_side: &SellSideDiagnosticsReport,
-    quote_proofs: BTreeMap<String, WalletSellQuoteProof>,
+    quote_proofs: Vec<WalletSellQuoteProof>,
+    inventory_complete: bool,
     errors: Vec<String>,
 ) -> WalletReconciliationReport {
-    let open_by_token: BTreeMap<_, _> = open_positions
+    let invalid_account_count = token_account_count.saturating_sub(balances.len() as u64);
+    let inventory_complete = inventory_complete
+        && invalid_account_count == 0
+        && balances.iter().all(|b| {
+            balances
+                .iter()
+                .filter(|other| other.token_account == b.token_account)
+                .count()
+                == 1
+                && raw_amount(&b.amount_raw).is_some()
+        });
+    let zero_token_account_count = balances
         .iter()
-        .map(|position| (position.token.clone(), position))
+        .filter(|b| raw_amount(&b.amount_raw) == Some(0))
+        .count() as u64;
+    let quote_proofs: Vec<_> = quote_proofs
+        .into_iter()
+        .filter(|q| {
+            balances
+                .iter()
+                .filter(|b| b.token_account == q.request.token_account)
+                .count()
+                == 1
+        })
         .collect();
-    let balance_tokens: BTreeSet<_> = balances
-        .iter()
-        .map(|balance| balance.mint.clone())
+    let bot_remainder_mark = bot_marks(
+        &owner_pubkey,
+        inventory_complete,
+        &balances,
+        open_positions,
+        &quote_proofs,
+    );
+    let positions = open_positions.unwrap_or(&[]);
+    let balances: Vec<_> = balances
+        .into_iter()
+        .filter(|b| raw_amount(&b.amount_raw).is_some_and(|n| n > 0))
         .collect();
     let failure_by_token: BTreeMap<_, _> = sell_side
         .failures_by_token
@@ -117,15 +155,18 @@ pub fn build_wallet_reconciliation_from_parts(
     let mut near_zero_quote_count = 0;
 
     for balance in balances {
-        let open_position =
-            open_by_token
-                .get(&balance.mint)
-                .map(|position| WalletOpenPositionSummary {
-                    position_id: position.position_id.clone(),
-                    qty: position.qty,
-                    cost_sol: position.cost_sol,
-                    opened_ts: position.opened_ts,
-                });
+        let bound_position = bot_remainder_mark.positions.iter().find(|p| {
+            p.binding_reason.is_none()
+                && p.token_account.as_deref() == Some(balance.token_account.as_str())
+        });
+        let open_position = bound_position
+            .and_then(|mark| positions.iter().find(|p| p.position_id == mark.position_id))
+            .map(|p| WalletOpenPositionSummary {
+                position_id: p.position_id.clone(),
+                qty: p.qty,
+                cost_sol: p.cost_sol,
+                opened_ts: p.opened_ts,
+            });
         let failure = failure_by_token
             .get(&balance.mint)
             .map(|failure| WalletSellFailureSummary {
@@ -135,14 +176,20 @@ pub fn build_wallet_reconciliation_from_parts(
                 latest_error: failure.latest_error.clone(),
                 next_action: failure.next_action.clone(),
             });
-        let classification = classify_balance(open_position.is_some(), failure.as_ref());
+        let classification = if !bot_remainder_mark.positions_loaded
+            || (open_position.is_none() && positions.iter().any(|p| p.token == balance.mint))
+        {
+            "ambiguous_bot_attribution"
+        } else {
+            classify_balance(open_position.is_some(), failure.as_ref())
+        };
         match classification {
             "terminal_no_route_leftover" => terminal_no_route_leftover_count += 1,
             "failed_sell_leftover" => failed_sell_leftover_count += 1,
             "untracked_wallet_balance" => untracked_nonzero_count += 1,
             _ => {}
         }
-        let sell_quote = quote_proofs.get(&balance.mint).cloned();
+        let sell_quote = bound_quote(&owner_pubkey, &balance, &quote_proofs).cloned();
         if let Some(quote) = &sell_quote {
             if quote.status == "ok" {
                 quote_ok_count += 1;
@@ -170,15 +217,42 @@ pub fn build_wallet_reconciliation_from_parts(
         left.classification
             .cmp(&right.classification)
             .then(left.mint.cmp(&right.mint))
+            .then(left.token_account.cmp(&right.token_account))
     });
 
-    let unmatched_open_position_tokens: Vec<_> = open_by_token
-        .keys()
-        .filter(|token| !balance_tokens.contains(*token))
-        .cloned()
+    let unmatched_open_position_tokens: Vec<_> = bot_remainder_mark
+        .positions
+        .iter()
+        .filter(|p| p.binding_reason.is_some())
+        .map(|p| p.token.clone())
         .collect();
-    let matched_open_position_count = open_by_token.len() - unmatched_open_position_tokens.len();
-    let source_status = if errors.is_empty() { "ok" } else { "partial" };
+    let matched_open_position_count = positions.len() - unmatched_open_position_tokens.len();
+    let values: Vec<_> = rows
+        .iter()
+        .map(|r| quote_value(r.sell_quote.as_ref()))
+        .collect();
+    let mut reasons: Vec<_> = rows
+        .iter()
+        .filter_map(|r| quote_reason(r.sell_quote.as_ref()))
+        .collect();
+    if !inventory_complete {
+        reasons.push("wallet_inventory_incomplete".into());
+    }
+    reasons.sort();
+    reasons.dedup();
+    reasons.truncate(16);
+    let mut wallet_account_mark = QuoteCoverage::from_values(
+        "full_wallet_accounts_gross_independent_quotes",
+        inventory_complete,
+        &values,
+        reasons,
+    );
+    wallet_account_mark.unknown_items += invalid_account_count;
+    let source_status = if errors.is_empty() && inventory_complete {
+        "ok"
+    } else {
+        "partial"
+    };
     WalletReconciliationReport {
         as_of,
         owner_pubkey,
@@ -187,9 +261,9 @@ pub fn build_wallet_reconciliation_from_parts(
         sol_balance_lamports,
         sol_balance_sol: sol_balance_lamports.map(|lamports| lamports as f64 / 1_000_000_000.0),
         token_account_count,
-        zero_token_account_count: token_account_count.saturating_sub(rows.len() as u64),
+        zero_token_account_count,
         nonzero_token_account_count: rows.len() as u64,
-        bot_open_position_count: open_by_token.len() as u64,
+        bot_open_position_count: positions.len() as u64,
         matched_open_position_count: matched_open_position_count as u64,
         unmatched_open_position_count: unmatched_open_position_tokens.len() as u64,
         unmatched_open_position_tokens,
@@ -201,6 +275,9 @@ pub fn build_wallet_reconciliation_from_parts(
         near_zero_quote_count,
         near_zero_lamports_threshold: NEAR_ZERO_QUOTE_LAMPORTS,
         balances: rows,
+        inventory_complete,
+        wallet_account_mark,
+        bot_remainder_mark,
     }
 }
 

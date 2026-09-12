@@ -22,6 +22,8 @@ pub(crate) const DECISION_UNKNOWN: &str = "unknown";
 
 #[derive(Debug, Clone)]
 pub(crate) struct QuoteSample {
+    pub(crate) http_request_started_ts: Option<DateTime<Utc>>,
+    pub(crate) quote_response_available_ts: Option<DateTime<Utc>>,
     pub(crate) in_amount: String,
     pub(crate) out_amount: String,
     pub(crate) response_json: String,
@@ -51,6 +53,10 @@ pub(crate) fn apply_quote_sample_to_event(
     event.price_impact_pct = quote.price_impact_pct;
     event.route_plan_json = quote.route_plan_json;
     event.quote_latency_ms = Some(quote.latency_ms);
+    event.http_request_started_ts = quote.http_request_started_ts;
+    event.quote_response_available_ts = quote.quote_response_available_ts;
+    event.decision_delay_ms =
+        crate::execution_quote_timing::actual_delay(event.signal_ts, event.http_request_started_ts);
 }
 
 pub(crate) fn attach_priority_fee(
@@ -162,6 +168,8 @@ pub(crate) fn entry_error_event(
     error: &anyhow::Error,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: entry_quote_event_id(&signal.signal_id),
         signal_id: Some(signal.signal_id.clone()),
         shadow_closed_trade_id: None,
@@ -171,7 +179,7 @@ pub(crate) fn entry_error_event(
         quote_status: QUOTE_STATUS_ERROR.to_string(),
         request_ts: now,
         signal_ts: Some(signal.ts),
-        decision_delay_ms: duration_ms_between(signal.ts, now),
+        decision_delay_ms: None,
         quote_latency_ms: None,
         leader_notional_sol: Some(signal.notional_sol),
         quote_in_amount_raw: None,
@@ -197,6 +205,8 @@ pub(crate) fn close_error_event(
     error: &anyhow::Error,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: close_quote_event_id(close.id),
         signal_id: Some(close.signal_id.clone()),
         shadow_closed_trade_id: Some(close.id),
@@ -206,7 +216,7 @@ pub(crate) fn close_error_event(
         quote_status: QUOTE_STATUS_ERROR.to_string(),
         request_ts: now,
         signal_ts: Some(close.closed_ts),
-        decision_delay_ms: duration_ms_between(close.closed_ts, now),
+        decision_delay_ms: None,
         quote_latency_ms: None,
         leader_notional_sol: Some(close.exit_value_sol),
         quote_in_amount_raw: close.qty_raw.clone(),
@@ -343,14 +353,6 @@ pub(crate) fn numeric_field(value: &Value, field: &str) -> Option<f64> {
     }
 }
 
-pub(crate) fn priority_fee_lamports(result: &Value) -> Option<u64> {
-    json_u64(result.get("recommended"))
-        .or_else(|| nested_json_u64(result, "per_compute_unit", "high"))
-        .or_else(|| nested_json_u64(result, "per_compute_unit", "medium"))
-        .or_else(|| nested_json_u64(result, "per_transaction", "high"))
-        .or_else(|| nested_json_u64(result, "per_transaction", "medium"))
-}
-
 pub(crate) fn short_error(error: &anyhow::Error) -> String {
     truncate_for_log(&format!("{error:#}"), 500)
 }
@@ -372,18 +374,6 @@ pub(crate) fn signal_signature_for_canary(signal_id: &str) -> Option<&str> {
         parts.next().filter(|value| !value.trim().is_empty())
     } else {
         Some(signal_id)
-    }
-}
-
-fn nested_json_u64(value: &Value, parent: &str, child: &str) -> Option<u64> {
-    value.get(parent).and_then(|node| json_u64(node.get(child)))
-}
-
-fn json_u64(value: Option<&Value>) -> Option<u64> {
-    match value? {
-        Value::Number(number) => number.as_u64(),
-        Value::String(raw) => raw.parse::<u64>().ok(),
-        _ => None,
     }
 }
 

@@ -52,8 +52,9 @@ fn quote_pnl_summary_counts_executable_quote_adjusted_pnl() -> Result<()> {
     store.record_execution_quote_canary_event(&sell_quote_with_decision(
         "quote:sell:counted",
         close_id,
+        "sell-counted",
         "TokenMint",
-        opened,
+        closed,
         "50",
         "125000000",
         "would_force_exit",
@@ -73,10 +74,20 @@ fn quote_pnl_summary_counts_executable_quote_adjusted_pnl() -> Result<()> {
     assert_eq!(summary.quote_win_count, 1);
     assert_close(summary.shadow_pnl_sol, 0.03);
     assert_close(summary.quote_adjusted_pnl_sol, 0.025);
-    assert_close(summary.quote_adjusted_pnl_after_priority_fee_sol, 0.02498);
+    assert_close(
+        summary
+            .quote_adjusted_pnl_after_priority_fee_sol
+            .expect("known fees"),
+        0.024985,
+    );
     assert_close(summary.quote_vs_shadow_delta_sol, -0.005);
-    assert_close(summary.quote_after_fee_vs_shadow_delta_sol, -0.00502);
-    assert_eq!(summary.priority_fee_lamports_sum, 20_000);
+    assert_close(
+        summary
+            .quote_after_fee_vs_shadow_delta_sol
+            .expect("known fees"),
+        -0.005015,
+    );
+    assert_eq!(summary.priority_fee_lamports_sum, Some(15_000));
     assert_eq!(summary.force_exit_counted_trades, 1);
     assert_eq!(summary.force_exit_skipped_entry_trades, 0);
     assert_eq!(summary.quote_diagnostics.entry_all.events, 1);
@@ -140,8 +151,9 @@ fn quote_pnl_readiness_gate_allows_clean_tiny_execution_window() -> Result<()> {
         store.record_execution_quote_canary_event(&sell_quote(
             &format!("quote:sell:ready:{index}"),
             close_id,
+            &signal_id,
             &token,
-            trade_opened,
+            closed,
             "50",
             "125000000",
         ))?;
@@ -220,8 +232,9 @@ fn quote_pnl_summary_breaks_out_stale_shadow_closes() -> Result<()> {
     store.record_execution_quote_canary_event(&sell_quote(
         "quote:sell:market",
         close_id,
+        "sell-market",
         "MarketToken",
-        opened,
+        closed,
         "50",
         "125000000",
     ))?;
@@ -291,8 +304,9 @@ fn quote_pnl_summary_excludes_entry_would_skip_from_quote_pnl() -> Result<()> {
     store.record_execution_quote_canary_event(&sell_quote_with_decision(
         "quote:sell:skipped",
         close_id,
+        "sell-skipped",
         "SkipToken",
-        opened,
+        closed,
         "50",
         "125000000",
         "would_force_exit",
@@ -309,14 +323,23 @@ fn quote_pnl_summary_excludes_entry_would_skip_from_quote_pnl() -> Result<()> {
     assert_eq!(summary.unknown_trades, 0);
     assert_close(summary.quote_adjusted_pnl_sol, 0.0);
     assert_close(summary.skipped_shadow_pnl_sol, 0.01);
-    assert_close(summary.skipped_counterfactual_pnl_sol, 0.025);
     assert_close(
-        summary.skipped_counterfactual_pnl_after_priority_fee_sol,
-        0.02498,
+        summary
+            .skipped_counterfactual_pnl_sol
+            .expect("gross counterfactual"),
+        0.025,
     );
     assert_close(
-        summary.skipped_counterfactual_after_fee_vs_shadow_delta_sol,
-        0.01498,
+        summary
+            .skipped_counterfactual_pnl_after_priority_fee_sol
+            .expect("known fees"),
+        0.024985,
+    );
+    assert_close(
+        summary
+            .skipped_counterfactual_after_fee_vs_shadow_delta_sol
+            .expect("known fees"),
+        0.014985,
     );
     assert_eq!(summary.force_exit_counted_trades, 0);
     assert_eq!(summary.force_exit_skipped_entry_trades, 1);
@@ -335,13 +358,13 @@ fn quote_pnl_summary_excludes_entry_would_skip_from_quote_pnl() -> Result<()> {
         trade
             .skipped_counterfactual_pnl_after_priority_fee_sol
             .expect("pnl after fee"),
-        0.02498,
+        0.024985,
     );
     Ok(())
 }
 
 #[test]
-fn quote_pnl_summary_scales_sell_quote_when_close_qty_exceeds_entry_quote() -> Result<()> {
+fn quote_pnl_summary_keeps_scaled_gross_but_over_close_net_is_unknown() -> Result<()> {
     let store = open_migrated_store("execution-canary-quote-pnl-scaled-exit")?;
     let opened = ts("2026-06-02T12:20:00Z");
     let closed = opened + Duration::seconds(20);
@@ -368,8 +391,9 @@ fn quote_pnl_summary_scales_sell_quote_when_close_qty_exceeds_entry_quote() -> R
     store.record_execution_quote_canary_event(&sell_quote(
         "quote:sell:scaled",
         close_id,
+        "sell-scaled",
         "ScaledToken",
-        opened,
+        closed,
         "120",
         "240000000",
     ))?;
@@ -378,12 +402,12 @@ fn quote_pnl_summary_scales_sell_quote_when_close_qty_exceeds_entry_quote() -> R
         store.execution_canary_quote_pnl_summary(closed, opened - Duration::seconds(1), 10)?;
     let trade = summary.trades.first().expect("trade should be reported");
 
-    assert_eq!(summary.pnl_counted_trades, 1);
-    assert_eq!(trade.status, "pnl_counted");
-    assert_eq!(trade.reason, "ok_scaled_to_entry_qty");
-    assert_close(trade.closed_qty_ratio.expect("ratio"), 1.0);
+    assert_eq!(summary.pnl_counted_trades, 0);
+    assert_eq!(trade.status, "unknown");
+    assert_eq!(trade.reason, "quote_quantity_over_close");
+    assert_close(trade.closed_qty_ratio.expect("gross ratio"), 1.0);
     assert_close(summary.quote_adjusted_pnl_sol, 0.0);
-    assert_close(summary.quote_adjusted_pnl_after_priority_fee_sol, -0.00002);
+    assert!(summary.quote_adjusted_pnl_after_priority_fee_sol.is_none());
     Ok(())
 }
 
@@ -404,6 +428,8 @@ fn buy_quote(
     decision_status: &str,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: Some(opened + Duration::milliseconds(10)),
+        quote_response_available_ts: None,
         event_id: event_id.to_string(),
         signal_id: Some(signal_id.to_string()),
         shadow_closed_trade_id: None,
@@ -436,16 +462,18 @@ fn buy_quote(
 fn sell_quote(
     event_id: &str,
     close_id: i64,
+    signal_id: &str,
     token: &str,
-    opened: DateTime<Utc>,
+    closed: DateTime<Utc>,
     in_raw: &str,
     out_raw: &str,
 ) -> ExecutionQuoteCanaryEventInsert {
     sell_quote_with_decision(
         event_id,
         close_id,
+        signal_id,
         token,
-        opened,
+        closed,
         in_raw,
         out_raw,
         "would_execute",
@@ -455,22 +483,25 @@ fn sell_quote(
 fn sell_quote_with_decision(
     event_id: &str,
     close_id: i64,
+    signal_id: &str,
     token: &str,
-    opened: DateTime<Utc>,
+    closed: DateTime<Utc>,
     in_raw: &str,
     out_raw: &str,
     decision_status: &str,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: Some(closed + Duration::milliseconds(10)),
+        quote_response_available_ts: None,
         event_id: event_id.to_string(),
-        signal_id: Some(format!("sell:{close_id}")),
+        signal_id: Some(signal_id.to_string()),
         shadow_closed_trade_id: Some(close_id),
         wallet_id: "leader-wallet".to_string(),
         token: token.to_string(),
         side: "sell".to_string(),
         quote_status: "ok".to_string(),
-        request_ts: opened + Duration::milliseconds(30),
-        signal_ts: Some(opened + Duration::seconds(30)),
+        request_ts: closed + Duration::milliseconds(30),
+        signal_ts: Some(closed),
         decision_delay_ms: Some(10),
         quote_latency_ms: Some(20),
         leader_notional_sol: Some(0.125),

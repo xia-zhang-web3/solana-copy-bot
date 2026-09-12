@@ -164,7 +164,8 @@ fn tiny_execution_gate_status_reports_runtime_not_startup_readiness() -> Result<
         .as_ref()
         .unwrap_or_else(|| panic!("tiny execution gate should exist: {:?}", report.error));
 
-    assert_eq!(gate.status, "ready");
+    assert_eq!(gate.status, "ready_with_warnings");
+    assert_gate_check(gate, "current_entry_cost_coverage", "warn");
     assert!(gate.live_trading_enabled);
     assert_eq!(gate.live_trading_status, "yes_entries_and_sells_enabled");
     assert_eq!(gate.startup_readiness_status, "blocked");
@@ -218,7 +219,8 @@ fn tiny_execution_gate_reports_upstream_shadow_risk_pause() -> Result<()> {
         .unwrap_or_else(|| panic!("tiny execution gate should exist: {:?}", report.error));
 
     assert_eq!(gate.status, "entries_paused");
-    assert_eq!(gate.runtime_status, "ready");
+    assert_eq!(gate.runtime_status, "ready_with_warnings");
+    assert_gate_check(gate, "current_entry_cost_coverage", "warn");
     assert_eq!(gate.upstream_status, "entries_paused");
     assert!(!gate.live_trading_enabled);
     assert!(!gate.can_start_tiny_execution);
@@ -306,6 +308,8 @@ fn signal(name: &str, ts: DateTime<Utc>) -> CopySignalRow {
 
 fn quote_event(ts: DateTime<Utc>) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: "quote:buy:gate-submit-prime".to_string(),
         signal_id: Some("shadow:sig-gate-submit:signed-pending:TokenMint".to_string()),
         shadow_closed_trade_id: None,

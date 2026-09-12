@@ -1,11 +1,6 @@
-#[path = "tiny_runner_confirmed_reconcile.rs"]
-mod tiny_runner_confirmed_reconcile;
-
-use self::tiny_runner_confirmed_reconcile::reconcile_already_confirmed_tiny_submit_fill;
 use super::{
     cap_execution_priority_fee_lamports, record_execution_rpc_confirmation_boundary,
-    ExecutionConfirmationBoundaryOutcome, ExecutionConfirmedBuyFill, ExecutionConfirmedFill,
-    ExecutionConfirmedSellFill, ExecutionSubmitAdapter, ExecutionSubmitRequest,
+    ExecutionConfirmationBoundaryOutcome, ExecutionSubmitAdapter, ExecutionSubmitRequest,
     RpcExecutionSubmitTransport,
 };
 use crate::execution_canary_submit_contract::{
@@ -13,23 +8,21 @@ use crate::execution_canary_submit_contract::{
 };
 use crate::execution_signing_envelope::ExecutionSigningEnvelope;
 use crate::execution_tiny_entry_route::load_entry_route_plan_json_for_sell;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
-use copybot_core_types::TokenQuantity;
 use copybot_storage_core::{
     ExecutionCanaryBuildPlanMetadata, SqliteStore, EXECUTION_STATUS_CANARY_CONFIRMED,
     EXECUTION_STATUS_CANARY_SUBMITTED,
 };
-use serde_json::Value;
 
-const DEFAULT_TINY_SELL_DUST_QTY_EPSILON: f64 = 1e-9;
 const SUBMITTED_WITHOUT_TX_SIGNATURE_REASON: &str = "submitted_without_tx_signature";
 const RECONCILE_ALREADY_CONFIRMED_REASON: &str = "submitted_reconcile_already_confirmed";
 const RECONCILE_NOT_SUBMITTED_REASON: &str = "submitted_reconcile_not_submitted";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionTinySubmitConfirmPathOutcome {
+    pub(crate) pre_submit_refusal: Option<Box<crate::execution_submit_refusal::PreSubmitRefusal>>,
     pub(crate) submit_failed: usize,
     pub(crate) confirmation_failed: usize,
     pub(crate) submitted: usize,
@@ -43,6 +36,7 @@ pub(crate) struct ExecutionTinySubmitConfirmPathOutcome {
     pub(crate) sell_partial: usize,
     pub(crate) sell_dust_closed: usize,
     pub(crate) sell_no_position: usize,
+    pub(crate) cash_settlement: Option<copybot_storage_core::ExecutionCanaryCashSettlement>,
     pub(crate) tx_signature: Option<String>,
     pub(crate) reason: Option<String>,
     pub(crate) error: Option<String>,
@@ -72,14 +66,12 @@ pub(crate) async fn record_execution_tiny_submit_confirm_path<A: ExecutionSubmit
         outcome.reason = Some(SUBMITTED_WITHOUT_TX_SIGNATURE_REASON.to_string());
         return Ok(outcome);
     }
-    let fill = build_execution_confirmed_fill_from_request(store, request, now)?;
     let confirmation = record_execution_rpc_confirmation_boundary(
         store,
         confirmation_http,
         confirmation_rpc_url,
         &request.order_id,
         &request.wallet_pubkey,
-        fill,
         now,
         confirmation_timeout_ms,
     )
@@ -97,19 +89,31 @@ pub(crate) async fn reconcile_execution_tiny_submit_confirmation(
     now: DateTime<Utc>,
     confirmation_timeout_ms: u64,
 ) -> Result<ExecutionTinySubmitConfirmPathOutcome> {
+    store.visit_execution_canary_reconciliation(order_id, &config.canary_wallet_pubkey, now)?;
     let Some(order) = store.load_execution_canary_order(order_id)? else {
         anyhow::bail!("missing execution canary order {order_id}");
     };
     if order.status == EXECUTION_STATUS_CANARY_CONFIRMED {
-        return Ok(reconcile_already_confirmed_tiny_submit_fill(
-            store,
-            config,
-            &order,
-            now,
-            RECONCILE_ALREADY_CONFIRMED_REASON,
-        ));
+        if store.execution_canary_fill_exists(order_id)? {
+            store.validate_execution_canary_cash_settlement_replay(
+                order_id,
+                &config.canary_wallet_pubkey,
+            )?;
+            return Ok(ExecutionTinySubmitConfirmPathOutcome {
+                confirmation_confirmed: 1,
+                cash_settlement: store.load_execution_canary_cash_settlement(order_id)?,
+                tx_signature: order.tx_signature,
+                reason: Some(RECONCILE_ALREADY_CONFIRMED_REASON.into()),
+                ..Default::default()
+            });
+        }
     }
-    if order.status != EXECUTION_STATUS_CANARY_SUBMITTED {
+    if !matches!(
+        order.status.as_str(),
+        EXECUTION_STATUS_CANARY_SUBMITTED
+            | EXECUTION_STATUS_CANARY_CONFIRMED
+            | copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED
+    ) {
         return Ok(ExecutionTinySubmitConfirmPathOutcome {
             reason: Some(RECONCILE_NOT_SUBMITTED_REASON.to_string()),
             ..ExecutionTinySubmitConfirmPathOutcome::default()
@@ -128,15 +132,12 @@ pub(crate) async fn reconcile_execution_tiny_submit_confirmation(
         });
     }
 
-    let request = build_tiny_submit_reconciliation_request(store, config, &order)?;
-    let fill = build_execution_confirmed_fill_from_request(store, &request, now)?;
     let confirmation = record_execution_rpc_confirmation_boundary(
         store,
         confirmation_http,
         confirmation_rpc_url,
         order_id,
-        &request.wallet_pubkey,
-        fill,
+        &config.canary_wallet_pubkey,
         now,
         confirmation_timeout_ms,
     )
@@ -150,20 +151,6 @@ pub(crate) async fn reconcile_execution_tiny_submit_confirmation(
     Ok(outcome)
 }
 
-pub(crate) fn build_execution_confirmed_fill_from_request(
-    store: &SqliteStore,
-    request: &ExecutionSubmitRequest,
-    fill_ts: DateTime<Utc>,
-) -> Result<ExecutionConfirmedFill> {
-    if request.side.eq_ignore_ascii_case("buy") {
-        return build_buy_fill_from_request(request, fill_ts);
-    }
-    if request.side.eq_ignore_ascii_case("sell") {
-        return build_sell_fill_from_request(store, request, fill_ts);
-    }
-    anyhow::bail!("unsupported tiny execution fill side: {}", request.side)
-}
-
 pub(crate) fn build_tiny_submit_reconciliation_request(
     store: &SqliteStore,
     config: &ExecutionConfig,
@@ -175,8 +162,13 @@ pub(crate) fn build_tiny_submit_reconciliation_request(
     let metadata = store
         .load_execution_canary_build_plan_metadata(&order.order_id)?
         .ok_or_else(|| anyhow::anyhow!("missing build metadata for {}", order.order_id))?;
-    let metadata =
+    let mut metadata =
         cap_execution_priority_fee_lamports(config, build_plan_metadata_from_storage(metadata));
+    // This constructor is used by unsigned retry. Known signatures reconcile above without it.
+    if signal.side.eq_ignore_ascii_case("sell") {
+        metadata.owned_sell_amount =
+            crate::execution_source_sell_guard::amount::decode(store, &order.order_id)?;
+    }
     let entry_route_plan_json =
         load_entry_route_plan_json_for_sell(store, &signal.token, signal.side.as_str())?;
     Ok(ExecutionSubmitRequest {
@@ -204,6 +196,10 @@ fn build_plan_metadata_from_storage(
     metadata: ExecutionCanaryBuildPlanMetadata,
 ) -> super::ExecutionBuildPlanMetadata {
     super::ExecutionBuildPlanMetadata {
+        owned_sell_amount: None,
+        protected_capital: None,
+        http_request_started_ts: metadata.http_request_started_ts,
+        quote_response_available_ts: metadata.quote_response_available_ts,
         quote_source: metadata.quote_source,
         quote_event_id: metadata.quote_event_id,
         quote_request_ts: metadata.quote_request_ts,
@@ -224,79 +220,11 @@ fn build_plan_metadata_from_storage(
     }
 }
 
-fn build_buy_fill_from_request(
-    request: &ExecutionSubmitRequest,
-    fill_ts: DateTime<Utc>,
-) -> Result<ExecutionConfirmedFill> {
-    let price_sol = positive_quote_price(request)?;
-    let qty_exact = quote_exact_output_quantity(request)?;
-    let qty = qty_exact
-        .map(TokenQuantity::as_f64)
-        .or_else(|| quote_output_ui_amount(request))
-        .unwrap_or(request.buy_size_sol / price_sol);
-    validate_positive(qty, "buy fill qty")?;
-    validate_positive(request.buy_size_sol, "buy fill cost_sol")?;
-    Ok(ExecutionConfirmedFill::Buy(ExecutionConfirmedBuyFill {
-        order_id: request.order_id.clone(),
-        token: request.token.clone(),
-        qty,
-        qty_exact,
-        cost_sol: request.buy_size_sol,
-        fill_ts,
-    }))
-}
-
-fn build_sell_fill_from_request(
-    store: &SqliteStore,
-    request: &ExecutionSubmitRequest,
-    fill_ts: DateTime<Utc>,
-) -> Result<ExecutionConfirmedFill> {
-    let Some(position) = store.load_execution_canary_open_position(&request.token)? else {
-        return build_orphan_sell_fill_from_request(request, fill_ts);
-    };
-    let exit_price_sol = positive_quote_price(request)?;
-    let target_qty_exact = quote_exact_input_quantity(request, &position)?;
-    let target_qty = target_qty_exact
-        .map(TokenQuantity::as_f64)
-        .unwrap_or(position.qty);
-    validate_positive(target_qty, "sell fill target_qty")?;
-    Ok(ExecutionConfirmedFill::Sell(ExecutionConfirmedSellFill {
-        order_id: request.order_id.clone(),
-        token: request.token.clone(),
-        target_qty,
-        target_qty_exact,
-        exit_price_sol,
-        dust_qty_epsilon: DEFAULT_TINY_SELL_DUST_QTY_EPSILON,
-        fill_ts,
-    }))
-}
-
-fn build_orphan_sell_fill_from_request(
-    request: &ExecutionSubmitRequest,
-    fill_ts: DateTime<Utc>,
-) -> Result<ExecutionConfirmedFill> {
-    let target_qty = 1.0;
-    validate_positive(target_qty, "orphan sell fill target_qty")?;
-    let exit_price_sol = request
-        .metadata
-        .quote_price_sol
-        .filter(|price| price.is_finite() && *price >= 0.0)
-        .unwrap_or(0.0);
-    Ok(ExecutionConfirmedFill::Sell(ExecutionConfirmedSellFill {
-        order_id: request.order_id.clone(),
-        token: request.token.clone(),
-        target_qty,
-        target_qty_exact: None,
-        exit_price_sol,
-        dust_qty_epsilon: DEFAULT_TINY_SELL_DUST_QTY_EPSILON,
-        fill_ts,
-    }))
-}
-
 fn outcome_from_submit(
     submit: &ExecutionSubmitPlanOutcome,
 ) -> ExecutionTinySubmitConfirmPathOutcome {
     ExecutionTinySubmitConfirmPathOutcome {
+        pre_submit_refusal: submit.pre_submit_refusal.clone(),
         submit_failed: submit.failed,
         submitted: submit.submitted,
         submit_disabled: submit.submit_disabled,
@@ -321,84 +249,7 @@ fn apply_confirmation(
     outcome.sell_partial = confirmation.sell_partial;
     outcome.sell_dust_closed = confirmation.sell_dust_closed;
     outcome.sell_no_position = confirmation.sell_no_position;
+    outcome.cash_settlement = confirmation.cash_settlement;
     outcome.reason = confirmation.reason;
     outcome.error = confirmation.error;
-}
-
-fn positive_quote_price(request: &ExecutionSubmitRequest) -> Result<f64> {
-    let price = request
-        .metadata
-        .quote_price_sol
-        .ok_or_else(|| anyhow::anyhow!("missing quote_price_sol for {}", request.order_id))?;
-    validate_positive(price, "quote_price_sol")?;
-    Ok(price)
-}
-
-fn quote_exact_output_quantity(request: &ExecutionSubmitRequest) -> Result<Option<TokenQuantity>> {
-    let Some(raw) = request.metadata.quote_out_amount_raw.as_deref() else {
-        return Ok(None);
-    };
-    let Some(decimals) = quote_output_decimals(request) else {
-        return Ok(None);
-    };
-    let raw = raw
-        .parse::<u64>()
-        .with_context(|| format!("invalid quote_out_amount_raw for {}", request.order_id))?;
-    Ok(Some(TokenQuantity::new(raw, decimals)))
-}
-
-fn quote_exact_input_quantity(
-    request: &ExecutionSubmitRequest,
-    position: &copybot_storage_core::ExecutionCanaryOwnedPosition,
-) -> Result<Option<TokenQuantity>> {
-    let Some(position_qty) = position.qty_exact else {
-        return Ok(None);
-    };
-    let Some(raw) = request.metadata.quote_in_amount_raw.as_deref() else {
-        return Ok(Some(position_qty));
-    };
-    let raw = raw
-        .parse::<u64>()
-        .with_context(|| format!("invalid quote_in_amount_raw for {}", request.order_id))?;
-    let raw = raw.min(position_qty.raw());
-    Ok((raw > 0).then(|| TokenQuantity::new(raw, position_qty.decimals())))
-}
-
-fn quote_output_decimals(request: &ExecutionSubmitRequest) -> Option<u8> {
-    let json = quote_response_json(request)?;
-    decimal_pointer(&json, "/quote/meta/outDecimals")
-        .or_else(|| decimal_pointer(&json, "/meta/outDecimals"))
-        .or_else(|| decimal_pointer(&json, "/quote/outDecimals"))
-        .or_else(|| decimal_pointer(&json, "/outDecimals"))
-        .or_else(|| decimal_pointer(&json, "/_copybot/outDecimals"))
-}
-
-fn quote_output_ui_amount(request: &ExecutionSubmitRequest) -> Option<f64> {
-    let json = quote_response_json(request)?;
-    number_pointer(&json, "/quote/outAmountUi").or_else(|| number_pointer(&json, "/outAmountUi"))
-}
-
-fn quote_response_json(request: &ExecutionSubmitRequest) -> Option<Value> {
-    serde_json::from_str(request.metadata.quote_response_json.as_deref()?).ok()
-}
-
-fn decimal_pointer(value: &Value, path: &str) -> Option<u8> {
-    value
-        .pointer(path)
-        .and_then(Value::as_u64)
-        .and_then(|raw| u8::try_from(raw).ok())
-}
-
-fn number_pointer(value: &Value, path: &str) -> Option<f64> {
-    value
-        .pointer(path)
-        .and_then(Value::as_f64)
-        .filter(|amount| amount.is_finite() && *amount > 0.0)
-}
-
-fn validate_positive(value: f64, label: &str) -> Result<()> {
-    if !value.is_finite() || value <= 0.0 {
-        anyhow::bail!("{label} must be positive, got {value}");
-    }
-    Ok(())
 }

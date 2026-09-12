@@ -26,6 +26,7 @@ impl SqliteStore {
         completed_at: DateTime<Utc>,
         deadline: Option<Instant>,
     ) -> Result<(RecentRawJournalWriteSummary, bool)> {
+        copybot_storage_core::source_sell_handoff_schema::available(&self.conn)?;
         self.ensure_recent_raw_journal_tables()?;
         if swaps.is_empty() {
             let state = self.recent_raw_journal_state_cached()?;
@@ -33,6 +34,7 @@ impl SqliteStore {
         }
 
         self.with_immediate_transaction_retry("recent raw journal batch write", |conn| {
+            copybot_storage_core::source_sell_handoff_schema::available(conn)?;
             ensure_recent_raw_journal_tables_on_conn(conn)?;
             let mut inserted_rows = 0usize;
             let mut processed_rows = 0usize;
@@ -127,6 +129,7 @@ impl SqliteStore {
                 inserted_rows,
                 completed_at,
             );
+            copybot_storage_core::observed_retention::restrict_coverage(conn, &mut state)?;
             if processed_rows > 0 {
                 upsert_recent_raw_journal_state_on_conn(conn, &state)?;
             }

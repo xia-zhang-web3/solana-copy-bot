@@ -16,8 +16,9 @@ pub(super) fn load_executable_wallet_feedback(
         return Ok(HashMap::new());
     }
     store
-        .executable_wallet_feedback_since(
+        .executable_wallet_feedback_as_of(
             now - Duration::hours(discovery.executable_wallet_filter_window_hours as i64),
+            now,
         )
         .context("failed loading discovery v2 executable wallet feedback")
 }
@@ -31,8 +32,9 @@ pub(super) fn apply_executable_feedback(
         return;
     };
     metric.executable_feedback_samples = Some(feedback.samples.min(u64::from(u32::MAX)) as u32);
-    metric.executable_feedback_pnl_after_fee_sol =
-        Some(feedback.quote_adjusted_pnl_after_priority_fee_sol);
+    metric.executable_feedback_pnl_after_fee_sol = feedback.complete_pnl_after_priority_fee_sol();
+    metric.executable_feedback_unknown_samples =
+        Some(feedback.unknown_samples.min(u64::from(u32::MAX)) as u32);
     metric.executable_feedback_flip_rate = feedback.flip_rate();
     if rejects_wallet(feedback, discovery) {
         reject_wallet_metric(metric, EXECUTABLE_FEEDBACK_REJECT_REASON);
@@ -43,7 +45,7 @@ fn rejects_wallet(feedback: &ExecutableWalletFeedback, discovery: &DiscoveryConf
     if feedback.samples < u64::from(discovery.executable_wallet_filter_min_samples) {
         return false;
     }
-    let pnl_reject = feedback.quote_adjusted_pnl_after_priority_fee_sol
+    let pnl_reject = feedback.known_sample_pnl_after_priority_fee_sol
         < discovery.executable_wallet_filter_max_pnl_sol;
     let flip_reject = feedback
         .flip_rate()

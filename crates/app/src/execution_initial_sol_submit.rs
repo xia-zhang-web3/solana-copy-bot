@@ -1,0 +1,122 @@
+//! The only new await before BUY send; all post-I/O decisions below are synchronous.
+use crate::execution_canary_submit_contract::{
+    record_submit_plan_failure, ExecutionSubmitPlanOutcome, ExecutionTinySubmitGate,
+};
+use crate::execution_signing_envelope::ExecutionSigningEnvelope;
+use crate::execution_submit_adapter::{
+    ExecutionSubmitIntent, ExecutionSubmitRequest, RpcExecutionSubmitTransport,
+};
+use crate::execution_tiny_submit_state::{reject, unchanged, SubmitState};
+use anyhow::{anyhow, ensure};
+use chrono::{DateTime, Utc};
+use copybot_storage_core::SqliteStore;
+
+pub(crate) async fn before_send(
+    store: &SqliteStore,
+    request: &ExecutionSubmitRequest,
+    envelope: &ExecutionSigningEnvelope,
+    intent: &ExecutionSubmitIntent,
+    gate: &ExecutionTinySubmitGate,
+    transport: &RpcExecutionSubmitTransport,
+    state: &SubmitState,
+    tick_at: DateTime<Utc>,
+) -> Option<ExecutionSubmitPlanOutcome> {
+    if !request.side.eq_ignore_ascii_case("buy") {
+        return None;
+    }
+    let result = Box::pin(async {
+        let config = gate
+            .buy_safety_config
+            .as_ref()
+            .ok_or_else(|| anyhow!("initial_sol_policy_unavailable"))?;
+        ensure!(
+            config.canary_tiny_submit_enabled,
+            "initial_sol_policy_unavailable"
+        );
+        let protected = crate::execution_native_floor_policy::protected::current(
+            store, config, request, tick_at,
+        )?;
+        let reserve = match &protected {
+            Some(proof) => {
+                proof.floor(&gate.execution_wallet_pubkey, gate.pretrade_min_sol_reserve)?
+            }
+            None => crate::execution_native_floor_policy::reserve_lamports(
+                gate.pretrade_min_sol_reserve,
+            )?,
+        };
+        let wallet = crate::execution_pumpswap_accounts::parse_pubkey(
+            &gate.execution_wallet_pubkey,
+            "initial_sol_wallet",
+        )?;
+        // Keep the collector future out of the already nested daemon retry/tick stack.
+        Box::pin(crate::execution_initial_sol::collect_with_policy(
+            transport.rpc_endpoint(),
+            gate.submit_timeout_ms,
+            &intent.signed_transaction_base64,
+            wallet,
+            reserve,
+            protected.as_ref(),
+        ))
+        .await
+    })
+    .await;
+    // Applies equally to success and collector error: never fail/erase a changed order.
+    if let Err(reason) = unchanged(state, store, request) {
+        return Some(refuse(request, reason));
+    }
+    if let Some(config) = &gate.buy_safety_config {
+        match crate::execution_canary_safety::live_pre_submit_safety_snapshot(
+            config, store, tick_at,
+        ) {
+            Ok(safety) => {
+                if let Some(reason) = safety.blocked_reason {
+                    return Some(refuse(request, reason));
+                }
+            }
+            Err(_) => return Some(refuse(request, "initial_sol_safety_unavailable")),
+        }
+    }
+    let result = result.and_then(|_| {
+        crate::execution_native_floor_policy::protected::current_gate(
+            store, gate, request, tick_at,
+        )?;
+        crate::execution_priority_fee_proof::validate_submit(
+            store,
+            request,
+            envelope,
+            intent,
+            gate.pretrade_max_priority_fee_lamports,
+        )?;
+        crate::execution_native_floor_policy::verify_submit_payload(
+            request,
+            &intent.signed_transaction_base64,
+            gate.pretrade_min_sol_reserve,
+            &gate.execution_wallet_pubkey,
+        )
+    });
+    match result {
+        Ok(()) => None,
+        Err(error) => Some(safe_failure(store, request, tick_at, error)),
+    }
+}
+
+fn safe_failure(
+    store: &SqliteStore,
+    request: &ExecutionSubmitRequest,
+    now: DateTime<Utc>,
+    error: anyhow::Error,
+) -> ExecutionSubmitPlanOutcome {
+    record_submit_plan_failure(store, request, now, error.to_string())
+        .unwrap_or_else(|_| refuse(request, "initial_sol_failure_record_unavailable"))
+}
+
+fn refuse(request: &ExecutionSubmitRequest, reason: &'static str) -> ExecutionSubmitPlanOutcome {
+    let mut outcome = reject(reason);
+    outcome.pre_submit_refusal = Some(
+        crate::execution_submit_refusal::PreSubmitRefusal::after_collection(
+            &request.order_id,
+            reason,
+        ),
+    );
+    outcome
+}

@@ -31,15 +31,7 @@ pub(super) fn recent_raw_journal_coverage_snapshot_on_conn(
     let row_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM observed_swaps", [], |row| row.get(0))
         .context("failed counting recent raw journal observed_swaps rows")?;
-    let covered_since_raw: Option<String> = conn
-        .query_row("SELECT MIN(ts) FROM observed_swaps", [], |row| row.get(0))
-        .optional()
-        .context("failed loading recent raw journal covered_since timestamp")?
-        .flatten();
-    let covered_since = parse_optional_rfc3339_utc(
-        covered_since_raw,
-        "recent_raw_journal_state.covered_since_ts",
-    )?;
+    let covered_since = copybot_storage_core::observed_retention::earliest_covered(conn)?;
     let covered_through_cursor_raw = conn
         .query_row(
             "SELECT ts, slot, signature
@@ -188,7 +180,9 @@ pub(super) fn recent_raw_journal_state_cached_query(
         updated_at_raw,
     )) = row
     else {
-        return Ok(RecentRawJournalStateRow::default());
+        let mut state = RecentRawJournalStateRow::default();
+        copybot_storage_core::observed_retention::restrict_coverage(conn, &mut state)?;
+        return Ok(state);
     };
     let covered_through_cursor = match (
         covered_through_ts_raw,
@@ -209,7 +203,7 @@ pub(super) fn recent_raw_journal_state_cached_query(
         (None, None, None) => None,
         _ => bail!("recent_raw_journal_state cursor columns are partially populated"),
     };
-    Ok(RecentRawJournalStateRow {
+    let mut state = RecentRawJournalStateRow {
         covered_since: parse_optional_rfc3339_utc(
             covered_since_raw,
             "recent_raw_journal_state.covered_since_ts",
@@ -236,7 +230,9 @@ pub(super) fn recent_raw_journal_state_cached_query(
             updated_at_raw,
             "recent_raw_journal_state.updated_at",
         )?,
-    })
+    };
+    copybot_storage_core::observed_retention::restrict_coverage(conn, &mut state)?;
+    Ok(state)
 }
 
 fn parse_recent_raw_count(value: i64, field: &str) -> Result<usize> {

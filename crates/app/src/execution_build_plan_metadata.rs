@@ -23,29 +23,39 @@ pub(crate) fn record_execution_build_plan_metadata(
     now: DateTime<Utc>,
 ) -> Result<ExecutionCanaryBuildPlanMetadataRecordOutcome> {
     let metadata = &plan.metadata;
-    store.record_execution_canary_build_plan_metadata(&ExecutionCanaryBuildPlanMetadata {
-        order_id: plan.order_id.clone(),
-        signal_id: plan.signal_id.clone(),
-        client_order_id: plan.client_order_id.clone(),
-        recorded_ts: metadata_recorded_ts(now, metadata.quote_request_ts),
-        quote_source: metadata.quote_source.clone(),
-        quote_event_id: metadata.quote_event_id.clone(),
-        quote_request_ts: metadata.quote_request_ts,
-        quote_status: metadata.quote_status.clone(),
-        quote_in_amount_raw: metadata.quote_in_amount_raw.clone(),
-        quote_out_amount_raw: metadata.quote_out_amount_raw.clone(),
-        quote_response_json: metadata.quote_response_json.clone(),
-        quote_price_sol: metadata.quote_price_sol,
-        price_impact_pct: metadata.price_impact_pct,
-        route_plan_json: metadata.route_plan_json.clone(),
-        priority_fee_source: metadata.priority_fee_source.clone(),
-        priority_fee_status: metadata.priority_fee_status.clone(),
-        priority_fee_lamports: metadata.priority_fee_lamports,
-        priority_fee_json: metadata.priority_fee_json.clone(),
-        slippage_bps: metadata.slippage_bps,
-        decision_status: metadata.decision_status.clone(),
-        decision_reason: metadata.decision_reason.clone(),
-    })
+    let proof = metadata
+        .owned_sell_amount
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    store.record_execution_canary_build_plan_metadata_with_sell_amount(
+        &ExecutionCanaryBuildPlanMetadata {
+            http_request_started_ts: metadata.http_request_started_ts,
+            quote_response_available_ts: metadata.quote_response_available_ts,
+            order_id: plan.order_id.clone(),
+            signal_id: plan.signal_id.clone(),
+            client_order_id: plan.client_order_id.clone(),
+            recorded_ts: metadata_recorded_ts(now, metadata.quote_request_ts),
+            quote_source: metadata.quote_source.clone(),
+            quote_event_id: metadata.quote_event_id.clone(),
+            quote_request_ts: metadata.quote_request_ts,
+            quote_status: metadata.quote_status.clone(),
+            quote_in_amount_raw: metadata.quote_in_amount_raw.clone(),
+            quote_out_amount_raw: metadata.quote_out_amount_raw.clone(),
+            quote_response_json: metadata.quote_response_json.clone(),
+            quote_price_sol: metadata.quote_price_sol,
+            price_impact_pct: metadata.price_impact_pct,
+            route_plan_json: metadata.route_plan_json.clone(),
+            priority_fee_source: metadata.priority_fee_source.clone(),
+            priority_fee_status: metadata.priority_fee_status.clone(),
+            priority_fee_lamports: metadata.priority_fee_lamports,
+            priority_fee_json: metadata.priority_fee_json.clone(),
+            slippage_bps: metadata.slippage_bps,
+            decision_status: metadata.decision_status.clone(),
+            decision_reason: metadata.decision_reason.clone(),
+        },
+        proof.as_deref(),
+    )
 }
 
 fn metadata_recorded_ts(

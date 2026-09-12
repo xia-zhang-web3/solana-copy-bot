@@ -91,14 +91,14 @@ fn run(config: Config) -> Result<DiscoveryV2Status> {
             db_path.display()
         )
     })?;
-    let options = DiscoveryV2BuildOptions::from_config(
+    let mut options = DiscoveryV2BuildOptions::from_config(
         &loaded.discovery,
         loaded.execution.enabled,
         Utc::now(),
     )
     .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded));
     let mut status = if config.live_rebuild {
-        build_discovery_v2_status(&store, &loaded.discovery, &loaded.shadow, options)?
+        build_discovery_v2_status(&store, &loaded.discovery, &loaded.shadow, options.clone())?
     } else {
         load_materialized_discovery_v2_status_for_publish(
             &store,
@@ -109,7 +109,15 @@ fn run(config: Config) -> Result<DiscoveryV2Status> {
         .map(|(status, _report)| status)?
     };
     status.shadow_signals_24h = Some(load_discovery_v2_shadow_signal_status(&store, Utc::now())?);
-    Ok(status)
+    options.now = Utc::now();
+    copybot_discovery_v2::revalidate_discovery_v2_status(
+        status,
+        copybot_discovery_v2::DiscoveryV2DecisionContext::new(
+            &loaded.discovery,
+            &loaded.shadow,
+            &options,
+        ),
+    )
 }
 
 fn resolve_db_path(config_path: &Path, override_path: Option<&Path>, configured: &str) -> PathBuf {

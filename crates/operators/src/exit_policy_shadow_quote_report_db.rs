@@ -55,9 +55,11 @@ pub(crate) fn load_diagnostic_events(
     hold_minutes: i64,
     close_match_limit: u32,
 ) -> Result<Vec<DiagnosticEvent>> {
+    let actual =
+        copybot_storage_core::quote_http_started_expr(conn, "execution_quote_canary_events", "")?;
     let event_prefix = format!("{EVENT_PREFIX_HEAD}{hold_minutes}m:");
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT
                 event_id,
                 wallet_id,
@@ -68,15 +70,15 @@ pub(crate) fn load_diagnostic_events(
                 signal_ts,
                 decision_delay_ms,
                 quote_price_sol,
-                shadow_price_sol
+                shadow_price_sol, {actual}
              FROM execution_quote_canary_events INDEXED BY idx_execution_quote_canary_events_side_request_ts
              WHERE side = 'sell'
                AND request_ts >= ?1
                AND request_ts < ?2
                AND event_id LIKE ?3
              ORDER BY request_ts ASC, event_id ASC
-             LIMIT ?4",
-        )
+             LIMIT ?4"
+        ))
         .context("failed to prepare exit policy diagnostic event query")?;
     let rows = stmt
         .query_map(
@@ -116,7 +118,7 @@ fn read_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DiagnosticEvent> 
         error: row.get(4)?,
         request_ts: parse_sql_ts(&request_raw, 5)?,
         signal_ts: parse_sql_ts(&signal_raw, 6)?,
-        decision_delay_ms: optional_i64_to_u64(row.get(7)?, 7)?,
+        decision_delay_ms: crate::quote_timing::read_delay(row, 6, 10)?,
         quote_price_sol: row.get(8)?,
         shadow_price_sol: row.get(9)?,
         close_matches: Vec::new(),
@@ -177,18 +179,4 @@ fn parse_sql_ts(raw: &str, index: usize) -> rusqlite::Result<DateTime<Utc>> {
                 Box::new(error),
             )
         })
-}
-
-fn optional_i64_to_u64(value: Option<i64>, index: usize) -> rusqlite::Result<Option<u64>> {
-    value
-        .map(|raw| {
-            u64::try_from(raw).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    index,
-                    rusqlite::types::Type::Integer,
-                    Box::new(error),
-                )
-            })
-        })
-        .transpose()
 }

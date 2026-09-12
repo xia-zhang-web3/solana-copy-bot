@@ -280,7 +280,7 @@ async fn tiny_submit_enabled_rejects_swap_transaction_when_rpc_simulation_fails(
         assert!(request.contains("\"replaceRecentBlockhash\":true"));
         write_alternate_builder_json(
             &mut rpc_socket,
-            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":{"InstructionError":[6,"MissingAccount"]},"logs":["Program JUP6 failed: An account required by the instruction is missing"]}}}"#,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"context":{"slot":42},"value":{"err":{"InstructionError":[6,"MissingAccount"]},"logs":["Program JUP6 failed: An account required by the instruction is missing"]}}}"#,
         )
         .await;
     });
@@ -388,6 +388,10 @@ fn alternate_builder_metadata(
     quote_source: &str,
 ) -> crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
     crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+        owned_sell_amount: None,
+        protected_capital: None,
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         quote_source: Some(quote_source.to_string()),
         quote_event_id: Some("quote:entry:signal-alternate-builder".to_string()),
         quote_request_ts: None,
@@ -401,7 +405,7 @@ fn alternate_builder_metadata(
         priority_fee_source: Some("test".to_string()),
         priority_fee_status: Some("ok".to_string()),
         priority_fee_lamports: Some(22_000),
-        priority_fee_json: Some(r#"{"recommended":22000}"#.to_string()),
+        priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
         slippage_bps: Some(125.0),
         decision_status: Some("would_execute".to_string()),
         decision_reason: Some("within_slippage_limit".to_string()),

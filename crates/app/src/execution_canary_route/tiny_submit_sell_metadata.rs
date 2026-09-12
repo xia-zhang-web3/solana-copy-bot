@@ -1,14 +1,14 @@
 use super::tiny_submit_wallet_balance::fetch_wallet_token_balance;
 use crate::execution_pump_fun_quote_http::fetch_pump_fun_quote_sample;
 use crate::execution_quote_canary_helpers::{
-    price_sol_per_token, quote_canary_slippage_limit_bps, ui_amount_to_raw_string,
-    DECISION_WOULD_EXECUTE, DECISION_WOULD_FORCE_EXIT, QUOTE_STATUS_OK, SIDE_SELL, SOL_MINT,
+    price_sol_per_token, quote_canary_slippage_limit_bps, DECISION_WOULD_EXECUTE,
+    DECISION_WOULD_FORCE_EXIT, QUOTE_STATUS_OK, SIDE_SELL, SOL_MINT,
 };
-use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
 use crate::execution_quote_http::fetch_quote_sample;
 use crate::execution_quote_provider_selection::{
     QUOTE_SOURCE_GENERIC_METIS, QUOTE_SOURCE_PUMP_FUN_PAID,
 };
+use crate::execution_source_sell_guard::{self as source_guard, Snapshot};
 use crate::execution_submit_adapter::ExecutionBuildPlanMetadata;
 use anyhow::{anyhow, Context, Result};
 use copybot_config::ExecutionConfig;
@@ -21,30 +21,63 @@ pub(crate) async fn owned_position_sell_metadata(
     token: &str,
     metadata: ExecutionBuildPlanMetadata,
 ) -> Result<ExecutionBuildPlanMetadata> {
+    guarded_owned_position_sell_metadata(config, store, token, metadata, None).await
+}
+
+pub(crate) async fn guarded_owned_position_sell_metadata(
+    config: &ExecutionConfig,
+    store: &SqliteStore,
+    token: &str,
+    metadata: ExecutionBuildPlanMetadata,
+    source: Option<&Snapshot>,
+) -> Result<ExecutionBuildPlanMetadata> {
+    source_guard::recheck(source, store)?;
     let position = store
         .load_execution_canary_open_position(token)?
         .ok_or_else(|| anyhow!("missing owned execution canary position for sell {token}"))?;
+    let selection = source_guard::amount::Selection::new(&position)?;
     let http = reqwest::Client::new();
-    let amount_raw = owned_position_amount_raw(config, &http, token, &position).await?;
+    let wallet = fetch_wallet_token_balance(&http, config, token).await;
+    source_guard::recheck(source, store)?;
+    selection.recheck(store)?;
+    let wallet =
+        wallet?.ok_or_else(|| anyhow!("owned sell wallet token account missing for {token}"))?;
+    let selected_raw = selection.amount(wallet.raw, wallet.decimals)?;
+    let amount_raw = selected_raw.to_string();
+    let finish = |m| {
+        selection.finish(
+            m,
+            source,
+            &config.canary_wallet_pubkey,
+            wallet.raw,
+            selected_raw,
+        )
+    };
     let prefer_pump_fun = metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_PUMP_FUN_PAID);
     let mut pump_fun_preferred_error = None;
 
     if prefer_pump_fun {
-        match pump_fun_owned_sell_metadata(config, &http, token, &position, &amount_raw, &metadata)
-            .await
-        {
-            Ok(Some(pump_fun_metadata)) => return Ok(pump_fun_metadata),
+        let result =
+            pump_fun_owned_sell_metadata(config, &http, token, &position, &amount_raw, &metadata)
+                .await;
+        source_guard::recheck(source, store)?;
+        selection.recheck(store)?;
+        match result {
+            Ok(Some(pump_fun_metadata)) => return finish(pump_fun_metadata),
             Ok(None) => {}
             Err(error) => pump_fun_preferred_error = Some(error),
         }
     }
 
     let fallback_metadata = metadata.clone();
-    match generic_owned_sell_metadata(config, &http, token, &position, &amount_raw, metadata).await
-    {
-        Ok(metadata) => Ok(metadata),
+    let result =
+        generic_owned_sell_metadata(config, &http, token, &position, &amount_raw, metadata).await;
+    source_guard::recheck(source, store)?;
+    selection.recheck(store)?;
+    match result {
+        Ok(metadata) => finish(metadata),
         Err(generic_error) if !prefer_pump_fun => {
-            match pump_fun_owned_sell_metadata(
+            let result = pump_fun_owned_sell_metadata(
                 config,
                 &http,
                 token,
@@ -52,9 +85,11 @@ pub(crate) async fn owned_position_sell_metadata(
                 &amount_raw,
                 &fallback_metadata,
             )
-            .await
-            {
-                Ok(Some(metadata)) => Ok(metadata),
+            .await;
+            source_guard::recheck(source, store)?;
+            selection.recheck(store)?;
+            match result {
+                Ok(Some(metadata)) => finish(metadata),
                 Ok(None) => Err(generic_error),
                 Err(pump_fun_error) => Err(anyhow!(
                     "owned sell generic quote failed: {generic_error}; pump.fun owned sell fallback failed: {pump_fun_error}"
@@ -116,7 +151,7 @@ pub(super) fn validate_tiny_sell_metadata(
     if metadata.priority_fee_status.as_deref() != Some(QUOTE_STATUS_OK) {
         return Some("priority_fee_not_ok");
     }
-    if metadata.priority_fee_lamports.is_none() {
+    if crate::execution_priority_fee::metadata_fee(metadata).is_err() {
         return Some("missing_priority_fee_lamports");
     }
     None
@@ -180,55 +215,14 @@ fn apply_owned_sell_quote_metadata(
     metadata.quote_status = Some(QUOTE_STATUS_OK.to_string());
     metadata.quote_in_amount_raw = Some(quote.in_amount);
     metadata.quote_out_amount_raw = Some(quote.out_amount);
+    metadata.http_request_started_ts = quote.http_request_started_ts;
+    metadata.quote_response_available_ts = quote.quote_response_available_ts;
     metadata.quote_response_json = Some(quote.response_json);
     metadata.quote_price_sol =
         price_sol_per_token(out_lamports as f64 / 1_000_000_000.0, position.qty);
     metadata.price_impact_pct = quote.price_impact_pct;
     metadata.route_plan_json = quote.route_plan_json;
     Ok(metadata)
-}
-
-async fn owned_position_amount_raw(
-    config: &ExecutionConfig,
-    http: &reqwest::Client,
-    token: &str,
-    position: &ExecutionCanaryOwnedPosition,
-) -> Result<String> {
-    let wallet = fetch_wallet_token_balance(http, config, token)
-        .await?
-        .ok_or_else(|| anyhow!("owned sell wallet token account missing for {token}"))?;
-    if wallet.raw == 0 {
-        return Err(anyhow!(
-            "owned sell wallet token balance is zero for {token}"
-        ));
-    }
-    let position_raw = if let Some(qty) = position.qty_exact {
-        if qty.decimals() != wallet.decimals {
-            return Err(anyhow!(
-                "owned sell wallet decimals mismatch for {token}: position={} wallet={}",
-                qty.decimals(),
-                wallet.decimals
-            ));
-        }
-        qty.raw()
-    } else {
-        let decimals = resolve_spl_token_decimals(http, config, token, Some(wallet.decimals))
-            .await
-            .unwrap_or(wallet.decimals);
-        let raw = ui_amount_to_raw_string(position.qty, decimals).ok_or_else(|| {
-            anyhow!(
-                "invalid owned sell qty {} decimals {decimals}",
-                position.qty
-            )
-        })?;
-        raw.parse::<u64>()
-            .with_context(|| format!("invalid owned sell raw amount {raw} for {token}"))?
-    };
-    let amount_raw = position_raw.min(wallet.raw);
-    if amount_raw == 0 {
-        return Err(anyhow!("owned sell amount is zero for {token}"));
-    }
-    Ok(amount_raw.to_string())
 }
 
 fn pump_fun_quote_is_completed(raw: &str) -> Option<bool> {

@@ -17,6 +17,7 @@ fn token_balance(owner: &str, mint: &str, amount: &str) -> Value {
         .saturating_mul(1_000_000)
         .to_string();
     json!({
+        "accountIndex": if mint == "TokenMintB" { 2 } else { 1 },
         "owner": owner,
         "mint": mint,
         "uiTokenAmount": {
@@ -29,6 +30,7 @@ fn token_balance(owner: &str, mint: &str, amount: &str) -> Value {
 
 fn token_balance_without_raw(owner: &str, mint: &str, amount: &str) -> Value {
     json!({
+        "accountIndex": if mint == "TokenMintB" { 2 } else { 1 },
         "owner": owner,
         "mint": mint,
         "uiTokenAmount": {
@@ -69,3 +71,9 @@ mod helius_and_queue;
 mod rpc_backfill_tests;
 #[path = "../source_tests/02_yellowstone_proto.rs"]
 mod yellowstone_proto_tests;
+
+#[path = "../source_tests/pumpswap/mod.rs"]
+mod pumpswap_tests;
+
+#[path = "../source_tests/delivery_queue_tests.rs"]
+mod delivery_queue_tests;

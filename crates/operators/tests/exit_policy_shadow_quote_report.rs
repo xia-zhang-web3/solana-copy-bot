@@ -141,6 +141,7 @@ fn create_schema(conn: &Connection) {
             token TEXT NOT NULL,
             side TEXT NOT NULL,
             quote_status TEXT NOT NULL,
+            http_request_started_ts TEXT,
             request_ts TEXT NOT NULL,
             signal_ts TEXT,
             decision_delay_ms INTEGER,
@@ -195,8 +196,8 @@ fn insert_event(
     conn.execute(
         "INSERT INTO execution_quote_canary_events(
             event_id, wallet_id, token, side, quote_status, request_ts, signal_ts,
-            decision_delay_ms, quote_price_sol, shadow_price_sol, error
-         ) VALUES (?1, 'wallet', 'token', 'sell', ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            decision_delay_ms, quote_price_sol, shadow_price_sol, error, http_request_started_ts
+         ) VALUES (?1, 'wallet', 'token', 'sell', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             event_id,
             quote_status,
@@ -206,6 +207,7 @@ fn insert_event(
             quote_price_sol,
             shadow_price_sol,
             error,
+            decision_delay_ms.map(|ms| (signal_ts + Duration::milliseconds(ms)).to_rfc3339()),
         ],
     )
     .unwrap();

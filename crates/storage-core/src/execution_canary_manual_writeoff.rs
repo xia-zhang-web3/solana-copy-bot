@@ -139,7 +139,7 @@ impl SqliteDiscoveryStore {
                         TERMINAL_WRITE_OFF_EXIT_PRICE_SOL,
                         TERMINAL_WRITE_OFF_DUST_QTY_EPSILON,
                         now,
-                    )?);
+                     None)?);
                     position = self.load_execution_canary_open_position(token)?;
                 }
 

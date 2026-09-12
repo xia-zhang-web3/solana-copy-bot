@@ -125,6 +125,18 @@ pub(crate) fn summarize_track_b(
         price_ratio_stats: numeric_stats(ratios),
         price_impact_stats: numeric_stats(impacts),
         market_exit_quote_ratio_stats: numeric_stats(market_exit_ratios),
+        market_exit_actual_delay_events: outcomes
+            .iter()
+            .flat_map(|o| &o.closes)
+            .filter_map(|c| c.market_exit_quote.as_ref())
+            .filter(|q| q.decision_delay_ms.is_some())
+            .count() as u64,
+        market_exit_unknown_delay_events: outcomes
+            .iter()
+            .flat_map(|o| &o.closes)
+            .filter_map(|c| c.market_exit_quote.as_ref())
+            .filter(|q| q.decision_delay_ms.is_none())
+            .count() as u64,
         market_exit_decision_delay_ms_stats: numeric_stats(market_exit_delays),
         by_close_bucket: summarize_close_buckets(&clean),
         by_exit_executability: summarize_exit_executability(&clean),

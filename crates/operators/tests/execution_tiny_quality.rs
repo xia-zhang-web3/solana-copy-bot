@@ -382,6 +382,8 @@ fn record_failed_buy_order(store: &SqliteStore, signal_ts: DateTime<Utc>) -> Res
         signal_ts + Duration::milliseconds(100),
     )?;
     store.record_execution_canary_build_plan_metadata(&ExecutionCanaryBuildPlanMetadata {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         order_id: reserve.order.order_id.clone(),
         signal_id: reserve.order.signal_id.clone(),
         client_order_id: reserve.order.client_order_id.clone(),
@@ -431,6 +433,8 @@ fn record_confirmed_buy_order(store: &SqliteStore, signal_ts: DateTime<Utc>) -> 
         signal_ts + Duration::milliseconds(100),
     )?;
     store.record_execution_canary_build_plan_metadata(&ExecutionCanaryBuildPlanMetadata {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         order_id: reserve.order.order_id.clone(),
         signal_id: reserve.order.signal_id.clone(),
         client_order_id: reserve.order.client_order_id.clone(),
@@ -482,6 +486,8 @@ fn record_confirmed_sell_order(store: &SqliteStore, signal_ts: DateTime<Utc>) ->
         signal_ts + Duration::milliseconds(100),
     )?;
     store.record_execution_canary_build_plan_metadata(&ExecutionCanaryBuildPlanMetadata {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         order_id: reserve.order.order_id.clone(),
         signal_id: reserve.order.signal_id.clone(),
         client_order_id: reserve.order.client_order_id.clone(),
@@ -544,6 +550,8 @@ fn quote_event_for(
     signal_ts: DateTime<Utc>,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: event_id.to_string(),
         signal_id: signal_id.map(ToString::to_string),
         shadow_closed_trade_id: close_id,

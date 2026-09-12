@@ -2,15 +2,13 @@ use crate::{
     execution_canary_quote_pnl_accumulator::summarize_quote_pnl,
     execution_canary_quote_pnl_compute::compute_quote_pnl,
     execution_canary_quote_pnl_diagnostics::route_labels,
-    execution_canary_quote_pnl_rows::{read_quote_pnl_row, QuotePnlRow},
-    execution_quote_canary::ensure_execution_quote_canary_tables,
-    ExecutionCanaryQuotePnlSummary, ExecutionCanaryQuotePnlTrade, SqliteDiscoveryStore,
-    EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED, EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
-    EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,
+    execution_canary_quote_pnl_rows::QuotePnlRow,
+    execution_quote_canary::ensure_execution_quote_canary_tables, ExecutionCanaryQuotePnlSummary,
+    ExecutionCanaryQuotePnlTrade, SqliteDiscoveryStore, EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED,
+    EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED, EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
-use rusqlite::params;
 
 const QUOTE_STATUS_OK: &str = "ok";
 const DECISION_WOULD_EXECUTE: &str = "would_execute";
@@ -24,12 +22,17 @@ impl SqliteDiscoveryStore {
         since: DateTime<Utc>,
         limit: u32,
     ) -> Result<ExecutionCanaryQuotePnlSummary> {
+        crate::quote_http_timing::quote_http_timing_available(
+            &self.conn,
+            "execution_quote_canary_events",
+        )?;
         ensure_execution_quote_canary_tables(self)?;
         let shadow_close_breakdown = self.execution_canary_shadow_close_breakdown(since)?;
         let open_position_count = self.execution_canary_open_position_count()?;
         let buy_shadow_gate = self.execution_quote_canary_shadow_gate_summary(since, limit)?;
-        let rows = self.execution_canary_quote_pnl_rows(since, limit)?;
-        let trades = rows
+        let cohort = self.quote_fee_cohort(since, Some(as_of), Some(limit))?;
+        let trades = cohort
+            .rows
             .into_iter()
             .map(classify_trade)
             .collect::<Result<Vec<_>>>()?;
@@ -38,98 +41,11 @@ impl SqliteDiscoveryStore {
             since,
             limit,
             trades,
+            cohort.window_total_closed_trades,
             shadow_close_breakdown,
             open_position_count,
             buy_shadow_gate,
         ))
-    }
-
-    fn execution_canary_quote_pnl_rows(
-        &self,
-        since: DateTime<Utc>,
-        limit: u32,
-    ) -> Result<Vec<QuotePnlRow>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT
-                    closed.id,
-                    closed.signal_id,
-                    closed.wallet_id,
-                    closed.token,
-                    closed.qty,
-                    closed.entry_cost_sol,
-                    closed.exit_value_sol,
-                    closed.pnl_sol,
-                    closed.opened_ts,
-                    closed.closed_ts,
-                    buy.event_id,
-                    buy.quote_status,
-                    buy.request_ts,
-                    buy.signal_ts,
-                    buy.decision_delay_ms,
-                    buy.quote_latency_ms,
-                    buy.quote_in_amount_raw,
-                    buy.quote_out_amount_raw,
-                    buy.quote_price_sol,
-                    buy.shadow_price_sol,
-                    buy.slippage_bps,
-                    buy.price_impact_pct,
-                    buy.route_plan_json,
-                    buy.priority_fee_status,
-                    buy.priority_fee_lamports,
-                    buy.decision_status,
-                    buy.decision_reason,
-                    buy.leader_notional_sol,
-                    sell.event_id,
-                    sell.quote_status,
-                    sell.request_ts,
-                    sell.signal_ts,
-                    sell.decision_delay_ms,
-                    sell.quote_latency_ms,
-                    sell.quote_in_amount_raw,
-                    sell.quote_out_amount_raw,
-                    sell.quote_price_sol,
-                    sell.shadow_price_sol,
-                    sell.slippage_bps,
-                    sell.price_impact_pct,
-                    sell.route_plan_json,
-                    sell.priority_fee_status,
-                    sell.priority_fee_lamports,
-                    sell.decision_status,
-                    sell.decision_reason,
-                    sell.leader_notional_sol
-                 FROM shadow_closed_trades AS closed
-                 LEFT JOIN execution_quote_canary_events AS sell
-                    ON sell.shadow_closed_trade_id = closed.id
-                   AND lower(sell.side) = 'sell'
-                 LEFT JOIN execution_quote_canary_events AS buy
-                    ON buy.event_id = (
-                        SELECT candidate.event_id
-                        FROM execution_quote_canary_events AS candidate
-                        WHERE lower(candidate.side) = 'buy'
-                          AND candidate.event_id NOT LIKE 'quote:entry-shadow-diag:%'
-                          AND candidate.wallet_id = closed.wallet_id
-                          AND candidate.token = closed.token
-                          AND substr(candidate.signal_ts, 1, 19) = substr(closed.opened_ts, 1, 19)
-                        ORDER BY candidate.request_ts DESC, candidate.event_id DESC
-                        LIMIT 1
-                    )
-                 WHERE closed.closed_ts >= ?1
-                   AND COALESCE(closed.close_context, 'market') = 'market'
-                   AND closed.signal_id NOT LIKE 'stale-close-%'
-                 ORDER BY closed.closed_ts DESC, closed.id DESC
-                 LIMIT ?2",
-            )
-            .context("failed to prepare execution canary quote pnl query")?;
-        let rows = stmt
-            .query_map(
-                params![since.to_rfc3339(), i64::from(limit.max(1))],
-                |row| read_quote_pnl_row(row),
-            )
-            .context("failed querying execution canary quote pnl rows")?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed reading execution canary quote pnl rows")
     }
 }
 
@@ -141,6 +57,11 @@ fn classify_trade(row: QuotePnlRow) -> Result<ExecutionCanaryQuotePnlTrade> {
     trade.exit_quote_status = row.sell.quote_status.clone();
     trade.entry_priority_fee_status = row.buy.priority_fee_status.clone();
     trade.exit_priority_fee_status = row.sell.priority_fee_status.clone();
+    trade.priority_fee_lamports_total = row
+        .amounts()
+        .buy_priority_fee_lamports
+        .zip(row.sell.priority_fee_lamports)
+        .and_then(|(buy, sell)| buy.checked_add(sell));
     trade.entry_decision_status = row.buy.decision_status.clone();
     trade.exit_decision_status = row.sell.decision_status.clone();
     trade.buy_leader_notional_sol = row.buy.leader_notional_sol;
@@ -151,6 +72,8 @@ fn classify_trade(row: QuotePnlRow) -> Result<ExecutionCanaryQuotePnlTrade> {
     trade.sell_price_impact_pct = row.sell.price_impact_pct;
     trade.entry_decision_delay_ms = row.buy.decision_delay_ms;
     trade.exit_decision_delay_ms = row.sell.decision_delay_ms;
+    trade.entry_http_request_started_ts = row.buy.http_request_started_ts;
+    trade.exit_http_request_started_ts = row.sell.http_request_started_ts;
     trade.entry_quote_latency_ms = row.buy.quote_latency_ms;
     trade.exit_quote_latency_ms = row.sell.quote_latency_ms;
     trade.entry_quote_price_sol = row.buy.quote_price_sol;
@@ -160,6 +83,20 @@ fn classify_trade(row: QuotePnlRow) -> Result<ExecutionCanaryQuotePnlTrade> {
     trade.entry_route_labels = route_labels(row.buy.route_plan_json.as_deref());
     trade.exit_route_labels = route_labels(row.sell.route_plan_json.as_deref());
 
+    // Entry identity is proven separately by bind_entry; an exit/history error
+    // cannot erase a known decision not to enter. Never infer this from the
+    // decision string alone (ambiguous or conflicting BUYs remain unknown).
+    if row.entry_attributed
+        && row.buy.quote_status.as_deref() == Some(QUOTE_STATUS_OK)
+        && row.buy.decision_status.as_deref() == Some(DECISION_WOULD_SKIP)
+    {
+        record_skipped_counterfactual(&mut trade, &row)?;
+        return Ok(mark_skipped(trade, entry_reason(&row)));
+    }
+
+    if let Some(reason) = row.binding_error {
+        return Ok(mark_unknown(trade, reason));
+    }
     let Some(buy_status) = row.buy.quote_status.as_deref() else {
         return Ok(mark_unknown(trade, "missing_entry_quote"));
     };
@@ -181,16 +118,6 @@ fn classify_trade(row: QuotePnlRow) -> Result<ExecutionCanaryQuotePnlTrade> {
 
     match row.buy.decision_status.as_deref() {
         Some(DECISION_WOULD_EXECUTE) => {}
-        Some(DECISION_WOULD_SKIP) => {
-            if let Some(pnl) = compute_quote_pnl(row.amounts())? {
-                trade.skipped_counterfactual_pnl_sol = Some(pnl.quote_adjusted_pnl_sol);
-                trade.skipped_counterfactual_pnl_after_priority_fee_sol =
-                    Some(pnl.quote_adjusted_pnl_after_priority_fee_sol);
-                trade.skipped_counterfactual_after_fee_vs_shadow_delta_sol =
-                    Some(pnl.quote_adjusted_pnl_after_priority_fee_sol - row.shadow_pnl_sol);
-            }
-            return Ok(mark_skipped(trade, entry_reason(&row)));
-        }
         Some(status) => return Ok(mark_unknown(trade, &format!("entry_decision:{status}"))),
         None => return Ok(mark_unknown(trade, "entry_decision_missing")),
     }
@@ -210,20 +137,64 @@ fn classify_trade(row: QuotePnlRow) -> Result<ExecutionCanaryQuotePnlTrade> {
         "ok".to_string()
     };
     trade.quote_adjusted_pnl_sol = Some(pnl.quote_adjusted_pnl_sol);
-    trade.quote_adjusted_pnl_after_priority_fee_sol =
-        Some(pnl.quote_adjusted_pnl_after_priority_fee_sol);
+    trade.quote_adjusted_pnl_after_priority_fee_sol = pnl.quote_adjusted_pnl_after_priority_fee_sol;
     trade.quote_vs_shadow_delta_sol = Some(pnl.quote_adjusted_pnl_sol - row.shadow_pnl_sol);
-    trade.quote_after_fee_vs_shadow_delta_sol =
-        Some(pnl.quote_adjusted_pnl_after_priority_fee_sol - row.shadow_pnl_sol);
+    trade.quote_after_fee_vs_shadow_delta_sol = pnl
+        .quote_adjusted_pnl_after_priority_fee_sol
+        .map(|net| net - row.shadow_pnl_sol);
     trade.entry_cost_sol = Some(pnl.entry_cost_sol);
     trade.exit_quote_sol = Some(pnl.exit_quote_sol);
     trade.closed_qty_ratio = Some(pnl.closed_qty_ratio);
-    trade.priority_fee_lamports_total = Some(pnl.priority_fee_lamports_total);
+    trade.priority_fee_lamports_total = pnl.priority_fee_lamports_total;
+    if pnl.priority_fee_lamports_total.is_none() {
+        trade.status = EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN.to_string();
+        trade.reason = row.allocation.reason.clone();
+    }
     Ok(trade)
+}
+
+/// Only called for an independently proven, successful skipped BUY quote.
+/// Exit validation and fee allocation still govern hypothetical money coverage.
+fn record_skipped_counterfactual(
+    trade: &mut ExecutionCanaryQuotePnlTrade,
+    row: &QuotePnlRow,
+) -> Result<()> {
+    let exit_error = row.binding_error.or_else(|| {
+        if row.sell.quote_status.is_none() {
+            Some("missing_exit_quote")
+        } else if row.sell.quote_status.as_deref() != Some(QUOTE_STATUS_OK) {
+            Some("exit_quote_not_ok")
+        } else if !matches!(
+            row.sell.decision_status.as_deref(),
+            Some(DECISION_WOULD_EXECUTE | DECISION_WOULD_FORCE_EXIT)
+        ) {
+            Some("exit_decision_unproven")
+        } else {
+            None
+        }
+    });
+    let reason = if let Some(reason) = exit_error {
+        reason
+    } else if let Some(pnl) = compute_quote_pnl(row.amounts())? {
+        trade.skipped_counterfactual_pnl_sol = Some(pnl.quote_adjusted_pnl_sol);
+        trade.skipped_counterfactual_pnl_after_priority_fee_sol =
+            pnl.quote_adjusted_pnl_after_priority_fee_sol;
+        trade.skipped_counterfactual_after_fee_vs_shadow_delta_sol = pnl
+            .quote_adjusted_pnl_after_priority_fee_sol
+            .map(|net| net - row.shadow_pnl_sol);
+        // The allocation reason is bounded and retains missing prior history,
+        // unknown fees and partial allocation without inventing another budget.
+        &row.allocation.reason
+    } else {
+        "invalid_quote_amount"
+    };
+    trade.skipped_counterfactual_reason = Some(reason.to_string());
+    Ok(())
 }
 
 fn base_trade(row: &QuotePnlRow) -> ExecutionCanaryQuotePnlTrade {
     ExecutionCanaryQuotePnlTrade {
+        fee_allocation: row.allocation.clone(),
         shadow_closed_trade_id: row.id,
         signal_id: row.signal_id.clone(),
         wallet_id: row.wallet_id.clone(),
@@ -237,6 +208,7 @@ fn base_trade(row: &QuotePnlRow) -> ExecutionCanaryQuotePnlTrade {
         quote_adjusted_pnl_after_priority_fee_sol: None,
         quote_vs_shadow_delta_sol: None,
         quote_after_fee_vs_shadow_delta_sol: None,
+        skipped_counterfactual_reason: None,
         skipped_counterfactual_pnl_sol: None,
         skipped_counterfactual_pnl_after_priority_fee_sol: None,
         skipped_counterfactual_after_fee_vs_shadow_delta_sol: None,
@@ -259,6 +231,8 @@ fn base_trade(row: &QuotePnlRow) -> ExecutionCanaryQuotePnlTrade {
         sell_price_impact_pct: None,
         entry_decision_delay_ms: None,
         exit_decision_delay_ms: None,
+        entry_http_request_started_ts: None,
+        exit_http_request_started_ts: None,
         entry_quote_latency_ms: None,
         exit_quote_latency_ms: None,
         entry_quote_price_sol: None,

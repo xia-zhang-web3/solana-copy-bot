@@ -42,8 +42,37 @@ pub(crate) fn build_quote_readiness_gate(
     let mut checks = Vec::new();
     checks.push(min_market_trades_check(market_closed_trades));
     checks.push(sample_size_check(sampled_market_trades));
+    checks.push(window_coverage_check(summary));
     checks.push(open_position_check(open_position_count));
     checks.push(unknown_quote_check(summary.unknown_trades));
+    checks.push(check(
+        "skipped_counterfactual_coverage",
+        if summary.skipped_counterfactual_net_unknown_trades == 0 {
+            CHECK_PASS
+        } else {
+            CHECK_BLOCK
+        },
+        format!(
+            "gross known={} unknown={}; net known={} unknown={}",
+            summary.skipped_counterfactual_gross_known_trades,
+            summary.skipped_counterfactual_gross_unknown_trades,
+            summary.skipped_counterfactual_net_known_trades,
+            summary.skipped_counterfactual_net_unknown_trades,
+        ),
+        "0 unknown counterfactuals",
+        "a known skipped BUY does not prove its hypothetical exit or after-fee PnL",
+    ));
+    checks.push(check(
+        "priority_fee_total_coverage",
+        if summary.unknown_priority_fee_trades == 0 {
+            CHECK_PASS
+        } else {
+            CHECK_BLOCK
+        },
+        summary.unknown_priority_fee_trades.to_string(),
+        "0 unknown totals",
+        "BUY and SELL totals must be known, including skipped counterfactuals",
+    ));
     checks.push(quote_pnl_check(
         summary.quote_adjusted_pnl_after_priority_fee_sol,
     ));
@@ -61,8 +90,22 @@ pub(crate) fn build_quote_readiness_gate(
         priority_fee_sample_count(summary),
         non_ok_priority_fee_rate_pct,
     ));
-    checks.push(entry_quote_latency_check(avg_entry_quote_latency_ms));
-    checks.push(entry_decision_delay_check(avg_entry_decision_delay_ms));
+    checks.push(timing_coverage_check(
+        entry_quote_latency_check(avg_entry_quote_latency_ms.unwrap_or(0.0)),
+        summary.quote_diagnostics.entry_all.quote_latency_ms_samples,
+        summary.quote_diagnostics.entry_all.quote_latency_ms_unknown,
+    ));
+    checks.push(timing_coverage_check(
+        entry_decision_delay_check(avg_entry_decision_delay_ms.unwrap_or(0.0)),
+        summary
+            .quote_diagnostics
+            .entry_all
+            .decision_delay_ms_samples,
+        summary
+            .quote_diagnostics
+            .entry_all
+            .decision_delay_ms_unknown,
+    ));
     checks.push(stale_rug_like_check(
         summary.shadow_close_breakdown.stale_rug_like_closed_trades,
         summary.shadow_close_breakdown.stale_rug_like_pnl_sol,
@@ -107,6 +150,42 @@ pub(crate) fn build_quote_readiness_gate(
         threshold_candidate,
         checks,
     }
+}
+
+fn window_coverage_check(
+    summary: &ExecutionCanaryQuotePnlSummary,
+) -> ExecutionCanaryQuoteReadinessCheck {
+    let consistent = summary.sampled_closed_trades == summary.total_closed_trades
+        && summary
+            .window_total_closed_trades
+            .and_then(|total| total.checked_sub(summary.sampled_closed_trades))
+            .zip(summary.omitted_closed_trades)
+            .is_some_and(|(expected, omitted)| expected == omitted);
+    let (status, reason) = if !consistent {
+        (CHECK_BLOCK, "quote_window_coverage_unknown")
+    } else if summary.omitted_closed_trades != Some(0) {
+        (CHECK_BLOCK, "quote_window_truncated")
+    } else {
+        (CHECK_PASS, "quote_window_complete")
+    };
+    check(
+        "quote_window_coverage",
+        status,
+        format!(
+            "window={} sampled={} omitted={}",
+            summary
+                .window_total_closed_trades
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            summary.sampled_closed_trades,
+            summary
+                .omitted_closed_trades
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+        ),
+        "same-snapshot exact count; 0 omitted",
+        reason,
+    )
 }
 
 fn min_market_trades_check(market_closed_trades: u64) -> ExecutionCanaryQuoteReadinessCheck {
@@ -161,19 +240,21 @@ fn unknown_quote_check(unknown_trades: u64) -> ExecutionCanaryQuoteReadinessChec
         },
         unknown_trades.to_string(),
         "0",
-        "entry and exit quote accounting must be complete",
+        "non-skipped entry and exit quote accounting must be complete",
     )
 }
 
-fn quote_pnl_check(quote_after_fee_pnl_sol: f64) -> ExecutionCanaryQuoteReadinessCheck {
+fn quote_pnl_check(quote_after_fee_pnl_sol: Option<f64>) -> ExecutionCanaryQuoteReadinessCheck {
     check(
         "quote_pnl_after_fee",
-        if quote_after_fee_pnl_sol > 0.0 {
+        if quote_after_fee_pnl_sol.is_some_and(|pnl| pnl > 0.0) {
             CHECK_PASS
         } else {
             CHECK_BLOCK
         },
-        sol_value(quote_after_fee_pnl_sol),
+        quote_after_fee_pnl_sol
+            .map(sol_value)
+            .unwrap_or_else(|| "unknown".to_string()),
         "> 0 SOL",
         "quote-adjusted PnL must stay positive after priority fees",
     )
@@ -216,8 +297,11 @@ fn threshold_candidate(
         quote_win_rate_pct: percent(threshold.quote_win_count, quote_win_trades),
         quote_adjusted_pnl_after_priority_fee_sol: threshold
             .quote_adjusted_pnl_after_priority_fee_sol,
-        clears_skip_rate_blocker: skip_rate_pct <= MAX_SKIP_RATE_PCT,
-        pnl_positive: threshold.quote_adjusted_pnl_after_priority_fee_sol > 0.0,
+        clears_skip_rate_blocker: threshold.unknown_trades == 0
+            && skip_rate_pct <= MAX_SKIP_RATE_PCT,
+        pnl_positive: threshold
+            .quote_adjusted_pnl_after_priority_fee_sol
+            .is_some_and(|pnl| pnl > 0.0),
     })
 }
 
@@ -237,7 +321,10 @@ fn candidate_threshold_check(
             candidate.counted_trades,
             candidate.skipped_trades,
             pct_value(candidate.skip_rate_pct),
-            sol_value(candidate.quote_adjusted_pnl_after_priority_fee_sol)
+            candidate
+                .quote_adjusted_pnl_after_priority_fee_sol
+                .map(sol_value)
+                .unwrap_or_else(|| "unknown".to_string())
         ),
         "candidate only; active gate unchanged",
         reason,
@@ -397,4 +484,23 @@ fn ms_value(value: f64) -> String {
 
 fn sol_value(value: f64) -> String {
     format!("{value:.6} SOL")
+}
+
+fn timing_coverage_check(
+    mut check: ExecutionCanaryQuoteReadinessCheck,
+    known: u64,
+    unknown: u64,
+) -> ExecutionCanaryQuoteReadinessCheck {
+    if known == 0 || unknown > 0 {
+        check.status = CHECK_BLOCK.to_string();
+        check.value = if known == 0 {
+            "unknown".to_string()
+        } else {
+            format!("{} (partial)", check.value)
+        };
+        check.reason = format!(
+            "actual HTTP timing: {known} known / {unknown} unknown; complete coverage required"
+        );
+    }
+    check
 }

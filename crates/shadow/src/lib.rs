@@ -1,3 +1,5 @@
+mod recorded_buy_lot;
+pub use recorded_buy_lot::RecordedBuyLot;
 mod candidate;
 use self::candidate::to_shadow_candidate;
 mod quality_gates;

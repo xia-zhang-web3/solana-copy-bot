@@ -31,6 +31,7 @@ const ZERO_TOKEN_ACCOUNT_RENT_LAMPORTS: u64 = 2_039_280;
 pub struct Cli {
     pub config_path: Option<PathBuf>,
     pub db_path: Option<PathBuf>,
+    pub portfolio_input: Option<PathBuf>,
     pub json: bool,
     pub since: Option<DateTime<Utc>>,
     pub since_hours: i64,
@@ -45,6 +46,7 @@ pub struct Cli {
 
 #[derive(Debug, Serialize)]
 pub struct TinyEconomicsReport {
+    pub portfolio_replay: serde_json::Value,
     pub as_of: DateTime<Utc>,
     pub since: DateTime<Utc>,
     pub reason_class: String,
@@ -54,6 +56,7 @@ pub struct TinyEconomicsReport {
     pub canary: Option<CanaryEconomics>,
     pub tiny: Option<TinyRealizedEconomics>,
     pub open_mark_to_quote: Option<OpenMarkToQuoteReport>,
+    pub wallet_account_mark: Option<crate::execution_canary_quote_pnl_wallet::QuoteCoverage>,
     pub equity_view: Option<EquityViewReport>,
     pub follower_gap: Option<FollowerGapReport>,
     pub stale_decay: Option<ExecutionStaleDecayReport>,
@@ -68,6 +71,7 @@ pub struct ConfiguredNotionalReport {
 
 #[derive(Debug, Serialize)]
 pub struct ShadowEconomics {
+    pub market_totals_scope: &'static str,
     pub market_trades: u64,
     pub market_pnl_sol: f64,
     pub market_pnl_scaled_to_tiny_sol: Option<f64>,
@@ -79,9 +83,21 @@ pub struct ShadowEconomics {
 
 #[derive(Debug, Serialize)]
 pub struct CanaryEconomics {
+    pub financial_totals_scope: &'static str,
+    pub window_total_closed_trades: Option<u64>,
+    pub sampled_closed_trades: u64,
+    pub omitted_closed_trades: Option<u64>,
     pub counted_trades: u64,
+    pub skipped_trades: u64,
+    pub unknown_trades: u64,
+    pub skipped_counterfactual_gross_known_trades: u64,
+    pub skipped_counterfactual_gross_unknown_trades: u64,
+    pub skipped_counterfactual_net_known_trades: u64,
+    pub skipped_counterfactual_net_unknown_trades: u64,
+    pub skipped_counterfactual_pnl_sol: Option<f64>,
+    pub skipped_counterfactual_pnl_after_priority_fee_sol: Option<f64>,
     pub quote_adjusted_pnl_sol: f64,
-    pub quote_adjusted_pnl_after_priority_fee_sol: f64,
+    pub quote_adjusted_pnl_after_priority_fee_sol: Option<f64>,
     pub quote_adjusted_pnl_scaled_to_tiny_sol: Option<f64>,
     pub quote_adjusted_pnl_after_priority_fee_scaled_to_tiny_sol: Option<f64>,
     pub quote_win_count: u64,
@@ -91,7 +107,12 @@ pub struct CanaryEconomics {
 #[derive(Debug, Serialize)]
 pub struct TinyRealizedEconomics {
     pub closed_positions: u64,
-    pub realized_pnl_sol: f64,
+    pub realized_pnl_sol: Option<f64>,
+    pub economic_pnl_basis: String,
+    pub legacy_recorded_pnl_sol: Option<f64>,
+    pub native_observations: copybot_storage_core::NativeObservationReport,
+    pub failed_expenses: copybot_storage_core::FailedExpenseReport,
+    pub cash_settlements: copybot_storage_core::ExecutionCashSettlementReport,
     pub zero_token_account_count: Option<u64>,
     pub zero_token_account_rent_estimate_sol: Option<f64>,
 }
@@ -99,7 +120,10 @@ pub struct TinyRealizedEconomics {
 #[derive(Debug, Serialize)]
 pub struct OpenMarkToQuoteReport {
     pub open_positions: u64,
-    pub open_cost_sol: f64,
+    pub open_cost_sol: Option<f64>,
+    pub scope: &'static str,
+    pub complete: bool,
+    pub positions_loaded: bool,
     pub quoted_value_sol: Option<f64>,
     pub unrealized_pnl_sol: Option<f64>,
     pub quote_errors: Vec<String>,
@@ -108,6 +132,9 @@ pub struct OpenMarkToQuoteReport {
 impl TinyEconomicsReport {
     fn failed(as_of: DateTime<Utc>, error: impl Into<String>) -> Self {
         Self {
+            portfolio_replay: crate::quote_portfolio_report::unavailable(
+                "report_context_unavailable",
+            ),
             as_of,
             since: as_of - Duration::hours(DEFAULT_SINCE_HOURS),
             reason_class: REASON_ERROR.to_string(),
@@ -117,6 +144,7 @@ impl TinyEconomicsReport {
             canary: None,
             tiny: None,
             open_mark_to_quote: None,
+            wallet_account_mark: None,
             equity_view: None,
             follower_gap: None,
             stale_decay: None,
@@ -149,6 +177,7 @@ where
 {
     let mut config_path = None;
     let mut db_path = None;
+    let mut portfolio_input = None;
     let mut json = false;
     let mut since = None;
     let mut since_hours = DEFAULT_SINCE_HOURS;
@@ -163,6 +192,9 @@ where
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--config" => config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?)),
+            "--portfolio-input" => {
+                portfolio_input = Some(PathBuf::from(next_value(&mut iter, "--portfolio-input")?))
+            }
             "--db-path" => db_path = Some(PathBuf::from(next_value(&mut iter, "--db-path")?)),
             "--since" => since = Some(parse_since(&next_value(&mut iter, "--since")?)?),
             "--since-hours" => {
@@ -197,6 +229,7 @@ where
     Ok(Cli {
         config_path,
         db_path,
+        portfolio_input,
         json,
         since,
         since_hours,
@@ -211,10 +244,20 @@ where
 }
 
 fn build_report(cli: Cli, as_of: DateTime<Utc>) -> TinyEconomicsReport {
-    match build_report_result(cli, as_of) {
+    let db = cli
+        .portfolio_input
+        .as_ref()
+        .and_then(|_| load_context(&cli).ok());
+    let portfolio = crate::quote_portfolio_report::build(
+        cli.portfolio_input.as_deref(),
+        db.as_ref().map(|(_, p)| p.as_path()),
+    );
+    let mut report = match build_report_result(cli, as_of) {
         Ok(report) => report,
         Err(error) => TinyEconomicsReport::failed(as_of, error.to_string()),
-    }
+    };
+    report.portfolio_replay = portfolio;
+    report
 }
 
 fn build_report_result(cli: Cli, as_of: DateTime<Utc>) -> Result<TinyEconomicsReport> {
@@ -229,12 +272,12 @@ fn build_report_result(cli: Cli, as_of: DateTime<Utc>) -> Result<TinyEconomicsRe
     let wallet = config.as_ref().and_then(|config| {
         cli.live_wallet.then(|| {
             let sell_side = build_sell_side_diagnostics(&proof);
-            build_live_wallet_reconciliation(&config.execution, &proof, &sell_side, as_of)
+            build_live_wallet_reconciliation(&config.execution, &store, &sell_side, as_of)
         })
     });
-    let open_mark = open_mark_to_quote(&proof, wallet.as_ref());
+    let open_mark = open_mark_to_quote(wallet.as_ref());
     let equity_view = build_equity_view(
-        proof.summary.tiny_open_positions,
+        open_mark.open_positions,
         open_mark.open_cost_sol,
         open_mark.quoted_value_sol,
         wallet.as_ref(),
@@ -252,6 +295,7 @@ fn build_report_result(cli: Cli, as_of: DateTime<Utc>) -> Result<TinyEconomicsRe
         None
     };
     Ok(TinyEconomicsReport {
+        portfolio_replay: crate::quote_portfolio_report::unavailable("report_context_unavailable"),
         as_of,
         since,
         reason_class: REASON_OK.to_string(),
@@ -261,6 +305,7 @@ fn build_report_result(cli: Cli, as_of: DateTime<Utc>) -> Result<TinyEconomicsRe
         canary: Some(canary_economics(&summary, config.as_ref())),
         tiny: Some(tiny_economics(&proof, wallet.as_ref())),
         open_mark_to_quote: Some(open_mark),
+        wallet_account_mark: wallet.as_ref().map(|w| w.wallet_account_mark.clone()),
         equity_view: Some(equity_view),
         follower_gap: follower_gap_from_trades(&summary.trades),
         stale_decay,
@@ -304,6 +349,7 @@ fn shadow_economics(
         )
     });
     ShadowEconomics {
+        market_totals_scope: summary.financial_totals_scope,
         market_trades: summary.total_closed_trades,
         market_pnl_sol: summary.shadow_pnl_sol,
         market_pnl_scaled_to_tiny_sol: scale.map(|scale| summary.shadow_pnl_sol * scale),
@@ -326,14 +372,31 @@ fn canary_economics(
         )
     });
     CanaryEconomics {
+        financial_totals_scope: summary.financial_totals_scope,
+        window_total_closed_trades: summary.window_total_closed_trades,
+        sampled_closed_trades: summary.sampled_closed_trades,
+        omitted_closed_trades: summary.omitted_closed_trades,
         counted_trades: summary.pnl_counted_trades,
+        skipped_trades: summary.skipped_trades,
+        unknown_trades: summary.unknown_trades,
+        skipped_counterfactual_gross_known_trades: summary
+            .skipped_counterfactual_gross_known_trades,
+        skipped_counterfactual_gross_unknown_trades: summary
+            .skipped_counterfactual_gross_unknown_trades,
+        skipped_counterfactual_net_known_trades: summary.skipped_counterfactual_net_known_trades,
+        skipped_counterfactual_net_unknown_trades: summary
+            .skipped_counterfactual_net_unknown_trades,
+        skipped_counterfactual_pnl_sol: summary.skipped_counterfactual_pnl_sol,
+        skipped_counterfactual_pnl_after_priority_fee_sol: summary
+            .skipped_counterfactual_pnl_after_priority_fee_sol,
         quote_adjusted_pnl_sol: summary.quote_adjusted_pnl_sol,
         quote_adjusted_pnl_after_priority_fee_sol: summary
             .quote_adjusted_pnl_after_priority_fee_sol,
         quote_adjusted_pnl_scaled_to_tiny_sol: scale
             .map(|scale| summary.quote_adjusted_pnl_sol * scale),
         quote_adjusted_pnl_after_priority_fee_scaled_to_tiny_sol: scale
-            .map(|scale| summary.quote_adjusted_pnl_after_priority_fee_sol * scale),
+            .zip(summary.quote_adjusted_pnl_after_priority_fee_sol)
+            .map(|(scale, pnl)| pnl * scale),
         quote_win_count: summary.quote_win_count,
         quote_loss_count: summary.quote_loss_count,
     }
@@ -347,42 +410,31 @@ fn tiny_economics(
     TinyRealizedEconomics {
         closed_positions: proof.summary.tiny_unique_closed_positions,
         realized_pnl_sol: proof.summary.tiny_realized_pnl_sol,
+        economic_pnl_basis: proof.summary.economic_pnl_basis.clone(),
+        legacy_recorded_pnl_sol: proof.summary.legacy_recorded_pnl_sol,
+        cash_settlements: proof.cash_settlements.clone(),
+        failed_expenses: proof.failed_expenses.clone(),
+        native_observations: proof.native_observations.clone(),
         zero_token_account_count: zero_count,
         zero_token_account_rent_estimate_sol: zero_count.map(estimated_zero_rent_sol),
     }
 }
 
-fn open_mark_to_quote(
-    proof: &ExecutionTinyProofReport,
-    wallet: Option<&WalletReconciliationReport>,
-) -> OpenMarkToQuoteReport {
-    let open_cost_sol: f64 = proof
-        .open_positions
-        .iter()
-        .map(|position| position.cost_sol)
-        .sum();
-    let quoted_value_sol = wallet.map(|wallet| {
-        wallet
-            .balances
-            .iter()
-            .filter_map(|balance| {
-                balance
-                    .bot_open_position
-                    .as_ref()
-                    .and_then(|_| balance.sell_quote.as_ref())
-                    .and_then(|quote| quote.out_sol)
-            })
-            .sum::<f64>()
-    });
-    let quote_errors = wallet
-        .map(|wallet| wallet.errors.clone())
-        .unwrap_or_default();
+fn open_mark_to_quote(wallet: Option<&WalletReconciliationReport>) -> OpenMarkToQuoteReport {
+    let mark = wallet.map(|w| &w.bot_remainder_mark);
+    let open_cost_sol = mark.and_then(|m| m.open_cost_sol);
+    let quoted_value_sol = mark.and_then(|m| m.coverage.quoted_value_sol);
     OpenMarkToQuoteReport {
-        open_positions: proof.summary.tiny_open_positions,
+        open_positions: mark.map(|m| m.positions.len() as u64).unwrap_or(0),
         open_cost_sol,
+        scope: "full_exact_bot_remainder_gross_independent_quotes",
+        complete: mark.is_some_and(|m| m.coverage.complete),
+        positions_loaded: mark.is_some_and(|m| m.positions_loaded),
         quoted_value_sol,
-        unrealized_pnl_sol: quoted_value_sol.map(|value| value - open_cost_sol),
-        quote_errors,
+        unrealized_pnl_sol: quoted_value_sol.zip(open_cost_sol).map(|(v, c)| v - c),
+        quote_errors: mark
+            .map(|m| m.coverage.unknown_reasons.clone())
+            .unwrap_or_else(|| vec!["live_wallet_unavailable".into()]),
     }
 }
 

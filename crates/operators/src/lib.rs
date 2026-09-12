@@ -3,6 +3,7 @@ pub(crate) mod entry_side_filter_backtest_db;
 pub(crate) mod entry_side_filter_backtest_summary;
 pub mod execution_ata_sweep;
 pub(crate) mod execution_ata_sweep_rpc;
+mod execution_canary_entry_cost_gate;
 pub mod execution_canary_manual_writeoff;
 pub(crate) mod execution_canary_manual_writeoff_cli;
 pub mod execution_canary_quote_pnl;
@@ -55,3 +56,12 @@ pub(crate) mod universe_de_risk_report_db;
 pub(crate) mod universe_de_risk_report_replay;
 pub(crate) mod universe_de_risk_report_summary;
 pub mod yellowstone_probe;
+
+mod quote_timing;
+
+mod execution_wallet_inventory;
+mod execution_wallet_marks;
+mod execution_wallet_quote;
+pub mod quote_portfolio;
+
+pub mod quote_portfolio_report;

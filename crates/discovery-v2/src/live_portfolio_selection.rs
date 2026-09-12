@@ -1,8 +1,9 @@
+use crate::live_inventory::{InventoryFailure, LivePortfolioSnapshot};
 use crate::live_portfolio::{
-    evaluate_live_portfolio_snapshot, load_live_token_prices, load_live_token_quality,
-    reject_metric, DiscoveryV2LivePortfolioStatus, LivePortfolioSnapshot,
+    load_live_token_quality, reject_metric, DiscoveryV2LivePortfolioStatus,
     LIVE_PORTFOLIO_RPC_BATCH_SIZE,
 };
+use crate::live_valuation_build::{evaluate_live_portfolio_snapshot, load_live_token_prices};
 use crate::metric::DiscoveryV2WalletMetric;
 use crate::status::DiscoveryV2CandidateWalletSource;
 use anyhow::Result;
@@ -36,8 +37,12 @@ pub(super) fn process_live_portfolio_candidate_rows(
             status.checked_wallets += 1;
             let snapshot = match snapshot {
                 Ok(snapshot) => snapshot,
-                Err(_) => {
-                    let reason = "live_portfolio_rpc_unavailable";
+                Err(error) => {
+                    let reason = error.reason();
+                    *status
+                        .failure_breakdown
+                        .entry(reason.to_string())
+                        .or_default() += 1;
                     reject_metric(metric, reason);
                     live_reject_reasons.push(reason.to_string());
                     status.rpc_failures += 1;
@@ -53,8 +58,14 @@ pub(super) fn process_live_portfolio_candidate_rows(
                 shadow,
                 &price_cache,
                 &quality_cache,
-                options.now,
+                options,
             );
+            status.complete_inventory_wallets += 1;
+            if evaluation.inventory.unvalued_token_positions > 0 {
+                status.unknown_valuation_wallets += 1;
+            }
+            metric.live_inventory = Some(evaluation.inventory);
+            metric.live_valuation = Some(evaluation.valuation);
             metric.live_sol_balance = Some(evaluation.sol_balance);
             metric.live_token_value_sol = Some(evaluation.token_value_sol);
             metric.live_token_positions = Some(evaluation.token_positions);
@@ -86,7 +97,7 @@ pub(super) fn process_live_portfolio_candidate_rows(
 fn fetch_live_portfolio_batch(
     client: &crate::live_portfolio_rpc::LivePortfolioRpcClient,
     batch: &[(usize, String, &'static str)],
-) -> Vec<(usize, Result<LivePortfolioSnapshot>)> {
+) -> Vec<(usize, Result<LivePortfolioSnapshot, InventoryFailure>)> {
     thread::scope(|scope| {
         let handles = batch
             .iter()

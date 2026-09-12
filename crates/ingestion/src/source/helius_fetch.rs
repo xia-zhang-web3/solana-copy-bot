@@ -252,15 +252,27 @@ async fn fetch_swap_from_signature(
     };
 
     let (token_in, amount_in, token_out, amount_out) =
-        match HeliusWsSource::infer_swap_from_json_balances(meta, signer_index, &signer) {
+        match HeliusWsSource::infer_swap_from_json_balances_with_attribution(
+            meta,
+            signer_index,
+            &signer,
+            || {
+                super::native_attribution::json::infer(
+                    result,
+                    meta,
+                    &signer,
+                    &runtime_config.pumpswap_program_ids,
+                )
+            },
+        ) {
             Some(value) => value,
             None => return Ok(None),
         };
 
     let block_time = result.get("blockTime").and_then(Value::as_i64);
-    let ts_utc = block_time
-        .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
-        .unwrap_or_else(Utc::now);
+    let Some(ts_utc) = block_time.and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0)) else {
+        return Ok(None);
+    };
     let slot = result
         .get("slot")
         .and_then(Value::as_u64)
@@ -273,6 +285,18 @@ async fn fetch_swap_from_signature(
         &runtime_config.raydium_program_ids,
         &runtime_config.pumpswap_program_ids,
     );
+
+    if super::pumpswap_instruction::requires_pumpswap_instruction(
+        &program_ids,
+        &dex_hint,
+        &runtime_config.pumpswap_program_ids,
+    ) && !super::pumpswap_instruction::json_has_supported_swap(
+        result,
+        meta,
+        &runtime_config.pumpswap_program_ids,
+    ) {
+        return Ok(None);
+    }
 
     Ok(Some(RawSwapObservation {
         signature: signature.to_string(),

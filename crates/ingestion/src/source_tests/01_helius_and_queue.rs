@@ -55,8 +55,8 @@ fn infer_swap_prefers_sol_leg_with_lamport_delta() {
     let meta = json!({
         "preTokenBalances": [token_balance(signer, "TokenMintA", "0")],
         "postTokenBalances": [token_balance(signer, "TokenMintA", "100")],
-        "preBalances": [2_000_000_000u64],
-        "postBalances": [1_000_000_000u64]
+        "preBalances": [2_000_000_000u64, 5_000_000, 5_000_000],
+        "postBalances": [1_000_000_000u64, 5_000_000, 5_000_000]
     });
 
     let inferred = HeliusWsSource::infer_swap_from_json_balances(&meta, 0, signer)
@@ -76,8 +76,8 @@ fn infer_swap_does_not_reconstruct_exact_raw_delta_from_partial_json_balances() 
     let meta = json!({
         "preTokenBalances": [token_balance_without_raw(signer, "TokenMintA", "80")],
         "postTokenBalances": [token_balance(signer, "TokenMintA", "90")],
-        "preBalances": [2_000_000_000u64],
-        "postBalances": [1_900_000_000u64]
+        "preBalances": [2_000_000_000u64, 5_000_000, 5_000_000],
+        "postBalances": [1_900_000_000u64, 5_000_000, 5_000_000]
     });
 
     let inferred = HeliusWsSource::infer_swap_from_json_balances(&meta, 0, signer)
@@ -249,8 +249,8 @@ fn infer_swap_drops_ambiguous_multi_output_tx() {
             token_balance(signer, "TokenMintA", "100"),
             token_balance(signer, "TokenMintB", "40")
         ],
-        "preBalances": [2_000_000_000u64],
-        "postBalances": [1_000_000_000u64]
+        "preBalances": [2_000_000_000u64, 5_000_000, 5_000_000],
+        "postBalances": [1_000_000_000u64, 5_000_000, 5_000_000]
     });
 
     let inferred = HeliusWsSource::infer_swap_from_json_balances(&meta, 0, signer);

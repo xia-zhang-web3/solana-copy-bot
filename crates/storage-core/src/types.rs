@@ -44,8 +44,9 @@ pub use types_execution_quote_pnl::{
     ExecutionCanaryShadowCloseContextSummary, ExecutionQuoteCanaryProviderComparisonEvent,
     ExecutionQuoteCanaryProviderComparisonSummary, ExecutionQuoteCanaryProviderSelectionEvent,
     ExecutionQuoteCanaryProviderSelectionSummary, ExecutionQuoteCanaryPublicPaidComparisonEvent,
-    ExecutionQuoteCanaryPublicPaidComparisonSummary, EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED,
-    EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED, EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,
+    ExecutionQuoteCanaryPublicPaidComparisonSummary, ExecutionQuoteFeeAllocation,
+    EXECUTION_CANARY_QUOTE_PNL_STATUS_COUNTED, EXECUTION_CANARY_QUOTE_PNL_STATUS_SKIPPED,
+    EXECUTION_CANARY_QUOTE_PNL_STATUS_UNKNOWN,
 };
 pub use types_execution_tiny_proof::{
     ExecutionTinyEntryFunnel, ExecutionTinyEntryFunnelBucket,

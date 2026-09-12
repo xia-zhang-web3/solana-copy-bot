@@ -5,6 +5,9 @@ use copybot_storage_core::{
 };
 use tempfile::tempdir;
 
+#[path = "market_price/cases.rs"]
+mod market_price;
+
 fn assert_malformed_observed_timestamp_index(error: &anyhow::Error) {
     assert!(error
         .to_string()

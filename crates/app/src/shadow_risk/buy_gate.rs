@@ -30,6 +30,25 @@ impl ShadowRiskGuard {
         wallet_id: Option<&str>,
         token: Option<&str>,
     ) -> BuyRiskDecision {
+        self.check_buy(
+            store,
+            now,
+            pause_new_trades_on_outage,
+            wallet_id,
+            token,
+            false,
+        )
+    }
+
+    pub(super) fn check_buy(
+        &mut self,
+        store: &SqliteStore,
+        now: DateTime<Utc>,
+        pause_new_trades_on_outage: bool,
+        wallet_id: Option<&str>,
+        token: Option<&str>,
+        own_recorded_lot: bool,
+    ) -> BuyRiskDecision {
         if !self.config.shadow_killswitch_enabled {
             return BuyRiskDecision::Allow;
         }
@@ -179,7 +198,11 @@ impl ShadowRiskGuard {
         }
 
         if let Some(token) = token {
-            match self.token_open_notional_cap(store, token) {
+            match if own_recorded_lot {
+                self.token_open_notional_cap_for_completion(store, token, true)
+            } else {
+                self.token_open_notional_cap(store, token)
+            } {
                 Ok(Some(detail)) => {
                     return BuyRiskDecision::Blocked {
                         reason: BuyRiskBlockReason::ExposureCap,

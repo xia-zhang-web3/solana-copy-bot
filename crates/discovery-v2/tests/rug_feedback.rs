@@ -191,7 +191,13 @@ fn rug_quarantine_persists_rejection_after_feedback_window_expires() -> Result<(
     discovery.rug_wallet_filter_max_stale_terminal_pnl_sol = 0.0;
     discovery.rug_wallet_filter_quarantine_hours = 168;
     let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
-    let report = publish_discovery_v2_status(&store, status, true, 168)?;
+    let report = publish_discovery_v2_status(
+        &store,
+        status,
+        true,
+        168,
+        copybot_discovery_v2::DiscoveryV2DecisionContext::new(&discovery, &shadow, &options(now)),
+    )?;
     assert_eq!(report.rug_quarantine_wallet_count, 1);
     let active = store.active_rug_wallet_quarantines("rug_feedback_stale_terminal", now)?;
     assert_eq!(active.len(), 1);
@@ -237,7 +243,13 @@ fn rug_quarantine_persists_rejection_after_feedback_window_expires() -> Result<(
     assert!(bad_metric
         .reject_reasons
         .contains(&"rug_feedback_stale_terminal".to_string()));
-    let report = publish_discovery_v2_status(&store, status, true, 168)?;
+    let report = publish_discovery_v2_status(
+        &store,
+        status,
+        true,
+        168,
+        copybot_discovery_v2::DiscoveryV2DecisionContext::new(&discovery, &shadow, &options(later)),
+    )?;
     assert_eq!(report.rug_quarantine_wallet_count, 0);
     let active = store.active_rug_wallet_quarantines("rug_feedback_stale_terminal", later)?;
     assert_eq!(active.len(), 1);

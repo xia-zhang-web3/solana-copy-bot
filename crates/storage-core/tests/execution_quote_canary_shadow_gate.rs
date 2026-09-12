@@ -156,6 +156,8 @@ fn buy_quote(
     decision_status: &str,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: format!("quote:buy:shadow-{suffix}"),
         signal_id: Some(format!("buy-shadow-{suffix}")),
         shadow_closed_trade_id: None,

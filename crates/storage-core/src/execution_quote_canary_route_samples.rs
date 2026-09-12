@@ -1,3 +1,5 @@
+#[path = "execution_quote_provider_record.rs"]
+mod record;
 use crate::types::{
     ExecutionQuoteCanaryPublicPaidComparisonEvent, ExecutionQuoteCanaryPublicPaidComparisonSummary,
 };
@@ -24,69 +26,6 @@ pub(crate) fn ensure_execution_quote_canary_provider_samples_table(
 }
 
 impl SqliteDiscoveryStore {
-    pub fn record_execution_quote_canary_provider_sample(
-        &self,
-        sample: &ExecutionQuoteCanaryProviderSampleInsert,
-    ) -> Result<ExecutionQuoteCanaryRecordOutcome> {
-        ensure_execution_quote_canary_provider_samples_table(self)?;
-        let quote_latency_ms = optional_u64_to_i64(
-            "execution_quote_canary_provider_samples.quote_latency_ms",
-            sample.quote_latency_ms,
-        )?;
-        let inserted = self
-            .execute_with_retry(|conn| {
-                conn.execute(
-                    "INSERT OR IGNORE INTO execution_quote_canary_provider_samples(
-                        event_id,
-                        provider,
-                        side,
-                        quote_status,
-                        request_ts,
-                        quote_latency_ms,
-                        quote_in_amount_raw,
-                        quote_out_amount_raw,
-                        quote_response_json,
-                        quote_price_sol,
-                        shadow_price_sol,
-                        slippage_bps,
-                        price_impact_pct,
-                        route_plan_json,
-                        decision_status,
-                        decision_reason,
-                        error
-                    ) VALUES (
-                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                        ?13, ?14, ?15, ?16, ?17
-                    )",
-                    params![
-                        &sample.event_id,
-                        &sample.provider,
-                        &sample.side,
-                        &sample.quote_status,
-                        sample.request_ts.to_rfc3339(),
-                        quote_latency_ms,
-                        sample.quote_in_amount_raw.as_deref(),
-                        sample.quote_out_amount_raw.as_deref(),
-                        sample.quote_response_json.as_deref(),
-                        sample.quote_price_sol,
-                        sample.shadow_price_sol,
-                        sample.slippage_bps,
-                        sample.price_impact_pct,
-                        sample.route_plan_json.as_deref(),
-                        sample.decision_status.as_deref(),
-                        sample.decision_reason.as_deref(),
-                        sample.error.as_deref(),
-                    ],
-                )
-            })
-            .context("failed recording execution quote canary provider sample")?;
-        if inserted > 0 {
-            Ok(ExecutionQuoteCanaryRecordOutcome::Inserted)
-        } else {
-            Ok(ExecutionQuoteCanaryRecordOutcome::Existing)
-        }
-    }
-
     pub fn execution_quote_canary_provider_comparison_summary(
         &self,
         as_of: DateTime<Utc>,
@@ -116,18 +55,28 @@ impl SqliteDiscoveryStore {
         since: DateTime<Utc>,
         limit: u32,
     ) -> Result<Vec<ExecutionQuoteCanaryProviderComparisonEvent>> {
+        let generic_actual = crate::quote_http_started_expr(
+            &self.conn,
+            "execution_quote_canary_provider_samples",
+            "generic",
+        )?;
+        let pump_actual = crate::quote_http_started_expr(
+            &self.conn,
+            "execution_quote_canary_provider_samples",
+            "pump",
+        )?;
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT
+                &format!("SELECT
                     event.event_id,
                     event.side,
                     event.token,
                     event.request_ts,
                     generic.quote_status,
                     pump.quote_status,
-                    generic.quote_latency_ms,
-                    pump.quote_latency_ms,
+                    CASE WHEN julianday({generic_actual}) IS NOT NULL AND generic.request_ts=event.request_ts THEN generic.quote_latency_ms END,
+                    CASE WHEN julianday({pump_actual}) IS NOT NULL AND pump.request_ts=event.request_ts THEN pump.quote_latency_ms END,
                     generic.slippage_bps,
                     pump.slippage_bps,
                     generic.quote_price_sol,
@@ -146,7 +95,7 @@ impl SqliteDiscoveryStore {
                    AND event.event_id NOT LIKE 'quote:entry-shadow-diag:%'
                    AND (generic.event_id IS NOT NULL OR pump.event_id IS NOT NULL)
                  ORDER BY event.request_ts DESC, event.event_id DESC
-                 LIMIT ?4",
+                 LIMIT ?4"),
             )
             .context("failed to prepare provider comparison query")?;
         let rows = stmt
@@ -169,18 +118,28 @@ impl SqliteDiscoveryStore {
         since: DateTime<Utc>,
         limit: u32,
     ) -> Result<Vec<ExecutionQuoteCanaryPublicPaidComparisonEvent>> {
+        let public_actual = crate::quote_http_started_expr(
+            &self.conn,
+            "execution_quote_canary_provider_samples",
+            "public",
+        )?;
+        let paid_actual = crate::quote_http_started_expr(
+            &self.conn,
+            "execution_quote_canary_provider_samples",
+            "paid",
+        )?;
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT
+                &format!("SELECT
                     event.event_id,
                     event.side,
                     event.token,
                     event.request_ts,
                     public.quote_status,
                     paid.quote_status,
-                    public.quote_latency_ms,
-                    paid.quote_latency_ms,
+                    CASE WHEN julianday({public_actual}) IS NOT NULL AND public.request_ts=event.request_ts THEN public.quote_latency_ms END,
+                    CASE WHEN julianday({paid_actual}) IS NOT NULL AND paid.request_ts=event.request_ts THEN paid.quote_latency_ms END,
                     public.slippage_bps,
                     paid.slippage_bps,
                     public.quote_price_sol,
@@ -199,7 +158,7 @@ impl SqliteDiscoveryStore {
                    AND event.event_id NOT LIKE 'quote:entry-shadow-diag:%'
                    AND (public.event_id IS NOT NULL OR paid.event_id IS NOT NULL)
                  ORDER BY event.request_ts DESC, event.event_id DESC
-                 LIMIT ?4",
+                 LIMIT ?4"),
             )
             .context("failed to prepare public/paid generic comparison query")?;
         let rows = stmt
@@ -237,8 +196,12 @@ fn summarize_provider_comparison(
         pump_fun_better_slippage_events: 0,
         generic_better_slippage_events: 0,
         equal_slippage_events: 0,
-        avg_generic_latency_ms: 0.0,
-        avg_pump_fun_latency_ms: 0.0,
+        generic_latency_samples: 0,
+        generic_latency_unknown: 0,
+        avg_generic_latency_ms: None,
+        pump_fun_latency_samples: 0,
+        pump_fun_latency_unknown: 0,
+        avg_pump_fun_latency_ms: None,
         avg_generic_slippage_bps: 0.0,
         avg_pump_fun_slippage_bps: 0.0,
         avg_pump_fun_minus_generic_slippage_bps: 0.0,
@@ -276,8 +239,12 @@ fn summarize_provider_comparison(
             }
         }
     }
-    summary.avg_generic_latency_ms = generic_latency.avg;
-    summary.avg_pump_fun_latency_ms = pump_latency.avg;
+    summary.generic_latency_samples = generic_latency.samples;
+    summary.generic_latency_unknown = summary.total_events.saturating_sub(generic_latency.samples);
+    summary.avg_generic_latency_ms = (generic_latency.samples > 0).then_some(generic_latency.avg);
+    summary.pump_fun_latency_samples = pump_latency.samples;
+    summary.pump_fun_latency_unknown = summary.total_events.saturating_sub(pump_latency.samples);
+    summary.avg_pump_fun_latency_ms = (pump_latency.samples > 0).then_some(pump_latency.avg);
     summary.avg_generic_slippage_bps = generic_slippage.avg;
     summary.avg_pump_fun_slippage_bps = pump_slippage.avg;
     summary.avg_pump_fun_minus_generic_slippage_bps = slippage_delta.avg;
@@ -303,8 +270,12 @@ fn summarize_public_paid_comparison(
         paid_better_slippage_events: 0,
         public_better_slippage_events: 0,
         equal_slippage_events: 0,
-        avg_public_latency_ms: 0.0,
-        avg_paid_latency_ms: 0.0,
+        public_latency_samples: 0,
+        public_latency_unknown: 0,
+        avg_public_latency_ms: None,
+        paid_latency_samples: 0,
+        paid_latency_unknown: 0,
+        avg_paid_latency_ms: None,
         avg_public_slippage_bps: 0.0,
         avg_paid_slippage_bps: 0.0,
         avg_paid_minus_public_slippage_bps: 0.0,
@@ -342,8 +313,12 @@ fn summarize_public_paid_comparison(
             }
         }
     }
-    summary.avg_public_latency_ms = public_latency.avg;
-    summary.avg_paid_latency_ms = paid_latency.avg;
+    summary.public_latency_samples = public_latency.samples;
+    summary.public_latency_unknown = summary.total_events.saturating_sub(public_latency.samples);
+    summary.avg_public_latency_ms = (public_latency.samples > 0).then_some(public_latency.avg);
+    summary.paid_latency_samples = paid_latency.samples;
+    summary.paid_latency_unknown = summary.total_events.saturating_sub(paid_latency.samples);
+    summary.avg_paid_latency_ms = (paid_latency.samples > 0).then_some(paid_latency.avg);
     summary.avg_public_slippage_bps = public_slippage.avg;
     summary.avg_paid_slippage_bps = paid_slippage.avg;
     summary.avg_paid_minus_public_slippage_bps = slippage_delta.avg;

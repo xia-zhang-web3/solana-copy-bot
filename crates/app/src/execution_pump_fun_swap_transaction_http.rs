@@ -49,8 +49,9 @@ pub(crate) async fn fetch_pump_fun_swap_transaction_dry_run(
         "pump.fun swap transaction dry-run",
     )
     .await?;
-    let result =
+    let mut result =
         pump_fun_swap_transaction_summary(response.value, response.elapsed_ms, response.attempts)?;
+    crate::execution_native_floor_policy::protected_assembly::prepare(config, plan, &mut result)?;
     Ok(Some(
         verified_pump_fun_swap_transaction_summary(http, config, result, timeout).await?,
     ))
@@ -102,7 +103,7 @@ async fn verified_pump_fun_swap_transaction_summary(
     mut result: SwapTransactionDryRunResult,
     timeout: StdDuration,
 ) -> Result<SwapTransactionDryRunResult> {
-    verify_serialized_transaction_rpc_simulation(
+    let simulation = verify_serialized_transaction_rpc_simulation(
         http,
         config,
         &result.serialized_transaction_base64,
@@ -110,7 +111,7 @@ async fn verified_pump_fun_swap_transaction_summary(
         timeout,
     )
     .await?;
-    result.summary = truncate_for_log(&format!("{} rpc_simulation=passed", result.summary), 500);
+    result.summary = simulation.with_summary(&result.summary);
     Ok(result)
 }
 

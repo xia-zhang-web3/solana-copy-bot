@@ -1,5 +1,5 @@
+use super::receipt_legacy_fixture::{answer_receipt, confirmed_slot};
 use super::*;
-use crate::execution_submit_adapter::ExecutionSubmitAdapter;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
@@ -13,25 +13,34 @@ async fn tiny_submit_confirm_path_gate_disabled_stops_before_confirmation() -> R
     let now = Utc::now();
     let request = tiny_path_request(&store, "gate-disabled", "buy", 0.01, now)?;
     let adapter = TinyPathSubmitReadyAdapter;
-    let envelope = tiny_path_envelope(&request)?;
+    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
+        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
+            &request.wallet_pubkey,
+        )),
         allow_rpc_submit: false,
+        pretrade_max_priority_fee_lamports: 500_000,
+        pretrade_min_sol_reserve: 0.05,
+        execution_wallet_pubkey: request.wallet_pubkey.clone(),
         submit_timeout_ms: 1_000,
     };
     let transport =
         crate::execution_submit_adapter::RpcExecutionSubmitTransport::new(String::new());
 
-    let outcome = crate::execution_submit_adapter::record_execution_tiny_submit_confirm_path(
-        &store,
-        &adapter,
-        &request,
-        &envelope,
-        &gate,
-        &transport,
-        &reqwest::Client::new(),
-        "",
-        now,
-        1_000,
+    let outcome = super::entry_risk_clock_fixture::at(
+        now + chrono::Duration::minutes(2),
+        crate::execution_submit_adapter::record_execution_tiny_submit_confirm_path(
+            &store,
+            &adapter,
+            &request,
+            &envelope,
+            &gate,
+            &transport,
+            &reqwest::Client::new(),
+            "",
+            now,
+            1_000,
+        ),
     )
     .await?;
 
@@ -56,30 +65,39 @@ async fn tiny_submit_confirm_path_confirmed_buy_opens_position() -> Result<()> {
     let now = Utc::now();
     let request = tiny_path_request(&store, "confirmed-buy", "buy", 0.01, now)?;
     let adapter = TinyPathSubmitReadyAdapter;
-    let envelope = tiny_path_envelope(&request)?;
+    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
     let (rpc_url, server) = serve_submit_then_confirm(
         "tx-confirmed-buy",
         r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":10,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}"#,
     )
     .await?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
+        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
+            &request.wallet_pubkey,
+        )),
         allow_rpc_submit: true,
+        pretrade_max_priority_fee_lamports: 500_000,
+        pretrade_min_sol_reserve: 0.05,
+        execution_wallet_pubkey: request.wallet_pubkey.clone(),
         submit_timeout_ms: 1_000,
     };
     let transport =
         crate::execution_submit_adapter::RpcExecutionSubmitTransport::new(rpc_url.clone());
 
-    let outcome = crate::execution_submit_adapter::record_execution_tiny_submit_confirm_path(
-        &store,
-        &adapter,
-        &request,
-        &envelope,
-        &gate,
-        &transport,
-        &reqwest::Client::new(),
-        &rpc_url,
-        now + chrono::Duration::seconds(2),
-        1_000,
+    let outcome = super::entry_risk_clock_fixture::at(
+        now + chrono::Duration::minutes(2),
+        crate::execution_submit_adapter::record_execution_tiny_submit_confirm_path(
+            &store,
+            &adapter,
+            &request,
+            &envelope,
+            &gate,
+            &transport,
+            &reqwest::Client::new(),
+            &rpc_url,
+            now + chrono::Duration::seconds(2),
+            1_000,
+        ),
     )
     .await?;
     server.await?;
@@ -112,30 +130,39 @@ async fn tiny_submit_confirm_path_pending_buy_does_not_open_fill() -> Result<()>
     let now = Utc::now();
     let request = tiny_path_request(&store, "pending-buy", "buy", 0.01, now)?;
     let adapter = TinyPathSubmitReadyAdapter;
-    let envelope = tiny_path_envelope(&request)?;
+    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
     let (rpc_url, server) = serve_submit_then_confirm(
         "tx-pending-buy",
         r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[null]}}"#,
     )
     .await?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
+        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
+            &request.wallet_pubkey,
+        )),
         allow_rpc_submit: true,
+        pretrade_max_priority_fee_lamports: 500_000,
+        pretrade_min_sol_reserve: 0.05,
+        execution_wallet_pubkey: request.wallet_pubkey.clone(),
         submit_timeout_ms: 1_000,
     };
     let transport =
         crate::execution_submit_adapter::RpcExecutionSubmitTransport::new(rpc_url.clone());
 
-    let outcome = crate::execution_submit_adapter::record_execution_tiny_submit_confirm_path(
-        &store,
-        &adapter,
-        &request,
-        &envelope,
-        &gate,
-        &transport,
-        &reqwest::Client::new(),
-        &rpc_url,
-        now + chrono::Duration::seconds(2),
-        1_000,
+    let outcome = super::entry_risk_clock_fixture::at(
+        now + chrono::Duration::minutes(2),
+        crate::execution_submit_adapter::record_execution_tiny_submit_confirm_path(
+            &store,
+            &adapter,
+            &request,
+            &envelope,
+            &gate,
+            &transport,
+            &reqwest::Client::new(),
+            &rpc_url,
+            now + chrono::Duration::seconds(2),
+            1_000,
+        ),
     )
     .await?;
     server.await?;
@@ -166,6 +193,7 @@ async fn tiny_submit_confirm_path_confirmed_sell_closes_owned_position() -> Resu
         0.8,
         now,
     )?;
+    super::receipt_legacy_fixture::prepared_inventory_zero(&db_path)?;
     let request = tiny_path_request(
         &store,
         "confirmed-sell",
@@ -174,30 +202,39 @@ async fn tiny_submit_confirm_path_confirmed_sell_closes_owned_position() -> Resu
         now + chrono::Duration::minutes(1),
     )?;
     let adapter = TinyPathSubmitReadyAdapter;
-    let envelope = tiny_path_envelope(&request)?;
+    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
     let (rpc_url, server) = serve_submit_then_confirm(
         "tx-confirmed-sell",
         r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":20,"confirmations":null,"err":null,"confirmationStatus":"confirmed"}]}}"#,
     )
     .await?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
+        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
+            &request.wallet_pubkey,
+        )),
         allow_rpc_submit: true,
+        pretrade_max_priority_fee_lamports: 500_000,
+        pretrade_min_sol_reserve: 0.05,
+        execution_wallet_pubkey: request.wallet_pubkey.clone(),
         submit_timeout_ms: 1_000,
     };
     let transport =
         crate::execution_submit_adapter::RpcExecutionSubmitTransport::new(rpc_url.clone());
 
-    let outcome = crate::execution_submit_adapter::record_execution_tiny_submit_confirm_path(
-        &store,
-        &adapter,
-        &request,
-        &envelope,
-        &gate,
-        &transport,
-        &reqwest::Client::new(),
-        &rpc_url,
-        now + chrono::Duration::minutes(1) + chrono::Duration::seconds(2),
-        1_000,
+    let outcome = super::entry_risk_clock_fixture::at(
+        now + chrono::Duration::minutes(2),
+        crate::execution_submit_adapter::record_execution_tiny_submit_confirm_path(
+            &store,
+            &adapter,
+            &request,
+            &envelope,
+            &gate,
+            &transport,
+            &reqwest::Client::new(),
+            &rpc_url,
+            now + chrono::Duration::minutes(1) + chrono::Duration::seconds(2),
+            1_000,
+        ),
     )
     .await?;
     server.await?;
@@ -271,6 +308,11 @@ async fn serve_submit_then_confirm(
     let tx_signature = tx_signature.to_string();
     let confirmation_body = confirmation_body.to_string();
     let server = tokio::spawn(async move {
+        if !tx_signature.contains("sell") {
+            super::initial_sol_rpc_fixture::serve_three(&listener)
+                .await
+                .expect("BUY funding RPC");
+        }
         let submit = read_http_request(&listener).await;
         assert!(submit.body.contains("\"method\":\"sendTransaction\""));
         write_http_response(
@@ -285,6 +327,26 @@ async fn serve_submit_then_confirm(
             .contains("\"method\":\"getSignatureStatuses\""));
         assert!(confirmation.body.contains(&tx_signature));
         write_http_response(confirmation.socket, &confirmation_body).await;
+        if let Some(slot) = confirmed_slot(&confirmation_body) {
+            let side = if tx_signature.contains("sell") {
+                "sell"
+            } else {
+                "buy"
+            };
+            answer_receipt(
+                &listener,
+                &bs58::encode([7; 32]).into_string(),
+                &tx_signature,
+                side,
+                slot,
+                if side == "buy" {
+                    -100_000_000
+                } else {
+                    1_200_000_000
+                },
+            )
+            .await;
+        }
     });
     Ok((rpc_url, server))
 }
@@ -295,7 +357,11 @@ struct TinyPathHttpRequest {
 }
 
 async fn read_http_request(listener: &tokio::net::TcpListener) -> TinyPathHttpRequest {
-    let (mut socket, _) = listener.accept().await.expect("http request");
+    let (mut socket, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+            .await
+            .expect("bounded HTTP accept")
+            .expect("http request");
     let mut buffer = [0_u8; 8192];
     let read = socket.read(&mut buffer).await.expect("read request");
     TinyPathHttpRequest {
@@ -341,7 +407,7 @@ fn tiny_path_request(
         side: signal.side,
         buy_size_sol: 0.1,
         slippage_tolerance_bps: 500,
-        wallet_pubkey: "DryRunWallet11111111111111111111111111111111".to_string(),
+        wallet_pubkey: bs58::encode([7; 32]).into_string(),
         entry_route_plan_json: None,
         metadata: tiny_path_metadata(quote_price_sol),
     })
@@ -351,28 +417,15 @@ fn tiny_path_metadata(
     quote_price_sol: f64,
 ) -> crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
     crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         quote_out_amount_raw: Some("10000".to_string()),
         quote_response_json: Some(
             r#"{"quote":{"outAmountUi":10.0,"meta":{"outDecimals":3}}}"#.to_string(),
         ),
         quote_price_sol: Some(quote_price_sol),
-        ..crate::execution_submit_adapter::ExecutionBuildPlanMetadata::default()
+        ..crate::app_tests::priority_fee_fixture::metadata()
     }
-}
-
-fn tiny_path_envelope(
-    request: &crate::execution_submit_adapter::ExecutionSubmitRequest,
-) -> Result<crate::execution_signing_envelope::ExecutionSigningEnvelope> {
-    let plan = crate::execution_submit_adapter::NoSubmitExecutionAdapter
-        .build_transaction_plan(request)?;
-    crate::execution_signing_envelope::build_signed_transaction_execution_envelope(
-        request,
-        &plan,
-        crate::execution_signing_envelope::ExecutionSignedTransactionPayload {
-            signed_transaction_base64: "AQIDBA==".to_string(),
-            tx_signature_hint: Some("tx-hint-from-envelope".to_string()),
-        },
-    )
 }
 
 fn tiny_path_signal(

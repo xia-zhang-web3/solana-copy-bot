@@ -10,7 +10,7 @@ impl ShadowScheduler {
     ) -> bool {
         shadow_queue_full
             && !shadow_scheduler_needs_reset
-            && shadow_worker_count < SHADOW_MAX_CONCURRENT_WORKERS
+            && shadow_worker_count + self.hot_quotes.active() < SHADOW_MAX_CONCURRENT_WORKERS
             && !self.key_has_pending_or_inflight(key)
     }
 
@@ -20,7 +20,7 @@ impl ShadowScheduler {
         shadow: &copybot_shadow::ShadowService,
         max_workers: usize,
     ) {
-        while self.shadow_workers.len() < max_workers {
+        while self.active_task_count() < max_workers.min(SHADOW_MAX_CONCURRENT_WORKERS) {
             let Some(next) = self.dequeue_next_shadow_task() else {
                 return;
             };

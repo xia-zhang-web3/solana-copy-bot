@@ -14,6 +14,17 @@ impl SqliteDiscoveryStore {
         since: DateTime<Utc>,
         limit: u32,
     ) -> Result<Vec<CopySignalRow>> {
+        self.list_execution_canary_ready_candidates(copy_signal_status, since, limit, false)
+    }
+
+    pub fn list_execution_canary_ready_candidates(
+        &self,
+        copy_signal_status: &str,
+        since: DateTime<Utc>,
+        limit: u32,
+        require_quote: bool,
+    ) -> Result<Vec<CopySignalRow>> {
+        crate::execution_quote_canary::ensure_execution_quote_canary_tables(self)?;
         let mut stmt = self
             .conn
             .prepare(
@@ -32,6 +43,15 @@ impl SqliteDiscoveryStore {
                    AND ts >= ?2
                    AND lower(side) = 'buy'
                    AND NOT EXISTS (
+                        SELECT 1 FROM execution_quote_canary_events e
+                        WHERE e.event_id = 'quote:entry:' || copy_signals.signal_id
+                          AND (e.decision_reason GLOB 'hot_buy_refused:*' OR e.decision_status = 'owner_pending')
+                   )
+                   AND (?4 = 0 OR EXISTS (
+                        SELECT 1 FROM execution_quote_canary_events e
+                        WHERE e.event_id = 'quote:entry:' || copy_signals.signal_id
+                   ))
+                   AND NOT EXISTS (
                         SELECT 1 FROM orders
                         WHERE orders.signal_id = copy_signals.signal_id
                    )
@@ -43,7 +63,8 @@ impl SqliteDiscoveryStore {
             .query(params![
                 copy_signal_status,
                 since.to_rfc3339(),
-                limit.max(1) as i64
+                limit.max(1) as i64,
+                require_quote
             ])
             .context("failed querying execution canary candidates")?;
 

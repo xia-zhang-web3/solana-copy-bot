@@ -1,8 +1,5 @@
 use crate::{
-    observed_timestamp::{
-        ensure_observed_swaps_timestamp_validation_index_empty_safe,
-        ensure_observed_swaps_timestamps_canonical_utc_read_only,
-    },
+    observed_timestamp::ensure_observed_swaps_timestamp_validation_index_empty_safe,
     schema_indexes::ensure_observed_swaps_read_indexes_empty_safe_on_conn,
     ObservedSwapBatchWriteMetrics, SqliteBatchedDeleteSummary, SqliteDiscoveryStore,
     WalletActivityDayRow,
@@ -32,6 +29,23 @@ impl SqliteDiscoveryStore {
         &self,
         swaps: &[SwapEvent],
     ) -> Result<ObservedSwapBatchWriteMetrics> {
+        self.insert_observed_swaps_with_candidates(swaps, &vec![None; swaps.len()])
+    }
+
+    pub fn insert_observed_swaps_with_candidates(
+        &self,
+        swaps: &[SwapEvent],
+        candidates: &[Option<crate::SourceSellCandidate>],
+    ) -> Result<ObservedSwapBatchWriteMetrics> {
+        anyhow::ensure!(
+            swaps.len() == candidates.len(),
+            "observed candidate count mismatch"
+        );
+        let modern = crate::source_sell_handoff_schema::available(&self.conn)?;
+        anyhow::ensure!(
+            modern || candidates.iter().all(Option::is_none),
+            "source SELL handoff requires migration 0065"
+        );
         if swaps.is_empty() {
             return Ok(ObservedSwapBatchWriteMetrics {
                 inserted: Vec::new(),
@@ -42,6 +56,7 @@ impl SqliteDiscoveryStore {
 
         self.ensure_observed_swap_writer_tables()?;
         self.with_immediate_transaction_retry("observed swap batch write", |conn| {
+            crate::source_sell_handoff_schema::available(conn)?;
             let observed_swaps_insert_started = Instant::now();
             let mut stmt = conn
                 .prepare_cached(
@@ -65,7 +80,12 @@ impl SqliteDiscoveryStore {
 
             let mut inserted = Vec::with_capacity(swaps.len());
             let mut activity_dedup = HashMap::<(String, NaiveDate), DateTime<Utc>>::new();
-            for swap in swaps {
+            for (swap, candidate) in swaps.iter().zip(candidates) {
+                let new_handoff = if let Some(candidate) = candidate {
+                    crate::source_sell_handoff::prepare_candidate(conn, swap, candidate)?
+                } else {
+                    false
+                };
                 let changed = stmt
                     .execute(params![
                         &swap.signature,
@@ -92,6 +112,10 @@ impl SqliteDiscoveryStore {
                     ])
                     .context("failed to insert observed swap in batch write")?;
                 let was_inserted = changed > 0;
+                anyhow::ensure!(
+                    !new_handoff || was_inserted,
+                    "new handoff canonical INSERT was refused"
+                );
                 inserted.push(was_inserted);
                 if was_inserted {
                     activity_dedup
@@ -134,21 +158,9 @@ impl SqliteDiscoveryStore {
         cutoff: DateTime<Utc>,
         batch_size: usize,
     ) -> Result<usize> {
-        ensure_observed_swaps_timestamps_canonical_utc_read_only(&self.conn)?;
-        let cutoff_ts = cutoff.to_rfc3339();
         let batch_limit = batch_size.max(1).min(i64::MAX as usize) as i64;
-        self.execute_with_retry(|conn| {
-            conn.execute(
-                "DELETE FROM observed_swaps
-                 WHERE rowid IN (
-                     SELECT rowid
-                     FROM observed_swaps
-                     WHERE ts < ?1
-                     ORDER BY ts ASC, slot ASC, signature ASC
-                     LIMIT ?2
-                 )",
-                params![&cutoff_ts, batch_limit],
-            )
+        self.with_immediate_transaction_retry("observed swap retention", |conn| {
+            crate::observed_retention::delete_before_batch(conn, cutoff, batch_limit, None)
         })
         .context("failed to delete observed swap retention slice")
     }

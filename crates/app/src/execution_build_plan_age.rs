@@ -2,8 +2,9 @@ use crate::execution_submit_adapter::ExecutionBuildPlanMetadata;
 use chrono::Utc;
 
 pub(crate) fn quote_age_ms_at_build(metadata: &ExecutionBuildPlanMetadata) -> Option<i64> {
-    let request_ts = metadata.quote_request_ts?;
-    Some((Utc::now() - request_ts).num_milliseconds().max(0))
+    let request_ts = metadata.http_request_started_ts?;
+    let now = Utc::now();
+    (request_ts <= now).then(|| (now - request_ts).num_milliseconds())
 }
 
 pub(crate) fn quote_age_ms_summary_field(metadata: &ExecutionBuildPlanMetadata) -> String {

@@ -35,6 +35,7 @@ pub(crate) async fn run_yellowstone_probe(
     started: Instant,
 ) -> Result<ProbeReport> {
     let mut report = ProbeReport {
+        capture: None,
         probe_mode: config.mode.as_str().to_string(),
         config_loaded: true,
         endpoint_host_redacted: Some(redacted_endpoint_host(&config.grpc_url)),

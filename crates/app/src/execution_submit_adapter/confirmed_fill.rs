@@ -71,6 +71,7 @@ pub(crate) fn record_confirmed_fill_accounting_and_status(
     store: &SqliteStore,
     fill: ExecutionConfirmedFill,
     confirmed_at: DateTime<Utc>,
+    actual_lamports: Option<copybot_core_types::Lamports>,
 ) -> Result<(
     copybot_storage_core::ExecutionCanaryOrder,
     ExecutionConfirmedFillAccountingOutcome,
@@ -85,6 +86,7 @@ pub(crate) fn record_confirmed_fill_accounting_and_status(
                 fill.cost_sol,
                 fill.fill_ts,
                 confirmed_at,
+                actual_lamports,
             )?;
             Ok((
                 order,
@@ -110,6 +112,7 @@ pub(crate) fn record_confirmed_fill_accounting_and_status(
                 fill.dust_qty_epsilon,
                 fill.fill_ts,
                 confirmed_at,
+                actual_lamports,
             )?;
             Ok((order, sell_fill_accounting_outcome(result)))
         }

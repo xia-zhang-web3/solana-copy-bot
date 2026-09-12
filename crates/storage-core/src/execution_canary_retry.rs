@@ -1,6 +1,7 @@
+#[path = "execution_stale_sell_retry.rs"]
+mod stale_sell;
 use crate::{
     ExecutionCanaryConfirmTimeoutDecision, ExecutionCanaryOrder, SqliteDiscoveryStore,
-    EXECUTION_CANARY_CONFIRM_DECISION_EXPIRE_UNSAFE,
     EXECUTION_CANARY_CONFIRM_DECISION_NOT_SUBMITTED, EXECUTION_CANARY_CONFIRM_DECISION_RETRY,
     EXECUTION_CANARY_CONFIRM_DECISION_WAIT, EXECUTION_ERROR_BUILD_FAILED,
     EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_SIMULATION_STATUS_NOT_RUN,
@@ -73,6 +74,19 @@ impl SqliteDiscoveryStore {
             .ok_or_else(|| anyhow!("missing execution canary order {order_id}"))?;
         let elapsed = elapsed_since_submit(now, order.submit_ts);
         let timeout_seconds = timeout.num_seconds();
+        if matches!(
+            order.status.as_str(),
+            crate::EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED
+                | crate::EXECUTION_STATUS_CANARY_CONFIRMED
+        ) {
+            return Ok(confirm_decision(
+                EXECUTION_CANARY_CONFIRM_DECISION_WAIT,
+                "network_confirmed_receipt_reconciliation_only",
+                order,
+                elapsed.num_seconds(),
+                timeout_seconds,
+            ));
+        }
         if order.status != EXECUTION_STATUS_CANARY_SUBMITTED {
             return Ok(confirm_decision(
                 EXECUTION_CANARY_CONFIRM_DECISION_NOT_SUBMITTED,
@@ -91,22 +105,17 @@ impl SqliteDiscoveryStore {
                 timeout_seconds,
             ));
         }
-        if order
-            .tx_signature
-            .as_deref()
-            .is_some_and(|signature| !signature.trim().is_empty())
-        {
-            return Ok(confirm_decision(
-                EXECUTION_CANARY_CONFIRM_DECISION_EXPIRE_UNSAFE,
-                "tx_signature_present_retry_unsafe",
-                order,
-                elapsed.num_seconds(),
-                timeout_seconds,
-            ));
-        }
         Ok(confirm_decision(
-            EXECUTION_CANARY_CONFIRM_DECISION_RETRY,
-            "no_tx_signature_retry_safe",
+            EXECUTION_CANARY_CONFIRM_DECISION_WAIT,
+            if order
+                .tx_signature
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+            {
+                "known_signature_outcome_unknown"
+            } else {
+                "legacy_unsigned_submit_outcome_unknown"
+            },
             order,
             elapsed.num_seconds(),
             timeout_seconds,

@@ -37,6 +37,31 @@ pub(crate) async fn close_stale_shadow_lots(
     quote_pricer: Option<&StaleCloseQuotePricer>,
     now: DateTime<Utc>,
 ) -> Result<StaleLotCleanupStats> {
+    close_stale_shadow_lots_with_recovery(
+        store,
+        open_shadow_lots,
+        max_hold_hours,
+        terminal_zero_price_hours,
+        recovery_zero_price_enabled,
+        _materialize_execution_canary_quote_loss,
+        quote_pricer,
+        now,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn close_stale_shadow_lots_with_recovery(
+    store: &SqliteStore,
+    open_shadow_lots: &mut HashSet<(String, String)>,
+    max_hold_hours: u32,
+    terminal_zero_price_hours: u32,
+    recovery_zero_price_enabled: bool,
+    _materialize_execution_canary_quote_loss: bool,
+    quote_pricer: Option<&StaleCloseQuotePricer>,
+    now: DateTime<Utc>,
+    recovery: Option<&crate::association_consumer::shadow_wake::ShadowWake>,
+) -> Result<StaleLotCleanupStats> {
     if max_hold_hours == 0 {
         return Ok(StaleLotCleanupStats::default());
     }
@@ -201,23 +226,29 @@ pub(crate) async fn close_stale_shadow_lots(
         };
 
         let signal_id = format!("stale-close-{}-{}", lot.id, now.timestamp_millis());
-        let close = store
-            .close_shadow_lots_fifo_atomic_exact_with_context(
-                &signal_id,
-                &lot.wallet_id,
-                &lot.token,
-                lot.qty,
-                lot.qty_exact,
-                exit_price_sol,
-                close_context,
-                now,
+        let close_result = store.close_shadow_lots_fifo_atomic_exact_with_recovery(
+            &signal_id,
+            &lot.wallet_id,
+            &lot.token,
+            lot.qty,
+            lot.qty_exact,
+            exit_price_sol,
+            close_context,
+            now,
+            recovery.map(|wake| wake.limits),
+        );
+        // Notify per attempt before propagating errors, not at final Ok(stats).
+        // An earlier committed close remains scheduled if a later price/close
+        // fails. A failed attempt's hint only causes a fresh SQLite work check.
+        if let Some(wake) = recovery {
+            wake.notify();
+        }
+        let close = close_result.with_context(|| {
+            format!(
+                "failed stale close for wallet={} token={} lot_id={}",
+                lot.wallet_id, lot.token, lot.id
             )
-            .with_context(|| {
-                format!(
-                    "failed stale close for wallet={} token={} lot_id={}",
-                    lot.wallet_id, lot.token, lot.id
-                )
-            })?;
+        })?;
 
         if close.closed_qty > STALE_CLOSE_EPS {
             if close_context == SHADOW_CLOSE_CONTEXT_RECOVERY_TERMINAL_ZERO_PRICE {

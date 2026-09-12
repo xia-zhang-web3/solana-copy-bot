@@ -96,7 +96,19 @@ async fn execution_canary_records_hot_observed_buy_quote_before_shadow_join() ->
     let hot_shadow_summary = runner
         .process_recorded_shadow_signal(&store, &signal, now)
         .await?;
-    assert_eq!(hot_shadow_summary.quote_entry_existing, 1);
+    assert_eq!(
+        hot_shadow_summary.skipped_reason,
+        Some("hot_buy_owner_pending")
+    );
+    let pending = store
+        .load_latest_execution_quote_canary_entry_event(&signal.signal_id)?
+        .unwrap();
+    assert_pending_network_decision(&pending, "would_execute")?;
+    store.complete_execution_quote_entry_owner(&pending)?;
+    let resumed = runner
+        .process_recorded_shadow_signal(&store, &signal, now)
+        .await?;
+    assert_eq!(resumed.quote_entry_existing, 1);
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -180,7 +192,7 @@ async fn hot_observed_buy_retries_transient_token_not_tradable() -> Result<()> {
         )?
         .expect("hot observed quote event");
     assert_eq!(event.quote_status, "ok");
-    assert_eq!(event.decision_status.as_deref(), Some("would_execute"));
+    assert_pending_network_decision(&event, "would_execute")?;
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -289,8 +301,12 @@ async fn hot_observed_buy_quote_runs_before_priority_fee_sample() -> Result<()> 
             "shadow:sig-hot-observed-priority-order:leader-wallet:buy:TokenMint",
         )?
         .expect("hot observed quote event");
-    assert_eq!(event.priority_fee_lamports, Some(12_345));
-    assert_eq!(event.decision_status.as_deref(), Some("would_execute"));
+    assert_eq!(event.priority_fee_lamports, None);
+    assert_eq!(
+        crate::execution_priority_fee::tagged_fee(event.priority_fee_json.as_deref())?,
+        crate::execution_priority_fee::PriorityFee::MicroLamportsPerComputeUnit(12_345)
+    );
+    assert_pending_network_decision(&event, "would_execute")?;
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -408,7 +424,7 @@ async fn public_platform_fee_fallback_does_not_mark_quote_executable() -> Result
 
     let primary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let primary_url = format!("http://{}", primary_listener.local_addr()?);
-    let primary_server = tokio::spawn(async move {
+    let mut primary_server = tokio::spawn(async move {
         for _ in 0..4 {
             let (mut socket, _) = primary_listener.accept().await.expect("primary quote");
             let mut buffer = [0_u8; 2048];
@@ -458,10 +474,22 @@ async fn public_platform_fee_fallback_does_not_mark_quote_executable() -> Result
     config.quote_canary_timeout_ms = 1_000;
     let runner = ExecutionCanaryRunner::new(config);
 
-    let summary = runner
-        .process_recorded_shadow_signal(&store, &signal, now)
-        .await?;
-    primary_server.await?;
+    let summary = runner.process_tick(&store, now).await?;
+    match tokio::time::timeout(std::time::Duration::from_secs(2), &mut primary_server).await {
+        Ok(joined) => joined?,
+        Err(error) => {
+            primary_server.abort();
+            assert!(primary_server.await.unwrap_err().is_cancelled());
+            return Err(error.into());
+        }
+    }
+    assert_eq!(
+        runner
+            .process_recorded_shadow_signal(&store, &signal, now)
+            .await?
+            .skipped_reason,
+        Some("hot_buy_owner_pending")
+    );
     let event = store
         .load_latest_execution_quote_canary_entry_event(&signal.signal_id)?
         .expect("quote event should exist");
@@ -469,7 +497,7 @@ async fn public_platform_fee_fallback_does_not_mark_quote_executable() -> Result
     assert_eq!(summary.quote_entry_errors, 1);
     assert_eq!(summary.quote_would_execute, 0);
     assert_eq!(event.quote_status, "error");
-    assert_eq!(event.decision_status.as_deref(), Some("unknown"));
+    assert_pending_network_decision(&event, "unknown")?;
     assert!(event
         .error
         .as_deref()
@@ -477,5 +505,16 @@ async fn public_platform_fee_fallback_does_not_mark_quote_executable() -> Result
         .contains("TOKEN_NOT_TRADABLE"));
 
     let _ = std::fs::remove_file(db_path);
+    Ok(())
+}
+
+fn assert_pending_network_decision(
+    event: &copybot_storage_core::ExecutionQuoteCanaryEventInsert,
+    expected: &str,
+) -> Result<()> {
+    assert_eq!(event.decision_status.as_deref(), Some("owner_pending"));
+    let (status, _): (Option<String>, Option<String>) =
+        serde_json::from_str(event.decision_reason.as_deref().unwrap())?;
+    assert_eq!(status.as_deref(), Some(expected));
     Ok(())
 }

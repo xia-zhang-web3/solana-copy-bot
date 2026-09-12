@@ -64,7 +64,7 @@ pub(in crate::observed_swap_writer) fn observed_swap_writer_loop(
         };
         let batch =
             collect_observed_swap_write_batch(first_request, &mut receiver, config.batch_max_size);
-        let (swaps, replies, queued_at) = unpack_observed_swap_write_batch(batch);
+        let (swaps, candidates, replies, queued_at) = unpack_observed_swap_write_batch(batch);
 
         if let Some(message) = load_terminal_failure_message(&terminal_failure_message) {
             send_observed_swap_write_error_replies(replies, &message);
@@ -87,7 +87,7 @@ pub(in crate::observed_swap_writer) fn observed_swap_writer_loop(
             }
 
             let raw_batch_started = Instant::now();
-            match store.insert_observed_swaps_batch_with_activity_days_measured(&swaps) {
+            match store.insert_observed_swaps_with_candidates(&swaps, &candidates) {
                 Ok(batch_metrics) => {
                     telemetry
                         .note_raw_batch_completed(elapsed_ms_ceil(raw_batch_started.elapsed()));

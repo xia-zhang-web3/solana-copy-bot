@@ -25,7 +25,10 @@ impl ExecutionQuoteCanaryRunner {
                 since,
                 batch_limit,
             )
-            .context("failed loading execution quote canary priority fee retry candidates")?;
+            .context("failed loading execution quote canary priority fee retry candidates")?
+            .into_iter()
+            .filter(|s| !self.entry_pending(&s.signal_id))
+            .collect::<Vec<_>>();
         summary.entry_candidates += signals.len();
         if signals.is_empty() {
             return Ok(());
@@ -144,31 +147,33 @@ impl ExecutionQuoteCanaryRunner {
         Ok(())
     }
 
-    fn mark_event_priority_fee_ok(
+    pub(super) fn mark_event_priority_fee_ok(
         &self,
         store: &SqliteStore,
         event: &mut ExecutionQuoteCanaryEventInsert,
         priority: &PriorityFeeSample,
     ) -> Result<()> {
-        let Some(lamports) = priority.lamports else {
-            return Ok(());
-        };
         store.mark_execution_quote_canary_priority_fee_ok(
             &event.event_id,
-            lamports,
+            priority.lamports,
             priority.json.as_deref(),
         )?;
         event.priority_fee_status = Some(QUOTE_STATUS_OK.to_string());
-        event.priority_fee_lamports = Some(lamports);
+        event.priority_fee_lamports = priority.lamports;
         event.priority_fee_json = priority.json.clone();
         event.error = None;
         Ok(())
     }
 }
 
-fn entry_event_needs_priority_fee_retry(event: &ExecutionQuoteCanaryEventInsert) -> bool {
-    event.quote_status == QUOTE_STATUS_OK
-        && (event.priority_fee_lamports.is_none()
+pub(super) fn entry_event_needs_priority_fee_retry(
+    event: &ExecutionQuoteCanaryEventInsert,
+) -> bool {
+    !copybot_storage_core::execution_quote_entry_is_closed(event)
+        && event.quote_status == QUOTE_STATUS_OK
+        && ((event.priority_fee_lamports.is_none()
+            && crate::execution_priority_fee::tagged_fee(event.priority_fee_json.as_deref())
+                .is_err())
             || event.priority_fee_status.as_deref() != Some(QUOTE_STATUS_OK))
 }
 
@@ -179,10 +184,13 @@ fn close_event_needs_priority_fee_retry(event: &ExecutionQuoteCanaryEventInsert)
             event.decision_status.as_deref(),
             Some(DECISION_WOULD_EXECUTE | DECISION_WOULD_FORCE_EXIT)
         )
-        && (event.priority_fee_lamports.is_none()
+        && ((event.priority_fee_lamports.is_none()
+            && crate::execution_priority_fee::tagged_fee(event.priority_fee_json.as_deref())
+                .is_err())
             || event.priority_fee_status.as_deref() != Some(QUOTE_STATUS_OK))
 }
 
-fn priority_fee_sample_is_usable(sample: &PriorityFeeSample) -> bool {
-    sample.status == QUOTE_STATUS_OK && sample.lamports.is_some()
+pub(super) fn priority_fee_sample_is_usable(sample: &PriorityFeeSample) -> bool {
+    sample.status == QUOTE_STATUS_OK
+        && crate::execution_priority_fee::tagged_fee(sample.json.as_deref()).is_ok()
 }

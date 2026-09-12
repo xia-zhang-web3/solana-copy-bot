@@ -1,6 +1,6 @@
 use crate::execution_quote_canary_helpers::{
-    priority_fee_lamports, short_error, truncate_for_log, PriorityFeeSample, QUOTE_STATUS_ERROR,
-    QUOTE_STATUS_OK, QUOTE_STATUS_SKIPPED,
+    short_error, truncate_for_log, PriorityFeeSample, QUOTE_STATUS_ERROR, QUOTE_STATUS_OK,
+    QUOTE_STATUS_SKIPPED,
 };
 use anyhow::{anyhow, Context, Result};
 use copybot_config::ExecutionConfig;
@@ -150,10 +150,11 @@ impl PriorityFeeSampler {
             return Err(anyhow!("priority fee canary RPC error: {error}"));
         }
         let result = value.get("result").unwrap_or(&value);
+        let (_, tagged_json) = crate::execution_priority_fee::sample_quicknode_fee(result)?;
         Ok(PriorityFeeSample {
             status: QUOTE_STATUS_OK.to_string(),
-            lamports: priority_fee_lamports(result),
-            json: Some(result.to_string()),
+            lamports: None,
+            json: Some(tagged_json),
             error: None,
         })
     }

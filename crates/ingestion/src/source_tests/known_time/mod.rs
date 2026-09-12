@@ -1,0 +1,378 @@
+use super::{config, fixtures as inventory, parse, SwapParser, PROVIDERS, PUMP, RAY, SOL};
+use crate::source::{yellowstone, YellowstoneGrpcSource, YellowstoneParsedUpdate};
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use prost::Message;
+use serde_json::{json, Value};
+
+mod controls;
+mod fixtures;
+mod http;
+mod provider;
+
+fn refused(sell: bool, native: bool, kind: usize, provider: &str) -> Result<()> {
+    let f = fixtures::base(sell, native, &format!("b51-bad-{sell}-{native}-{kind}"));
+    let healthy = provider::capture(&f, &f, provider, "healthy")?;
+    controls::assert_fields(&f, &healthy["event"], sell, native, provider);
+    let damaged = fixtures::damaged(&f, provider, kind);
+    let mutated = provider::capture(&f, &damaged, provider, "mutated")?;
+    let restored = fixtures::restore(&damaged, &f, provider);
+    let restored = provider::capture(&f, &restored, provider, "restored")?;
+    assert_eq!(healthy["event"], restored["event"]);
+    // Last assertion deliberately preserves both causal controls even in the RED run.
+    assert_eq!(
+        mutated["raw_present"], false,
+        "unknown time produced {}",
+        mutated["event"]
+    );
+    assert!(mutated["event"].is_null());
+    Ok(())
+}
+
+macro_rules! refusal {
+    ($name:ident, $sell:literal, $native:literal, $kind:literal, $provider:literal) => {
+        #[test]
+        fn $name() -> Result<()> {
+            refused($sell, $native, $kind, $provider)
+        }
+    };
+}
+refusal!(
+    refuse_buy_wsol_yellowstone_0,
+    false,
+    false,
+    0,
+    "yellowstone"
+);
+refusal!(
+    refuse_buy_wsol_yellowstone_1,
+    false,
+    false,
+    1,
+    "yellowstone"
+);
+refusal!(
+    refuse_buy_wsol_yellowstone_2,
+    false,
+    false,
+    2,
+    "yellowstone"
+);
+refusal!(
+    refuse_buy_wsol_yellowstone_3,
+    false,
+    false,
+    3,
+    "yellowstone"
+);
+refusal!(
+    refuse_buy_wsol_rpc_backfill_0,
+    false,
+    false,
+    0,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_buy_wsol_rpc_backfill_1,
+    false,
+    false,
+    1,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_buy_wsol_rpc_backfill_2,
+    false,
+    false,
+    2,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_buy_wsol_rpc_backfill_3,
+    false,
+    false,
+    3,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_buy_wsol_helius_fetch_0,
+    false,
+    false,
+    0,
+    "helius_fetch"
+);
+refusal!(
+    refuse_buy_wsol_helius_fetch_1,
+    false,
+    false,
+    1,
+    "helius_fetch"
+);
+refusal!(
+    refuse_buy_wsol_helius_fetch_2,
+    false,
+    false,
+    2,
+    "helius_fetch"
+);
+refusal!(
+    refuse_buy_wsol_helius_fetch_3,
+    false,
+    false,
+    3,
+    "helius_fetch"
+);
+refusal!(
+    refuse_buy_native_yellowstone_0,
+    false,
+    true,
+    0,
+    "yellowstone"
+);
+refusal!(
+    refuse_buy_native_yellowstone_1,
+    false,
+    true,
+    1,
+    "yellowstone"
+);
+refusal!(
+    refuse_buy_native_yellowstone_2,
+    false,
+    true,
+    2,
+    "yellowstone"
+);
+refusal!(
+    refuse_buy_native_yellowstone_3,
+    false,
+    true,
+    3,
+    "yellowstone"
+);
+refusal!(
+    refuse_buy_native_rpc_backfill_0,
+    false,
+    true,
+    0,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_buy_native_rpc_backfill_1,
+    false,
+    true,
+    1,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_buy_native_rpc_backfill_2,
+    false,
+    true,
+    2,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_buy_native_rpc_backfill_3,
+    false,
+    true,
+    3,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_buy_native_helius_fetch_0,
+    false,
+    true,
+    0,
+    "helius_fetch"
+);
+refusal!(
+    refuse_buy_native_helius_fetch_1,
+    false,
+    true,
+    1,
+    "helius_fetch"
+);
+refusal!(
+    refuse_buy_native_helius_fetch_2,
+    false,
+    true,
+    2,
+    "helius_fetch"
+);
+refusal!(
+    refuse_buy_native_helius_fetch_3,
+    false,
+    true,
+    3,
+    "helius_fetch"
+);
+refusal!(
+    refuse_sell_wsol_yellowstone_0,
+    true,
+    false,
+    0,
+    "yellowstone"
+);
+refusal!(
+    refuse_sell_wsol_yellowstone_1,
+    true,
+    false,
+    1,
+    "yellowstone"
+);
+refusal!(
+    refuse_sell_wsol_yellowstone_2,
+    true,
+    false,
+    2,
+    "yellowstone"
+);
+refusal!(
+    refuse_sell_wsol_yellowstone_3,
+    true,
+    false,
+    3,
+    "yellowstone"
+);
+refusal!(
+    refuse_sell_wsol_rpc_backfill_0,
+    true,
+    false,
+    0,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_sell_wsol_rpc_backfill_1,
+    true,
+    false,
+    1,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_sell_wsol_rpc_backfill_2,
+    true,
+    false,
+    2,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_sell_wsol_rpc_backfill_3,
+    true,
+    false,
+    3,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_sell_wsol_helius_fetch_0,
+    true,
+    false,
+    0,
+    "helius_fetch"
+);
+refusal!(
+    refuse_sell_wsol_helius_fetch_1,
+    true,
+    false,
+    1,
+    "helius_fetch"
+);
+refusal!(
+    refuse_sell_wsol_helius_fetch_2,
+    true,
+    false,
+    2,
+    "helius_fetch"
+);
+refusal!(
+    refuse_sell_wsol_helius_fetch_3,
+    true,
+    false,
+    3,
+    "helius_fetch"
+);
+refusal!(
+    refuse_sell_native_yellowstone_0,
+    true,
+    true,
+    0,
+    "yellowstone"
+);
+refusal!(
+    refuse_sell_native_yellowstone_1,
+    true,
+    true,
+    1,
+    "yellowstone"
+);
+refusal!(
+    refuse_sell_native_yellowstone_2,
+    true,
+    true,
+    2,
+    "yellowstone"
+);
+refusal!(
+    refuse_sell_native_yellowstone_3,
+    true,
+    true,
+    3,
+    "yellowstone"
+);
+refusal!(
+    refuse_sell_native_rpc_backfill_0,
+    true,
+    true,
+    0,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_sell_native_rpc_backfill_1,
+    true,
+    true,
+    1,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_sell_native_rpc_backfill_2,
+    true,
+    true,
+    2,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_sell_native_rpc_backfill_3,
+    true,
+    true,
+    3,
+    "rpc_backfill"
+);
+refusal!(
+    refuse_sell_native_helius_fetch_0,
+    true,
+    true,
+    0,
+    "helius_fetch"
+);
+refusal!(
+    refuse_sell_native_helius_fetch_1,
+    true,
+    true,
+    1,
+    "helius_fetch"
+);
+refusal!(
+    refuse_sell_native_helius_fetch_2,
+    true,
+    true,
+    2,
+    "helius_fetch"
+);
+refusal!(
+    refuse_sell_native_helius_fetch_3,
+    true,
+    true,
+    3,
+    "helius_fetch"
+);
+
+#[path = "../facts_time/mod.rs"]
+mod facts_time;

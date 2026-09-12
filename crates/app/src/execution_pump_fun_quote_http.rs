@@ -1,10 +1,11 @@
 use crate::execution_quote_canary_helpers::{
-    elapsed_ms, numeric_field, string_field, truncate_for_log, QuoteSample,
+    numeric_field, string_field, truncate_for_log, QuoteSample,
 };
+use crate::execution_quote_timing::{complete_attempt, QuoteAttemptClock, QuoteAttemptResult};
 use anyhow::{anyhow, Context, Result};
 use copybot_config::ExecutionConfig;
 use serde_json::{json, Value};
-use std::time::{Duration as StdDuration, Instant};
+use std::time::Duration as StdDuration;
 
 pub(crate) async fn fetch_pump_fun_quote_sample(
     http: &reqwest::Client,
@@ -12,43 +13,52 @@ pub(crate) async fn fetch_pump_fun_quote_sample(
     side: &str,
     mint: &str,
     amount_raw: &str,
-) -> Result<QuoteSample> {
-    let url = pump_fun_quote_url(&config.quote_canary_base_url)?;
-    let timeout = StdDuration::from_millis(config.quote_canary_timeout_ms.max(1));
-    let side = side.to_ascii_uppercase();
-    let started = Instant::now();
-    let mut request = http
-        .get(url)
-        .query(&[
-            ("mint", mint),
-            ("type", side.as_str()),
-            ("amount", amount_raw),
-        ])
-        .timeout(timeout);
-    let api_key = config.quote_canary_api_key.trim();
-    if !api_key.is_empty() {
-        request = request.header("x-api-key", api_key);
+) -> QuoteAttemptResult {
+    let mut clock = None;
+    let result = async {
+        let url = pump_fun_quote_url(&config.quote_canary_base_url)?;
+        let timeout = StdDuration::from_millis(config.quote_canary_timeout_ms.max(1));
+        let side = side.to_ascii_uppercase();
+        let mut request = http
+            .get(url)
+            .query(&[
+                ("mint", mint),
+                ("type", side.as_str()),
+                ("amount", amount_raw),
+            ])
+            .timeout(timeout);
+        let api_key = config.quote_canary_api_key.trim();
+        if !api_key.is_empty() {
+            request = request.header("x-api-key", api_key);
+        }
+        let request = request
+            .build()
+            .context("pump.fun paid quote request failed")?;
+        clock = Some(QuoteAttemptClock::start());
+        let response = http
+            .execute(request)
+            .await
+            .context("pump.fun paid quote request failed")?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "pump.fun paid quote returned HTTP {status}: {}",
+                truncate_for_log(&body, 240)
+            ));
+        }
+        let value = response
+            .json()
+            .await
+            .context("pump.fun paid quote response JSON decode failed")?;
+        pump_fun_quote_sample_from_json(value)
+            .map(crate::execution_quote_timing::response_available)
     }
-    let response = request
-        .send()
-        .await
-        .context("pump.fun paid quote request failed")?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!(
-            "pump.fun paid quote returned HTTP {status}: {}",
-            truncate_for_log(&body, 240)
-        ));
-    }
-    let value = response
-        .json()
-        .await
-        .context("pump.fun paid quote response JSON decode failed")?;
-    pump_fun_quote_sample_from_json(value, started)
+    .await;
+    complete_attempt(result, clock)
 }
 
-fn pump_fun_quote_sample_from_json(value: Value, started: Instant) -> Result<QuoteSample> {
+fn pump_fun_quote_sample_from_json(value: Value) -> Result<QuoteSample> {
     let quote = value
         .get("quote")
         .ok_or_else(|| anyhow!("pump.fun paid quote response missing quote"))?;
@@ -64,7 +74,9 @@ fn pump_fun_quote_sample_from_json(value: Value, started: Instant) -> Result<Quo
         route_plan_json: Some(pump_fun_paid_route_plan_json()),
         in_decimals: decimal_field(quote.pointer("/meta/inDecimals")),
         out_decimals: decimal_field(quote.pointer("/meta/outDecimals")),
-        latency_ms: elapsed_ms(started),
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
+        latency_ms: 0,
     })
 }
 

@@ -1,3 +1,4 @@
+use super::receipt_legacy_fixture::{answer_receipt, confirmed_slot};
 use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -24,7 +25,6 @@ async fn rpc_confirmation_boundary_pending_keeps_buy_unfilled() -> Result<()> {
             &rpc_url,
             &order_id,
             "DryRunWallet11111111111111111111111111111111",
-            boundary_buy_fill(&order_id, now + chrono::Duration::seconds(8)),
             now + chrono::Duration::seconds(7),
             1_000,
         )
@@ -71,7 +71,6 @@ async fn rpc_confirmation_boundary_confirmed_buy_opens_fill() -> Result<()> {
         &rpc_url,
         &order_id,
         "DryRunWallet11111111111111111111111111111111",
-        boundary_buy_fill(&order_id, now + chrono::Duration::seconds(8)),
         now + chrono::Duration::seconds(7),
         1_000,
     )
@@ -118,6 +117,8 @@ async fn rpc_confirmation_boundary_confirmed_sell_closes_confirmed_position() ->
         "tx-sell",
         now + chrono::Duration::minutes(1),
     )?;
+    // Prepared known inventory; actual receipt BUY initialization is tested separately.
+    rusqlite::Connection::open(&db_path)?.execute("UPDATE positions SET pnl_lamports=0", [])?;
     let rpc_url = serve_rpc_boundary_response(
         "tx-sell",
         r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":777,"confirmations":null,"err":null,"confirmationStatus":"confirmed"}]}}"#,
@@ -130,10 +131,6 @@ async fn rpc_confirmation_boundary_confirmed_sell_closes_confirmed_position() ->
         &rpc_url,
         &sell_order_id,
         "DryRunWallet11111111111111111111111111111111",
-        boundary_sell_fill(
-            &sell_order_id,
-            now + chrono::Duration::minutes(1) + chrono::Duration::seconds(8),
-        ),
         now + chrono::Duration::minutes(1) + chrono::Duration::seconds(7),
         1_000,
     )
@@ -144,7 +141,11 @@ async fn rpc_confirmation_boundary_confirmed_sell_closes_confirmed_position() ->
     assert_eq!(outcome.sell_closed, 1);
     assert_eq!(outcome.sell_no_position, 0);
     assert_eq!(outcome.closed_qty, 10.0);
-    assert!((outcome.pnl_sol - 0.2).abs() < 1e-9);
+    assert_eq!(outcome.pnl_sol, None);
+    assert_eq!(
+        outcome.cash_settlement.unwrap().cash_result_delta.as_i128(),
+        200_000_000
+    );
     assert!(store
         .load_execution_canary_open_position("TokenMint")?
         .is_none());
@@ -165,7 +166,7 @@ async fn rpc_confirmation_boundary_transaction_error_fails_order_without_fill() 
     let order_id = submitted_rpc_boundary_order(&store, "tx-error", "buy", "tx-error", now)?;
     let rpc_url = serve_rpc_boundary_response(
         "tx-error",
-        r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":700,"confirmations":null,"err":{"InstructionError":[0,"Custom"]},"confirmationStatus":"finalized"}]}}"#,
+        r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":700,"confirmations":null,"err":{"InstructionError":[0,{"Custom":7}]},"confirmationStatus":"finalized"}]}}"#,
     )
     .await?;
 
@@ -175,7 +176,6 @@ async fn rpc_confirmation_boundary_transaction_error_fails_order_without_fill() 
         &rpc_url,
         &order_id,
         "DryRunWallet11111111111111111111111111111111",
-        boundary_buy_fill(&order_id, now + chrono::Duration::seconds(8)),
         now + chrono::Duration::seconds(7),
         1_000,
     )
@@ -278,6 +278,7 @@ async fn tiny_submit_reconciliation_confirmed_sell_is_idempotent() -> Result<()>
         0.8,
         now,
     )?;
+    super::receipt_legacy_fixture::prepared_inventory_zero(&db_path)?;
     let order_id = submitted_rpc_boundary_order(
         &store,
         "reconcile-sell",
@@ -346,6 +347,27 @@ async fn serve_rpc_boundary_response(expected_signature: &str, body: &str) -> Re
             .write_all(response.as_bytes())
             .await
             .expect("write response");
+        drop(socket);
+        if let Some(slot) = confirmed_slot(&body) {
+            let side = if expected_signature.contains("sell") {
+                "sell"
+            } else {
+                "buy"
+            };
+            answer_receipt(
+                &listener,
+                "DryRunWallet11111111111111111111111111111111",
+                &expected_signature,
+                side,
+                slot,
+                if side == "buy" {
+                    -1_000_000_000
+                } else {
+                    1_200_000_000
+                },
+            )
+            .await;
+        }
     });
     Ok(rpc_url)
 }
@@ -361,6 +383,8 @@ fn record_rpc_boundary_build_metadata(
         .expect("order should exist");
     store.record_execution_canary_build_plan_metadata(
         &copybot_storage_core::ExecutionCanaryBuildPlanMetadata {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             order_id: order.order_id,
             signal_id: order.signal_id,
             client_order_id: order.client_order_id,
@@ -380,7 +404,7 @@ fn record_rpc_boundary_build_metadata(
             priority_fee_source: Some("test".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(10_000),
-            priority_fee_json: Some("{\"recommended\":10000}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(10_000)),
             slippage_bps: Some(10.0),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
@@ -435,23 +459,6 @@ fn boundary_buy_fill(
             qty: 10.0,
             qty_exact: Some(copybot_core_types::TokenQuantity::new(10_000, 3)),
             cost_sol: 1.0,
-            fill_ts,
-        },
-    )
-}
-
-fn boundary_sell_fill(
-    order_id: &str,
-    fill_ts: chrono::DateTime<Utc>,
-) -> crate::execution_submit_adapter::ExecutionConfirmedFill {
-    crate::execution_submit_adapter::ExecutionConfirmedFill::Sell(
-        crate::execution_submit_adapter::ExecutionConfirmedSellFill {
-            order_id: order_id.to_string(),
-            token: "TokenMint".to_string(),
-            target_qty: 10.0,
-            target_qty_exact: Some(copybot_core_types::TokenQuantity::new(10_000, 3)),
-            exit_price_sol: 0.12,
-            dust_qty_epsilon: 0.001,
             fill_ts,
         },
     )

@@ -331,6 +331,7 @@
                 &mut recent_signature_order,
                 &mut app_consumer_loop_telemetry,
                 StdInstant::now(),
+                None,
             )
             .await?;
 

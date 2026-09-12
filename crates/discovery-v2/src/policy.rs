@@ -43,6 +43,11 @@ impl DiscoveryV2BuildOptions {
         self
     }
 
+    pub fn checked_window_start(&self) -> Option<DateTime<Utc>> {
+        let minutes = i64::try_from(self.window_minutes).ok().filter(|n| *n > 0)?;
+        self.now.checked_sub_signed(Duration::try_minutes(minutes)?)
+    }
+
     pub fn window_start(&self) -> DateTime<Utc> {
         self.now - Duration::minutes(self.window_minutes.min(i64::MAX as u64) as i64)
     }

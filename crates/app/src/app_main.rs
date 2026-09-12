@@ -141,7 +141,7 @@ pub(crate) async fn run() -> Result<()> {
         "startup_runtime_service_init",
         Some(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
         || {
-            let ingestion = IngestionService::build(&config.ingestion)
+            let ingestion = IngestionService::build_for_app(&config)
                 .context("failed to initialize ingestion service")?;
             let discovery_http_url = select_role_helius_http_url(
                 &config.discovery.helius_http_url,

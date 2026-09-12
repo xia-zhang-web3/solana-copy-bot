@@ -433,6 +433,7 @@ impl SqliteDiscoveryStore {
     }
 
     pub fn insert_observed_swap(&self, swap: &SwapEvent) -> Result<bool> {
+        crate::source_sell_handoff_schema::available(&self.conn)?;
         let in_raw = swap
             .exact_amounts
             .as_ref()
@@ -451,27 +452,30 @@ impl SqliteDiscoveryStore {
             .map(|value| i64::from(value.amount_out_decimals));
         let slot = swap.slot as i64;
         let ts = swap.ts_utc.to_rfc3339();
-        let changed = self.conn.execute(
-            "INSERT OR IGNORE INTO observed_swaps(
+        let changed = self.with_immediate_transaction_retry("observed handoff write", |conn| {
+            crate::source_sell_handoff_schema::available(conn)?;
+            Ok(conn.execute(
+                "INSERT OR IGNORE INTO observed_swaps(
                 signature, wallet_id, dex, token_in, token_out, qty_in, qty_out,
                 qty_in_raw, qty_in_decimals, qty_out_raw, qty_out_decimals, slot, ts
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![
-                &swap.signature,
-                &swap.wallet,
-                &swap.dex,
-                &swap.token_in,
-                &swap.token_out,
-                swap.amount_in,
-                swap.amount_out,
-                in_raw,
-                in_decimals,
-                out_raw,
-                out_decimals,
-                slot,
-                ts,
-            ],
-        )?;
+                params![
+                    &swap.signature,
+                    &swap.wallet,
+                    &swap.dex,
+                    &swap.token_in,
+                    &swap.token_out,
+                    swap.amount_in,
+                    swap.amount_out,
+                    in_raw,
+                    in_decimals,
+                    out_raw,
+                    out_decimals,
+                    slot,
+                    ts,
+                ],
+            )?)
+        })?;
         Ok(changed > 0)
     }
 

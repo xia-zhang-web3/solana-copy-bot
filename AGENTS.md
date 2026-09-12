@@ -34,6 +34,43 @@ Read that ledger before reopening strategy ideas, filters, exit policies, or
 green-criterion debates. It records tested hypotheses, negative results,
 active diagnostics, and what must not be re-litigated without new evidence.
 
+The current recovery work and review progress are tracked in
+[`PROJECT_RECOVERY_PLAN.md`](PROJECT_RECOVERY_PLAN.md). Read it before selecting
+the next remediation batch. After each independent review decision, update its
+status, evidence link, remaining limitations, and next action. Local acceptance
+must remain distinct from rollout proof and profitability evidence.
+
+## Progress Toward Trading Is Mandatory
+
+The goal is bounded, verifiable trading readiness, then a measured net-profitability
+decision. The curator must keep work aligned without reminders from the user.
+
+Before assigning a batch, name its trading blocker, why it matters now, observable
+completion criterion, and next action enabled. Defer work lacking that connection.
+Test counts, reports, seals, refactors, and batch numbers are not readiness progress.
+
+No hardening for its own sake or expanded coverage for hypothetical concerns.
+Work must address a concrete failure or unmet agreed acceptance criterion.
+Keep unrelated improvements in the backlog; do not silently raise acceptance bars.
+
+Each audit must answer a specific question affecting implementation, acceptance,
+or rollout, with declared outcomes and a stopping condition. Once answered, act
+on it. Do not issue another audit that only restates the same Unknown or blocker.
+Repeat checks only for changed relevant code, new evidence, or an identified
+failure. Do not reopen unchanged accepted work for further assurance alone.
+
+When a risk budget, horizon, or other user decision blocks progress, prepare
+concrete options, consequences, and a recommendation; request the decision.
+Do not replace that decision with diagnostics or quietly divert to unrelated work.
+Independent work may continue only with a clear link to the agreed objective,
+while keeping the unresolved blocker visible.
+
+After each batch, state the blocker removed or narrowed and the next action
+enabled. If no progress was established, say so and change the approach.
+Local acceptance must lead to the next authorized step, not an endless review.
+These rules never authorize weaker fail-closed behavior, false GREEN, unapproved
+financial limits, deployment, or trading.
+
 ## Non-Negotiable Rules
 
 - Do not weaken fail-closed behavior.
@@ -264,6 +301,7 @@ The coding worker implements one bounded batch.
 Every worker response must include:
 
 - goal
+- blocker advanced and next action enabled, or the explicit remaining blocker
 - files changed
 - build target
 - tests/checks run
@@ -288,6 +326,7 @@ Before accepting a batch:
 6. verify build target is narrow
 7. verify no forbidden dependency creep
 8. verify production rollout need
+9. verify the stated progress criterion and name the next authorized action
 
 Reject for:
 
@@ -301,6 +340,7 @@ Reject for:
 - new operator/report logic in `copybot-app`
 - production-local release build as normal path
 - broad refactor hidden inside a small batch
+- repeated audit or hardening without new evidence or an agreed unmet criterion
 
 ## Commit Rules
 
@@ -352,15 +392,8 @@ Do not use docs to hide missing code enforcement.
 
 ## Current Immediate Priority
 
-Stop adding to monoliths.
-
-Immediate engineering priority:
-
-1. add/enforce architecture guards for file size, inline tests, forbidden app
-   operators, and dependency creep
-2. make operator artifact deployment the default
-3. extract `storage-core` or a tiny V2 SQLite facade
-4. extract Discovery V2 into its own crate
-5. quarantine `copybot-app` and legacy discovery/storage monoliths
-
-No more hour-long production builds as a normal workflow.
+Remove the next concrete trading blocker in `PROJECT_RECOVERY_PLAN.md`, using
+the progress contract above. Keep completed architecture work closed unless
+new evidence justifies reopening it. File-size, dependency, fail-closed, and
+artifact deployment rules remain mandatory constraints on that work.
+No new monoliths, hour-long production builds, or audit loops as normal workflow.

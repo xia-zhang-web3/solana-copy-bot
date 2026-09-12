@@ -58,8 +58,8 @@ fn provider_comparison_reports_paid_vs_generic_delta() -> Result<()> {
     assert_eq!(summary.both_ok_events, 1);
     assert_eq!(summary.pump_fun_better_slippage_events, 1);
     assert_eq!(summary.generic_better_slippage_events, 0);
-    assert_eq!(summary.avg_generic_latency_ms, 120.0);
-    assert_eq!(summary.avg_pump_fun_latency_ms, 80.0);
+    assert_eq!(summary.avg_generic_latency_ms, Some(120.0));
+    assert_eq!(summary.avg_pump_fun_latency_ms, Some(80.0));
     assert_eq!(summary.avg_pump_fun_minus_generic_slippage_bps, -350.0);
     assert_eq!(
         latest.better_provider.as_deref(),
@@ -108,8 +108,8 @@ fn public_paid_comparison_reports_paid_generic_delta() -> Result<()> {
     assert_eq!(summary.both_ok_events, 1);
     assert_eq!(summary.paid_better_slippage_events, 1);
     assert_eq!(summary.public_better_slippage_events, 0);
-    assert_eq!(summary.avg_public_latency_ms, 210.0);
-    assert_eq!(summary.avg_paid_latency_ms, 90.0);
+    assert_eq!(summary.avg_public_latency_ms, Some(210.0));
+    assert_eq!(summary.avg_paid_latency_ms, Some(90.0));
     assert_eq!(summary.avg_paid_minus_public_slippage_bps, -600.0);
     assert_eq!(
         latest.better_provider.as_deref(),
@@ -292,6 +292,8 @@ fn provider_selection_excludes_shadow_diagnostic_events() -> Result<()> {
 
 fn quote_event(request_ts: DateTime<Utc>) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: Some(request_ts),
+        quote_response_available_ts: None,
         event_id: "quote:entry:provider-compare".to_string(),
         signal_id: Some("provider-compare".to_string()),
         shadow_closed_trade_id: None,
@@ -350,6 +352,8 @@ fn provider_sample_with_response(
     error: Option<String>,
 ) -> ExecutionQuoteCanaryProviderSampleInsert {
     ExecutionQuoteCanaryProviderSampleInsert {
+        http_request_started_ts: Some(event.request_ts),
+        quote_response_available_ts: None,
         event_id: event.event_id.clone(),
         provider: provider.to_string(),
         side: event.side.clone(),

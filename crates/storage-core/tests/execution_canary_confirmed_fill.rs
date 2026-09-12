@@ -348,6 +348,7 @@ fn submitted_sell_fill_confirm_closes_position_and_writes_fill_marker() -> Resul
         0.001,
         now + Duration::minutes(1) + Duration::seconds(4),
         now + Duration::minutes(1) + Duration::seconds(5),
+        None,
     )?;
 
     assert_eq!(

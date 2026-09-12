@@ -1,6 +1,5 @@
+use super::receipt_legacy_fixture::answer_receipt;
 use super::*;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -94,10 +93,13 @@ async fn tiny_submit_sweep_replays_retry_ready_simulated_order() -> Result<()> {
     config.swap_instructions_dry_run_enabled = true;
     config.swap_transaction_dry_run_enabled = true;
 
-    let summary = crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
-        &config,
-        &store,
-        now + chrono::Duration::seconds(7),
+    let summary = super::entry_risk_clock_fixture::at(
+        now + chrono::Duration::seconds(8),
+        crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
+            &config,
+            &store,
+            now + chrono::Duration::seconds(7),
+        ),
     )
     .await?
     .expect("second sweep should replay retry-ready order");
@@ -158,10 +160,13 @@ async fn tiny_submit_sweep_replays_rpc_not_sent_retry_ready_order() -> Result<()
     config.swap_instructions_dry_run_enabled = true;
     config.swap_transaction_dry_run_enabled = true;
 
-    let summary = crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
-        &config,
-        &store,
-        now + chrono::Duration::seconds(4),
+    let summary = super::entry_risk_clock_fixture::at(
+        now + chrono::Duration::seconds(5),
+        crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
+            &config,
+            &store,
+            now + chrono::Duration::seconds(4),
+        ),
     )
     .await?
     .expect("sweep should replay rpc-not-sent retry-ready order");
@@ -315,7 +320,7 @@ fn mark_tiny_timeout_submitted_signed(
     Ok(order_id)
 }
 
-fn mark_tiny_timeout_simulated(
+pub(super) fn mark_tiny_timeout_simulated(
     store: &SqliteStore,
     signal: &copybot_core_types::CopySignalRow,
     now: chrono::DateTime<Utc>,
@@ -336,7 +341,7 @@ fn mark_tiny_timeout_simulated(
     Ok(reserve.order.order_id)
 }
 
-fn record_tiny_timeout_build_metadata(
+pub(super) fn record_tiny_timeout_build_metadata(
     store: &SqliteStore,
     order_id: &str,
     signal: &copybot_core_types::CopySignalRow,
@@ -344,6 +349,8 @@ fn record_tiny_timeout_build_metadata(
 ) -> Result<()> {
     store.record_execution_canary_build_plan_metadata(
         &copybot_storage_core::ExecutionCanaryBuildPlanMetadata {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             order_id: order_id.to_string(),
             signal_id: signal.signal_id.clone(),
             client_order_id: format!("copybot:canary:{}", signal.signal_id),
@@ -364,7 +371,7 @@ fn record_tiny_timeout_build_metadata(
             priority_fee_source: Some("test".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some("{\"recommended\":22000}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             slippage_bps: Some(100.0),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
@@ -408,6 +415,7 @@ async fn serve_tiny_retry_build_submit_and_confirm(
     let base_url = format!("http://{}", listener.local_addr()?);
     let tx = tx_signature.to_string();
     let serialized_transaction = serialized_tiny_timeout_transaction(*first_signer);
+    let wallet = bs58::encode(first_signer).into_string();
     let server = tokio::spawn(async move {
         let quote = read_tiny_timeout_http_request(&listener).await;
         assert!(quote.body.starts_with("GET /quote?"));
@@ -446,10 +454,13 @@ async fn serve_tiny_retry_build_submit_and_confirm(
             .contains("\"method\":\"simulateTransaction\""));
         write_tiny_timeout_http_response(
             rpc_simulation.socket,
-            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":null,"logs":[]}}}"#,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"context":{"slot":42},"value":{"err":null,"logs":[]}}}"#,
         )
         .await;
 
+        super::initial_sol_rpc_fixture::serve_three(&listener)
+            .await
+            .expect("BUY funding RPC");
         let submit = read_tiny_timeout_http_request(&listener).await;
         assert!(submit.body.contains("\"method\":\"sendTransaction\""));
         write_tiny_timeout_http_response(
@@ -468,6 +479,7 @@ async fn serve_tiny_retry_build_submit_and_confirm(
             r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":44,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}"#,
         )
         .await;
+        answer_receipt(&listener, &wallet, &tx, "buy", 44, -10_000_000).await;
     });
     Ok((base_url, server))
 }
@@ -480,7 +492,11 @@ struct TinyTimeoutHttpRequest {
 async fn read_tiny_timeout_http_request(
     listener: &tokio::net::TcpListener,
 ) -> TinyTimeoutHttpRequest {
-    let (mut socket, _) = listener.accept().await.expect("tiny timeout HTTP request");
+    let (mut socket, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+            .await
+            .expect("tiny timeout HTTP request deadline")
+            .expect("tiny timeout HTTP request");
     let mut buffer = [0_u8; 16384];
     let read = socket.read(&mut buffer).await.expect("read request");
     TinyTimeoutHttpRequest {
@@ -525,14 +541,7 @@ fn write_tiny_timeout_keypair_file(name: &str, bytes: &[u8]) -> Result<PathBuf> 
 }
 
 fn serialized_tiny_timeout_transaction(first_account_key: [u8; 32]) -> String {
-    let mut transaction = vec![1_u8];
-    transaction.extend_from_slice(&[0_u8; 64]);
-    transaction.extend_from_slice(&[1_u8, 0, 0]);
-    transaction.push(1);
-    transaction.extend_from_slice(&first_account_key);
-    transaction.extend_from_slice(&[9_u8; 32]);
-    transaction.push(0);
-    BASE64_STANDARD.encode(transaction)
+    crate::app_tests::priority_fee_fixture::guarded_transaction(first_account_key, 200_000, 10_000)
 }
 
 fn tiny_timeout_config(rpc_url: &str) -> ExecutionConfig {

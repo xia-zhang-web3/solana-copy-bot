@@ -1,6 +1,4 @@
-use crate::{
-    execution_canary_quote_pnl_compute::QuotePnlAmounts, observed_timestamp::parse_rfc3339_utc,
-};
+use crate::execution_canary_quote_pnl_compute::QuotePnlAmounts;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
@@ -13,6 +11,10 @@ pub(crate) struct QuotePnlRow {
     pub(crate) shadow_pnl_sol: f64,
     pub(crate) opened_ts: DateTime<Utc>,
     pub(crate) closed_ts: DateTime<Utc>,
+    pub(crate) market: bool,
+    pub(crate) allocation: crate::ExecutionQuoteFeeAllocation,
+    pub(crate) entry_attributed: bool,
+    pub(crate) binding_error: Option<&'static str>,
     pub(crate) buy: QuoteEvent,
     pub(crate) sell: QuoteEvent,
 }
@@ -24,15 +26,27 @@ impl QuotePnlRow {
             entry_out_raw: self.buy.quote_out_amount_raw.as_deref(),
             exit_in_raw: self.sell.quote_in_amount_raw.as_deref(),
             exit_out_raw: self.sell.quote_out_amount_raw.as_deref(),
-            buy_priority_fee_lamports: self.buy.priority_fee_lamports,
+            buy_priority_fee_lamports: self
+                .allocation
+                .buy_fee_allocated_lamports
+                .as_deref()
+                .and_then(|v| v.parse().ok()),
             sell_priority_fee_lamports: self.sell.priority_fee_lamports,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct QuoteEvent {
+    pub(crate) http_request_started_ts: Option<DateTime<Utc>>,
     pub(crate) event_id: Option<String>,
+    pub(crate) signal_id: Option<String>,
+    pub(crate) closed_id: Option<i64>,
+    pub(crate) wallet: String,
+    pub(crate) token: String,
+    pub(crate) side: String,
+    pub(crate) signal_ts: Option<DateTime<Utc>>,
+    pub(crate) request_ts: Option<DateTime<Utc>>,
     pub(crate) quote_status: Option<String>,
     pub(crate) decision_delay_ms: Option<u64>,
     pub(crate) quote_latency_ms: Option<u64>,
@@ -46,57 +60,37 @@ pub(crate) struct QuoteEvent {
     pub(crate) leader_notional_sol: Option<f64>,
     pub(crate) decision_status: Option<String>,
     pub(crate) decision_reason: Option<String>,
-    quote_in_amount_raw: Option<String>,
-    quote_out_amount_raw: Option<String>,
-}
-
-pub(crate) fn read_quote_pnl_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<QuotePnlRow> {
-    read_quote_pnl_row_result(row).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                error.to_string(),
-            )),
-        )
-    })
-}
-
-fn read_quote_pnl_row_result(row: &rusqlite::Row<'_>) -> Result<QuotePnlRow> {
-    let opened_ts_raw: String = row.get(8).context("failed reading opened_ts")?;
-    let closed_ts_raw: String = row.get(9).context("failed reading closed_ts")?;
-    Ok(QuotePnlRow {
-        id: row.get(0).context("failed reading closed id")?,
-        signal_id: row.get(1).context("failed reading signal_id")?,
-        wallet_id: row.get(2).context("failed reading wallet_id")?,
-        token: row.get(3).context("failed reading token")?,
-        shadow_pnl_sol: row.get(7).context("failed reading pnl_sol")?,
-        opened_ts: parse_rfc3339_utc(&opened_ts_raw, "shadow_closed_trades.opened_ts")?,
-        closed_ts: parse_rfc3339_utc(&closed_ts_raw, "shadow_closed_trades.closed_ts")?,
-        buy: QuoteEvent::read(row, 10)?,
-        sell: QuoteEvent::read(row, 28)?,
-    })
+    pub(crate) quote_in_amount_raw: Option<String>,
+    pub(crate) quote_out_amount_raw: Option<String>,
 }
 
 impl QuoteEvent {
-    fn read(row: &rusqlite::Row<'_>, offset: usize) -> Result<Self> {
+    pub(crate) fn read(row: &rusqlite::Row<'_>, offset: usize) -> Result<Self> {
         let priority_fee_raw: Option<i64> = row
             .get(offset + 14)
             .context("failed reading priority_fee_lamports")?;
+        let actual = crate::quote_http_timing::read_http_started(row, offset + 23)?;
         Ok(Self {
+            http_request_started_ts: actual,
             event_id: row.get(offset).context("failed reading event_id")?,
+            signal_id: row.get(offset + 18)?,
+            closed_id: row.get(offset + 19)?,
+            wallet: row.get(offset + 20)?,
+            token: row.get(offset + 21)?,
+            side: row.get(offset + 22)?,
+            signal_ts: read_time(row, offset + 3)?,
+            request_ts: read_time(row, offset + 2)?,
             quote_status: row.get(offset + 1).context("failed reading quote_status")?,
-            decision_delay_ms: optional_i64_to_u64(
-                "execution_quote_canary_events.decision_delay_ms",
-                row.get(offset + 4)
-                    .context("failed reading decision_delay_ms")?,
-            )?,
+            decision_delay_ms: crate::quote_http_timing::actual_delay_ms(
+                read_time(row, offset + 3)?,
+                actual,
+            ),
             quote_latency_ms: optional_i64_to_u64(
                 "execution_quote_canary_events.quote_latency_ms",
                 row.get(offset + 5)
                     .context("failed reading quote_latency_ms")?,
-            )?,
+            )?
+            .filter(|_| actual.is_some()),
             quote_in_amount_raw: row
                 .get(offset + 6)
                 .context("failed reading quote_in_amount_raw")?,
@@ -121,12 +115,7 @@ impl QuoteEvent {
             priority_fee_status: row
                 .get(offset + 13)
                 .context("failed reading priority_fee_status")?,
-            priority_fee_lamports: priority_fee_raw
-                .map(|raw| {
-                    u64::try_from(raw)
-                        .with_context(|| format!("invalid priority_fee_lamports: {raw}"))
-                })
-                .transpose()?,
+            priority_fee_lamports: priority_fee_raw.and_then(|raw| u64::try_from(raw).ok()),
             decision_status: row
                 .get(offset + 15)
                 .context("failed reading decision_status")?,
@@ -146,4 +135,13 @@ fn optional_i64_to_u64(field: &str, value: Option<i64>) -> Result<Option<u64>> {
             u64::try_from(raw).with_context(|| format!("{field} is negative or invalid: {raw}"))
         })
         .transpose()
+}
+
+fn read_time(row: &rusqlite::Row<'_>, offset: usize) -> Result<Option<DateTime<Utc>>> {
+    let raw: Option<String> = row.get(offset)?;
+    Ok(raw.and_then(|s| {
+        DateTime::parse_from_rfc3339(&s)
+            .ok()
+            .map(|t| t.with_timezone(&Utc))
+    }))
 }

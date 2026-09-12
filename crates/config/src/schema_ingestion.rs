@@ -6,6 +6,8 @@ use std::fmt;
 #[serde(default)]
 pub struct IngestionConfig {
     pub source: String,
+    pub yellowstone_delivery_mode: String,
+    pub yellowstone_association: Option<crate::AssociationDeliveryConfig>,
     pub helius_ws_url: String,
     pub helius_http_url: String,
     pub helius_http_urls: Vec<String>,
@@ -46,6 +48,8 @@ impl Default for IngestionConfig {
     fn default() -> Self {
         Self {
             source: "mock".to_string(),
+            yellowstone_delivery_mode: "legacy".into(),
+            yellowstone_association: None,
             helius_ws_url: "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
             helius_http_url: "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
             helius_http_urls: Vec::new(),

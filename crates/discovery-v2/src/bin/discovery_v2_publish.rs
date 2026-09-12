@@ -4,7 +4,7 @@ use copybot_config::load_from_path;
 use copybot_discovery_v2::{
     build_discovery_v2_status, live_portfolio_rpc_url_from_config,
     load_materialized_discovery_v2_status_for_publish, publish_discovery_v2_status,
-    DiscoveryV2BuildOptions, DiscoveryV2PublishReport,
+    DiscoveryV2BuildOptions, DiscoveryV2DecisionContext, DiscoveryV2PublishReport,
 };
 use copybot_storage_core::{
     ensure_discovery_v2_schema, validate_discovery_v2_status_schema_read_only, SqliteDiscoveryStore,
@@ -119,6 +119,14 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
             status,
             false,
             loaded.discovery.rug_wallet_filter_quarantine_hours,
+            DiscoveryV2DecisionContext::new(
+                &loaded.discovery,
+                &loaded.shadow,
+                &DiscoveryV2BuildOptions {
+                    now: Utc::now(),
+                    ..read_options.clone()
+                },
+            ),
         );
     }
     if !config.acknowledge_daemon_restart_required {
@@ -132,6 +140,14 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
             status,
             true,
             loaded.discovery.rug_wallet_filter_quarantine_hours,
+            DiscoveryV2DecisionContext::new(
+                &loaded.discovery,
+                &loaded.shadow,
+                &DiscoveryV2BuildOptions {
+                    now: Utc::now(),
+                    ..read_options.clone()
+                },
+            ),
         );
     }
     drop(read_store);
@@ -149,6 +165,14 @@ fn run(config: Config) -> Result<DiscoveryV2PublishReport> {
         status,
         true,
         loaded.discovery.rug_wallet_filter_quarantine_hours,
+        DiscoveryV2DecisionContext::new(
+            &loaded.discovery,
+            &loaded.shadow,
+            &DiscoveryV2BuildOptions {
+                now: Utc::now(),
+                ..read_options
+            },
+        ),
     )
 }
 

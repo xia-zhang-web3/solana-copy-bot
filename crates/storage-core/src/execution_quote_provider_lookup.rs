@@ -33,12 +33,21 @@ impl SqliteDiscoveryStore {
                         route_plan_json,
                         decision_status,
                         decision_reason,
-                        error
+                        error, {}, {}
                      FROM execution_quote_canary_provider_samples
                      WHERE event_id = ?1
                        AND provider = ?2
                      LIMIT 1",
-                    quote_response_json_expr(self)?
+                    quote_response_json_expr(self)?,
+                    crate::quote_http_started_expr(
+                        &self.conn,
+                        "execution_quote_canary_provider_samples",
+                        ""
+                    )?,
+                    crate::quote_response_availability::expr(
+                        &self.conn,
+                        "execution_quote_canary_provider_samples"
+                    )?
                 ),
                 params![event_id, provider],
                 provider_sample_from_row,
@@ -66,8 +75,11 @@ fn provider_sample_from_row(
 fn read_provider_sample_row(
     row: &rusqlite::Row<'_>,
 ) -> Result<ExecutionQuoteCanaryProviderSampleInsert> {
+    let actual = crate::quote_http_timing::read_http_started(row, 17)?;
     let request_ts_raw: String = row.get(4).context("failed reading request_ts")?;
     Ok(ExecutionQuoteCanaryProviderSampleInsert {
+        http_request_started_ts: actual,
+        quote_response_available_ts: crate::quote_response_availability::read(row, 18)?,
         event_id: row.get(0).context("failed reading event_id")?,
         provider: row.get(1).context("failed reading provider")?,
         side: row.get(2).context("failed reading side")?,
@@ -79,7 +91,8 @@ fn read_provider_sample_row(
         quote_latency_ms: optional_i64_to_u64(
             "execution_quote_canary_provider_samples.quote_latency_ms",
             row.get(5).context("failed reading quote_latency_ms")?,
-        )?,
+        )?
+        .filter(|_| actual.is_some()),
         quote_in_amount_raw: row.get(6).context("failed reading quote_in_amount_raw")?,
         quote_out_amount_raw: row.get(7).context("failed reading quote_out_amount_raw")?,
         quote_response_json: row.get(8).context("failed reading quote_response_json")?,

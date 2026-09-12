@@ -2,9 +2,11 @@ use super::*;
 
 impl SqliteStore {
     pub fn insert_observed_swap(&self, swap: &SwapEvent) -> Result<bool> {
+        copybot_storage_core::source_sell_handoff_schema::available(&self.conn)?;
         let written = self
-            .execute_with_retry(|conn| {
-                conn.execute(
+            .with_immediate_transaction_retry("observed handoff write", |conn| {
+                copybot_storage_core::source_sell_handoff_schema::available(conn)?;
+                Ok(conn.execute(
                     "INSERT OR IGNORE INTO observed_swaps(
                     signature,
                     wallet_id,
@@ -43,18 +45,20 @@ impl SqliteStore {
                         swap.slot as i64,
                         swap.ts_utc.to_rfc3339(),
                     ],
-                )
+                )?)
             })
             .context("failed to insert observed swap")?;
         Ok(written > 0)
     }
 
     pub fn insert_observed_swaps_batch(&self, swaps: &[SwapEvent]) -> Result<Vec<bool>> {
+        copybot_storage_core::source_sell_handoff_schema::available(&self.conn)?;
         if swaps.is_empty() {
             return Ok(Vec::new());
         }
 
         self.with_immediate_transaction_retry("observed swap batch write", |conn| {
+            copybot_storage_core::source_sell_handoff_schema::available(conn)?;
             let mut stmt = conn
                 .prepare_cached(
                     "INSERT OR IGNORE INTO observed_swaps(

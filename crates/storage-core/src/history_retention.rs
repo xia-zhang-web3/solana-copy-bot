@@ -66,11 +66,11 @@ impl SqliteDiscoveryStore {
                     order_id TEXT NOT NULL,
                     token TEXT NOT NULL,
                     qty REAL NOT NULL,
-                    avg_price REAL NOT NULL,
-                    fee REAL NOT NULL,
-                    slippage_bps REAL NOT NULL
+                    avg_price REAL,
+                    fee REAL,
+                    slippage_bps REAL
                 );
-                CREATE INDEX IF NOT EXISTS idx_fills_order_id
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_order_id
                     ON fills(order_id);
                 CREATE TABLE IF NOT EXISTS shadow_closed_trades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,

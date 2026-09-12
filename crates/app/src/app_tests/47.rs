@@ -452,6 +452,8 @@ fn record_swap_instructions_quote(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,
@@ -476,7 +478,7 @@ fn record_swap_instructions_quote(
             route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Pump.fun Amm\"}}]".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some("{\"recommended\":22000}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
             error: None,

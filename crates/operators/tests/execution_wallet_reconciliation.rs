@@ -1,13 +1,14 @@
 use chrono::{DateTime, Utc};
+use copybot_core_types::TokenQuantity;
 use copybot_operators::execution_canary_quote_pnl::parse_args_from;
 use copybot_operators::execution_canary_quote_pnl_sell_side::{
     SellSideDiagnosticsReport, SellSideTokenFailure,
 };
+use copybot_operators::execution_canary_quote_pnl_wallet::WalletQuoteRequest;
 use copybot_operators::execution_canary_quote_pnl_wallet::{
     build_wallet_reconciliation_from_parts, WalletSellQuoteProof, WalletTokenBalance,
 };
-use copybot_storage_core::ExecutionTinyProofOpenPosition;
-use std::collections::BTreeMap;
+use copybot_storage_core::ExecutionCanaryOwnedPosition;
 
 fn ts(raw: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(raw)
@@ -28,16 +29,27 @@ fn wallet_reconciliation_classifies_live_leftovers_and_untracked_balances() {
             balance("TerminalMint", "476443270406"),
             balance("FailedMint", "30041062390"),
             balance("UntrackedMint", "7"),
+            balance("zero1", "0"),
+            balance("zero2", "0"),
+            balance("zero3", "0"),
+            balance("zero4", "0"),
+            balance("zero5", "0"),
+            balance("zero6", "0"),
         ],
-        &[ExecutionTinyProofOpenPosition {
+        Ok(&[ExecutionCanaryOwnedPosition {
             position_id: "open-position".to_string(),
             token: "OpenMint".to_string(),
             qty: 26_435.909646,
+            qty_exact: Some(TokenQuantity::new(26435909646, 6)),
+            cost_lamports: None,
+            state: "open".into(),
+            accounting_bucket: "execution_canary".into(),
             cost_sol: 0.0176063,
             opened_ts: ts("2026-06-09T19:03:04Z"),
-        }],
+        }]),
         &sell_side(),
         quote_proofs(),
+        true,
         Vec::new(),
     );
 
@@ -128,7 +140,7 @@ fn failure(
     }
 }
 
-fn quote_proofs() -> BTreeMap<String, WalletSellQuoteProof> {
+fn quote_proofs() -> Vec<WalletSellQuoteProof> {
     [
         ("OpenMint", ok_quote("5055")),
         ("TerminalMint", no_route_quote()),
@@ -136,12 +148,25 @@ fn quote_proofs() -> BTreeMap<String, WalletSellQuoteProof> {
         ("UntrackedMint", ok_quote("7")),
     ]
     .into_iter()
-    .map(|(mint, quote)| (mint.to_string(), quote))
+    .map(|(mint, mut quote)| {
+        let raw = match mint {
+            "OpenMint" => "26435909646",
+            "TerminalMint" => "476443270406",
+            "FailedMint" => "30041062390",
+            _ => "7",
+        };
+        quote.request = WalletQuoteRequest::for_balance(
+            "Aegb8cCuQVZJEcRfd4AbE3TE5MecJE5UBtkCdQ2764vs",
+            &balance(mint, raw),
+        );
+        quote
+    })
     .collect()
 }
 
 fn ok_quote(out_amount_raw: &str) -> WalletSellQuoteProof {
     WalletSellQuoteProof {
+        request: WalletQuoteRequest::for_balance("placeholder", &balance("placeholder", "1")),
         status: "ok".to_string(),
         http_status: Some(200),
         error: None,
@@ -158,6 +183,7 @@ fn ok_quote(out_amount_raw: &str) -> WalletSellQuoteProof {
 
 fn no_route_quote() -> WalletSellQuoteProof {
     WalletSellQuoteProof {
+        request: WalletQuoteRequest::for_balance("placeholder", &balance("placeholder", "1")),
         status: "no_route".to_string(),
         http_status: Some(400),
         error: Some("No routes found".to_string()),
@@ -182,4 +208,26 @@ fn assert_classification(
         "missing {mint} classification {classification}: {:?}",
         report.balances
     );
+}
+
+#[test]
+fn duplicate_quote_request_does_not_select_last_proof() {
+    let mut proofs = quote_proofs();
+    let duplicate = proofs[0].clone();
+    proofs.push(duplicate);
+    let report = build_wallet_reconciliation_from_parts(
+        ts("2026-06-09T20:45:00Z"),
+        "Aegb8cCuQVZJEcRfd4AbE3TE5MecJE5UBtkCdQ2764vs".into(),
+        Some(1),
+        1,
+        vec![balance("OpenMint", "26435909646")],
+        Ok(&[]),
+        &sell_side(),
+        proofs,
+        true,
+        vec![],
+    );
+    assert!(report.balances[0].sell_quote.is_none());
+    assert!(!report.wallet_account_mark.complete);
+    assert_eq!(report.quote_ok_count, 0);
 }

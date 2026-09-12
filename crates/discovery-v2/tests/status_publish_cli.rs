@@ -13,6 +13,9 @@ use std::thread;
 use std::time::{Duration as StdDuration, Instant as StdInstant};
 use tempfile::tempdir;
 
+#[path = "cli/price_decision.rs"]
+mod price_decision;
+
 const CLI_TEST_TIMEOUT: StdDuration = StdDuration::from_secs(60);
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 const TOKEN_MINT: &str = "CliMaterializedToken111111111111111111111";

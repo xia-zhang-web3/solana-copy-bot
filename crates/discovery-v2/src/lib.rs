@@ -1,10 +1,18 @@
 mod accumulator;
 mod candidate_selection;
+mod decision_context;
 mod executable_feedback;
 mod filters;
+mod live_inventory;
+mod live_inventory_parse;
+mod live_inventory_status;
 mod live_portfolio;
 mod live_portfolio_rpc;
 mod live_portfolio_selection;
+mod live_valuation;
+mod live_valuation_build;
+mod live_valuation_numbers;
+mod live_valuation_validate;
 mod materialized_status;
 mod maturity;
 mod metric;
@@ -51,4 +59,13 @@ pub use crate::wallet_report::{
     DiscoveryV2WalletFilterImpact, DiscoveryV2WalletReport, DiscoveryV2WalletReportOptions,
     DiscoveryV2WalletReportRow, DiscoveryV2WalletReportThresholds,
 };
+pub use decision_context::DiscoveryV2DecisionContext;
+pub use live_valuation_validate::revalidate_discovery_v2_status;
 pub use metric::DiscoveryV2WalletMetric;
+
+pub use live_inventory::{DiscoveryV2LiveInventoryEvidence, DiscoveryV2LiveValuationBasis};
+
+pub use live_valuation::{
+    DiscoveryV2LiveValuationEvidence, DiscoveryV2PriceContribution, DiscoveryV2PriceUnknownReason,
+    DiscoveryV2ValuationDecision,
+};

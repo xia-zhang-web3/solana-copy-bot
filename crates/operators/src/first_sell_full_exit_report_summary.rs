@@ -28,7 +28,7 @@ pub(crate) fn summarize_audit(
             Ok(amounts) => {
                 evidence.coverage.eligible_entry_events += 1;
                 *notionals.entry(amounts.in_lamports).or_insert(0_u64) += 1;
-                latest_entry_ready = latest_entry_ready.max(entry.entry_ready_ts);
+                latest_entry_ready = latest_entry_ready.max(entry.modeled_entry_ready_ts);
             }
             Err(EntryValidationError::QuoteSkipped) => evidence.coverage.skipped_entry_events += 1,
             Err(EntryValidationError::ShadowDropped) => {
@@ -121,7 +121,7 @@ pub(crate) fn summarize_audit(
         entry_gate_model: EntryGateModelSummary {
             expected_in_lamports: gate.expected_in_lamports,
             max_slippage_bps: gate.max_slippage_bps,
-            earliest_open_basis: "max(quote_request_plus_latency,shadow_gate_recorded_ts)"
+            earliest_open_basis: "historical model: max(correlation_request_ts + stored_latency_ms, shadow_gate_recorded_ts); actual HTTP coverage is separate"
                 .to_string(),
         },
         observed_entry_notionals,

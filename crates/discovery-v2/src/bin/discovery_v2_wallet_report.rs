@@ -82,27 +82,33 @@ fn run(config: WalletReportCliConfig) -> Result<serde_json::Value> {
         )?;
         return serde_json::to_value(report).context("failed serializing rug feedback report");
     }
-    let options =
+    let mut options =
         DiscoveryV2BuildOptions::from_config(&loaded.discovery, loaded.execution.enabled, now)
             .with_live_portfolio_rpc_url(live_portfolio_rpc_url_from_config(&loaded));
     let mut status = load_status(
         &store,
         &loaded.discovery,
         &loaded.shadow,
-        options,
+        options.clone(),
         config.live_rebuild,
     )?;
     status.shadow_signals_24h = Some(load_discovery_v2_shadow_signal_status(&store, now)?);
+    options.now = Utc::now();
     let report = build_discovery_v2_wallet_report(
         &store,
         &loaded.discovery,
         &loaded.shadow,
         status,
         DiscoveryV2WalletReportOptions {
-            now,
+            now: options.now,
             limit: config.top,
             include_rejected: config.include_rejected,
         },
+        copybot_discovery_v2::DiscoveryV2DecisionContext::new(
+            &loaded.discovery,
+            &loaded.shadow,
+            &options,
+        ),
     )?;
     serde_json::to_value(report).context("failed serializing wallet report")
 }

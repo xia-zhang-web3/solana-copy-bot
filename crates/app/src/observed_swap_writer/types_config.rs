@@ -130,6 +130,8 @@ impl ObservedSwapRetentionRuntimeHealthHandle {
 }
 
 pub(in crate::observed_swap_writer) struct ObservedSwapWriteRequest {
+    pub(in crate::observed_swap_writer) candidate:
+        Option<copybot_storage_core::SourceSellCandidate>,
     pub(in crate::observed_swap_writer) swap: SwapEvent,
     pub(in crate::observed_swap_writer) reply_tx: Option<oneshot::Sender<Result<bool>>>,
     pub(in crate::observed_swap_writer) enqueued_at: Instant,

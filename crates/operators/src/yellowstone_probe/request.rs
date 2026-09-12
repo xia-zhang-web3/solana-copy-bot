@@ -9,6 +9,19 @@ use super::config::ProbeMode;
 
 pub(crate) fn build_subscribe_request(mode: ProbeMode, program_ids: &[String]) -> SubscribeRequest {
     match mode {
+        ProbeMode::AssociationCapture => {
+            let mut request = build_transaction_filter_subscribe_request(program_ids);
+            request.blocks.insert(
+                "copybot-association".into(),
+                yellowstone_grpc_proto::prelude::SubscribeRequestFilterBlocks {
+                    account_include: program_ids.to_vec(),
+                    include_transactions: Some(true),
+                    include_accounts: Some(false),
+                    include_entries: Some(false),
+                },
+            );
+            request
+        }
         ProbeMode::TransactionFilter => build_transaction_filter_subscribe_request(program_ids),
         ProbeMode::SlotsOnly => build_slots_only_subscribe_request(),
         ProbeMode::BlocksMeta => build_blocks_meta_subscribe_request(),

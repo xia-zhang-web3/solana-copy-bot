@@ -137,6 +137,8 @@ fn seed_wallet_metrics(path: &Path) -> Result<()> {
 
 fn quote_event(request_ts: chrono::DateTime<Utc>) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: "quote:entry-shadow-diag:sig".to_string(),
         signal_id: Some("sig".to_string()),
         shadow_closed_trade_id: None,

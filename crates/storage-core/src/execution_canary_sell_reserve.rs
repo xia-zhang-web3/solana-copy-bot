@@ -60,6 +60,14 @@ impl SqliteDiscoveryStore {
                     ));
                 }
 
+                if let Some(blocker) = crate::execution_canary_receipt::pending_token_order(
+                    conn,
+                    &token,
+                    Some(&order_id),
+                )? {
+                    return Ok(GuardedSellReserveTx::BlockedByInFlight(blocker));
+                }
+
                 let blocker: Option<String> = conn
                     .query_row(
                         "SELECT orders.order_id

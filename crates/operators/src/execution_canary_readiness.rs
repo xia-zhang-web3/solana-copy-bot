@@ -32,20 +32,31 @@ pub struct CanaryReadinessOperatorReport {
     pub reason_class: String,
     pub error: Option<String>,
     pub readiness_green: bool,
+    pub readiness_basis: String,
+    pub economic_green: bool,
+    pub failed_expenses: Option<copybot_storage_core::FailedExpenseReport>,
     pub production_green: bool,
     pub summary: Option<ExecutionCanaryReadinessSummary>,
     pub window: Option<ExecutionCanaryReadinessWindowSummary>,
 }
 
 impl CanaryReadinessOperatorReport {
-    fn failed(reason_class: &str, error: Option<String>, as_of: DateTime<Utc>) -> Self {
+    fn failed(
+        reason_class: &str,
+        error: Option<String>,
+        as_of: DateTime<Utc>,
+        config_loaded: bool,
+    ) -> Self {
         Self {
-            config_loaded: false,
+            config_loaded,
             db_opened: false,
             as_of,
             reason_class: reason_class.to_string(),
             error,
             readiness_green: false,
+            readiness_basis: "quote_simulation_only_not_economic".into(),
+            economic_green: false,
+            failed_expenses: None,
             production_green: false,
             summary: None,
             window: None,
@@ -67,11 +78,15 @@ pub fn run_from_env() -> i32 {
             REASON_JSON_REQUIRED,
             Some("--json is required for operator output".to_string()),
             as_of,
+            false,
         ),
         Ok(cli) => build_report(cli, as_of),
-        Err(error) => {
-            CanaryReadinessOperatorReport::failed(REASON_CLI_ERROR, Some(error.to_string()), as_of)
-        }
+        Err(error) => CanaryReadinessOperatorReport::failed(
+            REASON_CLI_ERROR,
+            Some(error.to_string()),
+            as_of,
+            false,
+        ),
     };
 
     println!(
@@ -136,13 +151,14 @@ pub fn build_report_from_db_path(
 }
 
 fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryReadinessOperatorReport {
-    let db_path = match resolve_db_path(&cli) {
-        Ok(path) => path,
+    let (db_path, config_loaded) = match resolve_db_path(&cli) {
+        Ok(resolved) => resolved,
         Err(error) => {
             return CanaryReadinessOperatorReport::failed(
                 REASON_CONFIG_UNREADABLE,
                 Some(error.to_string()),
                 as_of,
+                false,
             );
         }
     };
@@ -154,6 +170,7 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryReadinessOperatorReport
                 REASON_DB_UNREADABLE,
                 Some(error.to_string()),
                 as_of,
+                config_loaded,
             );
         }
     };
@@ -164,15 +181,34 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryReadinessOperatorReport
                 REASON_DB_UNREADABLE,
                 Some(error.to_string()),
                 as_of,
+                config_loaded,
             );
+        }
+    };
+    let failed_expenses = match store.execution_failed_expense_report(
+        as_of - chrono::Duration::hours(24),
+        as_of,
+        cli.limit,
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            return CanaryReadinessOperatorReport::failed(
+                REASON_DB_UNREADABLE,
+                Some(error.to_string()),
+                as_of,
+                config_loaded,
+            )
         }
     };
     match store.execution_canary_readiness_window_summary(as_of, cli.limit) {
         Ok(window) => CanaryReadinessOperatorReport {
-            config_loaded: cli.config_path.is_some(),
+            config_loaded,
             db_opened: true,
             as_of,
             readiness_green: summary.readiness_status == "would_enter",
+            readiness_basis: "quote_simulation_only_not_economic".into(),
+            economic_green: false,
+            failed_expenses: Some(failed_expenses),
             production_green: false,
             reason_class: REASON_OK.to_string(),
             error: None,
@@ -183,13 +219,14 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryReadinessOperatorReport
             REASON_DB_UNREADABLE,
             Some(error.to_string()),
             as_of,
+            config_loaded,
         ),
     }
 }
 
-fn resolve_db_path(cli: &Cli) -> Result<PathBuf> {
+fn resolve_db_path(cli: &Cli) -> Result<(PathBuf, bool)> {
     if let Some(path) = &cli.db_path {
-        return Ok(path.clone());
+        return Ok((path.clone(), false));
     }
     let config_path = cli
         .config_path
@@ -197,7 +234,7 @@ fn resolve_db_path(cli: &Cli) -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("--config is required when --db-path is omitted"))?;
     let loaded = load_from_path(config_path)
         .with_context(|| format!("failed to load config: {}", config_path.display()))?;
-    Ok(PathBuf::from(loaded.sqlite.path))
+    Ok((PathBuf::from(loaded.sqlite.path), true))
 }
 
 fn next_value(iter: &mut impl Iterator<Item = String>, flag: &str) -> Result<String> {

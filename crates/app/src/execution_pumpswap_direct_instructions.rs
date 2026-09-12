@@ -29,7 +29,7 @@ pub(crate) struct PumpSwapInstructionInputs {
     pub(crate) user_quote_ata: PubkeyBytes,
     pub(crate) amount_in: u64,
     pub(crate) min_output: u64,
-    pub(crate) priority_fee_lamports: u64,
+    pub(crate) priority_fee_micro_lamports_per_cu: u64,
 }
 
 pub(crate) fn build_buy_with_sol_instructions(
@@ -86,9 +86,9 @@ pub(crate) fn build_sell_for_sol_instructions(
 fn shared_prefix_instructions(input: &PumpSwapInstructionInputs) -> Vec<SolanaInstruction> {
     let mut instructions = Vec::new();
     instructions.push(compute_unit_limit_instruction(PUMPSWAP_COMPUTE_UNIT_LIMIT));
-    instructions.push(compute_unit_price_instruction(priority_micro_lamports(
-        input.priority_fee_lamports,
-    )));
+    instructions.push(compute_unit_price_instruction(
+        input.priority_fee_micro_lamports_per_cu,
+    ));
     if input.pool_account_len < PUMPSWAP_POOL_ACCOUNT_NEW_SIZE {
         instructions.push(extend_pool_account_instruction(
             &input.user,
@@ -96,14 +96,6 @@ fn shared_prefix_instructions(input: &PumpSwapInstructionInputs) -> Vec<SolanaIn
         ));
     }
     instructions
-}
-
-fn priority_micro_lamports(priority_fee_lamports: u64) -> u64 {
-    if priority_fee_lamports == 0 {
-        return 0;
-    }
-    let numerator = u128::from(priority_fee_lamports) * 1_000_000_u128;
-    (numerator / u128::from(PUMPSWAP_COMPUTE_UNIT_LIMIT)).min(u128::from(u64::MAX)) as u64
 }
 
 fn compute_unit_limit_instruction(units: u32) -> SolanaInstruction {

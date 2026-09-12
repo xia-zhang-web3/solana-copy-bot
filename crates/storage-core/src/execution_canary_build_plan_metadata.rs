@@ -1,3 +1,6 @@
+#[path = "execution_sell_amount_proof.rs"]
+mod sell_amount_proof;
+
 use crate::{
     observed_timestamp::parse_rfc3339_utc, schema::column_exists, schema::ensure_column,
     ExecutionCanaryBuildPlanMetadata, ExecutionCanaryBuildPlanMetadataRecordOutcome,
@@ -11,6 +14,30 @@ impl SqliteDiscoveryStore {
         &self,
         metadata: &ExecutionCanaryBuildPlanMetadata,
     ) -> Result<ExecutionCanaryBuildPlanMetadataRecordOutcome> {
+        self.record_execution_canary_build_plan_metadata_with_sell_amount(metadata, None)
+    }
+
+    /// Metadata and its quantity proof are one SQLite write, including replacement with NULL.
+    pub fn record_execution_canary_build_plan_metadata_with_sell_amount(
+        &self,
+        metadata: &ExecutionCanaryBuildPlanMetadata,
+        proof_json: Option<&str>,
+    ) -> Result<ExecutionCanaryBuildPlanMetadataRecordOutcome> {
+        let proof_available = sell_amount_proof::available(&self.conn)?;
+        if proof_json.is_some() && !proof_available {
+            anyhow::bail!("0070 is required to persist owned SELL amount proof");
+        }
+        let proof_column = if proof_available {
+            ", owned_sell_amount_proof_json"
+        } else {
+            ""
+        };
+        let proof_value = if proof_available { ", ?" } else { "" };
+        let proof_update = if proof_available {
+            "owned_sell_amount_proof_json=excluded.owned_sell_amount_proof_json,"
+        } else {
+            ""
+        };
         validate_required(
             "execution canary build metadata order_id",
             &metadata.order_id,
@@ -24,6 +51,32 @@ impl SqliteDiscoveryStore {
             &metadata.client_order_id,
         )?;
         ensure_execution_canary_build_plan_metadata_table(self)?;
+        let availability = crate::quote_response_availability::Write::new(
+            &self.conn,
+            "execution_canary_build_plan_metadata",
+            metadata.quote_response_available_ts,
+            metadata.quote_status.as_deref() == Some("ok"),
+        )?;
+        let available_column = availability.column;
+        let available_value = availability.placeholder;
+        let available_update = availability.update;
+        let timing_available = crate::quote_http_timing::timing_write_available(
+            &self.conn,
+            "execution_canary_build_plan_metadata",
+            metadata.http_request_started_ts,
+        )?;
+        let actual_start = metadata.http_request_started_ts.map(|ts| ts.to_rfc3339());
+        let timing_column = if timing_available {
+            ", http_request_started_ts"
+        } else {
+            ""
+        };
+        let timing_value = if timing_available { ", ?22" } else { "" };
+        let timing_update = if timing_available {
+            "http_request_started_ts=excluded.http_request_started_ts,"
+        } else {
+            ""
+        };
         let priority_fee_lamports = optional_u64_to_i64(
             "execution_canary_build_plan_metadata.priority_fee_lamports",
             metadata.priority_fee_lamports,
@@ -31,10 +84,7 @@ impl SqliteDiscoveryStore {
         let existed = self
             .conn
             .query_row(
-                "SELECT 1
-                 FROM execution_canary_build_plan_metadata
-                 WHERE order_id = ?1
-                 LIMIT 1",
+                "SELECT 1 FROM execution_canary_build_plan_metadata WHERE order_id=?1 LIMIT 1",
                 params![&metadata.order_id],
                 |_| Ok(()),
             )
@@ -42,8 +92,42 @@ impl SqliteDiscoveryStore {
             .context("failed checking execution canary build plan metadata existence")?
             .is_some();
         self.execute_with_retry(|conn| {
+            let original_values = params![
+                &metadata.order_id,
+                &metadata.signal_id,
+                &metadata.client_order_id,
+                metadata.recorded_ts.to_rfc3339(),
+                metadata.quote_source.as_deref(),
+                metadata.quote_event_id.as_deref(),
+                metadata.quote_status.as_deref(),
+                metadata.quote_in_amount_raw.as_deref(),
+                metadata.quote_out_amount_raw.as_deref(),
+                metadata.quote_response_json.as_deref(),
+                metadata.quote_price_sol,
+                metadata.price_impact_pct,
+                metadata.route_plan_json.as_deref(),
+                metadata.priority_fee_source.as_deref(),
+                metadata.priority_fee_status.as_deref(),
+                priority_fee_lamports,
+                metadata.priority_fee_json.as_deref(),
+                metadata.slippage_bps,
+                metadata.decision_status.as_deref(),
+                metadata.decision_reason.as_deref(),
+                metadata.quote_request_ts.map(|ts| ts.to_rfc3339()),
+            ];
+            let mut values = original_values.to_vec();
+            if timing_available {
+                values.push(&actual_start);
+            }
+            if proof_available {
+                values.push(&proof_json);
+            }
+            if availability.enabled {
+                values.push(&availability.value);
+            }
             conn.execute(
-                "INSERT INTO execution_canary_build_plan_metadata(
+                &format!(
+                    "INSERT INTO execution_canary_build_plan_metadata(
                         order_id,
                         signal_id,
                         client_order_id,
@@ -64,13 +148,14 @@ impl SqliteDiscoveryStore {
                         slippage_bps,
                         decision_status,
                         decision_reason,
-                        quote_request_ts
+                        quote_request_ts{timing_column}{proof_column}{available_column}
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
                         ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                        ?17, ?18, ?19, ?20, ?21
+                        ?17, ?18, ?19, ?20, ?21{timing_value}{proof_value}{available_value}
                     )
                     ON CONFLICT(order_id) DO UPDATE SET
+                        {timing_update}{proof_update}{available_update}
                         signal_id = excluded.signal_id,
                         client_order_id = excluded.client_order_id,
                         recorded_ts = excluded.recorded_ts,
@@ -90,30 +175,9 @@ impl SqliteDiscoveryStore {
                         slippage_bps = excluded.slippage_bps,
                         decision_status = excluded.decision_status,
                         decision_reason = excluded.decision_reason,
-                        quote_request_ts = excluded.quote_request_ts",
-                params![
-                    &metadata.order_id,
-                    &metadata.signal_id,
-                    &metadata.client_order_id,
-                    metadata.recorded_ts.to_rfc3339(),
-                    metadata.quote_source.as_deref(),
-                    metadata.quote_event_id.as_deref(),
-                    metadata.quote_status.as_deref(),
-                    metadata.quote_in_amount_raw.as_deref(),
-                    metadata.quote_out_amount_raw.as_deref(),
-                    metadata.quote_response_json.as_deref(),
-                    metadata.quote_price_sol,
-                    metadata.price_impact_pct,
-                    metadata.route_plan_json.as_deref(),
-                    metadata.priority_fee_source.as_deref(),
-                    metadata.priority_fee_status.as_deref(),
-                    priority_fee_lamports,
-                    metadata.priority_fee_json.as_deref(),
-                    metadata.slippage_bps,
-                    metadata.decision_status.as_deref(),
-                    metadata.decision_reason.as_deref(),
-                    metadata.quote_request_ts.map(|ts| ts.to_rfc3339()),
-                ],
+                        quote_request_ts = excluded.quote_request_ts"
+                ),
+                values.as_slice(),
             )
         })
         .context("failed recording execution canary build plan metadata")?;
@@ -128,6 +192,7 @@ impl SqliteDiscoveryStore {
         &self,
         order_id: &str,
     ) -> Result<Option<ExecutionCanaryBuildPlanMetadata>> {
+        crate::quote_http_timing_available(&self.conn, "execution_canary_build_plan_metadata")?;
         if !self.sqlite_table_exists("execution_canary_build_plan_metadata")? {
             return Ok(None);
         }
@@ -150,6 +215,7 @@ impl SqliteDiscoveryStore {
     pub fn latest_execution_canary_build_plan_metadata(
         &self,
     ) -> Result<Option<ExecutionCanaryBuildPlanMetadata>> {
+        crate::quote_http_timing_available(&self.conn, "execution_canary_build_plan_metadata")?;
         if !self.sqlite_table_exists("execution_canary_build_plan_metadata")? {
             return Ok(None);
         }
@@ -215,12 +281,19 @@ fn build_plan_metadata_columns(store: &SqliteDiscoveryStore) -> Result<String> {
          {},
          {},
          {},
+         {},
+         {},
          {}",
         optional_column_expr(store, "quote_response_json")?,
         optional_column_expr(store, "slippage_bps")?,
         optional_column_expr(store, "decision_status")?,
         optional_column_expr(store, "decision_reason")?,
         optional_column_expr(store, "quote_request_ts")?,
+        crate::quote_http_started_expr(&store.conn, "execution_canary_build_plan_metadata", "")?,
+        crate::quote_response_availability::expr(
+            &store.conn,
+            "execution_canary_build_plan_metadata"
+        )?,
     ))
 }
 
@@ -279,6 +352,8 @@ fn read_execution_canary_build_plan_metadata_row(
             .context("failed reading priority_fee_lamports")?,
     )?;
     Ok(ExecutionCanaryBuildPlanMetadata {
+        http_request_started_ts: crate::quote_http_timing::read_http_started(row, 21)?,
+        quote_response_available_ts: crate::quote_response_availability::read(row, 22)?,
         order_id: row.get(0).context("failed reading order_id")?,
         signal_id: row.get(1).context("failed reading signal_id")?,
         client_order_id: row.get(2).context("failed reading client_order_id")?,

@@ -81,6 +81,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
                     verified_swap_transaction_response_summary(
                         http,
                         config,
+                        plan,
                         skip_retry.value,
                         skip_retry.elapsed_ms,
                         skip_retry.attempts,
@@ -107,6 +108,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
                     verified_swap_transaction_response_summary(
                         http,
                         config,
+                        plan,
                         static_cu_retry.value,
                         static_cu_retry.elapsed_ms,
                         static_cu_retry.attempts,
@@ -123,6 +125,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
                 verified_swap_transaction_response_summary(
                     http,
                     config,
+                    plan,
                     static_cu_retry.value,
                     static_cu_retry.elapsed_ms,
                     static_cu_retry.attempts,
@@ -139,6 +142,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
             verified_swap_transaction_response_summary(
                 http,
                 config,
+                plan,
                 retry.value,
                 retry.elapsed_ms,
                 retry.attempts,
@@ -155,6 +159,7 @@ pub(crate) async fn fetch_swap_transaction_dry_run(
         verified_swap_transaction_response_summary(
             http,
             config,
+            plan,
             response.value,
             response.elapsed_ms,
             response.attempts,
@@ -236,6 +241,7 @@ fn swap_transaction_response_summary(
 async fn verified_swap_transaction_response_summary(
     http: &reqwest::Client,
     config: &ExecutionConfig,
+    plan: &ExecutionTransactionPlan,
     value: Value,
     elapsed_ms: u64,
     attempts: usize,
@@ -245,7 +251,7 @@ async fn verified_swap_transaction_response_summary(
     dynamic_compute_unit_limit: bool,
     timeout: StdDuration,
 ) -> Result<SwapTransactionDryRunResult> {
-    let result = swap_transaction_response_summary(
+    let mut result = swap_transaction_response_summary(
         value,
         elapsed_ms,
         attempts,
@@ -254,6 +260,7 @@ async fn verified_swap_transaction_response_summary(
         skip_user_accounts_rpc_calls,
         dynamic_compute_unit_limit,
     )?;
+    crate::execution_native_floor_policy::protected_assembly::prepare(config, plan, &mut result)?;
     verify_rpc_simulation(http, config, result, timeout).await
 }
 
@@ -263,7 +270,7 @@ async fn verify_rpc_simulation(
     mut result: SwapTransactionDryRunResult,
     timeout: StdDuration,
 ) -> Result<SwapTransactionDryRunResult> {
-    verify_serialized_transaction_rpc_simulation(
+    let simulation = verify_serialized_transaction_rpc_simulation(
         http,
         config,
         &result.serialized_transaction_base64,
@@ -271,7 +278,7 @@ async fn verify_rpc_simulation(
         timeout,
     )
     .await?;
-    result.summary = truncate_for_log(&format!("{} rpc_simulation=passed", result.summary), 500);
+    result.summary = simulation.with_summary(&result.summary);
     Ok(result)
 }
 

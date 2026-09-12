@@ -38,7 +38,9 @@ pub fn publish_discovery_v2_status(
     status: DiscoveryV2Status,
     commit: bool,
     rug_quarantine_hours: u64,
+    context: crate::DiscoveryV2DecisionContext<'_>,
 ) -> Result<DiscoveryV2PublishReport> {
+    let status = crate::revalidate_discovery_v2_status(status, context)?;
     let runtime_mode = if status.production_green {
         DiscoveryRuntimeMode::Healthy
     } else {

@@ -427,6 +427,8 @@ fn quote_event(
     out_amount: &str,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: event_id.to_string(),
         signal_id: Some(signal.signal_id.clone()),
         shadow_closed_trade_id: None,

@@ -103,6 +103,7 @@ fn is_sell_runtime_blocker(name: &str) -> bool {
             | "canary_daily_loss_cap"
             | "open_canary_positions"
             | "recent_realized_loss_24h"
+            | "current_entry_cost_cap"
     ) {
         return false;
     }
@@ -143,6 +144,7 @@ fn is_entry_runtime_blocker(name: &str) -> bool {
             | "priority_fee_canary_enabled"
             | "open_canary_positions"
             | "recent_realized_loss_24h"
+            | "current_entry_cost_cap"
             | "pending_signed_submit_orders"
             | "pending_unknown_submit_orders"
             | "retry_ready_orders"

@@ -100,7 +100,12 @@ pub(crate) fn build_confirmation_request_from_order(
     let order = store
         .load_execution_canary_order(order_id)?
         .ok_or_else(|| anyhow!("missing execution canary order {order_id}"))?;
-    if order.status != EXECUTION_STATUS_CANARY_SUBMITTED {
+    if !matches!(
+        order.status.as_str(),
+        EXECUTION_STATUS_CANARY_SUBMITTED
+            | EXECUTION_STATUS_CANARY_CONFIRMED
+            | copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED
+    ) {
         anyhow::bail!(
             "execution confirmation request requires submitted order {order_id}, got {}",
             order.status
@@ -142,7 +147,7 @@ pub(crate) fn record_confirmation_tracker_outcome(
         ExecutionConfirmationTrackerOutcome::Confirmed(proof) => {
             validate_confirmation_signature(request, &proof.tx_signature)?;
             let (order, fill_accounting) =
-                record_confirmed_fill_accounting_and_status(store, fill, proof.confirmed_at)?;
+                record_confirmed_fill_accounting_and_status(store, fill, proof.confirmed_at, None)?;
             Ok(ExecutionConfirmationTrackerRecordOutcome {
                 confirmed: usize::from(order.status == EXECUTION_STATUS_CANARY_CONFIRMED),
                 confirmation_status: Some(proof.confirmation_status),

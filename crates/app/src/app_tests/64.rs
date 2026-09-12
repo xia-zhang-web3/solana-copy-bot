@@ -1,6 +1,5 @@
+use super::receipt_legacy_fixture::answer_receipt;
 use super::*;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -23,6 +22,7 @@ async fn tiny_submit_route_confirmed_sell_closes_owned_position() -> Result<()> 
         0.8,
         now,
     )?;
+    super::receipt_legacy_fixture::prepared_inventory_zero(&db_path)?;
     let signal = tiny_sell_route_signal("confirmed-sell", now + chrono::Duration::minutes(1));
     store.insert_copy_signal(&signal)?;
     let quote_event_id = format!("quote:close:{}", signal.signal_id);
@@ -40,7 +40,15 @@ async fn tiny_submit_route_confirmed_sell_closes_owned_position() -> Result<()> 
     )
     .await?
     .expect("sell quote event should be processed");
-    server.await?;
+    let mut server = server;
+    match tokio::time::timeout(std::time::Duration::from_secs(5), &mut server).await {
+        Ok(result) => result?,
+        Err(_) => {
+            server.abort();
+            let _ = server.await;
+            anyhow::bail!("legacy SELL RPC fixture did not finish: {summary:?}");
+        }
+    }
     let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .expect("tiny sell route should reserve an order");
@@ -89,6 +97,7 @@ async fn tiny_submit_route_reconciles_existing_submitted_sell() -> Result<()> {
         0.8,
         now,
     )?;
+    super::receipt_legacy_fixture::prepared_inventory_zero(&db_path)?;
     let signal = tiny_sell_route_signal("reconcile-sell", now + chrono::Duration::minutes(1));
     store.insert_copy_signal(&signal)?;
     let quote_event_id = format!("quote:close:{}", signal.signal_id);
@@ -112,7 +121,8 @@ async fn tiny_submit_route_reconciles_existing_submitted_sell() -> Result<()> {
         .is_some());
 
     let (confirm_url, confirm_server) =
-        serve_tiny_sell_route_confirmation_only("tx-tiny-route-reconcile-sell").await?;
+        serve_tiny_sell_route_confirmation_only("tx-tiny-route-reconcile-sell", &keypair.pubkey)
+            .await?;
     let reconcile_config =
         tiny_sell_route_config(&keypair.pubkey, &keypair_path, &confirm_url, &confirm_url);
     let second = crate::execution_canary_route::process_tiny_submit_sell_quote_event_for_route(
@@ -164,6 +174,7 @@ async fn tiny_submit_tick_sweeps_existing_submitted_sell() -> Result<()> {
         0.8,
         now,
     )?;
+    super::receipt_legacy_fixture::prepared_inventory_zero(&db_path)?;
     let signal = tiny_sell_route_signal("sweep-sell", now + chrono::Duration::minutes(1));
     store.insert_copy_signal(&signal)?;
     let order_id = mark_tiny_sell_route_submitted_order(
@@ -173,7 +184,8 @@ async fn tiny_submit_tick_sweeps_existing_submitted_sell() -> Result<()> {
         "tx-tiny-route-sweep-sell",
     )?;
     let (confirm_url, confirm_server) =
-        serve_tiny_sell_route_confirmation_only("tx-tiny-route-sweep-sell").await?;
+        serve_tiny_sell_route_confirmation_only("tx-tiny-route-sweep-sell", &keypair.pubkey)
+            .await?;
     let mut config =
         tiny_sell_route_config(&keypair.pubkey, &keypair_path, &confirm_url, &confirm_url);
     config.quote_canary_enabled = false;
@@ -212,6 +224,7 @@ async fn serve_sell_build_submit_and_confirm(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base_url = format!("http://{}", listener.local_addr()?);
     let tx = tx_signature.to_string();
+    let wallet = bs58::encode(first_signer).into_string();
     let serialized_transaction = serialized_sell_route_legacy_transaction(*first_signer);
     let server = tokio::spawn(async move {
         let balance = read_tiny_sell_route_http_request(&listener).await;
@@ -261,7 +274,7 @@ async fn serve_sell_build_submit_and_confirm(
             .contains("\"method\":\"simulateTransaction\""));
         write_tiny_sell_route_http_response(
             rpc_simulation.socket,
-            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":null,"logs":[]}}}"#,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"context":{"slot":42},"value":{"err":null,"logs":[]}}}"#,
         )
         .await;
 
@@ -283,16 +296,19 @@ async fn serve_sell_build_submit_and_confirm(
             r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":43,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}"#,
         )
         .await;
+        answer_receipt(&listener, &wallet, &tx, "sell", 43, 1200000000).await;
     });
     Ok((base_url, server))
 }
 
 async fn serve_tiny_sell_route_confirmation_only(
     tx_signature: &str,
+    wallet: &str,
 ) -> Result<(String, tokio::task::JoinHandle<()>)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base_url = format!("http://{}", listener.local_addr()?);
     let tx = tx_signature.to_string();
+    let wallet = wallet.to_string();
     let server = tokio::spawn(async move {
         let confirmation = read_tiny_sell_route_http_request(&listener).await;
         assert!(confirmation
@@ -304,6 +320,7 @@ async fn serve_tiny_sell_route_confirmation_only(
             r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":45,"confirmations":null,"err":null,"confirmationStatus":"confirmed"}]}}"#,
         )
         .await;
+        answer_receipt(&listener, &wallet, &tx, "sell", 45, 1200000000).await;
     });
     Ok((base_url, server))
 }
@@ -334,6 +351,8 @@ fn mark_tiny_sell_route_submitted_order(
     )?;
     store.record_execution_canary_build_plan_metadata(
         &copybot_storage_core::ExecutionCanaryBuildPlanMetadata {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             order_id: reserve.order.order_id.clone(),
             signal_id: signal.signal_id.clone(),
             client_order_id: reserve.order.client_order_id.clone(),
@@ -354,7 +373,7 @@ fn mark_tiny_sell_route_submitted_order(
             priority_fee_source: Some("test".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some("{\"recommended\":22000}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             slippage_bps: Some(100.0),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
@@ -424,7 +443,7 @@ fn tiny_sell_route_signal(
     ts: chrono::DateTime<Utc>,
 ) -> copybot_core_types::CopySignalRow {
     copybot_core_types::CopySignalRow {
-        signal_id: format!("shadow:sig-tiny-sell-route:leader-wallet:{name}:TokenMint"),
+        signal_id: format!("shadow:sig-tiny-sell-route:{name}:leader-wallet:sell:TokenMint"),
         wallet_id: "leader-wallet".to_string(),
         side: "sell".to_string(),
         token: "TokenMint".to_string(),
@@ -444,6 +463,8 @@ fn record_tiny_sell_route_quote(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: event_id.to_string(),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,
@@ -469,7 +490,7 @@ fn record_tiny_sell_route_quote(
             route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Pump.fun Amm\"}}]".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some("{\"recommended\":22000}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
             error: None,
@@ -505,14 +526,7 @@ fn write_tiny_sell_route_keypair_file(name: &str, bytes: &[u8]) -> Result<PathBu
 }
 
 fn serialized_sell_route_legacy_transaction(first_account_key: [u8; 32]) -> String {
-    let mut transaction = vec![1_u8];
-    transaction.extend_from_slice(&[0_u8; 64]);
-    transaction.extend_from_slice(&[1_u8, 0, 0]);
-    transaction.push(1);
-    transaction.extend_from_slice(&first_account_key);
-    transaction.extend_from_slice(&[9_u8; 32]);
-    transaction.push(0);
-    BASE64_STANDARD.encode(transaction)
+    crate::app_tests::priority_fee_fixture::transaction(first_account_key, 200_000, 10_000)
 }
 
 fn unique_tiny_sell_route_test_path(name: &str) -> PathBuf {

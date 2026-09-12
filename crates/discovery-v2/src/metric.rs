@@ -32,7 +32,12 @@ pub struct DiscoveryV2WalletMetric {
     pub rug_lookahead_evaluated: u32,
     pub rug_lookahead_unevaluated: u32,
     pub live_sol_balance: Option<f64>,
+    /// Compatibility alias of live_inventory.known_classic_value_sol, never a full portfolio total.
     pub live_token_value_sol: Option<f64>,
+    #[serde(default)]
+    pub live_inventory: Option<crate::DiscoveryV2LiveInventoryEvidence>,
+    #[serde(default)]
+    pub live_valuation: Option<crate::DiscoveryV2LiveValuationEvidence>,
     pub live_token_positions: Option<u32>,
     pub live_tradable_token_positions: Option<u32>,
     pub shadow_closed_trades_24h: Option<u32>,
@@ -46,6 +51,8 @@ pub struct DiscoveryV2WalletMetric {
     pub shadow_stale_copy_loss_roi_24h: Option<f64>,
     #[serde(default)]
     pub executable_feedback_samples: Option<u32>,
+    #[serde(default)]
+    pub executable_feedback_unknown_samples: Option<u32>,
     #[serde(default)]
     pub executable_feedback_pnl_after_fee_sol: Option<f64>,
     #[serde(default)]
@@ -149,6 +156,8 @@ pub(crate) fn wallet_metric_from_accumulator(
         rug_lookahead_unevaluated: rug.unevaluated,
         live_sol_balance: None,
         live_token_value_sol: None,
+        live_inventory: None,
+        live_valuation: None,
         live_token_positions: None,
         live_tradable_token_positions: None,
         shadow_closed_trades_24h: None,
@@ -158,6 +167,7 @@ pub(crate) fn wallet_metric_from_accumulator(
         shadow_fast_loss_roi_24h: None,
         shadow_stale_copy_loss_roi_24h: None,
         executable_feedback_samples: None,
+        executable_feedback_unknown_samples: None,
         executable_feedback_pnl_after_fee_sol: None,
         executable_feedback_flip_rate: None,
         rug_feedback_closed_trades: None,

@@ -3,19 +3,20 @@ use super::tiny_submit::{
     reconcile_existing_tiny_submit_order, tiny_submit_runtime_block_reason,
 };
 use super::tiny_submit_request::build_submit_request;
-use super::tiny_submit_sell_metadata::{owned_position_sell_metadata, validate_tiny_sell_metadata};
+use super::tiny_submit_sell_metadata::{
+    guarded_owned_position_sell_metadata, validate_tiny_sell_metadata,
+};
 use super::tiny_submit_sell_retry::{
     failed_sell_build_retry_ready, failed_sell_simulation_retry_ready,
-    hold_terminal_failed_sell_no_route, hold_terminal_failed_sell_simulation,
-    next_failed_sell_retry_event_id, retry_failed_sell_candidate_ready,
+    hold_terminal_failed_sell_no_route, retry_failed_sell_candidate_ready,
     terminal_failed_sell_no_route, terminal_failed_sell_no_route_retry_ready,
-    terminal_failed_sell_simulation, RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
-    RETRY_TERMINAL_SELL_NO_ROUTE_REASON,
+    RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON, RETRY_TERMINAL_SELL_NO_ROUTE_REASON,
 };
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_canary_submit_contract::ExecutionTinySubmitGate;
 use crate::execution_quote_canary_helpers::{quote_canary_slippage_limit_bps, SIDE_SELL};
 use crate::execution_quote_provider_selection::selected_execution_build_plan_metadata;
+use crate::execution_source_sell_guard as source_guard;
 use crate::execution_submit_adapter::{
     record_execution_tiny_submit_confirm_path, JupiterMetisDryRunExecutionAdapter,
     RpcExecutionSubmitTransport,
@@ -64,9 +65,68 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
         return Ok(Some(summary));
     };
     let Some(signal) = store.load_copy_signal_by_signal_id(signal_id)? else {
-        summary.skipped_reason = Some("missing_sell_copy_signal");
+        source_guard::retry::state_result(
+            store,
+            now,
+            source_guard::signal(store, signal_id),
+            &mut summary,
+        )?;
         return Ok(Some(summary));
     };
+    let existing_order = store.load_execution_canary_order_by_signal(&signal.signal_id)?;
+    if let Some(existing) = &existing_order {
+        summary.existing = 1;
+        summary.last_order_id = Some(existing.order_id.clone());
+        if source_guard::known_signature(existing)
+            || matches!(
+                existing.status.as_str(),
+                copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
+                    | copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED
+                    | copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED
+            )
+        {
+            reconcile_existing_tiny_submit_order(config, store, existing, now, &mut summary)
+                .await?;
+            return Ok(Some(summary));
+        }
+        // Terminal write-off already performs its own fresh atomic source check.
+        if terminal_failed_sell_no_route(config, existing) {
+            return Ok(Some(hold_terminal_failed_sell_no_route(
+                store,
+                existing,
+                config.max_submit_attempts,
+                now,
+            )?));
+        }
+        if source_guard::retry::state_result(
+            store,
+            now,
+            source_guard::order(
+                store,
+                &existing.order_id,
+                &[
+                    copybot_storage_core::EXECUTION_STATUS_CANARY_CANDIDATE,
+                    copybot_storage_core::EXECUTION_STATUS_CANARY_BUILT,
+                    copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED,
+                    copybot_storage_core::EXECUTION_STATUS_CANARY_FAILED,
+                ],
+            ),
+            &mut summary,
+        )?
+        .is_none()
+        {
+            return Ok(Some(summary));
+        }
+    } else if source_guard::retry::state_result(
+        store,
+        now,
+        source_guard::signal(store, &signal.signal_id),
+        &mut summary,
+    )?
+    .is_none()
+    {
+        return Ok(Some(summary));
+    }
     if !signal.side.eq_ignore_ascii_case(SIDE_SELL) {
         summary.skipped_reason = Some("sell_signal_side_mismatch");
         return Ok(Some(summary));
@@ -78,56 +138,62 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
         }
     }
 
-    let retry_order =
-        if let Some(existing) = store.load_execution_canary_order_by_signal(&signal.signal_id)? {
-            summary.existing = 1;
-            summary.last_order_id = Some(existing.order_id.clone());
-            if retry_failed_sell_candidate_ready(&existing) {
-                Some(existing)
-            } else if terminal_failed_sell_no_route_retry_ready(&existing, now) {
-                if store
-                    .load_execution_canary_open_position(&signal.token)?
-                    .is_none()
-                {
-                    summary.open_positions = store.execution_canary_open_position_count()?;
-                    summary.sell_no_position = 1;
-                    summary.skipped_reason = Some("no_owned_position");
-                    return Ok(Some(summary));
-                }
-                Some(
-                    store.mark_execution_canary_terminal_sell_no_route_retry_candidate(
-                        &existing.order_id,
-                        now,
-                        RETRY_TERMINAL_SELL_NO_ROUTE_REASON,
-                    )?,
-                )
-            } else if terminal_failed_sell_no_route(config, &existing) {
-                return Ok(Some(hold_terminal_failed_sell_no_route(
-                    store, &existing, now,
-                )?));
-            } else if failed_sell_build_retry_ready(config, &existing) {
-                Some(store.mark_execution_canary_failed_build_retry_candidate(
+    let retry_order = if let Some(existing) = existing_order {
+        summary.existing = 1;
+        summary.last_order_id = Some(existing.order_id.clone());
+        if retry_failed_sell_candidate_ready(&existing) {
+            Some(existing)
+        } else if terminal_failed_sell_no_route_retry_ready(&existing, now) {
+            if store
+                .load_execution_canary_open_position(&signal.token)?
+                .is_none()
+            {
+                summary.open_positions = store.execution_canary_open_position_count()?;
+                summary.sell_no_position = 1;
+                summary.skipped_reason = Some("no_owned_position");
+                return Ok(Some(summary));
+            }
+            Some(
+                store.mark_execution_canary_terminal_sell_no_route_retry_candidate(
+                    &existing.order_id,
+                    now,
+                    RETRY_TERMINAL_SELL_NO_ROUTE_REASON,
+                )?,
+            )
+        } else if terminal_failed_sell_no_route(config, &existing) {
+            return Ok(Some(hold_terminal_failed_sell_no_route(
+                store,
+                &existing,
+                config.max_submit_attempts,
+                now,
+            )?));
+        } else if failed_sell_build_retry_ready(config, &existing) {
+            Some(store.mark_execution_canary_failed_build_retry_candidate(
+                &existing.order_id,
+                now,
+                RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
+            )?)
+        } else if failed_sell_simulation_retry_ready(config, &existing) {
+            Some(
+                store.mark_execution_canary_failed_simulation_retry_candidate(
                     &existing.order_id,
                     now,
                     RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
-                )?)
-            } else if failed_sell_simulation_retry_ready(config, &existing) {
-                Some(
-                    store.mark_execution_canary_failed_simulation_retry_candidate(
-                        &existing.order_id,
-                        now,
-                        RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
-                    )?,
-                )
-            } else {
-                reconcile_existing_tiny_submit_order(config, store, &existing, now, &mut summary)
-                    .await?;
-                return Ok(Some(summary));
-            }
+                )?,
+            )
         } else {
-            None
-        };
+            reconcile_existing_tiny_submit_order(config, store, &existing, now, &mut summary)
+                .await?;
+            return Ok(Some(summary));
+        }
+    } else {
+        None
+    };
 
+    if let Some(reason) = store.execution_sell_intent_position_block_reason(&signal)? {
+        summary.skipped_reason = Some(reason);
+        return Ok(Some(summary));
+    }
     let metadata = selected_execution_build_plan_metadata(store, event)?;
     let sell_limit_bps = quote_canary_slippage_limit_bps(config, SIDE_SELL) as f64;
     let decision = store.execution_canary_sell_decision(
@@ -172,10 +238,50 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
         reserve.order
     };
 
-    let metadata = match owned_position_sell_metadata(config, store, &signal.token, metadata).await
+    let Some(source) = source_guard::retry::state_result(
+        store,
+        now,
+        source_guard::order(
+            store,
+            &order.order_id,
+            &[copybot_storage_core::EXECUTION_STATUS_CANARY_CANDIDATE],
+        ),
+        &mut summary,
+    )?
+    else {
+        return Ok(Some(summary));
+    };
+    let result = guarded_owned_position_sell_metadata(
+        config,
+        store,
+        &signal.token,
+        metadata,
+        source.as_ref(),
+    )
+    .await
+    .map_err(|e| {
+        source_guard::retry::attach(source_guard::on_order(e, &order.order_id), source.as_ref())
+    });
+    if source_guard::retry::state_result(
+        store,
+        now,
+        source_guard::recheck(source.as_ref(), store),
+        &mut summary,
+    )?
+    .is_none()
     {
+        return Ok(Some(summary));
+    }
+    let metadata = match result {
         Ok(metadata) => metadata,
         Err(error) => {
+            if error.is::<source_guard::Refusal>() {
+                source_guard::retry::state_result::<()>(store, now, Err(error), &mut summary)?;
+                return Ok(Some(summary));
+            }
+            if source_guard::global_storage_error(&error) {
+                return Err(error);
+            }
             let error = format!("owned_sell_quote_failed: {error}");
             record_owned_sell_quote_failure(store, &order, now, &error, &mut summary)?;
             if write_off_dust_no_route_position(
@@ -210,10 +316,7 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
     else {
         return Ok(Some(summary));
     };
-    let submit_gate = ExecutionTinySubmitGate {
-        allow_rpc_submit: config.canary_tiny_submit_enabled,
-        submit_timeout_ms: config.submit_timeout_ms,
-    };
+    let submit_gate = ExecutionTinySubmitGate::from_config(config);
     let submit_transport = RpcExecutionSubmitTransport::new(config.submit_adapter_http_url.clone());
     let confirmation_timeout_ms = config.max_confirm_seconds.saturating_mul(1_000).max(1);
     let outcome = record_execution_tiny_submit_confirm_path(
@@ -231,44 +334,6 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
     .await?;
     apply_tiny_submit_confirm_path_outcome(&mut summary, outcome);
     Ok(Some(summary))
-}
-
-pub(super) async fn process_failed_sell_simulation_sweep_for_route(
-    config: &ExecutionConfig,
-    store: &SqliteStore,
-    now: DateTime<Utc>,
-) -> Result<ExecutionCanaryStateMachineSummary> {
-    if let Some(event_id) = next_failed_sell_retry_event_id(config, store, now)? {
-        return Ok(
-            process_tiny_submit_sell_quote_event(config, store, &event_id, now)
-                .await?
-                .unwrap_or_default(),
-        );
-    }
-
-    let mut orders = store
-        .list_failed_simulation_sell_execution_canary_orders_for_route(&config.canary_route, 1)?;
-    let Some(order) = orders.pop() else {
-        return Ok(ExecutionCanaryStateMachineSummary::default());
-    };
-    if terminal_failed_sell_simulation(config, &order) {
-        return hold_terminal_failed_sell_simulation(store, &order, now);
-    }
-    let Some(metadata) = store.load_execution_canary_build_plan_metadata(&order.order_id)? else {
-        return Ok(ExecutionCanaryStateMachineSummary::default());
-    };
-    let Some(event_id) = metadata
-        .quote_event_id
-        .as_deref()
-        .filter(|event_id| !event_id.trim().is_empty())
-    else {
-        return Ok(ExecutionCanaryStateMachineSummary::default());
-    };
-    Ok(
-        process_tiny_submit_sell_quote_event(config, store, event_id, now)
-            .await?
-            .unwrap_or_default(),
-    )
 }
 
 fn sell_safety_blocked(
@@ -314,6 +379,15 @@ fn write_off_dust_no_route_position(
 ) -> Result<bool> {
     if !error.contains("NO_ROUTES_FOUND") {
         return Ok(false);
+    }
+    if super::tiny_submit_source_write_off::apply_source_write_off(
+        store,
+        &order.order_id,
+        copybot_storage_core::ExecutionSourceSellWriteOffKind::DustNoRoute,
+        now,
+        summary,
+    )? {
+        return Ok(true);
     }
     let Some(position) = store.load_execution_canary_open_position(token)? else {
         return Ok(false);

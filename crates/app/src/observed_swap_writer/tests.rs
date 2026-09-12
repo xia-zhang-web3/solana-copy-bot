@@ -73,3 +73,6 @@ mod startup_recent_raw_b;
 
 use helpers_core::*;
 use helpers_scenarios::*;
+
+#[path = "tests_handoff_ack.rs"]
+mod handoff_ack;

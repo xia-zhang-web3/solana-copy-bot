@@ -1,8 +1,7 @@
 use crate::execution_canary_route::{
     list_swap_blueprint_state_machine_candidates, process_canary_state_machine_for_route,
-    process_failed_sell_simulation_sweep, process_tiny_submit_orphan_position_recovery_sweep,
-    process_tiny_submit_reconciliation_sweep, process_tiny_submit_sell_quote_event_for_route,
-    uses_swap_blueprint_state_machine,
+    process_tiny_submit_orphan_position_recovery_sweep,
+    process_tiny_submit_sell_quote_event_for_route, uses_swap_blueprint_state_machine,
 };
 use crate::execution_canary_summary::{apply_quote_summary, apply_state_machine_summary};
 use crate::execution_quote_canary::{ExecutionQuoteCanaryRunner, ExecutionQuoteCanaryTickSummary};
@@ -20,6 +19,12 @@ const CLOSE_QUOTE_RETRY_LOOKBACK_SECONDS: i64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionCanaryTickSummary {
+    pub(crate) buy_blocker: crate::execution_canary_summary::BuyBlocker,
+    pub(crate) source_sell_production: crate::execution_source_sell_producer::Summary,
+    pub(crate) source_sell_refusals: crate::execution_canary_summary::SourceSellWriteOffRefusals,
+    pub(crate) pre_submit_refusals: crate::execution_submit_refusal::PreSubmitRefusals,
+    pub(crate) source_sell_write_off_refusals:
+        crate::execution_canary_summary::SourceSellWriteOffRefusals,
     pub enabled: bool,
     pub dry_run: bool,
     pub route: String,
@@ -31,6 +36,7 @@ pub(crate) struct ExecutionCanaryTickSummary {
     pub last_signal_id: Option<String>,
     pub last_order_id: Option<String>,
     pub last_error: Option<String>,
+    pub last_owned_sell_recovery_error: Option<crate::telemetry::OwnedSellRecoveryError>,
     pub quote_entry_candidates: usize,
     pub quote_entry_inserted: usize,
     pub quote_entry_existing: usize,
@@ -61,12 +67,17 @@ pub(crate) struct ExecutionCanaryTickSummary {
     pub state_machine_skipped_reason: Option<&'static str>,
     pub state_machine_open_positions: u64,
     pub state_machine_daily_loss_sol: f64,
+    pub state_machine_entry_cost: Option<copybot_storage_core::ExecutionCanaryEntryCost>,
     pub last_state_machine_order_id: Option<String>,
 }
 
 impl ExecutionCanaryTickSummary {
     pub(crate) fn has_status_change(&self) -> bool {
-        self.inserted > 0
+        self.source_sell_production.visits > 0
+            || self.pre_submit_refusals.count() > 0
+            || self.source_sell_write_off_refusals.count() > 0
+            || self.source_sell_refusals.count() > 0
+            || self.inserted > 0
             || self.existing > 0
             || self.skipped_reason.is_some()
             || self.quote_entry_inserted > 0
@@ -96,19 +107,42 @@ impl ExecutionCanaryTickSummary {
 #[derive(Debug, Clone)]
 pub(crate) struct ExecutionCanaryRunner {
     config: ExecutionConfig,
+    strict_quotes: bool,
+    source_sell_continuation: crate::execution_source_sell_continuation::Continuation,
     quote_canary: ExecutionQuoteCanaryRunner,
 }
 
 impl ExecutionCanaryRunner {
     pub(crate) fn new(config: ExecutionConfig) -> Self {
         Self {
-            quote_canary: ExecutionQuoteCanaryRunner::new(config.clone()),
+            source_sell_continuation: Default::default(),
+            strict_quotes: false,
+            quote_canary: ExecutionQuoteCanaryRunner::new(config.clone()).requiring_owner(),
             config,
         }
     }
 
+    pub(crate) fn for_ingestion(
+        mut self,
+        ingestion: &copybot_config::IngestionConfig,
+        path: &str,
+    ) -> Result<Self> {
+        let strict = crate::execution_quote_canary::strict::StrictQuotes::for_ingestion(
+            &self.config,
+            ingestion,
+            path,
+        )?;
+        self.strict_quotes = strict.is_some();
+        self.quote_canary = self.quote_canary.with_strict_quotes(strict);
+        Ok(self)
+    }
+
     pub(crate) fn is_enabled(&self) -> bool {
-        self.config.canary_enabled
+        if self.strict_quotes {
+            self.config.canary_enabled || self.config.quote_canary_enabled
+        } else {
+            self.config.canary_enabled
+        }
     }
 
     pub(crate) fn interval_seconds(&self) -> u64 {
@@ -154,6 +188,28 @@ impl ExecutionCanaryRunner {
             wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
             ..ExecutionCanaryTickSummary::default()
         };
+        if self.strict_quotes {
+            // Durable mode is exclusively quote-only, including when the quote flag is OFF.
+            // Never enter order/reconciliation/simulation/signing/submit paths below.
+            if self.quote_canary.is_enabled()
+                && !Path::new(&self.config.canary_kill_switch_path).exists()
+            {
+                let q = self
+                    .quote_canary
+                    .process_tick(
+                        store,
+                        CANARY_COPY_SIGNAL_STATUS,
+                        now,
+                        now,
+                        self.config.canary_batch_limit.max(1),
+                    )
+                    .await?;
+                if q.strict_errors > 0 {
+                    anyhow::bail!("{}", q.last_error.unwrap_or_default());
+                }
+            }
+            return Ok(summary);
+        }
         if !self.config.canary_enabled {
             summary.skipped_reason = Some("disabled");
             return Ok(summary);
@@ -166,7 +222,7 @@ impl ExecutionCanaryRunner {
         let since = now - Duration::seconds(self.config.canary_max_signal_age_seconds as i64);
         let signals = if uses_swap_blueprint_state_machine(&self.config) {
             if let Some(state) =
-                process_tiny_submit_reconciliation_sweep(&self.config, store, now).await?
+                crate::execution_canary_route::process_tiny_submit_reconciliation_sweep_with_continuation(&self.config, store, now, &self.source_sell_continuation).await?
             {
                 apply_state_machine_summary(&mut summary, state);
             }
@@ -176,6 +232,8 @@ impl ExecutionCanaryRunner {
                 apply_state_machine_summary(&mut summary, state);
             }
             if self.quote_canary.is_enabled() {
+                summary.source_sell_production =
+                    crate::execution_source_sell_producer::produce(store)?;
                 let quote_summary = self
                     .quote_canary
                     .process_tick(
@@ -193,7 +251,7 @@ impl ExecutionCanaryRunner {
                 apply_quote_summary(&mut summary, quote_summary);
             }
             if let Some(state) =
-                process_failed_sell_simulation_sweep(&self.config, store, now).await?
+                crate::execution_canary_route::process_failed_sell_simulation_sweep_with_continuation(&self.config, store, now, &self.source_sell_continuation).await?
             {
                 apply_state_machine_summary(&mut summary, state);
             }
@@ -230,6 +288,9 @@ impl ExecutionCanaryRunner {
             signals
         };
         for signal in &signals {
+            if self.quote_canary.entry_pending(&signal.signal_id) {
+                continue;
+            }
             let state_summary =
                 process_canary_state_machine_for_route(&self.config, store, signal, now).await?;
             apply_state_machine_summary(&mut summary, state_summary);
@@ -240,6 +301,7 @@ impl ExecutionCanaryRunner {
         {
             summary.last_order_id = Some(order.order_id);
         }
+        summary.buy_blocker.refresh(store);
         Ok(summary)
     }
 
@@ -256,12 +318,31 @@ impl ExecutionCanaryRunner {
             wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
             ..ExecutionCanaryTickSummary::default()
         };
-        if !self.config.canary_enabled {
+        if self.strict_quotes || !self.config.canary_enabled {
             summary.skipped_reason = Some("disabled");
             return Ok(summary);
         }
         if Path::new(&self.config.canary_kill_switch_path).exists() {
             summary.skipped_reason = Some("kill_switch_active");
+            return Ok(summary);
+        }
+        if signal.side == "buy" && self.quote_canary.entry_pending(&signal.signal_id) {
+            #[cfg(test)]
+            crate::app_tests::b70_hooks::mark("recorded_pending", &signal.signal_id);
+            summary.skipped_reason = Some("hot_quote_pending");
+            return Ok(summary);
+        }
+        if signal.side == "buy"
+            && store
+                .execution_quote_entry_blocked(&signal.signal_id, self.quote_canary.is_enabled())?
+        {
+            summary.last_signal_id = Some(signal.signal_id.clone());
+            summary.skipped_reason =
+                Some(if store.execution_quote_entry_refused(&signal.signal_id)? {
+                    "hot_buy_refused"
+                } else {
+                    "hot_buy_owner_pending"
+                });
             return Ok(summary);
         }
         if signal.side == "buy" {
@@ -308,6 +389,7 @@ impl ExecutionCanaryRunner {
         {
             summary.last_order_id = Some(order.order_id);
         }
+        summary.buy_blocker.refresh(store);
         Ok(summary)
     }
 
@@ -324,7 +406,7 @@ impl ExecutionCanaryRunner {
             wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
             ..ExecutionCanaryTickSummary::default()
         };
-        if !self.config.canary_enabled {
+        if self.strict_quotes || !self.config.canary_enabled {
             summary.skipped_reason = Some("disabled");
             return Ok(summary);
         }
@@ -350,12 +432,16 @@ impl ExecutionCanaryRunner {
         summary: &mut ExecutionCanaryTickSummary,
     ) -> Result<Vec<CopySignalRow>> {
         let signals = store
-            .list_execution_canary_candidates(
+            .list_execution_canary_ready_candidates(
                 CANARY_COPY_SIGNAL_STATUS,
                 since,
                 self.config.canary_batch_limit.max(1),
+                self.quote_canary.is_enabled(),
             )
-            .context("failed loading execution canary candidates")?;
+            .context("failed loading execution canary candidates")?
+            .into_iter()
+            .filter(|s| !self.quote_canary.entry_pending(&s.signal_id))
+            .collect::<Vec<_>>();
         summary.candidates = signals.len();
         for signal in &signals {
             let outcome = store
@@ -415,17 +501,43 @@ impl ExecutionCanaryRunner {
             return Ok(());
         }
         let since = now - Duration::seconds(CLOSE_QUOTE_RETRY_LOOKBACK_SECONDS);
-        let event_ids = store
-            .list_execution_quote_canary_close_submit_retry_event_ids(
+        use crate::execution_source_sell_continuation::{Family, SOURCE_REFUSAL_VISIT_BUDGET};
+        let family = Family::FreshQuote;
+        let after = self.source_sell_continuation.after(family);
+        let limit = self.config.canary_batch_limit.max(1) as usize;
+        let rows = store
+            .list_execution_quote_canary_close_submit_retry_event_ids_page(
                 since,
-                self.config.canary_batch_limit.max(1),
+                limit
+                    .saturating_add(SOURCE_REFUSAL_VISIT_BUDGET)
+                    .min(u32::MAX as usize) as u32,
+                after.as_ref(),
             )
             .context("failed loading fresh close quote retry events")?;
-        for event_id in event_ids {
-            if let Some(state) =
-                process_tiny_submit_sell_quote_event_for_route(&self.config, store, &event_id, now)
-                    .await?
+        if rows.is_empty() {
+            self.source_sell_continuation.wrap(family);
+        }
+        let (mut handled, mut refused) = (0, 0);
+        for row in rows {
+            if handled >= limit || refused >= SOURCE_REFUSAL_VISIT_BUDGET {
+                break;
+            }
+            if let Some(state) = process_tiny_submit_sell_quote_event_for_route(
+                &self.config,
+                store,
+                &row.event_id,
+                now,
+            )
+            .await?
             {
+                let local = state.source_sell_refusals.count() > 0;
+                self.source_sell_continuation
+                    .visited(family, row.cursor, local);
+                if local {
+                    refused += 1;
+                } else {
+                    handled += 1;
+                }
                 apply_state_machine_summary(summary, state);
             }
         }
@@ -449,3 +561,8 @@ fn copy_signal_from_shadow_signal(
         status: CANARY_COPY_SIGNAL_STATUS.to_string(),
     }
 }
+
+#[path = "execution_canary_hot_jobs.rs"]
+mod hot_jobs;
+#[path = "execution_canary_hot_resume.rs"]
+mod hot_resume;

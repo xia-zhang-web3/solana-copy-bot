@@ -1,9 +1,8 @@
-use crate::execution_quote_canary_helpers::truncate_for_log;
 use crate::execution_signing_envelope::ExecutionSigningEnvelope;
 use crate::execution_submit_adapter::{
-    build_submit_transport_attempt, dry_run_no_send_submit_intent, record_submit_transport_outcome,
-    ExecutionSubmitAdapter, ExecutionSubmitPlan, ExecutionSubmitRequest,
-    ExecutionSubmitTransportOutcome, RpcExecutionSubmitTransport,
+    dry_run_no_send_submit_intent, record_submit_transport_outcome, ExecutionSubmitAdapter,
+    ExecutionSubmitPlan, ExecutionSubmitRequest, ExecutionSubmitTransportOutcome,
+    RpcExecutionSubmitTransport,
 };
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -14,11 +13,10 @@ use copybot_storage_core::{
 
 pub(crate) const TINY_SUBMIT_RETRY_AFTER_RPC_NOT_SENT_REASON: &str =
     "retry_after_rpc_submit_not_sent";
-const RPC_SUBMIT_ERROR_REASON: &str = "rpc_send_transaction_error";
-const RPC_SUBMIT_MISSING_SIGNATURE_REASON: &str = "rpc_send_transaction_missing_signature";
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionSubmitPlanOutcome {
+    pub(crate) pre_submit_refusal: Option<Box<crate::execution_submit_refusal::PreSubmitRefusal>>,
     pub(crate) failed: usize,
     pub(crate) submitted: usize,
     pub(crate) submit_disabled: usize,
@@ -30,17 +28,38 @@ pub(crate) struct ExecutionSubmitPlanOutcome {
     pub(crate) error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) struct ExecutionTinySubmitGate {
+    pub(crate) buy_safety_config: Option<copybot_config::ExecutionConfig>,
     pub(crate) allow_rpc_submit: bool,
+    pub(crate) pretrade_max_priority_fee_lamports: u64,
+    pub(crate) pretrade_min_sol_reserve: f64,
+    pub(crate) execution_wallet_pubkey: String,
     pub(crate) submit_timeout_ms: u64,
 }
 
 impl Default for ExecutionTinySubmitGate {
     fn default() -> Self {
         Self {
+            buy_safety_config: None,
             allow_rpc_submit: false,
+            pretrade_max_priority_fee_lamports: 0,
+            pretrade_min_sol_reserve: 0.0, // invalid if a caller enables tiny BUY without policy
+            execution_wallet_pubkey: String::new(),
             submit_timeout_ms: 3_000,
+        }
+    }
+}
+
+impl ExecutionTinySubmitGate {
+    pub(crate) fn from_config(config: &copybot_config::ExecutionConfig) -> Self {
+        Self {
+            buy_safety_config: Some(config.clone()),
+            allow_rpc_submit: config.canary_tiny_submit_enabled,
+            pretrade_max_priority_fee_lamports: config.pretrade_max_priority_fee_lamports,
+            pretrade_min_sol_reserve: config.pretrade_min_sol_reserve,
+            execution_wallet_pubkey: config.execution_signer_pubkey.clone(),
+            submit_timeout_ms: config.submit_timeout_ms,
         }
     }
 }
@@ -114,6 +133,10 @@ pub(crate) async fn record_execution_tiny_submit_plan<A: ExecutionSubmitAdapter>
     transport: &RpcExecutionSubmitTransport,
     now: DateTime<Utc>,
 ) -> Result<ExecutionSubmitPlanOutcome> {
+    let state = match crate::execution_tiny_submit_state::eligible(store, request) {
+        Ok(state) => state,
+        Err(reason) => return Ok(crate::execution_tiny_submit_state::reject(reason)),
+    };
     let submit_plan = match validated_submit_plan(adapter, request, envelope) {
         Ok(plan) => plan,
         Err(error) => {
@@ -153,43 +176,41 @@ pub(crate) async fn record_execution_tiny_submit_plan<A: ExecutionSubmitAdapter>
                     ..ExecutionSubmitPlanOutcome::default()
                 });
             }
-            let attempt = build_submit_transport_attempt(&intent, gate.submit_timeout_ms, now)?;
-            let transport_outcome = match transport.submit(&attempt).await {
-                Ok(outcome) => outcome,
-                Err(error) => {
+            if let Some(config) = gate.buy_safety_config.as_ref() {
+                if let Err(error) = crate::execution_native_floor_policy::protected::current(
+                    store, config, request, now,
+                ) {
                     return record_submit_plan_failure(store, request, now, error.to_string());
                 }
-            };
-            if let ExecutionSubmitTransportOutcome::NotSent {
-                idempotency_key,
-                reason,
-            } = &transport_outcome
-            {
-                if is_retryable_tiny_submit_not_sent(reason) {
-                    let retry_reason = tiny_submit_not_sent_retry_reason(reason);
-                    store.mark_execution_canary_retry_after_submit_not_sent(
-                        &request.order_id,
-                        now,
-                        &retry_reason,
-                    )?;
-                    return Ok(ExecutionSubmitPlanOutcome {
-                        idempotency_key: Some(idempotency_key.clone()),
-                        reason: Some(retry_reason),
-                        skipped_reason: Some("tiny_submit_retry_after_rpc_not_sent"),
-                        ..ExecutionSubmitPlanOutcome::default()
-                    });
-                }
             }
-            let record_outcome =
-                record_submit_transport_outcome(store, request, transport_outcome, now)?;
-            Ok(ExecutionSubmitPlanOutcome {
-                submitted: record_outcome.submitted,
-                submit_disabled: record_outcome.submit_disabled,
-                idempotency_key: record_outcome.idempotency_key,
-                tx_signature: record_outcome.tx_signature,
-                reason: record_outcome.reason,
-                ..ExecutionSubmitPlanOutcome::default()
-            })
+            if let Err(error) = crate::execution_priority_fee_proof::validate_submit(
+                store,
+                request,
+                envelope,
+                &intent,
+                gate.pretrade_max_priority_fee_lamports,
+            ) {
+                return record_submit_plan_failure(store, request, now, error.to_string());
+            }
+            if let Err(error) = crate::execution_native_floor_policy::verify_submit_payload(
+                request,
+                &intent.signed_transaction_base64,
+                gate.pretrade_min_sol_reserve,
+                &gate.execution_wallet_pubkey,
+            ) {
+                return record_submit_plan_failure(store, request, now, error.to_string());
+            }
+            if let Some(rejection) = crate::execution_initial_sol_submit::before_send(
+                store, request, envelope, &intent, gate, transport, &state, now,
+            )
+            .await
+            {
+                return Ok(rejection);
+            }
+            crate::execution_tiny_submit_state::dispatch::send(
+                store, request, &intent, envelope, gate, transport, &state, now,
+            )
+            .await
         }
     }
 }
@@ -204,24 +225,20 @@ fn validated_submit_plan<A: ExecutionSubmitAdapter>(
     Ok(plan)
 }
 
-fn is_retryable_tiny_submit_not_sent(reason: &str) -> bool {
-    reason.starts_with(RPC_SUBMIT_ERROR_REASON)
-        || reason.starts_with(RPC_SUBMIT_MISSING_SIGNATURE_REASON)
-}
-
-fn tiny_submit_not_sent_retry_reason(reason: &str) -> String {
-    format!(
-        "{TINY_SUBMIT_RETRY_AFTER_RPC_NOT_SENT_REASON}:{}",
-        truncate_for_log(reason, 220)
-    )
-}
-
-fn record_submit_plan_failure(
+pub(crate) fn record_submit_plan_failure(
     store: &SqliteStore,
     request: &ExecutionSubmitRequest,
     now: DateTime<Utc>,
     error: String,
 ) -> Result<ExecutionSubmitPlanOutcome> {
+    if let Some(dispatch) = store.load_execution_canary_dispatch(&request.order_id)? {
+        return Ok(ExecutionSubmitPlanOutcome {
+            submitted: 1,
+            tx_signature: Some(dispatch.tx_signature),
+            reason: Some("dispatch_outcome_unknown".into()),
+            ..Default::default()
+        });
+    }
     let order = store.mark_execution_canary_failed(
         &request.order_id,
         now,

@@ -1,0 +1,45 @@
+name: Storage Semantic
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  storage-semantic:
+    name: storage-semantic
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_TARGET_DIR: target/storage-semantic
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust versions
+        shell: bash
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Cache cargo state
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target/storage-semantic
+          key: cargo-storage-semantic-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain*', '.cargo/**') }}
+          restore-keys: |
+            cargo-storage-semantic-${{ runner.os }}-
+
+      - name: Workflow contract
+        shell: bash
+        run: python3 -B -m unittest discover -s tools/tests -p test_storage_semantic_workflow.py -v
+
+      - name: Storage semantic tests
+        shell: bash
+        run: cargo test --locked -p copybot-storage-core --lib --tests

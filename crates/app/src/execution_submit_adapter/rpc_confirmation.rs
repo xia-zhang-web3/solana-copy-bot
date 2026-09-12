@@ -12,6 +12,19 @@ pub(crate) const RPC_CONFIRMATION_PENDING_STATUS_PROCESSED: &str =
     "rpc_confirmation_pending_processed";
 pub(crate) const RPC_CONFIRMATION_PENDING_STATUS_UNKNOWN: &str = "rpc_confirmation_pending_unknown";
 
+#[derive(Debug)]
+pub(super) struct SignatureTransactionFailed {
+    pub slot: Option<u64>,
+    pub commitment: String,
+    pub error: Value,
+}
+impl std::fmt::Display for SignatureTransactionFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("confirmation RPC transaction_error")
+    }
+}
+impl std::error::Error for SignatureTransactionFailed {}
+
 pub(crate) async fn fetch_rpc_signature_confirmation(
     http: &reqwest::Client,
     rpc_url: &str,
@@ -81,11 +94,35 @@ pub(crate) fn rpc_signature_confirmation_from_json(
             RPC_CONFIRMATION_PENDING_STATUS_MISSING,
         ));
     }
-    if let Some(error) = status.get("err").filter(|error| !error.is_null()) {
-        return Err(anyhow!(
-            "confirmation RPC transaction_error: {}",
-            truncate_for_log(&error.to_string(), 240)
+    let Some(err) = status.get("err") else {
+        return Ok(pending(
+            tx_signature,
+            RPC_CONFIRMATION_PENDING_STATUS_MISSING,
         ));
+    };
+    if !err.is_null() {
+        anyhow::ensure!(
+            valid_transaction_error(err),
+            "confirmation RPC malformed transaction error"
+        );
+        let commitment = status
+            .get("confirmationStatus")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !matches!(commitment, "confirmed" | "finalized")
+            || !super::rpc_failed_expense::proven_failure(err)
+        {
+            return Ok(pending(
+                tx_signature,
+                RPC_CONFIRMATION_PENDING_STATUS_UNKNOWN,
+            ));
+        }
+        return Err(SignatureTransactionFailed {
+            slot: status.get("slot").and_then(Value::as_u64),
+            commitment: commitment.into(),
+            error: err.clone(),
+        }
+        .into());
     }
     let confirmation_status = status
         .get("confirmationStatus")
@@ -96,7 +133,7 @@ pub(crate) fn rpc_signature_confirmation_from_json(
             ExecutionConfirmationProof {
                 tx_signature: tx_signature.to_string(),
                 confirmation_status: confirmation_status.to_string(),
-                slot: status_slot(result, status),
+                slot: status.get("slot").and_then(Value::as_u64),
                 confirmed_at,
             },
         )),
@@ -127,16 +164,35 @@ fn validate_rpc_confirmation_request(
     Ok(())
 }
 
-fn status_slot(result: &Value, status: &Value) -> Option<u64> {
-    status
-        .get("slot")
-        .and_then(Value::as_u64)
-        .or_else(|| result.pointer("/context/slot").and_then(Value::as_u64))
-}
-
 fn pending(tx_signature: &str, reason: &str) -> ExecutionConfirmationTrackerOutcome {
     ExecutionConfirmationTrackerOutcome::Pending {
         tx_signature: tx_signature.to_string(),
         reason: reason.to_string(),
     }
+}
+
+// RPC errors outside this supported transaction-error shape are unavailable proof.
+pub(super) fn valid_transaction_error(error: &Value) -> bool {
+    if let Some(name) = error.as_str() {
+        return !name.is_empty();
+    }
+    let Some(object) = error.as_object().filter(|o| o.len() == 1) else {
+        return false;
+    };
+    let Some(instruction) = object
+        .get("InstructionError")
+        .and_then(Value::as_array)
+        .filter(|a| a.len() == 2 && a[0].as_u64().is_some())
+    else {
+        return false;
+    };
+    if let Some(name) = instruction[1].as_str() {
+        return !name.is_empty();
+    }
+    instruction[1]
+        .as_object()
+        .filter(|o| o.len() == 1)
+        .and_then(|o| o.get("Custom"))
+        .and_then(Value::as_u64)
+        .is_some_and(|code| u32::try_from(code).is_ok())
 }

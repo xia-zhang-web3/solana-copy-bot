@@ -17,7 +17,9 @@ pub(crate) struct EntryEvidence {
     pub(crate) wallet_id: String,
     pub(crate) token: String,
     pub(crate) signal_ts: DateTime<Utc>,
-    pub(crate) entry_ready_ts: Option<DateTime<Utc>>,
+    pub(crate) http_request_started_ts: Option<DateTime<Utc>>,
+    pub(crate) actual_entry_ready_ts: Option<DateTime<Utc>>,
+    pub(crate) modeled_entry_ready_ts: Option<DateTime<Utc>>,
     pub(crate) copy_signal_status: Option<String>,
     pub(crate) source_cohort: Option<String>,
     pub(crate) discovery_rank: Option<u64>,
@@ -101,6 +103,18 @@ pub(crate) fn load_audit_evidence(
         load_closes(conn, related_since, outcome_until, related_limit.max(1))?;
     let coverage = AuditCoverage {
         loaded_entry_events: entries.len() as u64,
+        actual_http_entry_events: entries
+            .iter()
+            .filter(|e| e.http_request_started_ts.is_some())
+            .count() as u64,
+        unknown_http_entry_events: entries
+            .iter()
+            .filter(|e| e.http_request_started_ts.is_none())
+            .count() as u64,
+        actual_entry_ready_events: entries
+            .iter()
+            .filter(|e| e.actual_entry_ready_ts.is_some())
+            .count() as u64,
         loaded_sell_signals: sell_signals.len() as u64,
         loaded_sell_quote_events: sell_quotes.len() as u64,
         loaded_close_outcomes: closes.len() as u64,
@@ -126,6 +140,11 @@ fn load_entries(
     outcome_until: DateTime<Utc>,
     limit: u32,
 ) -> Result<(Vec<EntryEvidence>, bool)> {
+    let actual = copybot_storage_core::quote_http_started_expr(
+        conn,
+        "execution_quote_canary_events",
+        "entry",
+    )?;
     let source_expr = optional_entry_metadata_expr(conn, "source_cohort")?;
     let rank_expr = optional_entry_metadata_expr(conn, "discovery_rank")?;
     let mut stmt = conn
@@ -136,7 +155,7 @@ fn load_entries(
                     entry.decision_status, gate.status, entry.quote_in_amount_raw,
                     entry.quote_out_amount_raw, entry.quote_response_json,
                     entry.quote_price_sol, entry.slippage_bps, entry.route_plan_json,
-                    entry.priority_fee_status, entry.priority_fee_lamports
+                    entry.priority_fee_status, entry.priority_fee_lamports, {actual}
              FROM execution_quote_canary_events AS entry
              INDEXED BY idx_execution_quote_canary_events_side_request_ts
              LEFT JOIN execution_quote_canary_events AS diag
@@ -170,6 +189,7 @@ fn load_entries(
             };
             let request_raw: String = row.get(3)?;
             let request_ts = parse_ts(&request_raw, "entry.request_ts")?;
+            let actual = crate::quote_timing::read_start(row, 21)?;
             let signal_raw: Option<String> = row.get(4)?;
             let quote_latency_ms = optional_i64_to_u64(row.get(5)?, 5)?;
             let gate_recorded_raw: Option<String> = row.get(6)?;
@@ -185,7 +205,15 @@ fn load_entries(
                     signal_raw.as_deref().unwrap_or(&request_raw),
                     "entry.signal_ts",
                 )?,
-                entry_ready_ts: entry_ready_ts(request_ts, quote_latency_ms, gate_recorded_ts),
+                http_request_started_ts: actual,
+                actual_entry_ready_ts: actual.and_then(|started| {
+                    modeled_entry_ready_ts(started, quote_latency_ms, gate_recorded_ts)
+                }),
+                modeled_entry_ready_ts: modeled_entry_ready_ts(
+                    request_ts,
+                    quote_latency_ms,
+                    gate_recorded_ts,
+                ),
                 copy_signal_status: row.get(7)?,
                 source_cohort: row.get(8)?,
                 discovery_rank: optional_i64_to_u64(row.get(9)?, 9)?,
@@ -214,7 +242,7 @@ fn load_entries(
     Ok((entries, hit))
 }
 
-fn entry_ready_ts(
+fn modeled_entry_ready_ts(
     request_ts: DateTime<Utc>,
     quote_latency_ms: Option<u64>,
     gate_recorded_ts: Option<DateTime<Utc>>,

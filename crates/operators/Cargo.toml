@@ -2,6 +2,12 @@
 name = "copybot-operators"
 version.workspace = true
 edition.workspace = true
+autobins = false
+
+[features]
+default = []
+# Closed experiments: local historical research only, excluded from artifacts.
+legacy-reports = []
 
 [lib]
 name = "copybot_operators"
@@ -33,7 +39,8 @@ path = "src/bin/copybot_execution_tiny_writeoff.rs"
 
 [[bin]]
 name = "copybot_exit_policy_sim"
-path = "src/bin/copybot_exit_policy_sim.rs"
+path = "src/legacy-bin/copybot_exit_policy_sim.rs"
+required-features = ["legacy-reports"]
 
 [[bin]]
 name = "copybot_first_sell_full_exit_report"
@@ -41,11 +48,13 @@ path = "src/bin/copybot_first_sell_full_exit_report.rs"
 
 [[bin]]
 name = "copybot_exit_policy_shadow_quote_report"
-path = "src/bin/copybot_exit_policy_shadow_quote_report.rs"
+path = "src/legacy-bin/copybot_exit_policy_shadow_quote_report.rs"
+required-features = ["legacy-reports"]
 
 [[bin]]
 name = "copybot_entry_side_filter_backtest"
-path = "src/bin/copybot_entry_side_filter_backtest.rs"
+path = "src/legacy-bin/copybot_entry_side_filter_backtest.rs"
+required-features = ["legacy-reports"]
 
 [[bin]]
 name = "copybot_leader_copyability_report"

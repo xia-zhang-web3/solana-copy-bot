@@ -26,6 +26,8 @@ fn threshold_summary(
 ) -> ExecutionCanaryQuotePnlThresholdSummary {
     let mut summary = ExecutionCanaryQuotePnlThresholdSummary {
         threshold_bps,
+        quote_adjusted_pnl_after_priority_fee_sol: Some(0.0),
+        skipped_counterfactual_pnl_after_priority_fee_sol: Some(0.0),
         total_closed_trades: trades.len() as u64,
         shadow_pnl_sol: trades.iter().map(|trade| trade.shadow_pnl_sol).sum(),
         ..ExecutionCanaryQuotePnlThresholdSummary::default()
@@ -45,7 +47,9 @@ fn threshold_summary(
         }
         if slippage_bps <= threshold_bps as f64 {
             summary.counted_trades += 1;
-            summary.quote_adjusted_pnl_after_priority_fee_sol += quote_after_fee;
+            summary.quote_adjusted_pnl_after_priority_fee_sol = summary
+                .quote_adjusted_pnl_after_priority_fee_sol
+                .map(|sum| sum + quote_after_fee);
             if quote_after_fee > 0.0 {
                 summary.quote_win_count += 1;
             } else if quote_after_fee < 0.0 {
@@ -57,11 +61,17 @@ fn threshold_summary(
         } else {
             summary.skipped_trades += 1;
             summary.skipped_shadow_pnl_sol += trade.shadow_pnl_sol;
-            summary.skipped_counterfactual_pnl_after_priority_fee_sol += quote_after_fee;
+            summary.skipped_counterfactual_pnl_after_priority_fee_sol = summary
+                .skipped_counterfactual_pnl_after_priority_fee_sol
+                .map(|sum| sum + quote_after_fee);
             if is_force_exit(trade) {
                 summary.force_exit_skipped_entry_trades += 1;
             }
         }
+    }
+    if summary.unknown_trades > 0 {
+        summary.quote_adjusted_pnl_after_priority_fee_sol = None;
+        summary.skipped_counterfactual_pnl_after_priority_fee_sol = None;
     }
     summary
 }
@@ -85,6 +95,8 @@ struct BucketAcc {
     trades: u64,
     shadow_pnl_sol: f64,
     quote_after_fee_sol: f64,
+    after_fee_known_trades: u64,
+    after_fee_unknown_trades: u64,
     buy_slippage_bps: Sample,
     sell_slippage_bps: Sample,
     entry_decision_delay_ms: Sample,
@@ -97,7 +109,12 @@ impl BucketAcc {
     fn record(&mut self, trade: &ExecutionCanaryQuotePnlTrade) {
         self.trades += 1;
         self.shadow_pnl_sol += trade.shadow_pnl_sol;
-        self.quote_after_fee_sol += quote_after_fee(trade).unwrap_or(0.0);
+        if let Some(net) = quote_after_fee(trade) {
+            self.quote_after_fee_sol += net;
+            self.after_fee_known_trades += 1;
+        } else {
+            self.after_fee_unknown_trades += 1;
+        }
         self.buy_slippage_bps.record(trade.buy_slippage_bps);
         self.sell_slippage_bps.record(trade.sell_slippage_bps);
         self.entry_decision_delay_ms
@@ -132,11 +149,24 @@ impl BucketAcc {
             bucket,
             trades: self.trades,
             shadow_pnl_sol: self.shadow_pnl_sol,
-            quote_adjusted_pnl_after_priority_fee_sol: self.quote_after_fee_sol,
+            after_fee_known_trades: self.after_fee_known_trades,
+            after_fee_unknown_trades: self.after_fee_unknown_trades,
+            quote_adjusted_pnl_after_priority_fee_sol: (self.after_fee_unknown_trades == 0)
+                .then_some(self.quote_after_fee_sol),
             buy_slippage_bps_avg: self.buy_slippage_bps.avg(),
             sell_slippage_bps_avg: self.sell_slippage_bps.avg(),
-            entry_decision_delay_ms_avg: self.entry_decision_delay_ms.avg(),
-            exit_decision_delay_ms_avg: self.exit_decision_delay_ms.avg(),
+            entry_decision_delay_ms_samples: self.entry_decision_delay_ms.count,
+            entry_decision_delay_ms_unknown: self
+                .trades
+                .saturating_sub(self.entry_decision_delay_ms.count),
+            entry_decision_delay_ms_avg: (self.entry_decision_delay_ms.count > 0)
+                .then(|| self.entry_decision_delay_ms.avg()),
+            exit_decision_delay_ms_samples: self.exit_decision_delay_ms.count,
+            exit_decision_delay_ms_unknown: self
+                .trades
+                .saturating_sub(self.exit_decision_delay_ms.count),
+            exit_decision_delay_ms_avg: (self.exit_decision_delay_ms.count > 0)
+                .then(|| self.exit_decision_delay_ms.avg()),
             buy_leader_notional_sol_avg: self.buy_leader_notional_sol.avg(),
             top_routes: routes,
         }

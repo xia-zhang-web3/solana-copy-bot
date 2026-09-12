@@ -6,6 +6,7 @@ use super::REASON_CONFIG_MISSING_YELLOWSTONE;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Cli {
+    pub(crate) capture: Option<super::capture_config::CaptureConfig>,
     pub(crate) config_path: PathBuf,
     pub(crate) json: bool,
     pub(crate) mode: ProbeMode,
@@ -29,11 +30,13 @@ pub enum ProbeMode {
     SlotsOnly,
     BlocksMeta,
     EmptyThenSend,
+    AssociationCapture,
 }
 
 impl ProbeMode {
     pub(crate) fn parse(value: &str) -> Result<Self> {
         match value {
+            "association-capture" => Ok(Self::AssociationCapture),
             "transaction-filter" => Ok(Self::TransactionFilter),
             "slots-only" => Ok(Self::SlotsOnly),
             "blocks-meta" => Ok(Self::BlocksMeta),
@@ -46,6 +49,7 @@ impl ProbeMode {
 
     pub(crate) fn as_str(self) -> &'static str {
         match self {
+            Self::AssociationCapture => "association-capture",
             Self::TransactionFilter => "transaction-filter",
             Self::SlotsOnly => "slots-only",
             Self::BlocksMeta => "blocks-meta",
@@ -112,7 +116,11 @@ pub(crate) fn build_probe_config(
         fallback.extend(ingestion.pumpswap_program_ids.iter().cloned());
         fallback
     };
-    if mode == ProbeMode::TransactionFilter && program_ids.is_empty() {
+    if matches!(
+        mode,
+        ProbeMode::TransactionFilter | ProbeMode::AssociationCapture
+    ) && program_ids.is_empty()
+    {
         return Err(anyhow!(
             "{REASON_CONFIG_MISSING_YELLOWSTONE}: no yellowstone program filters configured"
         ));
@@ -137,6 +145,7 @@ where
     I: IntoIterator,
     I::Item: Into<String>,
 {
+    let mut capture = super::capture_config::CaptureArgs::default();
     let mut config_path = None;
     let mut json = false;
     let mut mode = ProbeMode::TransactionFilter;
@@ -171,11 +180,13 @@ where
                     .ok_or_else(|| anyhow!("--subscribe-timeout-ms requires a value"))?;
                 subscribe_timeout_ms = Some(parse_positive_u64("--subscribe-timeout-ms", &value)?);
             }
+            other if capture.accepts(other) => capture.set(other, iter.next())?,
             other => return Err(anyhow!("unknown argument: {other}")),
         }
     }
 
     Ok(Cli {
+        capture: capture.finish(mode)?,
         config_path: config_path.ok_or_else(|| anyhow!("--config is required"))?,
         json,
         mode,

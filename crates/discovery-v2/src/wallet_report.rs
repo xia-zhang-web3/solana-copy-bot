@@ -97,7 +97,12 @@ pub struct DiscoveryV2WalletReportRow {
     pub rug_lookahead_evaluated: u32,
     pub rug_lookahead_unevaluated: u32,
     pub live_sol_balance: Option<f64>,
+    /// Compatibility alias for the known classic model subtotal, not total portfolio value.
     pub live_token_value_sol: Option<f64>,
+    #[serde(default)]
+    pub live_inventory: Option<crate::DiscoveryV2LiveInventoryEvidence>,
+    #[serde(default)]
+    pub live_valuation: Option<crate::DiscoveryV2LiveValuationEvidence>,
     pub live_token_positions: Option<u32>,
     pub live_tradable_token_positions: Option<u32>,
     pub shadow_closed_trades_24h: Option<u32>,
@@ -133,7 +138,22 @@ pub fn build_discovery_v2_wallet_report(
     shadow: &ShadowConfig,
     status: DiscoveryV2Status,
     options: DiscoveryV2WalletReportOptions,
+    context: crate::DiscoveryV2DecisionContext<'_>,
 ) -> Result<DiscoveryV2WalletReport> {
+    anyhow::ensure!(
+        options.now == context.options.now,
+        "discovery v2 report decision time mismatch"
+    );
+    anyhow::ensure!(
+        crate::discovery_v2_policy_fingerprint(discovery, shadow, context.options)
+            == crate::discovery_v2_policy_fingerprint(
+                context.discovery,
+                context.shadow,
+                context.options
+            ),
+        "discovery v2 report decision policy mismatch"
+    );
+    let status = crate::revalidate_discovery_v2_status(status, context)?;
     let limit = options.limit.max(1);
     let active_follow_wallets = store.list_active_follow_wallets()?;
     let metric_by_wallet = status
@@ -240,6 +260,8 @@ fn report_row(
         rug_lookahead_unevaluated: metric.rug_lookahead_unevaluated,
         live_sol_balance: metric.live_sol_balance,
         live_token_value_sol: metric.live_token_value_sol,
+        live_inventory: metric.live_inventory.clone(),
+        live_valuation: metric.live_valuation.clone(),
         live_token_positions: metric.live_token_positions,
         live_tradable_token_positions: metric.live_tradable_token_positions,
         shadow_closed_trades_24h: metric.shadow_closed_trades_24h,
@@ -277,7 +299,8 @@ fn filter_evidence(
     let open_position_pass = !discovery.require_open_positions_for_publication
         || !has_reason(metric, "open_position_required_missing");
     let live_portfolio_pass = !discovery.live_portfolio_gate_enabled
-        || (live_portfolio_value_satisfies(metric, discovery)
+        || (crate::live_inventory_status::metric_has_inventory_coverage(metric)
+            && live_portfolio_value_satisfies(metric, discovery)
             && !has_any_reason(
                 metric,
                 &[

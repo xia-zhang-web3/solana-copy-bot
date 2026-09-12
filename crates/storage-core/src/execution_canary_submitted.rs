@@ -4,8 +4,7 @@ use crate::{
     EXECUTION_CANARY_POSITION_STATE_OPEN, EXECUTION_ERROR_BUILD_FAILED,
     EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE,
     EXECUTION_SIMULATION_STATUS_NOT_RUN, EXECUTION_STATUS_CANARY_CANDIDATE,
-    EXECUTION_STATUS_CANARY_FAILED, EXECUTION_STATUS_CANARY_SIMULATED,
-    EXECUTION_STATUS_CANARY_SUBMITTED,
+    EXECUTION_STATUS_CANARY_FAILED,
 };
 use anyhow::{Context, Result};
 use rusqlite::params;
@@ -15,62 +14,6 @@ const DECISION_WOULD_EXECUTE: &str = "would_execute";
 const DECISION_WOULD_FORCE_EXIT: &str = "would_force_exit";
 
 impl SqliteDiscoveryStore {
-    pub fn list_reconcilable_execution_canary_orders_for_route(
-        &self,
-        route: &str,
-        retry_reason: &str,
-        limit: u32,
-    ) -> Result<Vec<ExecutionCanaryOrder>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT
-                    order_id,
-                    signal_id,
-                    route,
-                    submit_ts,
-                    confirm_ts,
-                    status,
-                    err_code,
-                    client_order_id,
-                    tx_signature,
-                    simulation_status,
-                    simulation_error,
-                    attempt
-                 FROM orders
-                 WHERE order_id LIKE 'exec-canary:%'
-                   AND route = ?1
-                   AND (
-                       status = ?2
-                       OR (
-                           status = ?3
-                           AND (tx_signature IS NULL OR TRIM(tx_signature) = '')
-                           AND (
-                               simulation_error = ?4
-                               OR simulation_error LIKE ?4 || ':%'
-                           )
-                       )
-                   )
-                 ORDER BY submit_ts ASC, order_id ASC
-                 LIMIT ?5",
-            )
-            .context("failed to prepare submitted execution canary order query")?;
-        let rows = stmt
-            .query_map(
-                params![
-                    route,
-                    EXECUTION_STATUS_CANARY_SUBMITTED,
-                    EXECUTION_STATUS_CANARY_SIMULATED,
-                    retry_reason,
-                    i64::from(limit),
-                ],
-                execution_canary_order_from_row,
-            )
-            .context("failed querying submitted execution canary orders")?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed reading submitted execution canary orders")
-    }
-
     pub fn list_failed_simulation_sell_execution_canary_orders_for_route(
         &self,
         route: &str,
@@ -182,10 +125,29 @@ impl SqliteDiscoveryStore {
         retry_reason: &str,
         limit: u32,
     ) -> Result<Vec<String>> {
+        Ok(self
+            .list_retry_candidate_sell_execution_quote_event_ids_for_route_page(
+                route,
+                retry_reason,
+                limit,
+                None,
+            )?
+            .into_iter()
+            .map(|r| r.event_id)
+            .collect())
+    }
+
+    pub fn list_retry_candidate_sell_execution_quote_event_ids_for_route_page(
+        &self,
+        route: &str,
+        retry_reason: &str,
+        limit: u32,
+        after: Option<&crate::ExecutionRetryCursor>,
+    ) -> Result<Vec<crate::ExecutionRetryQuote>> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT event.event_id
+                "SELECT event.event_id, orders.submit_ts, event.request_ts
                  FROM orders
                  JOIN copy_signals ON copy_signals.signal_id = orders.signal_id
                  JOIN execution_quote_canary_events AS event
@@ -219,6 +181,7 @@ impl SqliteDiscoveryStore {
                               )
                           )
                    )
+                   AND (?11 IS NULL OR (orders.submit_ts,event.request_ts,event.event_id) < (?11,?12,?13))
                  ORDER BY orders.submit_ts DESC, event.request_ts DESC, event.event_id DESC
                  LIMIT ?10",
             )
@@ -236,8 +199,20 @@ impl SqliteDiscoveryStore {
                     EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
                     EXECUTION_CANARY_POSITION_STATE_OPEN,
                     i64::from(limit.max(1)),
+                    after.map(|c| c.first.as_str()),
+                    after.map(|c| c.second.as_str()),
+                    after.map(|c| c.third.as_str()),
                 ],
-                |row| row.get(0),
+                |row| {
+                    Ok(crate::ExecutionRetryQuote {
+                        event_id: row.get(0)?,
+                        cursor: crate::ExecutionRetryCursor {
+                            first: row.get(1)?,
+                            second: row.get(2)?,
+                            third: row.get(0)?,
+                        },
+                    })
+                },
             )
             .context("failed querying retry candidate sell quote events")?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -315,10 +290,29 @@ impl SqliteDiscoveryStore {
         retry_after: chrono::DateTime<chrono::Utc>,
         limit: u32,
     ) -> Result<Vec<String>> {
+        Ok(self
+            .list_terminal_no_route_sell_execution_quote_event_ids_for_route_page(
+                route,
+                retry_after,
+                limit,
+                None,
+            )?
+            .into_iter()
+            .map(|r| r.event_id)
+            .collect())
+    }
+
+    pub fn list_terminal_no_route_sell_execution_quote_event_ids_for_route_page(
+        &self,
+        route: &str,
+        retry_after: chrono::DateTime<chrono::Utc>,
+        limit: u32,
+        after: Option<&crate::ExecutionRetryCursor>,
+    ) -> Result<Vec<crate::ExecutionRetryQuote>> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT event.event_id
+                "SELECT event.event_id, COALESCE(orders.confirm_ts, orders.submit_ts), event.request_ts
                  FROM orders
                  JOIN copy_signals ON copy_signals.signal_id = orders.signal_id
                  JOIN execution_quote_canary_events AS event
@@ -352,6 +346,7 @@ impl SqliteDiscoveryStore {
                               )
                           )
                    )
+                   AND (?11 IS NULL OR (COALESCE(orders.confirm_ts, orders.submit_ts),event.request_ts,event.event_id) < (?11,?12,?13))
                  ORDER BY COALESCE(orders.confirm_ts, orders.submit_ts) DESC,
                           event.request_ts DESC,
                           event.event_id DESC
@@ -371,8 +366,20 @@ impl SqliteDiscoveryStore {
                     EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
                     EXECUTION_CANARY_POSITION_STATE_OPEN,
                     i64::from(limit.max(1)),
+                    after.map(|c| c.first.as_str()),
+                    after.map(|c| c.second.as_str()),
+                    after.map(|c| c.third.as_str()),
                 ],
-                |row| row.get(0),
+                |row| {
+                    Ok(crate::ExecutionRetryQuote {
+                        event_id: row.get(0)?,
+                        cursor: crate::ExecutionRetryCursor {
+                            first: row.get(1)?,
+                            second: row.get(2)?,
+                            third: row.get(0)?,
+                        },
+                    })
+                },
             )
             .context("failed querying terminal no-route sell quote events")?;
         rows.collect::<rusqlite::Result<Vec<_>>>()

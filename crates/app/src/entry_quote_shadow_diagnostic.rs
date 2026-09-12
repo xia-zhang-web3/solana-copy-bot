@@ -1,8 +1,8 @@
 use crate::execution_quote_canary_helpers::{
-    apply_quote_sample_to_event, duration_ms_between, load_matching_observed_entry_leg,
-    price_sol_per_token, quote_canary_slippage_limit_bps, quote_slippage_bps_for_buy,
-    raw_amount_to_ui, short_error, sol_to_lamports_raw, QUOTE_STATUS_ERROR, QUOTE_STATUS_OK,
-    QUOTE_STATUS_SKIPPED, SIDE_BUY, SOL_MINT,
+    apply_quote_sample_to_event, load_matching_observed_entry_leg, price_sol_per_token,
+    quote_canary_slippage_limit_bps, quote_slippage_bps_for_buy, raw_amount_to_ui, short_error,
+    sol_to_lamports_raw, QUOTE_STATUS_ERROR, QUOTE_STATUS_OK, QUOTE_STATUS_SKIPPED, SIDE_BUY,
+    SOL_MINT,
 };
 use crate::execution_quote_canary_rpc::fetch_spl_token_decimals;
 use crate::execution_quote_http::fetch_quote_sample;
@@ -145,6 +145,7 @@ impl EntryQuoteShadowDiagnostic {
             Err(error) => {
                 let mut event = self.base_event(&signal, None, event_id, now);
                 event.quote_status = QUOTE_STATUS_ERROR.to_string();
+                event.quote_response_available_ts = None;
                 event.error = Some(short_error(&error));
                 return event;
             }
@@ -154,6 +155,7 @@ impl EntryQuoteShadowDiagnostic {
             Ok(value) => value,
             Err(error) => {
                 event.quote_status = QUOTE_STATUS_ERROR.to_string();
+                event.quote_response_available_ts = None;
                 event.error = Some(short_error(&error));
                 return event;
             }
@@ -168,7 +170,9 @@ impl EntryQuoteShadowDiagnostic {
         {
             Ok(quote) => apply_quote_to_entry_event(&mut event, quote),
             Err(error) => {
+                crate::execution_quote_timing::apply_anyhow_error_timing(&mut event, &error);
                 event.quote_status = QUOTE_STATUS_ERROR.to_string();
+                event.quote_response_available_ts = None;
                 event.error = Some(short_error(&error));
             }
         }
@@ -184,6 +188,8 @@ impl EntryQuoteShadowDiagnostic {
     ) -> ExecutionQuoteCanaryEventInsert {
         ExecutionQuoteCanaryEventInsert {
             event_id,
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,
             wallet_id: signal.wallet_id.clone(),
@@ -192,7 +198,7 @@ impl EntryQuoteShadowDiagnostic {
             quote_status: QUOTE_STATUS_SKIPPED.to_string(),
             request_ts: now,
             signal_ts: Some(signal.ts),
-            decision_delay_ms: duration_ms_between(signal.ts, now),
+            decision_delay_ms: None,
             quote_latency_ms: None,
             leader_notional_sol: observed
                 .map(|value| value.sol_notional)

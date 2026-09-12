@@ -54,6 +54,7 @@ impl Default for SystemConfig {
 #[derive(Clone, Deserialize)]
 #[serde(default)]
 pub struct ExecutionConfig {
+    pub tiny_experiment: crate::TinyExperimentConfig,
     pub enabled: bool,
     pub canary_enabled: bool,
     pub canary_dry_run: bool,
@@ -113,6 +114,7 @@ pub struct ExecutionConfig {
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
+            tiny_experiment: Default::default(),
             enabled: false,
             canary_enabled: false,
             canary_dry_run: true,

@@ -127,7 +127,7 @@ async fn rpc_confirmation_rejects_transaction_error() -> Result<()> {
         write_rpc_confirmation_status(
             request.socket,
             200,
-            r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":1001,"confirmations":null,"err":{"InstructionError":[0,"Custom"]},"confirmationStatus":"finalized"}]}}"#,
+            r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":1001,"confirmations":null,"err":{"InstructionError":[0,{"Custom":7}]},"confirmationStatus":"finalized"}]}}"#,
         )
         .await;
     });

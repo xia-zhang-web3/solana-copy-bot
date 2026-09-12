@@ -45,7 +45,8 @@ impl SqliteDiscoveryStore {
                     attempt
                  FROM orders
                  WHERE order_id LIKE 'exec-canary:%'
-                   AND status IN (?1, ?2, ?3, ?4)
+                   AND (status IN (?1, ?2, ?3, ?4, ?5) OR
+                       (status = ?6 AND NOT EXISTS(SELECT 1 FROM fills f WHERE f.order_id = orders.order_id)))
                  ORDER BY submit_ts DESC, order_id DESC",
             )
             .context("failed to prepare execution canary submit risk query")?;
@@ -56,6 +57,8 @@ impl SqliteDiscoveryStore {
                     EXECUTION_STATUS_CANARY_BUILT,
                     EXECUTION_STATUS_CANARY_SIMULATED,
                     EXECUTION_STATUS_CANARY_SUBMITTED,
+                    crate::EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED,
+                    crate::EXECUTION_STATUS_CANARY_CONFIRMED,
                 ],
                 execution_canary_order_from_row,
             )

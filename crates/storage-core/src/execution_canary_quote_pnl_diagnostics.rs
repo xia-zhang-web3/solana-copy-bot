@@ -82,6 +82,8 @@ fn record_side(
             trade.sell_price_impact_pct,
         ),
     };
+    diagnostics.decision_delay_ms_unknown += u64::from(delay.is_none());
+    diagnostics.quote_latency_ms_unknown += u64::from(latency.is_none());
     record_u64_sample(
         &mut diagnostics.decision_delay_ms_samples,
         &mut diagnostics.decision_delay_ms_avg,
@@ -108,13 +110,18 @@ fn record_side(
     );
 }
 
-fn record_u64_sample(samples: &mut u64, avg: &mut f64, max: &mut u64, sample: Option<u64>) {
+fn record_u64_sample(
+    samples: &mut u64,
+    avg: &mut Option<f64>,
+    max: &mut Option<u64>,
+    sample: Option<u64>,
+) {
     let Some(value) = sample else {
         return;
     };
     *samples += 1;
-    *avg = running_avg(*avg, *samples, value as f64);
-    *max = (*max).max(value);
+    *avg = Some(running_avg(avg.unwrap_or(0.0), *samples, value as f64));
+    *max = Some(max.unwrap_or(0).max(value));
 }
 
 fn record_f64_sample(samples: &mut u64, avg: &mut f64, max: &mut f64, sample: Option<f64>) {

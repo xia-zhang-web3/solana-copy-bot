@@ -43,6 +43,8 @@ pub(super) fn provider_sample_from_event(
         max_slippage_bps,
     );
     ExecutionQuoteCanaryProviderSampleInsert {
+        http_request_started_ts: event.http_request_started_ts,
+        quote_response_available_ts: event.quote_response_available_ts,
         event_id: event.event_id.clone(),
         provider: provider.to_string(),
         side: event.side.clone(),
@@ -68,12 +70,14 @@ pub(super) fn provider_sample_from_event(
 pub(super) fn provider_error_sample(
     event: &ExecutionQuoteCanaryEventInsert,
     provider: &str,
-    error: &anyhow::Error,
+    error: &crate::execution_quote_timing::QuoteAttemptError,
     max_slippage_bps: u64,
 ) -> ExecutionQuoteCanaryProviderSampleInsert {
     let mut sample = provider_sample_from_event(event, provider, max_slippage_bps);
     sample.quote_status = QUOTE_STATUS_ERROR.to_string();
-    sample.quote_latency_ms = None;
+    sample.quote_response_available_ts = None;
+    sample.http_request_started_ts = error.timing.map(|t| t.started_ts);
+    sample.quote_latency_ms = error.timing.map(|t| t.elapsed_ms);
     sample.quote_in_amount_raw = None;
     sample.quote_out_amount_raw = None;
     sample.quote_response_json = None;
@@ -125,7 +129,18 @@ fn apply_provider_sample_to_event(
     sample: &ExecutionQuoteCanaryProviderSampleInsert,
 ) {
     event.quote_status = sample.quote_status.clone();
-    event.quote_latency_ms = sample.quote_latency_ms;
+    event.quote_response_available_ts = (sample.request_ts == event.request_ts
+        && sample.quote_status == QUOTE_STATUS_OK)
+        .then_some(sample.quote_response_available_ts)
+        .flatten();
+    event.http_request_started_ts = (sample.request_ts == event.request_ts)
+        .then_some(sample.http_request_started_ts)
+        .flatten();
+    event.quote_latency_ms = sample
+        .quote_latency_ms
+        .filter(|_| event.http_request_started_ts.is_some());
+    event.decision_delay_ms =
+        crate::execution_quote_timing::actual_delay(event.signal_ts, event.http_request_started_ts);
     event.quote_in_amount_raw = sample.quote_in_amount_raw.clone();
     event.quote_out_amount_raw = sample.quote_out_amount_raw.clone();
     event.quote_response_json = sample.quote_response_json.clone();

@@ -1,7 +1,5 @@
 use super::*;
 use crate::execution_submit_adapter::ExecutionSubmitAdapter;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 
 #[tokio::test]
@@ -163,6 +161,9 @@ struct FileSignerAdapter {
 }
 
 impl crate::execution_submit_adapter::ExecutionSubmitAdapter for FileSignerAdapter {
+    fn native_floor_config(&self) -> Result<&ExecutionConfig> {
+        Ok(&self.config)
+    }
     fn build_transaction_plan(
         &self,
         request: &crate::execution_submit_adapter::ExecutionSubmitRequest,
@@ -265,14 +266,7 @@ fn file_signer_test_keypair(seed: u8) -> FileSignerTestKeypair {
 }
 
 fn serialized_legacy_transaction(first_account_key: [u8; 32]) -> String {
-    let mut transaction = vec![1_u8];
-    transaction.extend_from_slice(&[0_u8; 64]);
-    transaction.extend_from_slice(&[1_u8, 0, 0]);
-    transaction.push(1);
-    transaction.extend_from_slice(&first_account_key);
-    transaction.extend_from_slice(&[9_u8; 32]);
-    transaction.push(0);
-    BASE64_STANDARD.encode(transaction)
+    crate::app_tests::priority_fee_fixture::transaction(first_account_key, 200_000, 10_000)
 }
 
 fn write_file_signer_keypair_file(name: &str, keypair_bytes: &[u8]) -> Result<PathBuf> {
@@ -319,6 +313,8 @@ fn record_file_signer_quote(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,
@@ -341,7 +337,7 @@ fn record_file_signer_quote(
             route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(12_345),
-            priority_fee_json: Some("{\"recommended\":12345}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(12_345)),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
             error: None,

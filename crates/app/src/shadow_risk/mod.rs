@@ -6,5 +6,6 @@ mod infra;
 mod infra_details;
 mod observe;
 mod pause;
+mod quote_completion;
 mod state_actions;
 mod token_gates;

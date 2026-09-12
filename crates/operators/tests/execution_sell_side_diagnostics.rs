@@ -182,6 +182,8 @@ fn record_metadata(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(&quote_event(signal_id, token, signal_ts))?;
     store.record_execution_canary_build_plan_metadata(&ExecutionCanaryBuildPlanMetadata {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         order_id: order_id.to_string(),
         signal_id: signal_id.to_string(),
         client_order_id: "client-order".to_string(),
@@ -215,6 +217,8 @@ fn quote_event(
     signal_ts: DateTime<Utc>,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: format!("quote:{signal_id}"),
         signal_id: Some(signal_id.to_string()),
         shadow_closed_trade_id: None,

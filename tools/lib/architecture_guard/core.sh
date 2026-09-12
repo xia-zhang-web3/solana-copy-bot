@@ -65,26 +65,26 @@ baseline_file_content() {
 changed_files() {
   if [[ -n "${ARCH_GUARD_DIFF_RANGE:-}" ]]; then
     {
-      git diff --name-only --diff-filter=ACMRTUXB "$ARCH_GUARD_DIFF_RANGE"
+      git diff --name-only --diff-filter=ACMRTUXB "$ARCH_GUARD_DIFF_RANGE" || return
       if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
-        git diff --name-only --diff-filter=ACMRTUXB
-        git diff --name-only --cached --diff-filter=ACMRTUXB
-        git ls-files --others --exclude-standard
+        git diff --name-only --diff-filter=ACMRTUXB || return
+        git diff --name-only --cached --diff-filter=ACMRTUXB || return
+        git ls-files --others --exclude-standard || return
       fi
     } | sort -u
     return
   fi
   {
-    git diff --name-only --diff-filter=ACMRTUXB
-    git diff --name-only --cached --diff-filter=ACMRTUXB
-    git ls-files --others --exclude-standard
+    git diff --name-only --diff-filter=ACMRTUXB || return
+    git diff --name-only --cached --diff-filter=ACMRTUXB || return
+    git ls-files --others --exclude-standard || return
   } | sort -u
 }
 
 all_files() {
   {
-    git ls-files
-    git ls-files --others --exclude-standard
+    git ls-files || return
+    git ls-files --others --exclude-standard || return
   } | sort -u
 }
 

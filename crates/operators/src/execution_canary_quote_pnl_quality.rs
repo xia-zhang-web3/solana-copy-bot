@@ -46,9 +46,16 @@ pub struct TinyExecutionQualityReport {
     pub tiny_position_close_coverage_pct: f64,
     pub tiny_unique_position_close_coverage_pct: f64,
     pub shadow_pnl_sol: f64,
-    pub quote_adjusted_pnl_after_priority_fee_sol: f64,
-    pub tiny_realized_pnl_sol: f64,
-    pub tiny_vs_shadow_delta_sol: f64,
+    pub quote_adjusted_pnl_after_priority_fee_sol: Option<f64>,
+    pub tiny_realized_pnl_sol: Option<f64>,
+    pub tiny_vs_shadow_delta_sol: Option<f64>,
+    pub native_observations: copybot_storage_core::NativeObservationReport,
+    pub failed_expenses: copybot_storage_core::FailedExpenseReport,
+    pub economic_green: bool,
+    pub economic_pnl_basis: String,
+    pub cash_settled_orders: u64,
+    pub cash_unsettled_orders: u64,
+    pub known_cash_result_delta_lamports: Option<String>,
     pub entry_signal_to_submit_ms: ExecutionTinyProofLatencyStats,
     pub exit_signal_to_submit_ms: ExecutionTinyProofLatencyStats,
     pub entry_submit_to_confirm_ms: ExecutionTinyProofLatencyStats,
@@ -82,6 +89,7 @@ pub struct TinyExecutionQualityOrderSample {
     pub priority_fee_lamports: Option<u64>,
     pub attempt: u32,
     pub signal_ts: Option<DateTime<Utc>>,
+    pub http_request_started_ts: Option<DateTime<Utc>>,
     pub quote_request_ts: Option<DateTime<Utc>>,
     pub build_recorded_ts: Option<DateTime<Utc>>,
     pub submit_ts: DateTime<Utc>,
@@ -102,6 +110,7 @@ pub struct TinyExecutionQualityMissingExitSample {
     pub opened_ts: DateTime<Utc>,
     pub closed_ts: DateTime<Utc>,
     pub exit_signal_ts: Option<DateTime<Utc>>,
+    pub exit_http_request_started_ts: Option<DateTime<Utc>>,
     pub exit_quote_request_ts: Option<DateTime<Utc>>,
     pub exit_quote_event_id: Option<String>,
     pub exit_decision_status: Option<String>,
@@ -149,6 +158,14 @@ pub fn build_tiny_execution_quality(
         summary.quote_adjusted_pnl_after_priority_fee_sol,
     );
 
+    let verdict = if verdict == "healthy"
+        && (proof.failed_expenses.unresolved_orders > 0
+            || proof.failed_expenses.coverage != "complete_selected_cohort")
+    {
+        "failed_expense_coverage_unknown".into()
+    } else {
+        verdict
+    };
     TinyExecutionQualityReport {
         verdict,
         sample_status,
@@ -206,6 +223,16 @@ pub fn build_tiny_execution_quality(
             .quote_adjusted_pnl_after_priority_fee_sol,
         tiny_realized_pnl_sol: proof_summary.tiny_realized_pnl_sol,
         tiny_vs_shadow_delta_sol: proof_summary.tiny_vs_shadow_delta_sol,
+        failed_expenses: proof.failed_expenses.clone(),
+        native_observations: proof.native_observations.clone(),
+        economic_green: false,
+        economic_pnl_basis: proof_summary.economic_pnl_basis.clone(),
+        cash_settled_orders: proof.cash_settlements.settled_orders,
+        cash_unsettled_orders: proof.cash_settlements.unsettled_orders,
+        known_cash_result_delta_lamports: proof
+            .cash_settlements
+            .known_cash_result_delta_lamports
+            .clone(),
         entry_signal_to_submit_ms: proof.latency.entry_signal_to_submit_ms.clone(),
         exit_signal_to_submit_ms: proof.latency.exit_signal_to_submit_ms.clone(),
         entry_submit_to_confirm_ms: proof.latency.entry_submit_to_confirm_ms.clone(),
@@ -275,8 +302,8 @@ fn verdict(
     actionable_entry_missing: u64,
     shadow_gate_dropped_would_execute: u64,
     open_positions: u64,
-    tiny_vs_shadow_delta_sol: f64,
-    quote_after_fee_sol: f64,
+    tiny_vs_shadow_delta_sol: Option<f64>,
+    quote_after_fee_sol: Option<f64>,
 ) -> String {
     if exit_failed > 0 || exit_missing > 0 {
         "sell_flow_loss".to_string()
@@ -284,12 +311,18 @@ fn verdict(
         "entry_flow_loss".to_string()
     } else if open_positions > 0 {
         "open_positions_present".to_string()
-    } else if tiny_vs_shadow_delta_sol < 0.0 || quote_after_fee_sol < 0.0 {
+    } else if tiny_vs_shadow_delta_sol.is_some_and(|pnl| pnl < 0.0)
+        || quote_after_fee_sol.is_some_and(|pnl| pnl < 0.0)
+    {
         "execution_cost_negative".to_string()
     } else if shadow_gate_dropped_would_execute > 0 {
         "shadow_gate_filtered".to_string()
     } else if sample_status != "sampled" {
         sample_status.to_string()
+    } else if quote_after_fee_sol.is_none() {
+        "priority_fee_total_unknown".to_string()
+    } else if tiny_vs_shadow_delta_sol.is_none() {
+        "economic_basis_unresolved".to_string()
     } else {
         "healthy".to_string()
     }
@@ -393,6 +426,7 @@ fn missing_exit_sample(trade: &ExecutionTinyProofTrade) -> TinyExecutionQualityM
         opened_ts: trade.opened_ts,
         closed_ts: trade.closed_ts,
         exit_signal_ts: trade.exit_signal_ts,
+        exit_http_request_started_ts: trade.exit_http_request_started_ts,
         exit_quote_request_ts: trade.exit_quote_request_ts,
         exit_quote_event_id: trade.exit_quote_event_id.clone(),
         exit_decision_status: trade.exit_decision_status.clone(),
@@ -425,6 +459,7 @@ fn order_sample(order: &ExecutionTinyProofOrder) -> TinyExecutionQualityOrderSam
         priority_fee_lamports: order.priority_fee_lamports,
         attempt: order.attempt,
         signal_ts: order.signal_ts,
+        http_request_started_ts: order.http_request_started_ts,
         quote_request_ts: order.quote_request_ts,
         build_recorded_ts: order.build_recorded_ts,
         submit_ts: order.submit_ts,

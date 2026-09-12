@@ -1,5 +1,5 @@
 use crate::{
-    execution_canary_fill_marker::{fill_exists, insert_fill_marker_if_order_exists},
+    execution_canary_fill_marker::{fill_exists, insert_buy_fill_marker},
     execution_canary_positions::execution_canary_position_from_row,
     money::{sol_to_lamports_ceil, u64_to_sql_i64},
     shadow_lots::reject_zero_raw_exact_qty,
@@ -61,24 +61,22 @@ pub(crate) fn record_execution_canary_open_position_on_conn(
     validate_position_inputs(order_id, token, qty, cost_sol)?;
     let qty_exact = reject_zero_raw_exact_qty(qty_exact, "execution canary open position")?;
     if fill_exists(conn, order_id)? {
-        let position = load_existing_fill_position(conn, position_id, token)?.ok_or_else(|| {
-            anyhow!("missing execution canary position for existing fill {order_id}")
-        })?;
+        let position = crate::buy_fill_replay::load(conn, order_id, token)?;
         return Ok(ExecutionCanaryOwnedPositionRecordResult {
             outcome: ExecutionCanaryPositionRecordOutcome::Existing,
             position,
         });
     }
+    let source = crate::buy_fill_identity::source(conn, order_id, token)?;
+    crate::buy_fill_identity::validate_receipt_if_present(conn, order_id)?;
+    crate::buy_receipt_ownership::validate(conn, order_id)?;
     if let Some(position) = load_position_by_id(conn, position_id)? {
-        insert_fill_marker_if_order_exists(
-            conn,
-            order_id,
-            token,
-            qty,
-            qty_exact,
-            cost_sol,
-            cost_lamports,
-        )?;
+        crate::buy_fill_identity::position(&position, token)?;
+        // A position name alone cannot prove that this order was accounted.
+        anyhow::ensure!(
+            source.is_none(),
+            crate::BuyAttributionIssue::UnprovenDestination
+        );
         return Ok(ExecutionCanaryOwnedPositionRecordResult {
             outcome: ExecutionCanaryPositionRecordOutcome::Existing,
             position,
@@ -86,10 +84,11 @@ pub(crate) fn record_execution_canary_open_position_on_conn(
     }
     if let Some(position) = load_open_position_by_token(conn, token)? {
         merge_open_position(conn, &position, qty, qty_exact, cost_sol, cost_lamports)?;
-        insert_fill_marker_if_order_exists(
+        insert_buy_fill_marker(
             conn,
             order_id,
             token,
+            Some(&position.position_id),
             qty,
             qty_exact,
             cost_sol,
@@ -117,10 +116,11 @@ pub(crate) fn record_execution_canary_open_position_on_conn(
         cost_lamports,
         opened_ts_raw,
     )?;
-    insert_fill_marker_if_order_exists(
+    insert_buy_fill_marker(
         conn,
         order_id,
         token,
+        Some(position_id),
         qty,
         qty_exact,
         cost_sol,
@@ -132,20 +132,6 @@ pub(crate) fn record_execution_canary_open_position_on_conn(
         outcome: ExecutionCanaryPositionRecordOutcome::Inserted,
         position,
     })
-}
-
-fn load_existing_fill_position(
-    conn: &Connection,
-    position_id: &str,
-    token: &str,
-) -> Result<Option<ExecutionCanaryOwnedPosition>> {
-    if let Some(position) = load_position_by_id(conn, position_id)? {
-        return Ok(Some(position));
-    }
-    if let Some(position) = load_open_position_by_token(conn, token)? {
-        return Ok(Some(position));
-    }
-    load_latest_position_by_token(conn, token)
 }
 
 fn validate_position_inputs(order_id: &str, token: &str, qty: f64, cost_sol: f64) -> Result<()> {
@@ -170,7 +156,7 @@ fn validate_position_inputs(order_id: &str, token: &str, qty: f64, cost_sol: f64
     Ok(())
 }
 
-fn load_position_by_id(
+pub(crate) fn load_position_by_id(
     conn: &Connection,
     position_id: &str,
 ) -> Result<Option<ExecutionCanaryOwnedPosition>> {
@@ -197,7 +183,7 @@ fn load_position_by_id(
         .context("failed querying execution canary position")
 }
 
-fn load_open_position_by_token(
+pub(crate) fn load_open_position_by_token(
     conn: &Connection,
     token: &str,
 ) -> Result<Option<ExecutionCanaryOwnedPosition>> {
@@ -231,38 +217,6 @@ fn load_open_position_by_token(
     )
     .optional()
     .context("failed querying execution canary open position for merge")
-}
-
-fn load_latest_position_by_token(
-    conn: &Connection,
-    token: &str,
-) -> Result<Option<ExecutionCanaryOwnedPosition>> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT
-                position_id,
-                token,
-                qty,
-                cost_sol,
-                cost_lamports,
-                qty_raw,
-                qty_decimals,
-                opened_ts,
-                state,
-                accounting_bucket
-             FROM positions
-             WHERE token = ?1
-               AND accounting_bucket = ?2
-             ORDER BY opened_ts DESC, position_id DESC
-             LIMIT 1",
-        )
-        .context("failed to prepare execution canary latest position lookup")?;
-    stmt.query_row(
-        params![token, EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET],
-        execution_canary_position_from_row,
-    )
-    .optional()
-    .context("failed querying execution canary latest position")
 }
 
 fn insert_open_position(

@@ -280,6 +280,13 @@ tools/architecture_guard.sh --all
 `--changed` is required for normal batches. `--all` is required before
 architecture refactor acceptance.
 
+The storage semantic workflow is implemented and accepted locally:
+`.github/workflows/storage-semantic.yml` runs
+`cargo test --locked -p copybot-storage-core --lib --tests` on pull requests,
+pushes and manual dispatch in the `storage-semantic` check with a 10-minute
+job timeout. Hosted execution and required-check enforcement require separate
+evidence. This dev-test timeout does not replace production build budgets.
+
 ## 10. Waivers
 
 Waivers are explicit and temporary.

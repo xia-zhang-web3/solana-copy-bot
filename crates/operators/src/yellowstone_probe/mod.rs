@@ -1,3 +1,9 @@
+mod capture;
+mod capture_config;
+mod capture_files;
+mod capture_hash;
+mod capture_persist;
+mod capture_terminal;
 mod client;
 mod config;
 mod report;
@@ -57,9 +63,17 @@ async fn run(cli: config::Cli, started: Instant) -> ProbeReport {
                 report::elapsed_ms(started),
             );
             report.probe_mode = cli.mode.as_str().to_string();
+            if cli.mode == ProbeMode::AssociationCapture {
+                // TOML/load diagnostics may contain source text or sensitive paths.
+                report.error_redacted = None;
+            }
             return report;
         }
     };
+
+    if let Some(capture) = &cli.capture {
+        return capture::run(&loaded, capture, started).await;
+    }
 
     match client::run_yellowstone_probe(&loaded, started).await {
         Ok(report) => report,

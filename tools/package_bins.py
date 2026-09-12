@@ -13,21 +13,39 @@ def load_metadata():
     return json.loads(raw)
 
 
+def default_features(package):
+    """Resolve package-local features for the default artifact build only."""
+    features = package.get("features", {})
+    pending = ["default"] if "default" in features else []
+    enabled = set()
+    while pending:
+        feature = pending.pop()
+        if feature in enabled:
+            continue
+        enabled.add(feature)
+        pending.extend(features.get(feature, []))
+    return enabled
+
+
 def package_bins(metadata, package_name):
     for package in metadata.get("packages", []):
         if package.get("name") != package_name:
             continue
+        enabled = default_features(package)
         bins = sorted(
             target.get("name")
             for target in package.get("targets", [])
             if "bin" in target.get("kind", []) and target.get("name")
+            and set(target.get("required-features", [])).issubset(enabled)
         )
         return bins
     return None
 
 
 def main():
-    parser = argparse.ArgumentParser(description="List all Cargo bin targets for a package")
+    parser = argparse.ArgumentParser(
+        description="List package bin targets enabled by default for artifact builds"
+    )
     parser.add_argument("--package", required=True)
     args = parser.parse_args()
 

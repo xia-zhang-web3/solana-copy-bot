@@ -272,7 +272,7 @@ fn status_allows_one_active_day_policy_on_bounded_scan_window() -> Result<()> {
     let mut options = options(now);
     options.window_minutes = 120;
 
-    let status = build_discovery_v2_status(&store, &discovery, &shadow, options)?;
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options.clone())?;
 
     assert!(status.production_green, "{:?}", status.blockers);
     assert!(!status
@@ -383,7 +383,13 @@ fn publish_commit_writes_followlist_and_publication_state_when_green() -> Result
     let (discovery, shadow) = strict_policy();
     let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
 
-    let report = publish_discovery_v2_status(&store, status, true, 168)?;
+    let report = publish_discovery_v2_status(
+        &store,
+        status,
+        true,
+        168,
+        copybot_discovery_v2::DiscoveryV2DecisionContext::new(&discovery, &shadow, &options(now)),
+    )?;
 
     assert!(report.committed);
     assert_eq!(
@@ -439,14 +445,20 @@ fn publish_report_bounds_operator_wallet_metrics_without_losing_totals() -> Resu
     let mut options = options(now);
     options.max_rows = OPERATOR_WALLET_METRIC_LIMIT + 100;
 
-    let status = build_discovery_v2_status(&store, &discovery, &shadow, options)?;
+    let status = build_discovery_v2_status(&store, &discovery, &shadow, options.clone())?;
     let total_wallets = status.wallet_metrics_total;
     assert!(total_wallets > OPERATOR_WALLET_METRIC_LIMIT);
     assert_eq!(status.wallet_metrics_returned, OPERATOR_WALLET_METRIC_LIMIT);
     assert!(status.wallet_metrics_truncated);
     assert_eq!(status.wallet_metrics.len(), OPERATOR_WALLET_METRIC_LIMIT);
 
-    let report = publish_discovery_v2_status(&store, status, false, 168)?;
+    let report = publish_discovery_v2_status(
+        &store,
+        status,
+        false,
+        168,
+        copybot_discovery_v2::DiscoveryV2DecisionContext::new(&discovery, &shadow, &options),
+    )?;
 
     assert_eq!(report.status.filters.total_wallets, total_wallets);
     assert_eq!(report.status.scan.unique_wallets, total_wallets);
@@ -470,7 +482,14 @@ fn publish_commit_refuses_to_mutate_when_blocked() -> Result<()> {
     let (discovery, shadow) = strict_policy();
     let status = build_discovery_v2_status(&store, &discovery, &shadow, options(now))?;
 
-    let err = publish_discovery_v2_status(&store, status, true, 168).expect_err("blocked publish");
+    let err = publish_discovery_v2_status(
+        &store,
+        status,
+        true,
+        168,
+        copybot_discovery_v2::DiscoveryV2DecisionContext::new(&discovery, &shadow, &options(now)),
+    )
+    .expect_err("blocked publish");
 
     assert!(err
         .to_string()

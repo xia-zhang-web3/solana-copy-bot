@@ -1,0 +1,57 @@
+{
+  "old_v0_simulation": "Explicit local refusal sentinel; legacy simulation response must never be used for v0",
+  "r4_seal_sha256": "8d819d57195d71c243091513cfdb0eeb085eb5ae1650b0cebf5fd30d597dac0b",
+  "records": {
+    "instructions.json": {
+      "lines": 1,
+      "mode": "0o644",
+      "origin": "live/http-03-instructions/response.body",
+      "sha256": "116760609bef12ade696b4820cb02ec3fdc5ad3716475cda245b26023cae6e98",
+      "synthetic": false
+    },
+    "old-swap.json": {
+      "lines": 1,
+      "mode": "0o644",
+      "origin": "live/http-04-transaction/response.body",
+      "sha256": "1efe4b1a6e9e921d0b170cc52633e7c240b26cbab4054fd173c1e4d2fc817de3",
+      "synthetic": false
+    },
+    "quote.json": {
+      "lines": 1,
+      "mode": "0o644",
+      "origin": "live/http-02-quote/response.body",
+      "sha256": "3c76477ac5271a408db8ed2919ec1aa86ac0294d4638057208b28c1602668aff",
+      "synthetic": false
+    },
+    "request.json": {
+      "lines": 1,
+      "mode": "0o644",
+      "origin": "live/http-03-instructions/request.body",
+      "sha256": "8c5d5db4a7755fae7fbb37a8375c86648d15f385ce87ab8b3f84464ee9d5db90",
+      "synthetic": false
+    },
+    "simulation-request.json": {
+      "lines": 1,
+      "mode": "0o644",
+      "origin": "live/http-05-simulation/request.body",
+      "sha256": "bc809259a5955f5092c9ab58f2ae43812cdb7c6af31ac050a19a5054c94dc0eb",
+      "synthetic": false
+    },
+    "simulation.json": {
+      "lines": 1,
+      "mode": "0o644",
+      "origin": "live/http-05-simulation/response.body",
+      "sha256": "7802edf6aef557e04d18e3f80c759b77bf7c3cb3a37f3c0b84ee4cec256ad1d8",
+      "synthetic": false
+    },
+    "synthetic-direct-request.json": {
+      "lines": 1,
+      "mode": "0o644",
+      "origin": "adapter-current-control/request-1.body",
+      "sha256": "146136a18116e32a455333b214e717a0bc67c78729df188047515566444cc386",
+      "synthetic": true
+    }
+  },
+  "source": "Frozen115/R4; offline reuse, no new network proof",
+  "synthetic_direct_response": "BATCH113_OFFLINE_SYNTHETIC_DIRECT_REFUSAL; HTTP403; not provider/RPC evidence"
+}

@@ -90,11 +90,32 @@ pub(super) async fn handle_ingestion_swap_poll(
         );
     }
 
-    if !note_recent_swap_signature(
+    let delivery = crate::source_sell_ingress::RecentSwapDelivery::note(
         recent_swap_signatures,
         recent_swap_signature_order,
-        &swap.signature,
-    ) {
+        &swap,
+    );
+    let durable_ack = match crate::source_sell_ingress::persist_and_schedule(
+        store,
+        observed_swap_writer,
+        sqlite_path,
+        &mut shadow_scheduler.source_sells,
+        &delivery,
+        recent_swap_signatures,
+        recent_swap_signature_order,
+    )
+    .await?
+    {
+        crate::source_sell_ingress::SourceSellIngress::NotCandidate => None,
+        crate::source_sell_ingress::SourceSellIngress::Durable(ack) => Some(ack),
+        crate::source_sell_ingress::SourceSellIngress::Refused => {
+            app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
+            return Ok(());
+        }
+    };
+    // A staging retry bypasses only its own recent/DB dedupe boundary. Legacy
+    // consumers still see at most the original fresh, durably inserted delivery.
+    if !delivery.is_fresh() {
         app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
         debug!(signature = %swap.signature, "duplicate swap ignored by recent signature dedupe");
         return Ok(());
@@ -107,6 +128,10 @@ pub(super) async fn handle_ingestion_swap_poll(
         open_shadow_lots,
     ) {
         ObservedSwapShadowRelevance::IrrelevantUnclassified => {
+            if durable_ack.is_some() {
+                app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
+                return Ok(());
+            }
             handle_irrelevant_observed_swap(
                 store,
                 observed_swap_writer,
@@ -145,6 +170,10 @@ pub(super) async fn handle_ingestion_swap_poll(
                 signature = %swap.signature,
                 "shadow gate dropped"
             );
+            if durable_ack.is_some() {
+                app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
+                return Ok(());
+            }
             handle_irrelevant_observed_swap(
                 store,
                 observed_swap_writer,
@@ -195,6 +224,7 @@ pub(super) async fn handle_ingestion_swap_poll(
         recent_swap_signature_order,
         app_consumer_loop_telemetry,
         swap_processing_started_at,
+        durable_ack,
     )
     .await
 }

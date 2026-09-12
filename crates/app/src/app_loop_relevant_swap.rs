@@ -30,31 +30,36 @@ pub(super) async fn handle_relevant_observed_swap(
     recent_swap_signature_order: &mut VecDeque<String>,
     app_consumer_loop_telemetry: &mut AppConsumerLoopTelemetry,
     swap_processing_started_at: StdInstant,
+    durable_ack: Option<RelevantObservedSwapPersistence>,
 ) -> Result<()> {
-    let relevant_persistence = match persist_relevant_observed_swap(
-        observed_swap_writer,
-        recent_swap_signatures,
-        recent_swap_signature_order,
-        &swap,
-    )
-    .await
-    {
-        Ok(inserted) => relevant_observed_swap_persistence(inserted),
-        Err(error) => {
-            app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
-            let error_chain = format_error_chain(&error);
-            if observed_swap_writer_error_requires_restart(&error) {
-                return Err(error).context(
+    let relevant_persistence = if let Some(ack) = durable_ack {
+        ack
+    } else {
+        match persist_relevant_observed_swap(
+            observed_swap_writer,
+            recent_swap_signatures,
+            recent_swap_signature_order,
+            &swap,
+        )
+        .await
+        {
+            Ok(inserted) => relevant_observed_swap_persistence(inserted),
+            Err(error) => {
+                app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
+                let error_chain = format_error_chain(&error);
+                if observed_swap_writer_error_requires_restart(&error) {
+                    return Err(error).context(
                 "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
             );
+                }
+                warn!(
+                    error = %error,
+                    error_chain = %error_chain,
+                    signature = %swap.signature,
+                    "failed persisting relevant observed swap"
+                );
+                return Ok(());
             }
-            warn!(
-                error = %error,
-                error_chain = %error_chain,
-                signature = %swap.signature,
-                "failed persisting relevant observed swap"
-            );
-            return Ok(());
         }
     };
     if matches!(
@@ -228,6 +233,9 @@ pub(super) async fn handle_relevant_observed_swap(
         }
     }
 
+    if matches!(side, ShadowSwapSide::Sell) {
+        execution_canary_runner.make_room_for_owned_or_shadow_sell(store, shadow_scheduler)?;
+    }
     let hot_quote_swap = matches!(side, ShadowSwapSide::Buy).then(|| swap.clone());
     let task_input = ShadowTaskInput {
         swap,
@@ -305,54 +313,27 @@ pub(super) async fn handle_relevant_observed_swap(
         );
     }
     if shadow_task_accepted {
-        if let Some(hot_quote_swap) = hot_quote_swap.as_ref() {
-            run_hot_observed_buy_quote_canary(
-                execution_canary_runner,
+        if let Some(swap) = hot_quote_swap.as_ref() {
+            if let Err(error) = execution_canary_runner.admit_hot_observed_buy_quote(
                 store,
-                hot_quote_swap,
+                swap,
                 Utc::now(),
-            )
-            .await;
+                shadow_scheduler,
+            ) {
+                crate::telemetry::hot_quote::failure(
+                    &format!(
+                        "shadow:{}:{}:buy:{}",
+                        swap.signature, swap.wallet, swap.token_out
+                    ),
+                    "hot_quote_admission_error",
+                    &error,
+                    shadow_scheduler.active_task_count(),
+                    shadow_scheduler.buffered_shadow_task_count(),
+                );
+                // Storage/admission errors keep the existing nonfatal hot-quote boundary.
+            }
         }
     }
     app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
     Ok(())
-}
-
-async fn run_hot_observed_buy_quote_canary(
-    execution_canary_runner: &ExecutionCanaryRunner,
-    store: &SqliteStore,
-    swap: &SwapEvent,
-    now: DateTime<Utc>,
-) {
-    match execution_canary_runner
-        .process_hot_observed_buy_quote(store, swap, now)
-        .await
-    {
-        Ok(summary) if summary.has_status_change() => {
-            info!(
-                signature = %swap.signature,
-                wallet = %swap.wallet,
-                token = %swap.token_out,
-                quote_entry_inserted = summary.quote_entry_inserted,
-                quote_entry_existing = summary.quote_entry_existing,
-                quote_entry_errors = summary.quote_entry_errors,
-                quote_would_execute = summary.quote_would_execute,
-                quote_would_skip = summary.quote_would_skip,
-                quote_decision_unknown = summary.quote_decision_unknown,
-                last_quote_event_id = summary.last_quote_event_id.as_deref().unwrap_or("none"),
-                "execution canary hot observed buy quote processed"
-            );
-        }
-        Ok(_) => {}
-        Err(error) => {
-            warn!(
-                error = %error,
-                signature = %swap.signature,
-                wallet = %swap.wallet,
-                token = %swap.token_out,
-                "execution canary hot observed buy quote failed"
-            );
-        }
-    }
 }

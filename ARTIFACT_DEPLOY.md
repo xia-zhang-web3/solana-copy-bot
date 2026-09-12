@@ -14,7 +14,7 @@ Normal production deploy path:
 
 1. commit the accepted change,
 2. push the commit,
-3. wait for `.github/workflows/operator-artifacts.yml`,
+3. manually dispatch `.github/workflows/operator-artifacts.yml` for each selected package,
 4. download the artifact for the exact git SHA,
 5. verify manifest and checksums locally,
 6. upload the artifact to production,
@@ -39,13 +39,20 @@ must include locked package tests plus both architecture guard modes.
 ## 4. Builder Commands
 
 Production artifact source of truth: commit the accepted change, push to GitHub,
-wait for `.github/workflows/operator-artifacts.yml`, download artifacts for that
-exact commit SHA, and verify them before uploading to production. Do not deploy
+manually dispatch `.github/workflows/operator-artifacts.yml` with `inputs.package`,
+verify each run head SHA against that approved commit, then download and verify
+the matching artifact before uploading to production. Do not deploy
 local Docker or release-build artifacts unless the emergency fallback is
 invoked and recorded.
 
-The package binary set is authoritative. `tools/package_bins.py --package
-<package>` must match the artifact. Partial package artifacts are rejected.
+The default-feature package binary set is authoritative.
+`tools/package_bins.py --package <package>` must match the artifact. Partial
+package artifacts are rejected. `copybot-operators` ships 10 binaries; the three
+closed experiment commands require the local-only `legacy-reports` feature and
+are excluded from normal artifacts. See [report selection](LIVE_CANARY_REPORT_RUNBOOK.md).
+The installer removes their managed links when upgrading from the older package;
+installed-release rollback retains the old manifest and its complete binary set.
+This does not remove unmanaged binaries or previously built local files.
 
 Discovery V2 operators:
 
@@ -92,14 +99,21 @@ CI builder:
 .github/workflows/operator-artifacts.yml
 ```
 
-The workflow builds operator packages and the live daemon artifact.
-Manual `workflow_dispatch` is the full artifact proof path and must build every
-matrix package, including `copybot-app`. Push and pull-request runs may skip the
-daemon artifact when the changed paths cannot affect the daemon runtime graph.
-Changes under `migrations/**` are daemon-affecting because `copybot-app`
-applies migrations on startup; CI must build the daemon artifact for migration
-changes unless the batch explicitly declares a separate migration-only rollout
-proof.
+The workflow runs only on manual `workflow_dispatch`, with one required `package`
+input. Each dispatch builds one complete default-feature package; there is no
+matrix. Push and pull requests do not trigger this artifact workflow. Dispatch
+`copybot-app` explicitly for daemon changes; dispatch `copybot-operators` separately
+only when those accepted reports are needed. Operator delivery does not block app.
+For commands with approved ref/SHA inputs, see
+[the release preparation plan](proposals/batch129/BUILD_AND_PUBLISH_PLAN.md).
+
+Every selected package keeps `RUN_CHECKS=1`, its full locked test profile,
+`tools/architecture_guard.sh --changed` and `tools/architecture_guard.sh --all`,
+clean source, full bin-set/checksum/migration verification, install dry-run and
+CI temporary install/rollback proof. Scoped local tests do not replace these checks.
+Changes under `migrations/**` are daemon-affecting: the app ships the full bundle
+and startup applies pending SQL subject to its deferred-index policy. They require
+an app artifact unless a separate migration-only rollout proof is explicitly agreed.
 
 Runtime daemon artifact:
 

@@ -11,7 +11,14 @@ use crate::shadow_runtime_helpers::{find_last_pending_buy_index, spawn_shadow_wo
 use crate::swap_classification::classify_swap_side;
 use crate::telemetry::{record_shadow_queue_full_buy_drop, record_shadow_queue_full_sell_outcome};
 
+#[path = "shadow_scheduler_hot_completion.rs"]
+mod hot_completion;
+#[path = "shadow_scheduler_hot_quotes.rs"]
+pub(crate) mod hot_quotes;
+
 pub(crate) struct ShadowScheduler {
+    pub(crate) hot_quotes: hot_quotes::HotQuotes,
+    pub(crate) source_sells: crate::source_sell_staging::SourceSellStaging,
     pub(crate) shadow_workers: JoinSet<ShadowTaskOutput>,
     pub(crate) shadow_snapshot_handle: Option<JoinHandle<Result<ShadowSnapshot>>>,
     pub(crate) pending_shadow_tasks: HashMap<ShadowTaskKey, VecDeque<ShadowTaskInput>>,
@@ -31,6 +38,8 @@ pub(crate) struct ShadowTaskOutput {
     pub(crate) key: ShadowTaskKey,
     pub(crate) signal_id: Option<String>,
     pub(crate) side: Option<ShadowSwapSide>,
+    pub(crate) buy_receipt: Option<copybot_shadow::RecordedBuyLot>,
+    pub(crate) owned_sell_reject: Option<copybot_storage_core::ExecutionSellIntentReject>,
     pub(crate) outcome: Result<copybot_shadow::ShadowProcessOutcome>,
 }
 
@@ -60,6 +69,8 @@ pub(crate) enum ShadowSwapSide {
 impl ShadowScheduler {
     pub(crate) fn new() -> Self {
         Self {
+            hot_quotes: Default::default(),
+            source_sells: crate::source_sell_staging::SourceSellStaging::new(),
             shadow_workers: JoinSet::new(),
             shadow_snapshot_handle: None,
             pending_shadow_tasks: HashMap::new(),
@@ -78,6 +89,7 @@ impl ShadowScheduler {
     pub(crate) fn buffered_shadow_task_count(&self) -> usize {
         self.pending_shadow_task_count
             .saturating_add(self.held_shadow_sell_count)
+            .saturating_add(self.hot_quotes.pending())
     }
 
     pub(crate) fn held_shadow_sell_count(&self) -> usize {

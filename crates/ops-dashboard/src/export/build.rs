@@ -80,7 +80,7 @@ pub(super) fn execution_snapshot(report: &InputReport) -> (bool, Value) {
         .value
         .as_ref()
         .and_then(|value| value.get("wallet_reconciliation"));
-    let rows = vec![
+    let mut rows = vec![
         row(
             "entry_confirmed",
             u64_path_ref(quality, &["tiny_entry_confirmed_trades"])
@@ -105,10 +105,12 @@ pub(super) fn execution_snapshot(report: &InputReport) -> (bool, Value) {
             "wallet reconciliation",
         ),
     ];
+    rows.extend(super::cash::rows(report));
+    rows.extend(super::failed_expenses::rows(report));
     let status = str_path(&report.value, &["reason_class"]).unwrap_or("unknown");
     (
         report.status.stale,
-        json!({ "status": status, "rows": rows }),
+        json!({ "status": status, "rows": rows, "native_observations": super::native_observations::report(report) }),
     )
 }
 

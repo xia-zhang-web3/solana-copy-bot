@@ -1,6 +1,4 @@
 use super::*;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use base64::Engine as _;
 use copybot_core_types::{CopySignalRow, Lamports, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS};
 use ed25519_dalek::SigningKey;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,10 +26,13 @@ async fn tiny_submit_sweep_retries_transient_failed_buy_simulation() -> Result<(
     config.execution_signer_pubkey = keypair.pubkey.clone();
     config.execution_signer_keypair_path = keypair_path.to_string_lossy().to_string();
 
-    let summary = crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
-        &config,
-        &store,
-        now + chrono::Duration::seconds(5),
+    let summary = super::entry_risk_clock_fixture::at(
+        now + chrono::Duration::seconds(6),
+        crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
+            &config,
+            &store,
+            now + chrono::Duration::seconds(5),
+        ),
     )
     .await?
     .expect("tiny submit route should sweep failed buy simulation");
@@ -77,10 +78,13 @@ async fn tiny_submit_sweep_skips_failed_buy_retry_after_later_sell_signal() -> R
     })?;
 
     let config = buy_retry_config("http://127.0.0.1:1");
-    let summary = crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
-        &config,
-        &store,
-        now + chrono::Duration::seconds(5),
+    let summary = super::entry_risk_clock_fixture::at(
+        now + chrono::Duration::seconds(6),
+        crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
+            &config,
+            &store,
+            now + chrono::Duration::seconds(5),
+        ),
     )
     .await?
     .expect("tiny submit route should run reconciliation sweep");
@@ -122,10 +126,13 @@ async fn failed_buy_retry_candidate_is_failed_when_fresh_metadata_blocks_entry()
     let mut config = buy_retry_config("http://127.0.0.1:1");
     config.quote_canary_timeout_ms = 50;
 
-    let summary = crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
-        &config,
-        &store,
-        now + chrono::Duration::seconds(5),
+    let summary = super::entry_risk_clock_fixture::at(
+        now + chrono::Duration::seconds(6),
+        crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
+            &config,
+            &store,
+            now + chrono::Duration::seconds(5),
+        ),
     )
     .await?
     .expect("tiny submit route should sweep retry candidate");
@@ -177,10 +184,13 @@ async fn stale_failed_buy_retry_candidate_expires_without_submit() -> Result<()>
     let mut config = buy_retry_config("http://127.0.0.1:1");
     config.canary_max_signal_age_seconds = 30;
 
-    let summary = crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
-        &config,
-        &store,
-        now + chrono::Duration::seconds(60),
+    let summary = super::entry_risk_clock_fixture::at(
+        now + chrono::Duration::seconds(61),
+        crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
+            &config,
+            &store,
+            now + chrono::Duration::seconds(60),
+        ),
     )
     .await?
     .expect("tiny submit route should sweep stale retry candidate");
@@ -245,6 +255,7 @@ async fn serve_buy_retry_build_submit_and_confirm(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base_url = format!("http://{}", listener.local_addr()?);
     let tx = tx_signature.to_string();
+    let wallet = bs58::encode(first_signer).into_string();
     let serialized_transaction = serialized_buy_retry_transaction(*first_signer);
     let server = tokio::spawn(async move {
         let quote = read_buy_retry_http_request(&listener).await;
@@ -270,10 +281,13 @@ async fn serve_buy_retry_build_submit_and_confirm(
             .contains("\"method\":\"simulateTransaction\""));
         write_buy_retry_http_response(
             rpc_simulation.socket,
-            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":null,"logs":[]}}}"#,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"context":{"slot":42},"value":{"err":null,"logs":[]}}}"#,
         )
         .await;
 
+        super::initial_sol_rpc_fixture::serve_three(&listener)
+            .await
+            .expect("BUY funding RPC");
         let submit = read_buy_retry_http_request(&listener).await;
         assert!(submit.body.contains("\"method\":\"sendTransaction\""));
         write_buy_retry_http_response(
@@ -292,6 +306,15 @@ async fn serve_buy_retry_build_submit_and_confirm(
             r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":82,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}"#,
         )
         .await;
+        super::receipt_legacy_fixture::answer_receipt(
+            &listener,
+            &wallet,
+            &tx,
+            "buy",
+            82,
+            -10_000_000,
+        )
+        .await;
     });
     Ok((base_url, server))
 }
@@ -302,7 +325,11 @@ struct BuyRetryHttpRequest {
 }
 
 async fn read_buy_retry_http_request(listener: &tokio::net::TcpListener) -> BuyRetryHttpRequest {
-    let (mut socket, _) = listener.accept().await.expect("buy retry HTTP request");
+    let (mut socket, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
+            .await
+            .expect("buy retry HTTP request deadline")
+            .expect("buy retry HTTP request");
     let mut buffer = [0_u8; 16384];
     let read = socket.read(&mut buffer).await.expect("read request");
     BuyRetryHttpRequest {
@@ -327,6 +354,8 @@ fn record_buy_retry_quote(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,
@@ -349,7 +378,7 @@ fn record_buy_retry_quote(
             route_plan_json: Some(r#"[{"swapInfo":{"label":"Pump.fun Amm"}}]"#.to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some(r#"{"recommended":22000}"#.to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
             error: None,
@@ -397,14 +426,7 @@ fn write_buy_retry_keypair_file(name: &str, bytes: &[u8]) -> Result<PathBuf> {
 }
 
 fn serialized_buy_retry_transaction(first_account_key: [u8; 32]) -> String {
-    let mut transaction = vec![1_u8];
-    transaction.extend_from_slice(&[0_u8; 64]);
-    transaction.extend_from_slice(&[1_u8, 0, 0]);
-    transaction.push(1);
-    transaction.extend_from_slice(&first_account_key);
-    transaction.extend_from_slice(&[9_u8; 32]);
-    transaction.push(0);
-    BASE64_STANDARD.encode(transaction)
+    super::priority_fee_fixture::guarded_transaction(first_account_key, 200_000, 10_000)
 }
 
 fn buy_retry_config(base_url: &str) -> ExecutionConfig {

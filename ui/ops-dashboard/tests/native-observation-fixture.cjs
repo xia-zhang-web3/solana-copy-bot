@@ -1,0 +1,9 @@
+exports.report = function report(amount='9007199254740993') {
+  const known=(value,source='rpc_native_balance')=>({value,coverage:'known',source});
+  const missing={value:null,coverage:'missing',source:'unavailable'};
+  const endpoint={mint:known('Mint','rpc_token_balance'),token_owner:known('ForeignOwner','rpc_token_balance'),token_program:missing,decimals:known('9','rpc_token_balance'),raw:known('0','rpc_token_balance')};
+  const bundle={order_id:'exec-canary:row',tx_signature:'signature',wallet_pubkey:'Wallet',token:'Mint',side:'sell',slot:'18446744073709551615',accounts_coverage:'missing',instructions_coverage:'known',reasons:['token_account_fields_partial'],
+    accounts:[{account_index:1,pubkey:'Account',native_pre:known('0'),native_post:known(amount),native_delta:known(amount),pre_token:endpoint,post_token:endpoint,relevance:['wsol_mint']}],
+    instructions:[{outer_index:0,inner_index:0,stack_height:missing,program_id:known('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA','parsed_instruction'),instruction_type:known('closeAccount','parsed_instruction'),fields:{account:known('Account','parsed_instruction'),destination:known('ForeignDestination','parsed_instruction'),owner:known('Wallet','parsed_instruction')},coverage:'known'}]};
+  return {since:'2026-09-05T00:00:00Z',as_of:'2026-09-05T01:00:00Z',source_basis:'successful_getTransaction_jsonParsed_confirmed',window_basis:'original_order_submit_time',coverage:'partial_unresolved',decomposition:'unresolved',ordering:'rpc_outer_inner_positions_only_no_total_cpi_order',total_orders:'2',covered_orders:'0',partial_orders:'1',uncovered_orders:'1',conflict_orders:'0',account_rows:'1',instruction_rows:'1',rows_truncated:true,rows:[{order_id:bundle.order_id,operation_at:'2026-09-05T00:05:00Z',side:'sell',coverage:'partial',reason:null,observations:bundle}]};
+};

@@ -19,6 +19,8 @@ fn execution_canary_readiness_operator_reports_latest_metadata() -> Result<()> {
     let now = ts("2026-06-02T12:00:00Z");
     let reserve = store.reserve_execution_canary_order("buy-operator", "metis-canary", now)?;
     store.record_execution_canary_build_plan_metadata(&ExecutionCanaryBuildPlanMetadata {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         order_id: reserve.order.order_id.clone(),
         signal_id: reserve.order.signal_id.clone(),
         client_order_id: reserve.order.client_order_id.clone(),

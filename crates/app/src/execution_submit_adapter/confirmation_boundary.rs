@@ -1,12 +1,15 @@
 use super::{
     build_confirmation_request_from_order, fetch_rpc_signature_confirmation,
-    record_confirmation_tracker_outcome, rpc_confirmed_fill::fetch_actual_confirmed_fill,
-    ExecutionConfirmationTrackerOutcome, ExecutionConfirmedFill,
+    record_confirmed_fill_accounting_and_status,
+    rpc_confirmed_fill::confirmed_fill_from_facts,
+    rpc_receipt_facts::{fetch_confirmed_receipt_facts, ReceiptTransactionFailed},
+    ExecutionConfirmationTrackerOutcome,
 };
-use anyhow::Result;
+use anyhow::{anyhow, ensure, Result};
 use chrono::{DateTime, Utc};
 use copybot_storage_core::{
-    SqliteStore, EXECUTION_ERROR_CONFIRMATION_FAILED, EXECUTION_STATUS_CANARY_FAILED,
+    ExecutionCanaryReceiptProof, SqliteStore, EXECUTION_STATUS_CANARY_CONFIRMED,
+    EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED,
 };
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -26,7 +29,8 @@ pub(crate) struct ExecutionConfirmationBoundaryOutcome {
     pub(crate) sell_no_position: usize,
     pub(crate) close_status: Option<String>,
     pub(crate) closed_qty: f64,
-    pub(crate) pnl_sol: f64,
+    pub(crate) pnl_sol: Option<f64>,
+    pub(crate) cash_settlement: Option<copybot_storage_core::ExecutionCanaryCashSettlement>,
 }
 
 pub(crate) async fn record_execution_rpc_confirmation_boundary(
@@ -35,94 +39,241 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
     rpc_url: &str,
     order_id: &str,
     wallet_pubkey: &str,
-    fill: ExecutionConfirmedFill,
     now: DateTime<Utc>,
     timeout_ms: u64,
 ) -> Result<ExecutionConfirmationBoundaryOutcome> {
+    // Historical fills are immutable, including those created by older accounting code.
+    if store.execution_canary_fill_exists(order_id)? {
+        store.validate_execution_canary_cash_settlement_replay(order_id, wallet_pubkey)?;
+        return Ok(ExecutionConfirmationBoundaryOutcome {
+            confirmed: 1,
+            cash_settlement: store.load_execution_canary_cash_settlement(order_id)?,
+            reason: Some("receipt_already_accounted".into()),
+            ..Default::default()
+        });
+    }
+    store.visit_execution_canary_reconciliation(order_id, wallet_pubkey, now)?;
+    let order = store
+        .load_execution_canary_order(order_id)?
+        .ok_or_else(|| anyhow!("receipt order missing"))?;
     let request = build_confirmation_request_from_order(store, order_id, now)?;
-    let tracker_outcome =
-        match fetch_rpc_signature_confirmation(http, rpc_url, &request, now, timeout_ms).await {
-            Ok(outcome) => outcome,
-            Err(error) if is_rpc_confirmation_transaction_error(&error) => {
-                let error = format!("{error:#}");
-                let order = store.mark_execution_canary_failed(
-                    order_id,
-                    now,
-                    EXECUTION_ERROR_CONFIRMATION_FAILED,
-                    &error,
-                )?;
-                return Ok(ExecutionConfirmationBoundaryOutcome {
-                    failed: usize::from(order.status == EXECUTION_STATUS_CANARY_FAILED),
-                    reason: Some(EXECUTION_ERROR_CONFIRMATION_FAILED.to_string()),
-                    error: Some(error),
-                    ..ExecutionConfirmationBoundaryOutcome::default()
-                });
+    let mut proof = if let Some(proof) = store.load_execution_canary_receipt_proof(order_id)? {
+        ensure!(
+            proof.tx_signature == request.tx_signature && proof.wallet_pubkey == wallet_pubkey,
+            "stored receipt signature or configured wallet mismatch"
+        );
+        proof
+    } else {
+        let signal = store
+            .load_copy_signal_by_signal_id(&order.signal_id)?
+            .ok_or_else(|| anyhow!("receipt signal missing"))?;
+        let (confirmation_status, slot, confirmed_at) = if order.status
+            == EXECUTION_STATUS_CANARY_CONFIRMED
+        {
+            (
+                "legacy_confirmed".to_string(),
+                None,
+                order.confirm_ts.unwrap_or(now),
+            )
+        } else {
+            ensure!(
+                order.status != EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED,
+                "durable receipt proof missing"
+            );
+            match fetch_rpc_signature_confirmation(http, rpc_url, &request, now, timeout_ms).await {
+                Ok(ExecutionConfirmationTrackerOutcome::Pending { reason, .. }) => {
+                    return Ok(ExecutionConfirmationBoundaryOutcome {
+                        pending: 1,
+                        reason: Some(reason),
+                        ..Default::default()
+                    })
+                }
+                Ok(ExecutionConfirmationTrackerOutcome::Confirmed(proof)) => {
+                    (proof.confirmation_status, proof.slot, proof.confirmed_at)
+                }
+                Err(error) if error.is::<super::rpc_confirmation::SignatureTransactionFailed>() => {
+                    let failure = error
+                        .downcast_ref::<super::rpc_confirmation::SignatureTransactionFailed>()
+                        .unwrap();
+                    return super::failed_expense::detected(
+                        store,
+                        http,
+                        rpc_url,
+                        order_id,
+                        wallet_pubkey,
+                        "signature_status",
+                        &failure.commitment,
+                        failure.slot,
+                        &failure.error,
+                        now,
+                        timeout_ms,
+                        None,
+                    )
+                    .await;
+                }
+                Err(_) => {
+                    return Ok(ExecutionConfirmationBoundaryOutcome {
+                        pending: 1,
+                        reason: Some("signature_rpc_unavailable".into()),
+                        ..Default::default()
+                    })
+                }
             }
-            Err(error) => return Err(error),
         };
-    let fill = actual_confirmed_fill_or_expected(
-        http,
-        rpc_url,
-        wallet_pubkey,
-        &request.tx_signature,
-        fill,
-        &tracker_outcome,
-        timeout_ms,
-    )
-    .await;
-    let record = record_confirmation_tracker_outcome(store, &request, tracker_outcome, fill)?;
-    let mut outcome = ExecutionConfirmationBoundaryOutcome {
-        confirmed: record.confirmed,
-        pending: record.pending,
-        reason: record.reason,
-        confirmation_status: record.confirmation_status,
-        slot: record.slot,
-        ..ExecutionConfirmationBoundaryOutcome::default()
+        ExecutionCanaryReceiptProof {
+            tx_signature: request.tx_signature,
+            wallet_pubkey: wallet_pubkey.into(),
+            token: signal.token,
+            side: signal.side.to_ascii_lowercase(),
+            confirmation_status,
+            slot,
+            confirmed_at,
+            reason: "receipt_not_fetched".into(),
+        }
     };
-    if let Some(fill) = record.fill_accounting {
-        outcome.buy_opened = fill.buy_opened;
-        outcome.buy_existing = fill.buy_existing;
-        outcome.sell_closed = fill.sell_closed;
-        outcome.sell_partial = fill.sell_partial;
-        outcome.sell_dust_closed = fill.sell_dust_closed;
-        outcome.sell_no_position = fill.sell_no_position;
-        outcome.close_status = fill.close_status;
-        outcome.closed_qty = fill.closed_qty;
-        outcome.pnl_sol = fill.pnl_sol;
+    // Persist network confirmation BEFORE any receipt I/O or accounting attempt.
+    store.mark_execution_canary_confirmed_unreconciled(order_id, &proof, now)?;
+    let bundle =
+        match fetch_confirmed_receipt_facts(http, rpc_url, order_id, &proof, timeout_ms).await {
+            Ok(facts) => facts,
+            Err(error) if error.is::<ReceiptTransactionFailed>() => {
+                let failure = error.downcast_ref::<ReceiptTransactionFailed>().unwrap();
+                if store
+                    .load_execution_canary_receipt_facts(order_id)?
+                    .is_some()
+                {
+                    store.detect_failed_expense(
+                        order_id,
+                        wallet_pubkey,
+                        "receipt_meta",
+                        "confirmed",
+                        Some(failure.slot),
+                        &failure.receipt["result"]["meta"]["err"],
+                        now,
+                    )?;
+                    proof.reason = "receipt_facts_execution_conflict".into();
+                    store.mark_execution_canary_confirmed_unreconciled(order_id, &proof, now)?;
+                    return Ok(pending_accounting(&proof));
+                }
+                return super::failed_expense::detected(
+                    store,
+                    http,
+                    rpc_url,
+                    order_id,
+                    wallet_pubkey,
+                    "receipt_meta",
+                    "confirmed",
+                    Some(failure.slot),
+                    &failure.receipt["result"]["meta"]["err"],
+                    now,
+                    timeout_ms,
+                    Some(&failure.receipt),
+                )
+                .await;
+            }
+            Err(error) => {
+                proof.reason = error.to_string();
+                store.mark_execution_canary_confirmed_unreconciled(order_id, &proof, now)?;
+                return Ok(pending_accounting(&proof));
+            }
+        };
+    let facts = &bundle.facts;
+    if store.success_conflicts_with_failed_expense(&facts.tx_signature)? {
+        proof.reason = "receipt_failed_expense_conflict".into();
+        store.mark_execution_canary_confirmed_unreconciled(order_id, &proof, now)?;
+        return Ok(pending_accounting(&proof));
     }
-    Ok(outcome)
-}
-
-async fn actual_confirmed_fill_or_expected(
-    http: &reqwest::Client,
-    rpc_url: &str,
-    wallet_pubkey: &str,
-    tx_signature: &str,
-    expected: ExecutionConfirmedFill,
-    tracker_outcome: &ExecutionConfirmationTrackerOutcome,
-    timeout_ms: u64,
-) -> ExecutionConfirmedFill {
-    if !matches!(
-        tracker_outcome,
-        ExecutionConfirmationTrackerOutcome::Confirmed(_)
+    // No fill conversion or accounting may precede durable exact observations.
+    if let Err(error) = store.record_receipt_observation_bundle(&bundle, now) {
+        proof.reason = if error.to_string() == "native_observation_conflict" {
+            "native_observation_conflict"
+        } else {
+            "receipt_facts_write_failed"
+        }
+        .into();
+        store.mark_execution_canary_confirmed_unreconciled(order_id, &proof, now)?;
+        if copybot_storage_core::is_fatal_sqlite_anyhow_error(&error)
+            || error.downcast_ref::<rusqlite::Error>().is_some_and(|e| !matches!(e,
+                rusqlite::Error::SqliteFailure(code, _) if code.code == rusqlite::ErrorCode::ConstraintViolation))
+        {
+            return Err(error);
+        }
+        // A new pending transaction and readback are required before allowing
+        // an unrelated mint's exit after a local observation write rejection.
+        ensure!(
+            store
+                .load_execution_canary_receipt_proof(order_id)?
+                .as_ref()
+                == Some(&proof)
+                && store
+                    .load_execution_canary_order(order_id)?
+                    .is_some_and(|o| o.status == EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED)
+                && !store.execution_canary_fill_exists(order_id)?
+                && store.execution_canary_accounting_pending()?
+                && store.execution_canary_token_accounting_pending(&proof.token)?,
+            "receipt observation failure pending proof not preserved"
+        );
+        return Ok(pending_accounting(&proof));
+    }
+    if facts.side == "sell" {
+        return super::receipt_sell_accounting::account(store, &facts, &mut proof, now);
+    }
+    let fill = match confirmed_fill_from_facts(&facts, &proof) {
+        Ok(fill) => fill,
+        Err(error) => {
+            proof.reason = error.to_string();
+            store.mark_execution_canary_confirmed_unreconciled(order_id, &proof, now)?;
+            return Ok(pending_accounting(&proof));
+        }
+    };
+    let (_, fill) = match record_confirmed_fill_accounting_and_status(
+        store,
+        fill.fill,
+        proof.confirmed_at,
+        Some(fill.net_lamports),
     ) {
-        return expected;
-    }
-    match fetch_actual_confirmed_fill(
-        http,
-        rpc_url,
-        wallet_pubkey,
-        tx_signature,
-        &expected,
-        timeout_ms,
-    )
-    .await
-    {
-        Ok(Some(actual)) => actual,
-        _ => expected,
-    }
+        Ok(result) => result,
+        Err(error) if error.is::<copybot_storage_core::ReceiptAccountingUnsupported>() => {
+            proof.reason = error
+                .downcast_ref::<copybot_storage_core::ReceiptAccountingUnsupported>()
+                .expect("matched accounting error")
+                .0
+                .to_string();
+            store.mark_execution_canary_confirmed_unreconciled(order_id, &proof, now)?;
+            return Ok(pending_accounting(&proof));
+        }
+        Err(error) => {
+            proof.reason = "receipt_accounting_write_failed".into();
+            store.mark_execution_canary_confirmed_unreconciled(order_id, &proof, now)?;
+            // Surface the DB failure; durable proof and position/fill transaction remain intact.
+            return Err(error);
+        }
+    };
+    Ok(ExecutionConfirmationBoundaryOutcome {
+        confirmed: 1,
+        confirmation_status: Some(proof.confirmation_status),
+        slot: proof.slot,
+        buy_opened: fill.buy_opened,
+        buy_existing: fill.buy_existing,
+        sell_closed: fill.sell_closed,
+        sell_partial: fill.sell_partial,
+        sell_dust_closed: fill.sell_dust_closed,
+        sell_no_position: fill.sell_no_position,
+        close_status: fill.close_status,
+        closed_qty: fill.closed_qty,
+        pnl_sol: Some(fill.pnl_sol),
+        ..Default::default()
+    })
 }
 
-fn is_rpc_confirmation_transaction_error(error: &anyhow::Error) -> bool {
-    format!("{error:#}").contains("confirmation RPC transaction_error")
+pub(super) fn pending_accounting(
+    proof: &ExecutionCanaryReceiptProof,
+) -> ExecutionConfirmationBoundaryOutcome {
+    ExecutionConfirmationBoundaryOutcome {
+        pending: 1,
+        reason: Some(proof.reason.clone()),
+        confirmation_status: Some(proof.confirmation_status.clone()),
+        slot: proof.slot,
+        ..Default::default()
+    }
 }

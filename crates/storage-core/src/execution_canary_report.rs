@@ -34,14 +34,18 @@ impl SqliteDiscoveryStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT status, COUNT(*)
+                "SELECT CASE WHEN status = ?1 AND NOT EXISTS(SELECT 1 FROM fills f WHERE f.order_id = orders.order_id)
+                             THEN ?2 ELSE status END AS accounting_status, COUNT(*)
                  FROM orders
                  WHERE order_id LIKE 'exec-canary:%'
-                 GROUP BY status",
+                 GROUP BY accounting_status",
             )
             .context("failed to prepare execution canary status count query")?;
         let mut rows = stmt
-            .query([])
+            .query(params![
+                EXECUTION_STATUS_CANARY_CONFIRMED,
+                crate::EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED
+            ])
             .context("failed querying execution canary status counts")?;
         while let Some(row) = rows
             .next()
@@ -56,7 +60,11 @@ impl SqliteDiscoveryStore {
                 EXECUTION_STATUS_CANARY_CANDIDATE => report.candidate += count,
                 EXECUTION_STATUS_CANARY_BUILT => report.built += count,
                 EXECUTION_STATUS_CANARY_SIMULATED => report.simulated += count,
-                EXECUTION_STATUS_CANARY_SUBMITTED => report.submitted += count,
+                // Keep unfinished accounting in the existing active/in-flight bucket.
+                EXECUTION_STATUS_CANARY_SUBMITTED
+                | crate::EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED => {
+                    report.submitted += count
+                }
                 EXECUTION_STATUS_CANARY_CONFIRMED => report.confirmed += count,
                 EXECUTION_STATUS_CANARY_FAILED => report.failed += count,
                 EXECUTION_STATUS_CANARY_EXPIRED => report.expired += count,

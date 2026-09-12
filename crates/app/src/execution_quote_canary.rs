@@ -1,19 +1,28 @@
 use crate::execution_quote_canary_helpers::*;
 use crate::execution_quote_canary_priority_fee::PriorityFeeSampler;
-use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
-use crate::execution_quote_http::fetch_quote_sample;
-use crate::quote_price_sanity::raw_amount_mismatch_error;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
-use copybot_core_types::CopySignalRow;
 use copybot_shadow::ShadowSignalResult;
 use copybot_storage_core::{
-    ExecutionCanaryCloseCandidate, ExecutionQuoteCanaryEventInsert,
-    ExecutionQuoteCanaryProviderSampleInsert, ExecutionQuoteCanaryRecordOutcome, SqliteStore,
-    PROVIDER_GENERIC_METIS,
+    ExecutionQuoteCanaryEventInsert, ExecutionQuoteCanaryProviderSampleInsert,
+    ExecutionQuoteCanaryRecordOutcome, SqliteStore, PROVIDER_GENERIC_METIS,
 };
 
+#[path = "execution_strict_quote_jobs.rs"]
+pub(crate) mod strict;
+
+#[path = "execution_hot_quote_claims.rs"]
+pub(crate) mod claims;
+#[path = "execution_hot_quote_lifecycle.rs"]
+mod hot_lifecycle;
+#[path = "execution_hot_quote_network.rs"]
+mod hot_network;
+#[path = "execution_hot_quote_job.rs"]
+pub(crate) mod job;
+
+#[path = "execution_quote_canary_builders.rs"]
+mod builders;
 #[path = "execution_quote_canary_hot_observed.rs"]
 mod hot_observed;
 #[path = "execution_quote_canary_owned_sell.rs"]
@@ -28,6 +37,8 @@ mod provider_compare;
 mod pump_fun_parallel;
 #[path = "execution_pump_fun_quote_http.rs"]
 mod pump_fun_quote_http;
+#[path = "execution_quote_canary_fetch.rs"]
+mod quote_fetch;
 #[path = "execution_quote_canary_summary.rs"]
 mod summary;
 
@@ -43,6 +54,9 @@ pub(crate) struct ExecutionQuoteCanaryRunner {
     config: ExecutionConfig,
     http: reqwest::Client,
     priority_fee: PriorityFeeSampler,
+    entry_claims: claims::EntryClaims,
+    owner_decisions: bool,
+    strict: Option<strict::StrictQuotes>,
 }
 
 impl ExecutionQuoteCanaryRunner {
@@ -50,9 +64,17 @@ impl ExecutionQuoteCanaryRunner {
         let http = reqwest::Client::new();
         Self {
             config: config.clone(),
+            entry_claims: Default::default(),
+            owner_decisions: false,
+            strict: None,
             http: http.clone(),
             priority_fee: PriorityFeeSampler::new(config, http),
         }
+    }
+
+    pub(crate) fn requiring_owner(mut self) -> Self {
+        self.owner_decisions = true;
+        self
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
@@ -67,6 +89,9 @@ impl ExecutionQuoteCanaryRunner {
         since: DateTime<Utc>,
         batch_limit: u32,
     ) -> Result<ExecutionQuoteCanaryTickSummary> {
+        if self.strict.is_some() {
+            return self.strict_tick();
+        }
         let mut priority_fee_sample = None;
         let mut summary = ExecutionQuoteCanaryTickSummary::default();
         self.process_entry_candidates(
@@ -122,6 +147,9 @@ impl ExecutionQuoteCanaryRunner {
         let mut priority_fee_sample = None;
         match signal.side.as_str() {
             SIDE_BUY => {
+                if self.entry_pending(&signal.signal_id) {
+                    return Ok(summary);
+                }
                 let Some(copy_signal) = store
                     .load_copy_signal_by_signal_id(&signal.signal_id)
                     .with_context(|| {
@@ -220,7 +248,10 @@ impl ExecutionQuoteCanaryRunner {
     ) -> Result<()> {
         let signals = store
             .list_execution_quote_canary_entry_candidates(copy_signal_status, since, batch_limit)
-            .context("failed loading execution quote canary entry candidates")?;
+            .context("failed loading execution quote canary entry candidates")?
+            .into_iter()
+            .filter(|s| !self.entry_pending(&s.signal_id))
+            .collect::<Vec<_>>();
         summary.entry_candidates = signals.len();
         if signals.is_empty() {
             return Ok(());
@@ -306,6 +337,10 @@ impl ExecutionQuoteCanaryRunner {
         }
         apply_decision_summary(&event, summary);
         summary.last_event_id = Some(event.event_id.clone());
+        let provider_event = event.clone();
+        if self.owner_decisions {
+            copybot_storage_core::pend_execution_quote_entry(event)?;
+        }
         match store
             .record_execution_quote_canary_event(event)
             .with_context(|| {
@@ -315,9 +350,12 @@ impl ExecutionQuoteCanaryRunner {
                 )
             })? {
             ExecutionQuoteCanaryRecordOutcome::Inserted => summary.entry_inserted += 1,
-            ExecutionQuoteCanaryRecordOutcome::Existing => summary.entry_existing += 1,
+            ExecutionQuoteCanaryRecordOutcome::Existing => {
+                summary.entry_existing += 1;
+                return Ok(()); // Never append provider samples from a losing completion.
+            }
         }
-        self.record_provider_samples(store, &event, bundle.provider_samples, limit_bps)?;
+        self.record_provider_samples(store, &provider_event, bundle.provider_samples, limit_bps)?;
         Ok(())
     }
 
@@ -368,209 +406,6 @@ impl ExecutionQuoteCanaryRunner {
             store.record_execution_quote_canary_provider_sample(&sample)?;
         }
         Ok(())
-    }
-
-    async fn build_entry_quote_event(
-        &self,
-        store: &SqliteStore,
-        signal: &CopySignalRow,
-        now: DateTime<Utc>,
-        priority_fee_sample: Option<&PriorityFeeSample>,
-    ) -> Result<QuoteEventBundle> {
-        let observed = load_matching_observed_entry_leg(store, signal)?;
-        let mut event = ExecutionQuoteCanaryEventInsert {
-            event_id: entry_quote_event_id(&signal.signal_id),
-            signal_id: Some(signal.signal_id.clone()),
-            shadow_closed_trade_id: None,
-            wallet_id: signal.wallet_id.clone(),
-            token: signal.token.clone(),
-            side: SIDE_BUY.to_string(),
-            quote_status: QUOTE_STATUS_SKIPPED.to_string(),
-            request_ts: now,
-            signal_ts: Some(signal.ts),
-            decision_delay_ms: duration_ms_between(signal.ts, now),
-            quote_latency_ms: None,
-            leader_notional_sol: observed
-                .as_ref()
-                .map(|value| value.sol_notional)
-                .or(Some(signal.notional_sol)),
-            quote_in_amount_raw: None,
-            quote_out_amount_raw: None,
-            quote_response_json: None,
-            quote_price_sol: None,
-            shadow_price_sol: observed
-                .as_ref()
-                .and_then(|value| price_sol_per_token(value.sol_notional, value.token_qty)),
-            slippage_bps: None,
-            price_impact_pct: None,
-            route_plan_json: None,
-            priority_fee_status: None,
-            priority_fee_lamports: None,
-            priority_fee_json: None,
-            decision_status: None,
-            decision_reason: None,
-            error: None,
-        };
-        attach_priority_fee(&mut event, priority_fee_sample);
-
-        let amount = match sol_to_lamports_raw(self.config.quote_canary_buy_size_sol) {
-            Ok(value) => value,
-            Err(error) => {
-                event.quote_status = QUOTE_STATUS_ERROR.to_string();
-                event.error = Some(short_error(&error));
-                return Ok(QuoteEventBundle::event_only(event));
-            }
-        };
-        let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_BUY);
-        let mut token_decimals = observed.as_ref().and_then(observed_token_decimals);
-        match fetch_quote_sample(
-            &self.http,
-            &self.config,
-            SOL_MINT,
-            &signal.token,
-            &amount,
-            limit_bps,
-        )
-        .await
-        {
-            Ok(quote) => {
-                apply_quote_sample_to_event(&mut event, quote);
-                token_decimals = resolve_spl_token_decimals(
-                    &self.http,
-                    &self.config,
-                    &signal.token,
-                    token_decimals,
-                )
-                .await;
-                if let Some(decimals) = token_decimals {
-                    let (price, slippage) = buy_quote_price_and_slippage(&event, decimals);
-                    event.quote_price_sol = price;
-                    event.slippage_bps = slippage;
-                }
-            }
-            Err(error) => {
-                event.quote_status = QUOTE_STATUS_ERROR.to_string();
-                event.error = Some(short_error(&error));
-            }
-        }
-        let mut bundle = QuoteEventBundle::event_only(event);
-        append_parallel_provider_samples(
-            &mut bundle,
-            &self.http,
-            &self.config,
-            SOL_MINT,
-            &signal.token,
-            &amount,
-            token_decimals,
-            limit_bps,
-        )
-        .await;
-        Ok(bundle)
-    }
-
-    async fn build_close_quote_event(
-        &self,
-        store: &SqliteStore,
-        close: &ExecutionCanaryCloseCandidate,
-        now: DateTime<Utc>,
-        priority_fee_sample: Option<&PriorityFeeSample>,
-    ) -> Result<QuoteEventBundle> {
-        let mut event = close_quote_event(close, now);
-        attach_priority_fee(&mut event, priority_fee_sample);
-        let observed =
-            load_matching_observed_leg_for_signal(store, &close.signal_id, &close.token)?;
-        let decimals = close
-            .qty_decimals
-            .or_else(|| observed.as_ref().and_then(observed_token_decimals));
-        let decimals =
-            resolve_spl_token_decimals(&self.http, &self.config, &close.token, decimals).await;
-        let amount = close
-            .qty_raw
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map(ToString::to_string)
-            .or_else(|| decimals.and_then(|value| ui_amount_to_raw_string(close.qty, value)));
-        let Some(amount) = amount else {
-            event.error = Some("missing exact close qty_raw and inferred decimals".to_string());
-            return Ok(QuoteEventBundle::event_only(event));
-        };
-        if let Some(error) = raw_amount_mismatch_error(&amount, decimals, close.qty, "close quote")
-        {
-            event.error = Some(error);
-            return Ok(QuoteEventBundle::event_only(event));
-        }
-        event.quote_in_amount_raw = Some(amount.clone());
-        let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_SELL);
-        match fetch_quote_sample(
-            &self.http,
-            &self.config,
-            &close.token,
-            SOL_MINT,
-            &amount,
-            limit_bps,
-        )
-        .await
-        {
-            Ok(quote) => {
-                apply_quote_sample_to_event(&mut event, quote);
-                if let Some(decimals) = decimals {
-                    let (price, slippage) = sell_quote_price_and_slippage(&event, decimals);
-                    event.quote_price_sol = price;
-                    event.slippage_bps = slippage;
-                }
-            }
-            Err(error) => {
-                event.quote_status = QUOTE_STATUS_ERROR.to_string();
-                event.error = Some(short_error(&error));
-            }
-        }
-        let mut bundle = QuoteEventBundle::event_only(event);
-        append_parallel_provider_samples(
-            &mut bundle,
-            &self.http,
-            &self.config,
-            &close.token,
-            SOL_MINT,
-            &amount,
-            decimals,
-            limit_bps,
-        )
-        .await;
-        Ok(bundle)
-    }
-}
-
-fn close_quote_event(
-    close: &ExecutionCanaryCloseCandidate,
-    now: DateTime<Utc>,
-) -> ExecutionQuoteCanaryEventInsert {
-    ExecutionQuoteCanaryEventInsert {
-        event_id: close_quote_event_id(close.id),
-        signal_id: Some(close.signal_id.clone()),
-        shadow_closed_trade_id: Some(close.id),
-        wallet_id: close.wallet_id.clone(),
-        token: close.token.clone(),
-        side: SIDE_SELL.to_string(),
-        quote_status: QUOTE_STATUS_SKIPPED.to_string(),
-        request_ts: now,
-        signal_ts: Some(close.closed_ts),
-        decision_delay_ms: duration_ms_between(close.closed_ts, now),
-        quote_latency_ms: None,
-        leader_notional_sol: Some(close.exit_value_sol),
-        quote_in_amount_raw: close.qty_raw.clone(),
-        quote_out_amount_raw: None,
-        quote_response_json: None,
-        quote_price_sol: None,
-        shadow_price_sol: price_sol_per_token(close.exit_value_sol, close.qty),
-        slippage_bps: None,
-        price_impact_pct: None,
-        route_plan_json: None,
-        priority_fee_status: None,
-        priority_fee_lamports: None,
-        priority_fee_json: None,
-        decision_status: None,
-        decision_reason: None,
-        error: None,
     }
 }
 

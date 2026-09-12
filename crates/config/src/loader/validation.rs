@@ -4,6 +4,11 @@ use crate::risk_validation::validate_shadow_risk_float_gates;
 use crate::AppConfig;
 
 pub(super) fn validate_loaded_config(config: &AppConfig) -> Result<()> {
+    config
+        .execution
+        .tiny_experiment
+        .validate(&config.execution.canary_wallet_pubkey)?;
+    crate::validate_association_delivery(config)?;
     validate_live_ingestion_source_config(config)?;
     validate_shadow_universe_config(config)?;
     validate_shadow_quality_thresholds(config)?;

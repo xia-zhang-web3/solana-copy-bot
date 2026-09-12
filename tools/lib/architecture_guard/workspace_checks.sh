@@ -34,18 +34,6 @@ check_forbidden_legacy_markers() {
       if [[ "$include_local_worktree" == "1" ]] && marker_diff_adds_normalized_pattern "$pattern" --cached --unified=3; then
         fail "changed diff adds a split forbidden legacy Stage 3 marker"
       fi
-      if [[ "$include_local_worktree" == "1" ]]; then
-        for path in "${files[@]}"; do
-          [[ -f "$path" ]] || continue
-          git ls-files --error-unmatch "$path" >/dev/null 2>&1 && continue
-          if grep -IF "$pattern" "$path" >/dev/null; then
-            fail "$path adds a forbidden legacy Stage 3 marker"
-          fi
-          if file_contains_normalized_pattern "$pattern" "$path"; then
-            fail "$path adds a split forbidden legacy Stage 3 marker"
-          fi
-        done
-      fi
     done < <(legacy_stage3_marker_patterns)
     local legacy_raw_source legacy_raw_source_regex legacy_raw_source_normalized_regex
     legacy_raw_source="$(printf '%b' 'raw_\x77indow')"
@@ -70,230 +58,35 @@ check_forbidden_legacy_markers() {
       fail "changed diff adds split legacy publication-source readiness wiring"
     fi
     if [[ "$include_local_worktree" == "1" ]]; then
-      for path in "${files[@]}"; do
-        [[ -f "$path" ]] || continue
-        git ls-files --error-unmatch "$path" >/dev/null 2>&1 && continue
-        if grep -E "$legacy_raw_source_regex" "$path" >/dev/null; then
-          fail "$path adds legacy publication-source readiness wiring"
-        fi
-        if file_contains_normalized_regex_window "$legacy_raw_source_normalized_regex" "$path" 16; then
-          fail "$path adds split legacy publication-source readiness wiring"
-        fi
-      done
+      batch_diagnostics legacy_files.py "$mode"
     fi
     return 0
   fi
-
-  while IFS= read -r pattern; do
-    for path in "${files[@]}"; do
-      [[ -f "$path" ]] || continue
-      if grep -IF "$pattern" "$path" >/dev/null; then
-        fail "$path contains a forbidden legacy Stage 3 marker"
-      fi
-      if file_contains_normalized_pattern "$pattern" "$path"; then
-        fail "$path contains a split forbidden legacy Stage 3 marker"
-      fi
-    done
-  done < <(legacy_stage3_marker_patterns)
-
-  local legacy_raw_source legacy_raw_source_regex legacy_raw_source_normalized_regex path
-  legacy_raw_source="$(printf '%b' 'raw_\x77indow')"
-  legacy_raw_source_regex="published_scoring_source.*${legacy_raw_source}([^[:alnum:]_]|$)"
-  legacy_raw_source_normalized_regex="published_scoring_source.*${legacy_raw_source}[^a-z0-9_]"
-  for path in "${files[@]}"; do
-    [[ -f "$path" ]] || continue
-    is_test_rust_file_path "$path" && continue
-    if grep -E "$legacy_raw_source_regex" "$path" >/dev/null; then
-      fail "$path contains legacy publication-source readiness wiring"
-    fi
-    if file_contains_normalized_regex_window "$legacy_raw_source_normalized_regex" "$path" 16; then
-      fail "$path contains split legacy publication-source readiness wiring"
-    fi
-  done
-}
-
-file_contains_normalized_pattern() {
-  local pattern="$1"
-  local path="$2"
-  python3 - "$pattern" "$path" <<'PY'
-import re
-import sys
-
-def norm(value):
-    return re.sub(r"[\s\"+,()]", "", value).replace(chr(39), "").lower()
-
-pattern = norm(sys.argv[1])
-path = sys.argv[2]
-try:
-    with open(path, "r", encoding="utf-8", errors="ignore") as handle:
-        content = norm(handle.read()) + "!"
-except OSError:
-    raise SystemExit(1)
-raise SystemExit(0 if pattern and pattern in content else 1)
-PY
-}
-
-file_contains_normalized_regex() {
-  local pattern="$1"
-  local path="$2"
-  python3 - "$pattern" "$path" <<'PY'
-import re
-import sys
-
-def norm(value):
-    return re.sub(r"[\s\"+,()]", "", value).replace(chr(39), "").lower()
-
-pattern = re.compile(norm(sys.argv[1]))
-path = sys.argv[2]
-try:
-    with open(path, "r", encoding="utf-8", errors="ignore") as handle:
-        content = norm(handle.read()) + "!"
-except OSError:
-    raise SystemExit(1)
-raise SystemExit(0 if pattern.search(content) else 1)
-PY
-}
-
-file_contains_normalized_regex_window() {
-  local pattern="$1"
-  local path="$2"
-  local window_lines="$3"
-  python3 - "$pattern" "$path" "$window_lines" <<'PY'
-import re
-import sys
-
-def norm(value):
-    return re.sub(r"[\s\"+,()]", "", value).replace(chr(39), "").lower()
-
-pattern = re.compile(norm(sys.argv[1]))
-path = sys.argv[2]
-window_lines = max(1, int(sys.argv[3]))
-try:
-    with open(path, "r", encoding="utf-8", errors="ignore") as handle:
-        lines = [norm(line) for line in handle]
-except OSError:
-    raise SystemExit(1)
-
-for index in range(len(lines)):
-    chunk = "".join(lines[index:index + window_lines]) + "!"
-    if pattern.search(chunk):
-        raise SystemExit(0)
-raise SystemExit(1)
-PY
+  batch_diagnostics legacy_files.py "$mode"
 }
 
 marker_diff_adds_pattern() {
   local pattern="$1"
   shift
-  git diff "$@" -- "${files[@]}" 2>/dev/null \
-    | grep -v -F -- '+++' \
-    | grep -v -F -- '---' \
-    | grep -F "$pattern" \
-    | grep -E '^\+[^+]' >/dev/null
+  marker_diff_scan literal "$pattern" "$@"
 }
 
 marker_diff_adds_regex() {
   local pattern="$1"
   shift
-  git diff "$@" -- "${files[@]}" 2>/dev/null \
-    | grep -v -F -- '+++' \
-    | grep -v -F -- '---' \
-    | grep -E "^\\+[^+].*${pattern}" >/dev/null
+  marker_diff_scan regex "$pattern" "$@"
 }
 
 marker_diff_adds_normalized_pattern() {
   local pattern="$1"
   shift
-  git diff "$@" -- "${files[@]}" 2>/dev/null \
-    | python3 -c '
-import re
-import sys
-
-def norm(value):
-    return re.sub(r"[\s\"+,()]", "", value).replace(chr(39), "").lower()
-
-pattern = norm(sys.argv[1])
-hunk_old = []
-hunk_new = []
-
-def flush_hunk():
-    old = norm("".join(hunk_old)) + "!"
-    new = norm("".join(hunk_new)) + "!"
-    return bool(pattern and pattern in new and pattern not in old)
-
-for line in sys.stdin:
-    if line.startswith(("diff ", "index ", "---", "+++")):
-        continue
-    if line.startswith("@@"):
-        if flush_hunk():
-            raise SystemExit(0)
-        hunk_old = []
-        hunk_new = []
-        continue
-    if line.startswith(" "):
-        hunk_old.append(line[1:])
-        hunk_new.append(line[1:])
-    elif line.startswith("-"):
-        hunk_old.append(line[1:])
-    elif line.startswith("+"):
-        hunk_new.append(line[1:])
-    else:
-        if flush_hunk():
-            raise SystemExit(0)
-        hunk_old = []
-        hunk_new = []
-if flush_hunk():
-    raise SystemExit(0)
-raise SystemExit(1)
-' "$pattern"
+  marker_diff_scan normalized-pattern "$pattern" "$@"
 }
 
 marker_diff_adds_normalized_regex() {
   local pattern="$1"
   shift
-  git diff "$@" -- "${files[@]}" 2>/dev/null \
-    | python3 -c '
-import re
-import sys
-
-def norm(value):
-    return re.sub(r"[\s\"+,()]", "", value).replace(chr(39), "").lower()
-
-pattern = norm(sys.argv[1])
-regex = re.compile(pattern)
-hunk_old = []
-hunk_new = []
-
-def flush_hunk():
-    old = norm("".join(hunk_old)) + "!"
-    new = norm("".join(hunk_new)) + "!"
-    return bool(regex.search(new) and not regex.search(old))
-
-for line in sys.stdin:
-    if line.startswith(("diff ", "index ", "---", "+++")):
-        continue
-    if line.startswith("@@"):
-        if flush_hunk():
-            raise SystemExit(0)
-        hunk_old = []
-        hunk_new = []
-        continue
-    if line.startswith(" "):
-        hunk_old.append(line[1:])
-        hunk_new.append(line[1:])
-    elif line.startswith("-"):
-        hunk_old.append(line[1:])
-    elif line.startswith("+"):
-        hunk_new.append(line[1:])
-    else:
-        if flush_hunk():
-            raise SystemExit(0)
-        hunk_old = []
-        hunk_new = []
-if flush_hunk():
-    raise SystemExit(0)
-raise SystemExit(1)
-' "$pattern"
+  marker_diff_scan normalized-regex "$pattern" "$@"
 }
 
 check_required_policy_files() {
@@ -318,7 +111,7 @@ check_duplicate_workspace_bins() {
     name="${line%% *}"
     fail "duplicate workspace bin name: $line"
   done < <(
-    cargo metadata --locked --format-version=1 --no-deps 2>/dev/null | python3 -c '
+    printf '%s\n' "$architecture_metadata" | python3 -c '
 import json
 import pathlib
 import sys
@@ -395,7 +188,7 @@ check_forbidden_dependency_graph() {
 }
 
 operator_guard_packages() {
-  cargo metadata --locked --format-version=1 --no-deps 2>/dev/null | python3 -c '
+  printf '%s\n' "$architecture_metadata" | python3 -c '
 import json
 import sys
 
@@ -415,4 +208,14 @@ for package in metadata.get("packages", []):
 for name in sorted(set(packages)):
     print(name)
 '
+}
+
+prepare_workspace_metadata() {
+  if ! architecture_metadata="$(cargo metadata --locked --format-version=1 --no-deps 2>/dev/null)"; then
+    fail "failed to read workspace metadata for architecture guard"
+    architecture_metadata='{}'
+  elif ! printf '%s\n' "$architecture_metadata" | python3 -c 'import json,sys; json.load(sys.stdin)' ; then
+    fail "failed to parse workspace metadata for architecture guard"
+    architecture_metadata='{}'
+  fi
 }

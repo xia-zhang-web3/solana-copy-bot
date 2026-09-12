@@ -1,4 +1,7 @@
+import { ExecutionNativeObservationsPanel } from "../components/ExecutionNativeObservationsPanel";
 import { OpenPositionsPanel } from "../components/OpenPositionsPanel";
+import { ExecutionFailedExpensePanel } from "../components/ExecutionFailedExpensePanel";
+import { ExecutionCashPanel } from "../components/ExecutionCashPanel";
 import { PageHeader } from "../components/PageHeader";
 import { BarTrack, Panel, StatCard } from "../components/Ui";
 import type { BarTone } from "../components/Ui";
@@ -10,7 +13,7 @@ type SnapshotRow = readonly [string, string, string?, RiskLevel?];
 type RowList = ReadonlyArray<SnapshotRow>;
 
 export function Execution() {
-  const { snapshot, data } = useSnapshot<RowsSnapshot>("/api/execution");
+  const { snapshot, data } = useSnapshot<RowsSnapshot & {native_observations?: unknown}>("/api/execution");
   const rows = data?.rows?.length ? data.rows : unavailableRows();
   const cards = executionCards(rows);
   const openCount = Number(rowValue(rows, "open_positions") ?? rowValue(rows, "Open positions") ?? 0);
@@ -21,8 +24,8 @@ export function Execution() {
       <PageHeader
         title="Execution"
         subtitle={headerSubtitle(snapshot, "order flow · last 1h")}
-        status={snapshot?.stale ? "Stale" : "Fills symmetric"}
-        statusLevel={snapshot?.stale ? "warning" : "safe"}
+        status={snapshot?.stale ? "Stale" : "Economics unresolved"}
+        statusLevel="warning"
       />
       <div className="screen">
         <div className="metric-grid">
@@ -30,6 +33,10 @@ export function Execution() {
             <StatCard detail={detail} key={label} label={label} level={state} value={value} />
           ))}
         </div>
+
+        <ExecutionNativeObservationsPanel report={data?.native_observations} />
+        <ExecutionCashPanel rows={rows} />
+        <ExecutionFailedExpensePanel rows={rows} />
 
         <div className="execution-layout">
           <OpenPositionsPanel
@@ -81,8 +88,8 @@ export function Execution() {
 
 function executionCards(rows: RowList) {
   return [
-    ["Buys confirmed", rowValue(rows, "entry_confirmed") ?? rowValue(rows, "Buys confirmed") ?? "0", "confirmed tiny entries", "safe"],
-    ["Sells confirmed", rowValue(rows, "exit_confirmed") ?? rowValue(rows, "Sells confirmed") ?? "0", "confirmed tiny exits", "safe"],
+    ["Shadow-linked buys confirmed", rowValue(rows, "entry_confirmed") ?? rowValue(rows, "Buys confirmed") ?? "0", "shadow cohort · tiny entries", "safe"],
+    ["Shadow-linked sells confirmed", rowValue(rows, "exit_confirmed") ?? rowValue(rows, "Sells confirmed") ?? "0", "shadow cohort · excludes owned-only exits", "safe"],
     ["Buys failed", rowValue(rows, "buy_failed") ?? "0", "slippage / rpc", "warning"],
     ["Sells failed", rowValue(rows, "sell_failed") ?? "0", "route stale", "info"]
   ] as Array<[string, string, string, RiskLevel]>;

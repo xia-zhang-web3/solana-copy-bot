@@ -109,7 +109,7 @@ pub(crate) fn entry_amounts(
     {
         return Err(EntryValidationError::GateRejected);
     }
-    if entry.entry_ready_ts.is_none() {
+    if entry.modeled_entry_ready_ts.is_none() {
         return Err(EntryValidationError::TimingUnknown);
     }
     let out_raw = parse_u128(entry.quote_out_amount_raw.as_deref())

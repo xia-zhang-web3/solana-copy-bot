@@ -3,11 +3,18 @@ use std::fs;
 #[cfg(test)]
 use std::path::{Path, PathBuf};
 
+mod association_delivery;
+pub use association_delivery::{
+    validate_association_delivery, validate_delivery_source, AssociationDeliveryConfig,
+    DeliveryBudget,
+};
 mod discovery_v2_identity;
 mod env_parsing;
 mod loader;
 mod risk_validation;
 mod schema;
+mod tiny_experiment;
+pub use tiny_experiment::{TinyExperimentConfig, TinyPolicyMode};
 
 pub use self::discovery_v2_identity::{
     discovery_v2_policy_fingerprint, DiscoveryV2PolicyFingerprintInput,

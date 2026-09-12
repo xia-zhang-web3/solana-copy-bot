@@ -12,6 +12,10 @@ use rusqlite::params;
 use std::collections::HashSet;
 use std::io;
 
+#[path = "shadow_lot_insert.rs"]
+mod insert;
+pub(crate) use insert::insert_on_conn;
+
 impl SqliteDiscoveryStore {
     pub fn insert_shadow_lot(
         &self,
@@ -57,37 +61,16 @@ impl SqliteDiscoveryStore {
         let qty_exact = reject_zero_raw_exact_qty(qty_exact, "insert shadow lot")?;
         validate_shadow_risk_context(risk_context)?;
         self.execute_with_retry_result(|conn| {
-            let cost_lamports = sol_to_lamports_ceil(cost_sol, "shadow lot cost_sol")
-                .map_err(to_sql_conversion_error)?;
-            let accounting_bucket = shadow_accounting_bucket_for_qty_exact(qty_exact);
-            conn.execute(
-                "INSERT INTO shadow_lots(
-                    wallet_id,
-                    token,
-                    accounting_bucket,
-                    risk_context,
-                    qty,
-                    qty_raw,
-                    qty_decimals,
-                    cost_sol,
-                    cost_lamports,
-                    opened_ts
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    wallet_id,
-                    token,
-                    accounting_bucket,
-                    risk_context,
-                    qty,
-                    qty_exact.as_ref().map(|value| value.raw().to_string()),
-                    qty_exact.as_ref().map(|value| i64::from(value.decimals())),
-                    cost_sol,
-                    u64_to_sql_i64("shadow_lots.cost_lamports", cost_lamports.as_u64())
-                        .map_err(to_sql_conversion_error)?,
-                    opened_ts.to_rfc3339()
-                ],
-            )?;
-            Ok(conn.last_insert_rowid())
+            insert_on_conn(
+                conn,
+                wallet_id,
+                token,
+                qty,
+                qty_exact,
+                cost_sol,
+                risk_context,
+                opened_ts,
+            )
         })
         .context("failed to insert shadow lot")
     }
@@ -108,6 +91,19 @@ impl SqliteDiscoveryStore {
             )
             .context("failed querying shadow lots existence")?;
         Ok(has_lots > 0)
+    }
+
+    pub fn has_shadow_lots_at(
+        &self,
+        wallet_id: &str,
+        token: &str,
+        as_of: DateTime<Utc>,
+    ) -> Result<bool> {
+        // Compare parsed timestamps without losing subsecond precision in SQLite.
+        Ok(self
+            .list_shadow_lots(wallet_id, token)?
+            .into_iter()
+            .any(|lot| lot.qty > SHADOW_LOT_OPEN_EPS && lot.opened_ts <= as_of))
     }
 
     pub fn list_shadow_open_pairs(&self) -> Result<HashSet<(String, String)>> {

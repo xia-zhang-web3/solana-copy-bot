@@ -1,11 +1,17 @@
 #[path = "export/build.rs"]
 mod build;
+#[path = "export/cash.rs"]
+mod cash;
 #[path = "export/discovery.rs"]
 mod discovery;
+#[path = "export/failed_expenses.rs"]
+mod failed_expenses;
 #[path = "export/io.rs"]
 mod io;
 #[path = "export/json.rs"]
 mod json;
+#[path = "export/native_observations.rs"]
+mod native_observations;
 
 use std::{path::PathBuf, time::Duration};
 

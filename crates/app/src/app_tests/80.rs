@@ -33,11 +33,7 @@ async fn swap_instructions_missing_account_allows_swap_transaction_proof() -> Re
         let read = third.read(&mut buffer).await.expect("read swap request");
         let request = String::from_utf8_lossy(&buffer[..read]);
         assert!(request.starts_with("POST /swap "));
-        write_soft_swap_json(
-            &mut third,
-            r#"{"swapTransaction":"AQIDBA==","simulationError":null}"#,
-        )
-        .await;
+        write_soft_swap_json(&mut third, &valid_soft_swap_transaction_json()).await;
     });
     let now = Utc::now();
     let signal = soft_swap_signal(now);
@@ -100,7 +96,7 @@ async fn selected_public_quote_uses_paid_metis_builder() -> Result<()> {
         let read = second.read(&mut buffer).await.expect("read metis swap");
         let request = String::from_utf8_lossy(&buffer[..read]);
         assert!(request.starts_with("POST /swap "));
-        write_soft_swap_json(&mut second, valid_soft_swap_transaction_json()).await;
+        write_soft_swap_json(&mut second, &valid_soft_swap_transaction_json()).await;
     });
     let now = Utc::now();
     let signal = soft_swap_signal(now);
@@ -238,8 +234,8 @@ fn valid_soft_swap_instructions_json() -> &'static str {
     r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":null}"#
 }
 
-fn valid_soft_swap_transaction_json() -> &'static str {
-    r#"{"swapTransaction":"AQIDBA==","simulationError":null}"#
+fn valid_soft_swap_transaction_json() -> String {
+    serde_json::json!({"swapTransaction": super::priority_fee_fixture::transaction([0; 32], 1_000_000, 22_000), "simulationError": null}).to_string()
 }
 
 fn fresh_public_quote_json() -> &'static str {
@@ -283,6 +279,8 @@ fn record_soft_swap_quote(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,
@@ -307,7 +305,7 @@ fn record_soft_swap_quote(
             route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Pump.fun Amm\"}}]".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some("{\"recommended\":22000}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
             error: None,
@@ -323,6 +321,8 @@ fn record_soft_swap_public_provider_sample(
 ) -> Result<()> {
     store.record_execution_quote_canary_provider_sample(
         &copybot_storage_core::ExecutionQuoteCanaryProviderSampleInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             provider: copybot_storage_core::PROVIDER_GENERIC_PUBLIC.to_string(),
             side: "buy".to_string(),

@@ -26,6 +26,20 @@ pub(crate) fn record_submit_transport_outcome(
     now: DateTime<Utc>,
 ) -> Result<ExecutionSubmitTransportRecordOutcome> {
     validate_transport_outcome_idempotency(request, &outcome)?;
+    if let Some(dispatch) = store.load_execution_canary_dispatch(&request.order_id)? {
+        anyhow::ensure!(
+            dispatch.attempt == request.attempt && dispatch.wallet == request.wallet_pubkey,
+            "dispatch_transport_identity_conflict"
+        );
+        store.note_execution_canary_dispatch(&dispatch, "dispatch_outcome_unknown")?;
+        return Ok(ExecutionSubmitTransportRecordOutcome {
+            submitted: 1,
+            idempotency_key: Some(outcome.idempotency_key().to_string()),
+            tx_signature: Some(dispatch.tx_signature),
+            reason: Some("dispatch_outcome_unknown".into()),
+            ..Default::default()
+        });
+    }
     match outcome {
         ExecutionSubmitTransportOutcome::NotSent {
             idempotency_key,

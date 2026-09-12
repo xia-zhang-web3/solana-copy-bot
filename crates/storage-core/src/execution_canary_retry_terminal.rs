@@ -64,54 +64,7 @@ impl SqliteDiscoveryStore {
         validate_terminal_reason(reason)?;
         self.with_immediate_transaction_retry(
             "execution canary terminal sell simulation blocked mark",
-            |conn| {
-                let current: Option<(String, Option<String>, Option<String>)> = conn
-                    .query_row(
-                        "SELECT status, err_code, tx_signature
-                         FROM orders
-                         WHERE order_id = ?1
-                         LIMIT 1",
-                        params![order_id],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                    )
-                    .optional()
-                    .context("failed loading terminal sell simulation state")?;
-                let Some((status, err_code, tx_signature)) = current else {
-                    return Err(anyhow!("missing execution canary order {order_id}"));
-                };
-                if status != EXECUTION_STATUS_CANARY_FAILED
-                    || err_code.as_deref() != Some(EXECUTION_ERROR_SIMULATION_FAILED)
-                {
-                    return Err(anyhow!(
-                        "invalid terminal sell simulation transition for {order_id}: status={status} err_code={:?}",
-                        err_code
-                    ));
-                }
-                if tx_signature
-                    .as_deref()
-                    .is_some_and(|signature| !signature.trim().is_empty())
-                {
-                    return Err(anyhow!(
-                        "terminal sell simulation block is unsafe for {order_id}: tx_signature is present"
-                    ));
-                }
-                conn.execute(
-                    "UPDATE orders
-                     SET err_code = ?2,
-                         simulation_error = CASE
-                             WHEN simulation_error IS NULL OR TRIM(simulation_error) = '' THEN ?3
-                             ELSE ?3 || ': ' || simulation_error
-                         END
-                     WHERE order_id = ?1",
-                    params![
-                        order_id,
-                        EXECUTION_ERROR_TERMINAL_SELL_SIMULATION_FAILED,
-                        reason,
-                    ],
-                )
-                .context("failed marking terminal sell simulation blocked")?;
-                Ok(())
-            },
+            |conn| mark_terminal_sell_blocked_on_conn(conn, order_id, true, reason),
         )?;
         self.load_execution_canary_order(order_id)?.ok_or_else(|| {
             anyhow!("missing execution canary order after terminal sell simulation blocked mark")
@@ -126,50 +79,7 @@ impl SqliteDiscoveryStore {
         validate_terminal_reason(reason)?;
         self.with_immediate_transaction_retry(
             "execution canary terminal sell no-route blocked mark",
-            |conn| {
-                let current: Option<(String, Option<String>, Option<String>)> = conn
-                    .query_row(
-                        "SELECT status, err_code, tx_signature
-                         FROM orders
-                         WHERE order_id = ?1
-                         LIMIT 1",
-                        params![order_id],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                    )
-                    .optional()
-                    .context("failed loading terminal sell no-route state")?;
-                let Some((status, err_code, tx_signature)) = current else {
-                    return Err(anyhow!("missing execution canary order {order_id}"));
-                };
-                if status != EXECUTION_STATUS_CANARY_FAILED
-                    || err_code.as_deref() != Some(EXECUTION_ERROR_BUILD_FAILED)
-                {
-                    return Err(anyhow!(
-                        "invalid terminal sell no-route transition for {order_id}: status={status} err_code={:?}",
-                        err_code
-                    ));
-                }
-                if tx_signature
-                    .as_deref()
-                    .is_some_and(|signature| !signature.trim().is_empty())
-                {
-                    return Err(anyhow!(
-                        "terminal sell no-route block is unsafe for {order_id}: tx_signature is present"
-                    ));
-                }
-                conn.execute(
-                    "UPDATE orders
-                     SET err_code = ?2,
-                         simulation_error = CASE
-                             WHEN simulation_error IS NULL OR TRIM(simulation_error) = '' THEN ?3
-                             ELSE ?3 || ': ' || simulation_error
-                         END
-                     WHERE order_id = ?1",
-                    params![order_id, EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE, reason],
-                )
-                .context("failed marking terminal sell no-route blocked")?;
-                Ok(())
-            },
+            |conn| mark_terminal_sell_blocked_on_conn(conn, order_id, false, reason),
         )?;
         self.load_execution_canary_order(order_id)?.ok_or_else(|| {
             anyhow!("missing execution canary order after terminal sell no-route blocked mark")
@@ -251,5 +161,56 @@ fn validate_terminal_reason(reason: &str) -> Result<()> {
             "execution canary terminal sell simulation reason must be non-empty"
         ));
     }
+    Ok(())
+}
+
+pub(crate) fn mark_terminal_sell_blocked_on_conn(
+    conn: &rusqlite::Connection,
+    order_id: &str,
+    simulation: bool,
+    reason: &str,
+) -> Result<()> {
+    validate_terminal_reason(reason)?;
+    let label = if simulation { "simulation" } else { "no-route" };
+    let expected = if simulation {
+        EXECUTION_ERROR_SIMULATION_FAILED
+    } else {
+        EXECUTION_ERROR_BUILD_FAILED
+    };
+    let terminal = if simulation {
+        EXECUTION_ERROR_TERMINAL_SELL_SIMULATION_FAILED
+    } else {
+        EXECUTION_ERROR_TERMINAL_SELL_NO_ROUTE
+    };
+    let current: Option<(String, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT status,err_code,tx_signature FROM orders WHERE order_id=?1 LIMIT 1",
+            [order_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .context("failed loading terminal sell state")?;
+    let Some((status, err_code, tx_signature)) = current else {
+        return Err(anyhow!("missing execution canary order {order_id}"));
+    };
+    if status != EXECUTION_STATUS_CANARY_FAILED || err_code.as_deref() != Some(expected) {
+        return Err(anyhow!("invalid terminal sell {label} transition for {order_id}: status={status} err_code={err_code:?}"));
+    }
+    if tx_signature
+        .as_deref()
+        .is_some_and(|signature| !signature.trim().is_empty())
+    {
+        return Err(anyhow!(
+            "terminal sell {label} block is unsafe for {order_id}: tx_signature is present"
+        ));
+    }
+    let changed = conn.execute("UPDATE orders SET err_code=?2,
+        simulation_error=CASE WHEN simulation_error IS NULL OR TRIM(simulation_error)='' THEN ?3 ELSE ?3 || ': ' || simulation_error END
+        WHERE order_id=?1 AND status=?4 AND err_code=?5 AND (tx_signature IS NULL OR TRIM(tx_signature)='')",
+        params![order_id,terminal,reason,EXECUTION_STATUS_CANARY_FAILED,expected]).context("failed marking terminal sell blocked")?;
+    anyhow::ensure!(
+        changed == 1,
+        "terminal sell {label} mark updated {changed} rows for {order_id}"
+    );
     Ok(())
 }

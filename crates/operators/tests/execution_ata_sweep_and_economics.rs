@@ -2,6 +2,9 @@ use chrono::{TimeZone, Utc};
 use copybot_operators::execution_ata_sweep::parse_args_from as parse_sweep_args;
 use copybot_operators::execution_canary_manual_writeoff::parse_args_from as parse_writeoff_args;
 use copybot_operators::execution_canary_quote_pnl_wallet::{
+    BotRemainderMark, QuoteCoverage, WalletQuoteRequest, WalletTokenBalance,
+};
+use copybot_operators::execution_canary_quote_pnl_wallet::{
     WalletReconciliationReport, WalletSellQuoteProof, WalletTokenReconciliation,
 };
 use copybot_operators::execution_tiny_economics::parse_args_from as parse_economics_args;
@@ -152,8 +155,39 @@ fn follower_gap_tracks_tail_and_sign_flips() {
 }
 
 #[test]
+fn follower_gap_keeps_unknown_net_coverage_separate_from_price_samples() {
+    let report = follower_gap_from_trades(&[
+        trade(0.01, None, Some(1.0), Some(1.0)),
+        trade(0.01, Some(0.0), Some(1.0), Some(1.0)),
+        trade(0.01, Some(-0.001), Some(1.0), Some(1.0)),
+    ])
+    .unwrap();
+    assert_eq!(report.samples, 3);
+    assert_eq!(report.after_fee_known_samples, 2);
+    assert_eq!(report.after_fee_unknown_samples, 1);
+    assert_eq!(report.quote_after_fee_negative, 1);
+    assert_eq!(report.shadow_positive_quote_after_fee_negative, 1);
+}
+
+#[test]
 fn equity_view_combines_liquid_open_dust_and_recoverable_rent() {
+    let coverage = QuoteCoverage {
+        scope: "unit_fixture",
+        complete: true,
+        known_items: 3,
+        unknown_items: 0,
+        quoted_value_sol: Some(0.06),
+        unknown_reasons: vec![],
+    };
     let wallet = WalletReconciliationReport {
+        inventory_complete: true,
+        wallet_account_mark: coverage.clone(),
+        bot_remainder_mark: BotRemainderMark {
+            positions_loaded: true,
+            open_cost_sol: Some(0.05),
+            coverage,
+            positions: vec![],
+        },
         as_of: Utc.with_ymd_and_hms(2026, 6, 12, 0, 0, 0).unwrap(),
         owner_pubkey: "wallet".to_string(),
         source_status: "ok".to_string(),
@@ -181,7 +215,7 @@ fn equity_view_combines_liquid_open_dust_and_recoverable_rent() {
         ],
     };
 
-    let report = build_equity_view(1, 0.05, Some(0.03), Some(&wallet));
+    let report = build_equity_view(1, Some(0.05), Some(0.03), Some(&wallet));
 
     assert_eq!(report.liquid_sol, Some(1.5));
     assert_eq!(report.open_unrealized_pnl_sol, Some(-0.020000000000000004));
@@ -199,6 +233,7 @@ fn trade(
 ) -> ExecutionCanaryQuotePnlTrade {
     let ts = Utc.with_ymd_and_hms(2026, 6, 12, 0, 0, 0).unwrap();
     ExecutionCanaryQuotePnlTrade {
+        fee_allocation: Default::default(),
         shadow_closed_trade_id: 1,
         signal_id: "signal".to_string(),
         wallet_id: "wallet".to_string(),
@@ -212,6 +247,7 @@ fn trade(
         quote_adjusted_pnl_after_priority_fee_sol: quote_pnl_after_fee,
         quote_vs_shadow_delta_sol: None,
         quote_after_fee_vs_shadow_delta_sol: None,
+        skipped_counterfactual_reason: None,
         skipped_counterfactual_pnl_sol: None,
         skipped_counterfactual_pnl_after_priority_fee_sol: None,
         skipped_counterfactual_after_fee_vs_shadow_delta_sol: None,
@@ -232,6 +268,8 @@ fn trade(
         sell_slippage_bps: None,
         buy_price_impact_pct: None,
         sell_price_impact_pct: None,
+        entry_http_request_started_ts: None,
+        exit_http_request_started_ts: None,
         entry_decision_delay_ms: None,
         exit_decision_delay_ms: None,
         entry_quote_latency_ms: None,
@@ -257,11 +295,21 @@ fn balance(classification: &str, out_sol: Option<f64>) -> WalletTokenReconciliat
         bot_open_position: None,
         sell_failure: None,
         sell_quote: Some(WalletSellQuoteProof {
+            request: WalletQuoteRequest::for_balance(
+                "wallet",
+                &WalletTokenBalance {
+                    token_account: format!("{classification}-ata"),
+                    mint: format!("{classification}-mint"),
+                    amount_raw: "1".into(),
+                    decimals: 6,
+                    ui_amount_string: "1".into(),
+                },
+            ),
             status: "ok".to_string(),
             http_status: Some(200),
             error: None,
             error_code: None,
-            out_amount_raw: None,
+            out_amount_raw: out_sol.map(|v| ((v * 1e9) as u64).to_string()),
             out_sol,
             price_impact_pct: None,
             route_labels: Vec::new(),

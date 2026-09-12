@@ -110,13 +110,21 @@ pub fn load_materialized_discovery_v2_status_for_publish(
         (None, None) => {}
         _ => bail!("discovery v2 materialized status runtime cursor mismatch"),
     }
+    crate::live_inventory_status::validate_inventory_coverage(
+        &status,
+        discovery.live_portfolio_gate_enabled,
+    )?;
     validate_status_identity(&status, options)?;
     validate_status_age(&status, discovery, options.now)?;
+    let status = crate::revalidate_discovery_v2_status(
+        status,
+        crate::DiscoveryV2DecisionContext::new(discovery, shadow, options),
+    )?;
     let report = materialized_status_report(&status, discovery, options.now, false);
     Ok((status, report))
 }
 
-fn validate_status_identity(
+pub(crate) fn validate_status_identity(
     status: &DiscoveryV2Status,
     options: &DiscoveryV2BuildOptions,
 ) -> Result<()> {
@@ -143,7 +151,7 @@ fn validate_status_identity(
     Ok(())
 }
 
-fn validate_status_age(
+pub(crate) fn validate_status_age(
     status: &DiscoveryV2Status,
     discovery: &DiscoveryConfig,
     now: DateTime<Utc>,

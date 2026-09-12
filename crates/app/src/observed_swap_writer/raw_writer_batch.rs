@@ -20,18 +20,21 @@ pub(in crate::observed_swap_writer) fn unpack_observed_swap_write_batch(
     batch: Vec<ObservedSwapWriteRequest>,
 ) -> (
     Vec<SwapEvent>,
+    Vec<Option<copybot_storage_core::SourceSellCandidate>>,
     Vec<Option<oneshot::Sender<Result<bool>>>>,
     Vec<Instant>,
 ) {
     let mut swaps = Vec::with_capacity(batch.len());
+    let mut candidates = Vec::with_capacity(batch.len());
     let mut replies = Vec::with_capacity(batch.len());
     let mut queued_at = Vec::with_capacity(batch.len());
     for request in batch {
         swaps.push(request.swap);
+        candidates.push(request.candidate);
         replies.push(request.reply_tx);
         queued_at.push(request.enqueued_at);
     }
-    (swaps, replies, queued_at)
+    (swaps, candidates, replies, queued_at)
 }
 
 pub(in crate::observed_swap_writer) fn send_observed_swap_write_error_replies(

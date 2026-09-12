@@ -15,18 +15,28 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::warn;
 
 mod core;
+pub(crate) mod durable;
 #[allow(dead_code)]
 mod helius_fetch;
 #[allow(dead_code)]
 mod helius_parser;
 #[allow(dead_code)]
 mod helius_pipeline;
+mod native_attribution;
+mod pumpswap_instruction;
 mod queue;
 mod rate_limit;
 mod reorder;
 mod rpc_backfill;
+mod target_balance_rows;
 mod telemetry;
 mod yellowstone;
+#[allow(dead_code)]
+mod yellowstone_association;
+#[allow(dead_code)]
+mod yellowstone_block_association;
+mod yellowstone_facts;
+mod yellowstone_message_time;
 mod yellowstone_pipeline;
 mod yellowstone_proto;
 mod yellowstone_request;

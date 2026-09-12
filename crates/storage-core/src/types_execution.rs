@@ -148,8 +148,11 @@ pub struct ExecutionCanaryConfirmTimeoutDecision {
     pub timeout_seconds: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 pub struct ExecutionCanaryBuildPlanMetadata {
+    /// Proven client attempt start; None for legacy or before HTTP.
+    pub http_request_started_ts: Option<DateTime<Utc>>,
+    pub quote_response_available_ts: Option<DateTime<Utc>>,
     pub order_id: String,
     pub signal_id: String,
     pub client_order_id: String,
@@ -293,6 +296,9 @@ pub struct ExecutionCanaryCloseCandidate {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionQuoteCanaryEventInsert {
+    /// Proven client attempt start; None for legacy or before HTTP.
+    pub http_request_started_ts: Option<DateTime<Utc>>,
+    pub quote_response_available_ts: Option<DateTime<Utc>>,
     pub event_id: String,
     pub signal_id: Option<String>,
     pub shadow_closed_trade_id: Option<i64>,
@@ -329,6 +335,9 @@ pub enum ExecutionQuoteCanaryRecordOutcome {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionQuoteCanaryProviderSampleInsert {
+    /// Proven client attempt start; None for legacy or before HTTP.
+    pub http_request_started_ts: Option<DateTime<Utc>>,
+    pub quote_response_available_ts: Option<DateTime<Utc>>,
     pub event_id: String,
     pub provider: String,
     pub side: String,

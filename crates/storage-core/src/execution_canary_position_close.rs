@@ -20,6 +20,46 @@ use rusqlite::{params, Connection, OptionalExtension};
 const EXECUTION_CANARY_POSITION_CLOSE_EPS: f64 = 1e-12;
 const EXECUTION_CANARY_POSITION_RAW_DUST_UNITS: u64 = 1;
 
+pub(crate) fn write_off_exact_position_on_conn(
+    conn: &Connection,
+    position: &ExecutionCanaryOwnedPosition,
+    now: DateTime<Utc>,
+) -> Result<ExecutionCanaryPositionCloseResult> {
+    let fresh =
+        crate::execution_canary_position_open::load_position_by_id(conn, &position.position_id)?;
+    anyhow::ensure!(
+        fresh.as_ref() == Some(position)
+            && position.state == EXECUTION_CANARY_POSITION_STATE_OPEN
+            && position.accounting_bucket == EXECUTION_CANARY_POSITION_ACCOUNTING_BUCKET,
+        "source write-off exact position changed"
+    );
+    // Same zero-exit full-close math as the legacy automatic write-off, no fill/receipt.
+    let plan = plan_position_close(
+        position,
+        position.qty,
+        position.qty_exact,
+        0.0,
+        1e-12,
+        false,
+        None,
+    )?;
+    apply_position_close(conn, position, &plan, now)?;
+    let saved =
+        crate::execution_canary_position_open::load_position_by_id(conn, &position.position_id)?
+            .context("source write-off position missing after close")?;
+    anyhow::ensure!(
+        saved.state == EXECUTION_CANARY_POSITION_STATE_CLOSED
+            && saved.token == position.token
+            && saved.accounting_bucket == position.accounting_bucket
+            && saved.qty == plan.remaining_qty
+            && saved.qty_exact == plan.remaining_qty_exact
+            && saved.cost_sol == plan.remaining_cost_sol
+            && saved.cost_lamports == Some(plan.remaining_cost_lamports),
+        "source write-off position close changed unexpectedly"
+    );
+    Ok(plan.into_result(position, &position.token))
+}
+
 impl SqliteDiscoveryStore {
     pub fn close_execution_canary_open_position(
         &self,
@@ -45,6 +85,7 @@ impl SqliteDiscoveryStore {
                     exit_price_sol,
                     dust_qty_epsilon,
                     closed_ts,
+                    None,
                 )
             },
         )?;
@@ -65,6 +106,7 @@ pub(crate) fn close_execution_canary_open_position_on_conn(
     exit_price_sol: f64,
     dust_qty_epsilon: f64,
     closed_ts: DateTime<Utc>,
+    actual_proceeds: Option<Lamports>,
 ) -> Result<ExecutionCanaryPositionCloseResult> {
     validate_close_inputs(token, target_qty, exit_price_sol, dust_qty_epsilon)?;
     let target_qty_exact =
@@ -73,6 +115,7 @@ pub(crate) fn close_execution_canary_open_position_on_conn(
         if fill_exists(conn, order_id)? {
             return Ok(no_position_close_result(token));
         }
+        crate::legacy_sell_receipt_ownership::validate(conn, order_id, token)?;
     }
     let Some(position) = load_open_position_for_close(conn, token)? else {
         insert_no_position_sell_fill_marker(
@@ -82,8 +125,17 @@ pub(crate) fn close_execution_canary_open_position_on_conn(
             target_qty,
             target_qty_exact,
             exit_price_sol,
+            actual_proceeds,
         )?;
         return Ok(no_position_close_result(token));
+    };
+    let receipt_exact = match order_id {
+        Some(id) => conn.query_row(
+            "SELECT status = ?2 FROM orders WHERE order_id = ?1",
+            params![id, crate::EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED],
+            |r| r.get::<_, bool>(0),
+        )?,
+        None => false,
     };
     let plan = plan_position_close(
         &position,
@@ -91,6 +143,8 @@ pub(crate) fn close_execution_canary_open_position_on_conn(
         target_qty_exact,
         exit_price_sol,
         dust_qty_epsilon,
+        receipt_exact,
+        actual_proceeds,
     )?;
     apply_position_close(conn, &position, &plan, closed_ts)?;
     insert_position_sell_fill_marker(conn, order_id, token, &plan)?;
@@ -131,13 +185,18 @@ fn insert_no_position_sell_fill_marker(
     target_qty: f64,
     target_qty_exact: Option<TokenQuantity>,
     exit_price_sol: f64,
+    actual_proceeds: Option<Lamports>,
 ) -> Result<()> {
     let Some(order_id) = order_id else {
         return Ok(());
     };
-    let exit_value_sol = target_qty * exit_price_sol;
-    let exit_value_lamports =
-        sol_to_lamports_floor(exit_value_sol, "execution canary sell fill exit_value_sol")?;
+    let exit_value_sol = actual_proceeds
+        .map(crate::money::lamports_to_sol)
+        .unwrap_or(target_qty * exit_price_sol);
+    let exit_value_lamports = match actual_proceeds {
+        Some(value) => value,
+        None => sol_to_lamports_floor(exit_value_sol, "execution canary sell fill exit_value_sol")?,
+    };
     insert_fill_marker_if_order_exists(
         conn,
         order_id,
@@ -271,6 +330,8 @@ fn plan_position_close(
     target_qty_exact: Option<TokenQuantity>,
     exit_price_sol: f64,
     dust_qty_epsilon: f64,
+    receipt_exact: bool,
+    actual_proceeds: Option<Lamports>,
 ) -> Result<PlannedPositionClose> {
     if position.qty <= EXECUTION_CANARY_POSITION_CLOSE_EPS {
         return Err(anyhow!(
@@ -279,26 +340,58 @@ fn plan_position_close(
             position.qty
         ));
     }
-    let capped_qty = target_qty.min(position.qty);
-    let projected_remaining = (position.qty - capped_qty).max(0.0);
-    let dust_limit = dust_qty_epsilon.max(EXECUTION_CANARY_POSITION_CLOSE_EPS);
-    let dust_close = (projected_remaining > 0.0 && projected_remaining <= dust_limit)
-        || exact_raw_dust_remaining(position.qty_exact, target_qty_exact);
-    let closing = projected_remaining <= EXECUTION_CANARY_POSITION_CLOSE_EPS || dust_close;
-    let closed_qty = if closing { position.qty } else { capped_qty };
-    let remaining_qty = if closing {
-        0.0
-    } else {
-        (position.qty - closed_qty).max(0.0)
-    };
-    let closed_qty_exact = closed_qty_exact(position.qty_exact, target_qty_exact, closing)?;
-    let remaining_qty_exact =
-        merge_position_qty_exact_on_sell(position.qty_exact, closed_qty_exact, closing)?;
-    let remaining_qty_exact = if closing {
-        remaining_qty_exact
-    } else {
-        reject_zero_raw_exact_qty(remaining_qty_exact, "execution canary close remaining qty")?
-    };
+    let (closing, dust_close, closed_qty, remaining_qty, closed_qty_exact, remaining_qty_exact) =
+        if receipt_exact {
+            let (current, target) = position
+                .qty_exact
+                .zip(target_qty_exact)
+                .ok_or_else(|| anyhow!("receipt_sell_position_exact_quantity_missing"))?;
+            if current.decimals() != target.decimals() || target.raw() > current.raw() {
+                return Err(anyhow!("receipt_sell_position_quantity_mismatch"));
+            }
+            let closing = target.raw() == current.raw();
+            let remaining = TokenQuantity::new(current.raw() - target.raw(), current.decimals());
+            (
+                closing,
+                false,
+                target.as_f64(),
+                remaining.as_f64(),
+                Some(target),
+                Some(remaining),
+            )
+        } else {
+            let capped_qty = target_qty.min(position.qty);
+            let projected_remaining = (position.qty - capped_qty).max(0.0);
+            let dust_limit = dust_qty_epsilon.max(EXECUTION_CANARY_POSITION_CLOSE_EPS);
+            let dust_close = (projected_remaining > 0.0 && projected_remaining <= dust_limit)
+                || exact_raw_dust_remaining(position.qty_exact, target_qty_exact);
+            let closing = projected_remaining <= EXECUTION_CANARY_POSITION_CLOSE_EPS || dust_close;
+            let closed_qty = if closing { position.qty } else { capped_qty };
+            let remaining_qty = if closing {
+                0.0
+            } else {
+                (position.qty - closed_qty).max(0.0)
+            };
+            let closed_qty_exact = closed_qty_exact(position.qty_exact, target_qty_exact, closing)?;
+            let remaining_qty_exact =
+                merge_position_qty_exact_on_sell(position.qty_exact, closed_qty_exact, closing)?;
+            let remaining_qty_exact = if closing {
+                remaining_qty_exact
+            } else {
+                reject_zero_raw_exact_qty(
+                    remaining_qty_exact,
+                    "execution canary close remaining qty",
+                )?
+            };
+            (
+                closing,
+                dust_close,
+                closed_qty,
+                remaining_qty,
+                closed_qty_exact,
+                remaining_qty_exact,
+            )
+        };
     let total_cost_lamports = position_cost_lamports(position)?;
     let entry_cost_sol = if closing {
         position.cost_sol
@@ -319,19 +412,24 @@ fn plan_position_close(
     } else {
         (position.cost_sol - entry_cost_sol).max(0.0)
     };
-    let exit_value_sol = closed_qty * exit_price_sol;
-    let exit_value_lamports =
-        sol_to_lamports_floor(exit_value_sol, "execution canary close exit_value_sol")?;
+    let exit_value_sol = actual_proceeds
+        .map(crate::money::lamports_to_sol)
+        .unwrap_or(closed_qty * exit_price_sol);
+    let exit_value_lamports = match actual_proceeds {
+        Some(value) => value,
+        None => sol_to_lamports_floor(exit_value_sol, "execution canary close exit_value_sol")?,
+    };
     let pnl_lamports = SignedLamports::new(
         i128::from(exit_value_lamports.as_u64()) - i128::from(entry_cost_lamports.as_u64()),
     );
-    let close_status = if dust_close || exact_raw_position_dust(position.qty_exact) {
-        EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED
-    } else if closing {
-        EXECUTION_CANARY_POSITION_CLOSE_CLOSED
-    } else {
-        EXECUTION_CANARY_POSITION_CLOSE_PARTIAL
-    };
+    let close_status =
+        if dust_close || (!receipt_exact && exact_raw_position_dust(position.qty_exact)) {
+            EXECUTION_CANARY_POSITION_CLOSE_DUST_CLOSED
+        } else if closing {
+            EXECUTION_CANARY_POSITION_CLOSE_CLOSED
+        } else {
+            EXECUTION_CANARY_POSITION_CLOSE_PARTIAL
+        };
     Ok(PlannedPositionClose {
         close_status,
         closed_qty,

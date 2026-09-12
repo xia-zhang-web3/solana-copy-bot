@@ -1,3 +1,8 @@
+#[path = "../src/execution_canary_quote_pnl_error_class.rs"]
+mod execution_canary_quote_pnl_error_class;
+#[path = "../src/execution_canary_quote_pnl_quality.rs"]
+mod execution_canary_quote_pnl_quality;
+
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_operators::execution_canary_quote_pnl::{
@@ -18,6 +23,15 @@ fn ts(raw: &str) -> DateTime<Utc> {
 
 #[test]
 fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
+    check_operator_fee_report(Some(10_000))
+}
+
+#[test]
+fn execution_canary_quote_pnl_operator_preserves_unknown_fee() -> Result<()> {
+    check_operator_fee_report(None)
+}
+
+fn check_operator_fee_report(fee: Option<u64>) -> Result<()> {
     let dir = tempdir()?;
     let db_path = dir.path().join("runtime.db");
     let mut store = SqliteStore::open(&db_path)?;
@@ -45,7 +59,7 @@ fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
         .next()
         .expect("close candidate")
         .id;
-    store.record_execution_quote_canary_event(&quote_event(
+    let mut event = quote_event(
         "quote:buy:operator",
         Some("buy-operator"),
         None,
@@ -53,8 +67,10 @@ fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
         opened,
         "200000000",
         "100",
-    ))?;
-    store.record_execution_quote_canary_event(&quote_event(
+    );
+    event.priority_fee_lamports = fee;
+    store.record_execution_quote_canary_event(&event)?;
+    let mut event = quote_event(
         "quote:sell:operator",
         Some("sell-operator"),
         Some(close_id),
@@ -62,7 +78,9 @@ fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
         opened + Duration::seconds(30),
         "50",
         "125000000",
-    ))?;
+    );
+    event.priority_fee_lamports = fee;
+    store.record_execution_quote_canary_event(&event)?;
     drop(store);
 
     let report = build_report_from_db_path(&db_path, closed + Duration::seconds(1));
@@ -74,8 +92,33 @@ fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
         .provider_selection
         .as_ref()
         .expect("provider selection should exist");
+    let value = serde_json::to_value(&report)?;
+    let mut proof = report.tiny_execution_proof.clone().expect("proof");
+    // Isolate the quality conclusion with otherwise clean, sufficiently sampled proof.
+    proof.summary = Default::default();
+    proof.summary.shadow_market_closed_trades = 30;
+    proof.entry_funnel = Default::default();
+    proof.trades.clear();
+    proof.recent_orders.clear();
     let summary = report.summary.expect("operator summary should exist");
+    let quality =
+        execution_canary_quote_pnl_quality::build_tiny_execution_quality(&summary, &proof);
+    if fee.is_none() {
+        assert!(value["summary"]["quote_adjusted_pnl_after_priority_fee_sol"].is_null());
+        assert!(
+            value["tiny_execution_quality"]["quote_adjusted_pnl_after_priority_fee_sol"].is_null()
+        );
+        assert_eq!(summary.pnl_counted_trades, 0);
+        assert_eq!(summary.unknown_priority_fee_trades, 1);
+        assert!(!summary.readiness_gate.can_start_tiny_execution);
+        assert_ne!(value["tiny_execution_quality"]["verdict"], "healthy");
+        assert_eq!(quality.verdict, "priority_fee_total_unknown");
+        assert_gate_check(gate, "quote_readiness_gate", "block");
+        return Ok(());
+    }
 
+    assert_eq!(quality.verdict, "economic_basis_unresolved");
+    assert!(quality.tiny_realized_pnl_sol.is_none());
     assert_eq!(report.reason_class, "execution_canary_quote_pnl_loaded");
     assert!(report.db_opened);
     assert_eq!(gate.status, "blocked");
@@ -85,12 +128,26 @@ fn execution_canary_quote_pnl_operator_reports_adjusted_pnl() -> Result<()> {
     assert_eq!(summary.shadow_close_breakdown.stale_closed_trades, 0);
     assert_eq!(summary.pnl_counted_trades, 1);
     assert_close(summary.quote_adjusted_pnl_sol, 0.025);
-    assert_close(summary.quote_adjusted_pnl_after_priority_fee_sol, 0.02498);
+    assert_close(
+        summary
+            .quote_adjusted_pnl_after_priority_fee_sol
+            .expect("known fees"),
+        0.024985,
+    );
     assert_close(summary.quote_vs_shadow_delta_sol, -0.005);
-    assert_close(summary.quote_after_fee_vs_shadow_delta_sol, -0.00502);
+    assert_close(
+        summary
+            .quote_after_fee_vs_shadow_delta_sol
+            .expect("known fees"),
+        -0.005015,
+    );
     assert_eq!(summary.quote_diagnostics.entry_counted.events, 1);
     assert_close(
-        summary.quote_diagnostics.entry_all.quote_latency_ms_avg,
+        summary
+            .quote_diagnostics
+            .entry_all
+            .quote_latency_ms_avg
+            .expect("actual sample"),
         20.0,
     );
     assert_eq!(summary.threshold_summaries.len(), 4);
@@ -419,6 +476,8 @@ fn quote_event(
     out_raw: &str,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: Some(signal_ts + Duration::milliseconds(10)),
+        quote_response_available_ts: None,
         event_id: event_id.to_string(),
         signal_id: signal_id.map(ToString::to_string),
         shadow_closed_trade_id: close_id,

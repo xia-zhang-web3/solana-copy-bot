@@ -4,7 +4,7 @@ use crate::execution_swap_http_request::{
     disable_shared_accounts, is_missing_account_simulation_error, primary_swap_builder_endpoint,
     simulation_error_text, swap_request_body, SwapBuilderSource,
 };
-use crate::execution_swap_http_retry::post_swap_json_with_retry;
+use crate::execution_swap_http_retry::post_swap_json_with_limit;
 use anyhow::{anyhow, Result};
 use copybot_config::ExecutionConfig;
 use serde_json::Value;
@@ -18,6 +18,25 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
     if !config.swap_instructions_dry_run_enabled {
         return Ok(None);
     }
+    Ok(Some(
+        fetch_instructions_response(http, config, plan, None)
+            .await?
+            .summary,
+    ))
+}
+
+pub(crate) struct FetchedInstructions {
+    pub(crate) value: Value,
+    pub(crate) body: Value,
+    pub(crate) summary: String,
+}
+
+pub(crate) async fn fetch_instructions_response(
+    http: &reqwest::Client,
+    config: &ExecutionConfig,
+    plan: &ExecutionTransactionPlan,
+    byte_limit: Option<usize>,
+) -> Result<FetchedInstructions> {
     let Some(blueprint) = plan.swap_blueprint.as_ref() else {
         return Err(anyhow!(
             "missing swap blueprint for swap-instructions dry-run"
@@ -34,13 +53,14 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
     let primary =
         primary_swap_builder_endpoint(config, plan, "swap-instructions", "swap-instructions")?;
     let timeout = StdDuration::from_millis(config.quote_canary_timeout_ms.max(1));
-    let response = post_swap_json_with_retry(
+    let response = post_swap_json_with_limit(
         http,
         primary.url.clone(),
         &primary.api_key,
         &body,
         timeout,
         "swap-instructions dry-run",
+        byte_limit,
     )
     .await;
     let (endpoint, response) = match response {
@@ -50,34 +70,45 @@ pub(crate) async fn fetch_swap_instructions_dry_run(
     if is_missing_account_simulation_error(&response.value) {
         let mut no_shared_body = body.clone();
         disable_shared_accounts(&mut no_shared_body);
-        let retry = post_swap_json_with_retry(
+        let retry = post_swap_json_with_limit(
             http,
             endpoint.url.clone(),
             &endpoint.api_key,
             &no_shared_body,
             timeout,
             "swap-instructions dry-run no-shared-accounts fallback",
+            byte_limit,
         )
         .await?;
-        return Ok(Some(swap_instructions_response_summary(
-            retry.value,
+        let summary = swap_instructions_response_summary(
+            &retry.value,
             retry.elapsed_ms,
             retry.attempts,
             endpoint.source,
             true,
-        )?));
+        )?;
+        return Ok(FetchedInstructions {
+            value: retry.value,
+            body: no_shared_body,
+            summary,
+        });
     }
-    Ok(Some(swap_instructions_response_summary(
-        response.value,
+    let summary = swap_instructions_response_summary(
+        &response.value,
         response.elapsed_ms,
         response.attempts,
         endpoint.source,
         true,
-    )?))
+    )?;
+    Ok(FetchedInstructions {
+        value: response.value,
+        body,
+        summary,
+    })
 }
 
 fn swap_instructions_response_summary(
-    value: Value,
+    value: &Value,
     elapsed_ms: u64,
     attempts: usize,
     source: SwapBuilderSource,

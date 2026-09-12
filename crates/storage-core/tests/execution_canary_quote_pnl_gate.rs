@@ -78,7 +78,7 @@ fn quote_readiness_gate_ignores_skipped_priority_fee_statuses() -> Result<()> {
         )?;
         store.record_execution_quote_canary_event(&quote_event(
             format!("quote:sell:gate:{index}"),
-            Some(format!("sell:{close_id}")),
+            Some(signal_id.clone()),
             Some(close_id),
             &token,
             "sell",
@@ -144,7 +144,7 @@ fn quote_readiness_gate_warns_for_open_positions_during_live_tiny() -> Result<()
         ))?;
         store.record_execution_quote_canary_event(&quote_event(
             format!("quote:sell:live-open:{index}"),
-            Some(format!("sell:{close_id}")),
+            Some(signal_id.clone()),
             Some(close_id),
             &token,
             "sell",
@@ -226,7 +226,7 @@ fn quote_readiness_gate_reports_candidate_threshold_without_unblocking() -> Resu
         ))?;
         store.record_execution_quote_canary_event(&quote_event(
             format!("quote:sell:candidate:{index}"),
-            Some(format!("sell:{close_id}")),
+            Some(signal_id.clone()),
             Some(close_id),
             &token,
             "sell",
@@ -302,6 +302,8 @@ fn quote_event_with_slippage(
     };
 
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: Some(signal_ts + Duration::milliseconds(10)),
+        quote_response_available_ts: None,
         event_id,
         signal_id,
         shadow_closed_trade_id,

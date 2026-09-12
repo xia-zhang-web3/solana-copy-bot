@@ -1,0 +1,1 @@
+{"id":"execution-pumpswap-direct-get-multiple-accounts","jsonrpc":"2.0","method":"getMultipleAccounts","params":[["ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw","2FrZacEkUQZAopSf1E5QiftBc4jPp4JdPme5xLNSWoPK"],{"commitment":"confirmed","encoding":"base64"}]}

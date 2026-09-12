@@ -16,6 +16,9 @@ use crate::swap_classification::classify_swap_side;
 use crate::telemetry::{reason_to_key, reason_to_stage};
 use copybot_shadow::{ShadowDropReason, ShadowProcessOutcome, ShadowSignalResult};
 
+#[path = "owned_sell_intent.rs"]
+mod owned_sell_intent;
+
 const SHADOW_TASK_SQLITE_BUSY_TIMEOUT_SECS: u64 = 15;
 const SHADOW_TASK_RETRY_BACKOFF_MS: [u64; 4] = [100, 250, 500, 1_000];
 
@@ -43,6 +46,8 @@ pub(crate) fn spawn_shadow_worker_task(
                 key: fallback_key,
                 signal_id: fallback_signal_id,
                 side: fallback_side,
+                buy_receipt: None,
+                owned_sell_reject: None,
                 outcome: Err(anyhow::anyhow!(
                     "shadow worker task panicked: {}",
                     panic_payload_to_string(payload.as_ref())
@@ -70,6 +75,15 @@ pub(crate) fn handle_shadow_task_output(
 ) -> Result<Option<ShadowSignalResult>> {
     match task_output.outcome {
         Ok(ShadowProcessOutcome::Recorded(result)) => {
+            // The shared delivery shape does not turn an execution intent into a shadow fill.
+            if let Some(store) = store {
+                if store
+                    .load_copy_signal_by_signal_id(&result.signal_id)?
+                    .is_some_and(|s| s.status == copybot_storage_core::EXECUTION_SELL_INTENT_STATUS)
+                {
+                    return Ok(Some(result));
+                }
+            }
             record_shadow_gate_outcome_for_recorded(store, &result);
             info!(
                 signal_id = %result.signal_id,
@@ -95,9 +109,16 @@ pub(crate) fn handle_shadow_task_output(
             Ok(Some(result))
         }
         Ok(ShadowProcessOutcome::Dropped(reason)) => {
-            record_shadow_gate_outcome_for_drop(store, &task_output, reason);
-            let reason_key = reason_to_key(reason);
-            let stage_key = reason_to_stage(reason);
+            let reason_key = task_output
+                .owned_sell_reject
+                .map(|reject| reject.as_str())
+                .unwrap_or_else(|| reason_to_key(reason));
+            record_shadow_gate_outcome_for_drop(store, &task_output, reason_key);
+            let stage_key = if task_output.owned_sell_reject.is_some() {
+                "owned_sell_intent"
+            } else {
+                reason_to_stage(reason)
+            };
             *shadow_drop_reason_counts.entry(reason_key).or_insert(0) += 1;
             *shadow_drop_stage_counts.entry(stage_key).or_insert(0) += 1;
             Ok(None)
@@ -143,7 +164,7 @@ fn record_shadow_gate_outcome_for_recorded(
 fn record_shadow_gate_outcome_for_drop(
     store: Option<&SqliteStore>,
     task_output: &ShadowTaskOutput,
-    reason: ShadowDropReason,
+    reason: &'static str,
 ) {
     let Some(store) = store else {
         return;
@@ -158,13 +179,13 @@ fn record_shadow_gate_outcome_for_drop(
         &task_output.key.token,
         side,
         EXECUTION_QUOTE_CANARY_SHADOW_GATE_DROPPED,
-        Some(reason.as_str()),
+        Some(reason),
         Utc::now(),
     ) {
         warn!(
             error = %error,
             signal_id,
-            reason = reason.as_str(),
+            reason,
             "failed recording execution quote canary shadow gate outcome"
         );
     }
@@ -198,6 +219,10 @@ fn shadow_task(
     let side = classify_swap_side(&swap);
     let signal_id = side.map(|value| shadow_signal_id(&signature, &key, value));
     let processing_now = Utc::now();
+    #[cfg(test)]
+    crate::app_tests::b70_hooks::before_shadow(&signature);
+    let mut owned_sell_reject = None;
+    let mut buy_receipt = None;
     let outcome = retry_shadow_task_on_sqlite_contention(&signature, || -> Result<_> {
         let store = SqliteStore::open(Path::new(sqlite_path)).with_context(|| {
             format!("failed to open sqlite db for shadow worker task: {sqlite_path}")
@@ -215,13 +240,34 @@ fn shadow_task(
         {
             return Ok(ShadowProcessOutcome::Dropped(ShadowDropReason::NotFollowed));
         }
-        shadow.process_swap(&store, &swap, follow_snapshot.as_ref(), processing_now)
+        // Capture the actual insert identity, never infer a lot from matching data.
+        buy_receipt = None;
+        if matches!(side, Some(ShadowSwapSide::Buy)) {
+            let (outcome, receipt) = shadow.process_swap_with_buy_receipt(
+                &store,
+                &swap,
+                follow_snapshot.as_ref(),
+                processing_now,
+            )?;
+            buy_receipt = receipt;
+            return Ok(outcome);
+        }
+        owned_sell_intent::process_swap(
+            &shadow,
+            &store,
+            &swap,
+            follow_snapshot.as_ref(),
+            processing_now,
+            &mut owned_sell_reject,
+        )
     });
     ShadowTaskOutput {
         signature,
         key,
         signal_id,
         side,
+        buy_receipt,
+        owned_sell_reject,
         outcome,
     }
 }

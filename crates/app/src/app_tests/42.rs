@@ -10,6 +10,8 @@ fn priority_fee_timeout_is_non_blocking_canary_metadata() {
 
     let now = Utc::now();
     let mut event = ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: "quote:priority-timeout".to_string(),
         signal_id: Some("sig".to_string()),
         shadow_closed_trade_id: None,
@@ -56,6 +58,8 @@ fn priority_fee_timeout_is_non_blocking_canary_metadata() {
 fn sell_quote_with_missing_slippage_is_force_exit_not_unknown() {
     let now = Utc::now();
     let mut sell_event = ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: "quote:sell-missing-slippage".to_string(),
         signal_id: Some("sell-sig".to_string()),
         shadow_closed_trade_id: None,
@@ -80,7 +84,7 @@ fn sell_quote_with_missing_slippage_is_force_exit_not_unknown() {
             crate::execution_quote_canary_helpers::QUOTE_STATUS_OK.to_string(),
         ),
         priority_fee_lamports: Some(1),
-        priority_fee_json: Some("{}".to_string()),
+        priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(1)),
         decision_status: None,
         decision_reason: None,
         error: None,

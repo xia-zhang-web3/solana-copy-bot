@@ -21,37 +21,6 @@ const TERMINAL_SELL_WRITE_OFF_EXIT_PRICE_SOL: f64 = 0.0;
 const TERMINAL_SELL_WRITE_OFF_DUST_QTY_EPSILON: f64 = 1e-12;
 const TERMINAL_SELL_WRITE_OFF_MAX_POSITIONS_PER_TOKEN: usize = 32;
 
-pub(super) fn next_failed_sell_retry_event_id(
-    config: &ExecutionConfig,
-    store: &SqliteStore,
-    now: DateTime<Utc>,
-) -> Result<Option<String>> {
-    let mut retry_events = store.list_retry_candidate_sell_execution_quote_event_ids_for_route(
-        &config.canary_route,
-        RETRY_FAILED_SELL_WITH_OWNED_POSITION_AMOUNT_REASON,
-        1,
-    )?;
-    if let Some(event_id) = retry_events.pop() {
-        return Ok(Some(event_id));
-    }
-
-    let retry_after =
-        now - chrono::Duration::seconds(TERMINAL_SELL_NO_ROUTE_REPROBE_COOLDOWN_SECONDS);
-    let mut terminal_no_route_events = store
-        .list_terminal_no_route_sell_execution_quote_event_ids_for_route(
-            &config.canary_route,
-            retry_after,
-            1,
-        )?;
-    if let Some(event_id) = terminal_no_route_events.pop() {
-        return Ok(Some(event_id));
-    }
-
-    let mut failed_build_events = store
-        .list_failed_build_sell_execution_quote_event_ids_for_route(&config.canary_route, 1)?;
-    Ok(failed_build_events.pop())
-}
-
 pub(super) fn failed_sell_simulation_retry_ready(
     config: &ExecutionConfig,
     order: &ExecutionCanaryOrder,
@@ -107,12 +76,7 @@ pub(super) fn terminal_failed_sell_no_route(
 }
 
 fn terminal_sell_no_route_proof(error: &str) -> bool {
-    let lower = error.to_ascii_lowercase();
-    lower.contains("no_routes_found")
-        || lower.contains("no routes found")
-        || lower.contains("token_not_tradable")
-        || lower.contains("not tradable")
-        || lower.contains("bonding curve for mint not found")
+    copybot_storage_core::execution_terminal_sell_no_route_proof(error)
 }
 
 pub(super) fn terminal_failed_sell_no_route_retry_ready(
@@ -146,6 +110,7 @@ pub(super) fn terminal_failed_sell_simulation(
 pub(super) fn hold_terminal_failed_sell_simulation(
     store: &SqliteStore,
     order: &ExecutionCanaryOrder,
+    max_attempts: u32,
     now: DateTime<Utc>,
 ) -> Result<ExecutionCanaryStateMachineSummary> {
     let mut summary = ExecutionCanaryStateMachineSummary {
@@ -154,6 +119,15 @@ pub(super) fn hold_terminal_failed_sell_simulation(
         last_order_id: Some(order.order_id.clone()),
         ..ExecutionCanaryStateMachineSummary::default()
     };
+    if super::tiny_submit_source_write_off::apply_source_write_off(
+        store,
+        &order.order_id,
+        copybot_storage_core::ExecutionSourceSellWriteOffKind::TerminalSimulation { max_attempts },
+        now,
+        &mut summary,
+    )? {
+        return Ok(summary);
+    }
     let Some(signal) = store.load_copy_signal_by_signal_id(&order.signal_id)? else {
         summary.skipped_reason = Some("missing_terminal_failed_sell_signal");
         return Ok(summary);
@@ -195,6 +169,7 @@ pub(super) fn hold_terminal_failed_sell_simulation(
 pub(super) fn hold_terminal_failed_sell_no_route(
     store: &SqliteStore,
     order: &ExecutionCanaryOrder,
+    max_attempts: u32,
     now: DateTime<Utc>,
 ) -> Result<ExecutionCanaryStateMachineSummary> {
     let mut summary = ExecutionCanaryStateMachineSummary {
@@ -203,6 +178,15 @@ pub(super) fn hold_terminal_failed_sell_no_route(
         last_order_id: Some(order.order_id.clone()),
         ..ExecutionCanaryStateMachineSummary::default()
     };
+    if super::tiny_submit_source_write_off::apply_source_write_off(
+        store,
+        &order.order_id,
+        copybot_storage_core::ExecutionSourceSellWriteOffKind::TerminalNoRoute { max_attempts },
+        now,
+        &mut summary,
+    )? {
+        return Ok(summary);
+    }
     let Some(signal) = store.load_copy_signal_by_signal_id(&order.signal_id)? else {
         summary.skipped_reason = Some("missing_terminal_failed_sell_signal");
         return Ok(summary);
@@ -287,7 +271,7 @@ fn close_terminal_write_off_positions(
     Ok(close_results)
 }
 
-fn record_terminal_write_off_summary(
+pub(super) fn record_terminal_write_off_summary(
     store: &SqliteStore,
     summary: &mut ExecutionCanaryStateMachineSummary,
     order: &ExecutionCanaryOrder,

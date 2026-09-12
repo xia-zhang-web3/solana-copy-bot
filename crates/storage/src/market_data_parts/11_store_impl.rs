@@ -14,6 +14,7 @@ impl SqliteStore {
         &self,
         swaps: &[SwapEvent],
     ) -> Result<ObservedSwapBatchWriteMetrics> {
+        copybot_storage_core::source_sell_handoff_schema::available(&self.conn)?;
         if swaps.is_empty() {
             return Ok(ObservedSwapBatchWriteMetrics {
                 inserted: Vec::new(),
@@ -23,6 +24,7 @@ impl SqliteStore {
         }
 
         self.with_immediate_transaction_retry("observed swap batch write", |conn| {
+            copybot_storage_core::source_sell_handoff_schema::available(conn)?;
             let observed_swaps_insert_started = Instant::now();
             let mut stmt = conn
                 .prepare_cached(
@@ -140,20 +142,13 @@ impl SqliteStore {
         cutoff: DateTime<Utc>,
         batch_size: usize,
     ) -> Result<usize> {
-        let cutoff_ts = cutoff.to_rfc3339();
         let batch_limit = batch_size.max(1).min(i64::MAX as usize) as i64;
-        ensure_recent_raw_observed_swaps_timestamps_canonical_utc(&self.conn)?;
-        self.execute_with_retry(|conn| {
-            conn.execute(
-                "DELETE FROM observed_swaps
-                 WHERE rowid IN (
-                     SELECT rowid
-                     FROM observed_swaps
-                     WHERE ts < ?1
-                     ORDER BY ts ASC, slot ASC, signature ASC
-                     LIMIT ?2
-                 )",
-                params![&cutoff_ts, batch_limit],
+        self.with_immediate_transaction_retry("observed swap retention", |conn| {
+            copybot_storage_core::observed_retention::delete_before_batch(
+                conn,
+                cutoff,
+                batch_limit,
+                None,
             )
         })
         .context("failed to delete observed swap retention slice")

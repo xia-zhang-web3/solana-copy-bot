@@ -8,6 +8,8 @@ pub struct TrackBEntryQuoteSummary {
     pub price_ratio_stats: NumericStats,
     pub price_impact_stats: NumericStats,
     pub market_exit_quote_ratio_stats: NumericStats,
+    pub market_exit_actual_delay_events: u64,
+    pub market_exit_unknown_delay_events: u64,
     pub market_exit_decision_delay_ms_stats: NumericStats,
     pub by_close_bucket: Vec<BucketSummary>,
     pub by_exit_executability: Vec<BucketSummary>,

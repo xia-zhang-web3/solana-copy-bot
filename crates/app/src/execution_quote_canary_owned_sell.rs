@@ -1,14 +1,15 @@
-use super::append_parallel_provider_samples;
+use super::parallel_samples::append_guarded_parallel_provider_samples;
 use super::provider_compare::{sell_quote_price_and_slippage, QuoteEventBundle};
+use super::quote_fetch::fetch_guarded_quotes;
 use super::{ExecutionQuoteCanaryRunner, ExecutionQuoteCanaryTickSummary};
 use crate::execution_quote_canary_helpers::{
-    apply_quote_sample_to_event, attach_priority_fee, duration_ms_between,
-    load_matching_observed_leg_for_signal, observed_token_decimals, price_sol_per_token,
-    quote_canary_slippage_limit_bps, short_error, ui_amount_to_raw_string, PriorityFeeSample,
-    QUOTE_STATUS_ERROR, QUOTE_STATUS_SKIPPED, SIDE_SELL, SOL_MINT,
+    apply_quote_sample_to_event, attach_priority_fee, load_matching_observed_leg_for_signal,
+    observed_token_decimals, price_sol_per_token, quote_canary_slippage_limit_bps, short_error,
+    ui_amount_to_raw_string, PriorityFeeSample, QUOTE_STATUS_ERROR, QUOTE_STATUS_SKIPPED,
+    SIDE_SELL, SOL_MINT,
 };
 use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
-use crate::execution_quote_http::fetch_quote_sample;
+use crate::execution_source_sell_guard as source_guard;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::{CopySignalRow, COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE};
@@ -38,11 +39,35 @@ impl ExecutionQuoteCanaryRunner {
         )?;
         summary.close_candidates += signal_ids.len();
         for signal_id in signal_ids {
-            let Some(signal) = store.load_copy_signal_by_signal_id(&signal_id)? else {
-                continue;
-            };
-            self.process_owned_sell_signal(store, &signal, now, priority_fee_sample, summary)
-                .await?;
+            store.advance_execution_owned_sell_cursor(&signal_id)?;
+            let before_attempt = summary.clone();
+            let result: Result<()> = async {
+                let Some(signal) = store.load_copy_signal_by_signal_id(&signal_id)? else {
+                    return Ok(());
+                };
+                self.process_owned_sell_signal(store, &signal, now, priority_fee_sample, summary)
+                    .await
+            }
+            .await;
+            if let Err(error) = result {
+                if copybot_storage_core::is_fatal_sqlite_anyhow_error(&error)
+                    || source_guard::global_storage_error(&error)
+                {
+                    return Err(error);
+                }
+                // A recorder may update its in-memory summary before its write fails.
+                *summary = before_attempt;
+                summary.close_errors += 1;
+                summary.decision_unknown += 1;
+                let reason =
+                    short_error(&error.context(format!("owned sell recovery {signal_id}")));
+                summary.last_owned_sell_recovery_error = Some(
+                    crate::telemetry::OwnedSellRecoveryError::from_bounded_error(
+                        &signal_id, &reason,
+                    ),
+                );
+                summary.last_error = Some(reason);
+            }
         }
         self.process_owned_stale_close_candidates(
             store,
@@ -91,7 +116,31 @@ impl ExecutionQuoteCanaryRunner {
         priority_fee_sample: &mut Option<PriorityFeeSample>,
         summary: &mut ExecutionQuoteCanaryTickSummary,
     ) -> Result<()> {
+        let result = self
+            .try_process_owned_sell_signal(store, signal, now, priority_fee_sample, summary)
+            .await;
+        source_guard::quote_result(result, summary)?;
+        Ok(())
+    }
+
+    async fn try_process_owned_sell_signal(
+        &self,
+        store: &SqliteStore,
+        signal: &CopySignalRow,
+        now: DateTime<Utc>,
+        priority_fee_sample: &mut Option<PriorityFeeSample>,
+        summary: &mut ExecutionQuoteCanaryTickSummary,
+    ) -> Result<()> {
+        let source = source_guard::signal(store, &signal.signal_id)?;
+        let signal = &source.signal;
         if !signal.side.eq_ignore_ascii_case(SIDE_SELL) {
+            return Ok(());
+        }
+        if signal.status == copybot_storage_core::EXECUTION_SELL_INTENT_STATUS
+            && store
+                .load_execution_canary_order_by_signal(&signal.signal_id)?
+                .is_some()
+        {
             return Ok(());
         }
         let Some(position) = store.load_execution_canary_open_position(&signal.token)? else {
@@ -103,9 +152,12 @@ impl ExecutionQuoteCanaryRunner {
         let priority = self
             .priority_fee_sample_if_needed(priority_fee_sample)
             .await;
+        source.recheck(store)?;
         let bundle = self
             .build_owned_sell_quote_event(store, signal, &position, now, priority, None)
-            .await?;
+            .await;
+        source.recheck(store)?;
+        let bundle = bundle?;
         self.record_close_event(store, bundle, summary)
     }
 
@@ -144,6 +196,7 @@ impl ExecutionQuoteCanaryRunner {
         priority_fee_sample: Option<&PriorityFeeSample>,
         shadow_close: Option<&ExecutionCanaryCloseCandidate>,
     ) -> Result<QuoteEventBundle> {
+        let source = source_guard::signal(store, &signal.signal_id)?;
         let observed =
             load_matching_observed_leg_for_signal(store, &signal.signal_id, &signal.token)?;
         let mut event =
@@ -155,27 +208,31 @@ impl ExecutionQuoteCanaryRunner {
             .or_else(|| observed.as_ref().and_then(observed_token_decimals));
         let decimals =
             resolve_spl_token_decimals(&self.http, &self.config, &signal.token, decimals).await;
+        source.recheck(store)?;
         let amount = position
             .qty_exact
             .map(|qty| qty.raw().to_string())
             .or_else(|| decimals.and_then(|value| ui_amount_to_raw_string(position.qty, value)));
         let Some(amount) = amount else {
             event.quote_status = QUOTE_STATUS_ERROR.to_string();
+            event.quote_response_available_ts = None;
             event.error = Some("missing owned sell qty_raw and inferred decimals".to_string());
             return Ok(QuoteEventBundle::event_only(event));
         };
         event.quote_in_amount_raw = Some(amount.clone());
         let limit_bps = quote_canary_slippage_limit_bps(&self.config, SIDE_SELL);
-        match fetch_quote_sample(
+        let (quote, pump) = fetch_guarded_quotes(
             &self.http,
             &self.config,
+            &event,
             &signal.token,
             SOL_MINT,
             &amount,
             limit_bps,
+            || source.recheck(store),
         )
-        .await
-        {
+        .await?;
+        match quote {
             Ok(quote) => {
                 apply_quote_sample_to_event(&mut event, quote);
                 if let Some(decimals) = decimals {
@@ -185,22 +242,25 @@ impl ExecutionQuoteCanaryRunner {
                 }
             }
             Err(error) => {
+                crate::execution_quote_timing::apply_error_timing(&mut event, &error);
                 event.quote_status = QUOTE_STATUS_ERROR.to_string();
+                event.quote_response_available_ts = None;
                 event.error = Some(short_error(&error));
             }
         }
         let mut bundle = QuoteEventBundle::event_only(event);
-        append_parallel_provider_samples(
+        append_guarded_parallel_provider_samples(
             &mut bundle,
             &self.http,
             &self.config,
             &signal.token,
             SOL_MINT,
-            &amount,
+            pump,
             decimals,
             limit_bps,
+            || source.recheck(store),
         )
-        .await;
+        .await?;
         Ok(bundle)
     }
 }
@@ -216,6 +276,8 @@ fn owned_sell_quote_event(
         .map(|close| close.closed_ts)
         .or(Some(signal.ts));
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: owned_sell_quote_event_id(signal, shadow_close),
         signal_id: Some(signal.signal_id.clone()),
         shadow_closed_trade_id: shadow_close.map(|close| close.id),
@@ -225,7 +287,7 @@ fn owned_sell_quote_event(
         quote_status: QUOTE_STATUS_SKIPPED.to_string(),
         request_ts: now,
         signal_ts,
-        decision_delay_ms: signal_ts.and_then(|ts| duration_ms_between(ts, now)),
+        decision_delay_ms: None,
         quote_latency_ms: None,
         leader_notional_sol: observed
             .map(|value| value.sol_notional)

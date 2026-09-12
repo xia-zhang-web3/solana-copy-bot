@@ -12,6 +12,7 @@ const EXECUTION_SIGNING_PAYLOAD_KIND_V1: &str = "execution_transaction_plan_v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExecutionSigningEnvelope {
+    pub(crate) priority_fee_proof: Option<crate::execution_priority_fee_proof::PriorityFeeProof>,
     pub(crate) envelope_id: String,
     pub(crate) idempotency_key: String,
     pub(crate) mode: String,
@@ -42,6 +43,7 @@ pub(crate) fn build_dry_run_execution_signing_envelope(
     validate_request_plan_alignment(request, plan)?;
     let payload = canonical_signing_payload(request, plan);
     let envelope = ExecutionSigningEnvelope {
+        priority_fee_proof: None,
         envelope_id: format!(
             "copybot:sign:{}:attempt:{}",
             request.client_order_id, request.attempt
@@ -68,6 +70,7 @@ pub(crate) fn build_serialized_transaction_execution_envelope(
     validate_serialized_transaction_payload(&payload)?;
     let canonical_payload = canonical_serialized_transaction_payload(request, plan, &payload);
     let envelope = ExecutionSigningEnvelope {
+        priority_fee_proof: None,
         envelope_id: format!(
             "copybot:sign:{}:attempt:{}",
             request.client_order_id, request.attempt
@@ -94,6 +97,7 @@ pub(crate) fn build_signed_transaction_execution_envelope(
     validate_signed_transaction_payload(&payload)?;
     let canonical_payload = canonical_signed_transaction_payload(request, plan, &payload);
     let envelope = ExecutionSigningEnvelope {
+        priority_fee_proof: None,
         envelope_id: format!(
             "copybot:sign:{}:attempt:{}",
             request.client_order_id, request.attempt

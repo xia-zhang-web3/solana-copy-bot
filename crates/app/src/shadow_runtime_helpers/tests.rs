@@ -34,6 +34,8 @@ fn test_task_output(error: anyhow::Error) -> ShadowTaskOutput {
         },
         signal_id: None,
         side: None,
+        buy_receipt: None,
+        owned_sell_reject: None,
         outcome: Err(error),
     }
 }

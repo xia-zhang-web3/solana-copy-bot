@@ -97,7 +97,14 @@ impl ShadowService {
         token: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<TokenQualityCacheRow>> {
-        let cached = store.get_token_quality_cache(token)?;
+        // Use the same evaluation clock for initial and post-refresh reads.
+        // Filtering here also keeps future rows out of every cached fallback.
+        let read_usable_cache = || {
+            store
+                .get_token_quality_cache(token)
+                .map(|row| row.filter(|row| row.fetched_at <= now))
+        };
+        let cached = read_usable_cache()?;
         let is_fresh = cached
             .as_ref()
             .map(|row| now - row.fetched_at <= Duration::seconds(QUALITY_CACHE_TTL_SECONDS))
@@ -125,7 +132,7 @@ impl ShadowService {
                     fetched.token_age_seconds,
                     now,
                 )?;
-                store.get_token_quality_cache(token)
+                read_usable_cache()
             }
             Err(error) => {
                 warn!(

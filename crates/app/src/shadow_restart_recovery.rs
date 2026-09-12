@@ -167,6 +167,8 @@ pub(crate) async fn apply_shadow_restart_recovery_swaps(
                 key,
                 signal_id: None,
                 side: None,
+                buy_receipt: None,
+                owned_sell_reject: None,
                 outcome,
             },
             open_shadow_lots,

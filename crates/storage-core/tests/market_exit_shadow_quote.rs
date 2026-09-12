@@ -88,6 +88,8 @@ fn market_exit_shadow_quote_candidates_require_market_context() -> Result<()> {
 
 fn sell_quote_event(event_id: &str, now: DateTime<Utc>) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: event_id.to_string(),
         signal_id: None,
         shadow_closed_trade_id: None,

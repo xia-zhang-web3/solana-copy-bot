@@ -45,6 +45,7 @@ const TINY_SUBMIT_RETRY_AFTER_UNKNOWN_SUBMIT_TIMEOUT_REASON: &str =
 pub struct Cli {
     pub config_path: Option<PathBuf>,
     pub db_path: Option<PathBuf>,
+    pub portfolio_input: Option<PathBuf>,
     pub json: bool,
     pub limit: u32,
     pub since: Option<DateTime<Utc>>,
@@ -55,6 +56,7 @@ pub struct Cli {
 
 #[derive(Debug, Serialize)]
 pub struct CanaryQuotePnlOperatorReport {
+    pub portfolio_replay: serde_json::Value,
     pub config_loaded: bool,
     pub db_opened: bool,
     pub as_of: DateTime<Utc>,
@@ -69,6 +71,7 @@ pub struct CanaryQuotePnlOperatorReport {
     pub tiny_execution_quality: Option<TinyExecutionQualityReport>,
     pub sell_side_diagnostics: Option<SellSideDiagnosticsReport>,
     pub tiny_execution_gate: Option<TinyExecutionGate>,
+    pub current_entry_cost: Option<copybot_storage_core::ExecutionCanaryEntryCost>,
     pub metis_diagnostics: Option<MetisDiagnosticsReport>,
     pub wallet_reconciliation: Option<WalletReconciliationReport>,
 }
@@ -76,6 +79,9 @@ pub struct CanaryQuotePnlOperatorReport {
 impl CanaryQuotePnlOperatorReport {
     fn failed(reason_class: &str, error: Option<String>, as_of: DateTime<Utc>) -> Self {
         Self {
+            portfolio_replay: crate::quote_portfolio_report::unavailable(
+                "report_context_unavailable",
+            ),
             config_loaded: false,
             db_opened: false,
             as_of,
@@ -90,6 +96,7 @@ impl CanaryQuotePnlOperatorReport {
             tiny_execution_quality: None,
             sell_side_diagnostics: None,
             tiny_execution_gate: None,
+            current_entry_cost: None,
             metis_diagnostics: None,
             wallet_reconciliation: None,
         }
@@ -131,6 +138,7 @@ where
 {
     let mut config_path = None;
     let mut db_path = None;
+    let mut portfolio_input = None;
     let mut json = false;
     let mut limit = DEFAULT_LIMIT;
     let mut since = None;
@@ -142,6 +150,9 @@ where
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--config" => config_path = Some(PathBuf::from(next_value(&mut iter, "--config")?)),
+            "--portfolio-input" => {
+                portfolio_input = Some(PathBuf::from(next_value(&mut iter, "--portfolio-input")?))
+            }
             "--db-path" => db_path = Some(PathBuf::from(next_value(&mut iter, "--db-path")?)),
             "--limit" => limit = parse_limit(&next_value(&mut iter, "--limit")?)?,
             "--since" => since = Some(parse_since(&next_value(&mut iter, "--since")?)?),
@@ -162,6 +173,7 @@ where
     Ok(Cli {
         config_path,
         db_path,
+        portfolio_input,
         json,
         limit,
         since,
@@ -179,6 +191,7 @@ pub fn build_report_from_db_path(
         Cli {
             config_path: None,
             db_path: Some(db_path.to_path_buf()),
+            portfolio_input: None,
             json: true,
             limit: DEFAULT_LIMIT,
             since: None,
@@ -198,6 +211,7 @@ pub fn build_report_from_config_path(
         Cli {
             config_path: Some(config_path.to_path_buf()),
             db_path: None,
+            portfolio_input: None,
             json: true,
             limit: DEFAULT_LIMIT,
             since: None,
@@ -210,6 +224,20 @@ pub fn build_report_from_config_path(
 }
 
 fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport {
+    let db = cli
+        .portfolio_input
+        .as_ref()
+        .and_then(|_| resolve_report_context(&cli).ok());
+    let portfolio = crate::quote_portfolio_report::build(
+        cli.portfolio_input.as_deref(),
+        db.as_ref().map(|c| c.db_path.as_path()),
+    );
+    let mut report = build_legacy_report(cli, as_of);
+    report.portfolio_replay = portfolio;
+    report
+}
+
+fn build_legacy_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport {
     let since = cli
         .since
         .unwrap_or(as_of - Duration::hours(cli.since_hours));
@@ -351,6 +379,16 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
             );
         }
     };
+    let current_entry_cost = match store.execution_canary_entry_cost(as_of) {
+        Ok(cost) => cost,
+        Err(error) => {
+            return CanaryQuotePnlOperatorReport::failed(
+                REASON_DB_UNREADABLE,
+                Some(error.to_string()),
+                as_of,
+            )
+        }
+    };
     let tiny_execution_gate = build_tiny_execution_gate(
         &summary,
         &canary_status,
@@ -358,6 +396,7 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         &submit_risk,
         upstream_state,
         recent_loss,
+        &current_entry_cost,
         as_of,
         context.config.as_ref().map(|config| &config.execution),
         runtime_root.as_deref(),
@@ -376,7 +415,7 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         cli.wallet_reconciliation.then(|| {
             build_live_wallet_reconciliation(
                 &config.execution,
-                &tiny_execution_proof,
+                &store,
                 &sell_side_diagnostics,
                 as_of,
             )
@@ -384,6 +423,7 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
     });
 
     CanaryQuotePnlOperatorReport {
+        portfolio_replay: crate::quote_portfolio_report::unavailable("report_context_unavailable"),
         config_loaded: cli.config_path.is_some(),
         db_opened: true,
         as_of,
@@ -398,6 +438,7 @@ fn build_report(cli: Cli, as_of: DateTime<Utc>) -> CanaryQuotePnlOperatorReport 
         tiny_execution_quality: Some(tiny_execution_quality),
         sell_side_diagnostics: Some(sell_side_diagnostics),
         tiny_execution_gate: Some(tiny_execution_gate),
+        current_entry_cost: Some(current_entry_cost),
         metis_diagnostics,
         wallet_reconciliation,
     }

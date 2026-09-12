@@ -1,0 +1,9 @@
+# Semantic merge proposal for configs/live.toml, configs/prod.toml and
+# ops/server_templates/live.server.toml.example; never append to an existing TOML.
+# Not a complete service config. Preserve every omitted key and existing identity.
+[execution]
+enabled = false
+canary_tiny_submit_enabled = false
+
+[execution.tiny_experiment]
+activate = false

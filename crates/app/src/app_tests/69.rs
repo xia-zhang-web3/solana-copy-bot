@@ -37,6 +37,10 @@ async fn fresh_submit_quote_preserves_pump_fun_metadata_before_completion() -> R
         status: "shadow_recorded".to_string(),
     };
     let metadata = crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+        owned_sell_amount: None,
+        protected_capital: None,
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         quote_source: Some(
             crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID.to_string(),
         ),
@@ -54,7 +58,7 @@ async fn fresh_submit_quote_preserves_pump_fun_metadata_before_completion() -> R
         priority_fee_source: Some("test".to_string()),
         priority_fee_status: Some("ok".to_string()),
         priority_fee_lamports: Some(10_000),
-        priority_fee_json: Some(r#"{"recommended":10000}"#.to_string()),
+        priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(10_000)),
         slippage_bps: Some(125.0),
         decision_status: Some("would_execute".to_string()),
         decision_reason: Some("within_slippage_limit".to_string()),
@@ -286,7 +290,11 @@ async fn write_http_json(socket: &mut tokio::net::TcpStream, body: &str) {
     write_http_status_json(socket, 200, body).await;
 }
 
-async fn write_http_status_json(socket: &mut tokio::net::TcpStream, status: u16, body: &str) {
+pub(super) async fn write_http_status_json(
+    socket: &mut tokio::net::TcpStream,
+    status: u16,
+    body: &str,
+) {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -302,8 +310,12 @@ async fn write_http_status_json(socket: &mut tokio::net::TcpStream, status: u16,
         .expect("write quote response");
 }
 
-fn pump_fun_metadata() -> crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+pub(super) fn pump_fun_metadata() -> crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
     crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+        owned_sell_amount: None,
+        protected_capital: None,
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         quote_source: Some(
             crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID.to_string(),
         ),
@@ -321,7 +333,7 @@ fn pump_fun_metadata() -> crate::execution_submit_adapter::ExecutionBuildPlanMet
         priority_fee_source: Some("test".to_string()),
         priority_fee_status: Some("ok".to_string()),
         priority_fee_lamports: Some(10_000),
-        priority_fee_json: Some(r#"{"recommended":10000}"#.to_string()),
+        priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(10_000)),
         slippage_bps: Some(125.0),
         decision_status: Some("would_execute".to_string()),
         decision_reason: Some("within_slippage_limit".to_string()),

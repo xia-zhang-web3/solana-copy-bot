@@ -15,6 +15,9 @@ pub struct ExecutionTinyProofReport {
     pub position_matches: Vec<ExecutionTinyProofPositionMatch>,
     pub recent_orders: Vec<ExecutionTinyProofOrder>,
     pub open_positions: Vec<ExecutionTinyProofOpenPosition>,
+    pub native_observations: crate::NativeObservationReport,
+    pub failed_expenses: crate::FailedExpenseReport,
+    pub cash_settlements: crate::ExecutionCashSettlementReport,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -32,8 +35,10 @@ pub struct ExecutionTinyProofSummary {
     pub tiny_duplicate_closed_position_matches: u64,
     pub tiny_open_positions: u64,
     pub shadow_pnl_sol: f64,
-    pub tiny_realized_pnl_sol: f64,
-    pub tiny_vs_shadow_delta_sol: f64,
+    pub tiny_realized_pnl_sol: Option<f64>,
+    pub tiny_vs_shadow_delta_sol: Option<f64>,
+    pub legacy_recorded_pnl_sol: Option<f64>,
+    pub economic_pnl_basis: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -53,8 +58,9 @@ pub struct ExecutionTinyProofLatencySummary {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ExecutionTinyProofLatencyStats {
     pub samples: u64,
-    pub avg_ms: f64,
-    pub max_ms: u64,
+    pub unknown: u64,
+    pub avg_ms: Option<f64>,
+    pub max_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -146,6 +152,7 @@ pub struct ExecutionTinyProofTrade {
     pub tiny_vs_shadow_delta_sol: Option<f64>,
     pub entry_quote_event_id: Option<String>,
     pub entry_signal_ts: Option<DateTime<Utc>>,
+    pub entry_http_request_started_ts: Option<DateTime<Utc>>,
     pub entry_quote_request_ts: Option<DateTime<Utc>>,
     pub entry_quote_status: Option<String>,
     pub entry_decision_status: Option<String>,
@@ -155,6 +162,7 @@ pub struct ExecutionTinyProofTrade {
     pub entry_priority_fee_lamports: Option<u64>,
     pub exit_quote_event_id: Option<String>,
     pub exit_signal_ts: Option<DateTime<Utc>>,
+    pub exit_http_request_started_ts: Option<DateTime<Utc>>,
     pub exit_quote_request_ts: Option<DateTime<Utc>>,
     pub exit_quote_status: Option<String>,
     pub exit_decision_status: Option<String>,
@@ -186,6 +194,7 @@ pub struct ExecutionTinyProofPositionMatch {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExecutionTinyProofOrder {
+    pub http_request_started_ts: Option<DateTime<Utc>>,
     pub order_id: String,
     pub signal_id: String,
     pub side: Option<String>,

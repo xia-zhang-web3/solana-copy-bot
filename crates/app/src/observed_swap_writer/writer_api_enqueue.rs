@@ -30,6 +30,7 @@ impl ObservedSwapWriter {
     #[allow(dead_code)]
     pub(crate) async fn enqueue(&self, swap: &SwapEvent) -> Result<()> {
         self.send_request(ObservedSwapWriteRequest {
+            candidate: None,
             swap: swap.clone(),
             reply_tx: None,
             enqueued_at: Instant::now(),
@@ -58,6 +59,7 @@ impl ObservedSwapWriter {
             Ok(permit) => {
                 self.telemetry.note_enqueued();
                 permit.send(ObservedSwapWriteRequest {
+                    candidate: None,
                     swap: swap.clone(),
                     reply_tx: None,
                     enqueued_at: Instant::now(),
@@ -73,8 +75,17 @@ impl ObservedSwapWriter {
     }
 
     pub(crate) async fn write(&self, swap: &SwapEvent) -> Result<bool> {
+        self.write_with_candidate(swap, None).await
+    }
+
+    pub(crate) async fn write_with_candidate(
+        &self,
+        swap: &SwapEvent,
+        candidate: Option<copybot_storage_core::SourceSellCandidate>,
+    ) -> Result<bool> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.send_request(ObservedSwapWriteRequest {
+            candidate,
             swap: swap.clone(),
             reply_tx: Some(reply_tx),
             enqueued_at: Instant::now(),

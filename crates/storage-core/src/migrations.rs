@@ -266,41 +266,54 @@ impl SqliteDiscoveryStore {
     }
 
     fn run_migrations_from_sorted_files(&mut self, files: &[PathBuf]) -> Result<usize> {
-        let tx = self
-            .conn
-            .transaction()
-            .context("failed to open sqlite migration transaction")?;
-        let mut applied = 0usize;
-        for path in files {
-            let version = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| anyhow!("invalid migration filename: {}", path.display()))?;
-            let already_applied: Option<String> = tx
-                .query_row(
-                    "SELECT version FROM schema_migrations WHERE version = ?1",
-                    params![version],
-                    |row| row.get(0),
-                )
-                .optional()
-                .with_context(|| format!("failed checking migration {version}"))?;
-            if already_applied.is_some() {
-                continue;
-            }
-            let sql = fs::read_to_string(path)
-                .with_context(|| format!("failed reading migration file {}", path.display()))?;
-            tx.execute_batch(&sql)
+        let rebuild = crate::fill_cash_migration::required(&self.conn, files)?;
+        crate::fill_cash_migration::with_constraints(&mut self.conn, rebuild, |conn| {
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .context("failed to open sqlite migration transaction")?;
+            let mut applied = 0usize;
+            for path in files {
+                let version = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| anyhow!("invalid migration filename: {}", path.display()))?;
+                let already_applied: Option<String> = tx
+                    .query_row(
+                        "SELECT version FROM schema_migrations WHERE version = ?1",
+                        params![version],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .with_context(|| format!("failed checking migration {version}"))?;
+                if already_applied.is_some() {
+                    continue;
+                }
+                let sql = fs::read_to_string(path)
+                    .with_context(|| format!("failed reading migration file {}", path.display()))?;
+                (if version == crate::fill_cash_migration::VERSION {
+                    crate::fill_cash_migration::apply(&tx, &sql)
+                } else {
+                    tx.execute_batch(&sql).map_err(anyhow::Error::from)
+                })
                 .with_context(|| format!("failed applying migration {version}"))?;
-            tx.execute(
+                tx.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, datetime('now'))",
                 params![version],
             )
             .with_context(|| format!("failed recording migration {version}"))?;
-            applied += 1;
-            tracing::info!(version = version, "migration applied");
-        }
-        tx.commit().context("failed to commit migrations")?;
-        Ok(applied)
+                applied += 1;
+                tracing::info!(version = version, "migration applied");
+            }
+            crate::quote_http_timing_available(&tx, "execution_quote_canary_events")?;
+            crate::quote_response_availability::available(&tx, "execution_quote_canary_events")?;
+            crate::shadow_lot_origin::schema::check_if_applied(&tx)?;
+            crate::ordered_source_sell::schema::check_if_applied(&tx)?;
+            if rebuild {
+                crate::fill_cash_migration::check_foreign_keys(&tx)?;
+            }
+            tx.commit().context("failed to commit migrations")?;
+            Ok(applied)
+        })
     }
 }
 

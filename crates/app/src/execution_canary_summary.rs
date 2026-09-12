@@ -1,3 +1,11 @@
+#[path = "execution_source_sell_refusal.rs"]
+mod source_sell_refusal;
+pub(crate) use source_sell_refusal::{is_local_source_write_off_error, SourceSellWriteOffRefusals};
+
+#[path = "execution_buy_blocker.rs"]
+mod buy_blocker;
+pub(crate) use buy_blocker::BuyBlocker;
+
 use crate::execution_canary::ExecutionCanaryTickSummary;
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_quote_canary::ExecutionQuoteCanaryTickSummary;
@@ -6,6 +14,9 @@ pub(crate) fn apply_quote_summary(
     summary: &mut ExecutionCanaryTickSummary,
     quote: ExecutionQuoteCanaryTickSummary,
 ) {
+    summary
+        .source_sell_refusals
+        .merge(quote.source_sell_refusals);
     summary.quote_entry_candidates = quote.entry_candidates;
     summary.quote_entry_inserted = quote.entry_inserted;
     summary.quote_entry_existing = quote.entry_existing;
@@ -19,12 +30,24 @@ pub(crate) fn apply_quote_summary(
     summary.quote_would_skip = quote.would_skip;
     summary.quote_decision_unknown = quote.decision_unknown;
     summary.last_quote_event_id = quote.last_event_id;
+    summary.last_owned_sell_recovery_error = quote.last_owned_sell_recovery_error;
+    if quote.last_error.is_some() {
+        summary.last_error = quote.last_error;
+    }
 }
 
 pub(crate) fn apply_state_machine_summary(
     summary: &mut ExecutionCanaryTickSummary,
     state: ExecutionCanaryStateMachineSummary,
 ) {
+    summary
+        .source_sell_refusals
+        .merge(state.source_sell_refusals);
+    summary.pre_submit_refusals.merge(state.pre_submit_refusals);
+    summary.buy_blocker.merge(state.buy_blocker);
+    summary
+        .source_sell_write_off_refusals
+        .merge(state.source_sell_write_off_refusals);
     summary.state_machine_reserved += state.reserved;
     summary.state_machine_existing += state.existing;
     summary.state_machine_built += state.built;
@@ -45,7 +68,12 @@ pub(crate) fn apply_state_machine_summary(
         summary.state_machine_skipped_reason = state.skipped_reason;
     }
     summary.state_machine_open_positions = state.open_positions;
-    summary.state_machine_daily_loss_sol = state.daily_loss_sol;
+    if state.entry_cost.is_some() || summary.state_machine_entry_cost.is_none() {
+        summary.state_machine_daily_loss_sol = state.daily_loss_sol;
+    }
+    if state.entry_cost.is_some() {
+        summary.state_machine_entry_cost = state.entry_cost;
+    }
     if state.last_order_id.is_some() {
         summary.last_state_machine_order_id = state.last_order_id;
     }

@@ -23,6 +23,8 @@ async fn execution_canary_state_machine_persists_build_plan_metadata() -> Result
     store.insert_copy_signal(&signal)?;
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: "quote:entry:persisted".to_string(),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,
@@ -45,7 +47,7 @@ async fn execution_canary_state_machine_persists_build_plan_metadata() -> Result
             route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(12_345),
-            priority_fee_json: Some("{\"recommended\":12345}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(12_345)),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("inside_limits".to_string()),
             error: None,
@@ -118,6 +120,8 @@ fn execution_build_plan_metadata_never_precedes_refreshed_quote_timestamp() -> R
         wallet_pubkey: "WalletPubkey".to_string(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             quote_event_id: Some("quote:entry:refreshed".to_string()),
             quote_request_ts: Some(quote_request_ts),
             quote_status: Some("ok".to_string()),

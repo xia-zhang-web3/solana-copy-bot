@@ -315,12 +315,14 @@ fn load_matching_closes(
 
 fn load_market_exit_quote(conn: &Connection, close_id: i64) -> Result<Option<MarketExitQuote>> {
     let event_id = format!("{MARKET_EXIT_DIAG_PREFIX}{close_id}");
+    let actual =
+        copybot_storage_core::quote_http_started_expr(conn, "execution_quote_canary_events", "")?;
     let mut stmt = conn
-        .prepare(
-            "SELECT quote_status, error, quote_price_sol, shadow_price_sol, decision_delay_ms
+        .prepare(&format!(
+            "SELECT quote_status, error, quote_price_sol, shadow_price_sol, signal_ts, {actual}
              FROM execution_quote_canary_events
-             WHERE event_id = ?1",
-        )
+             WHERE event_id = ?1"
+        ))
         .context("failed preparing Track-B market-exit quote lookup")?;
     let mut rows = stmt
         .query(params![event_id])
@@ -336,7 +338,8 @@ fn load_market_exit_quote(conn: &Connection, close_id: i64) -> Result<Option<Mar
         error: row.get(1)?,
         quote_price_sol: row.get(2)?,
         shadow_price_sol: row.get(3)?,
-        decision_delay_ms: row.get(4)?,
+        decision_delay_ms: crate::quote_timing::read_delay(row, 4, 5)?
+            .and_then(|ms| i64::try_from(ms).ok()),
     }))
 }
 

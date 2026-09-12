@@ -122,6 +122,9 @@ fn fresh_quote_error_metadata(
 ) -> ExecutionBuildPlanMetadata {
     metadata.quote_source = Some(quote_source.to_string());
     metadata.quote_status = Some(QUOTE_STATUS_ERROR.to_string());
+    metadata.quote_response_available_ts = None;
+    metadata.quote_price_sol = None;
+    metadata.slippage_bps = None;
     metadata.decision_status = Some(DECISION_UNKNOWN.to_string());
     metadata.decision_reason = Some(FRESH_SUBMIT_QUOTE_ERROR.to_string());
     metadata
@@ -182,7 +185,8 @@ fn apply_fresh_quote(
     max_slippage_bps: u64,
     quote_source: &str,
 ) -> ExecutionBuildPlanMetadata {
-    let price_and_slippage = fresh_buy_price_and_slippage(&metadata, &quote.out_amount);
+    let price_and_slippage =
+        fresh_buy_price_and_slippage(&metadata, &quote.in_amount, &quote.out_amount);
     let quote_response_json = quote_response_with_copybot_sidecar(
         quote.response_json,
         metadata.quote_response_json.as_deref(),
@@ -193,6 +197,8 @@ fn apply_fresh_quote(
     metadata.quote_status = Some(QUOTE_STATUS_OK.to_string());
     metadata.quote_in_amount_raw = Some(quote.in_amount);
     metadata.quote_out_amount_raw = Some(quote.out_amount);
+    metadata.http_request_started_ts = quote.http_request_started_ts;
+    metadata.quote_response_available_ts = quote.quote_response_available_ts;
     metadata.quote_response_json = Some(quote_response_json);
     metadata.price_impact_pct = quote.price_impact_pct;
     metadata.route_plan_json = quote.route_plan_json;
@@ -226,32 +232,54 @@ fn pump_fun_quote_is_completed(raw: &str) -> Option<bool> {
 
 fn fresh_buy_price_and_slippage(
     metadata: &ExecutionBuildPlanMetadata,
+    fresh_in_amount_raw: &str,
     fresh_out_amount_raw: &str,
 ) -> Option<(f64, f64)> {
     let old_quote_price = metadata.quote_price_sol?;
     let old_slippage_bps = metadata.slippage_bps?;
-    let old_out_amount = metadata
-        .quote_out_amount_raw
-        .as_deref()?
-        .parse::<f64>()
-        .ok()?;
-    let fresh_out_amount = fresh_out_amount_raw.parse::<f64>().ok()?;
-    if !old_quote_price.is_finite()
-        || old_quote_price <= 0.0
-        || !old_slippage_bps.is_finite()
-        || old_out_amount <= 0.0
-        || fresh_out_amount <= 0.0
-    {
+    let old_in = positive_raw_amount(metadata.quote_in_amount_raw.as_deref()?)?;
+    let old_out = positive_raw_amount(metadata.quote_out_amount_raw.as_deref()?)?;
+    let fresh_in = positive_raw_amount(fresh_in_amount_raw)?;
+    let fresh_out = positive_raw_amount(fresh_out_amount_raw)?;
+    if !old_quote_price.is_finite() || old_quote_price <= 0.0 || !old_slippage_bps.is_finite() {
         return None;
     }
     let shadow_denominator = 1.0 + old_slippage_bps / 10_000.0;
     if !shadow_denominator.is_finite() || shadow_denominator <= 0.0 {
         return None;
     }
-    let fresh_quote_price = old_quote_price * old_out_amount / fresh_out_amount;
+    // Each raw amount is a u64. Cross products fit exactly in u128, including
+    // proportional size changes; only the final ratio/price are f64 estimates.
+    let numerator = u128::from(fresh_in) * u128::from(old_out);
+    let denominator = u128::from(old_in) * u128::from(fresh_out);
+    let price_ratio = numerator as f64 / denominator as f64;
+    let fresh_quote_price = old_quote_price * price_ratio;
     let shadow_price = old_quote_price / shadow_denominator;
-    let fresh_slippage = quote_slippage_bps_for_buy(Some(fresh_quote_price), Some(shadow_price))?;
-    Some((fresh_quote_price, fresh_slippage))
+    if !fresh_quote_price.is_finite()
+        || fresh_quote_price <= 0.0
+        || !shadow_price.is_finite()
+        || shadow_price <= 0.0
+    {
+        return None;
+    }
+    // Equal cross products prove unchanged unit price. Preserve s0 exactly here
+    // so the reference round trip cannot move an at-limit quote above the cap.
+    let fresh_slippage = if numerator == denominator {
+        old_slippage_bps
+    } else {
+        quote_slippage_bps_for_buy(Some(fresh_quote_price), Some(shadow_price))?
+    };
+    fresh_slippage
+        .is_finite()
+        .then_some((fresh_quote_price, fresh_slippage))
+}
+
+fn positive_raw_amount(raw: &str) -> Option<u64> {
+    // SOL lamports and SPL token amounts use unsigned 64-bit integers.
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse::<u64>().ok().filter(|amount| *amount > 0)
 }
 
 fn quote_response_with_copybot_sidecar(fresh_raw: String, old_raw: Option<&str>) -> String {
@@ -282,6 +310,7 @@ fn quote_output_decimals(value: &Value) -> Option<u8> {
         "/meta/outDecimals",
         "/quote/outDecimals",
         "/outDecimals",
+        "/_copybot/outDecimals",
     ] {
         if let Some(raw) = value.pointer(path).and_then(Value::as_u64) {
             if let Ok(decimals) = u8::try_from(raw) {

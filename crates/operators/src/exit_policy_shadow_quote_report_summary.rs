@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 
 #[derive(Debug, Serialize)]
 pub struct CountSummary {
+    pub actual_delay_events: u64,
+    pub unknown_delay_events: u64,
     pub total_events: u64,
     pub ok_events: u64,
     pub error_events: u64,
@@ -78,6 +80,14 @@ pub(crate) fn summarize_exit_policy_shadow_quotes(
     let mut benefits = Vec::new();
     let mut error_classes = BTreeMap::<String, u64>::new();
     let mut counts = CountSummary {
+        actual_delay_events: events
+            .iter()
+            .filter(|e| e.decision_delay_ms.is_some())
+            .count() as u64,
+        unknown_delay_events: events
+            .iter()
+            .filter(|e| e.decision_delay_ms.is_none())
+            .count() as u64,
         total_events: events.len() as u64,
         ok_events: 0,
         error_events: 0,

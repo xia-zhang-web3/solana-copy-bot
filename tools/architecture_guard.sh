@@ -7,6 +7,8 @@ cd "$ROOT_DIR"
 
 # shellcheck source=tools/lib/architecture_guard/core.sh
 source "$SCRIPT_DIR/lib/architecture_guard/core.sh"
+# shellcheck source=tools/lib/architecture_guard/diff_cache.sh
+source "$SCRIPT_DIR/lib/architecture_guard/diff_cache.sh"
 # shellcheck source=tools/lib/architecture_guard/file_checks.sh
 source "$SCRIPT_DIR/lib/architecture_guard/file_checks.sh"
 # shellcheck source=tools/lib/architecture_guard/dependency_checks.sh
@@ -33,16 +35,14 @@ if ((failures > 0)); then
 fi
 
 if [[ "$mode" == "--changed" ]]; then
-  files=()
-  while IFS= read -r path; do
-    files+=("$path")
-  done < <(changed_files)
+  selected_files="$(changed_files)"
 else
-  files=()
-  while IFS= read -r path; do
-    files+=("$path")
-  done < <(all_files)
+  selected_files="$(all_files)"
 fi
+files=()
+while IFS= read -r path; do
+  [[ -n "$path" ]] && files+=("$path")
+done <<< "$selected_files"
 file_count=0
 for path in ${files[@]+"${files[@]}"}; do
   file_count=$((file_count + 1))
@@ -51,12 +51,11 @@ if ((file_count == 0)); then
   files=("__architecture_guard_no_changed_files__")
 fi
 
+if [[ "$mode" == "--changed" ]]; then
+  prepare_diff_cache
+fi
+check_file_batch
 for path in "${files[@]}"; do
-  check_file_size "$path"
-  check_inline_tests "$path"
-  check_include_sharding "$path"
-  check_forbidden_new_bin "$path"
-  check_forbidden_cargo_bins "$path"
   check_app_dependency_growth "$path"
   check_workspace_dependency_identity_growth "$path"
   check_forbidden_operator_deps "$path"
@@ -64,6 +63,7 @@ for path in "${files[@]}"; do
 done
 
 check_required_policy_files
+prepare_workspace_metadata
 check_duplicate_workspace_bins
 check_forbidden_legacy_markers
 check_forbidden_dependency_graph

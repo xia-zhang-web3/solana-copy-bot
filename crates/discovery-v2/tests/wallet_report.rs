@@ -88,6 +88,11 @@ fn status(now: DateTime<Utc>) -> DiscoveryV2Status {
             rpc_failures: 0,
             max_wallets: 10,
             rpc_missing: false,
+            inventory_contract_version: Some(1),
+            valuation_contract_version: Some(1),
+            complete_inventory_wallets: 2,
+            unknown_valuation_wallets: 0,
+            failure_breakdown: Default::default(),
         }),
         shadow_signals_24h: Some(DiscoveryV2ShadowSignalStatus {
             since: now - Duration::hours(24),
@@ -152,6 +157,14 @@ fn metric(
         rug_lookahead_unevaluated: 0,
         live_sol_balance: Some(0.08),
         live_token_value_sol: Some(0.35),
+        live_inventory: Some(copybot_discovery_v2::DiscoveryV2LiveInventoryEvidence {
+            contract_version: 1, classic_accounts: 2, token_2022_accounts: 0,
+            sol_slot: 10, classic_slot: 10, token_2022_slot: 11,
+            token_2022_positive_positions: 0, unvalued_token_positions: 0,
+            known_classic_value_sol: 0.35,
+            valuation_basis: copybot_discovery_v2::DiscoveryV2LiveValuationBasis::ClassicObservedPriceQualitySubtotal,
+        }),
+        live_valuation: Some(proof::valuation(now)),
         live_token_positions: Some(2),
         live_tradable_token_positions: Some(2),
         shadow_closed_trades_24h: Some(1),
@@ -161,6 +174,7 @@ fn metric(
         shadow_fast_loss_roi_24h: Some(-0.08),
         shadow_stale_copy_loss_roi_24h: None,
         executable_feedback_samples: None,
+        executable_feedback_unknown_samples: None,
         executable_feedback_pnl_after_fee_sol: None,
         executable_feedback_flip_rate: None,
         rug_feedback_closed_trades: None,
@@ -188,6 +202,11 @@ fn wallet_report_shows_active_follow_and_filter_evidence() -> Result<()> {
     let (discovery, shadow) = policy();
 
     let mut status = status(now);
+    status.policy_fingerprint = copybot_discovery_v2::discovery_v2_policy_fingerprint(
+        &discovery,
+        &shadow,
+        &proof::options(now),
+    );
     status.rug_quarantine_candidates = vec![
         DiscoveryV2RugQuarantineCandidate {
             wallet_id: "wallet-rug-a".to_string(),
@@ -215,6 +234,11 @@ fn wallet_report_shows_active_follow_and_filter_evidence() -> Result<()> {
             limit: 5,
             include_rejected: true,
         },
+        copybot_discovery_v2::DiscoveryV2DecisionContext::new(
+            &discovery,
+            &shadow,
+            &proof::options(now + Duration::seconds(30)),
+        ),
     )?;
 
     assert!(report.production_green);
@@ -255,6 +279,11 @@ fn wallet_report_rejects_candidate_missing_metric() -> Result<()> {
     let now = DateTime::parse_from_rfc3339("2026-05-14T12:00:00+00:00")?.with_timezone(&Utc);
     let (discovery, shadow) = policy();
     let mut status = status(now);
+    status.policy_fingerprint = copybot_discovery_v2::discovery_v2_policy_fingerprint(
+        &discovery,
+        &shadow,
+        &proof::options(now),
+    );
     status.wallet_metrics.clear();
 
     let err = build_discovery_v2_wallet_report(
@@ -267,9 +296,17 @@ fn wallet_report_rejects_candidate_missing_metric() -> Result<()> {
             limit: 5,
             include_rejected: false,
         },
+        copybot_discovery_v2::DiscoveryV2DecisionContext::new(
+            &discovery,
+            &shadow,
+            &proof::options(now),
+        ),
     )
     .expect_err("candidate without metric must fail closed");
 
     assert!(err.to_string().contains("candidate wallet is missing"));
     Ok(())
 }
+
+#[path = "wallet_report/proof.rs"]
+mod proof;

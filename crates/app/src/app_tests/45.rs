@@ -108,7 +108,7 @@ fn execution_swap_blueprint_requires_priority_fee_lamports() {
     let error = crate::execution_swap_blueprint::build_execution_swap_blueprint(&request)
         .expect_err("missing priority fee lamports should fail blueprint build");
 
-    assert!(error.to_string().contains("missing priority_fee_lamports"));
+    assert!(error.to_string().contains("priority_fee_units_unknown"));
 }
 
 #[test]
@@ -168,6 +168,10 @@ fn swap_blueprint_request(
         wallet_pubkey: "DryRunWallet11111111111111111111111111111111".to_string(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            owned_sell_amount: None,
+            protected_capital: None,
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             quote_source: Some("execution_quote_canary_event".to_string()),
             quote_event_id: Some("quote:entry:direct".to_string()),
             quote_request_ts: None,
@@ -181,7 +185,8 @@ fn swap_blueprint_request(
             priority_fee_source: Some("execution_quote_canary_event".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports,
-            priority_fee_json: Some("{\"recommended\":22000}".to_string()),
+            priority_fee_json: priority_fee_lamports
+                .map(crate::app_tests::priority_fee_fixture::total_json),
             slippage_bps: Some(125.0),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
@@ -198,6 +203,8 @@ fn record_swap_blueprint_quote(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,
@@ -220,7 +227,8 @@ fn record_swap_blueprint_quote(
             route_plan_json: Some(route_plan_json.to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports,
-            priority_fee_json: Some("{\"recommended\":22000}".to_string()),
+            priority_fee_json: priority_fee_lamports
+                .map(crate::app_tests::priority_fee_fixture::total_json),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
             error: None,

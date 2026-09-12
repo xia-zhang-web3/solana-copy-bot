@@ -1,8 +1,10 @@
+use super::receipt_legacy_fixture::answer_receipt;
 use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
-async fn tiny_submit_reconciliation_confirmed_orphan_sell_marks_no_position() -> Result<()> {
+async fn tiny_submit_reconciliation_confirmed_orphan_sell_waits_for_supported_inventory(
+) -> Result<()> {
     let db_path = unique_orphan_sell_test_path("confirmed-orphan-sell");
     let mut store = SqliteStore::open(&db_path)?;
     store.run_migrations(Path::new(concat!(
@@ -28,12 +30,19 @@ async fn tiny_submit_reconciliation_confirmed_orphan_sell_marks_no_position() ->
         .load_execution_canary_order(&order_id)?
         .expect("orphan sell order should exist");
 
-    assert_eq!(outcome.confirmation_confirmed, 1);
-    assert_eq!(outcome.sell_no_position, 1);
+    assert_eq!(outcome.confirmation_confirmed, 0);
+    assert_eq!(outcome.confirmation_pending, 1);
+    assert_eq!(
+        outcome.reason.as_deref(),
+        Some("receipt_sell_unsupported:NoOwnedPosition")
+    );
+    assert!(!store.execution_canary_fill_exists(&order_id)?);
+    assert!(store.execution_canary_accounting_pending()?);
+    assert_eq!(outcome.sell_no_position, 0);
     assert_eq!(outcome.sell_closed, 0);
     assert_eq!(
         order.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED
+        copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED
     );
     assert_eq!(store.execution_canary_open_position_count()?, 0);
 
@@ -81,6 +90,8 @@ fn record_orphan_sell_build_metadata(
         .expect("order should exist");
     store.record_execution_canary_build_plan_metadata(
         &copybot_storage_core::ExecutionCanaryBuildPlanMetadata {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             order_id: order.order_id,
             signal_id: order.signal_id,
             client_order_id: order.client_order_id,
@@ -100,7 +111,7 @@ fn record_orphan_sell_build_metadata(
             priority_fee_source: Some("test".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some("{\"recommended\":22000}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             slippage_bps: Some(100.0),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
@@ -131,6 +142,15 @@ async fn serve_orphan_sell_confirmation(expected_signature: &str) -> Result<Stri
         write_orphan_sell_http_response(
             socket,
             r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":902,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}"#,
+        )
+        .await;
+        answer_receipt(
+            &listener,
+            "DryRunWallet11111111111111111111111111111111",
+            &expected_signature,
+            "sell",
+            902,
+            1_200_000_000,
         )
         .await;
     });

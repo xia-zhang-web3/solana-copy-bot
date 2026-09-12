@@ -57,7 +57,7 @@ fn executable_wallet_feedback_aggregates_follower_pnl_and_flips() -> Result<()> 
         ))?;
         store.record_execution_quote_canary_event(&quote_event(
             &format!("sell-{index}"),
-            Some(format!("sell-signal-{index}")),
+            Some(signal_id.clone()),
             Some(close_id),
             "bad-wallet",
             &token,
@@ -75,7 +75,7 @@ fn executable_wallet_feedback_aggregates_follower_pnl_and_flips() -> Result<()> 
     assert_eq!(bad.samples, 10);
     assert_eq!(bad.shadow_positive_executable_negative, 10);
     assert_close(bad.flip_rate().expect("flip rate"), 1.0);
-    assert_close(bad.quote_adjusted_pnl_after_priority_fee_sol, -0.01);
+    assert_close(bad.known_sample_pnl_after_priority_fee_sol, -0.01);
     Ok(())
 }
 
@@ -103,6 +103,8 @@ fn quote_event(
     decision_status: &str,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: event_id.to_string(),
         signal_id,
         shadow_closed_trade_id,

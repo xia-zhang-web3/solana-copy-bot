@@ -196,6 +196,8 @@ fn sell_quote(
     request_ts: chrono::DateTime<Utc>,
 ) -> copybot_storage_core::ExecutionQuoteCanaryEventInsert {
     copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: event_id.to_string(),
         signal_id: Some(signal.signal_id.clone()),
         shadow_closed_trade_id: Some(42),
@@ -218,7 +220,7 @@ fn sell_quote(
         route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
         priority_fee_status: Some("ok".to_string()),
         priority_fee_lamports: Some(12_345),
-        priority_fee_json: Some("{\"recommended\":12345}".to_string()),
+        priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(12_345)),
         decision_status: Some("would_execute".to_string()),
         decision_reason: Some("within_slippage_limit".to_string()),
         error: None,

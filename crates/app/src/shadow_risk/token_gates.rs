@@ -94,9 +94,23 @@ impl ShadowRiskGuard {
         store: &SqliteStore,
         token: &str,
     ) -> Result<Option<String>> {
+        self.token_open_notional_cap_for_completion(store, token, false)
+    }
+
+    pub(super) fn token_open_notional_cap_for_completion(
+        &self,
+        store: &SqliteStore,
+        token: &str,
+        own_recorded_lot: bool,
+    ) -> Result<Option<String>> {
         let max_open_lots = self.config.shadow_max_open_lots_per_token.max(1);
         let open_lots = store.shadow_risk_open_lot_count_for_token(token)?;
-        if open_lots >= max_open_lots {
+        // Completing the proven, still-open A does not consume a second lot slot.
+        // Notional exposure below is not discounted, even for A.
+        let occupied_before_a = open_lots
+            .checked_sub(u64::from(own_recorded_lot))
+            .ok_or_else(|| anyhow::anyhow!("completion lot count inconsistent"))?;
+        if occupied_before_a >= max_open_lots {
             return Ok(Some(format!(
                 "token={} risk_open_lots={} per_token_lot_cap={}",
                 token, open_lots, max_open_lots

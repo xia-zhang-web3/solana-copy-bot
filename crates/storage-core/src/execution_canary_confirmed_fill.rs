@@ -3,6 +3,10 @@ use crate::{
     execution_canary_position_open::{
         execution_canary_position_id, record_execution_canary_open_position_on_conn,
     },
+    execution_canary_receipt::{
+        complete_receipt_accounting, EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED,
+    },
+    execution_canary_receipt_position::validate_receipt_position,
     execution_canary_rows::execution_canary_order_from_row,
     money::sol_to_lamports_ceil,
     ExecutionCanaryOrder, ExecutionCanaryOwnedPositionRecordResult,
@@ -11,7 +15,7 @@ use crate::{
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use copybot_core_types::TokenQuantity;
+use copybot_core_types::{Lamports, TokenQuantity};
 use rusqlite::{params, Connection, OptionalExtension};
 
 impl SqliteDiscoveryStore {
@@ -44,6 +48,7 @@ impl SqliteDiscoveryStore {
         cost_sol: f64,
         fill_ts: DateTime<Utc>,
         confirmed_at: DateTime<Utc>,
+        actual_lamports: Option<Lamports>,
     ) -> Result<(
         ExecutionCanaryOrder,
         ExecutionCanaryOwnedPositionRecordResult,
@@ -56,11 +61,16 @@ impl SqliteDiscoveryStore {
                 &[
                     EXECUTION_STATUS_CANARY_SUBMITTED,
                     EXECUTION_STATUS_CANARY_CONFIRMED,
+                    EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED,
                 ],
             )?;
+            validate_fill_token(conn, &order, token)?;
+            validate_receipt_position(conn, &order, token, qty_exact, actual_lamports, false)?;
             let position_id = execution_canary_position_id(&order.order_id);
-            let cost_lamports =
-                sol_to_lamports_ceil(cost_sol, "execution canary position cost_sol")?;
+            let cost_lamports = match actual_lamports {
+                Some(value) => value,
+                None => sol_to_lamports_ceil(cost_sol, "execution canary position cost_sol")?,
+            };
             let result = record_execution_canary_open_position_on_conn(
                 conn,
                 &order.order_id,
@@ -71,6 +81,13 @@ impl SqliteDiscoveryStore {
                 cost_lamports,
                 &position_id,
                 &fill_ts.to_rfc3339(),
+            )?;
+            crate::receipt_buy_initial_result::initialize(
+                conn,
+                &order,
+                &result,
+                qty_exact,
+                actual_lamports,
             )?;
             confirm_order_if_submitted(conn, &order, confirmed_at)?;
             let order = load_canary_fill_order(
@@ -95,6 +112,7 @@ impl SqliteDiscoveryStore {
     ) -> Result<ExecutionCanaryPositionCloseResult> {
         self.load_confirmed_canary_fill_order(order_id, "sell")?;
         self.with_immediate_transaction_retry("execution canary confirmed sell fill", |conn| {
+            load_canary_fill_order(conn, order_id, "sell", &[EXECUTION_STATUS_CANARY_CONFIRMED])?;
             close_execution_canary_open_position_on_conn(
                 conn,
                 Some(order_id),
@@ -104,6 +122,7 @@ impl SqliteDiscoveryStore {
                 exit_price_sol,
                 dust_qty_epsilon,
                 fill_ts,
+                None,
             )
         })
     }
@@ -118,6 +137,7 @@ impl SqliteDiscoveryStore {
         dust_qty_epsilon: f64,
         fill_ts: DateTime<Utc>,
         confirmed_at: DateTime<Utc>,
+        actual_lamports: Option<Lamports>,
     ) -> Result<(ExecutionCanaryOrder, ExecutionCanaryPositionCloseResult)> {
         self.with_immediate_transaction_retry("execution canary sell fill confirmation", |conn| {
             let order = load_canary_fill_order(
@@ -127,7 +147,17 @@ impl SqliteDiscoveryStore {
                 &[
                     EXECUTION_STATUS_CANARY_SUBMITTED,
                     EXECUTION_STATUS_CANARY_CONFIRMED,
+                    EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED,
                 ],
+            )?;
+            validate_fill_token(conn, &order, token)?;
+            validate_receipt_position(
+                conn,
+                &order,
+                token,
+                target_qty_exact,
+                actual_lamports,
+                true,
             )?;
             let result = close_execution_canary_open_position_on_conn(
                 conn,
@@ -138,6 +168,7 @@ impl SqliteDiscoveryStore {
                 exit_price_sol,
                 dust_qty_epsilon,
                 fill_ts,
+                actual_lamports,
             )?;
             confirm_order_if_submitted(conn, &order, confirmed_at)?;
             let order = load_canary_fill_order(
@@ -273,6 +304,9 @@ fn confirm_order_if_submitted(
     order: &ExecutionCanaryOrder,
     confirmed_at: DateTime<Utc>,
 ) -> Result<()> {
+    if order.status == EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED {
+        return complete_receipt_accounting(conn, &order.order_id);
+    }
     if order.status == EXECUTION_STATUS_CANARY_CONFIRMED {
         return Ok(());
     }
@@ -304,5 +338,15 @@ fn confirm_order_if_submitted(
             order.order_id
         ));
     }
+    Ok(())
+}
+
+fn validate_fill_token(conn: &Connection, order: &ExecutionCanaryOrder, token: &str) -> Result<()> {
+    let expected: String = conn.query_row(
+        "SELECT token FROM copy_signals WHERE signal_id = ?1",
+        [&order.signal_id],
+        |r| r.get(0),
+    )?;
+    anyhow::ensure!(expected == token, "confirmed fill token mismatch");
     Ok(())
 }

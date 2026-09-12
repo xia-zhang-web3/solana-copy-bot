@@ -119,7 +119,7 @@ fn mark_terminal_failed_sell_order(
 
 fn terminal_failed_sell_signal(token: &str, ts: chrono::DateTime<Utc>) -> CopySignalRow {
     CopySignalRow {
-        signal_id: format!("shadow:sig-terminal-failed-sell:leader:{token}"),
+        signal_id: format!("shadow:sig-terminal-failed-sell:leader:sell:{token}"),
         wallet_id: "leader".to_string(),
         side: "sell".to_string(),
         token: token.to_string(),

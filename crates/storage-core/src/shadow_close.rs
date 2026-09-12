@@ -53,39 +53,75 @@ impl SqliteDiscoveryStore {
         close_context: &str,
         closed_ts: DateTime<Utc>,
     ) -> Result<ShadowCloseOutcome> {
-        let target_qty_exact =
-            reject_zero_raw_exact_qty(target_qty_exact, "shadow fifo close target qty")?;
-        if target_qty <= SHADOW_LOT_OPEN_EPS {
-            return Ok(ShadowCloseOutcome {
-                has_open_lots_after: self.has_shadow_lots(wallet_id, token)?,
-                ..ShadowCloseOutcome::default()
-            });
-        }
-        for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
-            match self.close_shadow_lots_fifo_atomic_once(
-                signal_id,
-                wallet_id,
-                token,
-                target_qty,
-                target_qty_exact,
-                exit_price_sol,
-                close_context,
-                closed_ts,
-            ) {
-                Ok(outcome) => return Ok(outcome),
-                Err(error) => {
-                    let retryable = crate::sqlite_retry::is_retryable_sqlite_error(&error);
-                    if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
-                        std::thread::sleep(StdDuration::from_millis(
-                            SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
-                        ));
-                        continue;
-                    }
-                    return Err(error).context("failed to close shadow fifo lots atomically");
+        self.close_shadow_lots_fifo_atomic_exact_with_recovery(
+            signal_id,
+            wallet_id,
+            token,
+            target_qty,
+            target_qty_exact,
+            exit_price_sol,
+            close_context,
+            closed_ts,
+            None,
+        )
+    }
+
+    /// Stale-close producer opt-in: risk change and one related SELL cursor commit
+    /// together. Legacy callers retain their existing association-free contract.
+    #[allow(clippy::too_many_arguments)]
+    pub fn close_shadow_lots_fifo_atomic_exact_with_recovery(
+        &self,
+        signal_id: &str,
+        wallet_id: &str,
+        token: &str,
+        target_qty: f64,
+        target_qty_exact: Option<TokenQuantity>,
+        exit_price_sol: f64,
+        close_context: &str,
+        closed_ts: DateTime<Utc>,
+        recovery: Option<crate::association_inbox::InboxLimits>,
+    ) -> Result<ShadowCloseOutcome> {
+        crate::association_sell_preparation::shadow_recovery::durable_close(
+            &self.conn,
+            recovery,
+            || {
+                let target_qty_exact =
+                    reject_zero_raw_exact_qty(target_qty_exact, "shadow fifo close target qty")?;
+                if target_qty <= SHADOW_LOT_OPEN_EPS {
+                    return Ok(ShadowCloseOutcome {
+                        has_open_lots_after: self.has_shadow_lots(wallet_id, token)?,
+                        ..ShadowCloseOutcome::default()
+                    });
                 }
-            }
-        }
-        unreachable!("retry loop must return on success or terminal error");
+                for attempt in 0..=SQLITE_WRITE_MAX_RETRIES {
+                    match self.close_shadow_lots_fifo_atomic_once(
+                        signal_id,
+                        wallet_id,
+                        token,
+                        target_qty,
+                        target_qty_exact,
+                        exit_price_sol,
+                        close_context,
+                        closed_ts,
+                        recovery,
+                    ) {
+                        Ok(outcome) => return Ok(outcome),
+                        Err(error) => {
+                            let retryable = crate::sqlite_retry::is_retryable_sqlite_error(&error);
+                            if attempt < SQLITE_WRITE_MAX_RETRIES && retryable {
+                                std::thread::sleep(StdDuration::from_millis(
+                                    SQLITE_WRITE_RETRY_BACKOFF_MS[attempt],
+                                ));
+                                continue;
+                            }
+                            return Err(error)
+                                .context("failed to close shadow fifo lots atomically");
+                        }
+                    }
+                }
+                unreachable!("retry loop must return on success or terminal error");
+            },
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -99,18 +135,31 @@ impl SqliteDiscoveryStore {
         exit_price_sol: f64,
         close_context: &str,
         closed_ts: DateTime<Utc>,
+        recovery: Option<crate::association_inbox::InboxLimits>,
     ) -> rusqlite::Result<ShadowCloseOutcome> {
         self.conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
-        let close_result = self.close_shadow_lots_fifo_in_transaction(
-            signal_id,
-            wallet_id,
-            token,
-            target_qty,
-            target_qty_exact,
-            exit_price_sol,
-            close_context,
-            closed_ts,
-        );
+        let close_result = self
+            .close_shadow_lots_fifo_in_transaction(
+                signal_id,
+                wallet_id,
+                token,
+                target_qty,
+                target_qty_exact,
+                exit_price_sol,
+                close_context,
+                closed_ts,
+            )
+            .and_then(|outcome| {
+                if let Some(limits) = recovery {
+                    if outcome.closed_qty > SHADOW_LOT_OPEN_EPS {
+                        crate::association_sell_preparation::shadow_recovery::enqueue(
+                            &self.conn, wallet_id, token, limits,
+                        )
+                        .map_err(to_sql_conversion_error)?;
+                    }
+                }
+                Ok(outcome)
+            });
         match close_result {
             Ok(outcome) => match self.conn.execute_batch("COMMIT") {
                 Ok(()) => Ok(outcome),
@@ -138,12 +187,29 @@ impl SqliteDiscoveryStore {
         close_context: &str,
         closed_ts: DateTime<Utc>,
     ) -> rusqlite::Result<ShadowCloseOutcome> {
+        // A committed close is the durable replay marker. A signal inserted before
+        // a crash without any close rows must still be recoverable.
+        let already_closed: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM shadow_closed_trades
+             WHERE signal_id = ?1 AND wallet_id = ?2 AND token = ?3)",
+            params![signal_id, wallet_id, token],
+            |row| row.get(0),
+        )?;
+        if already_closed {
+            return Ok(ShadowCloseOutcome {
+                has_open_lots_after: self.has_shadow_lots_sql(wallet_id, token)?,
+                ..ShadowCloseOutcome::default()
+            });
+        }
         let mut qty_remaining = target_qty;
         let mut qty_remaining_exact = target_qty_exact;
         let mut closed_qty = 0.0;
         let mut realized_pnl_sol = 0.0;
         let lots = self.load_fifo_lots_for_close(wallet_id, token)?;
         for lot in lots {
+            if lot.opened_ts > closed_ts {
+                continue;
+            }
             if qty_remaining <= SHADOW_LOT_OPEN_EPS {
                 break;
             }

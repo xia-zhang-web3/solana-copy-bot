@@ -38,8 +38,10 @@ pub(crate) fn build_report(
     let latency = acc.latency.finish();
     let mut summary = acc.summary;
     summary.tiny_open_positions = open_positions.len() as u64;
-    summary.tiny_vs_shadow_delta_sol = summary.tiny_realized_pnl_sol - summary.shadow_pnl_sol;
+    // Old position PnL is legacy/unclassified; cash receipts are not economic PnL.
+    summary.economic_pnl_basis = "unresolved".into();
     ExecutionTinyProofReport {
+        native_observations: Default::default(),
         as_of,
         since,
         limit,
@@ -52,6 +54,8 @@ pub(crate) fn build_report(
         position_matches,
         recent_orders,
         open_positions,
+        cash_settlements: Default::default(),
+        failed_expenses: Default::default(),
     }
 }
 
@@ -101,7 +105,15 @@ impl ProofAccumulator {
             self.summary.tiny_closed_shadow_match_rows += 1;
             if self.record_unique_closed_position(trade) {
                 self.summary.tiny_unique_closed_positions += 1;
-                self.summary.tiny_realized_pnl_sol += trade.tiny_realized_pnl_sol.unwrap_or(0.0);
+                self.summary.legacy_recorded_pnl_sol =
+                    if self.summary.tiny_unique_closed_positions == 1 {
+                        trade.tiny_realized_pnl_sol
+                    } else {
+                        self.summary
+                            .legacy_recorded_pnl_sol
+                            .zip(trade.tiny_realized_pnl_sol)
+                            .map(|(sum, value)| sum + value)
+                    };
             } else {
                 self.summary.tiny_duplicate_closed_position_matches += 1;
             }
@@ -275,6 +287,7 @@ impl LatencyAccumulator {
 
 #[derive(Default)]
 struct Sample {
+    unknown: u64,
     samples: u64,
     sum: u64,
     max: u64,
@@ -286,24 +299,21 @@ impl Sample {
             self.samples += 1;
             self.sum = self.sum.saturating_add(value);
             self.max = self.max.max(value);
+        } else {
+            self.unknown += 1;
         }
     }
 
     fn record_i64(&mut self, value: Option<i64>) {
-        if let Some(value) = value.and_then(|value| u64::try_from(value).ok()) {
-            self.record(Some(value));
-        }
+        self.record(value.and_then(|value| u64::try_from(value).ok()));
     }
 
     fn finish(self) -> ExecutionTinyProofLatencyStats {
         ExecutionTinyProofLatencyStats {
             samples: self.samples,
-            avg_ms: if self.samples == 0 {
-                0.0
-            } else {
-                self.sum as f64 / self.samples as f64
-            },
-            max_ms: self.max,
+            unknown: self.unknown,
+            avg_ms: (self.samples > 0).then(|| self.sum as f64 / self.samples as f64),
+            max_ms: (self.samples > 0).then_some(self.max),
         }
     }
 }
@@ -332,6 +342,7 @@ fn classify_trade(row: ProofRow) -> ExecutionTinyProofTrade {
         entry_quote_event_id: row.buy_quote.event_id,
         entry_signal_ts: row.buy_quote.signal_ts,
         entry_quote_request_ts: row.buy_quote.request_ts,
+        entry_http_request_started_ts: row.buy_quote.http_request_started_ts,
         entry_quote_status: row.buy_quote.quote_status,
         entry_decision_status: row.buy_quote.decision_status,
         entry_decision_reason: row.buy_quote.decision_reason,
@@ -341,6 +352,7 @@ fn classify_trade(row: ProofRow) -> ExecutionTinyProofTrade {
         exit_quote_event_id: row.sell_quote.event_id,
         exit_signal_ts: row.sell_quote.signal_ts,
         exit_quote_request_ts: row.sell_quote.request_ts,
+        exit_http_request_started_ts: row.sell_quote.http_request_started_ts,
         exit_quote_status: row.sell_quote.quote_status,
         exit_decision_status: row.sell_quote.decision_status,
         exit_decision_reason: row.sell_quote.decision_reason,

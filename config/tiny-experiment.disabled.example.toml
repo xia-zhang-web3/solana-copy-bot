@@ -1,0 +1,8 @@
+# Local disabled example; no ID, activation, trade enablement or adjustable limits.
+[execution.tiny_experiment]
+activate = false
+policy_mode = "decoded_amount"
+# Alternative: "protected_native_capital", selected before first BUY preparation.
+# Pins B and max(original reserve, B-15000000) for the same one-hour experiment.
+# A future separately authorized activation sets id and activate=true.
+# Removing/changing id never resets the pinned database experiment.

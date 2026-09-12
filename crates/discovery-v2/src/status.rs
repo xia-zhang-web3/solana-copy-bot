@@ -48,7 +48,9 @@ pub fn build_discovery_v2_status(
     options: DiscoveryV2BuildOptions,
 ) -> Result<DiscoveryV2Status> {
     let build_started = Instant::now();
-    let window_start = options.window_start();
+    let window_start = options
+        .checked_window_start()
+        .ok_or_else(|| anyhow::anyhow!("discovery_v2_price_window_invalid"))?;
     let scan_deadline = Instant::now() + StdDuration::from_millis(options.time_budget_ms);
     let tail_started = Instant::now();
     let tail = load_tail_status(store, options.now, options.max_tail_lag_seconds)?;

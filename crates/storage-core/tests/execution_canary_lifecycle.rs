@@ -2,11 +2,9 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::{CopySignalRow, Lamports, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS};
 use copybot_storage_core::{
-    SqliteStore, EXECUTION_CANARY_CONFIRM_DECISION_EXPIRE_UNSAFE,
-    EXECUTION_CANARY_CONFIRM_DECISION_RETRY, EXECUTION_CANARY_CONFIRM_DECISION_WAIT,
-    EXECUTION_ERROR_EXPIRED, EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_STATUS_CANARY_BUILT,
-    EXECUTION_STATUS_CANARY_EXPIRED, EXECUTION_STATUS_CANARY_SIMULATED,
-    EXECUTION_STATUS_CANARY_SUBMITTED,
+    SqliteStore, EXECUTION_CANARY_CONFIRM_DECISION_WAIT, EXECUTION_ERROR_EXPIRED,
+    EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_STATUS_CANARY_BUILT,
+    EXECUTION_STATUS_CANARY_EXPIRED, EXECUTION_STATUS_CANARY_SUBMITTED,
 };
 use tempfile::tempdir;
 
@@ -148,62 +146,45 @@ fn execution_canary_confirm_timeout_blocks_retry_when_signature_exists() -> Resu
 
     assert_eq!(
         decision.decision_status,
-        EXECUTION_CANARY_CONFIRM_DECISION_EXPIRE_UNSAFE
+        EXECUTION_CANARY_CONFIRM_DECISION_WAIT
     );
-    assert_eq!(
-        decision.decision_reason,
-        "tx_signature_present_retry_unsafe"
-    );
-    assert!(format!("{retry_error:#}").contains("tx_signature_present_retry_unsafe"));
+    assert_eq!(decision.decision_reason, "known_signature_outcome_unknown");
+    assert!(format!("{retry_error:#}").contains("known_signature_outcome_unknown"));
     assert_eq!(expired.status, EXECUTION_STATUS_CANARY_EXPIRED);
     assert_eq!(expired.err_code.as_deref(), Some(EXECUTION_ERROR_EXPIRED));
     Ok(())
 }
 
 #[test]
-fn execution_canary_submitted_unknown_can_retry_after_timeout() -> Result<()> {
+fn execution_canary_submitted_unknown_never_becomes_safe_by_timeout() -> Result<()> {
     let store = open_migrated_store("execution-canary-confirm-retry")?;
     let now = ts("2026-05-30T08:00:00Z");
-    let order_id = mark_simulated_order(&store, "buy-submit-unknown", now)?;
-    let submitted = store.mark_execution_canary_submitted_unknown(
-        &order_id,
-        now + Duration::seconds(3),
-        "submit_returned_no_signature",
-    )?;
-
+    let id = mark_simulated_order(&store, "buy-submit-unknown", now)?;
+    let submitted =
+        store.mark_execution_canary_submitted_unknown(&id, now, "submit_returned_no_signature")?;
     let decision = store.execution_canary_confirm_timeout_decision(
-        &order_id,
+        &id,
         now + Duration::seconds(64),
         Duration::seconds(60),
     )?;
-    let retry = store.mark_execution_canary_retry_after_submit_timeout(
-        &order_id,
-        now + Duration::seconds(64),
-        Duration::seconds(60),
-        "retry_after_unknown_submit_timeout",
-    )?;
-    let resubmitted = store.mark_execution_canary_submitted(
-        &order_id,
-        now + Duration::seconds(65),
-        "tx-sig-2",
-    )?;
-
-    assert_eq!(submitted.status, EXECUTION_STATUS_CANARY_SUBMITTED);
-    assert!(submitted.tx_signature.is_none());
     assert_eq!(
         decision.decision_status,
-        EXECUTION_CANARY_CONFIRM_DECISION_RETRY
+        EXECUTION_CANARY_CONFIRM_DECISION_WAIT
     );
-    assert_eq!(decision.decision_reason, "no_tx_signature_retry_safe");
-    assert_eq!(retry.status, EXECUTION_STATUS_CANARY_SIMULATED);
-    assert_eq!(retry.attempt, 2);
-    assert!(retry.tx_signature.is_none());
     assert_eq!(
-        retry.simulation_error.as_deref(),
-        Some("retry_after_unknown_submit_timeout")
+        decision.decision_reason,
+        "legacy_unsigned_submit_outcome_unknown"
     );
-    assert_eq!(resubmitted.status, EXECUTION_STATUS_CANARY_SUBMITTED);
-    assert_eq!(resubmitted.tx_signature.as_deref(), Some("tx-sig-2"));
+    assert!(store
+        .mark_execution_canary_retry_after_submit_timeout(
+            &id,
+            now + Duration::seconds(64),
+            Duration::seconds(60),
+            "unsafe"
+        )
+        .is_err());
+    assert_eq!(store.load_execution_canary_order(&id)?, Some(submitted));
+    assert!(store.execution_canary_unresolved_buy()?);
     Ok(())
 }
 

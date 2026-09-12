@@ -53,6 +53,10 @@ impl RpcExecutionSubmitTransport {
         }
     }
 
+    pub(crate) fn rpc_endpoint(&self) -> &str {
+        self.rpc_url.trim()
+    }
+
     pub(crate) async fn submit(
         &self,
         attempt: &ExecutionSubmitTransportAttempt,

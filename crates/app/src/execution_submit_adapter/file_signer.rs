@@ -27,6 +27,17 @@ pub(crate) fn sign_serialized_transaction_from_config(
         return Ok(None);
     }
     validate_signer_config(config, request, plan)?;
+    crate::execution_priority_fee_proof::prove(
+        request,
+        &payload.serialized_transaction_base64,
+        config.pretrade_max_priority_fee_lamports,
+    )?;
+    crate::execution_native_floor_policy::verify_signing_payload(
+        config,
+        request,
+        plan,
+        &payload.serialized_transaction_base64,
+    )?;
     let signer = FileTransactionSigner::from_config(config)?;
     signer.sign_payload(payload)
 }

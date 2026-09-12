@@ -75,7 +75,7 @@ pub(super) fn push_bulk_insert_values(values: &mut Vec<SqlValue>, swap: &SwapEve
     values.push(SqlValue::Text(swap.ts_utc.to_rfc3339()));
 }
 
-pub(super) fn recent_raw_journal_state_query(
+pub(crate) fn recent_raw_journal_state_query(
     conn: &Connection,
 ) -> Result<RecentRawJournalStateRow> {
     let (row_count, covered_since, covered_through_cursor) = coverage_snapshot_on_conn(conn)?;
@@ -88,7 +88,7 @@ pub(super) fn recent_raw_journal_state_query(
     })
 }
 
-pub(super) fn recent_raw_journal_state_cached_query(
+pub(crate) fn recent_raw_journal_state_cached_query(
     conn: &Connection,
 ) -> Result<RecentRawJournalStateRow> {
     let row = conn
@@ -129,9 +129,11 @@ pub(super) fn recent_raw_journal_state_cached_query(
         updated_at,
     )) = row
     else {
-        return Ok(RecentRawJournalStateRow::default());
+        let mut state = RecentRawJournalStateRow::default();
+        crate::observed_retention::restrict_coverage(conn, &mut state)?;
+        return Ok(state);
     };
-    Ok(RecentRawJournalStateRow {
+    let mut state = RecentRawJournalStateRow {
         covered_since: parse_optional_rfc3339_utc(
             since,
             "recent_raw_journal_state.covered_since_ts",
@@ -155,7 +157,9 @@ pub(super) fn recent_raw_journal_state_cached_query(
             "recent_raw_journal_state.last_pruned_at",
         )?,
         updated_at: parse_optional_rfc3339_utc(updated_at, "recent_raw_journal_state.updated_at")?,
-    })
+    };
+    crate::observed_retention::restrict_coverage(conn, &mut state)?;
+    Ok(state)
 }
 
 fn parse_recent_raw_count(value: i64, field: &str) -> Result<usize> {
@@ -169,17 +173,7 @@ pub(super) fn coverage_snapshot_on_conn(
     let row_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM observed_swaps", [], |row| row.get(0))
         .context("failed counting recent raw journal observed_swaps rows")?;
-    let covered_since_raw: Option<String> = conn
-        .query_row(
-            "SELECT ts
-             FROM observed_swaps
-             ORDER BY ts ASC
-             LIMIT 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .context("failed loading recent raw journal covered_since timestamp")?;
+    let covered_since = crate::observed_retention::earliest_covered(conn)?;
     let cursor_raw = conn
         .query_row(
             "SELECT ts, slot, signature
@@ -200,17 +194,10 @@ pub(super) fn coverage_snapshot_on_conn(
             })
         })
         .transpose()?;
-    Ok((
-        row_count.max(0) as usize,
-        parse_optional_rfc3339_utc(
-            covered_since_raw,
-            "recent_raw_journal_state.covered_since_ts",
-        )?,
-        cursor,
-    ))
+    Ok((row_count.max(0) as usize, covered_since, cursor))
 }
 
-pub(super) fn recent_raw_journal_state_row_exists(conn: &Connection) -> Result<bool> {
+pub(crate) fn recent_raw_journal_state_row_exists(conn: &Connection) -> Result<bool> {
     Ok(conn
         .query_row(
             "SELECT 1 FROM recent_raw_journal_state WHERE id = 1",
@@ -222,7 +209,7 @@ pub(super) fn recent_raw_journal_state_row_exists(conn: &Connection) -> Result<b
         .is_some())
 }
 
-pub(super) fn upsert_recent_raw_journal_state_on_conn(
+pub(crate) fn upsert_recent_raw_journal_state_on_conn(
     conn: &Connection,
     state: &RecentRawJournalStateRow,
 ) -> Result<()> {

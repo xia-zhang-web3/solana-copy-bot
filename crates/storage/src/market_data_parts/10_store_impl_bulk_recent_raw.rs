@@ -22,6 +22,7 @@ impl SqliteStore {
         deadline: Instant,
         requested_chunk_rows: Option<usize>,
     ) -> Result<(RecentRawJournalWriteSummary, bool)> {
+        copybot_storage_core::source_sell_handoff_schema::available(&self.conn)?;
         self.ensure_recent_raw_journal_tables()?;
         if swaps.is_empty() {
             let state = self.recent_raw_journal_state_cached()?;
@@ -32,6 +33,7 @@ impl SqliteStore {
         let write_result = self.with_immediate_transaction_retry(
             "recent raw journal bulk batch write",
             |conn| {
+            copybot_storage_core::source_sell_handoff_schema::available(conn)?;
                 ensure_recent_raw_journal_tables_on_conn(conn)?;
                 let sqlite_variable_limit = recent_raw_journal_sqlite_variable_limit(conn);
                 let chunk_rows = recent_raw_journal_effective_bulk_insert_chunk_rows(
@@ -152,6 +154,7 @@ impl SqliteStore {
                     inserted_rows,
                     completed_at,
                 );
+                copybot_storage_core::observed_retention::restrict_coverage(conn, &mut state)?;
                 if processed_rows > 0 {
                     let state_upsert_started = Instant::now();
                     upsert_recent_raw_journal_state_on_conn(conn, &state)?;

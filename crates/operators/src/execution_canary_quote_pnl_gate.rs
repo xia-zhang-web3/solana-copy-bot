@@ -70,6 +70,7 @@ pub(crate) fn build_tiny_execution_gate(
     submit_risk: &ExecutionCanarySubmitRiskSummary,
     upstream_state: TinyExecutionUpstreamState,
     recent_loss_sol_24h: f64,
+    current_entry_cost: &copybot_storage_core::ExecutionCanaryEntryCost,
     as_of: DateTime<Utc>,
     config: Option<&ExecutionConfig>,
     runtime_root: Option<&Path>,
@@ -152,6 +153,11 @@ pub(crate) fn build_tiny_execution_gate(
         "open tiny positions must stay within the configured live cap",
     );
     push_submit_risk_checks(&mut checks, submit_risk);
+    crate::execution_canary_entry_cost_gate::push_current_entry_cost_checks(
+        &mut checks,
+        current_entry_cost,
+        config,
+    );
     let recent_loss_cap_sol = config
         .map(|config| config.canary_max_daily_loss_sol)
         .filter(|cap| cap.is_finite() && *cap > 0.0)

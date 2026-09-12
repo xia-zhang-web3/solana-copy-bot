@@ -144,7 +144,11 @@ impl SqliteDiscoveryStore {
                    AND (
                         event.priority_fee_status IS NULL
                         OR event.priority_fee_status != 'ok'
-                        OR event.priority_fee_lamports IS NULL
+                        OR (event.priority_fee_lamports IS NULL AND NOT CASE
+                            WHEN json_valid(event.priority_fee_json) THEN
+                                COALESCE(json_extract(event.priority_fee_json, '$.version') = 1
+                                AND json_extract(event.priority_fee_json, '$.unit') = 'micro_lamports_per_compute_unit', 0)
+                            ELSE 0 END)
                    )
                    AND NOT EXISTS (
                         SELECT 1 FROM orders
@@ -344,106 +348,18 @@ impl SqliteDiscoveryStore {
         .context("failed loading execution canary observed leg by signature")
     }
 
-    pub fn record_execution_quote_canary_event(
-        &self,
-        event: &ExecutionQuoteCanaryEventInsert,
-    ) -> Result<ExecutionQuoteCanaryRecordOutcome> {
-        ensure_execution_quote_canary_tables(self)?;
-        let quote_latency_ms = optional_u64_to_i64(
-            "execution_quote_canary_events.quote_latency_ms",
-            event.quote_latency_ms,
-        )?;
-        let decision_delay_ms = optional_u64_to_i64(
-            "execution_quote_canary_events.decision_delay_ms",
-            event.decision_delay_ms,
-        )?;
-        let priority_fee_lamports = optional_u64_to_i64(
-            "execution_quote_canary_events.priority_fee_lamports",
-            event.priority_fee_lamports,
-        )?;
-        let inserted = self
-            .execute_with_retry(|conn| {
-                conn.execute(
-                    "INSERT OR IGNORE INTO execution_quote_canary_events(
-                        event_id,
-                        signal_id,
-                        shadow_closed_trade_id,
-                        wallet_id,
-                        token,
-                        side,
-                        quote_status,
-                        request_ts,
-                        signal_ts,
-                        decision_delay_ms,
-                        quote_latency_ms,
-                        leader_notional_sol,
-                        quote_in_amount_raw,
-                        quote_out_amount_raw,
-                        quote_response_json,
-                        quote_price_sol,
-                        shadow_price_sol,
-                        slippage_bps,
-                        price_impact_pct,
-                        route_plan_json,
-                        priority_fee_status,
-                        priority_fee_lamports,
-                        priority_fee_json,
-                        decision_status,
-                        decision_reason,
-                        error
-                    ) VALUES (
-                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                        ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
-                        ?24, ?25, ?26
-                    )",
-                    params![
-                        &event.event_id,
-                        event.signal_id.as_deref(),
-                        event.shadow_closed_trade_id,
-                        &event.wallet_id,
-                        &event.token,
-                        &event.side,
-                        &event.quote_status,
-                        event.request_ts.to_rfc3339(),
-                        event.signal_ts.as_ref().map(DateTime::to_rfc3339),
-                        decision_delay_ms,
-                        quote_latency_ms,
-                        event.leader_notional_sol,
-                        event.quote_in_amount_raw.as_deref(),
-                        event.quote_out_amount_raw.as_deref(),
-                        event.quote_response_json.as_deref(),
-                        event.quote_price_sol,
-                        event.shadow_price_sol,
-                        event.slippage_bps,
-                        event.price_impact_pct,
-                        event.route_plan_json.as_deref(),
-                        event.priority_fee_status.as_deref(),
-                        priority_fee_lamports,
-                        event.priority_fee_json.as_deref(),
-                        event.decision_status.as_deref(),
-                        event.decision_reason.as_deref(),
-                        event.error.as_deref(),
-                    ],
-                )
-            })
-            .context("failed recording execution quote canary event")?;
-        if inserted > 0 {
-            Ok(ExecutionQuoteCanaryRecordOutcome::Inserted)
-        } else {
-            Ok(ExecutionQuoteCanaryRecordOutcome::Existing)
-        }
-    }
-
     pub fn mark_execution_quote_canary_priority_fee_ok(
         &self,
         event_id: &str,
-        lamports: u64,
+        lamports: impl Into<Option<u64>>,
         priority_fee_json: Option<&str>,
     ) -> Result<bool> {
         ensure_execution_quote_canary_tables(self)?;
-        let lamports = i64::try_from(lamports).with_context(|| {
-            format!("execution_quote_canary_events.priority_fee_lamports exceeds i64: {lamports}")
-        })?;
+        let lamports = lamports
+            .into()
+            .map(i64::try_from)
+            .transpose()
+            .context("execution_quote_canary_events.priority_fee_lamports exceeds i64")?;
         let updated = self
             .execute_with_retry(|conn| {
                 conn.execute(
@@ -584,3 +500,6 @@ CREATE INDEX IF NOT EXISTS idx_execution_quote_canary_events_side_request_ts
 CREATE INDEX IF NOT EXISTS idx_execution_quote_canary_events_decision_request_ts
     ON execution_quote_canary_events(decision_status, request_ts);
 ";
+
+#[path = "execution_quote_canary_record.rs"]
+mod record;

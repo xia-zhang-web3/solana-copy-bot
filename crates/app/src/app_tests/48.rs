@@ -22,7 +22,7 @@ async fn swap_transaction_dry_run_posts_http_before_submit_disabled() -> Result<
         assert!(request.contains("\"loadedLongtailToken\":true"));
         assert!(request.contains("\"prioritizationFeeLamports\":22000"));
         assert!(request.contains("\"useSharedAccounts\":false"));
-        write_swap_transaction_http_json(&mut socket, valid_swap_transaction_json()).await;
+        write_swap_transaction_http_json(&mut socket, &valid_swap_transaction_json()).await;
     });
     let now = Utc::now();
     let signal = swap_transaction_signal("http-ok", now);
@@ -211,7 +211,7 @@ async fn swap_transaction_dry_run_retries_missing_account_without_shared_account
         let read = second.read(&mut buffer).await.expect("read retry request");
         let request = String::from_utf8_lossy(&buffer[..read]);
         assert!(request.contains("\"useSharedAccounts\":false"));
-        write_swap_transaction_http_json(&mut second, valid_swap_transaction_json()).await;
+        write_swap_transaction_http_json(&mut second, &valid_swap_transaction_json()).await;
     });
     let now = Utc::now();
     let signal = swap_transaction_signal("http-no-shared", now);
@@ -316,8 +316,8 @@ async fn write_swap_transaction_http_json(socket: &mut tokio::net::TcpStream, bo
     write_swap_transaction_http_status(socket, 200, body).await;
 }
 
-fn valid_swap_transaction_json() -> &'static str {
-    r#"{"swapTransaction":"AQIDBA==","simulationError":null}"#
+fn valid_swap_transaction_json() -> String {
+    serde_json::json!({"swapTransaction":crate::app_tests::priority_fee_fixture::transaction([7;32], 200_000, 10_000),"simulationError":null}).to_string()
 }
 
 async fn write_swap_transaction_http_status(
@@ -375,6 +375,8 @@ fn record_swap_transaction_quote(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,
@@ -399,7 +401,7 @@ fn record_swap_transaction_quote(
             route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Pump.fun Amm\"}}]".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some("{\"recommended\":22000}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
             error: None,

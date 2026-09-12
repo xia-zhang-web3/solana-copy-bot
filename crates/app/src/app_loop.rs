@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(test)]
+use crate::app_tests::b70_hooks::stop as app_loop_stop;
+#[cfg(not(test))]
+use tokio::signal::ctrl_c as app_loop_stop;
 
 mod startup;
 
@@ -109,7 +113,8 @@ pub(super) async fn run_app_loop(
     let entry_quote_shadow_diagnostic = EntryQuoteShadowDiagnostic::new(execution_config.clone());
     let exit_policy_shadow_quote = ExitPolicyShadowQuoteDiagnostic::new(execution_config.clone());
     let market_exit_shadow_quote = MarketExitShadowQuoteDiagnostic::new(execution_config.clone());
-    let execution_canary_runner = ExecutionCanaryRunner::new(execution_config);
+    let execution_canary_runner = ExecutionCanaryRunner::new(execution_config)
+        .for_ingestion(&ingestion_config, &sqlite_path)?;
     execution_canary_runner.log_startup_status();
     let mut execution_canary_interval = time::interval(Duration::from_secs(
         execution_canary_runner.interval_seconds(),
@@ -162,8 +167,27 @@ pub(super) async fn run_app_loop(
         }
     }
 
+    let mut association_consumer = crate::association_consumer::AssociationConsumer::start(
+        &mut ingestion,
+        &ingestion_config,
+        &sqlite_path,
+    )
+    .await?;
+    let association_mode = association_consumer.is_some();
+    let shadow_wake = association_consumer.as_ref().map(|c| c.shadow_wake.clone());
+    #[cfg(test)]
+    let mut ingestion = crate::app_tests::b70_hooks::consumer(&mut ingestion);
+    let mut source_sell_recovery_tick =
+        crate::source_sell_staging::SourceSellStaging::recovery_interval();
+    let mut deferred_hot_buy: Option<crate::execution_quote_canary::job::HotQuoteOrigin> = None;
+    let loop_result: Result<()> = async {
     loop {
         operator_emergency_stop.refresh(&store, Utc::now())?;
+        // Observation-only delivery does not consume legacy SELL handoffs. Even
+        // an empty recovery visit writes a cursor and can block the inbox loop.
+        if !association_mode {
+            shadow_scheduler.source_sells.recover(&store, &sqlite_path)?;
+        }
 
         let shadow_queue_full = prepare_shadow_scheduler_before_select(
             &store,
@@ -177,6 +201,37 @@ pub(super) async fn run_app_loop(
         )?;
 
         tokio::select! {
+            result=crate::association_consumer::poll(&mut association_consumer,&store), if association_mode=>{
+                result?;
+            }
+            _ = async {}, if deferred_hot_buy.is_some() => {
+                if let Some(origin) = deferred_hot_buy.take() {
+                    let id = origin.signal_id();
+                    if let Err(error) = execution_canary_runner.resume_hot_buy(
+                        &store, origin, &follow_snapshot, shadow_strategy_fail_closed,
+                        &mut shadow_risk_guard, &operator_emergency_stop,
+                        pause_new_trades_on_outage, Utc::now()).await {
+                        crate::telemetry::hot_quote::failure(&id, "hot_buy_resume_error", &error,
+                            shadow_scheduler.active_task_count(), shadow_scheduler.buffered_shadow_task_count());
+                    }
+                }
+            }
+            _ = shadow_scheduler.hot_quotes.collect_next(), if shadow_scheduler.hot_quotes.can_collect() => {}
+            _ = async {}, if deferred_hot_buy.is_none() && shadow_scheduler.hot_completion_ready() => {
+                if let Some(completion) = shadow_scheduler.hot_quotes.take_completion() {
+                    deferred_hot_buy = execution_canary_runner.complete_hot_observed_buy_quote(
+                        &store, completion, &follow_snapshot, shadow_strategy_fail_closed,
+                        &mut shadow_risk_guard, &operator_emergency_stop,
+                        pause_new_trades_on_outage, Utc::now(), shadow_scheduler.active_task_count(),
+                        shadow_scheduler.buffered_shadow_task_count());
+                }
+            }
+            _ = source_sell_recovery_tick.tick(), if !association_mode => {
+                shadow_scheduler.source_sells.recover(&store, &sqlite_path)?;
+            }
+            completion = shadow_scheduler.source_sells.finish_next(), if !shadow_scheduler.source_sells.is_empty() => {
+                completion?; // Separate typed staging completion; no execution consumer.
+            }
             shadow_result = shadow_scheduler.shadow_workers.join_next(), if !shadow_scheduler.shadow_workers.is_empty() => {
                 if let Some(signal) = handle_shadow_worker_join(
                     &store,
@@ -243,53 +298,15 @@ pub(super) async fn run_app_loop(
             _ = execution_canary_interval.tick(), if execution_canary_runner.is_enabled() => {
                 match execution_canary_runner.process_tick(&store, Utc::now()).await {
                     Ok(summary) if summary.has_status_change() => {
-                        info!(
-                            enabled = summary.enabled,
-                            dry_run = summary.dry_run,
-                            route = %summary.route,
-                            wallet_pubkey = %summary.wallet_pubkey,
-                            candidates = summary.candidates,
-                            inserted = summary.inserted,
-                            existing = summary.existing,
-                            skipped_reason = summary.skipped_reason.unwrap_or("none"),
-                            last_signal_id = summary.last_signal_id.as_deref().unwrap_or("none"),
-                            last_order_id = summary.last_order_id.as_deref().unwrap_or("none"),
-                            quote_entry_candidates = summary.quote_entry_candidates,
-                            quote_entry_inserted = summary.quote_entry_inserted,
-                            quote_entry_existing = summary.quote_entry_existing,
-                            quote_entry_errors = summary.quote_entry_errors,
-                            quote_close_candidates = summary.quote_close_candidates,
-                            quote_close_inserted = summary.quote_close_inserted,
-                            quote_close_existing = summary.quote_close_existing,
-                            quote_close_errors = summary.quote_close_errors,
-                            quote_would_execute = summary.quote_would_execute,
-                            quote_would_force_exit = summary.quote_would_force_exit,
-                            quote_would_skip = summary.quote_would_skip,
-                            quote_decision_unknown = summary.quote_decision_unknown,
-                            last_quote_event_id = summary.last_quote_event_id.as_deref().unwrap_or("none"),
-                            state_machine_reserved = summary.state_machine_reserved,
-                            state_machine_existing = summary.state_machine_existing,
-                            state_machine_built = summary.state_machine_built,
-                            state_machine_simulated = summary.state_machine_simulated,
-                            state_machine_submit_disabled = summary.state_machine_submit_disabled,
-                            state_machine_failed = summary.state_machine_failed,
-                            state_machine_safety_blocked = summary.state_machine_safety_blocked,
-                            state_machine_entry_gate_blocked = summary.state_machine_entry_gate_blocked,
-                            orphan_recovery_checked = summary.orphan_recovery_checked,
-                            orphan_recovery_recovered = summary.orphan_recovery_recovered,
-                            orphan_recovery_reconciled = summary.orphan_recovery_reconciled,
-                            orphan_recovery_skipped_no_history = summary.orphan_recovery_skipped_no_history,
-                            orphan_recovery_errors = summary.orphan_recovery_errors,
-                            last_orphan_recovery_token = summary.last_orphan_recovery_token.as_deref().unwrap_or("none"),
-                            last_state_machine_order_id = summary.last_state_machine_order_id.as_deref().unwrap_or("none"),
-                            "execution canary dry-run tick"
-                        );
+                        crate::telemetry::record_execution_canary_tick(&summary);
                     }
                     Ok(_) => {}
                     Err(error) => {
                         warn!(error = %error, "execution canary dry-run tick failed");
                     }
                 }
+                #[cfg(test)]
+                crate::app_tests::b70_hooks::execution_tick(association_consumer.as_ref());
             }
             _ = runtime_follow_reload_interval.tick() => {
                 let reload_now = Utc::now();
@@ -361,7 +378,7 @@ pub(super) async fn run_app_loop(
                 )
                 .await?;
             }
-            maybe_swap = ingestion.next_swap(), if ingestion_backoff_until.is_none() => {
+            maybe_swap = ingestion.next_swap(), if ingestion_backoff_until.is_none() && !association_mode => {
                 let ingestion_snapshot = ingestion.runtime_snapshot();
                 handle_ingestion_swap_poll(
                     &store,
@@ -412,15 +429,32 @@ pub(super) async fn run_app_loop(
                     &entry_quote_shadow_diagnostic,
                     &exit_policy_shadow_quote,
                     &market_exit_shadow_quote,
+                    shadow_wake.as_ref(),
                 ).await?;
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = app_loop_stop() => {
                 info!("shutdown signal received");
                 break;
             }
         }
     }
 
+    Ok(())
+    }.await;
+    drop(association_consumer);
+    if let Some(origin) = deferred_hot_buy.take() {
+        crate::telemetry::hot_quote::record(
+            &origin.signal_id(),
+            "hot_quote_shutdown",
+            shadow_scheduler.active_task_count(),
+            shadow_scheduler.buffered_shadow_task_count(),
+        );
+    }
+    shadow_scheduler.hot_quotes.shutdown().await;
+    loop_result?;
+    shadow_scheduler.source_sells.drain().await?;
+    #[cfg(test)]
+    crate::app_tests::b70_hooks::checked_shutdown(&mut shadow_scheduler).await?;
     shutdown_app_loop_tasks(
         &mut observed_swap_retention_handle,
         &mut shadow_scheduler,
@@ -439,43 +473,7 @@ async fn handle_execution_canary_for_shadow_signal(
         .await
     {
         Ok(summary) if summary.has_status_change() => {
-            info!(
-                signal_id = %signal.signal_id,
-                side = %signal.side,
-                token = %signal.token,
-                inserted = summary.inserted,
-                existing = summary.existing,
-                quote_entry_inserted = summary.quote_entry_inserted,
-                quote_entry_existing = summary.quote_entry_existing,
-                quote_entry_errors = summary.quote_entry_errors,
-                quote_close_inserted = summary.quote_close_inserted,
-                quote_close_existing = summary.quote_close_existing,
-                quote_close_errors = summary.quote_close_errors,
-                quote_would_execute = summary.quote_would_execute,
-                quote_would_force_exit = summary.quote_would_force_exit,
-                quote_would_skip = summary.quote_would_skip,
-                quote_decision_unknown = summary.quote_decision_unknown,
-                last_quote_event_id = summary.last_quote_event_id.as_deref().unwrap_or("none"),
-                state_machine_reserved = summary.state_machine_reserved,
-                state_machine_existing = summary.state_machine_existing,
-                state_machine_built = summary.state_machine_built,
-                state_machine_simulated = summary.state_machine_simulated,
-                state_machine_submit_disabled = summary.state_machine_submit_disabled,
-                state_machine_failed = summary.state_machine_failed,
-                state_machine_safety_blocked = summary.state_machine_safety_blocked,
-                state_machine_entry_gate_blocked = summary.state_machine_entry_gate_blocked,
-                orphan_recovery_checked = summary.orphan_recovery_checked,
-                orphan_recovery_recovered = summary.orphan_recovery_recovered,
-                orphan_recovery_reconciled = summary.orphan_recovery_reconciled,
-                orphan_recovery_skipped_no_history = summary.orphan_recovery_skipped_no_history,
-                orphan_recovery_errors = summary.orphan_recovery_errors,
-                last_orphan_recovery_token = summary.last_orphan_recovery_token.as_deref().unwrap_or("none"),
-                state_machine_skipped_reason = summary.state_machine_skipped_reason.as_deref().unwrap_or("none"),
-                state_machine_open_positions = summary.state_machine_open_positions,
-                state_machine_daily_loss_sol = summary.state_machine_daily_loss_sol,
-                last_state_machine_order_id = summary.last_state_machine_order_id.as_deref().unwrap_or("none"),
-                "execution canary shadow-signal task"
-            );
+            crate::telemetry::record_execution_canary_shadow_signal(&summary, &signal);
         }
         Ok(_) => {}
         Err(error) => {
@@ -486,4 +484,6 @@ async fn handle_execution_canary_for_shadow_signal(
             );
         }
     }
+    #[cfg(test)]
+    crate::app_tests::b70_hooks::mark("recorded_owner_processed", &signal.signal_id);
 }

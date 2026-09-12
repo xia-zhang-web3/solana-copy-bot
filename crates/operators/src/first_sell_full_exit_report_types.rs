@@ -18,6 +18,9 @@ pub struct FirstSellAuditSummary {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct AuditCoverage {
+    pub actual_http_entry_events: u64,
+    pub unknown_http_entry_events: u64,
+    pub actual_entry_ready_events: u64,
     pub loaded_entry_events: u64,
     pub eligible_entry_events: u64,
     pub skipped_entry_events: u64,

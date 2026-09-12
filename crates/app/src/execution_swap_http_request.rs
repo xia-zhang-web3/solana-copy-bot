@@ -42,12 +42,20 @@ pub(crate) fn swap_request_body(
         .as_ref()
         .ok_or_else(|| anyhow!("missing swap blueprint for {context} body"))?;
     let quote_response = quote_response_body(plan, blueprint.slippage_bps, context)?;
-    Ok(json!({
+    let mut body = json!({
         "userPublicKey": user_pubkey,
         "quoteResponse": quote_response,
         "dynamicComputeUnitLimit": true,
-        "prioritizationFeeLamports": blueprint.priority_fee_lamports,
-    }))
+    });
+    match blueprint.priority_fee {
+        crate::execution_priority_fee::PriorityFee::MicroLamportsPerComputeUnit(price) => {
+            body["computeUnitPriceMicroLamports"] = json!(price)
+        }
+        crate::execution_priority_fee::PriorityFee::TotalPriorityFeeLamports(total) => {
+            body["prioritizationFeeLamports"] = json!(total)
+        }
+    }
+    Ok(body)
 }
 
 pub(crate) fn disable_shared_accounts(body: &mut Value) {

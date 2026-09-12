@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 const SOL_LAMPORTS: f64 = 1_000_000_000.0;
 
@@ -16,8 +16,8 @@ pub(crate) struct ComputedPnl {
     pub(crate) exit_quote_sol: f64,
     pub(crate) closed_qty_ratio: f64,
     pub(crate) quote_adjusted_pnl_sol: f64,
-    pub(crate) quote_adjusted_pnl_after_priority_fee_sol: f64,
-    pub(crate) priority_fee_lamports_total: u64,
+    pub(crate) quote_adjusted_pnl_after_priority_fee_sol: Option<f64>,
+    pub(crate) priority_fee_lamports_total: Option<u64>,
     pub(crate) scaled_exit_to_entry_qty: bool,
 }
 
@@ -43,11 +43,14 @@ pub(crate) fn compute_quote_pnl(amounts: QuotePnlAmounts<'_>) -> Result<Option<C
     let entry_cost_sol = (entry_in_raw as f64 / SOL_LAMPORTS) * closed_qty_ratio;
     let exit_quote_sol =
         (exit_out_raw as f64 / SOL_LAMPORTS) * (exit_qty_for_pnl as f64 / exit_in_raw as f64);
-    let priority_fee_lamports_total = amounts.buy_priority_fee_lamports.unwrap_or(0)
-        + amounts.sell_priority_fee_lamports.unwrap_or(0);
+    // A sample price/status is not evidence of a total. Both sides must be known.
+    let priority_fee_lamports_total = amounts
+        .buy_priority_fee_lamports
+        .zip(amounts.sell_priority_fee_lamports)
+        .and_then(|(buy, sell)| buy.checked_add(sell));
     let quote_adjusted_pnl_sol = exit_quote_sol - entry_cost_sol;
     let quote_adjusted_pnl_after_priority_fee_sol =
-        quote_adjusted_pnl_sol - priority_fee_lamports_total as f64 / SOL_LAMPORTS;
+        priority_fee_lamports_total.map(|fee| quote_adjusted_pnl_sol - fee as f64 / SOL_LAMPORTS);
     Ok(Some(ComputedPnl {
         entry_cost_sol,
         exit_quote_sol,
@@ -60,10 +63,7 @@ pub(crate) fn compute_quote_pnl(amounts: QuotePnlAmounts<'_>) -> Result<Option<C
 }
 
 fn parse_raw_amount(raw: Option<&str>) -> Result<Option<u128>> {
-    raw.map(|value| {
-        value
-            .parse::<u128>()
-            .with_context(|| format!("invalid quote raw amount: {value}"))
-    })
-    .transpose()
+    Ok(raw
+        .filter(|v| !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit()))
+        .and_then(|v| v.parse::<u128>().ok()))
 }

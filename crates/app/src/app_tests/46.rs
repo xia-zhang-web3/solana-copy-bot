@@ -104,7 +104,11 @@ async fn execution_canary_runner_retries_existing_quote_priority_fee() -> Result
     assert_eq!(summary.quote_entry_existing, 1);
     assert_eq!(summary.state_machine_reserved, 1);
     assert_eq!(event.priority_fee_status.as_deref(), Some("ok"));
-    assert_eq!(event.priority_fee_lamports, Some(33_000));
+    assert_eq!(event.priority_fee_lamports, None);
+    assert_eq!(
+        crate::execution_priority_fee::tagged_fee(event.priority_fee_json.as_deref())?,
+        crate::execution_priority_fee::PriorityFee::MicroLamportsPerComputeUnit(33_000)
+    );
     assert!(event.error.is_none());
     assert_eq!(
         order.status,
@@ -143,7 +147,7 @@ fn record_swap_blueprint_runner_quote(
         now,
         Some("ok"),
         Some(22_000),
-        Some("{\"recommended\":22000}"),
+        Some(&crate::app_tests::priority_fee_fixture::total_json(22_000)),
         None,
     )
 }
@@ -159,6 +163,8 @@ fn record_swap_blueprint_runner_quote_with_priority(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,

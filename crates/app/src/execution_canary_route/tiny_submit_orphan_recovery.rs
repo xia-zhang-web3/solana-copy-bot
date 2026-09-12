@@ -62,6 +62,9 @@ pub(super) async fn process_tiny_submit_orphan_position_recovery_for_route(
         if summary.orphan_recovery_recovered >= limit {
             break;
         }
+        if store.execution_canary_token_accounting_pending(&balance.mint)? {
+            continue;
+        }
         if let Some(position) = store.load_execution_canary_open_position(&balance.mint)? {
             if position
                 .position_id
@@ -113,6 +116,10 @@ fn reconcile_recovery_orphan_positions(
     summary: &mut ExecutionCanaryStateMachineSummary,
 ) -> Result<()> {
     for position in store.list_execution_canary_open_recovery_orphan_positions()? {
+        // Receipt owns this mutation, including terminal write-off and retimestamp paths.
+        if store.execution_canary_token_accounting_pending(&position.token)? {
+            continue;
+        }
         let Some(position_qty) = position.qty_exact else {
             summary.orphan_recovery_errors += 1;
             summary.last_error = Some(format!(

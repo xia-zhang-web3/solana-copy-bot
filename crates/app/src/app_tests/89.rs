@@ -60,7 +60,7 @@ async fn migrated_pumpswap_uses_direct_builder_before_pump_fun_endpoints() -> Re
         assert!(simulation.contains("\"sigVerify\":false"));
         write_http_json(
             simulation.into_socket,
-            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":null,"logs":[]}}}"#,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"context":{"slot":42},"value":{"err":null,"logs":[]}}}"#,
         )
         .await;
     });
@@ -151,7 +151,7 @@ async fn migrated_pumpswap_sell_uses_direct_builder_before_generic_swap() -> Res
         assert!(simulation.contains("\"sigVerify\":false"));
         write_http_json(
             simulation.into_socket,
-            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":null,"logs":[]}}}"#,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"context":{"slot":42},"value":{"err":null,"logs":[]}}}"#,
         )
         .await;
     });
@@ -263,7 +263,7 @@ async fn pump_fun_paid_sell_bonding_curve_miss_falls_back_to_pumpswap_direct() -
         assert!(simulation.contains("\"method\":\"simulateTransaction\""));
         write_http_json(
             simulation.into_socket,
-            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":null,"logs":[]}}}"#,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"context":{"slot":42},"value":{"err":null,"logs":[]}}}"#,
         )
         .await;
     });
@@ -318,6 +318,8 @@ fn pumpswap_custom_errors_survive_outer_truncation() {
         wallet_pubkey: "Wallet1111111111111111111111111111111111".to_string(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             route_plan_json: Some(r#"[{"swapInfo":{"label":"Pump.fun Amm"}}]"#.to_string()),
             ..crate::execution_submit_adapter::ExecutionBuildPlanMetadata::default()
         },
@@ -447,7 +449,7 @@ async fn pump_fun_swap_transaction_rpc_simulation_failure_blocks_payload() -> Re
         assert!(rpc.contains("\"method\":\"simulateTransaction\""));
         write_http_json(
             rpc.into_socket,
-            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":{"InstructionError":[6,"MissingAccount"]},"logs":["Program pAMM failed: missing account"]}}}"#,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"context":{"slot":42},"value":{"err":{"InstructionError":[6,"MissingAccount"]},"logs":["Program pAMM failed: missing account"]}}}"#,
         )
         .await;
     });
@@ -551,6 +553,10 @@ fn generic_migrated_pumpswap_request(
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            owned_sell_amount: None,
+            protected_capital: None,
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             quote_source: Some(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
             ),
@@ -568,7 +574,7 @@ fn generic_migrated_pumpswap_request(
             priority_fee_source: Some("test".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some(r#"{"recommended":22000}"#.to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             slippage_bps: Some(125.0),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
@@ -596,6 +602,10 @@ fn generic_migrated_pumpswap_sell_request(
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            owned_sell_amount: None,
+            protected_capital: None,
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             quote_source: Some(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
             ),
@@ -613,7 +623,7 @@ fn generic_migrated_pumpswap_sell_request(
             priority_fee_source: Some("test".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some(r#"{"recommended":22000}"#.to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             slippage_bps: Some(125.0),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
@@ -639,6 +649,10 @@ fn pump_fun_paid_migrated_pumpswap_sell_request(
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            owned_sell_amount: None,
+            protected_capital: None,
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             quote_source: Some(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID.to_string(),
             ),
@@ -656,7 +670,7 @@ fn pump_fun_paid_migrated_pumpswap_sell_request(
             priority_fee_source: Some("test".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some(r#"{"recommended":22000}"#.to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             slippage_bps: Some(125.0),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
@@ -754,42 +768,6 @@ pub(super) fn pump_fun_direct_config(base_url: &str) -> ExecutionConfig {
     config
 }
 
-fn generic_pump_fun_amm_request(
-    config: &ExecutionConfig,
-) -> crate::execution_submit_adapter::ExecutionSubmitRequest {
-    crate::execution_submit_adapter::ExecutionSubmitRequest {
-        order_id: "order-generic-pump-fun-amm".to_string(),
-        signal_id: "signal-generic-pump-fun-amm".to_string(),
-        client_order_id: "client-generic-pump-fun-amm".to_string(),
-        attempt: 1,
-        route: config.canary_route.clone(),
-        wallet_id: "leader-wallet".to_string(),
-        token: "TokenMint".to_string(),
-        side: "buy".to_string(),
-        buy_size_sol: 0.01,
-        slippage_tolerance_bps: 500,
-        wallet_pubkey: config.canary_wallet_pubkey.clone(),
-        entry_route_plan_json: None,
-        metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
-            quote_source: Some(
-                crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
-            ),
-            quote_event_id: Some("quote:entry:generic-pump-fun-amm".to_string()),
-            quote_request_ts: None,
-            quote_status: Some("ok".to_string()),
-            quote_in_amount_raw: Some("10000000".to_string()),
-            quote_out_amount_raw: Some("123456".to_string()),
-            quote_response_json: None,
-            quote_price_sol: Some(0.081),
-            price_impact_pct: Some(0.01),
-            route_plan_json: Some(r#"[{"swapInfo":{"label":"Pump.fun Amm"}}]"#.to_string()),
-            priority_fee_source: Some("test".to_string()),
-            priority_fee_status: Some("ok".to_string()),
-            priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some(r#"{"recommended":22000}"#.to_string()),
-            slippage_bps: Some(125.0),
-            decision_status: Some("would_execute".to_string()),
-            decision_reason: Some("within_slippage_limit".to_string()),
-        },
-    }
-}
+#[path = "pumpswap_metadata_fixture.rs"]
+mod metadata_fixture;
+use metadata_fixture::generic_pump_fun_amm_request;

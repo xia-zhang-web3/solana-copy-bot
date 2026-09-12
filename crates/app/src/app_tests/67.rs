@@ -147,6 +147,15 @@ async fn quote_canary_retries_owned_sell_priority_fee() -> Result<()> {
         Some("{\"reason\":\"priority_fee_transient_unavailable\"}"),
         Some("priority_fee: operation timed out"),
     )?;
+    let event_id = format!("quote:owned-close:{}", sell_signal.signal_id);
+    let actual = now - chrono::Duration::minutes(8) + chrono::Duration::milliseconds(12);
+    Connection::open(&db_path)?.execute(
+        "UPDATE execution_quote_canary_events SET http_request_started_ts=?1 WHERE event_id=?2",
+        rusqlite::params![actual.to_rfc3339(), &event_id],
+    )?;
+    let before = store
+        .load_execution_quote_canary_event_by_id(&event_id)?
+        .unwrap();
     let (priority_url, server) = serve_owned_sell_priority_fee(44_000).await?;
     let mut config = owned_sell_quote_config("http://127.0.0.1:9");
     config.priority_fee_canary_enabled = true;
@@ -156,7 +165,7 @@ async fn quote_canary_retries_owned_sell_priority_fee() -> Result<()> {
     let runner = ExecutionCanaryRunner::new(config);
 
     let summary = runner.process_tick(&store, now).await?;
-    server.await?;
+    tokio::time::timeout(std::time::Duration::from_secs(3), server).await??;
     let event = store
         .load_execution_quote_canary_event_by_id(&format!(
             "quote:owned-close:{}",
@@ -164,10 +173,19 @@ async fn quote_canary_retries_owned_sell_priority_fee() -> Result<()> {
         ))?
         .expect("owned sell quote event should exist");
 
+    assert_eq!(event.http_request_started_ts, Some(actual));
+    assert_eq!(event.request_ts, before.request_ts);
+    assert_eq!(event.quote_latency_ms, before.quote_latency_ms);
+    assert_eq!(event.quote_response_json, before.quote_response_json);
+    assert_eq!(event.quote_out_amount_raw, before.quote_out_amount_raw);
     assert_eq!(summary.quote_close_existing, 1);
     assert_eq!(summary.quote_would_execute, 1);
     assert_eq!(event.priority_fee_status.as_deref(), Some("ok"));
-    assert_eq!(event.priority_fee_lamports, Some(44_000));
+    assert_eq!(event.priority_fee_lamports, None);
+    assert_eq!(
+        crate::execution_priority_fee::tagged_fee(event.priority_fee_json.as_deref())?,
+        crate::execution_priority_fee::PriorityFee::MicroLamportsPerComputeUnit(44_000)
+    );
     assert!(event.error.is_none());
 
     let _ = std::fs::remove_file(db_path);
@@ -270,6 +288,8 @@ fn record_owned_sell_quote_with_priority(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:owned-close:{}", signal.signal_id),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,

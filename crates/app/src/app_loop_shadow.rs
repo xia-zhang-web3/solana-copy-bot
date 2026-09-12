@@ -21,12 +21,6 @@ pub(super) fn prepare_shadow_scheduler_before_select(
             shadow_scheduler.shadow_scheduler_needs_reset = false;
             warn!("shadow scheduler recovered after worker join error");
         }
-    } else {
-        shadow_scheduler.spawn_shadow_tasks_up_to_limit(
-            sqlite_path,
-            shadow,
-            SHADOW_WORKER_POOL_SIZE,
-        );
     }
     shadow_scheduler.release_held_shadow_sells(
         open_shadow_lots,
@@ -37,6 +31,18 @@ pub(super) fn prepare_shadow_scheduler_before_select(
         Utc::now(),
     );
 
+    if !shadow_scheduler.shadow_scheduler_needs_reset {
+        // Ready per-key work, including released SELL, owns the ordinary four
+        // slots first. The fifth still guarantees progress of pending HTTP FIFO.
+        shadow_scheduler.spawn_shadow_tasks_up_to_limit(
+            sqlite_path,
+            shadow,
+            SHADOW_WORKER_POOL_SIZE,
+        );
+    }
+    shadow_scheduler
+        .hot_quotes
+        .start_ready(shadow_scheduler.shadow_workers.len());
     let shadow_buffered_task_count = shadow_scheduler.buffered_shadow_task_count();
     let shadow_queue_full = shadow_buffered_task_count >= SHADOW_PENDING_TASK_CAPACITY;
     if shadow_queue_full && !shadow_scheduler.shadow_queue_backpressure_active {
@@ -81,6 +87,7 @@ pub(super) fn handle_shadow_worker_join(
     let mut recorded_signal = None;
     match shadow_result {
         Some(Ok(task_output)) => {
+            shadow_scheduler.hot_quotes.note_shadow_output(&task_output);
             shadow_scheduler.mark_task_complete(&task_output.key);
             recorded_signal = handle_shadow_task_output(
                 Some(store),
@@ -177,12 +184,13 @@ pub(super) async fn handle_shadow_interval_tick(
     entry_quote_shadow_diagnostic: &EntryQuoteShadowDiagnostic,
     exit_policy_shadow_quote: &ExitPolicyShadowQuoteDiagnostic,
     market_exit_shadow_quote: &MarketExitShadowQuoteDiagnostic,
+    shadow_wake: Option<&crate::association_consumer::shadow_wake::ShadowWake>,
 ) -> Result<()> {
     if shadow_strategy_fail_closed {
         return Ok(());
     }
     let cleanup_now = Utc::now();
-    match close_stale_shadow_lots(
+    match crate::stale_close::close_stale_shadow_lots_with_recovery(
         store,
         open_shadow_lots,
         stale_lot_max_hold_hours,
@@ -191,6 +199,7 @@ pub(super) async fn handle_shadow_interval_tick(
         materialize_execution_canary_quote_loss,
         Some(stale_close_quote_pricer),
         cleanup_now,
+        shadow_wake,
     )
     .await
     {

@@ -82,12 +82,13 @@ fn submitted_canary_order_query_is_bounded_to_route_and_status() -> Result<()> {
     )?;
 
     assert_eq!(one.len(), 1);
-    assert_eq!(one[0].order_id, old);
+    assert_eq!(one[0].order_id, confirmed);
     assert_eq!(
         all.iter()
             .map(|order| order.order_id.as_str())
             .collect::<Vec<_>>(),
         vec![
+            confirmed.as_str(),
             old.as_str(),
             no_sig.as_str(),
             new.as_str(),
@@ -95,7 +96,7 @@ fn submitted_canary_order_query_is_bounded_to_route_and_status() -> Result<()> {
         ]
     );
     assert!(!all.iter().any(|order| order.order_id == other_route));
-    assert!(!all
+    assert!(all
         .iter()
         .any(|order| order.status == EXECUTION_STATUS_CANARY_CONFIRMED));
     Ok(())
@@ -173,7 +174,7 @@ fn submit_risk_summary_counts_pending_retry_ready_and_budget_blockers() -> Resul
         1,
     )?;
 
-    assert_eq!(summary.active_orders, 4);
+    assert_eq!(summary.active_orders, 5);
     assert_eq!(summary.submitted_orders, 2);
     assert_eq!(summary.submitted_with_signature_orders, 1);
     assert_eq!(summary.submitted_without_signature_orders, 1);
@@ -183,9 +184,9 @@ fn submit_risk_summary_counts_pending_retry_ready_and_budget_blockers() -> Resul
     let latest = summary
         .latest_active_order
         .expect("latest active order should exist");
-    assert_eq!(latest.order_id, retry_ready);
-    assert_eq!(latest.attempt, 2);
-    assert!(!latest.tx_signature_present);
+    assert_eq!(latest.order_id, confirmed);
+    assert_eq!(latest.attempt, 1);
+    assert!(latest.tx_signature_present);
     assert_ne!(signed, no_sig);
     assert_ne!(retry_ready, rpc_retry_ready);
     Ok(())
@@ -697,6 +698,8 @@ fn metadata_for_order(
     recorded_ts: DateTime<Utc>,
 ) -> ExecutionCanaryBuildPlanMetadata {
     ExecutionCanaryBuildPlanMetadata {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         order_id: order_id.to_string(),
         signal_id: signal_id.to_string(),
         client_order_id: client_order_id.to_string(),
@@ -727,6 +730,8 @@ fn sell_quote_event(
     request_ts: DateTime<Utc>,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: event_id.to_string(),
         signal_id: Some(signal.signal_id.clone()),
         shadow_closed_trade_id: Some(42),

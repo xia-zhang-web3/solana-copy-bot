@@ -1,7 +1,7 @@
 use crate::execution_quote_canary_helpers::{
-    apply_quote_sample_to_event, duration_ms_between, price_sol_per_token,
-    quote_canary_slippage_limit_bps, quote_slippage_bps_for_sell, raw_amount_to_ui, short_error,
-    ui_amount_to_raw_string, QUOTE_STATUS_ERROR, QUOTE_STATUS_OK, SIDE_SELL, SOL_MINT,
+    apply_quote_sample_to_event, price_sol_per_token, quote_canary_slippage_limit_bps,
+    quote_slippage_bps_for_sell, raw_amount_to_ui, short_error, ui_amount_to_raw_string,
+    QUOTE_STATUS_ERROR, QUOTE_STATUS_OK, SIDE_SELL, SOL_MINT,
 };
 use crate::execution_quote_canary_rpc::resolve_spl_token_decimals;
 use crate::execution_quote_http::fetch_quote_sample;
@@ -89,7 +89,9 @@ impl MarketExitShadowQuoteDiagnostic {
         match self.quote_close(&close).await {
             Ok(quote) => apply_quote_to_close_event(&close, &mut event, quote),
             Err(error) => {
+                crate::execution_quote_timing::apply_anyhow_error_timing(&mut event, &error);
                 event.quote_status = QUOTE_STATUS_ERROR.to_string();
+                event.quote_response_available_ts = None;
                 event.error = Some(short_error(&error));
             }
         }
@@ -132,6 +134,8 @@ fn base_event(
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
         event_id,
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         signal_id: None,
         shadow_closed_trade_id: None,
         wallet_id: close.wallet_id.clone(),
@@ -140,7 +144,7 @@ fn base_event(
         quote_status: QUOTE_STATUS_ERROR.to_string(),
         request_ts: now,
         signal_ts: Some(close.closed_ts),
-        decision_delay_ms: duration_ms_between(close.closed_ts, now),
+        decision_delay_ms: None,
         quote_latency_ms: None,
         leader_notional_sol: Some(close.exit_value_sol),
         quote_in_amount_raw: close.qty_raw.clone(),
@@ -205,6 +209,7 @@ fn apply_quote_to_close_event(
 
 fn mark_quote_error(event: &mut ExecutionQuoteCanaryEventInsert, reason: String) {
     event.quote_status = QUOTE_STATUS_ERROR.to_string();
+    event.quote_response_available_ts = None;
     event.error = Some(reason);
     event.quote_price_sol = None;
     event.slippage_bps = None;

@@ -47,11 +47,20 @@ pub(crate) async fn fetch_pumpswap_direct_transaction_dry_run(
     let rpc = PumpSwapRpc::new(http, config, timeout)?;
     let side = plan.side.to_ascii_lowercase();
     let transaction = match side.as_str() {
-        "buy" => build_pumpswap_direct_buy_transaction(&rpc, plan).await?,
+        "buy" => build_pumpswap_direct_buy_transaction(&rpc, config, plan).await?,
         "sell" => build_pumpswap_direct_sell_transaction(&rpc, plan).await?,
         _ => return Ok(None),
     };
-    verify_serialized_transaction_rpc_simulation(
+    if crate::execution_native_floor_policy::protected::enabled(config) && side == "buy" {
+        let binding = crate::execution_instruction_bundle_binding::BundleRequest::capture(plan)?;
+        crate::execution_native_floor_policy::verify_signing_payload(
+            config,
+            binding.request(),
+            plan,
+            &transaction.serialized_transaction_base64,
+        )?;
+    }
+    let simulation = verify_serialized_transaction_rpc_simulation(
         http,
         config,
         &transaction.serialized_transaction_base64,
@@ -61,14 +70,14 @@ pub(crate) async fn fetch_pumpswap_direct_transaction_dry_run(
     .await
     .map_err(|error| anyhow!("{error}{}", quote_age_ms_summary_field(&plan.metadata)))?;
     let summary = format!(
-        "pumpswap_direct_{}_transaction_ok base64_len={} serialized_transaction_base64_ready=true latency_ms={} rpc_simulation=passed{}",
+        "pumpswap_direct_{}_transaction_ok base64_len={} serialized_transaction_base64_ready=true latency_ms={}{}",
         side,
         transaction.serialized_transaction_base64.len(),
         started.elapsed().as_millis(),
         quote_age_ms_summary_field(&plan.metadata)
     );
     Ok(Some(SwapTransactionDryRunResult {
-        summary: truncate_for_log(&summary, 500),
+        summary: simulation.with_summary(&summary),
         serialized_transaction_base64: transaction.serialized_transaction_base64,
         source: PUMPSWAP_DIRECT_SOURCE.to_string(),
     }))
@@ -80,8 +89,10 @@ struct PumpSwapDirectTransaction {
 
 async fn build_pumpswap_direct_buy_transaction(
     rpc: &PumpSwapRpc<'_>,
+    config: &ExecutionConfig,
     plan: &ExecutionTransactionPlan,
 ) -> Result<PumpSwapDirectTransaction> {
+    let reserve = crate::execution_native_floor_policy::required_for_plan(config, plan)?;
     let blueprint = plan
         .swap_blueprint
         .as_ref()
@@ -130,11 +141,30 @@ async fn build_pumpswap_direct_buy_transaction(
         user_quote_ata,
         amount_in,
         min_output,
-        priority_fee_lamports: blueprint.priority_fee_lamports,
+        priority_fee_micro_lamports_per_cu: blueprint.priority_fee.price_for_limit(
+            crate::execution_priority_fee::RequestedComputeUnitLimit::checked(
+                crate::execution_pumpswap_direct_instructions::PUMPSWAP_COMPUTE_UNIT_LIMIT,
+            )?,
+        )?,
     });
-    let raw = serialize_unsigned_legacy_transaction(user, blockhash, &instructions)?;
+    let serialized_transaction_base64 = if let Some(reserve) = reserve {
+        crate::execution_native_floor::prepare_final_native_floor(
+            user,
+            blockhash,
+            &instructions,
+            reserve,
+        )?
+        .payload()
+        .to_owned()
+    } else {
+        BASE64_STANDARD.encode(serialize_unsigned_legacy_transaction(
+            user,
+            blockhash,
+            &instructions,
+        )?)
+    };
     Ok(PumpSwapDirectTransaction {
-        serialized_transaction_base64: BASE64_STANDARD.encode(raw),
+        serialized_transaction_base64,
     })
 }
 
@@ -190,7 +220,11 @@ async fn build_pumpswap_direct_sell_transaction(
         user_quote_ata,
         amount_in,
         min_output,
-        priority_fee_lamports: blueprint.priority_fee_lamports,
+        priority_fee_micro_lamports_per_cu: blueprint.priority_fee.price_for_limit(
+            crate::execution_priority_fee::RequestedComputeUnitLimit::checked(
+                crate::execution_pumpswap_direct_instructions::PUMPSWAP_COMPUTE_UNIT_LIMIT,
+            )?,
+        )?,
     });
     let raw = serialize_unsigned_legacy_transaction(user, blockhash, &instructions)?;
     Ok(PumpSwapDirectTransaction {

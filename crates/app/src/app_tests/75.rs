@@ -26,6 +26,8 @@ async fn pump_fun_paid_quote_builds_pump_fun_swap_transaction_payload() -> Resul
     store.record_execution_quote_canary_event(&quote_event(&signal, now))?;
     store.record_execution_quote_canary_provider_sample(
         &copybot_storage_core::ExecutionQuoteCanaryProviderSampleInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             provider: copybot_storage_core::PROVIDER_PUMP_FUN_PAID.to_string(),
             side: "buy".to_string(),
@@ -104,6 +106,8 @@ async fn pump_fun_swap_instructions_error_is_soft_when_transaction_payload_passe
     store.record_execution_quote_canary_event(&quote_event(&signal, now))?;
     store.record_execution_quote_canary_provider_sample(
         &copybot_storage_core::ExecutionQuoteCanaryProviderSampleInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             provider: copybot_storage_core::PROVIDER_PUMP_FUN_PAID.to_string(),
             side: "buy".to_string(),
@@ -181,6 +185,8 @@ async fn pump_fun_swap_transaction_simulation_error_marks_order_failed() -> Resu
     store.record_execution_quote_canary_event(&quote_event(&signal, now))?;
     store.record_execution_quote_canary_provider_sample(
         &copybot_storage_core::ExecutionQuoteCanaryProviderSampleInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             provider: copybot_storage_core::PROVIDER_PUMP_FUN_PAID.to_string(),
             side: "buy".to_string(),
@@ -311,11 +317,11 @@ async fn assert_pump_fun_request(request: CapturedRequest, path: &str) {
     assert!(request.contains("\"inAmount\":\"10000000\""));
     assert!(request.contains("\"priorityFeeLevel\":\"high\""));
     let body = if path.ends_with("swap-instructions") {
-        r#"{"instructions":[{"keys":[],"programId":"ComputeBudget111111111111111111111111111111","data":[2]}]}"#
+        r#"{"instructions":[{"keys":[],"programId":"ComputeBudget111111111111111111111111111111","data":[2]}]}"#.to_string()
     } else {
-        r#"{"tx":"AQIDBA=="}"#
+        serde_json::json!({"tx": super::priority_fee_fixture::transaction([0; 32], 1_000_000, 22_000)}).to_string()
     };
-    write_http_json(request.into_socket, body).await;
+    write_http_json(request.into_socket, &body).await;
 }
 
 struct CapturedRequest {
@@ -376,6 +382,8 @@ fn quote_event(
     now: chrono::DateTime<Utc>,
 ) -> copybot_storage_core::ExecutionQuoteCanaryEventInsert {
     copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+        http_request_started_ts: None,
+        quote_response_available_ts: None,
         event_id: format!("quote:entry:{}", signal.signal_id),
         signal_id: Some(signal.signal_id.clone()),
         shadow_closed_trade_id: None,
@@ -398,7 +406,7 @@ fn quote_event(
         route_plan_json: Some(r#"[{"swapInfo":{"label":"Pump.fun Amm"}}]"#.to_string()),
         priority_fee_status: Some("ok".to_string()),
         priority_fee_lamports: Some(22_000),
-        priority_fee_json: Some("{\"recommended\":22000}".to_string()),
+        priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
         decision_status: Some("would_execute".to_string()),
         decision_reason: Some("within_slippage_limit".to_string()),
         error: None,
@@ -453,6 +461,10 @@ fn generic_pump_fun_submit_request(
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            owned_sell_amount: None,
+            protected_capital: None,
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             quote_source: Some(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
             ),
@@ -468,7 +480,7 @@ fn generic_pump_fun_submit_request(
             priority_fee_source: Some("test".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some(r#"{"recommended":22000}"#.to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             slippage_bps: Some(125.0),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),

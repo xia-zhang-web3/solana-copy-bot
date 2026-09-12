@@ -68,12 +68,25 @@ fn restart_recovery_sell_closes_open_lot_even_after_lag_window() -> Result<()> {
         ts_utc: sell_ts,
         exact_amounts: None,
     };
-    service
+    let normal = service
         .process_swap(&store, &sell, &follow, sell_ts + Duration::minutes(10))?
+        .expect_recorded("normal open-risk exit should bypass entry lag");
+    assert_eq!(normal.closed_qty, 500.0);
+    assert_eq!(store.shadow_open_lots_count()?, 0);
+    service
+        .process_swap(&store, &sell, &follow, sell_ts + Duration::minutes(11))?
         .expect_dropped(
             ShadowDropReason::LagExceeded,
-            "normal live path should still enforce lag",
+            "closed risk grants no lag exemption",
         );
+
+    // Independently retain recovery coverage for an unprocessed old SELL.
+    store.insert_shadow_lot("leader-wallet", "RecoveryMint", 500.0, 0.5, buy_ts)?;
+    let sell = SwapEvent {
+        token_in: "RecoveryMint".to_string(),
+        signature: "sig-independent-recovery".to_string(),
+        ..sell
+    };
 
     let recovered = service
         .process_restart_recovery_sell(&store, &sell, sell_ts + Duration::minutes(10))?

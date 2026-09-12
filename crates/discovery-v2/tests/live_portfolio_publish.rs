@@ -1,14 +1,13 @@
+const WALLET_SLOW: &str = "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS";
+const WALLET_C: &str = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+const WALLET_B: &str = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+const WALLET_A: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_config::{DiscoveryConfig, ShadowConfig};
 use copybot_core_types::SwapEvent;
 use copybot_discovery_v2::{build_discovery_v2_status, DiscoveryV2BuildOptions};
 use copybot_storage_core::{ensure_discovery_v2_schema, SqliteDiscoveryStore};
-use std::io::ErrorKind;
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::thread::JoinHandle;
-use std::time::{Duration as StdDuration, Instant};
 use tempfile::tempdir;
 
 const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
@@ -17,14 +16,14 @@ const SOL_MINT: &str = "So11111111111111111111111111111111111111112";
 fn live_portfolio_gate_replaces_drained_wallet_with_live_token_holder() -> Result<()> {
     let (_dir, store) = test_store()?;
     let now = DateTime::parse_from_rfc3339("2026-05-03T10:00:00Z")?.with_timezone(&Utc);
-    let token_a = "LiveTokenA1111111111111111111111111111111";
-    let token_b = "LiveTokenB2222222222222222222222222222222";
-    let token_c = "LiveTokenC3333333333333333333333333333333";
+    let token_a = "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD";
+    let token_b = "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE";
+    let token_c = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
     store.insert_observed_swaps_batch(&[
         tail_coverage_swap("sig-coverage-floor", 9, now - Duration::hours(25)),
-        swap_with_token("wallet_a", token_a, "sig-a", 10, now - Duration::minutes(4)),
-        swap_with_token("wallet_b", token_b, "sig-b", 11, now - Duration::minutes(3)),
-        swap_with_token("wallet_c", token_c, "sig-c", 12, now - Duration::minutes(2)),
+        swap_with_token(WALLET_A, token_a, "sig-a", 10, now - Duration::minutes(4)),
+        swap_with_token(WALLET_B, token_b, "sig-b", 11, now - Duration::minutes(3)),
+        swap_with_token(WALLET_C, token_c, "sig-c", 12, now - Duration::minutes(2)),
         tail_coverage_swap("sig-tail", 13, now - Duration::minutes(1)),
     ])?;
     insert_quality_for_token(&store, token_a, now, Some(1.0))?;
@@ -36,12 +35,13 @@ fn live_portfolio_gate_replaces_drained_wallet_with_live_token_holder() -> Resul
     discovery.min_live_sol_balance = 0.25;
     discovery.live_portfolio_max_wallets = 3;
     discovery.live_portfolio_max_token_accounts = 8;
-    let (rpc_url, rpc_thread) = start_live_portfolio_rpc(token_b, 6)?;
+    let rpc = start_live_portfolio_rpc(token_b);
     let mut build_options = options(now);
-    build_options.live_portfolio_rpc_url = Some(rpc_url);
+    build_options.live_portfolio_rpc_url = Some(rpc.url.clone());
 
     let status = build_discovery_v2_status(&store, &discovery, &shadow, build_options)?;
-    rpc_thread.join().expect("rpc server thread");
+    let calls = rpc.finish();
+    assert_eq!(calls.len(), 9);
 
     assert!(
         status.production_green,
@@ -50,7 +50,7 @@ fn live_portfolio_gate_replaces_drained_wallet_with_live_token_holder() -> Resul
     );
     assert_eq!(
         status.candidate_wallets,
-        vec!["wallet_b".to_string(), "wallet_c".to_string()]
+        vec![WALLET_B.to_string(), WALLET_C.to_string()]
     );
     let live = status.live_portfolio.expect("live portfolio status");
     assert_eq!(live.checked_wallets, 3);
@@ -59,7 +59,7 @@ fn live_portfolio_gate_replaces_drained_wallet_with_live_token_holder() -> Resul
     let drained = status
         .wallet_metrics
         .iter()
-        .find(|metric| metric.wallet_id == "wallet_a")
+        .find(|metric| metric.wallet_id == WALLET_A)
         .expect("wallet_a metric");
     assert!(drained
         .reject_reasons
@@ -67,7 +67,7 @@ fn live_portfolio_gate_replaces_drained_wallet_with_live_token_holder() -> Resul
     let token_holder = status
         .wallet_metrics
         .iter()
-        .find(|metric| metric.wallet_id == "wallet_b")
+        .find(|metric| metric.wallet_id == WALLET_B)
         .expect("wallet_b metric");
     assert!(token_holder.live_token_value_sol.unwrap_or_default() >= 0.25);
     assert_eq!(token_holder.live_tradable_token_positions, Some(1));
@@ -84,28 +84,28 @@ fn live_portfolio_gate_reserves_slow_hold_slots_after_baseline_accepts() -> Resu
     store.insert_observed_swaps_batch(&[
         tail_coverage_swap("sig-slow-live-coverage", 9, now - Duration::hours(25)),
         swap_with_token(
-            "wallet_a",
+            WALLET_A,
             token_a,
             "sig-slow-live-a",
             10,
             now - Duration::minutes(4),
         ),
         swap_with_token(
-            "wallet_b",
+            WALLET_B,
             token_b,
             "sig-slow-live-b",
             11,
             now - Duration::minutes(3),
         ),
         swap_with_token(
-            "wallet_slow",
+            WALLET_SLOW,
             token_slow,
             "sig-slow-live-buy",
             12,
             now - Duration::minutes(90),
         ),
         sell_with_token(
-            "wallet_slow",
+            WALLET_SLOW,
             token_slow,
             "sig-slow-live-sell",
             13,
@@ -128,12 +128,20 @@ fn live_portfolio_gate_reserves_slow_hold_slots_after_baseline_accepts() -> Resu
     discovery.slow_hold_min_trades = 2;
     discovery.slow_hold_min_buy_count = 1;
     discovery.slow_hold_min_score = 0.0;
-    let (rpc_url, rpc_thread) = start_accepting_all_live_portfolio_rpc(6)?;
+    let rpc = rpc::RpcStub::start(|request| {
+        rpc::result(if request["method"] == "getBalance" {
+            serde_json::json!(300_000_000u64)
+        } else {
+            serde_json::json!([])
+        })
+        .into()
+    });
     let mut build_options = options(now);
-    build_options.live_portfolio_rpc_url = Some(rpc_url);
+    build_options.live_portfolio_rpc_url = Some(rpc.url.clone());
 
     let status = build_discovery_v2_status(&store, &discovery, &shadow, build_options)?;
-    rpc_thread.join().expect("rpc server thread");
+    let calls = rpc.finish();
+    assert_eq!(calls.len(), 9);
 
     assert!(
         status.production_green,
@@ -143,9 +151,9 @@ fn live_portfolio_gate_reserves_slow_hold_slots_after_baseline_accepts() -> Resu
     assert_eq!(
         status.candidate_wallets,
         vec![
-            "wallet_a".to_string(),
-            "wallet_b".to_string(),
-            "wallet_slow".to_string()
+            WALLET_A.to_string(),
+            WALLET_B.to_string(),
+            WALLET_SLOW.to_string()
         ]
     );
     assert_eq!(
@@ -155,9 +163,9 @@ fn live_portfolio_gate_reserves_slow_hold_slots_after_baseline_accepts() -> Resu
             .map(|source| (source.wallet_id.as_str(), source.source_cohort.as_str()))
             .collect::<Vec<_>>(),
         vec![
-            ("wallet_a", "baseline"),
-            ("wallet_b", "baseline"),
-            ("wallet_slow", "slow_hold")
+            (WALLET_A, "baseline"),
+            (WALLET_B, "baseline"),
+            (WALLET_SLOW, "slow_hold")
         ]
     );
     let live = status.live_portfolio.expect("live portfolio status");
@@ -270,106 +278,54 @@ fn strict_policy() -> (DiscoveryConfig, ShadowConfig) {
     (discovery, shadow)
 }
 
-fn start_live_portfolio_rpc(
-    token_b: &str,
-    expected_requests: usize,
-) -> Result<(String, JoinHandle<()>)> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let url = format!("http://{}", listener.local_addr()?);
-    listener.set_nonblocking(true)?;
+fn start_live_portfolio_rpc(token_b: &str) -> rpc::RpcStub {
     let token_b = token_b.to_string();
-    let handle = std::thread::spawn(move || {
-        let mut handled = 0usize;
-        let mut last_request = Instant::now();
-        while handled < expected_requests && last_request.elapsed() < StdDuration::from_millis(250)
-        {
-            let (mut stream, _) = match listener.accept() {
-                Ok(accepted) => accepted,
-                Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    std::thread::sleep(StdDuration::from_millis(10));
-                    continue;
-                }
-                Err(err) => panic!("accept rpc request: {err}"),
-            };
-            handled += 1;
-            last_request = Instant::now();
-            let mut buffer = [0u8; 8192];
-            let read = stream.read(&mut buffer).expect("read rpc request");
-            let request = String::from_utf8_lossy(&buffer[..read]);
-            let body = live_portfolio_rpc_response(&request, &token_b);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("write rpc response");
+    rpc::RpcStub::start(move |request| {
+        let wallet = request["params"][0].as_str().unwrap();
+        if request["method"] == "getBalance" {
+            return rpc::result(serde_json::json!(if wallet == WALLET_C {
+                300_000_000u64
+            } else {
+                0
+            }))
+            .into();
         }
-    });
-    Ok((url, handle))
-}
-
-fn start_accepting_all_live_portfolio_rpc(
-    expected_requests: usize,
-) -> Result<(String, JoinHandle<()>)> {
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let url = format!("http://{}", listener.local_addr()?);
-    listener.set_nonblocking(true)?;
-    let handle = std::thread::spawn(move || {
-        let mut handled = 0usize;
-        let mut last_request = Instant::now();
-        while handled < expected_requests && last_request.elapsed() < StdDuration::from_millis(250)
-        {
-            let (mut stream, _) = match listener.accept() {
-                Ok(accepted) => accepted,
-                Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    std::thread::sleep(StdDuration::from_millis(10));
-                    continue;
-                }
-                Err(err) => panic!("accept rpc request: {err}"),
-            };
-            handled += 1;
-            last_request = Instant::now();
-            let mut buffer = [0u8; 8192];
-            let read = stream.read(&mut buffer).expect("read rpc request");
-            let request = String::from_utf8_lossy(&buffer[..read]);
-            let body = accepting_all_live_portfolio_rpc_response(&request);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("write rpc response");
-        }
-    });
-    Ok((url, handle))
-}
-
-fn accepting_all_live_portfolio_rpc_response(request: &str) -> String {
-    if request.contains("\"getBalance\"") {
-        return r#"{"jsonrpc":"2.0","id":1,"result":{"value":300000000}}"#.to_string();
-    }
-    r#"{"jsonrpc":"2.0","id":1,"result":{"value":[]}}"#.to_string()
-}
-
-fn live_portfolio_rpc_response(request: &str, token_b: &str) -> String {
-    if request.contains("\"getBalance\"") {
-        let lamports = if request.contains("wallet_c") {
-            300_000_000u64
+        let rows = if wallet == WALLET_B && request["params"][1]["programId"] == rpc::CLASSIC {
+            vec![rpc::account(
+                wallet,
+                &token_b,
+                &rpc::key('J'),
+                rpc::CLASSIC,
+                "10000000",
+                6,
+            )]
         } else {
-            0u64
+            vec![]
         };
-        return format!(r#"{{"jsonrpc":"2.0","id":1,"result":{{"value":{lamports}}}}}"#);
-    }
-    let token_accounts = if request.contains("wallet_b") {
-        format!(
-            r#"[{{"account":{{"data":{{"parsed":{{"info":{{"mint":"{token_b}","tokenAmount":{{"amount":"10000000","decimals":6,"uiAmountString":"10"}}}}}}}}}}}}]"#
-        )
-    } else {
-        "[]".to_string()
-    };
-    format!(r#"{{"jsonrpc":"2.0","id":1,"result":{{"value":{token_accounts}}}}}"#)
+        rpc::result(serde_json::json!(rows)).into()
+    })
 }
+
+#[path = "live_portfolio/fixture.rs"]
+mod fixture;
+#[path = "live_portfolio/inventory_cases.rs"]
+mod inventory_cases;
+#[path = "live_portfolio/materialized_cases.rs"]
+mod materialized_cases;
+#[path = "live_portfolio/rpc.rs"]
+mod rpc;
+
+#[path = "live_portfolio/protocol_cases.rs"]
+mod protocol_cases;
+
+#[path = "live_portfolio/price_controls.rs"]
+mod price_controls;
+#[path = "live_portfolio/price_fixture.rs"]
+mod price_fixture;
+#[path = "live_portfolio/price_freshness.rs"]
+mod price_freshness;
+#[path = "live_portfolio/price_reuse.rs"]
+mod price_reuse;
+
+#[path = "live_portfolio/price_numbers.rs"]
+mod price_numbers;

@@ -1,6 +1,9 @@
 use super::*;
 use crate::execution_submit_adapter::ExecutionSubmitAdapter;
 
+#[path = "source_guard_buy_consumer_tests.rs"]
+mod source_guard_buy_consumer_tests;
+
 #[tokio::test]
 async fn execution_canary_signer_contract_builds_signed_envelope() -> Result<()> {
     let db_path = unique_signer_contract_test_path("signed-envelope");
@@ -95,6 +98,9 @@ async fn execution_canary_signer_contract_rejects_bad_signed_payload() -> Result
 struct SignedEnvelopeAdapter;
 
 impl crate::execution_submit_adapter::ExecutionSubmitAdapter for SignedEnvelopeAdapter {
+    fn native_floor_config(&self) -> Result<&ExecutionConfig> {
+        Ok(crate::app_tests::priority_fee_fixture::dry_run_config())
+    }
     fn build_transaction_plan(
         &self,
         request: &crate::execution_submit_adapter::ExecutionSubmitRequest,
@@ -143,6 +149,9 @@ impl crate::execution_submit_adapter::ExecutionSubmitAdapter for SignedEnvelopeA
 struct BadSignedPayloadAdapter;
 
 impl crate::execution_submit_adapter::ExecutionSubmitAdapter for BadSignedPayloadAdapter {
+    fn native_floor_config(&self) -> Result<&ExecutionConfig> {
+        Ok(crate::app_tests::priority_fee_fixture::dry_run_config())
+    }
     fn build_transaction_plan(
         &self,
         request: &crate::execution_submit_adapter::ExecutionSubmitRequest,
@@ -223,11 +232,14 @@ fn signer_contract_config() -> ExecutionConfig {
 }
 
 fn serialized_payload() -> String {
-    "AQIDBA==".to_string()
+    crate::app_tests::priority_fee_fixture::transaction([7; 32], 200_000, 10_000)
 }
 
 fn signed_payload() -> String {
-    "BQYHCA==".to_string()
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let mut bytes = STANDARD.decode(serialized_payload()).unwrap();
+    bytes[1] = 1;
+    STANDARD.encode(bytes)
 }
 
 fn signer_contract_signal(
@@ -254,6 +266,8 @@ fn record_signer_contract_quote(
 ) -> Result<()> {
     store.record_execution_quote_canary_event(
         &copybot_storage_core::ExecutionQuoteCanaryEventInsert {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             event_id: format!("quote:entry:{}", signal.signal_id),
             signal_id: Some(signal.signal_id.clone()),
             shadow_closed_trade_id: None,
@@ -276,7 +290,7 @@ fn record_signer_contract_quote(
             route_plan_json: Some("[{\"swapInfo\":{\"label\":\"Metis\"}}]".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(12_345),
-            priority_fee_json: Some("{\"recommended\":12345}".to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(12_345)),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),
             error: None,

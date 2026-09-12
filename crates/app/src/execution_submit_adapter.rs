@@ -1,3 +1,6 @@
+use crate::execution_guarded_generic_buy::{
+    prepare as prepare_guarded_generic_buy, GenericBuyOutcome,
+};
 use crate::execution_pump_fun_migration_fallback::refresh_pump_fun_paid_sell_to_generic_pumpswap_plan;
 use crate::execution_pumpswap_route_context::plan_has_pumpswap_direct_route;
 use crate::execution_quote_canary_helpers::truncate_for_log;
@@ -5,9 +8,8 @@ use crate::execution_quote_provider_selection::QUOTE_SOURCE_PUMP_FUN_PAID;
 use crate::execution_route_plan::route_plan_has_pump_fun_amm;
 use crate::execution_serialized_transaction_slot::ExecutionSerializedTransactionPayloadSlot;
 use crate::execution_signing_envelope::{
-    build_dry_run_execution_signing_envelope, build_serialized_transaction_execution_envelope,
-    build_signed_transaction_execution_envelope, ExecutionSerializedTransactionPayload,
-    ExecutionSignedTransactionPayload, ExecutionSigningEnvelope,
+    ExecutionSerializedTransactionPayload, ExecutionSignedTransactionPayload,
+    ExecutionSigningEnvelope,
 };
 use crate::execution_simulation_proof::combined_simulation_proof;
 use crate::execution_swap_blueprint::{
@@ -16,7 +18,6 @@ use crate::execution_swap_blueprint::{
 };
 use crate::execution_swap_http_request::is_missing_account_error_text;
 use crate::execution_swap_http_retry::is_missing_token_program_error;
-use crate::execution_swap_instructions_http::fetch_swap_instructions_dry_run;
 use crate::execution_swap_transaction_http::fetch_swap_transaction_dry_run;
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
@@ -32,9 +33,18 @@ mod confirmation_boundary;
 mod confirmed_fill;
 mod diagnostics;
 mod direct_builders;
+mod failed_expense;
 mod file_signer;
+mod rpc_failed_expense;
+pub(crate) use failed_expense::sweep as recover_failed_expenses;
+mod receipt_sell_accounting;
 mod rpc_confirmation;
 mod rpc_confirmed_fill;
+mod rpc_native_accounts;
+mod rpc_native_instructions;
+mod rpc_receipt_balances;
+mod rpc_receipt_facts;
+mod rpc_receipt_lifecycle;
 mod rpc_submit;
 mod submit_plan;
 mod tiny_runner;
@@ -42,20 +52,24 @@ mod transport;
 mod transport_record;
 
 pub(crate) use self::confirmation::{
-    build_confirmation_request_from_order, record_confirmation_tracker_outcome,
-    ExecutionConfirmationProof, ExecutionConfirmationRequest, ExecutionConfirmationTrackerOutcome,
+    build_confirmation_request_from_order, ExecutionConfirmationProof,
+    ExecutionConfirmationRequest, ExecutionConfirmationTrackerOutcome,
 };
 #[cfg(test)]
 pub(crate) use self::confirmation::{
-    ExecutionConfirmationTracker, ExecutionConfirmationTrackerRecordOutcome,
-    MockConfirmedExecutionConfirmationTracker, NoSendExecutionConfirmationTracker,
+    record_confirmation_tracker_outcome, ExecutionConfirmationTracker,
+    ExecutionConfirmationTrackerRecordOutcome, MockConfirmedExecutionConfirmationTracker,
+    NoSendExecutionConfirmationTracker,
 };
 pub(crate) use self::confirmation_boundary::{
     record_execution_rpc_confirmation_boundary, ExecutionConfirmationBoundaryOutcome,
 };
+#[cfg(test)]
 pub(crate) use self::confirmed_fill::{
-    record_confirmed_fill_accounting, record_confirmed_fill_accounting_and_status,
-    ExecutionConfirmedBuyFill, ExecutionConfirmedFill, ExecutionConfirmedSellFill,
+    record_confirmed_fill_accounting, ExecutionConfirmedSellFill,
+};
+pub(crate) use self::confirmed_fill::{
+    record_confirmed_fill_accounting_and_status, ExecutionConfirmedBuyFill, ExecutionConfirmedFill,
 };
 use self::diagnostics::{
     execution_error_for_plan, execution_error_text_for_plan, pumpswap_direct_error_for_plan,
@@ -71,15 +85,11 @@ use self::direct_builders::{
 };
 pub(crate) use self::file_signer::sign_serialized_transaction_from_config;
 pub(crate) use self::rpc_confirmation::fetch_rpc_signature_confirmation;
-#[cfg(test)]
-pub(crate) use self::rpc_confirmed_fill::confirmed_fill_from_transaction_json;
 pub(crate) use self::rpc_submit::RpcExecutionSubmitTransport;
 pub(crate) use self::submit_plan::{
     execution_submit_idempotency_key, execution_submit_intent_from_signed_envelope,
     ExecutionSubmitIntent, ExecutionSubmitPlan,
 };
-#[cfg(test)]
-pub(crate) use self::tiny_runner::build_execution_confirmed_fill_from_request;
 pub(crate) use self::tiny_runner::{
     build_tiny_submit_reconciliation_request, reconcile_execution_tiny_submit_confirmation,
     record_execution_tiny_submit_confirm_path, ExecutionTinySubmitConfirmPathOutcome,
@@ -96,8 +106,15 @@ pub(crate) use self::transport_record::ExecutionSubmitTransportRecordOutcome;
 
 const EXECUTION_SUBMIT_ROUTE_RPC_DRY_RUN: &str = "rpc_dry_run";
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ExecutionBuildPlanMetadata {
+    #[serde(skip)]
+    pub(crate) protected_capital:
+        Option<Box<crate::execution_native_floor_policy::protected::ContextProof>>,
+    #[serde(default)]
+    pub(crate) owned_sell_amount: Option<crate::execution_source_sell_guard::amount::Proof>,
+    pub(crate) http_request_started_ts: Option<DateTime<Utc>>,
+    pub(crate) quote_response_available_ts: Option<DateTime<Utc>>,
     pub(crate) quote_source: Option<String>,
     pub(crate) quote_event_id: Option<String>,
     pub(crate) quote_request_ts: Option<DateTime<Utc>>,
@@ -120,9 +137,13 @@ pub(crate) struct ExecutionBuildPlanMetadata {
 impl Default for ExecutionBuildPlanMetadata {
     fn default() -> Self {
         Self {
+            owned_sell_amount: None,
+            protected_capital: None,
             quote_source: Some("not_available".to_string()),
             quote_event_id: None,
             quote_request_ts: None,
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             quote_status: None,
             quote_in_amount_raw: None,
             quote_out_amount_raw: None,
@@ -160,16 +181,12 @@ pub(crate) struct ExecutionSubmitRequest {
 
 pub(crate) fn cap_execution_priority_fee_lamports(
     config: &ExecutionConfig,
-    mut metadata: ExecutionBuildPlanMetadata,
+    metadata: ExecutionBuildPlanMetadata,
 ) -> ExecutionBuildPlanMetadata {
-    let cap = config.pretrade_max_priority_fee_lamports;
-    if cap == 0 {
-        return metadata;
-    }
-    if metadata.priority_fee_lamports.is_some_and(|fee| fee > cap) {
-        metadata.priority_fee_lamports = Some(cap);
-    }
-    metadata
+    crate::execution_priority_fee::cap_metadata_total(
+        config.pretrade_max_priority_fee_lamports,
+        metadata,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -218,21 +235,15 @@ pub(crate) trait ExecutionSubmitAdapter {
         request: &ExecutionSubmitRequest,
         plan: &ExecutionTransactionPlan,
     ) -> Result<ExecutionSigningEnvelope> {
-        if let Some(slot) = plan.serialized_transaction_payload_slot.as_ref() {
-            if let Some(payload) = slot.load()? {
-                if let Some(signed_payload) =
-                    self.sign_serialized_transaction(request, plan, &payload)?
-                {
-                    return build_signed_transaction_execution_envelope(
-                        request,
-                        plan,
-                        signed_payload,
-                    );
-                }
-                return build_serialized_transaction_execution_envelope(request, plan, payload);
-            }
-        }
-        build_dry_run_execution_signing_envelope(request, plan)
+        crate::execution_priority_fee_proof::build_envelope(self, request, plan)
+    }
+
+    fn priority_fee_cap(&self) -> u64 {
+        0
+    }
+
+    fn native_floor_config(&self) -> Result<&ExecutionConfig> {
+        anyhow::bail!("native_floor_policy_unavailable")
     }
 
     fn sign_serialized_transaction(
@@ -322,6 +333,14 @@ impl JupiterMetisDryRunExecutionAdapter {
 }
 
 impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
+    fn native_floor_config(&self) -> Result<&ExecutionConfig> {
+        Ok(&self.config)
+    }
+
+    fn priority_fee_cap(&self) -> u64 {
+        self.config.pretrade_max_priority_fee_lamports
+    }
+
     fn build_transaction_plan(
         &self,
         request: &ExecutionSubmitRequest,
@@ -418,24 +437,25 @@ impl ExecutionSubmitAdapter for JupiterMetisDryRunExecutionAdapter {
                 }
             }
             let generic_plan = generic_fallback_plan.as_ref().unwrap_or(plan);
-            let instructions_proof =
-                match fetch_swap_instructions_dry_run(&self.http, &self.config, generic_plan).await
-                {
-                    Ok(proof) => proof,
-                    Err(error) => {
-                        let Some(proof) = soft_swap_instructions_failure_proof(&error) else {
-                            return Err(error);
-                        };
-                        Some(proof)
-                    }
+            let prepared =
+                if crate::execution_guarded_generic_sell::applies(&self.config, generic_plan) {
+                    crate::execution_guarded_generic_sell::prepare(
+                        &self.http,
+                        &self.config,
+                        generic_plan,
+                    )
+                    .await?
+                } else {
+                    prepare_guarded_generic_buy(&self.http, &self.config, generic_plan).await?
                 };
-            let transaction_dry_run = match fetch_swap_transaction_dry_run(
-                &self.http,
-                &self.config,
-                generic_plan,
-            )
-            .await
-            {
+            let (instructions_proof, transaction_result) = match prepared {
+                GenericBuyOutcome::Built(transaction) => (None, Ok(Some(transaction))),
+                GenericBuyOutcome::ExistingPath(proof) => (
+                    proof,
+                    fetch_swap_transaction_dry_run(&self.http, &self.config, generic_plan).await,
+                ),
+            };
+            let transaction_dry_run = match transaction_result {
                 Ok(result) => result,
                 Err(error) => {
                     if let Some(pumpswap_error) = pumpswap_direct_error {
@@ -550,7 +570,7 @@ fn should_try_pumpswap_direct_before_pump_fun(plan: &ExecutionTransactionPlan) -
         && plan_has_pumpswap_direct_route(plan)
 }
 
-fn soft_swap_instructions_failure_proof(error: &anyhow::Error) -> Option<String> {
+pub(crate) fn soft_swap_instructions_failure_proof(error: &anyhow::Error) -> Option<String> {
     let message = error.to_string();
     if is_missing_account_error_text(&message) {
         return Some(format!(

@@ -11,6 +11,7 @@ fn token_balance(owner: &str, mint: &str, amount: &str) -> Value {
         .saturating_mul(1_000_000)
         .to_string();
     json!({
+        "accountIndex": 1,
         "owner": owner,
         "mint": mint,
         "uiTokenAmount": {
@@ -30,7 +31,8 @@ fn raw_backfill_parser_recovers_sell_swap_from_get_transaction_result() -> Resul
         "transaction": {
             "message": {
                 "accountKeys": [
-                    {"pubkey": signer, "signer": true}
+                    {"pubkey": signer, "signer": true},
+                    {"pubkey": "TargetTokenAccount", "signer": false}
                 ],
                 "instructions": [
                     {"programId": "raydium-program"}
@@ -39,8 +41,8 @@ fn raw_backfill_parser_recovers_sell_swap_from_get_transaction_result() -> Resul
         },
         "meta": {
             "err": null,
-            "preBalances": [1_000_000_000u64],
-            "postBalances": [2_000_000_000u64],
+            "preBalances": [1_000_000_000u64, 5_000_000],
+            "postBalances": [2_000_000_000u64, 5_000_000],
             "preTokenBalances": [token_balance(signer, "TokenMintA", "100")],
             "postTokenBalances": [token_balance(signer, "TokenMintA", "0")],
             "logMessages": []

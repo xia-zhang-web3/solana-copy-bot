@@ -4,6 +4,8 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FollowerGapReport {
     pub samples: u64,
+    pub after_fee_known_samples: u64,
+    pub after_fee_unknown_samples: u64,
     pub avg_exit_quote_to_shadow_price: f64,
     pub p10_exit_quote_to_shadow_price: f64,
     pub p50_exit_quote_to_shadow_price: f64,
@@ -19,21 +21,19 @@ pub fn follower_gap_from_trades(
     let mut ratios = Vec::new();
     let mut shadow_positive_quote_negative = 0_u64;
     let mut quote_after_fee_negative = 0_u64;
+    let mut after_fee_known_samples = 0_u64;
+    let mut after_fee_unknown_samples = 0_u64;
     for trade in trades {
-        if trade.shadow_pnl_sol > 0.0
-            && trade
-                .quote_adjusted_pnl_after_priority_fee_sol
-                .unwrap_or(0.0)
-                < 0.0
-        {
-            shadow_positive_quote_negative += 1;
-        }
-        if trade
-            .quote_adjusted_pnl_after_priority_fee_sol
-            .unwrap_or(0.0)
-            < 0.0
-        {
-            quote_after_fee_negative += 1;
+        if let Some(net) = trade.quote_adjusted_pnl_after_priority_fee_sol {
+            after_fee_known_samples += 1;
+            if net < 0.0 {
+                quote_after_fee_negative += 1;
+                if trade.shadow_pnl_sol > 0.0 {
+                    shadow_positive_quote_negative += 1;
+                }
+            }
+        } else {
+            after_fee_unknown_samples += 1;
         }
         let Some(shadow_price) = trade.exit_shadow_price_sol.filter(|price| *price > 0.0) else {
             continue;
@@ -50,6 +50,8 @@ pub fn follower_gap_from_trades(
     let avg = ratios.iter().sum::<f64>() / ratios.len() as f64;
     Some(FollowerGapReport {
         samples: ratios.len() as u64,
+        after_fee_known_samples,
+        after_fee_unknown_samples,
         avg_exit_quote_to_shadow_price: avg,
         p10_exit_quote_to_shadow_price: percentile(&ratios, 0.10),
         p50_exit_quote_to_shadow_price: percentile(&ratios, 0.50),

@@ -56,7 +56,7 @@ async fn sell_can_use_entry_pumpswap_amm_when_current_route_is_meteora() -> Resu
         assert!(simulation.contains("\"method\":\"simulateTransaction\""));
         write_http_json(
             simulation.into_socket,
-            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"value":{"err":null,"logs":[]}}}"#,
+            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"context":{"slot":42},"value":{"err":null,"logs":[]}}}"#,
         )
         .await;
     });
@@ -137,6 +137,8 @@ fn meteora_sell_with_entry_pumpswap_request(
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
         entry_route_plan_json: Some(entry_route_plan),
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            http_request_started_ts: None,
+            quote_response_available_ts: None,
             quote_source: Some(
                 crate::execution_quote_provider_selection::QUOTE_SOURCE_GENERIC_METIS.to_string(),
             ),
@@ -153,7 +155,7 @@ fn meteora_sell_with_entry_pumpswap_request(
             priority_fee_source: Some("test".to_string()),
             priority_fee_status: Some("ok".to_string()),
             priority_fee_lamports: Some(22_000),
-            priority_fee_json: Some(r#"{"recommended":22000}"#.to_string()),
+            priority_fee_json: Some(crate::app_tests::priority_fee_fixture::total_json(22_000)),
             slippage_bps: Some(125.0),
             decision_status: Some("would_execute".to_string()),
             decision_reason: Some("within_slippage_limit".to_string()),

@@ -25,6 +25,7 @@ pub(crate) struct ProofRow {
 
 #[derive(Debug, Default)]
 pub(crate) struct QuoteSide {
+    pub(crate) http_request_started_ts: Option<DateTime<Utc>>,
     pub(crate) event_id: Option<String>,
     pub(crate) quote_status: Option<String>,
     pub(crate) decision_status: Option<String>,
@@ -49,9 +50,27 @@ pub(crate) fn execution_tiny_proof_rows(
     since: DateTime<Utc>,
     limit: u32,
 ) -> Result<Vec<ProofRow>> {
+    let buy_actual =
+        crate::quote_http_started_expr(&store.conn, "execution_quote_canary_events", "buy")?;
+    let sell_actual =
+        crate::quote_http_started_expr(&store.conn, "execution_quote_canary_events", "sell")?;
+    let buy_metadata_actual = crate::quote_http_started_expr(
+        &store.conn,
+        "execution_canary_build_plan_metadata",
+        "buy_metadata",
+    )?;
+    let sell_metadata_actual = crate::quote_http_started_expr(
+        &store.conn,
+        "execution_canary_build_plan_metadata",
+        "sell_metadata",
+    )?;
+    let sql = PROOF_ROWS_SQL.replace(
+        "/* actual_fields */",
+        &format!(", {buy_actual}, {sell_actual}, {buy_metadata_actual}, {sell_metadata_actual}"),
+    );
     let mut stmt = store
         .conn
-        .prepare(PROOF_ROWS_SQL)
+        .prepare(&sql)
         .context("failed to prepare execution tiny proof query")?;
     let rows = stmt
         .query_map(
@@ -68,14 +87,22 @@ pub(crate) fn execution_tiny_recent_orders(
     since: DateTime<Utc>,
     limit: u32,
 ) -> Result<Vec<ExecutionTinyProofOrder>> {
-    let sql = if metadata_query_is_available(store)? {
+    let with_metadata = metadata_query_is_available(store)?;
+    let sql = if with_metadata {
         RECENT_ORDERS_SQL
     } else {
         RECENT_ORDERS_WITHOUT_METADATA_SQL
     };
+    let actual = crate::quote_http_started_expr(
+        &store.conn,
+        "execution_canary_build_plan_metadata",
+        "metadata",
+    )?;
+    let actual = if with_metadata { actual } else { "NULL".into() };
+    let sql = sql.replace("/* actual_order */", &format!(", {actual}"));
     let mut stmt = store
         .conn
-        .prepare(sql)
+        .prepare(&sql)
         .context("failed to prepare execution tiny recent orders query")?;
     let rows = stmt
         .query_map(
@@ -148,8 +175,8 @@ fn metadata_query_is_available(store: &SqliteDiscoveryStore) -> Result<bool> {
 fn read_proof_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProofRow> {
     let opened_raw: String = row.get(5)?;
     let closed_raw: String = row.get(6)?;
-    let buy_quote = read_quote_side(row, 7)?;
-    let sell_quote = read_quote_side(row, 17)?;
+    let buy_quote = read_quote_side(row, 7, optional_ts(row, 67)?)?;
+    let sell_quote = read_quote_side(row, 17, optional_ts(row, 68)?)?;
     Ok(ProofRow {
         shadow_closed_trade_id: row.get(0)?,
         signal_id: row.get(1)?,
@@ -158,24 +185,47 @@ fn read_proof_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProofRow> {
         shadow_pnl_sol: row.get(4)?,
         opened_ts: parse_ts_sql(5, &opened_raw)?,
         closed_ts: parse_ts_sql(6, &closed_raw)?,
-        buy_order: read_order_side(row, 27, "buy", buy_quote.signal_ts, buy_quote.request_ts)?,
-        sell_order: read_order_side(row, 44, "sell", sell_quote.signal_ts, sell_quote.request_ts)?,
+        buy_order: read_order_side(
+            row,
+            27,
+            "buy",
+            buy_quote.signal_ts,
+            buy_quote.request_ts,
+            optional_ts(row, 69)?,
+        )?,
+        sell_order: read_order_side(
+            row,
+            44,
+            "sell",
+            sell_quote.signal_ts,
+            sell_quote.request_ts,
+            optional_ts(row, 70)?,
+        )?,
         buy_quote,
         sell_quote,
         position: read_position_side(row, 61)?,
     })
 }
 
-fn read_quote_side(row: &rusqlite::Row<'_>, base: usize) -> rusqlite::Result<QuoteSide> {
+fn read_quote_side(
+    row: &rusqlite::Row<'_>,
+    base: usize,
+    actual: Option<DateTime<Utc>>,
+) -> rusqlite::Result<QuoteSide> {
     Ok(QuoteSide {
+        http_request_started_ts: actual,
         event_id: row.get(base)?,
         quote_status: row.get(base + 2)?,
         decision_status: row.get(base + 3)?,
         decision_reason: row.get(base + 4)?,
         request_ts: optional_ts(row, base + 5)?,
         signal_ts: optional_ts(row, base + 6)?,
-        quote_latency_ms: optional_i64_to_u64_sql(row.get(base + 7)?, base + 7)?,
-        decision_delay_ms: optional_i64_to_u64_sql(row.get(base + 8)?, base + 8)?,
+        quote_latency_ms: optional_i64_to_u64_sql(row.get(base + 7)?, base + 7)?
+            .filter(|_| actual.is_some()),
+        decision_delay_ms: crate::quote_http_timing::actual_delay_ms(
+            optional_ts(row, base + 6)?,
+            actual,
+        ),
         priority_fee_lamports: optional_i64_to_u64_sql(row.get(base + 9)?, base + 9)?,
     })
 }
@@ -186,6 +236,7 @@ fn read_order_side(
     side: &str,
     signal_ts: Option<DateTime<Utc>>,
     quote_ts: Option<DateTime<Utc>>,
+    actual: Option<DateTime<Utc>>,
 ) -> rusqlite::Result<Option<ExecutionTinyProofOrder>> {
     let order_id: Option<String> = row.get(base)?;
     let Some(order_id) = order_id else {
@@ -203,6 +254,7 @@ fn read_order_side(
         )
     })?;
     Ok(Some(ExecutionTinyProofOrder {
+        http_request_started_ts: actual,
         order_id,
         signal_id: row.get(base + 1)?,
         side: Some(side.to_string()),
@@ -222,13 +274,11 @@ fn read_order_side(
         simulation_status: row.get(base + 6)?,
         simulation_error: row.get(base + 7)?,
         submit_to_confirm_ms: confirm_ts.map(|confirm_ts| delta_ms(submit_ts, confirm_ts)),
-        signal_to_quote_ms: signal_ts
-            .zip(quote_ts)
-            .map(|(signal, quote)| delta_ms(signal, quote)),
+        signal_to_quote_ms: actual_delta_ms(signal_ts, actual),
         quote_to_build_ms: None,
         build_to_submit_ms: None,
         signal_to_submit_ms: signal_ts.map(|signal_ts| delta_ms(signal_ts, submit_ts)),
-        quote_to_submit_ms: quote_ts.map(|quote_ts| delta_ms(quote_ts, submit_ts)),
+        quote_to_submit_ms: actual_delta_ms(actual, Some(submit_ts)),
         quote_source: row.get(base + 12)?,
         quote_event_id: row.get(base + 13)?,
         priority_fee_lamports: optional_i64_to_u64_sql(row.get(base + 14)?, base + 14)?,
@@ -262,7 +312,9 @@ fn read_recent_order(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionTinyP
     let signal_ts = optional_ts(row, 18)?;
     let quote_request_ts = optional_ts(row, 19)?;
     let metadata_ts = optional_ts(row, 20)?;
+    let actual = optional_ts(row, 21)?;
     Ok(ExecutionTinyProofOrder {
+        http_request_started_ts: actual,
         order_id: row.get(0)?,
         signal_id: row.get(1)?,
         side: row.get(2)?,
@@ -282,15 +334,11 @@ fn read_recent_order(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExecutionTinyP
         simulation_error: row.get(11)?,
         attempt,
         submit_to_confirm_ms: confirm_ts.map(|confirm_ts| delta_ms(submit_ts, confirm_ts)),
-        signal_to_quote_ms: signal_ts
-            .zip(quote_request_ts)
-            .map(|(signal, quote)| delta_ms(signal, quote)),
-        quote_to_build_ms: quote_request_ts
-            .zip(metadata_ts)
-            .map(|(quote, metadata)| delta_ms(quote, metadata)),
+        signal_to_quote_ms: actual_delta_ms(signal_ts, actual),
+        quote_to_build_ms: actual_delta_ms(actual, metadata_ts),
         build_to_submit_ms: metadata_ts.map(|metadata_ts| delta_ms(metadata_ts, submit_ts)),
         signal_to_submit_ms: signal_ts.map(|signal_ts| delta_ms(signal_ts, submit_ts)),
-        quote_to_submit_ms: quote_request_ts.map(|quote_ts| delta_ms(quote_ts, submit_ts)),
+        quote_to_submit_ms: actual_delta_ms(actual, Some(submit_ts)),
         quote_source: row.get(13)?,
         quote_event_id: row.get(14)?,
         priority_fee_lamports: optional_i64_to_u64_sql(row.get(15)?, 15)?,
@@ -410,7 +458,9 @@ SELECT
     pos.opened_ts,
     pos.closed_ts,
     pos.cost_sol,
-    pos.pnl_sol
+    CASE WHEN EXISTS(SELECT 1 FROM fills cash WHERE cash.position_id=pos.position_id
+        AND cash.accounting_basis='receipt_native_cash') THEN NULL ELSE pos.pnl_sol END
+/* actual_fields */
 FROM shadow_closed_trades AS closed
 LEFT JOIN execution_quote_canary_events AS sell
     ON sell.shadow_closed_trade_id = closed.id
@@ -482,6 +532,7 @@ SELECT
     copy_signals.ts,
     metadata.quote_request_ts,
     metadata.recorded_ts
+/* actual_order */
 FROM orders
 LEFT JOIN copy_signals ON copy_signals.signal_id = orders.signal_id
 LEFT JOIN execution_canary_build_plan_metadata AS metadata
@@ -514,9 +565,15 @@ SELECT
     copy_signals.ts,
     NULL AS quote_request_ts,
     NULL AS recorded_ts
+/* actual_order */
 FROM orders
 LEFT JOIN copy_signals ON copy_signals.signal_id = orders.signal_id
 WHERE orders.order_id LIKE 'exec-canary:%'
   AND orders.submit_ts >= ?1
 ORDER BY orders.submit_ts DESC, orders.order_id DESC
 LIMIT ?2";
+
+fn actual_delta_ms(from: Option<DateTime<Utc>>, to: Option<DateTime<Utc>>) -> Option<i64> {
+    let (from, to) = (from?, to?);
+    (from <= to).then(|| (to - from).num_milliseconds())
+}

@@ -181,4 +181,9 @@ mod balances;
 
 #[cfg(test)]
 pub(super) use self::balances::parse_proto_ui_amount;
-pub(super) use self::balances::{build_exact_swap_amounts, infer_swap_from_proto_balances};
+pub(super) use self::balances::{
+    build_exact_swap_amounts, infer_swap_from_proto_balances_with_attribution,
+};
+
+#[cfg(test)]
+pub(super) use self::balances::infer_swap_from_proto_balances;
