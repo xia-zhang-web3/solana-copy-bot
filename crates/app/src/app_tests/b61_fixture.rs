@@ -46,6 +46,7 @@ impl Fixture {
         config.priority_fee_canary_enabled = true;
         config.priority_fee_canary_rpc_url = rpc.url.clone();
         config.swap_instructions_dry_run_enabled = true;
+        config.tiny_experiment = super::b126_config_fixture::activated(&config)?.tiny_experiment;
         config.canary_entry_submit_enabled = false;
         config.max_submit_attempts = 3;
         config.max_confirm_seconds = 1;

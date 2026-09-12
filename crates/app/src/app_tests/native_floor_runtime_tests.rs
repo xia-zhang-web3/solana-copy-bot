@@ -77,7 +77,7 @@ fn checked_simulation_and_send(
 #[tokio::test]
 async fn native_floor_hot_direct_buy_simulates_signs_and_submits_exact_guard() -> Result<()> {
     for extension in [false, true] {
-        let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+        let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
         f.wire.lock().unwrap().extension = extension;
         let signal = f
             .store
@@ -92,14 +92,17 @@ async fn native_floor_hot_direct_buy_simulates_signs_and_submits_exact_guard() -
         )?;
         f.conn()?.execute(
             "UPDATE execution_quote_canary_events SET quote_price_sol=?1, quote_response_json=?2,
-            quote_in_amount_raw=?3, quote_out_amount_raw=?4, route_plan_json=?5 WHERE signal_id=?6",
+            quote_in_amount_raw=?3, quote_out_amount_raw=?4, route_plan_json=?5,
+            priority_fee_json=?7, priority_fee_lamports=?8 WHERE signal_id=?6",
             rusqlite::params![
                 f.request.metadata.quote_price_sol,
                 f.request.metadata.quote_response_json,
                 f.request.metadata.quote_in_amount_raw,
                 f.request.metadata.quote_out_amount_raw,
                 f.request.metadata.route_plan_json,
-                f.request.signal_id
+                f.request.signal_id,
+                f.request.metadata.priority_fee_json,
+                f.request.metadata.priority_fee_lamports
             ],
         )?;
         let out = super::entry_risk_clock_fixture::at(
@@ -132,7 +135,7 @@ async fn native_floor_hot_direct_buy_simulates_signs_and_submits_exact_guard() -
 #[tokio::test]
 async fn native_floor_real_retry_rebuilds_with_current_r_and_blockhash() -> Result<()> {
     for extension in [false, true] {
-        let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+        let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
         f.wire.lock().unwrap().extension = extension;
         let old = f.build().await?.envelope.unwrap();
         f.store.mark_execution_canary_retry_after_submit_not_sent(

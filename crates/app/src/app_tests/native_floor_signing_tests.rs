@@ -28,7 +28,7 @@ async fn native_floor_labels_cannot_bypass_presign_and_guarded_fallback_passes()
         Route::PaidFallback,
         Route::Direct,
     ] {
-        let mut f = Fixture::new(route, 200_000, 200_000).await?;
+        let mut f = Fixture::new(route, 10_000, 200_000).await?;
         // Synthetic provider supplies independently verifiable guarded legacy bytes.
         // This does not claim that the production external builders construct guards.
         f.wire.lock().unwrap().guard = Some(50_000_001);

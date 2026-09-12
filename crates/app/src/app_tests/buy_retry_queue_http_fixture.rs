@@ -74,7 +74,7 @@ impl QueueRpc {
         let key = tiny_route_keypair(81);
         let transaction = serialized_legacy_transaction(key.public_key);
         let buy_transaction =
-            super::priority_fee_fixture::guarded_transaction(key.public_key, 200_000, 10_000);
+            super::tiny_transport_fixture::buy(key.public_key, [9; 32], 10_000_000);
         let allow_buy = malformed_buy || funding.is_some();
         let task = tokio::spawn(async move {
             let mut buying = false;
@@ -96,17 +96,21 @@ impl QueueRpc {
                     .as_str()
                     .is_some_and(|s| s.starts_with("native-funding-"))
                 {
-                    assert!(buying, "SELL must not request funding");
+                    assert!(
+                        buying || body["method"] == "getFeeForMessage",
+                        "SELL must not request BUY account/rent RPC"
+                    );
                     if body["method"] == "getFeeForMessage" {
                         if let Some((path, signal_id)) = &change_signal {
                             rusqlite::Connection::open(path).unwrap().execute(
                                 "UPDATE copy_signals SET status='r1-current-state' WHERE signal_id=?1", [signal_id]).unwrap();
                         }
                     }
-                    let response = funding
-                        .as_ref()
-                        .expect("explicit funding fixture")
-                        .reply(&body);
+                    let mut funding = funding
+                        .clone()
+                        .unwrap_or_else(super::tiny_transport_fixture::funding);
+                    funding.fee = Some(100_000);
+                    let response = funding.reply(&body);
                     log.lock()
                         .unwrap()
                         .push(format!("funding:{}", body["method"].as_str().unwrap()));
@@ -134,7 +138,11 @@ impl QueueRpc {
                         (
                             format!("{}-build-instructions", if buying { "buy" } else { "sell" }),
                             if buying {
-                                json!({"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":null})
+                                super::tiny_transport_fixture::bundle(
+                                    key.public_key,
+                                    [9; 32],
+                                    10_000_000,
+                                )
                             } else {
                                 super::generic_sell_synthetic_fixture::bundle(
                                     key.public_key,

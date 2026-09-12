@@ -69,7 +69,7 @@ async fn initial_sol_limit_one_failed_buy_does_not_starve_sell_or_legacy_receipt
     );
     assert_eq!(
         trace.iter().filter(|m| m.starts_with("funding:")).count(),
-        3
+        4
     );
     assert!(!trace.iter().any(|m| m == "sendTransaction:buy"));
     assert_eq!(

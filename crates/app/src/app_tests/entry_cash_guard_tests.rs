@@ -70,3 +70,35 @@ async fn entry_cash_actual_partial_loss_blocks_hot_buy_and_retry_at_exact_cap() 
     }
     Ok(())
 }
+
+pub(super) fn historical_duplicate(f: &RuntimeFixture) -> Result<()> {
+    let mut conn = Connection::open(&f.db_path)?;
+    let id = "exec-canary:duplicate";
+    cash::settle(
+        &f.store,
+        &conn,
+        id,
+        "independent-partial-signature",
+        &f.config.canary_wallet_pubkey,
+        "PartialMint",
+        1,
+        -4,
+        as_of(f),
+    )?;
+    let tx = conn.transaction()?;
+    for table in [
+        "orders",
+        "execution_canary_receipt_proofs",
+        "execution_canary_receipt_facts",
+    ] {
+        assert_eq!(
+            tx.execute(
+                &format!("UPDATE {table} SET tx_signature='partial-signature' WHERE order_id=?1"),
+                [id]
+            )?,
+            1
+        );
+    }
+    tx.commit()?;
+    Ok(())
+}

@@ -32,8 +32,8 @@ impl RuntimeFixture {
         retry: bool,
     ) -> Result<Self> {
         let (store, db_path) = make_test_store(name)?;
-        // Recorded fixture timestamps precede the refresh's actual Utc::now().
-        let now = Utc::now() - chrono::Duration::seconds(10);
+        // Recorded timestamps also precede queue retry offsets and the decision clock.
+        let now = Utc::now() - chrono::Duration::seconds(30);
         let signal = tiny_route_signal(name, now);
         store.insert_copy_signal(&signal)?;
         let key = tiny_route_keypair(81);
@@ -41,6 +41,7 @@ impl RuntimeFixture {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("http://{}", listener.local_addr()?);
         let mut config = tiny_route_config(&key.pubkey, &key_path, &url, &url);
+        config.tiny_experiment = super::b126_config_fixture::activated(&config)?.tiny_experiment;
         config.quote_canary_enabled = !retry; // hot runner must reuse the persisted entry quote
         config.canary_buy_size_sol = fresh_input as f64 / 1e9;
         config.quote_canary_buy_size_sol = old_input as f64 / 1e9;
@@ -101,7 +102,7 @@ impl RuntimeFixture {
         let submitted_signature = Arc::new(Mutex::new(None));
         let server_signature = submitted_signature.clone();
         // B25: valid synthetic provider payload includes the mandatory BUY guard.
-        let tx = super::priority_fee_fixture::guarded_transaction(key.public_key, 200_000, 10_000);
+        let tx = super::tiny_transport_fixture::buy(key.public_key, [9; 32], fresh_input);
         let simulation_result = Arc::new(Mutex::new(None::<Value>));
         let server_simulation = simulation_result.clone();
         let server = tokio::spawn(async move {
@@ -148,6 +149,15 @@ impl RuntimeFixture {
             Err(error) => Err(error.into()),
             Ok(()) => Ok(()),
         }
+    }
+
+    pub fn expect_existing_signature(&self, signature: &str) {
+        assert!(self
+            .submitted_signature
+            .lock()
+            .unwrap()
+            .replace(signature.into())
+            .is_none());
     }
 
     pub fn submitted_signature(&self) -> Option<String> {
@@ -233,9 +243,12 @@ fn respond(
         if request.starts_with("POST /swap-instructions ") {
             return (
                 "build-instructions".into(),
-                json!({"computeBudgetInstructions":[],
-                "setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,
-                "otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":null}),
+                super::tiny_transport_fixture::bundle_with_price(
+                    bs58::decode(wallet).into_vec().unwrap().try_into().unwrap(),
+                    [9; 32],
+                    input,
+                    10_000,
+                ),
             );
         }
         return (
@@ -250,7 +263,7 @@ fn respond(
     {
         return (
             method.into(),
-            super::initial_sol_rpc_fixture::FundingRpc::default().reply(&body),
+            super::tiny_transport_fixture::funding().reply(&body),
         );
     }
     if matches!(method, "getSignatureStatuses" | "getTransaction") {

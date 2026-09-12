@@ -56,7 +56,7 @@ async fn scenario(retry: bool, case: &'static str) -> Result<()> {
                 _ => {}
             }
         }
-        let mut reply = Reply::json(FundingRpc::default().reply(r));
+        let mut reply = Reply::json(FundingRpc { fee: Some(100_000), ..Default::default() }.reply(r));
         if r["id"].as_str().is_some_and(|s| s.starts_with("native-funding-")) {
             reply.delay = std::time::Duration::from_millis(20);
         }
@@ -111,7 +111,11 @@ async fn scenario(retry: bool, case: &'static str) -> Result<()> {
                 .iter()
                 .filter(|r| r.request["method"] == method)
                 .count(),
-            1,
+            if case == "success" && method == "getFeeForMessage" {
+                2
+            } else {
+                1
+            },
             "{case}/{retry}"
         );
     }

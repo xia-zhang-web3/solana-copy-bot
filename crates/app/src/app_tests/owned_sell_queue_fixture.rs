@@ -35,7 +35,7 @@ impl Queue {
         }));
     }
     pub async fn new(old_count: usize, limit: u32) -> Result<Self> {
-        let mut f = Intake::new(0.1, 120, 600_000).await?;
+        let mut f = Intake::legacy(0.1, 120, 100_000).await?;
         f.f.config.canary_batch_limit = limit;
         let now = f.f.now;
         // The old pending SELL follows the original BUY; only its receipt arrives late.
@@ -67,12 +67,15 @@ impl Queue {
             a.push(f.drain().await?.expect("actual raw A intent"));
         }
         let token_b = bs58::encode([21u8; 32]).into_string();
-        f.f.store.record_execution_canary_open_position(
+        super::tiny_parent_fixture::seed(
+            &f.f.store,
+            &f.conn()?,
             "owned-B",
+            "leader",
             &token_b,
-            7.0,
-            Some(TokenQuantity::new(7000, 3)),
-            0.07,
+            &f.f.config.canary_wallet_pubkey,
+            TokenQuantity::new(7000, 3),
+            7_000_000,
             now - Duration::minutes(5),
         )?;
         f.f.swap.token_in = token_b.clone();
@@ -80,7 +83,7 @@ impl Queue {
         f.f.swap.ts_utc = now - Duration::seconds(60);
         f.dispatch(false, false).await?;
         let b = f.drain().await?.expect("actual raw B intent");
-        assert_eq!(f.counts()?, (0, 0, old_count as u64 + 2, 1));
+        assert_eq!(f.counts()?, (0, 0, old_count as u64 + 3, 2));
         f.f.reopen()?;
         Ok(Self {
             intake: f,

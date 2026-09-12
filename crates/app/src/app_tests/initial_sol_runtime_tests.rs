@@ -41,7 +41,7 @@ async fn hot(
 async fn initial_sol_hot_and_retry_reject_insufficient_none_timeout_and_partial() -> Result<()> {
     for retry in [false, true] {
         for case in ["insufficient", "fee", "timeout", "extension"] {
-            let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+            let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
             f.wire.lock().unwrap().extension = case == "extension";
             match case {
                 "insufficient" => f.funding.lock().unwrap().balance = 0,
@@ -95,7 +95,7 @@ async fn initial_sol_hot_and_retry_reject_insufficient_none_timeout_and_partial(
 #[tokio::test]
 async fn initial_sol_rpc_rejection_preserves_original_message_without_new_collection() -> Result<()>
 {
-    let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+    let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
     f.wire.lock().unwrap().submit_error = true;
     let envelope = f.build().await?.envelope.unwrap();
     let first = f.submit(&envelope).await?;
@@ -134,7 +134,7 @@ async fn initial_sol_rpc_rejection_preserves_original_message_without_new_collec
         })
         .map(|(_, r)| r)
         .collect();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     let fees: Vec<_> = requests
         .iter()
         .filter(|r| r["method"] == "getFeeForMessage")
@@ -143,8 +143,9 @@ async fn initial_sol_rpc_rejection_preserves_original_message_without_new_collec
         .iter()
         .filter(|(_, r)| r["method"] == "sendTransaction")
         .collect();
-    assert_eq!((fees.len(), sends.len()), (1, 1));
-    for (fee, send) in fees.iter().zip(&sends) {
+    assert_eq!((fees.len(), sends.len()), (2, 1));
+    for fee in &fees {
+        let send = sends[0];
         use base64::{engine::general_purpose::STANDARD, Engine};
         let wire = crate::execution_transaction_wire::decode_message(
             send.1["params"][0].as_str().unwrap(),

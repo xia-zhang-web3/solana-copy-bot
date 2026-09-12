@@ -41,10 +41,19 @@ pub async fn stage(
     session: &str,
     reset: bool,
 ) -> Result<()> {
+    stage_at(db, root(case), m, names, session, reset).await
+}
+pub async fn stage_at(
+    db: &f::Db,
+    path: PathBuf,
+    m: &Value,
+    names: Vec<String>,
+    session: &str,
+    reset: bool,
+) -> Result<()> {
     let c = f::config(m);
     let before = s::snapshot(db)?;
     let (mut consumer, tx) = f::start(db, &c, session).await?;
-    let path = root(case);
     let producer = tokio::spawn(async move {
         let mut at = 1;
         if reset {

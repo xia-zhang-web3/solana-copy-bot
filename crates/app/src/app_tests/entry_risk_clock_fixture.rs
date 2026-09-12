@@ -22,24 +22,27 @@ pub(crate) fn sample() -> Option<(DateTime<Utc>, Option<DateTime<Utc>>)> {
         .ok()
 }
 
-pub(super) async fn at<F: Future>(time: DateTime<Utc>, future: F) -> F::Output {
-    sequence([time], future).await
+pub(super) fn at<F: Future>(time: DateTime<Utc>, future: F) -> impl Future<Output = F::Output> {
+    sequence([time], future)
 }
-pub(super) async fn sequence<F: Future>(
+pub(super) fn sequence<F: Future>(
     times: impl IntoIterator<Item = DateTime<Utc>>,
     future: F,
-) -> F::Output {
+) -> impl Future<Output = F::Output> {
     let times: VecDeque<_> = times.into_iter().collect();
     assert!(!times.is_empty());
-    CLOCK
-        .scope(RefCell::new(Script { times, last: None }), future)
-        .await
+    // Box before constructing the task-local future: async fn would retain F
+    // in its initial state and duplicate these large caller futures at each layer.
+    CLOCK.scope(RefCell::new(Script { times, last: None }), Box::pin(future))
 }
 
-pub(super) async fn or_at<F: Future>(time: DateTime<Utc>, future: F) -> F::Output {
-    if CLOCK.try_with(|_| ()).is_ok() {
-        future.await
-    } else {
-        at(time, future).await
+pub(super) fn or_at<F: Future>(time: DateTime<Utc>, future: F) -> impl Future<Output = F::Output> {
+    let future = Box::pin(future);
+    async move {
+        if CLOCK.try_with(|_| ()).is_ok() {
+            future.await
+        } else {
+            at(time, future).await
+        }
     }
 }

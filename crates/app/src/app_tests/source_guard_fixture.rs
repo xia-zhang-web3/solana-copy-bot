@@ -16,9 +16,44 @@ pub(super) struct Fixture {
 }
 impl Fixture {
     pub async fn new() -> Result<Self> {
-        let f = Source::new(4000)?;
+        Self::with_parent(true).await
+    }
+    pub async fn legacy_parent() -> Result<Self> {
+        Self::with_parent(false).await
+    }
+    async fn with_parent(pinned: bool) -> Result<Self> {
         let signing = SigningKey::from_bytes(&[29; 32]);
         let payer = signing.verifying_key().to_bytes();
+        let mut f = if pinned {
+            Source::new_with_parent(|store, path, now| {
+                super::tiny_parent_fixture::seed(
+                    store,
+                    &rusqlite::Connection::open(path)?,
+                    "buy-a",
+                    "source-a",
+                    "mint",
+                    &bs58::encode(payer).into_string(),
+                    copybot_core_types::TokenQuantity::new(4000, 3),
+                    1000,
+                    now,
+                )
+                .map(|_| ())
+            })?
+        } else {
+            Source::new_with_parent(|store, _, now| {
+                old::proven_buy(
+                    store,
+                    "buy-a",
+                    "source-a",
+                    now,
+                    copybot_core_types::TokenQuantity::new(4000, 3),
+                )
+                .map(|_| ())
+            })?
+        };
+        if !pinned {
+            f.replacement_wallet = Some(bs58::encode(payer).into_string());
+        }
         let key = f.path.with_extension("synthetic-signing.json");
         std::fs::write(
             &key,
@@ -36,6 +71,8 @@ impl Fixture {
         config.max_submit_attempts = 3;
         config.pretrade_max_priority_fee_lamports = 500_000;
         config.max_confirm_seconds = 1;
+        config.quote_canary_sell_slippage_bps = 500;
+        config.tiny_experiment = super::b126_config_fixture::activated(&config)?.tiny_experiment;
         Ok(Self {
             f,
             rpc,

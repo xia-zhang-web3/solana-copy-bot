@@ -13,12 +13,24 @@ async fn rpc_simulation_malformed_buy_does_not_stop_sell_or_submitted_reconcilia
     let pending = add_pending(&f, false)?;
     let original = buy_order(&f)?;
     let mut rpc = QueueRpc::with_simulation(&mut f, false, true, false).await?;
-    let summary = f.sweep().await;
+    let first = f.sweep().await?;
+    assert_eq!(first.existing, 2, "{first:?}");
+    assert_eq!(first.entry_gate_blocked, 0);
+    assert_eq!(first.safety_blocked, 1);
+    assert_eq!(first.skipped_reason, Some("unresolved_buy_dispatch"));
+    assert_eq!(buy_order(&f)?, original);
+    // Receipt-only work clears the existing BUY hold before this BUY may simulate.
+    let second = f.sweep().await?;
     rpc.finish().await?;
-    let s = summary?;
-    assert_eq!(s.existing, 3, "{s:?}");
-    assert_eq!(s.entry_gate_blocked, 0, "BUY actually reached simulation");
-    assert_eq!(s.signing_envelope_built, 1);
+    assert_eq!(second.existing, 1, "{second:?}");
+    assert_eq!(
+        second.entry_gate_blocked, 0,
+        "BUY actually reached simulation"
+    );
+    assert_eq!(
+        first.signing_envelope_built + second.signing_envelope_built,
+        1
+    );
     let trace = rpc.trace();
     assert!(trace.iter().any(|s| s == "simulateTransaction:buy"));
     assert!(trace.iter().any(|s| s == "simulateTransaction:sell"));

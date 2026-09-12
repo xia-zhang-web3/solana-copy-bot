@@ -53,7 +53,7 @@ async fn submit_refusal_actual_tick_preserves_a_after_successful_sell_b_and_clea
             .iter()
             .filter(|s| s.starts_with("funding:"))
             .count(),
-        3
+        4
     );
 
     // A remains retryable by design. Pause new entry only after proving the first
@@ -97,7 +97,7 @@ async fn submit_refusal_actual_tick_preserves_a_after_successful_sell_b_and_clea
             .iter()
             .filter(|s| s.starts_with("funding:"))
             .count(),
-        3
+        4
     );
     assert_eq!(
         rpc.trace()

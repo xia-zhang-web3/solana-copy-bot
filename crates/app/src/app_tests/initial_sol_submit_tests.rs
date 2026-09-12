@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 async fn initial_sol_ordinary_actual_submit_exact_balance_and_minus_one() -> Result<()> {
     let required = 50_000_001 + 19_000 + 10_000_000 + 2 * 2_039_280;
     for balance in [0, required - 1, required] {
-        let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+        let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
         let envelope = f.build().await?.envelope.unwrap();
         let rpc = Arc::new(Mutex::new(FundingRpc {
             balance,
@@ -54,8 +54,15 @@ async fn initial_sol_ordinary_actual_submit_exact_balance_and_minus_one() -> Res
                 .count(),
             usize::from(balance == required)
         );
-        assert_eq!(trace.len(), if balance == required { 4 } else { 3 });
+        assert_eq!(trace.len(), if balance == required { 5 } else { 3 });
         assert!(trace.iter().all(|r| r.completed.is_some()));
+        assert_eq!(
+            trace
+                .iter()
+                .filter(|r| r.request["method"] == "getFeeForMessage")
+                .count(),
+            if balance == required { 2 } else { 1 }
+        );
         if balance == required {
             assert_eq!(out.submitted, 1, "{out:?}");
             let sent = trace
@@ -91,7 +98,7 @@ async fn initial_sol_ordinary_actual_submit_exact_balance_and_minus_one() -> Res
 #[tokio::test]
 async fn initial_sol_extension_token2022_and_missing_fee_do_not_send() -> Result<()> {
     for case in ["extension", "token2022", "fee"] {
-        let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+        let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
         f.wire.lock().unwrap().extension = case == "extension";
         f.wire.lock().unwrap().token2022 = case == "token2022";
         if case == "fee" {

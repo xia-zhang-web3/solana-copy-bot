@@ -75,6 +75,7 @@ async fn handle(mut stream: TcpStream, shared: Shared, policy: ServerPolicy) -> 
         .context("receipt fixture missing method")?;
     shared.calls.lock().unwrap().push(method.into());
     let (code, body, delay) = match method {
+        "getFeeForMessage" => (200, json!({"jsonrpc":"2.0","id":request["id"],"result":{"context":{"slot":42},"value":19000}}).to_string(), 0),
         "getSignatureStatuses" => (200, shared.status.lock().unwrap().to_string(), 0),
         "getTokenAccountsByOwner" => {
             let value = if request["params"][1]["programId"]

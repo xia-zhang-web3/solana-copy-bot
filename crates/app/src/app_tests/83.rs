@@ -120,17 +120,24 @@ async fn serve_tiny_tick_confirmation_and_wallet(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
-        for _ in 0..3 {
+        for step in 0..2 {
             let (mut socket, _) = listener.accept().await?;
             let mut buffer = [0_u8; 4096];
             let read = socket.read(&mut buffer).await?;
             let request = String::from_utf8_lossy(&buffer[..read]);
+            assert!(request.contains(if step == 0 {
+                "getSignatureStatuses"
+            } else {
+                "getTransaction"
+            }));
+            assert!(request.contains(tx_signature));
             let body = if request.contains("getSignatureStatuses") {
                 format!(
                     r#"{{"jsonrpc":"2.0","id":"execution-confirmation","result":{{"value":[{{"slot":44,"confirmations":null,"err":null,"confirmationStatus":"finalized"}}]}}}}"#
                 )
             } else if request.contains("getTransaction") {
-                r#"{"jsonrpc":"2.0","id":"execution-confirmed-fill","result":null}"#.to_string()
+                let row = |raw: &str| serde_json::json!({"accountIndex":1,"owner":"ExecutorPubkey","mint":token,"uiTokenAmount":{"amount":raw,"decimals":3}});
+                serde_json::json!({"result":{"slot":44,"transaction":{"signatures":[tx_signature],"message":{"accountKeys":[{"pubkey":"ExecutorPubkey","signer":true,"writable":true},{"pubkey":"token-account","signer":false,"writable":true}]}},"meta":{"err":null,"fee":5000,"preBalances":[20000000,2039280],"postBalances":[10000000,2039280],"preTokenBalances":[row("0")],"postTokenBalances":[row("10000")]}}}).to_string()
             } else {
                 assert!(request.contains("getTokenAccountsByOwner"));
                 format!(

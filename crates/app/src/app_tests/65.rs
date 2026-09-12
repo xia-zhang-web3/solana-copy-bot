@@ -1,4 +1,3 @@
-use super::receipt_legacy_fixture::answer_receipt;
 use super::*;
 use ed25519_dalek::SigningKey;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -31,18 +30,19 @@ async fn tiny_submit_sweep_retries_submitted_unknown_without_signature_after_tim
         .expect("order should exist");
 
     assert_eq!(summary.existing, 1);
-    assert_eq!(summary.submit_timeout_retry, 1);
+    assert_eq!(summary.submit_timeout_retry, 0);
+    assert_eq!(summary.submit_timeout_wait, 1);
     assert_eq!(summary.submit_timeout_expire_unsafe, 0);
-    assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.simulated, 0);
     assert_eq!(
         summary.last_confirm_decision.as_deref(),
-        Some(copybot_storage_core::EXECUTION_CANARY_CONFIRM_DECISION_RETRY)
+        Some(copybot_storage_core::EXECUTION_CANARY_CONFIRM_DECISION_WAIT)
     );
     assert_eq!(
         order.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED
+        copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
     );
-    assert_eq!(order.attempt, 2);
+    assert_eq!(order.attempt, 1);
     assert!(order.tx_signature.is_none());
 
     let _ = std::fs::remove_file(db_path);
@@ -64,64 +64,65 @@ async fn tiny_submit_sweep_replays_retry_ready_simulated_order() -> Result<()> {
     store.insert_copy_signal(&signal)?;
     let order_id = mark_tiny_timeout_submitted_unknown(&store, &signal, now)?;
     record_tiny_timeout_build_metadata(&store, &order_id, &signal, now)?;
-    let mut config = tiny_timeout_config("http://127.0.0.1:1");
-    config.max_submit_attempts = 2;
-
-    crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
-        &config,
-        &store,
-        now + chrono::Duration::seconds(6),
-    )
-    .await?
-    .expect("first sweep should mark retry-ready simulated order");
-    let retry_ready = store
-        .load_execution_canary_order(&order_id)?
-        .expect("retry-ready order should exist");
-    assert_eq!(retry_ready.attempt, 2);
-    assert_eq!(
-        retry_ready.simulation_error.as_deref(),
-        Some("retry_after_unknown_submit_timeout")
-    );
-
-    let (base_url, server) =
-        serve_tiny_retry_build_submit_and_confirm(&keypair.public_key, "tx-retry-replay").await?;
-    config.quote_canary_base_url = base_url.clone();
-    config.submit_adapter_http_url = base_url;
+    // Historical unsafe retry row: the current setter refuses to manufacture it.
+    let err = store
+        .mark_execution_canary_retry_after_submit_timeout(
+            &order_id,
+            now + chrono::Duration::seconds(6),
+            chrono::Duration::seconds(2),
+            "historical",
+        )
+        .expect_err("Unknown is not safe to retry");
+    assert!(err
+        .to_string()
+        .contains("legacy_unsigned_submit_outcome_unknown"));
+    rusqlite::Connection::open(&db_path)?.execute(
+        "UPDATE orders SET status='execution_canary_simulated', attempt=2, simulation_error='retry_after_unknown_submit_timeout' WHERE order_id=?1", [&order_id])?;
+    let rpc =
+        super::native_rpc_fixture::Fixture::start(false, |_| panic!("Unknown must not send HTTP"))
+            .await?;
+    let mut config = tiny_timeout_config(&rpc.endpoint);
+    config.quote_canary_base_url = rpc.endpoint.clone();
     config.canary_wallet_pubkey = keypair.pubkey.clone();
     config.execution_signer_pubkey = keypair.pubkey.clone();
-    config.execution_signer_keypair_path = keypair_path.to_string_lossy().to_string();
-    config.swap_instructions_dry_run_enabled = true;
-    config.swap_transaction_dry_run_enabled = true;
-
-    let summary = super::entry_risk_clock_fixture::at(
-        now + chrono::Duration::seconds(8),
-        crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
-            &config,
-            &store,
-            now + chrono::Duration::seconds(7),
-        ),
-    )
-    .await?
-    .expect("second sweep should replay retry-ready order");
-    server.await?;
-    let confirmed = store
-        .load_execution_canary_order(&order_id)?
-        .expect("confirmed order should exist");
+    config.execution_signer_keypair_path = keypair_path.to_string_lossy().into();
+    config.tiny_experiment = super::b126_config_fixture::activated(&config)?.tiny_experiment;
     let metadata = store
         .load_execution_canary_build_plan_metadata(&order_id)?
-        .expect("retry should refresh build metadata");
-
-    assert_eq!(summary.existing, 1);
-    assert_eq!(summary.simulated, 1);
-    assert_eq!(summary.signing_envelope_built, 1);
-    assert_eq!(
-        confirmed.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED
-    );
-    assert_eq!(confirmed.attempt, 2);
-    assert_eq!(confirmed.tx_signature.as_deref(), Some("tx-retry-replay"));
-    assert_eq!(metadata.quote_out_amount_raw.as_deref(), Some("20000"));
-    assert_eq!(store.execution_canary_open_position_count()?, 1);
+        .unwrap();
+    for step in 0..3 {
+        let reopened = SqliteStore::open(&db_path)?;
+        let summary = super::entry_risk_clock_fixture::at(
+            now + chrono::Duration::seconds(8 + step),
+            crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
+                &config,
+                &reopened,
+                now + chrono::Duration::seconds(7 + step),
+            ),
+        )
+        .await?
+        .unwrap();
+        let held = reopened.load_execution_canary_order(&order_id)?.unwrap();
+        assert_eq!(summary.existing, 1);
+        assert_eq!(summary.simulated, 0);
+        assert_eq!(summary.signing_envelope_built, 0);
+        assert_eq!(summary.submit_timeout_retry, 0);
+        assert_eq!(summary.expired, 0);
+        assert_eq!(
+            held.status,
+            copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
+        );
+        assert_eq!(held.attempt, 2);
+        assert!(held.tx_signature.is_none());
+        assert_eq!(
+            reopened
+                .load_execution_canary_build_plan_metadata(&order_id)?
+                .unwrap(),
+            metadata
+        );
+        assert_eq!(reopened.execution_canary_open_position_count()?, 0);
+    }
+    assert!(rpc.finish().await?.is_empty());
 
     let _ = std::fs::remove_file(db_path);
     let _ = std::fs::remove_file(keypair_path);
@@ -148,8 +149,7 @@ async fn tiny_submit_sweep_replays_rpc_not_sent_retry_ready_order() -> Result<()
         now + chrono::Duration::seconds(3),
         "retry_after_rpc_submit_not_sent:rpc_send_transaction_error",
     )?;
-    let (base_url, server) =
-        serve_tiny_retry_build_submit_and_confirm(&keypair.public_key, "tx-rpc-retry").await?;
+    let (base_url, server) = serve_tiny_retry_build_submit_and_confirm(&keypair.public_key).await?;
     let mut config = tiny_timeout_config(&base_url);
     config.max_submit_attempts = 2;
     config.quote_canary_base_url = base_url.clone();
@@ -159,6 +159,7 @@ async fn tiny_submit_sweep_replays_rpc_not_sent_retry_ready_order() -> Result<()
     config.execution_signer_keypair_path = keypair_path.to_string_lossy().to_string();
     config.swap_instructions_dry_run_enabled = true;
     config.swap_transaction_dry_run_enabled = true;
+    config.tiny_experiment = super::b126_config_fixture::activated(&config)?.tiny_experiment;
 
     let summary = super::entry_risk_clock_fixture::at(
         now + chrono::Duration::seconds(5),
@@ -186,7 +187,7 @@ async fn tiny_submit_sweep_replays_rpc_not_sent_retry_ready_order() -> Result<()
         copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED
     );
     assert_eq!(confirmed.attempt, 2);
-    assert_eq!(confirmed.tx_signature.as_deref(), Some("tx-rpc-retry"));
+    super::tiny_buy_route_fixture::assert_dispatch(&store, &confirmed)?;
     assert_eq!(metadata.quote_out_amount_raw.as_deref(), Some("20000"));
 
     let _ = std::fs::remove_file(db_path);
@@ -223,14 +224,11 @@ async fn tiny_submit_sweep_expires_unknown_without_signature_when_retry_budget_i
 
     assert_eq!(summary.existing, 1);
     assert_eq!(summary.submit_timeout_retry, 0);
-    assert_eq!(summary.expired, 1);
-    assert_eq!(
-        summary.skipped_reason,
-        Some("submit_retry_budget_exhausted")
-    );
+    assert_eq!(summary.expired, 0);
+    assert_eq!(summary.skipped_reason, Some("unresolved_buy_dispatch"));
     assert_eq!(
         order.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_EXPIRED
+        copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
     );
     assert_eq!(order.attempt, 1);
     assert!(order.tx_signature.is_none());
@@ -238,7 +236,7 @@ async fn tiny_submit_sweep_expires_unknown_without_signature_when_retry_budget_i
         .simulation_error
         .as_deref()
         .unwrap_or_default()
-        .starts_with("submit_retry_budget_exhausted_after:submitted_without_signature"));
+        .eq("submitted_without_signature"));
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -274,15 +272,15 @@ async fn tiny_submit_sweep_expires_signed_pending_after_timeout_without_retry() 
 
     assert_eq!(summary.existing, 1);
     assert_eq!(summary.submit_timeout_retry, 0);
-    assert_eq!(summary.submit_timeout_expire_unsafe, 1);
-    assert_eq!(summary.expired, 1);
+    assert_eq!(summary.submit_timeout_expire_unsafe, 0);
+    assert_eq!(summary.expired, 0);
     assert_eq!(
         summary.last_confirm_decision.as_deref(),
-        Some(copybot_storage_core::EXECUTION_CANARY_CONFIRM_DECISION_EXPIRE_UNSAFE)
+        Some(copybot_storage_core::EXECUTION_CANARY_CONFIRM_DECISION_WAIT)
     );
     assert_eq!(
         order.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_EXPIRED
+        copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
     );
     assert_eq!(order.tx_signature.as_deref(), Some("tx-signed-pending"));
     assert_eq!(store.execution_canary_open_position_count()?, 0);
@@ -409,109 +407,8 @@ async fn serve_tiny_timeout_pending_confirmation(
 
 async fn serve_tiny_retry_build_submit_and_confirm(
     first_signer: &[u8; 32],
-    tx_signature: &str,
 ) -> Result<(String, tokio::task::JoinHandle<()>)> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let base_url = format!("http://{}", listener.local_addr()?);
-    let tx = tx_signature.to_string();
-    let serialized_transaction = serialized_tiny_timeout_transaction(*first_signer);
-    let wallet = bs58::encode(first_signer).into_string();
-    let server = tokio::spawn(async move {
-        let quote = read_tiny_timeout_http_request(&listener).await;
-        assert!(quote.body.starts_with("GET /quote?"));
-        assert!(quote
-            .body
-            .contains("inputMint=So11111111111111111111111111111111111111112"));
-        assert!(quote.body.contains("outputMint=TokenMint"));
-        assert!(quote.body.contains("amount=10000000"));
-        write_tiny_timeout_http_response(
-            quote.socket,
-            r#"{"inAmount":"10000000","outAmount":"20000","priceImpactPct":"0","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
-        )
-        .await;
-
-        let swap_instructions = read_tiny_timeout_http_request(&listener).await;
-        assert!(swap_instructions
-            .body
-            .starts_with("POST /swap-instructions "));
-        write_tiny_timeout_http_response(
-            swap_instructions.socket,
-            r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":null}"#,
-        )
-        .await;
-
-        let swap = read_tiny_timeout_http_request(&listener).await;
-        assert!(swap.body.starts_with("POST /swap "));
-        write_tiny_timeout_http_response(
-            swap.socket,
-            &format!(r#"{{"swapTransaction":"{serialized_transaction}","simulationError":null}}"#),
-        )
-        .await;
-
-        let rpc_simulation = read_tiny_timeout_http_request(&listener).await;
-        assert!(rpc_simulation
-            .body
-            .contains("\"method\":\"simulateTransaction\""));
-        write_tiny_timeout_http_response(
-            rpc_simulation.socket,
-            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"context":{"slot":42},"value":{"err":null,"logs":[]}}}"#,
-        )
-        .await;
-
-        super::initial_sol_rpc_fixture::serve_three(&listener)
-            .await
-            .expect("BUY funding RPC");
-        let submit = read_tiny_timeout_http_request(&listener).await;
-        assert!(submit.body.contains("\"method\":\"sendTransaction\""));
-        write_tiny_timeout_http_response(
-            submit.socket,
-            &format!(r#"{{"jsonrpc":"2.0","id":"execution-submit","result":"{tx}"}}"#),
-        )
-        .await;
-
-        let confirmation = read_tiny_timeout_http_request(&listener).await;
-        assert!(confirmation
-            .body
-            .contains("\"method\":\"getSignatureStatuses\""));
-        assert!(confirmation.body.contains(&tx));
-        write_tiny_timeout_http_response(
-            confirmation.socket,
-            r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":44,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}"#,
-        )
-        .await;
-        answer_receipt(&listener, &wallet, &tx, "buy", 44, -10_000_000).await;
-    });
-    Ok((base_url, server))
-}
-
-struct TinyTimeoutHttpRequest {
-    socket: tokio::net::TcpStream,
-    body: String,
-}
-
-async fn read_tiny_timeout_http_request(
-    listener: &tokio::net::TcpListener,
-) -> TinyTimeoutHttpRequest {
-    let (mut socket, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
-            .await
-            .expect("tiny timeout HTTP request deadline")
-            .expect("tiny timeout HTTP request");
-    let mut buffer = [0_u8; 16384];
-    let read = socket.read(&mut buffer).await.expect("read request");
-    TinyTimeoutHttpRequest {
-        socket,
-        body: String::from_utf8_lossy(&buffer[..read]).to_string(),
-    }
-}
-
-async fn write_tiny_timeout_http_response(mut socket: tokio::net::TcpStream, body: &str) {
-    let response = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
-        body.len(),
-        body
-    );
-    let _ = socket.write_all(response.as_bytes()).await;
+    super::tiny_buy_route_fixture::serve(*first_signer, 20000).await
 }
 
 struct TinyTimeoutKeypair {
@@ -538,10 +435,6 @@ fn write_tiny_timeout_keypair_file(name: &str, bytes: &[u8]) -> Result<PathBuf> 
     let path = unique_tiny_timeout_route_test_path(name).with_extension("json");
     std::fs::write(&path, serde_json::to_string(bytes)?)?;
     Ok(path)
-}
-
-fn serialized_tiny_timeout_transaction(first_account_key: [u8; 32]) -> String {
-    crate::app_tests::priority_fee_fixture::guarded_transaction(first_account_key, 200_000, 10_000)
 }
 
 fn tiny_timeout_config(rpc_url: &str) -> ExecutionConfig {

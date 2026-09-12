@@ -126,14 +126,18 @@ async fn source_terminal_correct_promoted_and_legacy_write_off_once() -> Result<
             .context("terminal result")?;
             assert_written_off(&f, &summary, &order.order_id, false, simulation)?;
             assert_eq!(snapshot(&f.conn()?, &["orders", "positions"])?, untouched);
-            let after = snapshot(&f.conn()?, &[])?;
+            let after = snapshot(&f.conn()?, &["execution_canary_reconcile_attempts"])?;
             let replay = if simulation {
                 process_failed_sell_simulation_sweep(&c, &f.store, f.now).await?
             } else {
                 process_tiny_submit_sell_quote_event_for_route(&c, &f.store, EVENT, f.now).await?
             };
             assert_eq!(replay.map_or(0, |s| s.sell_closed), 0);
-            assert_eq!(snapshot(&f.conn()?, &[])?, after);
+            assert_eq!(
+                snapshot(&f.conn()?, &["execution_canary_reconcile_attempts"])?,
+                after
+            );
+            assert_visit(&f, &order.order_id, !promoted && !simulation)?;
         }
     }
     Ok(())
@@ -162,12 +166,16 @@ async fn source_dust_correct_promoted_and_legacy_write_off_once() -> Result<()> 
         assert_eq!(order.attempt, 1);
         assert_written_off(&f, &summary, &order.order_id, true, false)?;
         assert_eq!(snapshot(&f.conn()?, &["orders", "positions"])?, untouched);
-        let after = snapshot(&f.conn()?, &[])?;
+        let after = snapshot(&f.conn()?, &["execution_canary_reconcile_attempts"])?;
         let reopened = copybot_storage_core::SqliteStore::open(&f.path)?;
         let replay =
             process_tiny_submit_sell_quote_event_for_route(&c, &reopened, EVENT, f.now).await?;
         assert_eq!(replay.map_or(0, |s| s.sell_closed), 0);
-        assert_eq!(snapshot(&f.conn()?, &[])?, after);
+        assert_eq!(
+            snapshot(&f.conn()?, &["execution_canary_reconcile_attempts"])?,
+            after
+        );
+        assert_visit(&f, &order.order_id, !promoted)?;
     }
     Ok(())
 }
@@ -300,4 +308,25 @@ fn snapshot(
     let mut exclude = exclude.to_vec();
     exclude.push("execution_failed_sell_sweep_cursors");
     super::source_write_off_fixture::snapshot(conn, &exclude)
+}
+
+// A promoted replay stops at the now-closed generation guard. A legacy replay
+// reaches reconciliation and records its visit without changing money rows.
+fn assert_visit(f: &Fixture, id: &str, expected: bool) -> Result<()> {
+    let conn = f.conn()?;
+    let count: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM execution_canary_reconcile_attempts",
+        [],
+        |r| r.get(0),
+    )?;
+    assert_eq!(count, u64::from(expected));
+    if expected {
+        let visit: (String, String) = conn.query_row(
+            "SELECT order_id,last_attempt_at FROM execution_canary_reconcile_attempts",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        assert_eq!(visit, (id.into(), f.now.to_rfc3339()));
+    }
+    Ok(())
 }

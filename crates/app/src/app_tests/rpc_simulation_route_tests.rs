@@ -73,7 +73,7 @@ async fn rpc_simulation_all_three_callers_reject_malformed_final_payload() -> Re
 
 async fn fallback(final_valid: bool) -> Result<()> {
     use base64::{engine::general_purpose::STANDARD, Engine};
-    let mut f = Fixture::new(Route::Direct, 120_000, 1_000_000).await?;
+    let mut f = Fixture::new(Route::Direct, 10_000, 1_000_000).await?;
     // Explicit guarded synthetic fallback preserves this simulation/signature control under B25.
     f.wire.lock().unwrap().guard = Some(50_000_001);
     // Direct PumpSwap and existing generic Metis fallback produce different valid bytes.

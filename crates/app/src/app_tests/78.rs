@@ -141,7 +141,7 @@ fn sell_token_in_flight_config() -> ExecutionConfig {
 
 fn sell_signal(label: &str, token: &str, ts: chrono::DateTime<Utc>) -> CopySignalRow {
     CopySignalRow {
-        signal_id: format!("shadow:sig-sell-token-in-flight-{label}:leader:{token}"),
+        signal_id: format!("shadow:sig-sell-token-in-flight-{label}:leader:sell:{token}"),
         wallet_id: "leader".to_string(),
         side: "sell".to_string(),
         token: token.to_string(),

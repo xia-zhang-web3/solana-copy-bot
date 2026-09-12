@@ -97,8 +97,12 @@ async fn source_sell_producer_moved_duplicate_and_malformed_binding_leave_b_runn
     for fault in ["moved", "duplicate", "time"] {
         let mut f = Fixture::new().await?;
         f.config.canary_tiny_submit_enabled = false;
+        let result = async {
         let a = f.stage("binding-a").await?;
         assert_eq!(f.tick().await?.source_sell_production.inserted, 1);
+        // Both rows must be durably staged before deliberately corrupting the
+        // binding schema; this tests producer isolation, not staging into broken SQL.
+        let b = f.stage("binding-b").await?;
         // Explicit later corruption after real runtime promotion, not manual signal setup.
         match fault {
             "moved" => {
@@ -118,11 +122,14 @@ async fn source_sell_producer_moved_duplicate_and_malformed_binding_leave_b_runn
                 )?;
             }
         }
-        let b = f.stage("binding-b").await?;
         let position = f.f.store.load_execution_canary_open_position("mint")?;
         let before = f.f.money()?;
         let out = produce(&f.f.store)?;
-        f.finish().await?;
+        Ok::<_, anyhow::Error>((a, b, position, before, out))
+        }.await;
+        let finished = f.finish().await;
+        let (a, b, position, before, out) = result?;
+        finished?;
         assert_eq!(out.inserted, 1, "{fault}: {out:?}");
         assert_eq!(out.rejected + out.malformed, 1, "{fault}: {out:?}");
         assert_eq!(out.refusals.order_id(), a.intent_id);

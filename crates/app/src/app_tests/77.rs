@@ -41,7 +41,6 @@ async fn first_attempt_sell_quote_error_records_failed_order() -> Result<()> {
     )
     .await?
     .expect("fresh sell quote event should be processed");
-    server.await??;
     let order = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
         .expect("fresh sell quote failure should be persisted as an order");
@@ -67,6 +66,7 @@ async fn first_attempt_sell_quote_error_records_failed_order() -> Result<()> {
         .unwrap_or_default()
         .contains("NO_ROUTES_FOUND"));
 
+    server.await??;
     let _ = std::fs::remove_file(db_path);
     Ok(())
 }
@@ -138,7 +138,7 @@ fn first_attempt_sell_config(base_url: &str) -> ExecutionConfig {
 
 fn first_attempt_sell_signal(token: &str, ts: chrono::DateTime<Utc>) -> CopySignalRow {
     CopySignalRow {
-        signal_id: format!("shadow:sig-first-attempt-sell:leader:{token}"),
+        signal_id: format!("shadow:sig-first-attempt-sell:leader:sell:{token}"),
         wallet_id: "leader".to_string(),
         side: "sell".to_string(),
         token: token.to_string(),

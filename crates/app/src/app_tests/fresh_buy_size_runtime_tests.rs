@@ -63,7 +63,6 @@ async fn assert_runtime(retry: bool, execute: bool) -> Result<()> {
                 &[
                     "quote",
                     "build-instructions",
-                    "build-transaction",
                     "simulateTransaction",
                     "sendTransaction",
                     "getSignatureStatuses",
@@ -86,6 +85,13 @@ async fn assert_runtime(retry: bool, execute: bool) -> Result<()> {
             close(m.quote_price_sol.unwrap(), 0.0001, 1e-18);
             close(m.slippage_bps.unwrap(), 0.0, 1e-9);
             assert_eq!(m.priority_fee_lamports, Some(22_000));
+            let proof: serde_json::Value =
+                serde_json::from_str(m.priority_fee_json.as_deref().unwrap())?;
+            assert_eq!(
+                proof["fee_proof"]["total_priority_fee_lamports"],
+                2_000,
+                "the linked 7,000-lamport receipt includes 5,000 base plus 2,000 priority"
+            );
             assert_eq!(
                 m.quote_event_id.as_deref(),
                 Some(format!("quote:entry:{}", f.signal.signal_id).as_str())

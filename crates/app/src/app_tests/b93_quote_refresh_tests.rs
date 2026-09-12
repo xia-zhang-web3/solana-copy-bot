@@ -28,9 +28,9 @@ async fn b93_preparation_partial_receipt_and_replay_same_generation() -> Result<
         .apply_execution_canary_sell_settlement(&facts, f::at())?;
     assert!(repeat.already_accounted);
     assert_eq!(s::snapshot(&db)?, frozen);
-    p::stage(
+    p::stage_at(
         &db,
-        "direct",
+        super::b93_local_fixture::inputs(),
         &m,
         p::frames(&m),
         "repeat-after-partial",

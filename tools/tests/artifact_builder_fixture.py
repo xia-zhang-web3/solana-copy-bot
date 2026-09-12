@@ -64,7 +64,7 @@ class BuilderFixture:
             (self.repo / 'migrations').mkdir()
             (self.repo / 'migrations/0001_fixture.sql').write_text('SELECT 1;\n')
         # A closed utility PATH: neither cargo nor rustc can fall through to a real compiler.
-        for name in ['bash', 'git', 'python3', 'xargs', 'tr', 'sed', 'sort', 'rmdir', 'mkdir',
+        for name in ['bash', 'git', 'python3', 'echo', 'xargs', 'tr', 'sed', 'sort', 'rmdir', 'mkdir',
                      'cp', 'tar', 'shasum', 'sha256sum', 'basename', 'dirname', 'rm', 'cat']:
             executable = sys.executable if name == 'python3' else shutil.which(name)
             if executable:

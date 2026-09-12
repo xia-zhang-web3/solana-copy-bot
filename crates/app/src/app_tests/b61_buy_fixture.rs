@@ -32,7 +32,44 @@ pub(super) fn proven_buy(
         .order_id;
     store.mark_execution_canary_built(&id, now)?;
     store.mark_execution_canary_simulated(&id, now, EXECUTION_SIMULATION_STATUS_PASSED, None)?;
-    store.mark_execution_canary_submitted(&id, now, &signature.clone())?;
+    if store.load_tiny_experiment(now)?.is_none() {
+        let order = store.load_execution_canary_order(&id)?.unwrap();
+        let signal = store
+            .load_copy_signal_by_signal_id(&order.signal_id)?
+            .unwrap();
+        let d = ExecutionCanaryDispatch {
+            order_id: id.clone(),
+            signal_id: order.signal_id.clone(),
+            client_order_id: order.client_order_id.clone(),
+            route: order.route.clone(),
+            attempt: order.attempt,
+            wallet: execution_wallet.into(),
+            token: token.into(),
+            side: "buy".into(),
+            tx_signature: signature.clone(),
+            transaction_sha256: "a".repeat(64),
+            message_sha256: "b".repeat(64),
+        };
+        store.activate_tiny_experiment("local-variant-a", execution_wallet, now)?;
+        let p = TinyBudgetClaim {
+            experiment_id: "local-variant-a".into(),
+            wallet: execution_wallet.into(),
+            tx_signature: signature.clone(),
+            transaction_sha256: d.transaction_sha256.clone(),
+            message_sha256: d.message_sha256.clone(),
+            buy_lamports: Some(950),
+            protected_capital: None,
+            total_fee: 50,
+            priority_fee: 0,
+            fee_slot: 42,
+        };
+        assert_eq!(
+            store.claim_tiny_experiment_dispatch(&order, &signal, &d, &p, now)?,
+            ExecutionDispatchClaim::New
+        );
+    } else {
+        store.mark_execution_canary_submitted(&id, now, &signature)?;
+    }
     store.mark_execution_canary_confirmed_unreconciled(
         &id,
         &ExecutionCanaryReceiptProof {

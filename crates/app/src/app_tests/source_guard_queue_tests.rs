@@ -3,7 +3,7 @@ use anyhow::Result;
 use copybot_storage_core::*;
 
 async fn queue(candidate: bool, with_a: bool) -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = Fixture::legacy_parent().await?;
     f.config.canary_batch_limit = 1;
     let a = if with_a { Some(f.retry()?) } else { None };
     f.f.replace(4000)?;

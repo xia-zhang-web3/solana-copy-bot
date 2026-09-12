@@ -51,7 +51,14 @@ async fn buy_retry_recovery_progress_missing_then_available_receipt_matrix() -> 
                     if remove_buy { None } else { metadata.clone() }
                 );
             }
-            confirmed(&f, &sell)?;
+            if reason == UNKNOWN {
+                let mut held = sell_before.clone();
+                held.status = copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED.into();
+                assert_eq!(f.store.load_execution_canary_order(&sell)?, Some(held));
+                assert!(!f.store.execution_canary_fill_exists(&sell)?);
+            } else {
+                confirmed(&f, &sell)?;
+            }
             let known = f.store.load_execution_canary_order(&pending)?.unwrap();
             assert_eq!(known.status, EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED);
             assert_eq!(known.tx_signature, known_before.tx_signature);
@@ -68,28 +75,27 @@ async fn buy_retry_recovery_progress_missing_then_available_receipt_matrix() -> 
                     "getTransaction:receipt-signature"
                 ]
             );
-            let mut expected = vec![
-                "getSignatureStatuses:receipt-signature",
-                "getTransaction:receipt-signature",
-                "sell-build-instructions",
-                "sell-build-transaction",
-                "simulateTransaction:sell",
-                "sendTransaction:sell",
-                "getSignatureStatuses:b12-sell-signature",
-                "getTransaction:b12-sell-signature",
-                "getTransaction:receipt-signature",
+            let mut expected: Vec<String> = vec![
+                "getSignatureStatuses:receipt-signature".into(),
+                "getTransaction:receipt-signature".into(),
             ];
+            if reason != UNKNOWN {
+                expected.extend(sell_trace(&f, &sell)?);
+            }
+            expected.push("getTransaction:receipt-signature".into());
             assert_eq!(rpc.trace(), expected);
             *rpc.pending_receipt.lock().unwrap() = false;
             reopen(&mut f)?;
-            let s = ExecutionCanaryRunner::new(f.config.clone())
-                .process_tick(&f.store, f.now + Duration::seconds(8))
-                .await?;
-            assert_eq!(s.state_machine_existing, 1);
+            for n in 8..10 {
+                let s = ExecutionCanaryRunner::new(f.config.clone())
+                    .process_tick(&f.store, f.now + Duration::seconds(n))
+                    .await?;
+                assert!(s.state_machine_existing <= 1);
+            }
             confirmed(&f, &pending)?;
-            expected.push("getTransaction:receipt-signature");
+            expected.push("getTransaction:receipt-signature".into());
             let accounted = rows(&f)?;
-            for n in 9..11 {
+            for n in 10..12 {
                 reopen(&mut f)?;
                 ExecutionCanaryRunner::new(f.config.clone())
                     .process_tick(&f.store, f.now + Duration::seconds(n))
@@ -101,7 +107,11 @@ async fn buy_retry_recovery_progress_missing_then_available_receipt_matrix() -> 
             let fills: i64 =
                 Connection::open(&f.db_path)?
                     .query_row("SELECT COUNT(*) FROM fills", [], |r| r.get(0))?;
-            assert_eq!(fills, 2);
+            assert_eq!(
+                fills,
+                if reason == UNKNOWN { 2 } else { 3 },
+                "canonical parent BUY plus reconciled queue receipts"
+            );
             eprintln!(
                 "B12/R1 reason={reason}, remove_buy={remove_buy}: {:?}",
                 rpc.trace()
@@ -120,12 +130,18 @@ async fn buy_retry_recovery_progress_allow_entry_keeps_previous_group_priority()
     let sell = add_sell(&f, false)?;
     let pending = add_pending(&f, false)?; // younger than NotSent SELL
     assert!(!f.store.execution_canary_accounting_pending()?);
-    let before = f.store.load_execution_canary_order(&sell)?;
+    let pending_before = f.store.load_execution_canary_order(&pending)?;
+    let original = buy_order(&f)?;
     let mut rpc = QueueRpc::new(&mut f, true).await?;
     let s = f.sweep().await?;
-    rpc.finish().await?;
     assert_eq!(s.existing, 1);
-    assert_eq!(f.store.load_execution_canary_order(&sell)?, before);
+    confirmed(&f, &sell)?;
+    assert_eq!(
+        f.store.load_execution_canary_order(&pending)?,
+        pending_before
+    );
+    assert_eq!(rpc.trace(), sell_trace(&f, &sell)?);
+    f.sweep().await?;
     assert_eq!(
         f.store
             .load_execution_canary_order(&pending)?
@@ -133,13 +149,14 @@ async fn buy_retry_recovery_progress_allow_entry_keeps_previous_group_priority()
             .status,
         EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED
     );
-    assert_eq!(
-        rpc.trace(),
-        [
-            "getSignatureStatuses:receipt-signature",
-            "getTransaction:receipt-signature"
-        ]
-    );
+    let mut expected = sell_trace(&f, &sell)?;
+    expected.extend([
+        "getSignatureStatuses:receipt-signature".into(),
+        "getTransaction:receipt-signature".into(),
+    ]);
+    rpc.finish().await?;
+    assert_eq!(rpc.trace(), expected);
+    assert_eq!(buy_order(&f)?, original);
     Ok(())
 }
 
@@ -177,4 +194,23 @@ async fn buy_retry_recovery_progress_same_mint_receipt_still_blocks_sell_send() 
         EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED
     );
     Ok(())
+}
+
+fn sell_trace(
+    f: &super::fresh_buy_size_runtime_fixture::RuntimeFixture,
+    sell: &str,
+) -> Result<Vec<String>> {
+    let sig = f
+        .store
+        .load_execution_canary_dispatch(sell)?
+        .unwrap()
+        .tx_signature;
+    Ok(vec![
+        "sell-build-instructions".into(),
+        "simulateTransaction:sell".into(),
+        "funding:getFeeForMessage".into(),
+        "sendTransaction:sell".into(),
+        format!("getSignatureStatuses:{sig}"),
+        format!("getTransaction:{sig}"),
+    ])
 }

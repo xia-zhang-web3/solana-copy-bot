@@ -65,22 +65,27 @@ async fn execution_canary_state_machine_submit_timeout_retries_unknown_without_s
         .load_execution_canary_order(&order_id)?
         .expect("canary order should exist");
 
-    assert_eq!(summary.submit_timeout_retry, 1);
-    assert_eq!(summary.simulated, 1);
+    assert_eq!(summary.submit_timeout_retry, 0);
+    assert_eq!(summary.submit_timeout_wait, 1);
+    assert_eq!(
+        summary.last_confirm_reason.as_deref(),
+        Some("legacy_unsigned_submit_outcome_unknown")
+    );
+    assert_eq!(summary.simulated, 0);
     assert_eq!(summary.submit_timeout_expire_unsafe, 0);
     assert_eq!(
         summary.last_confirm_decision.as_deref(),
-        Some(copybot_storage_core::EXECUTION_CANARY_CONFIRM_DECISION_RETRY)
+        Some(copybot_storage_core::EXECUTION_CANARY_CONFIRM_DECISION_WAIT)
     );
     assert_eq!(
         order.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED
+        copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
     );
-    assert_eq!(order.attempt, 2);
+    assert_eq!(order.attempt, 1);
     assert!(order.tx_signature.is_none());
     assert_eq!(
         order.simulation_error.as_deref(),
-        Some("retry_after_unknown_submit_timeout")
+        Some("submit_returned_no_signature")
     );
 
     let _ = std::fs::remove_file(db_path);
@@ -111,20 +116,22 @@ async fn execution_canary_state_machine_submit_timeout_expires_signature_without
         .expect("canary order should exist");
 
     assert_eq!(summary.submit_timeout_retry, 0);
-    assert_eq!(summary.submit_timeout_expire_unsafe, 1);
-    assert_eq!(summary.expired, 1);
+    assert_eq!(summary.submit_timeout_expire_unsafe, 0);
+    assert_eq!(summary.submit_timeout_wait, 1);
+    assert_eq!(
+        summary.last_confirm_reason.as_deref(),
+        Some("known_signature_outcome_unknown")
+    );
+    assert_eq!(summary.expired, 0);
     assert_eq!(
         summary.last_confirm_decision.as_deref(),
-        Some(copybot_storage_core::EXECUTION_CANARY_CONFIRM_DECISION_EXPIRE_UNSAFE)
+        Some(copybot_storage_core::EXECUTION_CANARY_CONFIRM_DECISION_WAIT)
     );
     assert_eq!(
         order.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_EXPIRED
+        copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
     );
-    assert_eq!(
-        order.err_code.as_deref(),
-        Some(copybot_storage_core::EXECUTION_ERROR_EXPIRED)
-    );
+    assert_eq!(order.err_code.as_deref(), None);
     assert_eq!(order.tx_signature.as_deref(), Some("tx-sig"));
 
     let _ = std::fs::remove_file(db_path);

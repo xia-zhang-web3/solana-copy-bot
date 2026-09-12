@@ -16,13 +16,23 @@ pub(super) struct Fixture {
 impl Fixture {
     pub async fn new() -> Result<Self> {
         let mut f = Ingress::new()?;
-        f.buy("producer-buy", "source-a")?;
         f.follow_source("source-a")?;
         f.store
             .deactivate_follow_wallet("source-a", f.now, "removed")?;
         Arc::make_mut(&mut f.follow).active.remove("source-a");
         let signing = SigningKey::from_bytes(&[46; 32]);
         let payer = signing.verifying_key().to_bytes();
+        super::tiny_parent_fixture::seed(
+            &f.store,
+            &f.conn()?,
+            "producer-buy",
+            "source-a",
+            "mint",
+            &bs58::encode(payer).into_string(),
+            copybot_core_types::TokenQuantity::new(7000, 3),
+            1000,
+            f.now,
+        )?;
         let key = f.path.with_extension("synthetic-producer-key.json");
         std::fs::write(
             &key,
@@ -42,6 +52,8 @@ impl Fixture {
         config.max_submit_attempts = 3;
         config.max_confirm_seconds = 1;
         config.pretrade_max_priority_fee_lamports = 500_000;
+        config.quote_canary_sell_slippage_bps = 500;
+        config.tiny_experiment = super::b126_config_fixture::activated(&config)?.tiny_experiment;
         Ok(Self {
             f,
             rpc,

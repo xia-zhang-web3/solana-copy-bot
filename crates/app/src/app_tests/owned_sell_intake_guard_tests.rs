@@ -18,7 +18,7 @@ async fn owned_sell_intake_permission_and_position_negative_controls() -> Result
         "global_closed",
         "shadow_disabled",
     ] {
-        let mut f = Intake::new(0.1, 120, 600_000).await?;
+        let mut f = Intake::new(0.1, 120, 100_000).await?;
         match case {
             "no_position" => {
                 f.conn()?.execute("DELETE FROM positions", [])?;
@@ -170,7 +170,7 @@ async fn owned_sell_intake_downstream_guards_survive_intent_and_restart() -> Res
 #[tokio::test]
 async fn owned_sell_intake_queued_work_rechecks_shadow_and_owned_state() -> Result<()> {
     for change in ["shadow_buy", "owned_closed", "newer_buy", "source_demoted"] {
-        let mut f = Intake::new(0.1, 120, 600_000).await?;
+        let mut f = Intake::legacy(0.1, 120, 100_000).await?;
         let key = crate::shadow_scheduler::ShadowTaskKey {
             wallet: "leader".into(),
             token: TOKEN.into(),
@@ -223,6 +223,7 @@ async fn owned_sell_intake_queued_work_rechecks_shadow_and_owned_state() -> Resu
                     .raw(),
                 10_000
             );
+            f.f.config.tiny_experiment.activate = false;
             let outcome = f.hot(&signal).await?;
             // The queued Shadow/owned selection still reaches dispatch. This legacy
             // position has no explicit variant A activation and cannot spend its budget.
@@ -242,7 +243,7 @@ async fn owned_sell_intake_queued_work_rechecks_shadow_and_owned_state() -> Resu
 async fn owned_sell_intake_final_submit_rechecks_position_after_build() -> Result<()> {
     use crate::execution_submit_adapter::*;
     for change in ["future", "closed", "latest_buy"] {
-        let mut f = Intake::new(0.1, 120, 600_000).await?;
+        let mut f = Intake::new(0.1, 120, 100_000).await?;
         f.dispatch(false, false).await?;
         f.drain().await?.unwrap();
         let signal = f.f.store.load_copy_signal_by_signal_id(&f.id())?.unwrap();

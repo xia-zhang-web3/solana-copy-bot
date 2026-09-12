@@ -356,11 +356,7 @@ async fn migrated_pumpswap_direct_failure_is_kept_when_generic_build_fails() -> 
 
         let instructions = read_http_request(&listener).await;
         assert!(instructions.starts_with("POST /swap-instructions "));
-        write_http_json(
-            instructions.into_socket,
-            r#"{"swapInstruction":{},"computeBudgetInstructions":[],"setupInstructions":[],"otherInstructions":[],"addressLookupTableAddresses":[],"cleanupInstruction":null}"#,
-        )
-        .await;
+        write_http_json(instructions.into_socket, r#"{"error":"missing account"}"#).await;
 
         let swap = read_http_request(&listener).await;
         assert!(swap.starts_with("POST /swap "));
@@ -383,7 +379,6 @@ async fn migrated_pumpswap_direct_failure_is_kept_when_generic_build_fails() -> 
         .simulate_transaction_plan(&plan)
         .await
         .expect_err("PumpSwap direct and generic build failure should be visible");
-    server.await?;
     let error = error.to_string();
 
     assert!(error.contains("PumpSwap direct build failed"));
@@ -391,6 +386,7 @@ async fn migrated_pumpswap_direct_failure_is_kept_when_generic_build_fails() -> 
     assert!(error.contains("quote_age_ms_at_build="));
     assert!(error.contains("generic Metis swap failed"));
     assert!(error.contains("generic metis build failed"));
+    server.await?;
     Ok(())
 }
 
@@ -480,7 +476,10 @@ async fn pump_fun_swap_transaction_rpc_simulation_failure_blocks_payload() -> Re
 
 async fn assert_pump_fun_request(request: CapturedRequest, path: &str) {
     assert!(request.starts_with(&format!("POST {path} ")));
-    assert!(request.contains("\"wallet\":\"11111111111111111111111111111111\""));
+    assert!(request.contains(&format!(
+        "\"wallet\":\"{}\"",
+        bs58::encode([11; 32]).into_string()
+    )));
     assert!(request.contains("\"type\":\"BUY\""));
     assert!(request.contains("\"mint\":\"TokenMint\""));
     assert!(request.contains("\"inAmount\":\"10000000\""));
@@ -759,7 +758,9 @@ pub(super) fn pump_fun_direct_config(base_url: &str) -> ExecutionConfig {
     config.canary_dry_run = true;
     config.canary_route =
         crate::execution_canary_route::CANARY_ROUTE_METIS_SWAP_INSTRUCTIONS_DRY_RUN.to_string();
-    config.canary_wallet_pubkey = "11111111111111111111111111111111".to_string();
+    config.canary_wallet_pubkey = bs58::encode([11u8; 32]).into_string();
+    config.execution_signer_pubkey = config.canary_wallet_pubkey.clone();
+    config.pretrade_min_sol_reserve = 0.05;
     config.quote_canary_base_url = base_url.to_string();
     config.quote_canary_timeout_ms = 1_000;
     config.quote_canary_buy_slippage_bps = 500;

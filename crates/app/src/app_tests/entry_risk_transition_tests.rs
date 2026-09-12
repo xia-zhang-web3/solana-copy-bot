@@ -6,7 +6,6 @@ use super::fresh_buy_size_runtime_fixture::RuntimeFixture;
 use super::ExecutionCanaryRunner;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
-use rusqlite::params;
 
 async fn fixed_pair(name: &str) -> Result<(RuntimeFixture, String, TickRpc)> {
     let mut f = RuntimeFixture::new(name, 10_000_000, 100, 10_000_000, 100, false).await?;
@@ -52,14 +51,16 @@ async fn fixed_pair(name: &str) -> Result<(RuntimeFixture, String, TickRpc)> {
 async fn entry_risk_single_tick_rechecks_clock_and_uses_new_utc_day() -> Result<()> {
     for cross_midnight in [false, true] {
         let (f, second, mut rpc) = fixed_pair(&format!("r1-midnight-{cross_midnight}")).await?;
-        let tick = f.now + Duration::seconds(4); // 23:59:58, both order timestamps must retain this.
+        let tick = f.now + Duration::seconds(4); // 23:59:58 event/tick boundary.
+        let first_claim = tick + Duration::milliseconds(200);
         let decision = tick + Duration::milliseconds(if cross_midnight { 3000 } else { 300 });
         let out = sequence(
-            [
-                tick + Duration::milliseconds(100),
-                tick + Duration::milliseconds(200),
-                decision,
-            ],
+            // Selection + candidate, then five clock checks through final claim.
+            // The second candidate sees a later instant after the durable failed fee.
+            [tick + Duration::milliseconds(100), first_claim]
+                .into_iter()
+                .chain(std::iter::repeat_n(first_claim, 5))
+                .chain([decision]),
             ExecutionCanaryRunner::new(f.config.clone()).process_tick(&f.store, tick),
         )
         .await;
@@ -70,7 +71,7 @@ async fn entry_risk_single_tick_rechecks_clock_and_uses_new_utc_day() -> Result<
             .iter()
             .filter(|s| s.as_str() == "sendTransaction")
             .count();
-        assert_eq!(sends, if cross_midnight { 2 } else { 1 });
+        assert_eq!(sends, 1, "a new UTC day never rearms the lifetime BUY slot");
         assert_eq!(out.candidates, 2);
         assert_eq!(
             f.store
@@ -102,14 +103,36 @@ async fn entry_risk_single_tick_rechecks_clock_and_uses_new_utc_day() -> Result<
             }
         );
         let conn = rusqlite::Connection::open(&f.db_path)?;
+        let first = f
+            .store
+            .load_execution_canary_order_by_signal(&f.signal.signal_id)?
+            .unwrap();
+        assert_eq!(first.submit_ts, first_claim);
+        let experiment = f.store.load_tiny_experiment(decision)?.unwrap();
+        assert_eq!(experiment.state, "stopped");
+        assert_eq!(
+            experiment.stop_reason.as_deref(),
+            Some("tiny_budget_buy_failed")
+        );
         assert_eq!(
             conn.query_row(
-                "SELECT COUNT(*) FROM orders WHERE submit_ts=?1",
-                params![tick.to_rfc3339()],
-                |r| r.get::<_, usize>(0)
+                "SELECT COUNT(*) FROM execution_tiny_reservations WHERE side='buy'",
+                [],
+                |r| r.get::<_, u64>(0)
             )?,
-            sends
+            1
         );
+        if cross_midnight {
+            let candidate = f
+                .store
+                .load_execution_canary_order_by_signal(&second)?
+                .unwrap();
+            assert!(candidate.tx_signature.is_none());
+            assert!(f
+                .store
+                .load_execution_canary_dispatch(&candidate.order_id)?
+                .is_none());
+        }
         assert_eq!(
             conn.query_row(
                 "SELECT COUNT(*) FROM execution_failed_expense_ledger",

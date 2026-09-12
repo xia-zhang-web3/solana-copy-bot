@@ -12,13 +12,11 @@ async fn tiny_submit_gate_disabled_records_not_sent_without_http() -> Result<()>
     let now = Utc::now();
     let request = tiny_submit_request(&store, "gate-disabled", now)?;
     let adapter = TinySubmitReadyAdapter {
-        tx_signature_hint: Some("tx-hint-gate-disabled"),
+        tx_signature_hint: Some("tx-hint-gate-disabled".into()),
     };
-    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
+    let envelope = super::tiny_submit_fixture::envelope(&store, &request, now)?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
-        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
-            &request.wallet_pubkey,
-        )),
+        buy_safety_config: Some(super::tiny_submit_fixture::config(&request.wallet_pubkey)),
         allow_rpc_submit: false,
         pretrade_max_priority_fee_lamports: 500_000,
         pretrade_min_sol_reserve: 0.05,
@@ -68,28 +66,29 @@ async fn tiny_submit_gate_allowed_records_rpc_signature() -> Result<()> {
         super::initial_sol_rpc_fixture::serve_three(&listener)
             .await
             .expect("BUY funding RPC");
+        super::tiny_submit_fixture::final_fee(&listener)
+            .await
+            .unwrap();
         let request = read_tiny_submit_request(&listener).await;
         assert!(request.body.contains("\"method\":\"sendTransaction\""));
-        assert!(request.body.contains(
-            &crate::app_tests::priority_fee_fixture::guarded_transaction([7; 32], 200_000, 10_000)
-        ));
+        assert!(request
+            .body
+            .contains(&super::tiny_submit_fixture::payload("buy").signed_transaction_base64));
         write_tiny_submit_status(
             request.socket,
             200,
-            r#"{"jsonrpc":"2.0","id":"execution-submit","result":"tx-tiny-submit-ok"}"#,
+            &serde_json::json!({"jsonrpc":"2.0","id":"execution-submit","result":super::tiny_submit_fixture::payload("buy").tx_signature_hint.unwrap()}).to_string(),
         )
         .await;
     });
     let now = Utc::now();
     let request = tiny_submit_request(&store, "rpc-ok", now)?;
     let adapter = TinySubmitReadyAdapter {
-        tx_signature_hint: Some("tx-hint-rpc-ok"),
+        tx_signature_hint: super::tiny_submit_fixture::payload("buy").tx_signature_hint,
     };
-    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
+    let envelope = super::tiny_submit_fixture::envelope(&store, &request, now)?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
-        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
-            &request.wallet_pubkey,
-        )),
+        buy_safety_config: Some(super::tiny_submit_fixture::config(&request.wallet_pubkey)),
         allow_rpc_submit: true,
         pretrade_max_priority_fee_lamports: 500_000,
         pretrade_min_sol_reserve: 0.05,
@@ -108,12 +107,22 @@ async fn tiny_submit_gate_allowed_records_rpc_signature() -> Result<()> {
         .expect("order should exist");
 
     assert_eq!(outcome.submitted, 1);
-    assert_eq!(outcome.tx_signature.as_deref(), Some("tx-tiny-submit-ok"));
+    assert_eq!(
+        outcome.tx_signature.as_deref(),
+        super::tiny_submit_fixture::payload("buy")
+            .tx_signature_hint
+            .as_deref()
+    );
     assert_eq!(
         order.status,
         copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
     );
-    assert_eq!(order.tx_signature.as_deref(), Some("tx-tiny-submit-ok"));
+    assert_eq!(
+        order.tx_signature.as_deref(),
+        super::tiny_submit_fixture::payload("buy")
+            .tx_signature_hint
+            .as_deref()
+    );
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -133,6 +142,9 @@ async fn tiny_submit_gate_allowed_records_rpc_error_as_retry_ready() -> Result<(
         super::initial_sol_rpc_fixture::serve_three(&listener)
             .await
             .expect("BUY funding RPC");
+        super::tiny_submit_fixture::final_fee(&listener)
+            .await
+            .unwrap();
         let request = read_tiny_submit_request(&listener).await;
         assert!(request.body.contains("\"sendTransaction\""));
         write_tiny_submit_status(
@@ -145,13 +157,11 @@ async fn tiny_submit_gate_allowed_records_rpc_error_as_retry_ready() -> Result<(
     let now = Utc::now();
     let request = tiny_submit_request(&store, "rpc-error", now)?;
     let adapter = TinySubmitReadyAdapter {
-        tx_signature_hint: Some("tx-hint-rpc-error"),
+        tx_signature_hint: super::tiny_submit_fixture::payload("buy").tx_signature_hint,
     };
-    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
+    let envelope = super::tiny_submit_fixture::envelope(&store, &request, now)?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
-        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
-            &request.wallet_pubkey,
-        )),
+        buy_safety_config: Some(super::tiny_submit_fixture::config(&request.wallet_pubkey)),
         allow_rpc_submit: true,
         pretrade_max_priority_fee_lamports: 500_000,
         pretrade_min_sol_reserve: 0.05,
@@ -170,27 +180,29 @@ async fn tiny_submit_gate_allowed_records_rpc_error_as_retry_ready() -> Result<(
         .expect("order should exist");
 
     assert_eq!(outcome.submit_disabled, 0);
+    assert_eq!(outcome.submitted, 1);
+    assert_eq!(outcome.skipped_reason, None);
     assert_eq!(
-        outcome.skipped_reason,
-        Some("tiny_submit_retry_after_rpc_not_sent")
+        outcome.reason.as_deref(),
+        Some("dispatch_rpc_rejection_unknown")
     );
-    assert!(outcome
-        .reason
-        .as_deref()
-        .unwrap_or_default()
-        .starts_with("retry_after_rpc_submit_not_sent:rpc_send_transaction_error"));
     assert_eq!(
         order.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED
+        copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
     );
-    assert_eq!(order.attempt, 2);
+    assert_eq!(order.attempt, 1);
     assert!(order.err_code.is_none());
-    assert!(order
-        .simulation_error
-        .as_deref()
-        .unwrap_or_default()
-        .starts_with("retry_after_rpc_submit_not_sent:rpc_send_transaction_error"));
-    assert!(order.tx_signature.is_none());
+    assert_eq!(
+        order.simulation_error.as_deref(),
+        Some("dispatch_outcome_unknown")
+    );
+    assert_eq!(
+        order.tx_signature.as_deref(),
+        super::tiny_submit_fixture::payload("buy")
+            .tx_signature_hint
+            .as_deref()
+    );
+    super::tiny_buy_route_fixture::assert_dispatch(&store, &order)?;
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -210,6 +222,9 @@ async fn tiny_submit_gate_timeout_with_hint_records_submitted_unknown() -> Resul
         super::initial_sol_rpc_fixture::serve_three(&listener)
             .await
             .expect("BUY funding RPC");
+        super::tiny_submit_fixture::final_fee(&listener)
+            .await
+            .unwrap();
         let request = read_tiny_submit_request(&listener).await;
         assert!(request.body.contains("\"sendTransaction\""));
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -223,13 +238,11 @@ async fn tiny_submit_gate_timeout_with_hint_records_submitted_unknown() -> Resul
     let now = Utc::now();
     let request = tiny_submit_request(&store, "rpc-timeout", now)?;
     let adapter = TinySubmitReadyAdapter {
-        tx_signature_hint: Some("tx-hint-timeout"),
+        tx_signature_hint: super::tiny_submit_fixture::payload("buy").tx_signature_hint,
     };
-    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
+    let envelope = super::tiny_submit_fixture::envelope(&store, &request, now)?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
-        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
-            &request.wallet_pubkey,
-        )),
+        buy_safety_config: Some(super::tiny_submit_fixture::config(&request.wallet_pubkey)),
         allow_rpc_submit: true,
         pretrade_max_priority_fee_lamports: 500_000,
         pretrade_min_sol_reserve: 0.05,
@@ -248,12 +261,22 @@ async fn tiny_submit_gate_timeout_with_hint_records_submitted_unknown() -> Resul
         .expect("order should exist");
 
     assert_eq!(outcome.submitted, 1);
-    assert_eq!(outcome.tx_signature.as_deref(), Some("tx-hint-timeout"));
+    assert_eq!(
+        outcome.tx_signature.as_deref(),
+        super::tiny_submit_fixture::payload("buy")
+            .tx_signature_hint
+            .as_deref()
+    );
     assert_eq!(
         order.status,
         copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
     );
-    assert_eq!(order.tx_signature.as_deref(), Some("tx-hint-timeout"));
+    assert_eq!(
+        order.tx_signature.as_deref(),
+        super::tiny_submit_fixture::payload("buy")
+            .tx_signature_hint
+            .as_deref()
+    );
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -261,7 +284,7 @@ async fn tiny_submit_gate_timeout_with_hint_records_submitted_unknown() -> Resul
 
 #[derive(Debug, Clone)]
 struct TinySubmitReadyAdapter {
-    tx_signature_hint: Option<&'static str>,
+    tx_signature_hint: Option<String>,
 }
 
 impl crate::execution_submit_adapter::ExecutionSubmitAdapter for TinySubmitReadyAdapter {
@@ -307,7 +330,7 @@ impl crate::execution_submit_adapter::ExecutionSubmitAdapter for TinySubmitReady
                 envelope,
                 "rpc_send_transaction".to_string(),
             )?;
-        intent.tx_signature_hint = self.tx_signature_hint.map(ToString::to_string);
+        intent.tx_signature_hint = self.tx_signature_hint.clone();
         Ok(crate::execution_submit_adapter::ExecutionSubmitPlan::SubmitReady(intent))
     }
 }
@@ -362,7 +385,7 @@ fn tiny_submit_request(
         side: signal.side,
         buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
-        wallet_pubkey: bs58::encode([7; 32]).into_string(),
+        wallet_pubkey: bs58::encode(super::tiny_submit_fixture::payer()).into_string(),
         entry_route_plan_json: None,
         metadata: crate::app_tests::priority_fee_fixture::metadata(),
     })

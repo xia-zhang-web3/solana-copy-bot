@@ -84,9 +84,9 @@ async fn b13_auditor_same_tick_failed_fee_stops_second_new_buy() -> Result<()> {
         result.candidates, 2,
         "must run both new BUY candidates: {result:?}"
     );
-    assert_eq!(
-        first.submit_ts, tick_now,
-        "timestamp must come from actual process_tick"
+    assert!(
+        first.submit_ts > tick_now,
+        "durable claim records its authoritative decision instant"
     );
     assert_eq!(
         first.status,
@@ -95,7 +95,7 @@ async fn b13_auditor_same_tick_failed_fee_stops_second_new_buy() -> Result<()> {
     assert_eq!(task.status, "complete");
     assert_eq!(
         chrono::DateTime::parse_from_rfc3339(&task.operation_at)?.with_timezone(&chrono::Utc),
-        tick_now
+        first.submit_ts
     );
     assert_eq!(
         f.store
@@ -118,7 +118,7 @@ async fn b13_auditor_same_tick_failed_fee_stops_second_new_buy() -> Result<()> {
     let at_boundary = f.store.execution_canary_entry_cost(tick_now)?;
     let after_boundary = f
         .store
-        .execution_canary_entry_cost(tick_now + Duration::nanoseconds(1))?;
+        .execution_canary_entry_cost(first.submit_ts + Duration::nanoseconds(1))?;
     let calls = rpc.calls.lock().unwrap().clone();
     let sends = calls
         .iter()
@@ -147,7 +147,6 @@ async fn b13_auditor_same_tick_failed_fee_stops_second_new_buy() -> Result<()> {
         &[
             "quote",
             "build-instructions",
-            "build-transaction",
             "simulateTransaction",
             "sendTransaction",
             "getSignatureStatuses",
@@ -188,23 +187,18 @@ impl TickRpc {
                         assert_eq!(body["quoteResponse"]["outAmount"], "100");
                         assert_eq!(body["prioritizationFeeLamports"], 22_000);
                         if path.starts_with("POST /swap-instructions ") {
+                            built += 1;
                             (
                                 "build-instructions",
-                                json!({"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":null}),
+                                super::tiny_transport_fixture::bundle_with_price(
+                                    public_key,
+                                    [built; 32],
+                                    10_000_000,
+                                    10_000,
+                                ),
                             )
                         } else {
-                            built += 1;
-                            // Distinct recent blockhash gives each real Ed25519 signature a distinct identity.
-                            let bytes = crate::execution_native_floor::prepare_final_native_floor(
-                                public_key,
-                                [built; 32],
-                                &super::priority_fee_fixture::budget(200_000, 10_000),
-                                50_000_001,
-                            )?;
-                            (
-                                "build-transaction",
-                                json!({"swapTransaction":bytes.payload(),"simulationError":null}),
-                            )
+                            anyhow::bail!("guarded BUY must assemble locally, no opaque /swap");
                         }
                     } else if body["id"]
                         .as_str()
@@ -220,7 +214,7 @@ impl TickRpc {
                         };
                         (
                             method,
-                            super::initial_sol_rpc_fixture::FundingRpc::default().reply(&body),
+                            super::tiny_transport_fixture::funding().reply(&body),
                         )
                     } else {
                         let method = body["method"].as_str().unwrap();

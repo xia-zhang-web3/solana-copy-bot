@@ -18,7 +18,7 @@ async fn initial_sol_postawait_state_changes_preserve_order_on_rpc_success_and_e
             "signal",
             "receipt",
         ] {
-            let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+            let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
             let envelope = f.build().await?.envelope.unwrap();
             let conn = Arc::new(Mutex::new(f.conn()?));
             let id = f.request.order_id.clone();
@@ -94,7 +94,7 @@ async fn initial_sol_postawait_state_changes_preserve_order_on_rpc_success_and_e
 #[tokio::test]
 async fn initial_sol_postawait_new_loss_fresh_clock_and_sql_error_are_no_send() -> Result<()> {
     for change in ["loss", "clock", "sql"] {
-        let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+        let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
         f.config.canary_max_open_positions = 10;
         f.store.record_execution_canary_open_position(
             "loss-source",
@@ -171,8 +171,14 @@ async fn initial_sol_postawait_new_loss_fresh_clock_and_sql_error_are_no_send() 
         f.make_sell()?;
         let sell = f.build().await?.envelope.unwrap();
         let server = Rpc::start(false, |r| {
-            assert_eq!(r["method"], "sendTransaction");
-            Reply::json(json!({"result":"synthetic-sell-after-funding-error"}))
+            assert!(["getFeeForMessage", "sendTransaction"]
+                .iter()
+                .any(|m| r["method"] == *m));
+            if r["method"] == "getFeeForMessage" {
+                Reply::json(FundingRpc::default().reply(r))
+            } else {
+                Reply::json(json!({"result":"synthetic-sell-after-funding-error"}))
+            }
         })
         .await?;
         f.config.submit_adapter_http_url = server.endpoint.clone();
@@ -180,14 +186,16 @@ async fn initial_sol_postawait_new_loss_fresh_clock_and_sql_error_are_no_send() 
         f.finish().await?;
         let trace = server.finish().await?;
         assert_eq!(result?.submitted, 1);
-        assert_eq!(trace.len(), 1);
+        assert_eq!(trace.len(), 2);
+        assert_eq!(trace[0].request["method"], "getFeeForMessage");
+        assert_eq!(trace[1].request["method"], "sendTransaction");
     }
     Ok(())
 }
 
 #[tokio::test]
 async fn initial_sol_postawait_durable_proof_change_is_rechecked_before_send() -> Result<()> {
-    let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+    let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
     let envelope = f.build().await?.envelope.unwrap();
     let conn = Arc::new(Mutex::new(f.conn()?));
     let id = f.request.order_id.clone();

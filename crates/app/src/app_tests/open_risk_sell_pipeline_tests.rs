@@ -6,7 +6,7 @@ use copybot_shadow::{ShadowDropReason, ShadowProcessOutcome};
 #[tokio::test]
 async fn open_risk_sell_raw_event_reaches_fresh_owned_quote_and_one_submit_after_reopen(
 ) -> Result<()> {
-    let mut f = Fixture::new(600_000).await?;
+    let mut f = Fixture::new(100_000).await?;
     let (signal, event_id) = f.quote_raw_sell().await?;
     let summary = f.submit(&event_id).await?;
     assert_eq!(summary.reserved, 1, "{summary:?}");

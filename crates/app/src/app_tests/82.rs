@@ -1,7 +1,6 @@
 use super::*;
 use copybot_core_types::{CopySignalRow, Lamports, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS};
 use ed25519_dalek::SigningKey;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
 async fn tiny_submit_sweep_retries_transient_failed_buy_simulation() -> Result<()> {
@@ -19,12 +18,12 @@ async fn tiny_submit_sweep_retries_transient_failed_buy_simulation() -> Result<(
     record_buy_retry_quote(&store, &signal, now)?;
     let order_id = mark_failed_buy_simulation_order(&store, &signal, now)?;
 
-    let (base_url, server) =
-        serve_buy_retry_build_submit_and_confirm(&keypair.public_key, "tx-buy-retry").await?;
+    let (base_url, server) = serve_buy_retry_build_submit_and_confirm(&keypair.public_key).await?;
     let mut config = buy_retry_config(&base_url);
     config.canary_wallet_pubkey = keypair.pubkey.clone();
     config.execution_signer_pubkey = keypair.pubkey.clone();
     config.execution_signer_keypair_path = keypair_path.to_string_lossy().to_string();
+    config.tiny_experiment = super::b126_config_fixture::activated(&config)?.tiny_experiment;
 
     let summary = super::entry_risk_clock_fixture::at(
         now + chrono::Duration::seconds(6),
@@ -49,7 +48,7 @@ async fn tiny_submit_sweep_retries_transient_failed_buy_simulation() -> Result<(
         copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED
     );
     assert_eq!(order.attempt, 2);
-    assert_eq!(order.tx_signature.as_deref(), Some("tx-buy-retry"));
+    super::tiny_buy_route_fixture::assert_dispatch(&store, &order)?;
     assert_eq!(store.execution_canary_open_position_count()?, 1);
 
     let _ = std::fs::remove_file(db_path);
@@ -250,101 +249,8 @@ fn mark_failed_buy_simulation_order(
 
 async fn serve_buy_retry_build_submit_and_confirm(
     first_signer: &[u8; 32],
-    tx_signature: &str,
 ) -> Result<(String, tokio::task::JoinHandle<()>)> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let base_url = format!("http://{}", listener.local_addr()?);
-    let tx = tx_signature.to_string();
-    let wallet = bs58::encode(first_signer).into_string();
-    let serialized_transaction = serialized_buy_retry_transaction(*first_signer);
-    let server = tokio::spawn(async move {
-        let quote = read_buy_retry_http_request(&listener).await;
-        assert!(quote.body.starts_with("GET /quote?"));
-        write_buy_retry_http_response(quote.socket, fresh_buy_retry_quote_json()).await;
-
-        let instructions = read_buy_retry_http_request(&listener).await;
-        assert!(instructions.body.starts_with("POST /swap-instructions "));
-        write_buy_retry_http_response(instructions.socket, valid_buy_retry_instructions_json())
-            .await;
-
-        let swap = read_buy_retry_http_request(&listener).await;
-        assert!(swap.body.starts_with("POST /swap "));
-        write_buy_retry_http_response(
-            swap.socket,
-            &format!(r#"{{"swapTransaction":"{serialized_transaction}","simulationError":null}}"#),
-        )
-        .await;
-
-        let rpc_simulation = read_buy_retry_http_request(&listener).await;
-        assert!(rpc_simulation
-            .body
-            .contains("\"method\":\"simulateTransaction\""));
-        write_buy_retry_http_response(
-            rpc_simulation.socket,
-            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"context":{"slot":42},"value":{"err":null,"logs":[]}}}"#,
-        )
-        .await;
-
-        super::initial_sol_rpc_fixture::serve_three(&listener)
-            .await
-            .expect("BUY funding RPC");
-        let submit = read_buy_retry_http_request(&listener).await;
-        assert!(submit.body.contains("\"method\":\"sendTransaction\""));
-        write_buy_retry_http_response(
-            submit.socket,
-            &format!(r#"{{"jsonrpc":"2.0","id":"execution-submit","result":"{tx}"}}"#),
-        )
-        .await;
-
-        let confirmation = read_buy_retry_http_request(&listener).await;
-        assert!(confirmation
-            .body
-            .contains("\"method\":\"getSignatureStatuses\""));
-        assert!(confirmation.body.contains(&tx));
-        write_buy_retry_http_response(
-            confirmation.socket,
-            r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":82,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}"#,
-        )
-        .await;
-        super::receipt_legacy_fixture::answer_receipt(
-            &listener,
-            &wallet,
-            &tx,
-            "buy",
-            82,
-            -10_000_000,
-        )
-        .await;
-    });
-    Ok((base_url, server))
-}
-
-struct BuyRetryHttpRequest {
-    socket: tokio::net::TcpStream,
-    body: String,
-}
-
-async fn read_buy_retry_http_request(listener: &tokio::net::TcpListener) -> BuyRetryHttpRequest {
-    let (mut socket, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept())
-            .await
-            .expect("buy retry HTTP request deadline")
-            .expect("buy retry HTTP request");
-    let mut buffer = [0_u8; 16384];
-    let read = socket.read(&mut buffer).await.expect("read request");
-    BuyRetryHttpRequest {
-        socket,
-        body: String::from_utf8_lossy(&buffer[..read]).to_string(),
-    }
-}
-
-async fn write_buy_retry_http_response(mut socket: tokio::net::TcpStream, body: &str) {
-    let response = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
-        body.len(),
-        body
-    );
-    let _ = socket.write_all(response.as_bytes()).await;
+    super::tiny_buy_route_fixture::serve(*first_signer, 20000).await
 }
 
 fn record_buy_retry_quote(
@@ -391,14 +297,6 @@ fn original_buy_retry_quote_json() -> &'static str {
     r#"{"inputMint":"So11111111111111111111111111111111111111112","inAmount":"10000000","outputMint":"TokenMint","outAmount":"10000","otherAmountThreshold":"9500","swapMode":"ExactIn","slippageBps":500,"platformFee":null,"priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}],"meta":{"outDecimals":3}}"#
 }
 
-fn fresh_buy_retry_quote_json() -> &'static str {
-    r#"{"inputMint":"So11111111111111111111111111111111111111112","inAmount":"10000000","outputMint":"TokenMint","outAmount":"10000","otherAmountThreshold":"9500","swapMode":"ExactIn","slippageBps":500,"platformFee":null,"priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#
-}
-
-fn valid_buy_retry_instructions_json() -> &'static str {
-    r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":null}"#
-}
-
 struct BuyRetryKeypair {
     public_key: [u8; 32],
     pubkey: String,
@@ -423,10 +321,6 @@ fn write_buy_retry_keypair_file(name: &str, bytes: &[u8]) -> Result<PathBuf> {
     let path = unique_buy_retry_test_path(name).with_extension("json");
     std::fs::write(&path, serde_json::to_string(bytes)?)?;
     Ok(path)
-}
-
-fn serialized_buy_retry_transaction(first_account_key: [u8; 32]) -> String {
-    super::priority_fee_fixture::guarded_transaction(first_account_key, 200_000, 10_000)
 }
 
 fn buy_retry_config(base_url: &str) -> ExecutionConfig {

@@ -17,7 +17,7 @@ async fn entry_cost_exhausted_fee_keeps_limit_one_sell_and_receipt_progress() ->
         f.config.canary_batch_limit = 1;
         f.config.canary_max_daily_loss_sol = 0.02;
         expense(&f, "exhausted", Some(20_000_000), false, true)?;
-        let sell = add_sell(&f, unknown)?;
+        let sell = add_sell(&f, false)?;
         let pending = add_pending(&f, true)?;
         let original = buy_order(&f)?;
         let mut rpc = QueueRpc::new(&mut f, true).await?;
@@ -74,7 +74,7 @@ async fn entry_cost_exhausted_fee_keeps_limit_one_sell_and_receipt_progress() ->
 #[tokio::test]
 async fn entry_cost_failed_receipt_between_selection_and_candidate_blocks_fresh_buy() -> Result<()>
 {
-    let mut f = queue_fixture("b13-dynamic-fee", true).await?;
+    let mut f = queue_fixture("b13-dynamic-fee", false).await?;
     f.config.canary_max_open_positions = 10;
     f.config.canary_batch_limit = 3;
     f.config.canary_max_daily_loss_sol = 0.02;
@@ -94,12 +94,19 @@ async fn entry_cost_failed_receipt_between_selection_and_candidate_blocks_fresh_
     let (url, task) = receipt_server(value, true).await?;
     f.config.submit_adapter_http_url = url.clone();
     f.config.quote_canary_base_url = url;
+    let first = f.sweep().await?;
+    assert_eq!(first.existing, 1);
+    assert_eq!(first.skipped_reason, Some("unresolved_buy_dispatch"));
+    assert_eq!(first.failed, 1);
     let out = f.sweep().await?;
     let calls = task.await??;
-    assert_eq!(out.existing, 2, "{out:?}");
+    assert_eq!(
+        out.existing, 0,
+        "fee cap defers BUY before retry selection: {out:?}"
+    );
     assert_eq!(out.skipped_reason, Some("max_daily_loss"));
     assert_eq!(out.safety_blocked, 1);
-    assert_eq!(out.failed, 1);
+    assert_eq!(out.failed, 0);
     assert_eq!(
         f.store.load_failed_expense_task(&pending)?.unwrap().status,
         "complete"

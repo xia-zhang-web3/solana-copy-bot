@@ -80,12 +80,12 @@ impl Server {
                                 url.query_pairs().into_owned().collect();
                             json!({"inputMint":query["inputMint"],"outputMint":query["outputMint"],
                                 "inAmount":query["amount"],"outAmount":"100000000","otherAmountThreshold":"90000000",
-                                "swapMode":"ExactIn","slippageBps":500,"priceImpactPct":"0",
+                                "swapMode":"ExactIn","slippageBps":query["slippageBps"].parse::<u64>()?,"priceImpactPct":"0",
                                 "routePlan":[{"swapInfo":{"label":"Metis"}}]})
                         }
                         "fallback" => json!({"error":"NO_ROUTES_FOUND"}),
                         "instructions" => {
-                            json!({"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"instructions":[{"programId":"synthetic"}],"simulationError":null})
+                            super::generic_sell_synthetic_fixture::bundle(payer, 200_000, 100_000)
                         }
                         "swap" => {
                             json!({"swapTransaction":super::priority_fee_fixture::transaction(payer,200000,100000),"simulationError":null})
@@ -102,6 +102,7 @@ impl Server {
                                 "simulateTransaction" => {
                                     json!({"context":{"slot":42},"value":{"err":null,"logs":[]}})
                                 }
+                                "getFeeForMessage" => json!({"context":{"slot":42},"value":25000}),
                                 "sendTransaction" => json!("source-guard-sent"),
                                 "getSignatureStatuses" => json!({"value":[null]}),
                                 "getTransaction" => Value::Null,

@@ -100,10 +100,18 @@ async fn b53_known_signature_local_timeout_keeps_selection_and_late_receipt() ->
     f.backend.wire.lock().unwrap().blockhash = 17;
     f.seed("audit-b", 33)?;
     f.tick(33).await?;
-    assert_eq!(f.sends().len(), 2);
+    assert_eq!(
+        f.sends().len(),
+        1,
+        "late receipt does not rearm lifetime BUY"
+    );
+    assert!(f
+        .store
+        .load_execution_canary_dispatch(&f.order("audit-b")?.order_id)?
+        .is_none());
     assert!(f
         .store
         .execution_canary_fill_exists(&f.order("audit-a")?.order_id)?);
-    f.emit("expired_a_late_receipt_not_reconciled_b_sent", "audit-a")?;
+    f.emit("expired_a_late_receipt_reconciled_b_refused", "audit-a")?;
     f.finish().await
 }

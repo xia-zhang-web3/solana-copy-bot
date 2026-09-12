@@ -11,7 +11,7 @@ async fn buy_retry_queue_limit_one_preserves_sell_and_known_receipt_for_both_rea
         let mut f = queue_fixture(&format!("b12-queue-{unknown}"), unknown).await?;
         f.config.canary_entry_submit_enabled = false;
         f.config.canary_batch_limit = 1;
-        let sell = add_sell(&f, unknown)?;
+        let sell = add_sell(&f, false)?;
         let pending = add_pending(&f, false)?;
         let original = buy_order(&f)?;
         let old_metadata = f
@@ -81,21 +81,30 @@ async fn buy_retry_queue_each_entry_guard_allows_sell_and_receipt_recovery() -> 
 
 #[tokio::test]
 async fn buy_retry_queue_rechecks_after_receipt_makes_accounting_pending() -> Result<()> {
-    let mut f = queue_fixture("b12-selection-race", true).await?;
+    let mut f = queue_fixture("b12-selection-race", false).await?;
     f.config.canary_max_open_positions = 10;
     f.config.canary_batch_limit = 3;
     let pending = add_pending(&f, true)?;
-    let sell = add_sell(&f, true)?;
+    let sell = add_sell(&f, false)?;
     assert!(!f.store.execution_canary_accounting_pending()?);
     let original = buy_order(&f)?;
     let mut rpc = QueueRpc::new(&mut f, true).await?;
     let s = f.sweep().await?;
     assert_eq!(
-        s.existing, 3,
-        "selection must include BUY before first receipt: {s:?}"
+        s.existing, 2,
+        "unresolved BUY defers new BUY; receipt and SELL remain eligible: {s:?}"
     );
     assert_eq!(s.safety_blocked, 1);
-    assert_eq!(s.skipped_reason, Some("confirmed_accounting_pending"));
+    assert_eq!(s.skipped_reason, Some("unresolved_buy_dispatch"));
+    assert_eq!(
+        crate::execution_canary_safety::pre_submit_safety_snapshot(
+            &f.config,
+            &f.store,
+            f.now + chrono::Duration::seconds(8)
+        )?
+        .blocked_reason,
+        Some("confirmed_accounting_pending")
+    );
     assert!(f.store.execution_canary_accounting_pending()?);
     assert_eq!(
         f.store
@@ -141,12 +150,16 @@ async fn buy_retry_queue_unknown_exhausted_budget_expires_while_entry_blocked() 
     reopen(&mut f)?;
     let s = f.sweep().await?;
     rpc.finish().await?;
-    assert_eq!(s.expired, 1);
+    assert_eq!(
+        s.expired, 0,
+        "Unknown must not expire merely because retry budget is exhausted"
+    );
     let after = buy_order(&f)?;
     assert_eq!(
         after.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_EXPIRED
+        copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
     );
+    assert!(f.store.execution_canary_unresolved_buy()?);
     assert_eq!(after.attempt, original.attempt);
     assert_eq!(after.client_order_id, original.client_order_id);
     assert!(after.tx_signature.is_none());

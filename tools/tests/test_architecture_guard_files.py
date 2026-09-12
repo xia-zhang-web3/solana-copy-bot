@@ -60,5 +60,6 @@ class Files(GuardCase):
         self.write(path, b'// old byte \xff\n')
         self.commit()
         self.write(path, '// valid current source\n')
-        self.pair()
-        self.pair('--all')
+        # Compare the raw-byte corpus in the same byte-oriented locale on GNU/BSD.
+        self.pair(LC_ALL='C')
+        self.pair('--all', LC_ALL='C')

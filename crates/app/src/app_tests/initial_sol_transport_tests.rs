@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 #[tokio::test]
 async fn initial_sol_actual_submit_shared_deadline_cancels_all_three_without_retries() -> Result<()>
 {
-    let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+    let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
     let envelope = f.build().await?.envelope.unwrap();
     let server = Rpc::start_with_in_flight(3, |r| {
         let mut reply = Reply::json(FundingRpc::default().reply(r));
@@ -55,7 +55,7 @@ async fn initial_sol_actual_submit_shared_deadline_cancels_all_three_without_ret
 #[tokio::test]
 async fn initial_sol_invalid_timeout_is_buy_only_and_never_queries_collector() -> Result<()> {
     for timeout in [0, 30_001, u64::MAX] {
-        let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+        let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
         let envelope = f.build().await?.envelope.unwrap();
         let server = Rpc::start(false, |_| panic!("invalid timeout must not send HTTP")).await?;
         f.config.submit_adapter_http_url = server.endpoint.clone();
@@ -80,7 +80,7 @@ async fn initial_sol_guarded_fallback_and_labels_cannot_skip_collection() -> Res
         Route::PaidFallback,
     ] {
         for enough in [false, true] {
-            let mut f = Fixture::new(route, 200_000, 200_000).await?;
+            let mut f = Fixture::new(route, 10_000, 200_000).await?;
             f.wire.lock().unwrap().guard = Some(50_000_001);
             f.funding.lock().unwrap().balance = if enough { 1_000_000_000 } else { 0 };
             let envelope = f.build().await?.envelope.unwrap();
@@ -99,7 +99,7 @@ async fn initial_sol_guarded_fallback_and_labels_cannot_skip_collection() -> Res
                         .as_str()
                         .is_some_and(|id| id.starts_with("native-funding-")))
                     .count(),
-                3
+                if enough { 4 } else { 3 }
             );
         }
     }
@@ -109,13 +109,13 @@ async fn initial_sol_guarded_fallback_and_labels_cannot_skip_collection() -> Res
 #[tokio::test]
 async fn initial_sol_disabled_and_sell_do_not_use_new_collector() -> Result<()> {
     for sell in [false, true] {
-        let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+        let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
         if sell {
             f.make_sell()?;
         }
         let envelope = f.build().await?.envelope.unwrap();
         f.config.pretrade_min_sol_reserve = f64::NAN;
-        f.config.submit_timeout_ms = 30_001; // outside collector bound, within existing transport bound
+        f.config.submit_timeout_ms = if sell { 500 } else { 30_001 }; // SELL now requires its own bounded fee RPC.
         if !sell {
             f.config.canary_tiny_submit_enabled = false;
         }
@@ -125,9 +125,19 @@ async fn initial_sol_disabled_and_sell_do_not_use_new_collector() -> Result<()> 
         assert_eq!(out.failed, 0, "{out:?}");
         assert_eq!(f.sends(), usize::from(sell));
         assert_eq!(out.submit_disabled, usize::from(!sell));
-        assert!(f.calls.lock().unwrap().iter().all(|(_, r)| !r["id"]
-            .as_str()
-            .is_some_and(|id| id.starts_with("native-funding-"))));
+        let calls = f.calls.lock().unwrap();
+        let funding: Vec<_> = calls
+            .iter()
+            .filter(|(_, r)| {
+                r["id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("native-funding-"))
+            })
+            .collect();
+        assert_eq!(funding.len(), usize::from(sell));
+        assert!(funding
+            .iter()
+            .all(|(_, r)| r["method"] == "getFeeForMessage"));
     }
     Ok(())
 }

@@ -9,14 +9,13 @@ use chrono::DateTime;
 use serde_json::json;
 use std::{
     fs,
-    path::PathBuf,
     time::{Duration, Instant},
 };
 use tokio::{net::TcpListener, sync::oneshot};
 
 async fn run_case(name: &str, hold_ms: u64, status: &'static str, truncate: bool) -> Result<()> {
-    let dir = PathBuf::from(std::env::var("B105_EVIDENCE")?).join(name);
-    fs::create_dir(&dir)?;
+    let output = super::temporary_output_fixture::OutputRoot::new(name)?;
+    let dir = output.path();
     let f = b58_fixture::Fixture::new(name)?;
     let token = bs58::encode([104u8; 32]).into_string();
     let supplied_now = fixture::initial_time();

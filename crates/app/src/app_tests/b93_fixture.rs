@@ -18,10 +18,16 @@ pub fn open(path: &Path) -> Result<f::Db> {
     })
 }
 pub async fn seeded(name: &str) -> Result<(f::Db, Value)> {
-    let m = p::meta("direct")?;
-    let db = f::Db::new(name)?;
+    let root = super::b93_local_fixture::begin(name)?;
+    let inputs = super::b93_local_fixture::inputs();
+    let m: Value = serde_json::from_slice(&std::fs::read(inputs.join("chain.json"))?)?;
+    assert_eq!(m["oracle"]["explicit_synthetic_only"], true);
+    let mut db = open(&root.join("case.sqlite"))?;
+    db.store.run_migrations(
+        &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations"),
+    )?;
     super::b93_buy_fixture::seed(&db, &m)?;
-    super::association_observation_fixture::stage(&db, &m, name).await?;
+    super::association_observation_fixture::stage(&db, &m, name, inputs).await?;
     let r = p::read(&db, &m)?;
     assert_eq!(
         serde_json::to_value(r.current.selected_chain)?,
@@ -208,7 +214,7 @@ pub fn state(db: &f::Db, m: &Value) -> Result<Value> {
 }
 pub fn write(name: &str, v: Value) -> Result<()> {
     let name = name.replace([':', '/', '\\'], "_");
-    let p = std::path::PathBuf::from(std::env::var("B92_RESULTS")?).join(format!("{name}.json"));
+    let p = super::b93_local_fixture::results().join(format!("{name}.json"));
     std::fs::create_dir_all(p.parent().unwrap())?;
     std::fs::write(p, serde_json::to_vec_pretty(&v)?)?;
     Ok(())
@@ -219,7 +225,11 @@ pub fn config(url: &str) -> copybot_config::ExecutionConfig {
     // Public synthetic payer only. No private key is created or loaded.
     c.canary_wallet_pubkey = bs58::encode([94u8; 32]).into_string();
     c.execution_signer_pubkey = c.canary_wallet_pubkey.clone();
-    c.execution_signer_keypair_path = std::env::var("B92_NO_KEY").unwrap();
+    c.execution_signer_keypair_path = super::b93_local_fixture::root()
+        .join("absent-signer.json")
+        .to_str()
+        .unwrap()
+        .to_owned();
     assert!(!std::path::Path::new(&c.execution_signer_keypair_path).exists());
     c.quote_canary_enabled = true;
     c.priority_fee_canary_enabled = true;

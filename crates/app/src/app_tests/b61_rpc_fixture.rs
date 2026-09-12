@@ -79,18 +79,16 @@ impl Server {
                             };
                             json!({"inputMint":q["inputMint"],"outputMint":q["outputMint"],"inAmount":q["amount"],
                                 "outAmount":out.to_string(),"otherAmountThreshold":(out*9/10).to_string(),"swapMode":"ExactIn",
-                                "slippageBps":500,"priceImpactPct":"0","routePlan":[{"swapInfo":{"label":"Metis"}}]})
+                                "slippageBps":q["slippageBps"].parse::<u64>()?,"priceImpactPct":"0","routePlan":[{"swapInfo":{"label":"Metis"}}]})
                         }
-                        "instructions" => {
-                            json!({"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},
-                            "instructions":[{"programId":key([66;32])}],"simulationError":null})
-                        }
+                        "instructions" => bundle(payer)?,
                         "swap" => {
                             json!({"swapTransaction":transaction(payer)?,"simulationError":null})
                         }
                         _ => {
                             let result = match method {
                                 "qn_estimatePriorityFees" => json!({"recommended":100000}),
+                                "getFeeForMessage" => json!({"context":{"slot":4241},"value":FEE}),
                                 "getTokenAccountsByOwner" => {
                                     ensure!(request["params"][0] == key(payer));
                                     if request["params"][1]["programId"]

@@ -113,13 +113,25 @@ async fn b53_signed_legacy_expired_resumes_but_unsigned_submit_never_retries() -
         let signed = legacy == "expired_signed";
         let mut f = Fixture::new().await?;
         f.seed("audit-a", 0)?;
-        f.tick(0).await?;
+        // Genuine historical order, created before tiny activation/reservation.
+        let id =
+            super::execution_state_machine_tiny_submit_timeout_route::mark_tiny_timeout_simulated(
+                &f.store,
+                &f.store.load_copy_signal_by_signal_id("audit-a")?.unwrap(),
+                f.now,
+            )?;
+        super::execution_state_machine_tiny_submit_timeout_route::record_tiny_timeout_build_metadata(
+            &f.store, &id, &f.store.load_copy_signal_by_signal_id("audit-a")?.unwrap(), f.now)?;
+        if signed {
+            f.store
+                .mark_execution_canary_submitted(&id, f.now, "legacy-signed")?;
+        } else {
+            f.store
+                .mark_execution_canary_submitted_unknown(&id, f.now, "legacy_unknown")?;
+        }
         let order = f.order("audit-a")?;
-        // Deliberate legacy upgrade fixture, separate from cancellation reproduction.
-        f.conn()?.execute(
-            "DELETE FROM execution_canary_dispatch WHERE order_id=?1",
-            [&order.order_id],
-        )?;
+        assert!(f.store.load_tiny_experiment(f.now)?.is_none());
+        assert!(f.store.load_execution_canary_dispatch(&id)?.is_none());
         if signed {
             f.store
                 .mark_execution_canary_expired(&order.order_id, f.now, "old_local_expiry")?;
@@ -138,7 +150,7 @@ async fn b53_signed_legacy_expired_resumes_but_unsigned_submit_never_retries() -
         }
         f.reopen()?;
         f.tick(35).await?;
-        assert_eq!(f.sends().len(), 1);
+        assert_eq!(f.sends().len(), 0, "legacy recovery never sends");
         assert_eq!(
             f.store.execution_canary_fill_exists(&order.order_id)?,
             signed

@@ -57,9 +57,9 @@ async fn tiny_submit_route_confirmed_buy_opens_position() -> Result<()> {
     let signal = tiny_route_signal("confirmed-buy", now);
     store.insert_copy_signal(&signal)?;
     record_tiny_route_quote(&store, &signal, now)?;
-    let (base_url, server) =
-        serve_metis_build_submit_and_confirm(&keypair.public_key, "tx-tiny-route-buy").await?;
-    let config = tiny_route_config(&keypair.pubkey, &keypair_path, &base_url, &base_url);
+    let (base_url, server) = serve_metis_build_submit_and_confirm(&keypair.public_key).await?;
+    let mut config = tiny_route_config(&keypair.pubkey, &keypair_path, &base_url, &base_url);
+    config.tiny_experiment = super::b126_config_fixture::activated(&config)?.tiny_experiment;
     let runner = ExecutionCanaryRunner::new(config);
 
     let summary = runner.process_tick(&store, now).await?;
@@ -81,7 +81,7 @@ async fn tiny_submit_route_confirmed_buy_opens_position() -> Result<()> {
         order.status,
         copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED
     );
-    assert_eq!(order.tx_signature.as_deref(), Some("tx-tiny-route-buy"));
+    super::tiny_buy_route_fixture::assert_dispatch(&store, &order)?;
     assert_eq!(
         order.simulation_status.as_deref(),
         Some(copybot_storage_core::EXECUTION_SIMULATION_STATUS_PASSED)
@@ -91,7 +91,7 @@ async fn tiny_submit_route_confirmed_buy_opens_position() -> Result<()> {
         Some(copybot_core_types::TokenQuantity::new(10_000, 3))
     );
     assert!((position.qty - 10.0).abs() < 1e-9);
-    assert!((position.cost_sol - 0.01).abs() < 1e-9);
+    assert!((position.cost_sol - 0.0101).abs() < 1e-9);
 
     let _ = std::fs::remove_file(db_path);
     let _ = std::fs::remove_file(keypair_path);
@@ -142,6 +142,15 @@ async fn tiny_submit_route_reconciles_existing_submitted_buy() -> Result<()> {
         ),
     )
     .await?;
+    assert_eq!(second.skipped_reason, Some("unresolved_buy_dispatch"));
+    assert_eq!(second.built, 0);
+    let second = crate::execution_canary_route::process_tiny_submit_reconciliation_sweep(
+        &reconcile_config,
+        &store,
+        now + chrono::Duration::seconds(4),
+    )
+    .await?
+    .unwrap();
     confirm_server.await?;
     let confirmed = store
         .load_execution_canary_order_by_signal(&signal.signal_id)?
@@ -206,82 +215,8 @@ async fn tiny_submit_tick_sweeps_existing_submitted_buy() -> Result<()> {
 
 async fn serve_metis_build_submit_and_confirm(
     first_signer: &[u8; 32],
-    tx_signature: &str,
 ) -> Result<(String, tokio::task::JoinHandle<()>)> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let base_url = format!("http://{}", listener.local_addr()?);
-    let tx = tx_signature.to_string();
-    let wallet = bs58::encode(first_signer).into_string();
-    // B25 positive BUY provider control carries a real guard; SELL fixtures stay unchanged.
-    let serialized_transaction =
-        super::priority_fee_fixture::guarded_transaction(*first_signer, 200_000, 10_000);
-    let server = tokio::spawn(async move {
-        let quote = read_tiny_route_http_request(&listener).await;
-        assert!(quote.body.starts_with("GET /quote?"));
-        write_tiny_route_http_response(
-            quote.socket,
-            r#"{"inputMint":"So11111111111111111111111111111111111111112","inAmount":"10000000","outputMint":"TokenMint","outAmount":"10000","otherAmountThreshold":"9500","swapMode":"ExactIn","slippageBps":500,"platformFee":null,"priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
-        )
-        .await;
-
-        let swap_instructions = read_tiny_route_http_request(&listener).await;
-        assert!(swap_instructions
-            .body
-            .starts_with("POST /swap-instructions "));
-        assert!(swap_instructions.body.contains("\"quoteResponse\""));
-        assert!(swap_instructions
-            .body
-            .contains("\"prioritizationFeeLamports\":22000"));
-        write_tiny_route_http_response(
-            swap_instructions.socket,
-            r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":null}"#,
-        )
-        .await;
-
-        let swap = read_tiny_route_http_request(&listener).await;
-        assert!(swap.body.starts_with("POST /swap "));
-        assert!(swap.body.contains("\"userPublicKey\""));
-        write_tiny_route_http_response(
-            swap.socket,
-            &format!(r#"{{"swapTransaction":"{serialized_transaction}","simulationError":null}}"#),
-        )
-        .await;
-
-        let rpc_simulation = read_tiny_route_http_request(&listener).await;
-        assert!(rpc_simulation
-            .body
-            .contains("\"method\":\"simulateTransaction\""));
-        assert!(rpc_simulation.body.contains("\"sigVerify\":false"));
-        write_tiny_route_http_response(
-            rpc_simulation.socket,
-            r#"{"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","result":{"context":{"slot":42},"value":{"err":null,"logs":[]}}}"#,
-        )
-        .await;
-
-        super::initial_sol_rpc_fixture::serve_three(&listener)
-            .await
-            .expect("BUY funding RPC");
-        let submit = read_tiny_route_http_request(&listener).await;
-        assert!(submit.body.contains("\"method\":\"sendTransaction\""));
-        write_tiny_route_http_response(
-            submit.socket,
-            &format!(r#"{{"jsonrpc":"2.0","id":"execution-submit","result":"{tx}"}}"#),
-        )
-        .await;
-
-        let confirmation = read_tiny_route_http_request(&listener).await;
-        assert!(confirmation
-            .body
-            .contains("\"method\":\"getSignatureStatuses\""));
-        assert!(confirmation.body.contains(&tx));
-        write_tiny_route_http_response(
-            confirmation.socket,
-            r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":42,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}"#,
-        )
-        .await;
-        answer_receipt(&listener, &wallet, &tx, "buy", 42, -10000000).await;
-    });
-    Ok((base_url, server))
+    super::tiny_buy_route_fixture::serve(*first_signer, 10000).await
 }
 
 async fn serve_tiny_route_confirmation_only(

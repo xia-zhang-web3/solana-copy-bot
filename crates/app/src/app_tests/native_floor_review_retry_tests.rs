@@ -17,7 +17,7 @@ fn blockhash(payload: &str) -> Result<[u8; 32]> {
 #[tokio::test]
 async fn root_b25_hash_only_retry_uses_new_blockhash_with_same_reserve() -> Result<()> {
     for extension in [false, true] {
-        let mut f = Fixture::new(Route::Direct, 200_000, 1_400_000).await?;
+        let mut f = Fixture::new(Route::Direct, 10_000, 1_400_000).await?;
         f.wire.lock().unwrap().extension = extension;
         let old = f.build().await?.envelope.unwrap();
         assert_eq!(

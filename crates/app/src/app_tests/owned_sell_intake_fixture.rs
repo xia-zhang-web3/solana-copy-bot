@@ -20,7 +20,12 @@ impl Intake {
     }
 
     pub async fn new(notional: f64, lag: i64, price: u64) -> Result<Self> {
-        let mut f = Fixture::new(price).await?;
+        Self::from_fixture(Fixture::new(price).await?, notional, lag)
+    }
+    pub async fn legacy(notional: f64, lag: i64, price: u64) -> Result<Self> {
+        Self::from_fixture(Fixture::legacy(price).await?, notional, lag)
+    }
+    fn from_fixture(mut f: Fixture, notional: f64, lag: i64) -> Result<Self> {
         for lot in f.store.list_shadow_lots("leader", TOKEN)? {
             f.store.delete_shadow_lot(lot.id)?;
         }

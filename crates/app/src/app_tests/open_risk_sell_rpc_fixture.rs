@@ -20,6 +20,7 @@ pub(super) async fn serve(
     receipt: Arc<Mutex<Option<Value>>>,
     responses: Trace,
 ) -> Result<()> {
+    let mut bundle_number = 0_u64;
     loop {
         let (mut stream, _) = listener.accept().await?;
         let (path, body) = read_request(&mut stream).await?;
@@ -33,7 +34,13 @@ pub(super) async fn serve(
             quote_response(&path)?
         } else if path == "POST /swap-instructions HTTP/1.1" && body.is_object() {
             if body["quoteResponse"]["outputMint"] == SOL {
-                super::generic_sell_synthetic_fixture::bundle(payer, 200_000, price)
+                bundle_number += 1;
+                let mut bundle =
+                    super::generic_sell_synthetic_fixture::bundle(payer, 200_000, price);
+                let mut blockhash = [9u8; 32];
+                blockhash[..8].copy_from_slice(&bundle_number.to_le_bytes());
+                bundle["blockhashWithMetadata"]["blockhash"] = json!(blockhash.to_vec());
+                bundle
             } else {
                 json!({"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"instructions":[{"programId":"synthetic"}],"simulationError":null})
             }
@@ -131,6 +138,7 @@ fn rpc_response(body: &Value, receipt: &Arc<Mutex<Option<Value>>>) -> Result<Val
         "simulateTransaction" => {
             json!({"context":{"slot":42},"value":{"err":null,"logs":[],"unitsConsumed":1}})
         }
+        "getFeeForMessage" => json!({"context":{"slot":42},"value":100000}),
         "sendTransaction" => json!("synthetic-open-risk-sell"),
         "getSignatureStatuses" => json!({"value":[null]}),
         "getTransaction" => {

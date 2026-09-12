@@ -159,7 +159,13 @@ async fn owned_sell_queue_receipt_reconciliation_retries_remaining_inventory_wit
         let order = store.load_execution_canary_order_by_signal(&a.signal_id)?;
         if case == "remaining" {
             let order = order.expect("unblocked A recovers without raw replay");
-            assert_eq!(order.status, EXECUTION_STATUS_CANARY_SUBMITTED);
+            // B owns the experiment. A's legacy remainder is observable but cannot
+            // spend B's SELL reservation after its late receipt is reconciled.
+            assert_eq!(order.status, EXECUTION_STATUS_CANARY_SIMULATED);
+            assert!(order.tx_signature.is_none());
+            assert!(store
+                .load_execution_canary_dispatch(&order.order_id)?
+                .is_none());
             assert_eq!(
                 store
                     .load_execution_canary_build_plan_metadata(&order.order_id)?
@@ -168,7 +174,7 @@ async fn owned_sell_queue_receipt_reconciliation_retries_remaining_inventory_wit
                     .as_deref(),
                 Some("6000")
             );
-            assert_eq!(q.intake.f.sends(), 2);
+            assert_eq!(q.intake.f.sends(), 1);
         } else {
             assert!(order.is_none(), "{case}");
             assert_eq!(q.intake.f.sends(), 1);

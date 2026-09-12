@@ -1,7 +1,7 @@
 use super::buy_retry_queue_fixture::*;
 use super::buy_retry_queue_http_fixture::QueueRpc;
 use super::buy_retry_safety_fixture::reopen;
-use super::entry_cash_guard_tests::{cash, partial};
+use super::entry_cash_guard_tests::partial;
 use super::entry_cost_runtime_fixture::as_of;
 use super::entry_risk_clock_fixture::{at, sequence};
 use super::ExecutionCanaryRunner;
@@ -21,19 +21,9 @@ async fn entry_cash_known_cap_and_unavailable_keep_limit_one_sell_and_receipt_pr
             f.config.canary_max_daily_loss_sol = 7e-9;
             partial(&f)?;
             if unavailable {
-                cash::settle(
-                    &f.store,
-                    &Connection::open(&f.db_path)?,
-                    "exec-canary:duplicate",
-                    "partial-signature",
-                    &f.config.canary_wallet_pubkey,
-                    "PartialMint",
-                    1,
-                    -4,
-                    as_of(&f),
-                )?;
+                super::entry_cash_guard_tests::historical_duplicate(&f)?;
             }
-            let sell = add_sell(&f, unknown)?;
+            let sell = add_sell(&f, false)?;
             let pending = add_pending(&f, true)?;
             let original = buy_order(&f)?;
             let initial = crate::execution_canary_safety::pre_submit_safety_snapshot(
@@ -41,18 +31,12 @@ async fn entry_cash_known_cap_and_unavailable_keep_limit_one_sell_and_receipt_pr
                 &f.store,
                 as_of(&f) + Duration::seconds(1),
             )?;
-            assert_eq!(
-                initial.blocked_reason,
-                Some(if unavailable {
-                    "cash_loss_unavailable"
-                } else {
-                    "max_daily_loss"
-                })
-            );
-            assert_eq!(
-                initial.entry_cost.unwrap().known_total_lamports.is_none(),
-                unavailable
-            );
+            assert_eq!(initial.blocked_reason, Some("unresolved_buy_dispatch"));
+            let cost = f
+                .store
+                .execution_canary_entry_cost(as_of(&f) + Duration::seconds(1))?;
+            assert_eq!(cost.known_total_lamports.is_none(), unavailable);
+            assert_eq!(cost.cash_loss.unavailable_reason.is_some(), unavailable);
             let mut rpc = QueueRpc::new(&mut f, true).await?;
             for n in 0..3 {
                 reopen(&mut f)?;
@@ -65,12 +49,14 @@ async fn entry_cash_known_cap_and_unavailable_keep_limit_one_sell_and_receipt_pr
                 assert!(s.state_machine_existing <= 1);
                 // Once A has a confirmed status but no receipt, its existing accounting
                 // blocker may take precedence on later passes. SELL must still progress.
-                assert!(matches!(
+                assert_eq!(
                     s.state_machine_skipped_reason,
-                    Some(
-                        "max_daily_loss" | "cash_loss_unavailable" | "confirmed_accounting_pending"
-                    )
-                ));
+                    Some(if n == 0 {
+                        "unresolved_buy_dispatch"
+                    } else {
+                        "confirmed_accounting_pending"
+                    })
+                );
                 if let Some(cost) = s.state_machine_entry_cost {
                     assert_eq!(cost.known_total_lamports.is_none(), unavailable);
                 }
@@ -108,7 +94,7 @@ async fn entry_cash_known_cap_and_unavailable_keep_limit_one_sell_and_receipt_pr
 #[tokio::test]
 async fn entry_cash_partial_receipt_during_sweep_blocks_selected_buy_with_fresh_cutoff(
 ) -> Result<()> {
-    let mut f = queue_fixture("b16-selected-buy", true).await?;
+    let mut f = queue_fixture("b16-selected-buy", false).await?;
     f.config.canary_max_open_positions = 10;
     f.config.canary_batch_limit = 3;
     f.config.canary_max_daily_loss_sol = 7e-9;

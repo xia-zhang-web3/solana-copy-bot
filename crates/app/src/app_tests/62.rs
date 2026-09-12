@@ -1,4 +1,4 @@
-use super::receipt_legacy_fixture::{answer_receipt, confirmed_slot};
+use super::receipt_legacy_fixture::{answer_receipt_fee, confirmed_slot};
 use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -13,11 +13,9 @@ async fn tiny_submit_confirm_path_gate_disabled_stops_before_confirmation() -> R
     let now = Utc::now();
     let request = tiny_path_request(&store, "gate-disabled", "buy", 0.01, now)?;
     let adapter = TinyPathSubmitReadyAdapter;
-    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
+    let envelope = super::tiny_submit_fixture::envelope(&store, &request, now)?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
-        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
-            &request.wallet_pubkey,
-        )),
+        buy_safety_config: Some(super::tiny_submit_fixture::config(&request.wallet_pubkey)),
         allow_rpc_submit: false,
         pretrade_max_priority_fee_lamports: 500_000,
         pretrade_min_sol_reserve: 0.05,
@@ -65,16 +63,14 @@ async fn tiny_submit_confirm_path_confirmed_buy_opens_position() -> Result<()> {
     let now = Utc::now();
     let request = tiny_path_request(&store, "confirmed-buy", "buy", 0.01, now)?;
     let adapter = TinyPathSubmitReadyAdapter;
-    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
+    let envelope = super::tiny_submit_fixture::envelope(&store, &request, now)?;
     let (rpc_url, server) = serve_submit_then_confirm(
         "tx-confirmed-buy",
         r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":10,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}"#,
     )
     .await?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
-        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
-            &request.wallet_pubkey,
-        )),
+        buy_safety_config: Some(super::tiny_submit_fixture::config(&request.wallet_pubkey)),
         allow_rpc_submit: true,
         pretrade_max_priority_fee_lamports: 500_000,
         pretrade_min_sol_reserve: 0.05,
@@ -113,7 +109,7 @@ async fn tiny_submit_confirm_path_confirmed_buy_opens_position() -> Result<()> {
         Some(copybot_core_types::TokenQuantity::new(10_000, 3))
     );
     assert!((position.qty - 10.0).abs() < 1e-9);
-    assert!((position.cost_sol - 0.1).abs() < 1e-9);
+    assert!((position.cost_sol - 0.010019).abs() < 1e-9);
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -130,16 +126,14 @@ async fn tiny_submit_confirm_path_pending_buy_does_not_open_fill() -> Result<()>
     let now = Utc::now();
     let request = tiny_path_request(&store, "pending-buy", "buy", 0.01, now)?;
     let adapter = TinyPathSubmitReadyAdapter;
-    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
+    let envelope = super::tiny_submit_fixture::envelope(&store, &request, now)?;
     let (rpc_url, server) = serve_submit_then_confirm(
         "tx-pending-buy",
         r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[null]}}"#,
     )
     .await?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
-        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
-            &request.wallet_pubkey,
-        )),
+        buy_safety_config: Some(super::tiny_submit_fixture::config(&request.wallet_pubkey)),
         allow_rpc_submit: true,
         pretrade_max_priority_fee_lamports: 500_000,
         pretrade_min_sol_reserve: 0.05,
@@ -185,12 +179,15 @@ async fn tiny_submit_confirm_path_confirmed_sell_closes_owned_position() -> Resu
         "/../../migrations"
     )))?;
     let now = Utc::now();
-    store.record_execution_canary_open_position(
+    super::tiny_parent_fixture::seed(
+        &store,
+        &rusqlite::Connection::open(&db_path)?,
         "existing-confirmed-buy",
+        "leader-wallet",
         "TokenMint",
-        10.0,
-        Some(copybot_core_types::TokenQuantity::new(10_000, 3)),
-        0.8,
+        &bs58::encode(super::tiny_submit_fixture::payer()).into_string(),
+        copybot_core_types::TokenQuantity::new(10000, 3),
+        10_000_000,
         now,
     )?;
     super::receipt_legacy_fixture::prepared_inventory_zero(&db_path)?;
@@ -202,16 +199,14 @@ async fn tiny_submit_confirm_path_confirmed_sell_closes_owned_position() -> Resu
         now + chrono::Duration::minutes(1),
     )?;
     let adapter = TinyPathSubmitReadyAdapter;
-    let envelope = crate::app_tests::priority_fee_fixture::envelope(&store, &request, now)?;
+    let envelope = super::tiny_submit_fixture::envelope(&store, &request, now)?;
     let (rpc_url, server) = serve_submit_then_confirm(
         "tx-confirmed-sell",
         r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":20,"confirmations":null,"err":null,"confirmationStatus":"confirmed"}]}}"#,
     )
     .await?;
     let gate = crate::execution_canary_submit_contract::ExecutionTinySubmitGate {
-        buy_safety_config: Some(super::initial_sol_rpc_fixture::buy_config(
-            &request.wallet_pubkey,
-        )),
+        buy_safety_config: Some(super::tiny_submit_fixture::config(&request.wallet_pubkey)),
         allow_rpc_submit: true,
         pretrade_max_priority_fee_lamports: 500_000,
         pretrade_min_sol_reserve: 0.05,
@@ -237,11 +232,17 @@ async fn tiny_submit_confirm_path_confirmed_sell_closes_owned_position() -> Resu
         ),
     )
     .await?;
+    assert_eq!(outcome.submitted, 1, "{outcome:?}");
     server.await?;
 
     assert_eq!(outcome.confirmation_confirmed, 1);
     assert_eq!(outcome.sell_closed, 1);
-    assert!((outcome.tx_signature.as_deref() == Some("tx-confirmed-sell")));
+    assert!(
+        (outcome.tx_signature.as_deref()
+            == super::tiny_submit_fixture::payload("sell")
+                .tx_signature_hint
+                .as_deref())
+    );
     assert!(store
         .load_execution_canary_open_position("TokenMint")?
         .is_none());
@@ -305,14 +306,24 @@ async fn serve_submit_then_confirm(
 ) -> Result<(String, tokio::task::JoinHandle<()>)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let rpc_url = format!("http://{}", listener.local_addr()?);
-    let tx_signature = tx_signature.to_string();
+    let side = if tx_signature.contains("sell") {
+        "sell"
+    } else {
+        "buy"
+    };
+    let tx_signature = super::tiny_submit_fixture::payload(side)
+        .tx_signature_hint
+        .unwrap();
     let confirmation_body = confirmation_body.to_string();
     let server = tokio::spawn(async move {
-        if !tx_signature.contains("sell") {
+        if side == "buy" {
             super::initial_sol_rpc_fixture::serve_three(&listener)
                 .await
                 .expect("BUY funding RPC");
         }
+        super::tiny_submit_fixture::final_fee(&listener)
+            .await
+            .unwrap();
         let submit = read_http_request(&listener).await;
         assert!(submit.body.contains("\"method\":\"sendTransaction\""));
         write_http_response(
@@ -328,19 +339,14 @@ async fn serve_submit_then_confirm(
         assert!(confirmation.body.contains(&tx_signature));
         write_http_response(confirmation.socket, &confirmation_body).await;
         if let Some(slot) = confirmed_slot(&confirmation_body) {
-            let side = if tx_signature.contains("sell") {
-                "sell"
-            } else {
-                "buy"
-            };
-            answer_receipt(
+            answer_receipt_fee(
                 &listener,
-                &bs58::encode([7; 32]).into_string(),
+                &bs58::encode(super::tiny_submit_fixture::payer()).into_string(),
                 &tx_signature,
                 side,
                 slot,
                 if side == "buy" {
-                    -100_000_000
+                    -10_019_000
                 } else {
                     1_200_000_000
                 },
@@ -396,7 +402,7 @@ fn tiny_path_request(
         copybot_storage_core::EXECUTION_SIMULATION_STATUS_PASSED,
         None,
     )?;
-    Ok(crate::execution_submit_adapter::ExecutionSubmitRequest {
+    let mut request = crate::execution_submit_adapter::ExecutionSubmitRequest {
         order_id: reserve.order.order_id,
         signal_id: signal.signal_id,
         client_order_id: reserve.order.client_order_id,
@@ -405,12 +411,19 @@ fn tiny_path_request(
         wallet_id: signal.wallet_id,
         token: signal.token,
         side: signal.side,
-        buy_size_sol: 0.1,
+        buy_size_sol: 0.01,
         slippage_tolerance_bps: 500,
-        wallet_pubkey: bs58::encode([7; 32]).into_string(),
+        wallet_pubkey: bs58::encode(super::tiny_submit_fixture::payer()).into_string(),
         entry_route_plan_json: None,
         metadata: tiny_path_metadata(quote_price_sol),
-    })
+    };
+    if side == "sell" {
+        request.metadata.quote_in_amount_raw = Some("10000".into());
+        request.metadata.quote_out_amount_raw = Some("1200000000".into());
+        request.metadata.quote_response_json = Some(serde_json::json!({"inputMint":"TokenMint","outputMint":"So11111111111111111111111111111111111111112","inAmount":"10000","outAmount":"1200000000","swapMode":"ExactIn","slippageBps":500}).to_string());
+        super::owned_sell_fixture::bind(store, &mut request, 10000, 3)?;
+    }
+    Ok(request)
 }
 
 fn tiny_path_metadata(
@@ -434,7 +447,7 @@ fn tiny_path_signal(
     ts: chrono::DateTime<Utc>,
 ) -> copybot_core_types::CopySignalRow {
     copybot_core_types::CopySignalRow {
-        signal_id: format!("shadow:sig-tiny-path:{name}:{side}:TokenMint"),
+        signal_id: format!("shadow:sig-tiny-path-{name}:leader-wallet:{side}:TokenMint"),
         wallet_id: "leader-wallet".to_string(),
         side: side.to_string(),
         token: "TokenMint".to_string(),

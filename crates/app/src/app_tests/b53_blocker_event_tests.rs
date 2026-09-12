@@ -29,21 +29,23 @@ async fn b53_r1_accounting_clears_a_or_replaces_it_with_new_c_in_same_tick() -> 
         f.reopen()?;
         let settled = capture_tick(&f.tick(2).await?);
         assert!(f.store.execution_canary_fill_exists(&a.order_id)?);
-        let expected = if new_c {
-            f.order("audit-c")?.order_id
-        } else {
-            "none".into()
-        };
+        let expected = "none";
         assert_eq!(settled["buy_blocker_order_id"], expected);
+        assert_eq!(settled["buy_blocker_reason"], "none");
         assert_eq!(
-            settled["buy_blocker_reason"],
-            if new_c {
-                EXECUTION_UNRESOLVED_BUY_REASON
-            } else {
-                "none"
-            }
+            f.sends().len(),
+            1,
+            "settling A never rearms the lifetime BUY slot"
         );
-        assert_eq!(f.sends().len(), if new_c { 2 } else { 1 });
+        if new_c {
+            let c = f.order("audit-c")?;
+            assert!(c.tx_signature.is_none());
+            assert!(f
+                .store
+                .load_execution_canary_dispatch(&c.order_id)?
+                .is_none());
+            assert!(!f.store.execution_canary_fill_exists(&c.order_id)?);
+        }
         f.reopen()?;
         let next = capture_tick(&f.tick(3).await?);
         assert_eq!(next["buy_blocker_order_id"], expected);

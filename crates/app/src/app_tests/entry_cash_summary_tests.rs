@@ -1,9 +1,8 @@
-use super::entry_cash_guard_tests::{cash, partial};
+use super::entry_cash_guard_tests::partial;
 use super::entry_cost_runtime_fixture::as_of;
 use super::fresh_buy_size_runtime_fixture::RuntimeFixture;
 use anyhow::Result;
 use chrono::Duration;
-use rusqlite::Connection;
 
 #[tokio::test]
 async fn entry_cash_available_to_unavailable_replaces_summary_but_no_read_sell_preserves_it(
@@ -17,17 +16,7 @@ async fn entry_cash_available_to_unavailable_replaces_summary_but_no_read_sell_p
     let mut summary = crate::execution_canary::ExecutionCanaryTickSummary::default();
     for broken in [false, true] {
         if broken {
-            cash::settle(
-                &f.store,
-                &Connection::open(&f.db_path)?,
-                "exec-canary:duplicate",
-                "partial-signature",
-                &f.config.canary_wallet_pubkey,
-                "PartialMint",
-                1,
-                -4,
-                as_of(&f),
-            )?;
+            super::entry_cash_guard_tests::historical_duplicate(&f)?;
         }
         let read = crate::execution_canary_safety::pre_submit_safety_snapshot(
             &f.config,

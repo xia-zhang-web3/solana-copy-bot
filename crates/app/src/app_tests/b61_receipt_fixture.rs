@@ -30,7 +30,7 @@ fn token_program() -> Result<[u8; 32]> {
         "B61 token program",
     )
 }
-pub(super) fn transaction(payer: [u8; 32]) -> Result<String> {
+fn instructions(payer: [u8; 32]) -> Result<Vec<SolanaInstruction>> {
     let mut instructions = super::priority_fee_fixture::budget(200_000, 100_000);
     instructions.push(SolanaInstruction {
         program_id: AMM,
@@ -44,6 +44,19 @@ pub(super) fn transaction(payer: [u8; 32]) -> Result<String> {
         ],
         data: [RAW.to_le_bytes(), GROSS.to_le_bytes()].concat(),
     });
+    Ok(instructions)
+}
+pub(super) fn bundle(payer: [u8; 32]) -> Result<Value> {
+    let mut all: Vec<_> = instructions(payer)?.into_iter().map(|ix| json!({
+        "programId":key(ix.program_id),"accounts":ix.accounts.iter().map(|a| json!({"pubkey":key(a.pubkey),"isSigner":a.is_signer,"isWritable":a.is_writable})).collect::<Vec<_>>(),"data":STANDARD.encode(ix.data)})).collect();
+    let swap = all.pop().unwrap();
+    let mut b = super::generic_sell_synthetic_fixture::bundle(payer, 200_000, 100_000);
+    b["computeBudgetInstructions"] = json!(all);
+    b["swapInstruction"] = swap;
+    Ok(b)
+}
+pub(super) fn transaction(payer: [u8; 32]) -> Result<String> {
+    let instructions = instructions(payer)?;
     Ok(STANDARD.encode(serialize_unsigned_legacy_transaction(
         payer,
         [9; 32],

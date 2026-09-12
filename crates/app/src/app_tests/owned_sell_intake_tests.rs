@@ -6,12 +6,12 @@ use anyhow::Result;
 async fn owned_sell_intake_raw_exit_uses_existing_pipeline_without_shadow_accounting() -> Result<()>
 {
     for (notional, lag) in [(0.1, 1), (0.5, 120), (0.1, 120)] {
-        let mut f = Intake::new(notional, lag, 600_000).await?;
-        assert_eq!(f.counts()?, (0, 0, 0, 0));
+        let mut f = Intake::new(notional, lag, 100_000).await?;
+        assert_eq!(f.counts()?, (0, 0, 1, 1));
         f.dispatch(false, true).await?;
         assert_eq!(f.scheduler.held_shadow_sell_count(), 1);
         assert!(f.drain().await?.is_none());
-        assert_eq!(f.counts()?, (0, 0, 0, 0));
+        assert_eq!(f.counts()?, (0, 0, 1, 1));
         f.release();
         let signal = f
             .drain()
@@ -33,7 +33,7 @@ async fn owned_sell_intake_raw_exit_uses_existing_pipeline_without_shadow_accoun
             |row| row.get(0),
         )?;
         assert_eq!(gate_rows, 0, "intent is not a recorded shadow fill");
-        assert_eq!(f.counts()?, (0, 0, 1, 0));
+        assert_eq!(f.counts()?, (0, 0, 2, 1));
         let summary = f.hot(&signal).await?;
         assert_eq!(f.f.sends(), 1, "{summary:?}");
         let quote =
@@ -96,7 +96,7 @@ async fn owned_sell_intake_raw_exit_uses_existing_pipeline_without_shadow_accoun
         assert!(f.drain().await?.is_none());
         f.f.reopen()?;
         f.tick().await?;
-        assert_eq!(f.counts()?, (0, 0, 1, 1));
+        assert_eq!(f.counts()?, (0, 0, 2, 2));
         assert_eq!(f.f.sends(), 1);
         f.finish().await?;
     }
@@ -105,28 +105,28 @@ async fn owned_sell_intake_raw_exit_uses_existing_pipeline_without_shadow_accoun
 
 #[tokio::test]
 async fn owned_sell_intake_restart_tick_finds_intent_before_quote_or_order() -> Result<()> {
-    let mut f = Intake::new(0.1, 120, 600_000).await?;
+    let mut f = Intake::new(0.1, 120, 100_000).await?;
     f.dispatch(false, false).await?;
     f.drain().await?.expect("persisted exit intent");
-    assert_eq!(f.counts()?, (0, 0, 1, 0));
+    assert_eq!(f.counts()?, (0, 0, 2, 1));
     assert_eq!(f.f.sends(), 0);
     f.f.reopen()?;
     let summary = f.tick().await?;
     assert_eq!(f.f.sends(), 1, "{summary:?}");
-    assert_eq!(f.counts()?, (0, 0, 1, 1));
+    assert_eq!(f.counts()?, (0, 0, 2, 2));
     f.finish().await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn owned_sell_intake_hot_tick_overlap_has_one_order_and_submit() -> Result<()> {
-    let mut f = Intake::new(0.1, 120, 600_000).await?;
+    let mut f = Intake::new(0.1, 120, 100_000).await?;
     f.dispatch(false, false).await?;
     let signal = f.drain().await?.unwrap();
     let (hot, tick) = tokio::join!(f.hot(&signal), f.tick());
     hot?;
     tick?;
-    assert_eq!(f.counts()?, (0, 0, 1, 1));
+    assert_eq!(f.counts()?, (0, 0, 2, 2));
     assert_eq!(f.f.sends(), 1);
     f.finish().await?;
     Ok(())
@@ -134,38 +134,58 @@ async fn owned_sell_intake_hot_tick_overlap_has_one_order_and_submit() -> Result
 
 #[tokio::test]
 async fn owned_sell_intake_restart_after_quote_refreshes_durable_unordered_intent() -> Result<()> {
-    let mut f = Intake::new(0.1, 120, 600_000).await?;
-    f.dispatch(false, false).await?;
-    let signal = f.drain().await?.unwrap();
-    crate::execution_quote_canary::ExecutionQuoteCanaryRunner::new(f.f.config.clone())
-        .process_recorded_shadow_signal(&f.f.store, &signal, f.f.now)
-        .await?;
-    assert_eq!(f.counts()?, (0, 0, 1, 0));
-    f.f.reopen()?;
-    f.f.now += chrono::Duration::days(2);
-    let summary = f.tick().await?;
-    assert_eq!(f.f.sends(), 1, "{summary:?}");
-    let quote =
-        f.f.store
-            .load_execution_quote_canary_event_by_id(&f.quote_id())?
-            .unwrap();
-    assert_eq!(quote.request_ts, f.f.now);
-    let provider =
-        f.f.store
-            .load_execution_quote_canary_provider_sample(
-                &f.quote_id(),
-                copybot_storage_core::PROVIDER_GENERIC_METIS,
-            )?
-            .unwrap();
-    assert_eq!(provider.request_ts, f.f.now);
-    assert_eq!(quote.signal_ts, Some(f.f.swap.ts_utc));
-    f.finish().await?;
+    for days_later in [false, true] {
+        let mut f = Intake::new(0.1, 120, 100_000).await?;
+        f.dispatch(false, false).await?;
+        let signal = f.drain().await?.unwrap();
+        crate::execution_quote_canary::ExecutionQuoteCanaryRunner::new(f.f.config.clone())
+            .process_recorded_shadow_signal(&f.f.store, &signal, f.f.now)
+            .await?;
+        assert_eq!(f.counts()?, (0, 0, 2, 1));
+        f.f.reopen()?;
+        f.f.now += if days_later {
+            chrono::Duration::days(2)
+        } else {
+            chrono::Duration::minutes(2)
+        };
+        let summary =
+            super::entry_risk_clock_fixture::at(f.f.now + chrono::Duration::seconds(1), f.tick())
+                .await?;
+        assert_eq!(f.f.sends(), usize::from(!days_later), "{summary:?}");
+        if days_later {
+            let state = f.f.store.load_tiny_experiment(f.f.now)?.unwrap();
+            assert_ne!(state.state, "active");
+            assert_eq!(
+                f.conn()?.query_row(
+                    "SELECT COUNT(*) FROM execution_tiny_reservations",
+                    [],
+                    |r| r.get::<_, u64>(0)
+                )?,
+                1
+            );
+        }
+        let quote =
+            f.f.store
+                .load_execution_quote_canary_event_by_id(&f.quote_id())?
+                .unwrap();
+        assert_eq!(quote.request_ts, f.f.now);
+        let provider =
+            f.f.store
+                .load_execution_quote_canary_provider_sample(
+                    &f.quote_id(),
+                    copybot_storage_core::PROVIDER_GENERIC_METIS,
+                )?
+                .unwrap();
+        assert_eq!(provider.request_ts, f.f.now);
+        assert_eq!(quote.signal_ts, Some(f.f.swap.ts_utc));
+        f.finish().await?;
+    }
     Ok(())
 }
 
 #[tokio::test]
 async fn owned_sell_intake_position_replaced_after_quote_remains_protected() -> Result<()> {
-    let mut f = Intake::new(0.1, 120, 600_000).await?;
+    let mut f = Intake::new(0.1, 120, 100_000).await?;
     f.dispatch(false, false).await?;
     let signal = f.drain().await?.unwrap();
     crate::execution_quote_canary::ExecutionQuoteCanaryRunner::new(f.f.config.clone())
@@ -186,7 +206,7 @@ async fn owned_sell_intake_position_replaced_after_quote_remains_protected() -> 
 async fn owned_sell_intake_preserves_approximate_source_and_wallet_bounded_raw_amount() -> Result<()>
 {
     for approximate in [false, true] {
-        let mut f = Intake::new(0.1, 120, 600_000).await?;
+        let mut f = Intake::new(0.1, 120, 100_000).await?;
         if approximate {
             f.f.swap.exact_amounts = None;
         }

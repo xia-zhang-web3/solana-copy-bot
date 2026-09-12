@@ -15,14 +15,28 @@ pub(super) struct Fixture {
     pub now: DateTime<Utc>,
     pub staged: ExecutionSourceSellIntent,
     pub signal: CopySignalRow,
+    pub replacement_wallet: Option<String>,
 }
 impl Fixture {
     pub fn new(qty: u64) -> Result<Self> {
+        Self::with_parent_age(10, |store, _, now| {
+            proven_buy(store, "buy-a", "source-a", now, TokenQuantity::new(qty, 3)).map(|_| ())
+        })
+    }
+    pub fn new_with_parent(
+        seed: impl FnOnce(&SqliteStore, &Path, DateTime<Utc>) -> Result<()>,
+    ) -> Result<Self> {
+        Self::with_parent_age(60, seed)
+    }
+    fn with_parent_age(
+        age: i64,
+        seed: impl FnOnce(&SqliteStore, &Path, DateTime<Utc>) -> Result<()>,
+    ) -> Result<Self> {
         static NEXT_DB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let sequence = NEXT_DB.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (store, path) = make_test_store(&format!("source-write-off-{sequence}"))?;
-        let now = Utc::now() - chrono::Duration::seconds(10);
-        proven_buy(&store, "buy-a", "source-a", now, TokenQuantity::new(qty, 3))?;
+        let now = Utc::now() - chrono::Duration::seconds(age);
+        seed(&store, &path, now)?;
         let staged = staged(&store, "sell-a", now)?;
         let ExecutionSourceSellPromotionOutcome::Inserted(binding) =
             store.promote_execution_source_sell_intent(&staged.intent_id)?
@@ -39,13 +53,36 @@ impl Fixture {
             now,
             staged,
             signal,
+            replacement_wallet: None,
         })
     }
     pub fn conn(&self) -> Result<Connection> {
         Ok(Connection::open(&self.path)?)
     }
     pub fn replace(&self, qty: u64) -> Result<()> {
-        replace(&self.store, self.now, qty)
+        if let Some(wallet) = &self.replacement_wallet {
+            self.store
+                .record_execution_canary_manual_terminal_write_off(
+                    "mint",
+                    "tiny",
+                    "fixture_replace",
+                    self.now,
+                )?;
+            super::tiny_parent_fixture::seed(
+                &self.store,
+                &self.conn()?,
+                "buy-b",
+                "source-a",
+                "mint",
+                wallet,
+                TokenQuantity::new(qty, 3),
+                1000,
+                self.now,
+            )
+            .map(|_| ())
+        } else {
+            replace(&self.store, self.now, qty)
+        }
     }
 }
 impl Drop for Fixture {

@@ -646,3 +646,23 @@ mod b127_causal_fixture;
 mod b127_floor_tests;
 mod b127_lifecycle_tests;
 mod b127_runtime_tests;
+
+mod entry_risk_future_size_tests;
+
+mod b93_local_fixture;
+mod temporary_output_fixture;
+
+mod tiny_transport_fixture;
+
+mod queue_owned_buy_fixture;
+
+mod b131_hold_tests;
+
+#[path = "app_tests/tiny_parent_fixture.rs"]
+mod tiny_parent_fixture;
+
+#[path = "app_tests/tiny_buy_route_fixture.rs"]
+mod tiny_buy_route_fixture;
+
+#[path = "app_tests/tiny_submit_fixture.rs"]
+mod tiny_submit_fixture;

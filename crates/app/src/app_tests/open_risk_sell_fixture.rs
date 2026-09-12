@@ -32,6 +32,12 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub async fn new(byte_price: u64) -> Result<Self> {
+        Self::with_parent(byte_price, true).await
+    }
+    pub async fn legacy(byte_price: u64) -> Result<Self> {
+        Self::with_parent(byte_price, false).await
+    }
+    async fn with_parent(byte_price: u64, pinned: bool) -> Result<Self> {
         let now = Utc::now();
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -65,14 +71,29 @@ impl Fixture {
             0.2,
             opened,
         )?;
-        store.record_execution_canary_open_position(
-            "owned-buy",
-            TOKEN,
-            7.0,
-            Some(TokenQuantity::new(7_000, 3)),
-            0.07,
-            opened,
-        )?;
+        if pinned {
+            super::tiny_parent_fixture::seed(
+                &store,
+                &rusqlite::Connection::open(dir.join("test.db"))?,
+                "owned-buy",
+                "leader",
+                TOKEN,
+                &bs58::encode(payer).into_string(),
+                TokenQuantity::new(7_000, 3),
+                7_000_000,
+                opened,
+            )?;
+        } else {
+            // Imported A is receipt-only; Queue separately pins its current B parent.
+            store.record_execution_canary_open_position(
+                "owned-buy",
+                TOKEN,
+                7.0,
+                Some(TokenQuantity::new(7_000, 3)),
+                0.07,
+                opened,
+            )?;
+        }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("http://{}", listener.local_addr()?);
         let mut config = ExecutionConfig::default();
@@ -98,6 +119,7 @@ impl Fixture {
         config.submit_timeout_ms = 500;
         config.max_confirm_seconds = 1;
         config.max_submit_attempts = 3;
+        config.tiny_experiment = super::b126_config_fixture::activated(&config)?.tiny_experiment;
         let mut shadow = ShadowConfig::default();
         shadow.enabled = true;
         shadow.quality_gates_enabled = false;

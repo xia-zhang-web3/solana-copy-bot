@@ -49,6 +49,9 @@ fn payload(case: &str) -> Result<ExecutionSignedTransactionPayload> {
     let key = SigningKey::from_bytes(&[if case == "wallet" { 12 } else { 11 }; 32]);
     let payer = key.verifying_key().to_bytes();
     let mut instructions = super::priority_fee_fixture::budget(200_000, 10_000);
+    instructions.push(super::native_funding_fixture::transfer(
+        payer, [52; 32], 10_000_000,
+    ));
     if case != "removed" {
         let reserve = if case == "amount" {
             50_000_002_u64
@@ -102,7 +105,7 @@ fn reseal(f: &Fixture, case: &str) -> Result<ExecutionSigningEnvelope> {
 #[tokio::test]
 async fn native_floor_actual_submit_intent_requires_current_policy_and_final_guard() -> Result<()> {
     for (case, expected) in [
-        ("removed", "native_floor_program"),
+        ("removed", "native_floor_wallet_operands"),
         ("early", "native_floor_program"),
         ("wallet", "native_floor_wallet_payer"),
         ("amount", "native_floor_reserve_mismatch"),
@@ -200,10 +203,10 @@ async fn native_floor_actual_submit_intent_requires_current_policy_and_final_gua
             .count();
         assert_eq!(
             funding_calls,
-            if matches!(case, "guarded" | "funding_zero") {
-                3
-            } else {
-                0
+            match case {
+                "guarded" => 4,
+                "funding_zero" => 3,
+                _ => 0,
             },
             "{case}"
         );

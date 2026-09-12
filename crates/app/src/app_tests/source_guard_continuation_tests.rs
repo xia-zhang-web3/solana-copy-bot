@@ -4,7 +4,11 @@ use anyhow::Result;
 use copybot_storage_core::*;
 
 async fn prefix(candidate: bool, cross_family: bool) -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = if cross_family {
+        Fixture::new().await?
+    } else {
+        Fixture::legacy_parent().await?
+    };
     f.config.canary_batch_limit = 1;
     f.config.quote_canary_enabled = false;
     let mut old = Vec::new();
@@ -69,7 +73,16 @@ async fn prefix(candidate: bool, cross_family: bool) -> Result<()> {
                 .await?;
         }
         f.finish().await?;
-        assert_eq!(f.rpc.count("sendTransaction"), 1, "{first:?}");
+        // Unknown SELLs own this same position. Fair traversal must not duplicate its exit.
+        assert_eq!(f.rpc.count("sendTransaction"), 0, "{first:?}");
+        assert!(f
+            .f
+            .store
+            .load_execution_canary_order(&b)?
+            .unwrap()
+            .tx_signature
+            .is_none());
+        assert!(f.f.store.load_execution_canary_dispatch(&b)?.is_none());
         assert_eq!(
             old.iter()
                 .map(|id| f.f.store.load_execution_canary_order(id))
@@ -138,7 +151,7 @@ async fn source_guard_unsigned_unknown_prefix_reconciles_only_and_keeps_sell_pro
 #[tokio::test]
 async fn source_guard_actual_tick_fresh_quote_prefix_progresses_without_reserving_a() -> Result<()>
 {
-    let mut f = Fixture::new().await?;
+    let mut f = Fixture::legacy_parent().await?;
     f.config.canary_batch_limit = 1;
     let mut old = vec![f.f.signal.signal_id.clone()];
     for n in 0..11 {

@@ -14,29 +14,34 @@ async fn tiny_submit_route_confirmed_sell_closes_owned_position() -> Result<()> 
     let keypair = tiny_sell_route_keypair(24);
     let keypair_path = write_tiny_sell_route_keypair_file("confirmed-sell", &keypair.bytes)?;
     let now = Utc::now();
-    store.record_execution_canary_open_position(
+    super::tiny_parent_fixture::seed(
+        &store,
+        &rusqlite::Connection::open(&db_path)?,
         "existing-confirmed-buy",
+        "leader-wallet",
         "TokenMint",
-        10.0,
-        Some(copybot_core_types::TokenQuantity::new(10_000, 3)),
-        0.8,
+        &keypair.pubkey,
+        copybot_core_types::TokenQuantity::new(10000, 3),
+        10_000_000,
         now,
     )?;
-    super::receipt_legacy_fixture::prepared_inventory_zero(&db_path)?;
     let signal = tiny_sell_route_signal("confirmed-sell", now + chrono::Duration::minutes(1));
     store.insert_copy_signal(&signal)?;
     let quote_event_id = format!("quote:close:{}", signal.signal_id);
     record_tiny_sell_route_quote(&store, &signal, &quote_event_id, now)?;
-    let (base_url, server) =
-        serve_sell_build_submit_and_confirm(&keypair.public_key, "tx-tiny-route-sell").await?;
+    let (base_url, server) = serve_sell_build_submit_and_confirm(&keypair.public_key).await?;
     let mut config = tiny_sell_route_config(&keypair.pubkey, &keypair_path, &base_url, &base_url);
     config.pretrade_max_priority_fee_lamports = 10_000;
+    config.tiny_experiment = super::b126_config_fixture::activated(&config)?.tiny_experiment;
 
-    let summary = crate::execution_canary_route::process_tiny_submit_sell_quote_event_for_route(
-        &config,
-        &store,
-        &quote_event_id,
-        now + chrono::Duration::minutes(1),
+    let summary = super::entry_risk_clock_fixture::at(
+        now + chrono::Duration::seconds(61),
+        crate::execution_canary_route::process_tiny_submit_sell_quote_event_for_route(
+            &config,
+            &store,
+            &quote_event_id,
+            now + chrono::Duration::minutes(1),
+        ),
     )
     .await?
     .expect("sell quote event should be processed");
@@ -68,7 +73,7 @@ async fn tiny_submit_route_confirmed_sell_closes_owned_position() -> Result<()> 
         copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED
     );
     assert_eq!(metadata.priority_fee_lamports, Some(10_000));
-    assert_eq!(order.tx_signature.as_deref(), Some("tx-tiny-route-sell"));
+    super::tiny_buy_route_fixture::assert_dispatch(&store, &order)?;
     assert!(store
         .load_execution_canary_open_position(&signal.token)?
         .is_none());
@@ -219,13 +224,11 @@ async fn tiny_submit_tick_sweeps_existing_submitted_sell() -> Result<()> {
 
 async fn serve_sell_build_submit_and_confirm(
     first_signer: &[u8; 32],
-    tx_signature: &str,
 ) -> Result<(String, tokio::task::JoinHandle<()>)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let base_url = format!("http://{}", listener.local_addr()?);
-    let tx = tx_signature.to_string();
+    let payer = *first_signer;
     let wallet = bs58::encode(first_signer).into_string();
-    let serialized_transaction = serialized_sell_route_legacy_transaction(*first_signer);
     let server = tokio::spawn(async move {
         let balance = read_tiny_sell_route_http_request(&listener).await;
         assert!(balance
@@ -242,7 +245,7 @@ async fn serve_sell_build_submit_and_confirm(
         assert!(quote.body.contains("amount=10000"));
         write_tiny_sell_route_http_response(
             quote.socket,
-            r#"{"inputMint":"TokenMint","inAmount":"10000","outputMint":"So11111111111111111111111111111111111111112","outAmount":"1200000000","priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
+            r#"{"inputMint":"TokenMint","inAmount":"10000","outputMint":"So11111111111111111111111111111111111111112","outAmount":"1200000000","otherAmountThreshold":"1140000000","swapMode":"ExactIn","slippageBps":500,"priceImpactPct":"0.01","routePlan":[{"swapInfo":{"label":"Pump.fun Amm"}}]}"#,
         )
         .await;
 
@@ -256,15 +259,7 @@ async fn serve_sell_build_submit_and_confirm(
             .contains("\"prioritizationFeeLamports\":10000"));
         write_tiny_sell_route_http_response(
             swap_instructions.socket,
-            r#"{"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"cleanupInstruction":null,"otherInstructions":[],"addressLookupTableAddresses":[],"simulationError":null}"#,
-        )
-        .await;
-
-        let swap = read_tiny_sell_route_http_request(&listener).await;
-        assert!(swap.body.starts_with("POST /swap "));
-        write_tiny_sell_route_http_response(
-            swap.socket,
-            &format!(r#"{{"swapTransaction":"{serialized_transaction}","simulationError":null}}"#),
+            &super::generic_sell_synthetic_fixture::bundle(payer, 200_000, 10_000).to_string(),
         )
         .await;
 
@@ -278,7 +273,22 @@ async fn serve_sell_build_submit_and_confirm(
         )
         .await;
 
+        super::tiny_submit_fixture::final_fee(&listener)
+            .await
+            .unwrap();
         let submit = read_tiny_sell_route_http_request(&listener).await;
+        let raw: serde_json::Value =
+            serde_json::from_str(submit.body.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw["params"][0].as_str().unwrap())
+            .unwrap();
+        let signature = ed25519_dalek::Signature::from_slice(&bytes[1..65]).unwrap();
+        ed25519_dalek::VerifyingKey::from_bytes(&payer)
+            .unwrap()
+            .verify_strict(&bytes[65..], &signature)
+            .unwrap();
+        let tx = bs58::encode(signature.to_bytes()).into_string();
         assert!(submit.body.contains("\"method\":\"sendTransaction\""));
         write_tiny_sell_route_http_response(
             submit.socket,
@@ -296,7 +306,10 @@ async fn serve_sell_build_submit_and_confirm(
             r#"{"jsonrpc":"2.0","id":"execution-confirmation","result":{"value":[{"slot":43,"confirmations":null,"err":null,"confirmationStatus":"finalized"}]}}"#,
         )
         .await;
-        answer_receipt(&listener, &wallet, &tx, "sell", 43, 1200000000).await;
+        super::receipt_legacy_fixture::answer_receipt_fee(
+            &listener, &wallet, &tx, "sell", 43, 1200000000,
+        )
+        .await;
     });
     Ok((base_url, server))
 }
@@ -523,10 +536,6 @@ fn write_tiny_sell_route_keypair_file(name: &str, bytes: &[u8]) -> Result<PathBu
     let path = unique_tiny_sell_route_test_path(name).with_extension("json");
     std::fs::write(&path, serde_json::to_string(bytes)?)?;
     Ok(path)
-}
-
-fn serialized_sell_route_legacy_transaction(first_account_key: [u8; 32]) -> String {
-    crate::app_tests::priority_fee_fixture::transaction(first_account_key, 200_000, 10_000)
 }
 
 fn unique_tiny_sell_route_test_path(name: &str) -> PathBuf {

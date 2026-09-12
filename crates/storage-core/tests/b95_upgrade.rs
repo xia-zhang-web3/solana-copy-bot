@@ -7,7 +7,7 @@ use copybot_storage_core::{
     shadow_lot_origin::schema, SqliteStore,
 };
 use rusqlite::Connection;
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 fn old_db(path: &Path) -> Result<()> {
     if let Ok(source) = std::env::var("B95_PRE_FIX_DB") {
@@ -63,12 +63,40 @@ fn b95_true_accepted93r1_upgrade_reopen_replay_preserves_first_and_fingerprint_i
     assert!(history.shadow.is_none());
     assert!(matches!(before.witness, FirstWitness::Selected(_)));
     let mut store = SqliteStore::open(&path)?;
+    let migrations = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../migrations"));
+    let versions = |c: &Connection| -> Result<BTreeSet<String>> {
+        Ok(c.prepare("SELECT version FROM schema_migrations")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    };
+    let applied_before = versions(&c)?;
+    let shipped = std::fs::read_dir(migrations)?
+        .map(|entry| Ok(entry?.path()))
+        .collect::<std::io::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "sql"))
+        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
+        .collect::<BTreeSet<_>>();
+    let pending = shipped
+        .difference(&applied_before)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert!(
+        pending.contains(schema::MIGRATION),
+        "0071 must be exercised"
+    );
+    assert_eq!(store.run_migrations(migrations)?, pending.len());
+    let applied_after = versions(&c)?;
     assert_eq!(
-        store.run_migrations(Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../migrations"
-        )))?,
-        1
+        applied_after
+            .difference(&applied_before)
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        pending
+    );
+    assert_eq!(
+        applied_after,
+        applied_before.union(&shipped).cloned().collect()
     );
     drop(store);
     let mut inbox = AssociationInbox::open(&path, f::limits())?;

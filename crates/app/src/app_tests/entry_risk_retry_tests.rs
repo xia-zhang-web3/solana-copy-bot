@@ -78,7 +78,6 @@ async fn entry_risk_current_decision_clock_enforces_first_and_retry_fee_boundari
                     &[
                         "quote",
                         "build-instructions",
-                        "build-transaction",
                         "simulateTransaction",
                         "sendTransaction",
                         "getSignatureStatuses",
@@ -150,6 +149,12 @@ async fn entry_risk_unordered_clock_keeps_limit_one_sell_and_known_receipt_progr
         assert!(out.state_machine_existing <= 1);
         assert_eq!(buy_order(&f)?, original);
     }
+    assert!(
+        !rpc.trace().iter().any(|s| s.starts_with("sendTransaction")),
+        "SELL also requires a valid tiny decision clock"
+    );
+    f.config.canary_entry_submit_enabled = false;
+    at(f.now + chrono::Duration::seconds(8), f.sweep()).await?;
     rpc.finish().await?;
     confirmed(&f, &sell)?;
     confirmed(&f, &known)?;

@@ -9,7 +9,7 @@ use chrono::Duration;
 
 #[tokio::test]
 async fn b12_auditor_successful_receipt_reaches_open_cap_after_selection() -> Result<()> {
-    let mut f = queue_fixture("b12-auditor-dynamic-open", true).await?;
+    let mut f = queue_fixture("b12-auditor-dynamic-open", false).await?;
     f.config.canary_batch_limit = 3;
     f.config.canary_max_open_positions = 1;
     let pending = add_pending(&f, true)?;
@@ -22,13 +22,16 @@ async fn b12_auditor_successful_receipt_reaches_open_cap_after_selection() -> Re
     let mut rpc = QueueRpc::new(&mut f, false).await?;
     reopen(&mut f)?;
     let summary = f.sweep().await?;
+    let after_receipt = f.sweep().await?;
     rpc.finish().await?;
     assert_eq!(
-        summary.existing, 2,
-        "both orders must have been selected: {summary:?}"
+        summary.existing, 1,
+        "pending BUY defers new BUY before selection: {summary:?}"
     );
     assert_eq!(summary.safety_blocked, 1, "{summary:?}");
-    assert_eq!(summary.skipped_reason, Some("max_open_positions"));
+    assert_eq!(summary.skipped_reason, Some("unresolved_buy_dispatch"));
+    assert_eq!(after_receipt.skipped_reason, Some("max_open_positions"));
+    assert_eq!(after_receipt.safety_blocked, 1);
     confirmed(&f, &pending)?;
     assert!(!f.store.execution_canary_accounting_pending()?);
     assert_eq!(f.store.execution_canary_open_position_count()?, 1);
@@ -50,7 +53,7 @@ async fn b12_auditor_successful_receipt_reaches_open_cap_after_selection() -> Re
 
 #[tokio::test]
 async fn b12_auditor_successful_sell_receipt_reaches_loss_cap_after_selection() -> Result<()> {
-    let mut f = queue_fixture("b12-auditor-dynamic-loss", true).await?;
+    let mut f = queue_fixture("b12-auditor-dynamic-loss", false).await?;
     f.config.canary_batch_limit = 3;
     f.config.canary_max_open_positions = 10;
     f.config.canary_max_daily_loss_sol = 0.02;

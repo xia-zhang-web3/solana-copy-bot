@@ -15,7 +15,7 @@ async fn priority_fee_guarded_legacy_builders_and_fallbacks_sign_and_submit_belo
         Route::DirectFallback,
         Route::PaidFallback,
     ] {
-        let mut f = Fixture::new(route, 200_000, 200_000).await?;
+        let mut f = Fixture::new(route, 10_000, 200_000).await?;
         f.wire.lock().unwrap().guard = Some(50_000_001);
         let outcome = f.build().await?;
         if route == Route::MetisV0 {
@@ -37,9 +37,9 @@ async fn priority_fee_guarded_legacy_builders_and_fallbacks_sign_and_submit_belo
             .unwrap();
         let proof: Value = serde_json::from_str(&stored.priority_fee_json.unwrap())?;
         let expected = if route == Route::Direct {
-            280_000
+            14_000
         } else {
-            40_000
+            2_000
         };
         assert_eq!(proof["fee_proof"]["total_priority_fee_lamports"], expected);
         let submitted = f.submit(&envelope).await?;
@@ -125,12 +125,11 @@ async fn priority_fee_all_builders_and_fallbacks_refuse_actual_over_cap_before_s
 
 #[tokio::test]
 async fn priority_fee_metis_dynamic_request_preserves_cu_price_units() -> Result<()> {
-    let mut f = Fixture::new(Route::Metis, 600_000, 200_000).await?;
+    let mut f = Fixture::new(Route::Metis, 60_000, 200_000).await?;
     f.wire.lock().unwrap().guard = Some(50_000_001);
     f.request.metadata.priority_fee_lamports = None;
-    f.request.metadata.priority_fee_json = Some(
-        crate::execution_priority_fee::sample_quicknode_fee(&json!({"recommended":600000}))?.1,
-    );
+    f.request.metadata.priority_fee_json =
+        Some(crate::execution_priority_fee::sample_quicknode_fee(&json!({"recommended":60000}))?.1);
     let envelope = f.build().await?.envelope.unwrap();
     assert_eq!(f.submit(&envelope).await?.submitted, 1);
     for (path, body) in f
@@ -140,12 +139,12 @@ async fn priority_fee_metis_dynamic_request_preserves_cu_price_units() -> Result
         .iter()
         .filter(|(p, _)| p.contains("/swap"))
     {
-        assert_eq!(body["computeUnitPriceMicroLamports"], 600000, "{path}");
+        assert_eq!(body["computeUnitPriceMicroLamports"], 60000, "{path}");
         assert!(body.get("prioritizationFeeLamports").is_none());
         assert_eq!(body["dynamicComputeUnitLimit"], true);
     }
     let proof = serde_json::to_value(envelope.priority_fee_proof.unwrap())?;
-    assert_eq!(proof["total_priority_fee_lamports"], 120000);
+    assert_eq!(proof["total_priority_fee_lamports"], 12000);
     assert_eq!(proof["requested_compute_unit_limit"], 200000); // mock simulation consumed just 1 CU
     f.finish().await?;
     Ok(())
@@ -219,8 +218,8 @@ async fn priority_fee_submit_rejects_changed_message_missing_or_replayed_proof()
 
 #[tokio::test]
 async fn priority_fee_production_retry_rebuilds_and_checks_new_bytes() -> Result<()> {
-    for next_price in [200_000, 600_000] {
-        let mut f = Fixture::new(Route::Metis, 200_000, 1_400_000).await?;
+    for next_price in [10_000, 600_000] {
+        let mut f = Fixture::new(Route::Metis, 10_000, 1_400_000).await?;
         f.wire.lock().unwrap().guard = Some(50_000_001);
         let old_envelope = f.build().await?.envelope.unwrap();
         assert_eq!(f.signatures(), 1);
@@ -274,7 +273,7 @@ async fn priority_fee_production_retry_rebuilds_and_checks_new_bytes() -> Result
 #[tokio::test]
 async fn priority_fee_sell_builders_use_the_same_pre_sign_and_submit_gates() -> Result<()> {
     for route in [Route::Metis, Route::Paid, Route::Direct] {
-        for price in [200_000, 600_000] {
+        for price in [10_000, 600_000] {
             let mut f = Fixture::new(route, price, 1_400_000).await?;
             f.wire.lock().unwrap().guard = Some(50_000_001);
             f.make_sell()?;

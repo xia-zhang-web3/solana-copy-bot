@@ -75,7 +75,13 @@ async fn root_b26_postawait_rejection_reaches_actual_tick_summary() -> Result<()
                     "result":{"context":{"slot":42},"value":{"err":null,"logs":[]}}
                 }));
             }
-            Reply::json(FundingRpc::default().reply(r))
+            Reply::json(
+                FundingRpc {
+                    fee: Some(100_000),
+                    ..Default::default()
+                }
+                .reply(r),
+            )
         })
         .await?;
         f.config.submit_adapter_http_url = server.endpoint.clone();
@@ -96,7 +102,7 @@ async fn root_b26_postawait_rejection_reaches_actual_tick_summary() -> Result<()
                 .iter()
                 .filter(|t| t.request["method"] == "getFeeForMessage")
                 .count(),
-            1
+            if mutate { 1 } else { 2 }
         );
         assert_eq!(
             trace

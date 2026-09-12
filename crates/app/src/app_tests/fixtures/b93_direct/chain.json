@@ -1,0 +1,102 @@
+{
+  "frames": [
+    "source",
+    "our",
+    "sell",
+    "block-100",
+    "block-120",
+    "block-150"
+  ],
+  "our": {
+    "amount_in": 1.0,
+    "amount_in_bits": 4607182418800017408,
+    "amount_out": 7.0,
+    "amount_out_bits": 4619567317775286272,
+    "dex_hint": "pumpswap",
+    "exact_amounts": {
+      "amount_in_decimals": 9,
+      "amount_in_raw": "1000000000",
+      "amount_out_decimals": 3,
+      "amount_out_raw": "7000"
+    },
+    "program_ids": [
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+    ],
+    "receipt_fee": 10000,
+    "receipt_native_post": 9999990000,
+    "receipt_native_pre": 10000000000,
+    "signature": "2pwQFPKaVjfwzcpThwwxKYuQbAetYiaw9a3f8A54UKyVNmUr5W4zwvAEbodzbpnktDTajRvsi3TndUnEMsNc1JYa",
+    "signer": "7MNnTJmxb2vJ7WWi15fNMHYhwvmvJyY5XMegUjDKEKKT",
+    "slot": 120,
+    "token_in": "So11111111111111111111111111111111111111112",
+    "token_out": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+  },
+  "programs": [
+    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+    "675kPX9MHTjS2zt1qfr1NYHuzeVoWJg29uhPcaX4cF5"
+  ],
+  "pumpswap": [
+    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+  ],
+  "raydium": [
+    "675kPX9MHTjS2zt1qfr1NYHuzeVoWJg29uhPcaX4cF5"
+  ],
+  "sell": {
+    "amount_in": 10.0,
+    "amount_in_bits": 4621819117588971520,
+    "amount_out": 1.0,
+    "amount_out_bits": 4607182418800017408,
+    "dex_hint": "pumpswap",
+    "exact_amounts": {
+      "amount_in_decimals": 3,
+      "amount_in_raw": "10000",
+      "amount_out_decimals": 9,
+      "amount_out_raw": "1000000000"
+    },
+    "program_ids": [
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+    ],
+    "receipt_fee": 10000,
+    "receipt_native_post": 9999990000,
+    "receipt_native_pre": 10000000000,
+    "signature": "2r6vTes1ioKysbwMdJJxHqptFnTCKgVa5CjqjvnXv85D7i9PrAdYpEbCCc3LzWqAwxwHFrRWbUz39qUt7SS2cMvb",
+    "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+    "slot": 150,
+    "token_in": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8",
+    "token_out": "So11111111111111111111111111111111111111112"
+  },
+  "source": {
+    "amount_in": 1.0,
+    "amount_in_bits": 4607182418800017408,
+    "amount_out": 10.0,
+    "amount_out_bits": 4621819117588971520,
+    "dex_hint": "pumpswap",
+    "exact_amounts": {
+      "amount_in_decimals": 9,
+      "amount_in_raw": "1000000000",
+      "amount_out_decimals": 3,
+      "amount_out_raw": "10000"
+    },
+    "program_ids": [
+      "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+    ],
+    "receipt_fee": 10000,
+    "receipt_native_post": 9999990000,
+    "receipt_native_pre": 10000000000,
+    "signature": "2omt37n9Gg1v7dhZnbaxMFyvvYramkgJDwMUWPMb2XsmdppJJqWT5bjH11EeD8kLpTytD1SEpbwY785acJKBQFAZ",
+    "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+    "slot": 100,
+    "token_in": "So11111111111111111111111111111111111111112",
+    "token_out": "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8"
+  },
+  "oracle": {
+    "buy_time": "2026-09-09T00:00:00Z",
+    "legacy_sell_time": "2026-09-09T00:00:10Z",
+    "settlement_time": "2026-09-09T00:00:05Z",
+    "explicit_synthetic_only": true,
+    "durable_message_time": null
+  }
+}

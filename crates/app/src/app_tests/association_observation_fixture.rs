@@ -7,13 +7,12 @@ use copybot_ingestion::{IngestionService, ReplayInput};
 use copybot_storage_core::association_inbox::AssociationInbox;
 use serde_json::Value;
 
-pub async fn stage(db: &f::Db, m: &Value, session: &str) -> Result<()> {
+pub async fn stage(db: &f::Db, m: &Value, session: &str, root: std::path::PathBuf) -> Result<()> {
     let config = f::config(m);
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     let mut service = IngestionService::with_replay(&config, rx, session.into())?;
     let mut receiver = service.take_delivery(session.into())?.unwrap();
     let frames = p::frames(m);
-    let root = p::root("direct");
     let producer = tokio::spawn(async move {
         for (n, name) in frames.iter().enumerate() {
             tx.send(ReplayInput::Update {

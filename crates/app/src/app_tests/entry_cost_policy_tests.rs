@@ -111,7 +111,6 @@ async fn entry_cost_below_cap_keeps_runtime_policy_for_known_zero_foreign_pendin
             &[
                 "quote",
                 "build-instructions",
-                "build-transaction",
                 "simulateTransaction",
                 "sendTransaction",
                 "getSignatureStatuses",

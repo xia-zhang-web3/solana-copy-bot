@@ -105,7 +105,7 @@ pub(super) async fn serve_three(listener: &tokio::net::TcpListener) -> anyhow::R
     Ok(())
 }
 
-/// Preserve the exact business sequence and require all three new parallel RPCs before send.
+/// Exact tiny BUY trace: funding fee/accounts/rent, then a separately bound final fee.
 pub(super) fn assert_funded_buy_trace(actual: &[String], business: &[&str]) {
     let methods = [
         "getFeeForMessage",
@@ -123,11 +123,14 @@ pub(super) fn assert_funded_buy_trace(actual: &[String], business: &[&str]) {
             .enumerate()
             .filter(|(_, m)| m.as_str() == method)
             .collect();
-        assert_eq!(occurrences.len(), 1, "{actual:?}");
-        assert!(
-            occurrences[0].0 > simulation && occurrences[0].0 < send,
+        assert_eq!(
+            occurrences.len(),
+            if method == "getFeeForMessage" { 2 } else { 1 },
             "{actual:?}"
         );
+        for (index, _) in occurrences {
+            assert!(index > simulation && index < send, "{actual:?}");
+        }
     }
     let rest: Vec<_> = actual
         .iter()

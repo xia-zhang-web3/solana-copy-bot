@@ -11,6 +11,38 @@ pub(super) async fn answer_receipt(
     slot: u64,
     net_lamports: i64,
 ) {
+    answer_receipt_inner(listener, wallet, signature, side, slot, net_lamports, None).await;
+}
+
+pub(super) async fn answer_receipt_fee(
+    listener: &tokio::net::TcpListener,
+    wallet: &str,
+    signature: &str,
+    side: &str,
+    slot: u64,
+    net_lamports: i64,
+) {
+    answer_receipt_inner(
+        listener,
+        wallet,
+        signature,
+        side,
+        slot,
+        net_lamports,
+        Some(19000),
+    )
+    .await;
+}
+
+async fn answer_receipt_inner(
+    listener: &tokio::net::TcpListener,
+    wallet: &str,
+    signature: &str,
+    side: &str,
+    slot: u64,
+    net_lamports: i64,
+    fee: Option<u64>,
+) {
     let (mut socket, _) =
         tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
             .await
@@ -25,13 +57,16 @@ pub(super) async fn answer_receipt(
         json!({"accountIndex":1,"owner":wallet,"mint":"TokenMint",
         "uiTokenAmount":{"amount":raw,"decimals":3}})
     };
-    let value = json!({"result":{"slot":slot,"transaction":{"signatures":[signature],
+    let mut value = json!({"result":{"slot":slot,"transaction":{"signatures":[signature],
         "message":{"accountKeys":[{"pubkey":wallet,"signer":true,"writable":true},
             {"pubkey":"token-account","signer":false,"writable":true}]}},
         "meta":{"err":null,"preBalances":[2_000_000_000_i64,2_039_280],
             "postBalances":[2_000_000_000_i64 + net_lamports,2_039_280],
             "preTokenBalances":[row(if side == "buy" {"0"} else {"10000"})],
             "postTokenBalances":[row(if side == "buy" {"10000"} else {"0"})]}}});
+    if let Some(fee) = fee {
+        value["result"]["meta"]["fee"] = json!(fee);
+    }
     let body = value.to_string();
     let response = format!(
         "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",

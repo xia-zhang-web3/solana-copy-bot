@@ -104,6 +104,9 @@ impl Fixture {
         config.submit_timeout_ms = 500;
         config.max_submit_attempts = 3;
         config.canary_buy_size_sol = 0.01;
+        config.quote_canary_buy_slippage_bps = 500;
+        config.quote_canary_sell_slippage_bps = 500;
+        config.tiny_experiment = super::b126_config_fixture::activated(&config)?.tiny_experiment;
         let signal = copybot_core_types::CopySignalRow {
             signal_id: "fee-signal".into(),
             wallet_id: "leader".into(),
@@ -258,13 +261,16 @@ impl Fixture {
         quote["outAmount"] = json!("10000000");
         quote["otherAmountThreshold"] = json!("9500000");
         self.request.metadata.quote_response_json = Some(quote.to_string());
-        self.store.record_execution_canary_open_position(
+        super::tiny_parent_fixture::seed(
+            &self.store,
+            &self.conn()?,
             "fee-owned",
+            "leader",
             TOKEN,
-            123456.0,
-            Some(copybot_core_types::TokenQuantity::new(123456, 0)),
-            0.01,
-            self.now,
+            &self.config.canary_wallet_pubkey,
+            copybot_core_types::TokenQuantity::new(123456, 0),
+            10_000_000,
+            self.now - chrono::Duration::seconds(1),
         )?;
         super::owned_sell_fixture::bind(&self.store, &mut self.request, 123456, 0)?;
         Ok(())
@@ -425,7 +431,9 @@ async fn serve(
                     price.load(Ordering::SeqCst),
                 )
             } else {
-                json!({"computeBudgetInstructions":[],"setupInstructions":[],"swapInstruction":{},"instructions":[{"programId":"synthetic"}],"simulationError":null})
+                // Explicit provider failure exercises the documented opaque fallback.
+                // A malformed bundle must remain a hard structural refusal.
+                json!({"error":"missing account"})
             }
         } else if path.contains("/swap ") {
             let override_tx = wire.lock().unwrap().transaction.clone();
@@ -473,6 +481,7 @@ async fn serve(
                         json!({"result":{"value":data.iter().map(|s| serde_json::from_str::<Value>(s).unwrap()).collect::<Vec<_>>()}})
                     }
                 }
+                "getFeeForMessage" => funding.lock().unwrap().reply(&body),
                 "getLatestBlockhash" => {
                     json!({"result":{"value":{"blockhash":bs58::encode([wire.lock().unwrap().blockhash; 32]).into_string(),"lastValidBlockHeight":1}}})
                 }
@@ -535,7 +544,13 @@ fn mock_transaction(
         crate::execution_native_floor::prepare_final_native_floor(
             payer,
             [9; 32],
-            &super::priority_fee_fixture::budget(limit, price),
+            &{
+                let mut instructions = super::priority_fee_fixture::budget(limit, price);
+                instructions.push(super::native_funding_fixture::transfer(
+                    payer, [52; 32], 10_000_000,
+                ));
+                instructions
+            },
             r,
         )
         .unwrap()

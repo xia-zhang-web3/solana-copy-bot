@@ -64,7 +64,7 @@ async fn witness(retry: bool, valid: bool) -> Result<()> {
             order.status,
             copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED
         );
-        assert_eq!(order.tx_signature.as_deref(), Some("tx-fresh-size"));
+        super::tiny_buy_route_fixture::assert_dispatch(&f.store, &order)?;
     } else {
         assert_eq!(
             order.status,

@@ -43,10 +43,22 @@ fn submit_transport_unknown_without_signature_retries_after_timeout_without_new_
         record.reason.as_deref(),
         Some("submit_transport_submitted_unknown_no_signature")
     );
-    assert_eq!(summary.submit_timeout_retry, 1);
-    assert_eq!(summary.simulated, 1);
+    // An elapsed timeout never proves an Unknown submission was not sent.
+    assert_eq!(summary.submit_timeout_retry, 0);
+    assert_eq!(summary.submit_timeout_wait, 1);
+    assert_eq!(
+        summary.last_confirm_reason.as_deref(),
+        Some("legacy_unsigned_submit_outcome_unknown")
+    );
+    assert_eq!(summary.simulated, 0);
+    assert_eq!(
+        reserve.order.status,
+        copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
+    );
     assert_eq!(reserve.order.order_id, request.order_id);
-    assert_eq!(reserve.order.attempt, 2);
+    assert_eq!(reserve.order.attempt, 1);
+    assert_eq!(reserve.order.client_order_id, request.client_order_id);
+    assert!(reserve.order.tx_signature.is_none());
 
     let _ = std::fs::remove_file(db_path);
     Ok(())
@@ -90,11 +102,20 @@ fn submit_transport_unknown_with_signature_expires_unsafe_instead_of_retry() -> 
         record.tx_signature.as_deref(),
         Some("tx-sig-submit-transport")
     );
-    assert_eq!(summary.submit_timeout_expire_unsafe, 1);
+    assert_eq!(summary.submit_timeout_expire_unsafe, 0);
+    assert_eq!(summary.submit_timeout_wait, 1);
+    assert_eq!(
+        summary.last_confirm_reason.as_deref(),
+        Some("known_signature_outcome_unknown")
+    );
+    assert_eq!(
+        order.tx_signature.as_deref(),
+        Some("tx-sig-submit-transport")
+    );
     assert_eq!(summary.submit_timeout_retry, 0);
     assert_eq!(
         order.status,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_EXPIRED
+        copybot_storage_core::EXECUTION_STATUS_CANARY_SUBMITTED
     );
     assert_eq!(order.attempt, 1);
 

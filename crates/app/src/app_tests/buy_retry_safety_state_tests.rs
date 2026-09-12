@@ -49,7 +49,6 @@ async fn buy_retry_safety_block_reopen_unblock_keeps_same_attempt_and_sends_once
             &[
                 "quote",
                 "build-instructions",
-                "build-transaction",
                 "simulateTransaction",
                 "sendTransaction",
                 "getSignatureStatuses",
@@ -144,6 +143,7 @@ async fn buy_retry_safety_own_known_signature_only_reconciles_when_entry_disable
         f.now + chrono::Duration::seconds(3),
         "tx-fresh-size",
     )?;
+    f.expect_existing_signature("tx-fresh-size");
     f.config.canary_entry_submit_enabled = false;
     reopen(&mut f)?;
     f.sweep().await?;
