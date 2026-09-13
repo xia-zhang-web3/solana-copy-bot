@@ -76,6 +76,13 @@ pub(crate) fn assemble(
         applies(config, plan),
         "instruction_bundle_sell_mode_binding"
     );
+    assemble_unsigned(config, plan, bundle)
+}
+fn assemble_unsigned(
+    config: &ExecutionConfig,
+    plan: &ExecutionTransactionPlan,
+    bundle: &BoundInstructionBundle,
+) -> Result<SwapTransactionDryRunResult> {
     let (binding, instructions) = bundle.verified_parts(plan)?;
     ensure!(
         !config.execution_signer_pubkey.is_empty()
@@ -117,4 +124,48 @@ pub(crate) fn assemble(
         serialized_transaction_base64: payload,
         source: "metis_instruction_bundle_legacy".into(),
     })
+}
+
+/// Only the closed finalized authority can enter with trading disabled. Legacy
+/// prepare/assemble retain their existing mode predicates and RPC semantics.
+pub(crate) async fn prepare_owned(
+    http: &reqwest::Client,
+    config: &ExecutionConfig,
+    plan: &ExecutionTransactionPlan,
+    authority: &crate::execution_owned_sell_rpc::Authority,
+    snapshot: &copybot_storage_core::rpc_owned_sell_snapshot::OwnedSellSnapshot,
+    check: &mut impl FnMut() -> Result<()>,
+) -> Result<SwapTransactionDryRunResult> {
+    ensure!(
+        copybot_config::owned_sell_flags(config)
+            && config.owned_sell_preparation.is_some()
+            && plan.side == "sell"
+            && !plan.submit_enabled,
+        "owned_sell_unsigned_only_flags"
+    );
+    authority.binding(config, snapshot)?;
+    ensure!(
+        plan.token == snapshot.quote.mint
+            && plan.wallet_pubkey == config.canary_wallet_pubkey
+            && plan.metadata.quote_in_amount_raw.as_deref()
+                == Some(snapshot.quote.raw.to_string().as_str()),
+        "owned_sell_plan_binding"
+    );
+    check()?;
+    let binding = BundleRequest::capture(plan)?;
+    let response =
+        fetch_instructions_response(http, config, plan, Some(MAX_RESPONSE_BYTES)).await?;
+    check()?;
+    ensure!(
+        binding.body() == &response.body,
+        "instruction_bundle_request_binding"
+    );
+    let transaction = assemble_unsigned(config, plan, &binding.bind(&response.value)?)?;
+    let rpc=crate::execution_owned_sell_rpc::exchange(http,config,&crate::execution_owned_sell_rpc::endpoint(config)?,serde_json::json!({"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","method":"simulateTransaction","params":[transaction.serialized_transaction_base64,{"encoding":"base64","sigVerify":false,"replaceRecentBlockhash":!copybot_config::owned_sell_dispatch(config),"commitment":"finalized"}]}),check).await?;
+    crate::execution_transaction_rpc_simulation::parse_rpc_simulation_response(
+        rpc.value(),
+        &transaction.source,
+    )?;
+    check()?;
+    Ok(transaction)
 }

@@ -354,7 +354,8 @@ impl SqliteStore {
 
     fn run_migrations_from_sorted_files(&mut self, files: &[PathBuf]) -> Result<usize> {
         use copybot_storage_core::fill_cash_migration;
-        let rebuild = fill_cash_migration::required(&self.conn, files)?;
+        let rebuild = fill_cash_migration::required(&self.conn, files)?
+            || copybot_storage_core::order_identity_migration::required(&self.conn, files)?;
         fill_cash_migration::with_constraints(&mut self.conn, rebuild, |conn| {
             let tx = conn
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -384,6 +385,8 @@ impl SqliteStore {
                     .with_context(|| format!("failed reading migration file {}", path.display()))?;
                 (if version == fill_cash_migration::VERSION {
                     fill_cash_migration::apply(&tx, &sql)
+                } else if version == copybot_storage_core::order_identity_migration::VERSION {
+                    copybot_storage_core::order_identity_migration::apply(&tx, &sql)
                 } else {
                     tx.execute_batch(&sql).map_err(anyhow::Error::from)
                 })

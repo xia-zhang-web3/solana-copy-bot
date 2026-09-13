@@ -30,6 +30,9 @@ pub enum SellSettlementUnsupported {
     SqliteIntegerOutOfRange,
     ReceiptAlreadyClaimed,
     UnprovenReceiptOwnership,
+    OwnedPositionChanged,
+    OwnedContributorsChanged,
+    OwnedOriginReceiptChanged,
     DurableIdentity(crate::ReceiptFactsIdentityRejection),
 }
 

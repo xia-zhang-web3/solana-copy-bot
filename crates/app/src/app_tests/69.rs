@@ -37,6 +37,8 @@ async fn fresh_submit_quote_preserves_pump_fun_metadata_before_completion() -> R
         status: "shadow_recorded".to_string(),
     };
     let metadata = crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+        rpc_owned_sell: None,
+        rpc_owned_live: None,
         owned_sell_amount: None,
         protected_capital: None,
         http_request_started_ts: None,
@@ -312,6 +314,8 @@ pub(super) async fn write_http_status_json(
 
 pub(super) fn pump_fun_metadata() -> crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
     crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+        rpc_owned_sell: None,
+        rpc_owned_live: None,
         owned_sell_amount: None,
         protected_capital: None,
         http_request_started_ts: None,

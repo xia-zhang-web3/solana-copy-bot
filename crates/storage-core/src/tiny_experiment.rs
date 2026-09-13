@@ -1,12 +1,17 @@
 //! Fixed variant A: one pinned experiment per database, never automatically rearmed.
 mod claim;
+mod snapshot;
+pub(crate) use snapshot::read as owned_snapshot;
+pub use snapshot::OwnedExperimentSnapshot;
 mod protected;
 pub use protected::{ProtectedCapitalClaim, ProtectedNativePolicy, TINY_NATIVE_ALLOWANCE};
+mod owned_sell;
 mod settlement;
 use crate::SqliteDiscoveryStore;
 use anyhow::{ensure, Context, Result};
 use chrono::{DateTime, Duration, Utc};
-pub(crate) use claim::reserve;
+pub(crate) use claim::{reserve, reserve_transferred};
+pub(crate) use owned_sell::{check_owned_sell_owner, prepare_owned_sell};
 use rusqlite::{params, Connection, OptionalExtension};
 pub(crate) use settlement::settle;
 
@@ -17,7 +22,7 @@ pub const TINY_TOTAL_FEE: u64 = 300_000;
 pub const TINY_EXIT_RESERVE: u64 = 200_000;
 pub const TINY_HORIZON_SECONDS: i64 = 3600;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TinyExperiment {
     pub id: String,
     pub wallet: String,
@@ -101,12 +106,7 @@ pub(super) fn refresh(conn: &Connection, now: DateTime<Utc>) -> Result<Option<Ti
     if now >= e.deadline {
         stop(conn, "tiny_budget_deadline")?;
     }
-    let (sell, committed): (u64, u64) = conn.query_row(
-        "SELECT COUNT(CASE WHEN side='sell' THEN 1 END),
-        COALESCE(SUM(COALESCE(actual_fee,fee_bound)),0) FROM execution_tiny_reservations",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
+    let (_, sell, committed) = totals(conn)?;
     if sell >= 2 {
         stop(conn, "tiny_budget_sell_slots")?;
     }
@@ -162,4 +162,16 @@ impl SqliteDiscoveryStore {
     pub fn load_tiny_experiment(&self, now: DateTime<Utc>) -> Result<Option<TinyExperiment>> {
         self.with_immediate_transaction_retry("read tiny experiment", |conn| refresh(conn, now))
     }
+}
+
+fn totals(conn: &Connection) -> Result<(u64, u64, u64)> {
+    let (buys,sells,fees):(u64,u64,u64)=conn.query_row("SELECT COUNT(CASE WHEN side='buy' THEN 1 END),COUNT(CASE WHEN side='sell' THEN 1 END),COALESCE(SUM(COALESCE(actual_fee,fee_bound)),0) FROM execution_tiny_reservations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+    let (unsigned, reserved) = owned_sell::unsigned_totals(conn)?;
+    Ok((
+        buys,
+        sells
+            .checked_add(unsigned)
+            .context("tiny_budget_overflow")?,
+        fees.checked_add(reserved).context("tiny_budget_overflow")?,
+    ))
 }

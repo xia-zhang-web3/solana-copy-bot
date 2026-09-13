@@ -66,9 +66,14 @@ pub(super) fn binding_matches(conn: &Connection, t: &FailedExpenseTask) -> Resul
     }) {
         return Ok(false);
     }
-    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM orders o JOIN copy_signals s ON s.signal_id=o.signal_id
-        WHERE o.order_id=?1 AND o.tx_signature=?2 AND o.attempt=?3 AND o.route=?4 AND s.token=?5 AND lower(s.side)=?6 AND o.submit_ts=?7 AND EXISTS(SELECT 1 FROM execution_failed_expense_tasks t WHERE t.order_id=o.order_id AND t.wallet=?8))",
-        params![t.order_id,t.tx_signature,t.attempt,t.route,t.token,t.side,t.operation_at,t.wallet],|r|r.get(0))?)
+    let (token, side) =
+        crate::rpc_owned_sell_handoff::dispatch::identity::token_side(conn, &t.order_id)?;
+    if token != t.token || !side.eq_ignore_ascii_case(&t.side) {
+        return Ok(false);
+    }
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM orders o
+        WHERE o.order_id=?1 AND o.tx_signature=?2 AND o.attempt=?3 AND o.route=?4 AND o.submit_ts=?5 AND EXISTS(SELECT 1 FROM execution_failed_expense_tasks t WHERE t.order_id=o.order_id AND t.wallet=?6))",
+        params![t.order_id,t.tx_signature,t.attempt,t.route,t.operation_at,t.wallet],|r|r.get(0))?)
 }
 impl SqliteDiscoveryStore {
     pub fn load_failed_expense_task(&self, id: &str) -> Result<Option<FailedExpenseTask>> {
@@ -97,8 +102,10 @@ impl SqliteDiscoveryStore {
             "invalid failed expense proof"
         );
         self.with_immediate_transaction_retry("failed expense detection",|conn| {
-            let (signature,attempt,route,token,side,operation,status):(String,u32,String,String,String,String,String)=conn.query_row(
-                "SELECT o.tx_signature,o.attempt,o.route,s.token,lower(s.side),o.submit_ts,o.status FROM orders o JOIN copy_signals s ON s.signal_id=o.signal_id WHERE o.order_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)))?;
+            let (token,side)=crate::rpc_owned_sell_handoff::dispatch::identity::token_side(conn,id)?;
+            let side=side.to_ascii_lowercase();
+            let (signature,attempt,route,operation,status):(String,u32,String,String,String)=conn.query_row(
+                "SELECT o.tx_signature,o.attempt,o.route,o.submit_ts,o.status FROM orders o WHERE o.order_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
             ensure!(id.starts_with("exec-canary:") && !signature.trim().is_empty() && matches!(status.as_str(),crate::EXECUTION_STATUS_CANARY_SUBMITTED|crate::EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED|crate::EXECUTION_STATUS_CANARY_CONFIRMED|crate::EXECUTION_STATUS_CANARY_FAILED),"failed expense requires sent order");
             if let Some(old)=load(conn,id)? {
                 if !binding_matches(conn,&old)? || old.wallet!=wallet || old.slot.zip(slot).is_some_and(|(a,b)|a!=b) || serde_json::from_str::<serde_json::Value>(&old.failure_error_json)? != *error {

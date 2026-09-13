@@ -23,6 +23,8 @@ pub(crate) fn sign_serialized_transaction_from_config(
     plan: &ExecutionTransactionPlan,
     payload: &ExecutionSerializedTransactionPayload,
 ) -> Result<Option<ExecutionSignedTransactionPayload>> {
+    #[cfg(test)]
+    crate::app_tests::b135_hooks::mark("signing_entry", &request.order_id);
     if signer_config_is_empty(config) {
         return Ok(None);
     }
@@ -73,6 +75,8 @@ struct FileTransactionSigner {
 
 impl FileTransactionSigner {
     fn from_config(config: &ExecutionConfig) -> Result<Self> {
+        #[cfg(test)]
+        crate::app_tests::b135_hooks::mark("keyloader", &config.execution_signer_keypair_path);
         let path = Path::new(config.execution_signer_keypair_path.trim());
         let keypair_bytes = load_solana_keypair_file(path)?;
         let mut secret = [0_u8; SECRET_KEY_BYTES];

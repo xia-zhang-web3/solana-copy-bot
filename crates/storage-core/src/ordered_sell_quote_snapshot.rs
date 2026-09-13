@@ -5,7 +5,7 @@ use anyhow::{ensure, Context};
 use copybot_core_types::association_delivery::CandidateGeneration;
 use rusqlite::Connection;
 
-pub(super) fn read(
+pub(crate) fn read(
     c: &Connection,
     id: &str,
     l: InboxLimits,

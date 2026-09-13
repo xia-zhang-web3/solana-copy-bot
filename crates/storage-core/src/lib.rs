@@ -2,10 +2,13 @@ mod association_candidate;
 pub mod association_inbox;
 pub mod association_sell_preparation;
 mod association_sell_types;
+pub mod order_identity_migration;
 pub mod ordered_sell_quote;
 pub mod ordered_source_sell;
 mod quote_http_timing;
 pub mod quote_response_availability;
+pub mod rpc_owned_sell_handoff;
+pub mod rpc_owned_sell_snapshot;
 pub use quote_http_timing::{
     quote_http_started_expr, quote_http_timing_available, QUOTE_HTTP_TIMING_MIGRATION,
 };

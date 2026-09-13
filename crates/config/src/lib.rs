@@ -11,9 +11,14 @@ pub use association_delivery::{
 mod discovery_v2_identity;
 mod env_parsing;
 mod loader;
+mod owned_sell_preparation;
 mod risk_validation;
 mod schema;
 mod tiny_experiment;
+pub use owned_sell_preparation::{
+    owned_sell_dispatch, owned_sell_flags, validate_owned_sell_preparation,
+    OwnedSellPreparationConfig, RPC_FINALIZED_OWNED_SELL_V1,
+};
 pub use tiny_experiment::{TinyExperimentConfig, TinyPolicyMode};
 
 pub use self::discovery_v2_identity::{

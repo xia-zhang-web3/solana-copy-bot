@@ -32,22 +32,22 @@ pub(crate) fn validate_identity(
     conn: &Connection,
     facts: &ExecutionCanaryReceiptFacts,
 ) -> Result<()> {
-    let Some((
-        status,
-        order_sig,
-        token,
-        side,
-        proof_sig,
-        wallet,
-        proof_token,
-        proof_side,
-        slot,
-        confirmation,
-    )) = conn
-        .query_row(
-            "SELECT o.status, o.tx_signature, s.token, s.side, p.tx_signature, p.wallet_pubkey,
+    let (token, side) =
+        crate::rpc_owned_sell_handoff::dispatch::identity::token_side(conn, &facts.order_id)
+            .map_err(|e| {
+                if matches!(
+                    e.downcast_ref::<rusqlite::Error>(),
+                    Some(rusqlite::Error::QueryReturnedNoRows)
+                ) {
+                    ReceiptFactsIdentityRejection::Missing.into()
+                } else {
+                    e
+                }
+            })?;
+    let Some((status, order_sig, proof_sig, wallet, proof_token, proof_side, slot, confirmation)) =
+        conn.query_row(
+            "SELECT o.status, o.tx_signature, p.tx_signature, p.wallet_pubkey,
          p.token, p.side, p.slot, p.confirmation_status FROM orders o
-         JOIN copy_signals s ON s.signal_id = o.signal_id
          JOIN execution_canary_receipt_proofs p ON p.order_id = o.order_id WHERE o.order_id = ?1",
             [&facts.order_id],
             |r| {
@@ -58,10 +58,8 @@ pub(crate) fn validate_identity(
                     r.get::<_, String>(3)?,
                     r.get::<_, String>(4)?,
                     r.get::<_, String>(5)?,
-                    r.get::<_, String>(6)?,
+                    r.get::<_, Option<String>>(6)?,
                     r.get::<_, String>(7)?,
-                    r.get::<_, Option<String>>(8)?,
-                    r.get::<_, String>(9)?,
                 ))
             },
         )

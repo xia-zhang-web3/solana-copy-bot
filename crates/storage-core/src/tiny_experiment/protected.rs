@@ -2,7 +2,7 @@
 use super::*;
 pub const TINY_NATIVE_ALLOWANCE: u64 = 15_000_000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProtectedNativePolicy {
     pub experiment_id: String,
     pub wallet: String,
@@ -31,7 +31,7 @@ pub(super) fn mode(conn: &Connection) -> Result<String> {
         |r| r.get(0),
     )?)
 }
-fn load_policy(conn: &Connection, e: &TinyExperiment) -> Result<ProtectedNativePolicy> {
+pub(super) fn load_policy(conn: &Connection, e: &TinyExperiment) -> Result<ProtectedNativePolicy> {
     ensure!(
         mode(conn)? == "protected_native_capital",
         "tiny_capital_mode_conflict"

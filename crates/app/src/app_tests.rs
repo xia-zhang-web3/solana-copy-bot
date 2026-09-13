@@ -659,6 +659,15 @@ mod queue_owned_buy_fixture;
 
 mod b131_hold_tests;
 
+mod b135_budget_tests;
+mod b135_fixture;
+pub(crate) mod b135_hooks;
+mod b135_partial_tests;
+mod b135_refusal_tests;
+mod b135_server;
+mod b135_state_tests;
+mod b135_transition_tests;
+
 #[path = "app_tests/tiny_parent_fixture.rs"]
 mod tiny_parent_fixture;
 
@@ -667,3 +676,19 @@ mod tiny_buy_route_fixture;
 
 #[path = "app_tests/tiny_submit_fixture.rs"]
 mod tiny_submit_fixture;
+
+mod b136_baseline_tests;
+mod b136_fixture;
+mod b136_server;
+
+mod b136_budget_tests;
+mod b136_config;
+mod b136_endpoint_tests;
+mod b136_prior_sell;
+mod b136_recovery_tests;
+mod b136_refusal_tests;
+mod b136_rpc;
+
+pub(crate) mod b136_r1_hooks;
+mod b136_r1_lifecycle_tests;
+mod b136_r1_tick_tests;

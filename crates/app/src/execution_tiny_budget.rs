@@ -24,6 +24,12 @@ pub(crate) async fn prepare(
     state: &SubmitState,
     tick: DateTime<Utc>,
 ) -> Result<(TinyBudgetClaim, DateTime<Utc>)> {
+    if matches!(state, SubmitState::Owned(_)) {
+        return crate::execution_owned_sell_prepare::submit::guard::budget(
+            store, request, intent, envelope, gate, transport,
+        )
+        .await;
+    }
     let config = gate
         .buy_safety_config
         .as_ref()

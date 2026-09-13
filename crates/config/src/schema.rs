@@ -54,6 +54,7 @@ impl Default for SystemConfig {
 #[derive(Clone, Deserialize)]
 #[serde(default)]
 pub struct ExecutionConfig {
+    pub owned_sell_preparation: Option<crate::OwnedSellPreparationConfig>,
     pub tiny_experiment: crate::TinyExperimentConfig,
     pub enabled: bool,
     pub canary_enabled: bool,
@@ -115,6 +116,7 @@ impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
             tiny_experiment: Default::default(),
+            owned_sell_preparation: None,
             enabled: false,
             canary_enabled: false,
             canary_dry_run: true,

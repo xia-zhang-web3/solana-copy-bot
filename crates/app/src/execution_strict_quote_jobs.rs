@@ -1,4 +1,4 @@
-//! Small quote-only job pool. No SwapEvent clock, owner permit or financial continuation.
+//! Bounded strict quote jobs; the explicit policy may continue to unsigned ownership.
 use super::{ExecutionQuoteCanaryRunner, ExecutionQuoteCanaryTickSummary};
 use anyhow::{ensure, Context, Result};
 use chrono::Utc;
@@ -12,7 +12,19 @@ use tokio::task::JoinHandle;
 #[path = "execution_strict_quote_http.rs"]
 mod http;
 const JOBS: usize = 4;
-type Job = JoinHandle<Result<Step>>;
+#[derive(Debug)]
+struct Job {
+    handle: JoinHandle<Result<Step>>,
+    live: crate::execution_owned_sell_prepare::submit::guard::Live,
+}
+impl Drop for Job {
+    fn drop(&mut self) {
+        self.live
+            .0
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.handle.abort();
+    }
+}
 #[derive(Debug)]
 enum Step {
     Completed,
@@ -26,7 +38,8 @@ struct Pool {
 impl Drop for Pool {
     fn drop(&mut self) {
         for job in &self.jobs {
-            job.abort();
+            job.live.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            job.handle.abort();
         }
     }
 }
@@ -42,11 +55,15 @@ impl StrictQuotes {
         ingestion: &IngestionConfig,
         path: &str,
     ) -> Result<Option<Self>> {
+        copybot_config::validate_owned_sell_preparation(config, ingestion)?;
+        if config.owned_sell_preparation.is_some() {
+            crate::execution_owned_sell_rpc::endpoint(config)?;
+        }
         if ingestion.yellowstone_delivery_mode != "durable_association_v1" {
             return Ok(None);
         }
         ensure!(
-            !config.enabled && !config.canary_tiny_submit_enabled,
+            copybot_config::owned_sell_flags(config),
             "strict quotes require both trading flags=false"
         );
         let l = ingestion
@@ -72,7 +89,7 @@ impl ExecutionQuoteCanaryRunner {
     pub(super) fn strict_tick(&self) -> Result<ExecutionQuoteCanaryTickSummary> {
         let strict = self.strict.as_ref().context("strict mode missing")?;
         ensure!(
-            !self.config.enabled && !self.config.canary_tiny_submit_enabled,
+            copybot_config::owned_sell_flags(&self.config),
             "strict quotes trading flags changed"
         );
         let mut pool = strict
@@ -83,14 +100,14 @@ impl ExecutionQuoteCanaryRunner {
         // Join only finished handles, without waiting on held network jobs in the app loop.
         let mut remaining = vec![];
         for mut job in pool.jobs.drain(..) {
-            if !job.is_finished() {
+            if !job.handle.is_finished() {
                 remaining.push(job);
                 continue;
             }
             use std::future::Future;
             let waker = std::task::Waker::noop();
             let mut cx = std::task::Context::from_waker(waker);
-            match std::pin::Pin::new(&mut job).poll(&mut cx) {
+            match std::pin::Pin::new(&mut job.handle).poll(&mut cx) {
                 std::task::Poll::Ready(Ok(Ok(Step::Completed))) => summary.strict_completed += 1,
                 std::task::Poll::Ready(Ok(Ok(Step::Skipped))) => {}
                 std::task::Poll::Ready(Ok(Ok(Step::CapacityRefused(refusal)))) => {
@@ -119,7 +136,11 @@ impl ExecutionQuoteCanaryRunner {
             let limits = strict.limits;
             let config = self.config.clone();
             let client = self.http.clone();
-            pool.jobs.push(tokio::spawn(async move {
+            let live = crate::execution_owned_sell_prepare::submit::guard::Live(Arc::new(
+                std::sync::atomic::AtomicBool::new(true),
+            ));
+            let owner = live.clone();
+            let handle = tokio::spawn(async move {
                 let endpoint = reqwest::Url::parse(&config.quote_canary_base_url)?;
                 ensure!(
                     endpoint.username().is_empty()
@@ -129,10 +150,19 @@ impl ExecutionQuoteCanaryRunner {
                     "strict quote endpoint must not contain credentials/query/fragment"
                 );
                 let endpoint = endpoint.to_string();
+                let preparation = config.owned_sell_preparation.is_some();
                 let prepared = tokio::task::spawn_blocking(move || -> Result<_> {
                     let store = SqliteStore::open(path)?;
                     store.set_busy_timeout(std::time::Duration::from_millis(limits.busy_ms))?;
-                    let claim = store.claim_strict_sell_quote(limits, &endpoint, Utc::now)?;
+                    let claim = if preparation {
+                        store.claim_strict_sell_quote_for_owned_preparation(
+                            limits,
+                            &endpoint,
+                            Utc::now,
+                        )?
+                    } else {
+                        store.claim_strict_sell_quote(limits, &endpoint, Utc::now)?
+                    };
                     Ok((store, claim))
                 })
                 .await??;
@@ -145,18 +175,44 @@ impl ExecutionQuoteCanaryRunner {
                     _ => return Ok(Step::Skipped),
                 };
                 let binding = claim.binding.clone();
-                let observation = http::fetch(&client, &config, &binding, || {
+                let mut recheck = || {
                     // Mutable capture keeps the connection owned by this Send job.
                     let store = &mut store;
                     store.recheck_strict_sell_quote(&claim, limits, Utc::now())
-                })
-                .await;
-                tokio::task::spawn_blocking(move || {
-                    store.complete_strict_sell_quote(&claim, limits, observation, Utc::now)
+                };
+                let (observation, body) = if preparation {
+                    http::fetch_with_body(&client, &config, &binding, &mut recheck).await
+                } else {
+                    (
+                        http::fetch(&client, &config, &binding, &mut recheck).await,
+                        None,
+                    )
+                };
+                let (mut store, observation) = tokio::task::spawn_blocking(move || -> Result<_> {
+                    let observation =
+                        store.complete_strict_sell_quote(&claim, limits, observation, Utc::now)?;
+                    Ok((store, observation))
                 })
                 .await??;
+                if config.owned_sell_preparation.is_some()
+                    && observation.outcome == QuoteOutcome::Current
+                {
+                    let runtime = tokio::runtime::Handle::current();
+                    tokio::task::spawn_blocking(move || {
+                        runtime.block_on(crate::execution_owned_sell_prepare::run(
+                            &mut store,
+                            &config,
+                            limits,
+                            observation,
+                            body.context("owned_sell_quote_body_missing")?,
+                            owner,
+                        ))
+                    })
+                    .await??;
+                }
                 Ok(Step::Completed)
-            }));
+            });
+            pool.jobs.push(Job { handle, live });
         }
         summary.strict_running = pool.jobs.len();
         Ok(summary)

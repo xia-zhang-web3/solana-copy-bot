@@ -36,7 +36,9 @@ mod direct_builders;
 mod failed_expense;
 mod file_signer;
 mod rpc_failed_expense;
-pub(crate) use failed_expense::sweep as recover_failed_expenses;
+pub(crate) use failed_expense::{
+    recover_order as recover_failed_expense_order, sweep as recover_failed_expenses,
+};
 mod receipt_sell_accounting;
 mod rpc_confirmation;
 mod rpc_confirmed_fill;
@@ -113,6 +115,11 @@ pub(crate) struct ExecutionBuildPlanMetadata {
         Option<Box<crate::execution_native_floor_policy::protected::ContextProof>>,
     #[serde(default)]
     pub(crate) owned_sell_amount: Option<crate::execution_source_sell_guard::amount::Proof>,
+    #[serde(skip)]
+    pub(crate) rpc_owned_live: Option<crate::execution_owned_sell_prepare::submit::guard::Live>,
+    #[serde(skip)]
+    pub(crate) rpc_owned_sell:
+        Option<Box<copybot_storage_core::rpc_owned_sell_handoff::dispatch::Prepared>>,
     pub(crate) http_request_started_ts: Option<DateTime<Utc>>,
     pub(crate) quote_response_available_ts: Option<DateTime<Utc>>,
     pub(crate) quote_source: Option<String>,
@@ -137,6 +144,8 @@ pub(crate) struct ExecutionBuildPlanMetadata {
 impl Default for ExecutionBuildPlanMetadata {
     fn default() -> Self {
         Self {
+            rpc_owned_live: None,
+            rpc_owned_sell: None,
             owned_sell_amount: None,
             protected_capital: None,
             quote_source: Some("not_available".to_string()),

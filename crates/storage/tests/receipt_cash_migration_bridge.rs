@@ -10,10 +10,16 @@ fn legacy_runner_uses_shared_cash_rebuild_and_preserves_incoming_links() -> Resu
     let old = dir.path().join("old");
     std::fs::create_dir(&old)?;
     let migrations = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../migrations"));
+    let mut pending = 0;
     for file in std::fs::read_dir(migrations)? {
         let file = file?;
+        if file.path().extension().is_none_or(|e| e != "sql") {
+            continue;
+        }
         if file.file_name().to_string_lossy().as_ref() < "0055" {
             std::fs::copy(file.path(), old.join(file.file_name()))?;
+        } else {
+            pending += 1;
         }
     }
     let path = dir.path().join("legacy.db");
@@ -26,7 +32,7 @@ fn legacy_runner_uses_shared_cash_rebuild_and_preserves_incoming_links() -> Resu
         CREATE INDEX legacy_fill_token ON fills(token);
         CREATE TABLE linked(fill_id INTEGER REFERENCES fills(id) ON DELETE CASCADE);
         INSERT INTO linked VALUES(71);")?;
-    assert_eq!(store.run_migrations(migrations)?, 7);
+    assert_eq!(store.run_migrations(migrations)?, pending);
     assert_eq!(store.run_migrations(migrations)?, 0);
     assert_eq!(
         conn.query_row("SELECT fill_id FROM linked", [], |r| r.get::<_, i64>(0))?,

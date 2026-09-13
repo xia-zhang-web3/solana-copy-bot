@@ -7,7 +7,7 @@ use rusqlite::{params, OptionalExtension};
 
 pub const EXECUTION_UNRESOLVED_BUY_REASON: &str = "unresolved_buy_dispatch";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionCanaryDispatch {
     pub order_id: String,
     pub signal_id: String,
@@ -104,31 +104,53 @@ impl SqliteDiscoveryStore {
         );
         self.with_immediate_transaction_retry("claim canary dispatch", |conn| {
             if let Some(old) = self.load_execution_canary_dispatch(&identity.order_id)? {
-                ensure!(&old==identity, "dispatch_identity_conflict");
+                ensure!(&old == identity, "dispatch_identity_conflict");
                 return Ok(ExecutionDispatchClaim::Existing);
             }
             let now = clock()?;
-            let current=self.load_execution_canary_order(&expected.order_id)?.context("dispatch_order_missing")?;
-            ensure!(&current==expected && current.status==EXECUTION_STATUS_CANARY_SIMULATED
-                && current.tx_signature.as_deref().is_none_or(|s| s.trim().is_empty()), "dispatch_order_changed");
-            let saved=self.load_copy_signal_by_signal_id(&signal.signal_id)?.context("dispatch_signal_missing")?;
-            ensure!(same_signal(signal,&saved), "dispatch_signal_changed");
-            if identity.side=="buy" {
-                ensure!(!self.execution_canary_unresolved_buy()?, "unresolved_buy_dispatch");
-                ensure!(!self.execution_canary_accounting_pending()?, "confirmed_accounting_pending");
+            let current = self
+                .load_execution_canary_order(&expected.order_id)?
+                .context("dispatch_order_missing")?;
+            ensure!(
+                &current == expected
+                    && current.status == EXECUTION_STATUS_CANARY_SIMULATED
+                    && current
+                        .tx_signature
+                        .as_deref()
+                        .is_none_or(|s| s.trim().is_empty()),
+                "dispatch_order_changed"
+            );
+            let saved = self
+                .load_copy_signal_by_signal_id(&signal.signal_id)?
+                .context("dispatch_signal_missing")?;
+            ensure!(same_signal(signal, &saved), "dispatch_signal_changed");
+            if identity.side == "buy" {
+                ensure!(
+                    !self.execution_canary_unresolved_buy()?,
+                    "unresolved_buy_dispatch"
+                );
+                ensure!(
+                    !self.execution_canary_accounting_pending()?,
+                    "confirmed_accounting_pending"
+                );
             }
-            ensure!(self.execution_canary_receipt_submit_block_reason(&identity.order_id,&identity.token,&identity.side)?.is_none(),
-                "dispatch_receipt_blocked");
-            ensure!(self.execution_sell_intent_block_in_snapshot(conn,&saved)?.is_none(), "dispatch_sell_source_changed");
-            conn.execute("INSERT INTO execution_canary_dispatch(order_id,signal_id,client_order_id,route,attempt,wallet,token,side,
-                tx_signature,transaction_sha256,message_sha256,claimed_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-                params![identity.order_id,identity.signal_id,identity.client_order_id,identity.route,identity.attempt,
-                    identity.wallet,identity.token,identity.side,identity.tx_signature,identity.transaction_sha256,identity.message_sha256,now.to_rfc3339()])?;
-            crate::tiny_experiment::reserve(conn,identity,budget,now)?;
-            let changed=conn.execute("UPDATE orders SET status='execution_canary_submitted',tx_signature=?2,submit_ts=?3,
-                confirm_ts=NULL,err_code=NULL,simulation_error='dispatch_outcome_unknown' WHERE order_id=?1",
-                params![identity.order_id,identity.tx_signature,now.to_rfc3339()])?;
-            ensure!(changed==1,"dispatch_order_missing");
+            ensure!(
+                self.execution_canary_receipt_submit_block_reason(
+                    &identity.order_id,
+                    &identity.token,
+                    &identity.side
+                )?
+                .is_none(),
+                "dispatch_receipt_blocked"
+            );
+            ensure!(
+                self.execution_sell_intent_block_in_snapshot(conn, &saved)?
+                    .is_none(),
+                "dispatch_sell_source_changed"
+            );
+            insert(conn, identity, now)?;
+            crate::tiny_experiment::reserve(conn, identity, budget, now)?;
+            mark_submitted(conn, identity, now)?;
             Ok(ExecutionDispatchClaim::New)
         })
     }
@@ -215,4 +237,30 @@ fn same_signal(a: &CopySignalRow, b: &CopySignalRow) -> bool {
         && a.notional_sol.to_bits() == b.notional_sol.to_bits()
         && a.notional_lamports == b.notional_lamports
         && a.notional_origin == b.notional_origin
+}
+
+pub(crate) fn insert(
+    conn: &rusqlite::Connection,
+    identity: &ExecutionCanaryDispatch,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    conn.execute("INSERT INTO execution_canary_dispatch(order_id,signal_id,client_order_id,route,attempt,wallet,token,side,
+                tx_signature,transaction_sha256,message_sha256,claimed_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                params![identity.order_id,identity.signal_id,identity.client_order_id,identity.route,identity.attempt,
+                    identity.wallet,identity.token,identity.side,identity.tx_signature,identity.transaction_sha256,identity.message_sha256,now.to_rfc3339()])?;
+
+    Ok(())
+}
+
+pub(crate) fn mark_submitted(
+    conn: &rusqlite::Connection,
+    identity: &ExecutionCanaryDispatch,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let changed=conn.execute("UPDATE orders SET status='execution_canary_submitted',tx_signature=?2,submit_ts=?3,
+                confirm_ts=NULL,err_code=NULL,simulation_error='dispatch_outcome_unknown' WHERE order_id=?1",
+                params![identity.order_id,identity.tx_signature,now.to_rfc3339()])?;
+    ensure!(changed == 1, "dispatch_order_missing");
+
+    Ok(())
 }

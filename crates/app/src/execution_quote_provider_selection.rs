@@ -146,6 +146,8 @@ pub(crate) fn metadata_from_quote_event(
         None
     };
     ExecutionBuildPlanMetadata {
+        rpc_owned_sell: None,
+        rpc_owned_live: None,
         owned_sell_amount: None,
         protected_capital: None,
         http_request_started_ts: event.http_request_started_ts,

@@ -12,7 +12,7 @@ mod rows;
 #[path = "ordered_sell_quote_schema.rs"]
 pub mod schema;
 #[path = "ordered_sell_quote_snapshot.rs"]
-mod snapshot;
+pub(crate) mod snapshot;
 #[path = "ordered_sell_quote_types.rs"]
 mod types;
 pub use types::*;
@@ -53,8 +53,28 @@ impl SqliteDiscoveryStore {
         &self,
         limits: InboxLimits,
         endpoint: &str,
+        clock: impl FnMut() -> DateTime<Utc>,
+        requested: QuoteCapacity,
+    ) -> Result<QuoteClaimStep> {
+        self.claim_quote_mode(limits, endpoint, clock, requested, false)
+    }
+    /// Same leases/cursor/three-attempt budget. A completed observation without
+    /// a financial owner can resume after a crash; an owned handoff cannot rearm.
+    pub fn claim_strict_sell_quote_for_owned_preparation(
+        &self,
+        limits: InboxLimits,
+        endpoint: &str,
+        clock: impl FnMut() -> DateTime<Utc>,
+    ) -> Result<QuoteClaimStep> {
+        self.claim_quote_mode(limits, endpoint, clock, QuoteCapacity::PRODUCTION, true)
+    }
+    fn claim_quote_mode(
+        &self,
+        limits: InboxLimits,
+        endpoint: &str,
         mut clock: impl FnMut() -> DateTime<Utc>,
         requested: QuoteCapacity,
+        preparation: bool,
     ) -> Result<QuoteClaimStep> {
         let caps = capacity::caps(limits, requested);
         schema::durable_writer(&self.conn)?;
@@ -82,6 +102,16 @@ impl SqliteDiscoveryStore {
             return Ok(QuoteClaimStep::Empty);
         };
         rows::cursor(&tx, &id)?;
+        if preparation
+            && tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM rpc_owned_sell_handoffs WHERE intent_id=?1)",
+                [&id],
+                |r| r.get::<_, bool>(0),
+            )?
+        {
+            tx.commit()?;
+            return Ok(QuoteClaimStep::Skipped);
+        }
         let old = rows::load(&tx, &id)?;
         let now = clock();
         if let Some(old) = &old {
@@ -102,7 +132,9 @@ impl SqliteDiscoveryStore {
             if let Some(wire) = &old.record {
                 let saved: QuoteObservation = serde_json::from_str(wire)?;
                 if saved.binding.as_ref() == Some(binding)
-                    && (saved.outcome == QuoteOutcome::Current || old.binding_attempt >= 3)
+                    && ((saved.outcome == QuoteOutcome::Current
+                        && (!preparation || fresh(&saved, now)))
+                        || old.binding_attempt >= 3)
                 {
                     tx.commit()?;
                     return Ok(QuoteClaimStep::Skipped);
@@ -289,7 +321,7 @@ impl SqliteDiscoveryStore {
         Ok(Some(result))
     }
 }
-fn fresh(r: &QuoteObservation, now: DateTime<Utc>) -> bool {
+pub(crate) fn fresh(r: &QuoteObservation, now: DateTime<Utc>) -> bool {
     let Some(b) = &r.binding else {
         return false;
     };

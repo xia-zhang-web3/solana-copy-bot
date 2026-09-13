@@ -120,3 +120,18 @@ pub(crate) async fn sweep(
     }
     Ok(())
 }
+
+pub(crate) async fn recover_order(
+    store: &SqliteStore,
+    http: &reqwest::Client,
+    url: &str,
+    id: &str,
+    wallet: &str,
+    now: DateTime<Utc>,
+    timeout: u64,
+) -> Result<()> {
+    let task = store
+        .load_failed_expense_task(id)?
+        .ok_or_else(|| anyhow::anyhow!("failed expense task missing"))?;
+    recover(store, http, url, wallet, task, now, timeout, None).await
+}

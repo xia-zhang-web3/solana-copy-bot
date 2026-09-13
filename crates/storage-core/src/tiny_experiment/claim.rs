@@ -7,6 +7,26 @@ pub(crate) fn reserve(
     p: Option<&TinyBudgetClaim>,
     now: DateTime<Utc>,
 ) -> Result<()> {
+    reserve_inner(conn, d, p, now, false)
+}
+
+pub(crate) fn reserve_transferred(
+    conn: &Connection,
+    d: &ExecutionCanaryDispatch,
+    p: &TinyBudgetClaim,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    crate::rpc_owned_sell_handoff::dispatch::identity::owned(conn, &d.order_id)?
+        .context("owned_sell_transfer_required")?;
+    reserve_inner(conn, d, Some(p), now, true)
+}
+fn reserve_inner(
+    conn: &Connection,
+    d: &ExecutionCanaryDispatch,
+    p: Option<&TinyBudgetClaim>,
+    now: DateTime<Utc>,
+    transferred: bool,
+) -> Result<()> {
     // The legacy storage claim API cannot bypass a pinned experiment. Only app tiny
     // dispatch calls the proof-required API, including before any activation exists.
     let Some(p) = p else {
@@ -28,7 +48,16 @@ pub(crate) fn reserve(
         now >= e.activated_at && now >= e.last_decision_at && now < e.deadline,
         "tiny_budget_deadline"
     );
-    ensure!(e.state == "active", "tiny_budget_stopped");
+    ensure!(
+        e.state == "active"
+            || (transferred
+                && e.state == "stopped"
+                && matches!(
+                    e.stop_reason.as_deref(),
+                    Some("tiny_budget_sell_slots" | "tiny_budget_fee_exhausted")
+                )),
+        "tiny_budget_stopped"
+    );
     ensure!(
         p.total_fee <= TINY_TRANSACTION_FEE,
         "tiny_budget_transaction_fee"
@@ -37,15 +66,15 @@ pub(crate) fn reserve(
         p.priority_fee <= TINY_PRIORITY_FEE && p.priority_fee <= p.total_fee,
         "tiny_budget_priority_fee"
     );
-    let (buys, sells, committed): (u64, u64, u64) = conn.query_row(
-        "SELECT COUNT(CASE WHEN side='buy' THEN 1 END),COUNT(CASE WHEN side='sell' THEN 1 END),
-        COALESCE(SUM(COALESCE(actual_fee,fee_bound)),0) FROM execution_tiny_reservations",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    )?;
+    let fee_bound = if transferred {
+        TINY_TRANSACTION_FEE
+    } else {
+        p.total_fee
+    };
+    let (buys, sells, committed) = totals(conn)?;
     ensure!(
         committed
-            .checked_add(p.total_fee)
+            .checked_add(fee_bound)
             .is_some_and(|v| v <= TINY_TOTAL_FEE),
         "tiny_budget_fee_exhausted"
     );
@@ -69,6 +98,10 @@ pub(crate) fn reserve(
                 params![d.order_id,d.token,crate::execution_canary_position_open::execution_canary_position_id(&d.order_id)])?;
         }
         "sell" => {
+            ensure!(
+                owned_sell::unsigned_totals(conn)?.0 == 0,
+                "owned_sell_unsigned_owner_pending"
+            );
             ensure!(buys == 1 && sells < 2, "tiny_budget_sell_slots");
             ensure!(
                 p.buy_lamports == Some(0)
@@ -81,7 +114,7 @@ pub(crate) fn reserve(
                 .as_deref()
                 .context("tiny_budget_position_missing")?;
             ensure!(
-                confirmed_buy_position(conn, &e, d)?,
+                confirmed_buy_position(conn, &e, &d.wallet, &d.token)?,
                 "tiny_budget_position_unconfirmed"
             );
             let other:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM positions WHERE token=?1 AND state='open' AND position_id!=?2 AND position_id LIKE 'exec-canary-pos:%')",
@@ -92,7 +125,7 @@ pub(crate) fn reserve(
     }
     conn.execute("INSERT INTO execution_tiny_reservations(order_id,experiment_id,tx_signature,wallet,side,message_sha256,transaction_sha256,
         buy_lamports,fee_bound,priority_fee,fee_slot,reserved_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
-        params![d.order_id,e.id,d.tx_signature,d.wallet,d.side,d.message_sha256,d.transaction_sha256,p.buy_lamports,p.total_fee,p.priority_fee,p.fee_slot.to_string(),now.to_rfc3339()])?;
+        params![d.order_id,e.id,d.tx_signature,d.wallet,d.side,d.message_sha256,d.transaction_sha256,p.buy_lamports,fee_bound,p.priority_fee,p.fee_slot.to_string(),now.to_rfc3339()])?;
     protected::record_claim(conn, d, p)?;
     conn.execute(
         "UPDATE execution_tiny_experiment SET last_decision_at=?1 WHERE singleton=1",
@@ -104,10 +137,11 @@ pub(crate) fn reserve(
 
 /// Execution ownership is canonical receipt + confirmed fill, not knowledge of fee.
 /// This read-only guard never releases a reservation or enriches historical facts.
-fn confirmed_buy_position(
+pub(super) fn confirmed_buy_position(
     conn: &Connection,
     e: &TinyExperiment,
-    sell: &ExecutionCanaryDispatch,
+    wallet: &str,
+    token: &str,
 ) -> Result<bool> {
     let order = e
         .buy_order_id
@@ -120,7 +154,11 @@ fn confirmed_buy_position(
         return Ok(false);
     };
     crate::receipt_facts_identity::validate_identity(conn, &facts)?;
-    if facts.wallet_pubkey != e.wallet || facts.token != sell.token || facts.side != "buy" {
+    if facts.wallet_pubkey != e.wallet
+        || facts.wallet_pubkey != wallet
+        || facts.token != token
+        || facts.side != "buy"
+    {
         return Ok(false);
     }
     let bound: bool = conn.query_row(
@@ -132,10 +170,10 @@ fn confirmed_buy_position(
          AND d.message_sha256=r.message_sha256 AND d.transaction_sha256=r.transaction_sha256
          AND d.signal_id=o.signal_id AND d.client_order_id=o.client_order_id
          AND d.route=o.route AND d.attempt=o.attempt AND o.status='execution_canary_confirmed')",
-        params![order,e.id,e.wallet,facts.tx_signature,sell.token], |r| r.get(0))?;
+        params![order,e.id,e.wallet,facts.tx_signature,token], |r| r.get(0))?;
     if !bound {
         return Ok(false);
     }
-    let position = crate::buy_fill_replay::load(conn, order, &sell.token)?;
+    let position = crate::buy_fill_replay::load(conn, order, token)?;
     Ok(e.position_id.as_deref() == Some(position.position_id.as_str()) && position.state == "open")
 }

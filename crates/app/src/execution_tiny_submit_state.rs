@@ -9,15 +9,23 @@ pub(crate) mod budget;
 #[path = "execution_dispatch.rs"]
 pub(crate) mod dispatch;
 
-pub(crate) struct SubmitState {
-    order: ExecutionCanaryOrder,
-    signal: CopySignalRow,
+pub(crate) enum SubmitState {
+    Legacy {
+        order: ExecutionCanaryOrder,
+        signal: CopySignalRow,
+    },
+    Owned(copybot_storage_core::rpc_owned_sell_handoff::dispatch::Prepared),
 }
 
 pub(crate) fn eligible(
     store: &SqliteStore,
     request: &ExecutionSubmitRequest,
 ) -> Result<SubmitState, &'static str> {
+    if request.metadata.rpc_owned_sell.is_some() {
+        return crate::execution_owned_sell_prepare::submit::guard::request(store, request)
+            .map(SubmitState::Owned)
+            .map_err(|_| "owned_sell_submit_state_changed");
+    }
     let order = store
         .load_execution_canary_order(&request.order_id)
         .map_err(|_| "tiny_submit_state_unavailable")?
@@ -66,7 +74,7 @@ pub(crate) fn eligible(
     {
         return Err(reason);
     }
-    Ok(SubmitState { order, signal })
+    Ok(SubmitState::Legacy { order, signal })
 }
 
 pub(crate) fn unchanged(
@@ -81,8 +89,21 @@ pub(crate) fn unchanged(
             "initial_sol_order_changed"
         }
     })?;
-    let (a, b) = (&before.signal, &after.signal);
-    if before.order != after.order
+    let (before_order, a, after_order, b) = match (before, &after) {
+        (SubmitState::Owned(a), SubmitState::Owned(b)) if a == b => return Ok(()),
+        (
+            SubmitState::Legacy {
+                order: a,
+                signal: s,
+            },
+            SubmitState::Legacy {
+                order: b,
+                signal: t,
+            },
+        ) => (a, s, b, t),
+        _ => return Err("initial_sol_order_changed"),
+    };
+    if before_order != after_order
         || a.signal_id != b.signal_id
         || a.wallet_id != b.wallet_id
         || a.side != b.side

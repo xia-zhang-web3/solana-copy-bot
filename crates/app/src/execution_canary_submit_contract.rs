@@ -239,6 +239,12 @@ pub(crate) fn record_submit_plan_failure(
             ..Default::default()
         });
     }
+    if request.metadata.rpc_owned_sell.is_some() {
+        return Ok(ExecutionSubmitPlanOutcome {
+            reason: Some(error),
+            ..crate::execution_tiny_submit_state::reject("owned_sell_submit_refused")
+        });
+    }
     let order = store.mark_execution_canary_failed(
         &request.order_id,
         now,

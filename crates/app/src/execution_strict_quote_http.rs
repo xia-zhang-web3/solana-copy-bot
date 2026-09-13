@@ -12,8 +12,17 @@ pub(super) async fn fetch(
     http: &reqwest::Client,
     config: &ExecutionConfig,
     binding: &QuoteBinding,
-    mut check: impl FnMut() -> Result<bool>,
+    check: impl FnMut() -> Result<bool>,
 ) -> QuoteObservation {
+    fetch_with_body(http, config, binding, check).await.0
+}
+pub(super) async fn fetch_with_body(
+    http: &reqwest::Client,
+    config: &ExecutionConfig,
+    binding: &QuoteBinding,
+    mut check: impl FnMut() -> Result<bool>,
+) -> (QuoteObservation, Option<String>) {
+    let mut captured_body = None;
     let mut clock = None;
     let mut response_ts = None;
     let mut digest = None;
@@ -68,6 +77,7 @@ pub(super) async fn fetch(
         }
         digest = Some(format!("{:x}", Sha256::digest(&bytes)));
         let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        captured_body = Some(String::from_utf8(bytes.clone())?);
         ensure!(
             value["inputMint"].as_str() == Some(&binding.mint)
                 && value["outputMint"].as_str() == Some(&binding.output_mint)
@@ -111,19 +121,22 @@ pub(super) async fn fetch(
             None,
         ),
     };
-    QuoteObservation {
-        version: 1,
-        binding: Some(binding.clone()),
-        outcome,
-        reason,
-        http_started: started,
-        http_response: response_ts,
-        quote_response_available_ts: available,
-        http_ended: ended,
-        response_in_raw: input,
-        response_out_raw: output,
-        response_sha256: digest,
-        event_time: None,
-        event_delay_ns: None,
-    }
+    (
+        QuoteObservation {
+            version: 1,
+            binding: Some(binding.clone()),
+            outcome,
+            reason,
+            http_started: started,
+            http_response: response_ts,
+            quote_response_available_ts: available,
+            http_ended: ended,
+            response_in_raw: input,
+            response_out_raw: output,
+            response_sha256: digest,
+            event_time: None,
+            event_delay_ns: None,
+        },
+        captured_body,
+    )
 }

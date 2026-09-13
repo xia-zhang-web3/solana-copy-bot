@@ -98,6 +98,7 @@ impl ExecutionCanaryTickSummary {
             || self.state_machine_failed > 0
             || self.state_machine_safety_blocked > 0
             || self.state_machine_entry_gate_blocked > 0
+            || (self.orphan_recovery_checked > 0 && self.last_error.is_some())
             || self.orphan_recovery_recovered > 0
             || self.orphan_recovery_reconciled > 0
             || self.orphan_recovery_errors > 0
@@ -108,6 +109,7 @@ impl ExecutionCanaryTickSummary {
 pub(crate) struct ExecutionCanaryRunner {
     config: ExecutionConfig,
     strict_quotes: bool,
+    owned_sell_recovery: Option<crate::execution_owned_sell_prepare::submit::recovery::Recovery>,
     source_sell_continuation: crate::execution_source_sell_continuation::Continuation,
     quote_canary: ExecutionQuoteCanaryRunner,
 }
@@ -117,6 +119,7 @@ impl ExecutionCanaryRunner {
         Self {
             source_sell_continuation: Default::default(),
             strict_quotes: false,
+            owned_sell_recovery: None,
             quote_canary: ExecutionQuoteCanaryRunner::new(config.clone()).requiring_owner(),
             config,
         }
@@ -133,13 +136,16 @@ impl ExecutionCanaryRunner {
             path,
         )?;
         self.strict_quotes = strict.is_some();
+        self.owned_sell_recovery = strict
+            .as_ref()
+            .map(|_| crate::execution_owned_sell_prepare::submit::recovery::Recovery::new(path));
         self.quote_canary = self.quote_canary.with_strict_quotes(strict);
         Ok(self)
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
         if self.strict_quotes {
-            self.config.canary_enabled || self.config.quote_canary_enabled
+            true // Keep canonical receipt obligations scheduled even when new execution is off.
         } else {
             self.config.canary_enabled
         }
@@ -189,8 +195,21 @@ impl ExecutionCanaryRunner {
             ..ExecutionCanaryTickSummary::default()
         };
         if self.strict_quotes {
-            // Durable mode is exclusively quote-only, including when the quote flag is OFF.
-            // Never enter order/reconciliation/simulation/signing/submit paths below.
+            if let Some(done) = self
+                .owned_sell_recovery
+                .as_ref()
+                .context("strict owned recovery missing")?
+                .tick(&self.config)?
+            {
+                summary.orphan_recovery_checked = done.checked;
+                summary.orphan_recovery_reconciled = done.reconciled;
+                summary.last_error = done.pending_reason;
+            }
+            if Path::new(&self.config.canary_kill_switch_path).exists() {
+                summary.skipped_reason = Some("kill_switch_active");
+            }
+            // Default durable mode is quote-only. Explicit finalized preparation
+            // continues within its bounded jobs and never enters legacy execution below.
             if self.quote_canary.is_enabled()
                 && !Path::new(&self.config.canary_kill_switch_path).exists()
             {

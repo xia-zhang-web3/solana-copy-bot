@@ -71,6 +71,11 @@ pub(crate) fn plan(conn: &Connection, order_id: &str) -> Result<ExecutionCanaryS
         .and_then(|v| u64::try_from(v).ok())
         .ok_or(Unsupported::TokenQuantityOutOfRange)?;
     let expected_position = sell_settlement_position::load(conn, &receipt.token)?;
+    crate::rpc_owned_sell_handoff::dispatch::identity::position(
+        conn,
+        order_id,
+        &expected_position,
+    )?;
     let old = expected_position.quantity;
     ensure!(
         old.decimals() == delta.decimals,

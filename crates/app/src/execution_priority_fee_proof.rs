@@ -151,6 +151,21 @@ pub(crate) fn validate_submit(
         envelope.priority_fee_proof.as_ref() == Some(&proof),
         "priority_fee_envelope_proof_missing_or_changed"
     );
+    if let Some(p) = request.metadata.rpc_owned_sell.as_deref() {
+        ensure!(
+            crate::execution_owned_sell_prepare::submit::guard::request(store, request)? == *p,
+            "owned_sell_prepared_changed"
+        );
+        crate::execution_owned_sell_prepare::submit::guard::payload(
+            p,
+            &intent.signed_transaction_base64,
+        )?;
+        ensure!(
+            proof.message_sha256 == p.message_sha256,
+            "owned_sell_message_changed"
+        );
+        return Ok(());
+    }
     let persisted = store
         .load_execution_canary_build_plan_metadata(&request.order_id)?
         .context("priority_fee_durable_proof_missing")?;

@@ -72,7 +72,21 @@ fn promotion_preserves_unfollowed_event_notional_witness_and_runnable_identity_a
                     .get::<_, i64>(0))?,
             signal_count + 1
         );
-        assert_eq!(snapshot(&db.conn()?, &["copy_signals", MARKER])?, before);
+        let mut after = snapshot(&db.conn()?, &["copy_signals", MARKER])?;
+        // Migration 0080 registers exactly the newly inserted legacy identity.
+        // Prove that sole metadata addition, then retain the all-other-tables check.
+        let added = format!(
+            "{:?}",
+            vec![
+                rusqlite::types::Value::Text(binding.signal_id.clone()),
+                rusqlite::types::Value::Text(binding.signal_id.clone()),
+                rusqlite::types::Value::Null,
+            ]
+        );
+        let registry = after.get_mut("execution_order_sources").unwrap();
+        assert_eq!(registry.iter().filter(|row| **row == added).count(), 1);
+        registry.retain(|row| row != &added);
+        assert_eq!(after, before);
         assert_eq!(
             db.store
                 .list_execution_quote_canary_owned_sell_signal_candidate_ids(

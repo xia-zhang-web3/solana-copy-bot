@@ -93,16 +93,24 @@ pub(crate) async fn send(
     };
     let mut attempt = build_submit_transport_attempt(intent, gate.submit_timeout_ms, now)?;
     attempt.tx_signature_hint = Some(identity.tx_signature.clone());
-    let claim = match store.claim_tiny_experiment_dispatch_with_clock(
-        &state.order,
-        &state.signal,
-        &identity,
-        &budget,
-        || {
-            crate::execution_canary_safety::risk_clock::decision_time(tick_at)
-                .ok_or_else(|| anyhow::anyhow!("tiny_budget_clock"))
-        },
-    ) {
+    let clock = || {
+        if let SubmitState::Owned(p) = state {
+            let c = gate
+                .buy_safety_config
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("tiny_budget_config_missing"))?;
+            crate::execution_owned_sell_prepare::submit::guard::live(request)?;
+            crate::execution_owned_sell_prepare::submit::guard::config(c, p)?;
+        }
+        crate::execution_canary_safety::risk_clock::decision_time(tick_at)
+            .ok_or_else(|| anyhow::anyhow!("tiny_budget_clock"))
+    };
+    let claim_result = match state {
+        SubmitState::Owned(p) => store.claim_owned_sell_dispatch(p, &identity, &budget, clock),
+        SubmitState::Legacy { order, signal } => store
+            .claim_tiny_experiment_dispatch_with_clock(order, signal, &identity, &budget, clock),
+    };
+    let claim = match claim_result {
         Ok(claim) => claim,
         Err(error) if error.downcast_ref::<rusqlite::Error>().is_some() => return Err(error),
         Err(error) => return Ok(budget_refusal(&request.order_id, error)),

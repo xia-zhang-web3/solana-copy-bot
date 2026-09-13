@@ -64,9 +64,7 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
         );
         proof
     } else {
-        let signal = store
-            .load_copy_signal_by_signal_id(&order.signal_id)?
-            .ok_or_else(|| anyhow!("receipt signal missing"))?;
+        let (token, side) = store.execution_receipt_token_side(order_id)?;
         let (confirmation_status, slot, confirmed_at) = if order.status
             == EXECUTION_STATUS_CANARY_CONFIRMED
         {
@@ -123,8 +121,8 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
         ExecutionCanaryReceiptProof {
             tx_signature: request.tx_signature,
             wallet_pubkey: wallet_pubkey.into(),
-            token: signal.token,
-            side: signal.side.to_ascii_lowercase(),
+            token,
+            side: side.to_ascii_lowercase(),
             confirmation_status,
             slot,
             confirmed_at,

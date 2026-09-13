@@ -100,9 +100,10 @@ pub fn validate_delivery_source(c: &IngestionConfig) -> Result<()> {
 }
 pub fn validate_association_delivery(c: &AppConfig) -> Result<()> {
     validate_delivery_source(&c.ingestion)?;
+    crate::validate_owned_sell_preparation(&c.execution, &c.ingestion)?;
     if c.ingestion.yellowstone_delivery_mode == "durable_association_v1" {
         ensure!(
-            !c.execution.enabled && !c.execution.canary_tiny_submit_enabled,
+            crate::owned_sell_flags(&c.execution),
             "durable association requires both execution flags=false"
         );
     }

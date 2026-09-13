@@ -388,6 +388,8 @@ fn alternate_builder_metadata(
     quote_source: &str,
 ) -> crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
     crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+        rpc_owned_sell: None,
+        rpc_owned_live: None,
         owned_sell_amount: None,
         protected_capital: None,
         http_request_started_ts: None,

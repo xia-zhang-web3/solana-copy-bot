@@ -95,6 +95,8 @@ fn live_pumpswap_direct_request(
         wallet_pubkey: wallet.to_string(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            rpc_owned_sell: None,
+            rpc_owned_live: None,
             owned_sell_amount: None,
             protected_capital: None,
             http_request_started_ts: None,
@@ -147,6 +149,8 @@ fn live_pumpswap_direct_sell_request(
         wallet_pubkey: wallet.to_string(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            rpc_owned_sell: None,
+            rpc_owned_live: None,
             owned_sell_amount: None,
             protected_capital: None,
             http_request_started_ts: None,

@@ -86,10 +86,10 @@ impl SqliteDiscoveryStore {
         );
         self.with_immediate_transaction_retry("record canary network confirmation", |conn| {
             if fill_exists(conn, order_id)? { return Ok(()); }
-            let (status, signature, token, side): (String, Option<String>, String, String) = conn.query_row(
-                "SELECT o.status, o.tx_signature, s.token, s.side FROM orders o
-                 JOIN copy_signals s ON s.signal_id = o.signal_id WHERE o.order_id = ?1", [order_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            let (token,side)=crate::rpc_owned_sell_handoff::dispatch::identity::token_side(conn,order_id)?;
+            let (status, signature): (String, Option<String>) = conn.query_row(
+                "SELECT o.status, o.tx_signature FROM orders o WHERE o.order_id = ?1", [order_id],
+                |r| Ok((r.get(0)?, r.get(1)?)))?;
             ensure!(matches!(status.as_str(), EXECUTION_STATUS_CANARY_SUBMITTED | EXECUTION_STATUS_CANARY_CONFIRMED | EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED), "order cannot enter receipt reconciliation");
             ensure!(signature.as_deref() == Some(&proof.tx_signature) && token == proof.token && side.eq_ignore_ascii_case(&proof.side), "receipt proof identity mismatch");
             // Repeated attempts may change only the reason; the original proof remains authoritative.
@@ -178,8 +178,8 @@ pub(crate) fn pending_token_order(
     {
         return Ok(Some(id));
     }
-    conn.query_row("SELECT o.order_id FROM orders o JOIN copy_signals s ON s.signal_id = o.signal_id
-        WHERE o.order_id LIKE 'exec-canary:%' AND s.token = ?1 AND (?2 IS NULL OR o.order_id != ?2)
+    conn.query_row("SELECT o.order_id FROM orders o LEFT JOIN copy_signals s ON s.signal_id = o.signal_id LEFT JOIN execution_canary_receipt_proofs p ON p.order_id=o.order_id
+        WHERE o.order_id LIKE 'exec-canary:%' AND COALESCE(s.token,p.token) = ?1 AND (?2 IS NULL OR o.order_id != ?2)
           AND (o.status = ?3 OR (o.status = ?4 AND NOT EXISTS(SELECT 1 FROM fills f WHERE f.order_id = o.order_id)))
         ORDER BY o.submit_ts, o.order_id LIMIT 1",
         params![token, except, EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED, EXECUTION_STATUS_CANARY_CONFIRMED], |r| r.get(0))
