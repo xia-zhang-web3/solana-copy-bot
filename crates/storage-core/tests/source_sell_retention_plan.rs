@@ -19,7 +19,7 @@ fn sample(unrelated: usize, pins: usize) -> Result<usize> {
     for n in 1..pins + unrelated {
         let name = format!("pin-{n:05}");
         tx.execute("INSERT INTO execution_source_sell_intents SELECT
-            ?1,?1,source_wallet,dex,token,token_out,amount_in,amount_out,slot,event_ts,
+            'source-sell:'||?1,?1,source_wallet,dex,token,token_out,amount_in,amount_out,slot,event_ts,
             amount_in_raw,amount_in_decimals,amount_out_raw,amount_out_decimals,
             position_id,buy_fill_id,buy_order_id,buy_signal_id,buy_tx_signature,buy_execution_wallet,staged_at
             FROM execution_source_sell_intents WHERE intent_id=?2", [&name, &staged.intent_id])?;

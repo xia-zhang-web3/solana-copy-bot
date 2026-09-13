@@ -16,6 +16,7 @@ mod source_sell_buy_fixture;
 mod source_sell_delivery_tests;
 #[path = "app_tests/source_sell_event_capture.rs"]
 mod source_sell_event_capture;
+mod source_sell_eviction_fixture;
 mod source_sell_eviction_review_tests;
 #[path = "app_tests/source_sell_ingress_fixture.rs"]
 mod source_sell_ingress_fixture;

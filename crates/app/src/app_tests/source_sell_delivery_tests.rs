@@ -1,5 +1,6 @@
+use super::source_sell_eviction_fixture::HeldEviction;
 use super::{source_sell_event_capture::capture, source_sell_ingress_fixture::Ingress};
-use crate::source_sell_staging::{SourceSellStaging, StageNotice, SOURCE_SELL_BINDING_CAPACITY};
+use crate::source_sell_staging::{SourceSellStaging, StageNotice};
 use anyhow::Result;
 use copybot_storage_core::ExecutionSourceSellReject as Reject;
 
@@ -108,29 +109,30 @@ async fn source_sell_delivery_lost_or_evicted_binding_never_uses_new_same_mint_g
         f.scheduler.source_sells.before_proof = Some(Box::new(|| panic!("bounded test panic")));
         f.send(&a, true).await?;
         assert_eq!(f.stage_completion().await?.notice, StageNotice::WorkerPanic);
-        if evict {
-            // Actual delivered events fill and evict the bounded hint cache.
-            for i in 0..SOURCE_SELL_BINDING_CAPACITY {
-                let event = f.sell(&format!("filler-{i}"), "foreign-source");
-                f.send(&event, true).await?;
-                f.stage_completion().await?;
-            }
+        let held = if evict {
+            Some(HeldEviction::enter(&mut f, &a).await?)
         } else {
             f.scheduler.source_sells = SourceSellStaging::new();
             f.reopen()?;
-        }
+            None
+        };
         f.store
             .record_execution_canary_manual_terminal_write_off("mint", "tiny", "close-a", f.now)?;
         f.buy("b", "source-a")?; // Same timestamp, different position ID.
         let before = f.money()?;
+        if let Some(held) = held {
+            held.release_and_drain(&mut f, &a).await?;
+        }
         for _ in 0..2 {
             let (result, events) = capture(async {
                 f.send(&a, true).await?;
                 f.stage_completion().await
             })
             .await;
+            let completion = result?;
+            assert_eq!(completion.signature, a.signature);
             assert_eq!(
-                result?.notice,
+                completion.notice,
                 StageNotice::Rejected(Reject::GenerationMismatch)
             );
             assert!(events

@@ -1,3 +1,5 @@
+#[path = "common/historical_migration_fixture.rs"]
+mod historical;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::{CopySignalRow, COPY_SIGNAL_NOTIONAL_ORIGIN_APPROXIMATE};
@@ -111,8 +113,10 @@ fn owned_sell_queue_0053_upgrade_preserves_rows_and_cursor_on_reopen() -> Result
         )?,
         0
     );
-    // Upgrade includes 0054 facts, 0055 cash fills, 0056 expenses, 0057 observations, 0058 staging, 0059 promotion, 0060 FAILED cursor, 0061 BUY claim indexes.
-    assert_eq!(s.run_migrations(&migrations())?, 9);
+    // Freeze the historical 0053..0061 contract; current-schema tests remain above.
+    let through61 = dir.path().join("through61");
+    historical::prefix(&through61, "0062")?;
+    assert_eq!(s.run_migrations(&through61)?, 9);
     assert_eq!(
         c.query_row(
             "SELECT COUNT(*) FROM execution_owned_sell_cursor",
@@ -121,11 +125,11 @@ fn owned_sell_queue_0053_upgrade_preserves_rows_and_cursor_on_reopen() -> Result
         )?,
         0
     );
-    assert_eq!(s.run_migrations(&migrations())?, 0);
+    assert_eq!(s.run_migrations(&through61)?, 0);
     s.advance_execution_owned_sell_cursor("a2")?;
     drop(s);
     let mut s = SqliteStore::open(&path)?;
-    assert_eq!(s.run_migrations(&migrations())?, 0);
+    assert_eq!(s.run_migrations(&through61)?, 0);
     assert_eq!(page(&s, 2)?, vec!["a3", "b"]);
     let after = (0..4)
         .map(|i| s.load_copy_signal_by_signal_id(["a1", "a2", "a3", "b"][i]))

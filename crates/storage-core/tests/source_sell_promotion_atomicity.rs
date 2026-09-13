@@ -1,9 +1,10 @@
 #[path = "common/source_sell_promotion_fixture.rs"]
 mod fixture;
+#[path = "common/historical_migration_fixture.rs"]
+mod historical;
 use anyhow::Result;
 use copybot_storage_core::SqliteStore;
 use fixture::*;
-use std::path::Path;
 
 #[test]
 fn signal_binding_ignore_abort_commit_and_missing_post_write_rows_roll_back_everything(
@@ -119,7 +120,7 @@ fn additive_0059_upgrade_preserves_existing_history_schema_and_reopens() -> Resu
         store,
         now: "2026-09-07T12:00:00Z".parse()?,
     };
-    db.proven("a", "source-a")?;
+    historical::buy(&db.conn()?, "a", "source-a", "sig:exec-canary:a", db.now)?;
     db.store
         .activate_follow_wallet("source-a", db.now, "legacy")?;
     let legacy = db.observed("legacy", "source-a")?;
@@ -154,9 +155,11 @@ fn additive_0059_upgrade_preserves_existing_history_schema_and_reopens() -> Resu
         )?,
         before
     );
-    assert_eq!(db.store.run_migrations(Path::new(MIGRATIONS))?, 5);
+    let through63 = db.dir.path().join("through63");
+    historical::prefix(&through63, "0064")?;
+    assert_eq!(db.store.run_migrations(&through63)?, 5);
     db.reopen()?;
-    assert_eq!(db.store.run_migrations(Path::new(MIGRATIONS))?, 0);
+    assert_eq!(db.store.run_migrations(&through63)?, 0);
     assert_eq!(
         snapshot(
             &conn,

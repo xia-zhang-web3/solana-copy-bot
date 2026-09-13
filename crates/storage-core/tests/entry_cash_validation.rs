@@ -118,7 +118,7 @@ fn entry_cash_duplicate_receipts_and_corrupt_claims_cannot_use_closed_floor_as_f
             -4,
             db.now,
         )?;
-        let conn = db.conn()?;
+        let mut conn = db.conn()?;
         match case {
             "duplicate" | "duplicate_across_positions" | "outside_day_duplicate" => {
                 let token = if case == "duplicate_across_positions" {
@@ -136,13 +136,33 @@ fn entry_cash_duplicate_receipts_and_corrupt_claims_cannot_use_closed_floor_as_f
                     &db.store,
                     &conn,
                     "exec-canary:second",
-                    "shared",
+                    "second-independent",
                     WALLET,
                     token,
                     1,
                     -4,
                     at,
                 )?;
+                // Both receipts must pass the canonical writer before constructing
+                // historical corruption for the reader, without changing money.
+                db.store
+                    .execution_canary_sell_cash_day(at + Duration::seconds(1))?;
+                let tx = conn.transaction()?;
+                for table in [
+                    "orders",
+                    "execution_canary_receipt_proofs",
+                    "execution_canary_receipt_facts",
+                ] {
+                    assert_eq!(
+                        tx.execute(
+                            &format!("UPDATE {table} SET tx_signature='shared' WHERE order_id='exec-canary:second' AND tx_signature='second-independent'"),
+                            [],
+                        )?,
+                        1,
+                        "{case}: {table} historical identity"
+                    );
+                }
+                tx.commit()?;
             }
             "bad_date" => {
                 conn.execute("UPDATE fills SET settlement_ts='bad'", [])?;
@@ -172,16 +192,29 @@ fn entry_cash_duplicate_receipts_and_corrupt_claims_cannot_use_closed_floor_as_f
             }
         }
         let before = snapshot(&db)?;
-        assert!(
-            db.store
-                .execution_canary_sell_cash_day(db.now + Duration::seconds(1))
-                .is_err(),
-            "{case}"
-        );
+        let error = db
+            .store
+            .execution_canary_sell_cash_day(db.now + Duration::seconds(1))
+            .expect_err(case);
+        let reason = match case {
+            "bad_date" => "invalid cash settlement timestamp",
+            "missing_facts" => "cash day event missing receipt facts",
+            "duplicate_order" => "duplicate cash day fill order",
+            _ => "duplicate wallet cash receipt claimed by multiple canary orders",
+        };
+        assert!(format!("{error:#}").contains(reason), "{case}: {error:#}");
         let v = cost(&db)?;
         assert!(v.known_total_lamports.is_none(), "{case}");
+        assert!(v.cash_loss.additional_loss_lamports.is_none(), "{case}");
+        assert_eq!(
+            v.cash_loss.unavailable_reason.as_deref(),
+            Some("cash_loss_unavailable")
+        );
         assert!(v.check_cap(1.0).is_err());
         assert_eq!(snapshot(&db)?, before);
+        eprintln!(
+            "B133_READER case={case} error={error:#} cash=unavailable cap=refused no_repair=true"
+        );
     }
     Ok(())
 }

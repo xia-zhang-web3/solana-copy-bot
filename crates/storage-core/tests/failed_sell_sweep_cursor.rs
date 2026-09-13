@@ -1,5 +1,7 @@
 #[path = "common/source_write_off_db.rs"]
 mod fixture;
+#[path = "common/historical_migration_fixture.rs"]
+mod historical;
 use anyhow::Result;
 use copybot_core_types::TokenQuantity;
 use copybot_storage_core::{
@@ -119,35 +121,25 @@ fn migration_0060_clean_upgrade_and_reopen_preserve_existing_history_and_cursor_
     let mut store = SqliteStore::open(&path)?;
     store.run_migrations(&migration_dir)?;
     let now = "2026-09-07T12:00:00Z".parse()?;
-    proven_buy(
-        &store,
+    historical::buy(
+        &Connection::open(&path)?,
         "upgrade-buy",
         "source-a",
+        "receipt:upgrade-buy",
         now,
-        TokenQuantity::new(7000, 3),
     )?;
+    let through61 = temp.path().join("through61");
+    historical::prefix(&through61, "0062")?;
     let before = snapshot(&Connection::open(&path)?, &["schema_migrations"])?;
     assert!(!before.contains_key(TABLE));
-    assert_eq!(
-        store.run_migrations(std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../migrations"
-        )))?,
-        2
-    );
+    assert_eq!(store.run_migrations(&through61)?, 2);
     assert_eq!(
         snapshot(&Connection::open(&path)?, &["schema_migrations", TABLE])?,
         before
     );
     drop(store);
     let mut reopened = SqliteStore::open(&path)?;
-    assert_eq!(
-        reopened.run_migrations(std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../migrations"
-        )))?,
-        0
-    );
+    assert_eq!(reopened.run_migrations(&through61)?, 0);
     assert_eq!(
         reopened.advance_execution_failed_sell_sweep("tiny")?,
         Visit::Wrapped

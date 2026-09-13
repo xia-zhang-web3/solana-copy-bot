@@ -1,5 +1,6 @@
+use super::source_sell_eviction_fixture::HeldEviction;
 use super::{source_sell_event_capture::capture, source_sell_ingress_fixture::Ingress};
-use crate::source_sell_staging::{StageNotice, SOURCE_SELL_BINDING_CAPACITY};
+use crate::source_sell_staging::StageNotice;
 use anyhow::Result;
 use copybot_storage_core::ExecutionSourceSellReject as Reject;
 
@@ -13,16 +14,20 @@ async fn known_redelivery_after_binding_loss(remove_observed: bool) -> Result<()
     f.send(&a, true).await?;
     assert_eq!(f.stage_completion().await?.notice, StageNotice::WorkerPanic);
     assert!(f.staged(&a.signature)?.is_none());
-    // Evict through actual incoming events; do not replace scheduler state in this probe.
-    for i in 0..SOURCE_SELL_BINDING_CAPACITY {
-        let filler = f.sell(&format!("real-eviction-{i}"), "foreign-source");
-        f.send(&filler, true).await?;
-        f.stage_completion().await?;
-    }
+    let held = HeldEviction::enter(&mut f, &a).await?;
     if remove_observed {
         f.store
             .delete_observed_swaps_before_batch(a.ts_utc + chrono::Duration::seconds(1), 10)?;
     }
+    held.assert_pending(
+        &f,
+        &a,
+        if remove_observed {
+            "after_retention"
+        } else {
+            "without_retention"
+        },
+    )?;
     f.store
         .record_execution_canary_manual_terminal_write_off("mint", "tiny", "close-a", f.now)?;
     f.buy("next-b", "source-a")?; // Equal timestamps, distinct actual BUY generation.
@@ -38,6 +43,7 @@ async fn known_redelivery_after_binding_loss(remove_observed: bool) -> Result<()
         [&a.signature],
         |r| r.get(0),
     )?;
+    held.release_and_drain(&mut f, &a).await?;
     let (result, first_events) = capture(async {
         f.send(&a, true).await?;
         f.stage_completion().await

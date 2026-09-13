@@ -1,3 +1,5 @@
+#[path = "common/historical_retry_fixture.rs"]
+mod historical_retry;
 use anyhow::Result;
 use chrono::{Duration, TimeZone, Utc};
 use copybot_core_types::{CopySignalRow, Lamports, COPY_SIGNAL_NOTIONAL_ORIGIN_EXACT_LAMPORTS};
@@ -57,15 +59,13 @@ impl Fixture {
             None,
         )?;
         if reason == UNKNOWN {
-            self.store
-                .mark_execution_canary_submitted_unknown(&order.order_id, now, "unknown")?;
-            self.store
-                .mark_execution_canary_retry_after_submit_timeout(
-                    &order.order_id,
-                    now + Duration::seconds(2),
-                    Duration::seconds(1),
-                    reason,
-                )?;
+            historical_retry::import_simulated_history(
+                &self.store,
+                &self.conn()?,
+                &order.order_id,
+                now + Duration::seconds(2),
+                reason,
+            )?;
         } else {
             self.store
                 .mark_execution_canary_retry_after_submit_not_sent(&order.order_id, now, reason)?;

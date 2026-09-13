@@ -1,3 +1,5 @@
+#[path = "common/historical_retry_fixture.rs"]
+mod historical_retry;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use copybot_core_types::{
@@ -10,7 +12,6 @@ use copybot_storage_core::{
     EXECUTION_SIMULATION_STATUS_PASSED, EXECUTION_STATUS_CANARY_CANDIDATE,
     EXECUTION_STATUS_CANARY_CONFIRMED, EXECUTION_STATUS_CANARY_SIMULATED,
 };
-use tempfile::tempdir;
 
 fn ts(raw: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(raw)
@@ -18,15 +19,8 @@ fn ts(raw: &str) -> DateTime<Utc> {
         .with_timezone(&Utc)
 }
 
-fn open_migrated_store(name: &str) -> Result<SqliteStore> {
-    let dir = tempdir()?;
-    let db_path = dir.keep().join(format!("{name}.db"));
-    let mut store = SqliteStore::open(&db_path)?;
-    store.run_migrations(std::path::Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../migrations"
-    )))?;
-    Ok(store)
+fn open_migrated_store(name: &str) -> Result<historical_retry::StoreFixture> {
+    historical_retry::StoreFixture::open(name)
 }
 
 #[test]
@@ -532,16 +526,28 @@ fn failed_build_sell_retry_candidate_increments_attempt_and_reuses_close_event()
 }
 
 fn retry_ready_simulated_order(
-    store: &SqliteStore,
+    store: &historical_retry::StoreFixture,
     signal_id: &str,
     route: &str,
     now: DateTime<Utc>,
 ) -> Result<String> {
-    let order_id = submitted_without_signature(store, signal_id, route, now)?;
-    store.mark_execution_canary_retry_after_submit_timeout(
+    store.insert_copy_signal(&signal(signal_id, now))?;
+    let order_id = store
+        .reserve_execution_canary_order(signal_id, route, now)?
+        .order
+        .order_id;
+    store.mark_execution_canary_built(&order_id, now + Duration::seconds(1))?;
+    store.mark_execution_canary_simulated(
+        &order_id,
+        now + Duration::seconds(2),
+        EXECUTION_SIMULATION_STATUS_PASSED,
+        None,
+    )?;
+    historical_retry::import_simulated_history(
+        store,
+        &rusqlite::Connection::open(&store.path)?,
         &order_id,
         now + Duration::seconds(10),
-        Duration::seconds(1),
         "retry_after_unknown_submit_timeout",
     )?;
     Ok(order_id)

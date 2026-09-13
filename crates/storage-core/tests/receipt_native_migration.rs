@@ -1,5 +1,7 @@
 #[path = "common/receipt_facts_fixture.rs"]
 mod fixture;
+#[path = "common/historical_migration_fixture.rs"]
+mod historical;
 use anyhow::Result;
 use copybot_storage_core::*;
 use fixture::*;
@@ -18,17 +20,22 @@ fn native_observations_0057_upgrade_keeps_old_completed_uncovered_and_fk() -> Re
     let path = dir.path().join("upgrade.db");
     let mut store = SqliteStore::open(&path)?;
     store.run_migrations(&old)?;
-    let (id, now) = seed(&store, Some(42))?;
+    let canonical = Db::new(Some(42))?;
+    canonical
+        .store
+        .record_execution_canary_receipt_facts(&canonical.facts(), canonical.now)?;
+    canonical.account()?;
+    historical::project_financial_rows(&rusqlite::Connection::open(&path)?, &canonical.conn()?)?;
     let mut db = Db {
         _dir: dir,
         path,
         store,
-        id,
-        now,
+        id: canonical.id.clone(),
+        now: canonical.now,
     };
-    db.store
-        .record_execution_canary_receipt_facts(&db.facts(), now)?;
-    db.account()?;
+    let now = db.now;
+    let through61 = db._dir.path().join("through61");
+    historical::prefix(&through61, "0062")?;
     let before = snapshot(&db.conn()?)?;
     let r = db.store.receipt_native_observations_report(
         now - chrono::Duration::seconds(1),
@@ -37,9 +44,9 @@ fn native_observations_0057_upgrade_keeps_old_completed_uncovered_and_fk() -> Re
     )?;
     assert_eq!(r.coverage, "schema_unavailable");
     assert_eq!(r.uncovered_orders, "1");
-    assert_eq!(db.store.run_migrations(migrations())?, 5);
+    assert_eq!(db.store.run_migrations(&through61)?, 5);
     db.reopen()?;
-    assert_eq!(db.store.run_migrations(migrations())?, 0);
+    assert_eq!(db.store.run_migrations(&through61)?, 0);
     assert_eq!(snapshot(&db.conn()?)?, before);
     assert!(db.store.load_receipt_native_observations(&db.id)?.is_none());
     let r = db.store.receipt_native_observations_report(

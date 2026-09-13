@@ -1,5 +1,7 @@
 #[path = "common/source_sell_fixture.rs"]
 mod fixture;
+#[path = "common/historical_migration_fixture.rs"]
+mod historical;
 use anyhow::Result;
 use copybot_storage_core::{ExecutionSellIntentOutcome, SqliteStore};
 use fixture::*;
@@ -121,7 +123,13 @@ fn additive_0058_upgrade_preserves_old_rows_schema_and_legacy_queue_then_reopens
         store,
         now: "2026-09-07T12:00:00Z".parse()?,
     };
-    db.proven("old-buy", "source-a")?;
+    historical::buy(
+        &db.conn()?,
+        "old-buy",
+        "source-a",
+        "sig:exec-canary:old-buy",
+        db.now,
+    )?;
     let position = db.position()?;
     db.store
         .activate_follow_wallet("source-a", db.now, "legacy")?;

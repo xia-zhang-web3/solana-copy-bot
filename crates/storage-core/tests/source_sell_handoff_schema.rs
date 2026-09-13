@@ -1,5 +1,7 @@
 #[path = "common/source_sell_fixture.rs"]
 mod fixture;
+#[path = "common/historical_migration_fixture.rs"]
+mod historical;
 use anyhow::Result;
 use copybot_storage_core::{
     source_sell_handoff_schema, SourceSellCandidate as Candidate, SqliteStore,
@@ -102,7 +104,13 @@ fn migration65_upgrade_preserves_prior_schema_and_rows_then_keeps_legacy_unknown
         store,
         now: "2026-09-07T12:00:00Z".parse()?,
     };
-    db.proven("old-buy", "source-a")?;
+    historical::buy(
+        &db.conn()?,
+        "old-buy",
+        "source-a",
+        "sig:exec-canary:old-buy",
+        db.now,
+    )?;
     let e = db.observed("old-event", "source-a")?;
     let p = db.position()?;
     let stage = inserted(db.store.stage_execution_source_sell_intent(&e, &p)?);

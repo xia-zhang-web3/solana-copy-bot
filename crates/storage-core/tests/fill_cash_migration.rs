@@ -1,3 +1,5 @@
+#[path = "common/historical_migration_fixture.rs"]
+mod historical;
 use anyhow::Result;
 use copybot_storage_core::SqliteStore;
 use rusqlite::{params, Connection};
@@ -47,7 +49,9 @@ fn nonempty_0054_upgrade_preserves_values_ids_sequence_indexes_triggers_and_fore
     let query="SELECT id,order_id,token,qty,avg_price,fee,slippage_bps,notional_lamports,fee_lamports,qty_raw,qty_decimals FROM fills ORDER BY id";
     let before = values(&conn, query)?;
     let audit = values(&conn, "SELECT * FROM fill_audit")?;
-    assert_eq!(store.run_migrations(Path::new(MIGRATIONS))?, 7);
+    let through61 = dir.path().join("through61");
+    historical::prefix(&through61, "0062")?;
+    assert_eq!(store.run_migrations(&through61)?, 7);
     assert_eq!(values(&conn, query)?, before);
     assert_eq!(
         values(&conn, "SELECT * FROM fill_audit")?,
@@ -97,10 +101,10 @@ fn nonempty_0054_upgrade_preserves_values_ids_sequence_indexes_triggers_and_fore
         901
     );
     assert!(!conn.prepare("PRAGMA foreign_key_check")?.exists([])?);
-    assert_eq!(store.run_migrations(Path::new(MIGRATIONS))?, 0);
+    assert_eq!(store.run_migrations(&through61)?, 0);
     drop(store);
     let mut store = SqliteStore::open(&path)?;
-    assert_eq!(store.run_migrations(Path::new(MIGRATIONS))?, 0);
+    assert_eq!(store.run_migrations(&through61)?, 0);
     store.ensure_history_retention_tables()?;
     for field in ["avg_price", "fee", "slippage_bps"] {
         assert_eq!(
