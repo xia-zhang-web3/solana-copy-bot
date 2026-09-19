@@ -345,7 +345,7 @@ class CaptureVirtualTests(unittest.TestCase):
             CaptureControl.create(self.dir / "capture.db", max_rows=1, max_bytes=4096)
         with self.assertRaisesRegex(ValueError, "schema_missing"):
             CaptureControl(self.dir / "virtual.db")
-        for rows, bytes_ in ((0, 1), (1_000_001, 1), (1, 1_073_741_825), (True, 1)):
+        for rows, bytes_ in ((0, 1), (4_000_001, 1), (1, 68_719_476_737), (True, 1)):
             with self.subTest(bounds=(rows, bytes_)), self.assertRaises(ValueError):
                 CaptureControl.create(self.dir / "invalid.db", max_rows=rows, max_bytes=bytes_)
         self.assertFalse((self.dir / "invalid.db").exists())
