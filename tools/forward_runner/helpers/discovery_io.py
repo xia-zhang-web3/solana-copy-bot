@@ -69,7 +69,8 @@ def snapshot(source, target, stop_event):
     """Each backup step releases source read lock; no explicit long transaction."""
     check_stop(stop_event)
     source, target = Path(source), Path(target)
-    if source.is_symlink() or target.exists() or not source.is_file():
+    # Live source exists only in the Linux volume; backup validates its owned path.
+    if source.is_symlink() or target.exists():
         raise ValueError('discovery_snapshot_path_invalid')
     started = utc()
     from session_sqlite import backup
