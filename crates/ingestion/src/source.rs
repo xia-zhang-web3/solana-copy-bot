@@ -15,6 +15,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::warn;
 
 mod core;
+pub(crate) mod scoped_capture;
 pub(crate) mod durable;
 #[allow(dead_code)]
 mod helius_fetch;
@@ -68,10 +69,10 @@ use self::types_mock::{
     SeenSignatureEntry, SOL_MINT, TELEMETRY_SAMPLE_CAPACITY, WS_IDLE_TIMEOUT_SECS,
 };
 pub use self::types_mock::{IngestionRuntimeSnapshot, IngestionSource, RawSwapObservation};
-use self::yellowstone_shell::{
-    YellowstoneGrpcSource, YellowstoneParsedUpdate, YellowstonePipeline, YellowstoneRecvOutcome,
-    YellowstoneRuntimeConfig,
+pub(crate) use self::yellowstone_shell::{
+    YellowstoneGrpcSource, YellowstoneParsedUpdate, YellowstoneRuntimeConfig,
 };
+use self::yellowstone_shell::{YellowstonePipeline, YellowstoneRecvOutcome};
 pub(crate) use rpc_backfill::fetch_recent_raw_swaps_for_wallets;
 
 #[cfg(test)]

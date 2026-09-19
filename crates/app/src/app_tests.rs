@@ -4,6 +4,8 @@ mod b61_receipt_fixture;
 mod b61_rpc_fixture;
 mod b61_tests;
 mod b96_consumer_tests;
+mod capture_scope_baseline_tests;
+mod capture_scope_pipeline_tests;
 mod root_hot_arrival_fairness;
 mod source_sell_handoff_fixture;
 mod source_sell_handoff_recovery_tests;

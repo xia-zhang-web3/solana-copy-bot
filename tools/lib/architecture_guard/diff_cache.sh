@@ -3,6 +3,8 @@
 prepare_diff_cache() {
   architecture_diff_dir="$(mktemp -d)"
   trap 'rm -rf "$architecture_diff_dir"' EXIT
+  # Selected files include untracked evidence; passing their paths can exceed ARG_MAX.
+  # Git diff already covers every tracked change in the requested worktree/index/range.
   local context source key
   for context in 0 3; do
     for source in main cached; do
@@ -14,10 +16,10 @@ prepare_diff_cache() {
         args+=("$ARCH_GUARD_DIFF_RANGE")
       fi
       key="$source-$context"
-      git diff "${args[@]}" -- "${files[@]}" > "$architecture_diff_dir/$key" || return
+      git diff "${args[@]}" -- > "$architecture_diff_dir/$key" || return
     done
     if [[ -n "${ARCH_GUARD_DIFF_RANGE:-}" && "${GITHUB_ACTIONS:-}" != true ]]; then
-      git diff --unified="$context" -- "${files[@]}" > "$architecture_diff_dir/local-$context" || return
+      git diff --unified="$context" -- > "$architecture_diff_dir/local-$context" || return
     fi
   done
 }

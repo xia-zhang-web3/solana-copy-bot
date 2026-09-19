@@ -11,6 +11,13 @@ pub(in crate::source) async fn yellowstone_stream_loop(
     let mut seen_signatures_queue: VecDeque<SeenSignatureEntry> = VecDeque::new();
     let mut seen_signatures_map: HashMap<String, Instant> = HashMap::new();
 
+    if super::super::scoped_capture::restore(runtime_config.clone())
+        .await
+        .is_err()
+    {
+        output_queue.close().await;
+        return;
+    }
     loop {
         let subscribe_request = build_yellowstone_subscribe_request(runtime_config.as_ref());
         let builder = match GeyserGrpcClient::build_from_shared(runtime_config.grpc_url.clone()) {
@@ -120,6 +127,13 @@ pub(in crate::source) async fn yellowstone_stream_loop(
         next_backoff_ms = runtime_config.reconnect_initial_ms;
 
         loop {
+            if super::super::scoped_capture::refresh(runtime_config.clone())
+                .await
+                .is_err()
+            {
+                output_queue.close().await;
+                return;
+            }
             let next_message =
                 time::timeout(Duration::from_secs(WS_IDLE_TIMEOUT_SECS), stream.next()).await;
             match next_message {
@@ -139,7 +153,17 @@ pub(in crate::source) async fn yellowstone_stream_loop(
                             .fetch_add(1, Ordering::Relaxed);
                     }
 
-                    match parse_yellowstone_update(update, runtime_config.as_ref()) {
+                    let parsed =
+                        match super::super::scoped_capture::process(update, runtime_config.clone())
+                            .await
+                        {
+                            Ok(parsed) => parsed,
+                            Err(_) => {
+                                output_queue.close().await;
+                                return;
+                            }
+                        };
+                    match parsed {
                         Ok(Some(YellowstoneParsedUpdate::Observation(raw))) => {
                             let now = Instant::now();
                             prune_seen_signatures(
@@ -290,6 +314,13 @@ pub(in crate::source) async fn yellowstone_stream_loop(
             }
         }
 
+        if super::super::scoped_capture::gap(runtime_config.clone())
+            .await
+            .is_err()
+        {
+            output_queue.close().await;
+            return;
+        }
         sleep_with_backoff(
             &mut next_backoff_ms,
             runtime_config.reconnect_initial_ms,

@@ -34,6 +34,17 @@ use tokio::time::{sleep, timeout, Duration};
 
 static RECENT_RAW_JOURNAL_PHASE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+impl ObservedSwapWriter {
+    // Inject only the external condition; callers exercise the real writer API.
+    pub(crate) fn set_capture_test_journal_inflight_rows(&self, rows: usize) {
+        if rows == 0 {
+            self.telemetry.note_journal_writer_inflight_finished();
+        } else {
+            self.telemetry.note_journal_writer_inflight_started(rows);
+        }
+    }
+}
+
 fn recent_raw_journal_phase_test_guard() -> MutexGuard<'static, ()> {
     RECENT_RAW_JOURNAL_PHASE_TEST_LOCK
         .lock()

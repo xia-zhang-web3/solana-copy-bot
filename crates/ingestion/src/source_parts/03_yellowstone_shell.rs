@@ -12,7 +12,8 @@ impl Drop for YellowstonePipeline {
     }
 }
 
-pub(in crate::source) struct YellowstoneRuntimeConfig {
+pub(crate) struct YellowstoneRuntimeConfig {
+    pub(in crate::source) capture: Option<Arc<super::scoped_capture::ScopedCapture>>,
     pub(in crate::source) grpc_url: String,
     pub(in crate::source) x_token: String,
     pub(in crate::source) connect_timeout_ms: u64,
@@ -29,7 +30,7 @@ pub(in crate::source) struct YellowstoneRuntimeConfig {
 }
 
 pub struct YellowstoneGrpcSource {
-    pub(in crate::source) runtime_config: Arc<YellowstoneRuntimeConfig>,
+    pub(crate) runtime_config: Arc<YellowstoneRuntimeConfig>,
     pub(in crate::source) queue_overflow_policy: QueueOverflowPolicy,
     pub(in crate::source) reorder: ReorderBuffer,
     pub(in crate::source) telemetry_report_seconds: u64,
@@ -42,7 +43,7 @@ pub(in crate::source) enum YellowstoneRecvOutcome {
     TimedOut,
 }
 
-pub(in crate::source) enum YellowstoneParsedUpdate {
+pub(crate) enum YellowstoneParsedUpdate {
     Observation(RawSwapObservation),
     Ping,
 }

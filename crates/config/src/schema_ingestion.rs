@@ -6,6 +6,8 @@ use std::fmt;
 #[serde(default)]
 pub struct IngestionConfig {
     pub source: String,
+    /// Separate, pre-created observation-only scope database. None preserves legacy behavior.
+    pub capture_scope_db: Option<String>,
     pub yellowstone_delivery_mode: String,
     pub yellowstone_association: Option<crate::AssociationDeliveryConfig>,
     pub helius_ws_url: String,
@@ -48,6 +50,7 @@ impl Default for IngestionConfig {
     fn default() -> Self {
         Self {
             source: "mock".to_string(),
+            capture_scope_db: None,
             yellowstone_delivery_mode: "legacy".into(),
             yellowstone_association: None,
             helius_ws_url: "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),

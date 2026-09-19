@@ -83,6 +83,14 @@ impl AssociationDeliveryConfig {
     }
 }
 pub fn validate_delivery_source(c: &IngestionConfig) -> Result<()> {
+    if let Some(path) = &c.capture_scope_db {
+        ensure!(
+            !path.trim().is_empty()
+                && c.source == "yellowstone_grpc"
+                && c.yellowstone_delivery_mode == "legacy",
+            "scoped capture requires legacy Yellowstone and an explicit database path"
+        );
+    }
     match c.yellowstone_delivery_mode.as_str() {
         "legacy" => Ok(()),
         "durable_association_v1" => {
@@ -100,6 +108,14 @@ pub fn validate_delivery_source(c: &IngestionConfig) -> Result<()> {
 }
 pub fn validate_association_delivery(c: &AppConfig) -> Result<()> {
     validate_delivery_source(&c.ingestion)?;
+    if c.ingestion.capture_scope_db.is_some() {
+        ensure!(
+            !c.execution.enabled
+                && !c.execution.canary_tiny_submit_enabled
+                && !c.execution.tiny_experiment.activate,
+            "observation-only capture requires execution, tiny and activation flags=false"
+        );
+    }
     crate::validate_owned_sell_preparation(&c.execution, &c.ingestion)?;
     if c.ingestion.yellowstone_delivery_mode == "durable_association_v1" {
         ensure!(

@@ -67,6 +67,7 @@ fn yellowstone_subscribe_request_uses_confirmed_commitment_and_program_filters()
     let mut interested = HashSet::new();
     interested.insert("Program1111111111111111111111111111111111".to_string());
     let runtime_config = YellowstoneRuntimeConfig {
+        capture: None,
         grpc_url: "https://example.quicknode.com:10000".to_string(),
         x_token: "token".to_string(),
         connect_timeout_ms: 5_000,

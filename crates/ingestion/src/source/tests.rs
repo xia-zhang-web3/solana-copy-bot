@@ -77,3 +77,10 @@ mod pumpswap_tests;
 
 #[path = "../source_tests/delivery_queue_tests.rs"]
 mod delivery_queue_tests;
+
+#[path = "../source_tests/capture_scope_fixture.rs"]
+mod capture_scope_fixture;
+#[path = "../source_tests/capture_scope_tests.rs"]
+mod capture_scope_tests;
+#[path = "../source_tests/capture_scope_bridge_tests.rs"]
+mod capture_scope_bridge_tests;

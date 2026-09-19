@@ -1,0 +1,30 @@
+{
+  "provenance": {
+    "http_sha256": "98b659607a8b303cd46fabd381ba9db4c99617e41e1e57642d3330bc72de97e7",
+    "source": "saved http/00000176.json; missing-transactions.json",
+    "timestamp_note": "blockTime supplied to writer replay; historical provider created_at and delivery unknown",
+    "inflight_note": "one inflight row injected using production telemetry, not asserted historical"
+  },
+  "pre_token_raw": "32828368812",
+  "post_token_raw": "31684237533",
+  "decimals": 6,
+  "pre_native_lamports": 174466517371,
+  "post_native_lamports": 175533618984,
+  "external_lot": {
+    "wallet": "DcVa5kaNzq9puM5nyhBh7L25QPkKNZSQWCMdXpc3kKWE",
+    "mint": "5xReA5QB1E1hikDA6ZsqLBvhzV18MGqWfcz2rsNzpump",
+    "status": "OPEN"
+  },
+  "swap": {
+    "wallet": "DcVa5kaNzq9puM5nyhBh7L25QPkKNZSQWCMdXpc3kKWE",
+    "dex": "pumpswap",
+    "token_in": "5xReA5QB1E1hikDA6ZsqLBvhzV18MGqWfcz2rsNzpump",
+    "token_out": "So11111111111111111111111111111111111111112",
+    "amount_in": 1144.131279000001,
+    "amount_out": 1.067101613,
+    "signature": "5kbYV8S8FimiM5GhqBZpJXpJzuLZ5jDTLFDyd7jbsuEdY3pGAvFXxHMF6LT5urNhemNyVeeazxZF6YZnG1CbkwUU",
+    "slot": 446979602,
+    "ts_utc": "2026-09-14T12:44:06+00:00",
+    "exact_amounts": null
+  }
+}

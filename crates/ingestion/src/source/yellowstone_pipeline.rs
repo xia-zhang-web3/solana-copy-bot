@@ -13,7 +13,7 @@ use super::core::{
     increment_atomic_usize, is_seen_signature, mark_seen_signature, prune_seen_signatures,
     sleep_with_backoff,
 };
-use super::yellowstone::{build_yellowstone_subscribe_request, parse_yellowstone_update};
+use super::yellowstone::build_yellowstone_subscribe_request;
 use super::{
     FetchedObservation, QueueOverflowPolicy, QueuePushResult, RawObservationQueue,
     SeenSignatureEntry, YellowstoneParsedUpdate, YellowstoneRuntimeConfig, WS_IDLE_TIMEOUT_SECS,

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "fixture": "transactions.json",
+  "fixture_sha256": "fb4a28cde49769b6d58ffed4436b41dfe5e33ce103ff116068b16734fdab5a5e",
+  "fixture_bytes": 4390116,
+  "count": 325,
+  "classes": {
+    "missing_sell": 258,
+    "observed_control": 67
+  },
+  "sides": {
+    "BUY": 40,
+    "SELL": 285
+  },
+  "transaction_versions": {
+    "legacy": 289,
+    "0": 36
+  },
+  "source_list_sha256": "afd65ecad43d3e4b5f8722356f7c589f22a04e845e3b3f5553e66215141f07dd",
+  "control_list_sha256": "3bc1c5405609ad82d258f112e10597c311388e6562855b92d7f046acf39bf7b2",
+  "control_snapshot_sha256": "1ec08d0a8c33fc442c0b0251aca6f7765ab95869e264724a935eb1868d49eea2",
+  "rpc_result_semantics": "Original result JSON data retained without semantic transformation",
+  "envelope_time": "Synthetic blockTime injection; historical gRPC created_at and receipt unknown",
+  "source_integrity": "Every source body matched its recorded SHA256 before extraction",
+  "control_source": "Closed audit virtual.sqlite TRANSACTION proofs joined to recorded event raw_row",
+  "network_requests": 0
+}

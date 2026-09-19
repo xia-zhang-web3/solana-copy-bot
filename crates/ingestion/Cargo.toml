@@ -9,6 +9,7 @@ bs58 = "0.5.1"
 chrono.workspace = true
 copybot-config = { path = "../config" }
 copybot-core-types = { path = "../core-types" }
+copybot-storage-core = { path = "../storage-core" }
 curve25519-dalek = "4.1.3"
 futures-util = "0.3.31"
 prost = "=0.14.3"
@@ -21,3 +22,7 @@ tonic = "=0.14.4"
 tracing.workspace = true
 yellowstone-grpc-client = "=12.0.0"
 yellowstone-grpc-proto = "=12.0.0"
+
+[dev-dependencies]
+rusqlite.workspace = true
+tempfile = "3"

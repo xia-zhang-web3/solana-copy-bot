@@ -1,0 +1,14 @@
+{
+  "virtual_engine.py": {
+    "source": "audit/2026-09-14/rolling-discovery-forward-20260914T074505Z/helpers/virtual_engine.py",
+    "source_sha256": "0495c1c77b128bea3851ded53b772e8967a9470b1629528c7826188ae78a66a6",
+    "fixture_sha256": "5421f7abff874097e0436ff0c13a9164ba24eb9d655463997660b5a1996f17df",
+    "change": "WSOL decoder import replaced by identical constant; no behavioral methods changed"
+  },
+  "virtual_store.py": {
+    "source": "audit/2026-09-14/rolling-discovery-forward-20260914T074505Z/helpers/virtual_store.py",
+    "source_sha256": "887844e4452b5ca3fb15b365f3ae89632e4a67478d178bd7531b86abe106034c",
+    "fixture_sha256": "887844e4452b5ca3fb15b365f3ae89632e4a67478d178bd7531b86abe106034c",
+    "change": "byte-identical"
+  }
+}

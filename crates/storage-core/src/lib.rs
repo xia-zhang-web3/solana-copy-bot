@@ -1,3 +1,4 @@
+pub mod capture_scope;
 mod association_candidate;
 pub mod association_inbox;
 pub mod association_sell_preparation;

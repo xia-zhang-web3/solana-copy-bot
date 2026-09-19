@@ -1,3 +1,4 @@
+pub mod capture_replay;
 mod parser;
 mod source;
 

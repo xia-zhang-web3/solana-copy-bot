@@ -90,7 +90,14 @@ impl YellowstoneGrpcSource {
             ));
         }
 
+        let capture = config
+            .capture_scope_db
+            .as_deref()
+            .map(super::scoped_capture::ScopedCapture::open)
+            .transpose()?
+            .map(Arc::new);
         let runtime_config = YellowstoneRuntimeConfig {
+            capture,
             grpc_url: grpc_url.to_string(),
             x_token: x_token.to_string(),
             connect_timeout_ms: config.yellowstone_connect_timeout_ms.max(500),
@@ -154,6 +161,9 @@ impl YellowstoneGrpcSource {
     }
 
     fn ensure_pipeline_running(&mut self) -> Result<()> {
+        if let Some(capture) = &self.runtime_config.capture {
+            capture.healthy()?;
+        }
         let needs_restart = self
             .pipeline
             .as_ref()
