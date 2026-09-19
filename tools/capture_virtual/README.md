@@ -69,11 +69,12 @@ for the same signature fail capture. Restart decodes the exact saved envelope,
 including missing/invalid timestamp, before accepting new requests or input.
 
 There is at most one capture operation in flight. Limits are explicit, persisted
-and checked before accepting another row: at most 1,000,000 events, 1 GiB charged
+and checked before accepting another row: at most 4,000,000 events, 64 GiB charged
 payload, 8 MiB per envelope, 16 KiB reserved decoded JSON per event, 128 wallets per
 request and 128 pending requests. Controller requests consume their own bounded
 payload charge. These are hard validation ceilings, not recommended session sizes
-or measured process RSS; SQLite indexes/pages and protobuf/transport overhead also
+or measured process RSS; explicit creation still requires both limits and existing
+database limits are never increased automatically; SQLite indexes/pages and protobuf/transport overhead also
 consume space. There is no eviction and no global backpressure-disable switch.
 
 Capacity, I/O or integrity failure stops the capture path. A successful persistent

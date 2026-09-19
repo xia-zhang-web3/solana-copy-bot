@@ -38,3 +38,6 @@ fn parse_rejects_infinite_amounts() {
         "non-finite amount must be rejected"
     );
 }
+
+#[path = "dex_policy_tests.rs"]
+mod dex_policy_tests;

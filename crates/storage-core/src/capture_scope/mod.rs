@@ -29,7 +29,7 @@ impl CaptureStore {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         ensure!(
-            rows > 0 && rows <= 1_000_000 && bytes > 0 && bytes <= 1_073_741_824,
+            rows > 0 && rows <= 4_000_000 && bytes > 0 && bytes <= 68_719_476_736,
             "capture bounds invalid"
         );
         Ok(Self { db, epoch: 0 })

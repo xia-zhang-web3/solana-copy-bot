@@ -31,7 +31,7 @@ def epoch(value):
 
 
 def validate_bounds(max_rows, max_bytes):
-    for value, limit in ((max_rows, 1_000_000), (max_bytes, 1_073_741_824)):
+    for value, limit in ((max_rows, 4_000_000), (max_bytes, 68_719_476_736)):
         if type(value) is not int or not 0 < value <= limit:
             raise ValueError("invalid_capture_bounds")
 

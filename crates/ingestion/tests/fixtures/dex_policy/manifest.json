@@ -1,0 +1,19 @@
+{
+  "source_export_sha256": "deb7f71e6c9ef2cebb2fa627a888d9438d88fd3c680a4c63fdaa05c9f5363b2d",
+  "source_sequence": 14,
+  "raw_sha256": "801374aea321effc5b25ec45b88de632937f3b7412a7503ca7723d2715b7c2d2",
+  "saved_event": {
+    "wallet": "BCBaTHa8HLymbmr9hDXrHarXUkiPu8RH2XFr4UFmnXQg",
+    "dex": "pumpswap",
+    "token_in": "4hABHBqxtSFhna9U9pRqtFkULkChWrbiTr3tn4Wnpump",
+    "token_out": "So11111111111111111111111111111111111111112",
+    "amount_in": 7428850.059557,
+    "amount_out": 0.010385549,
+    "signature": "3PiNwVAeSYSSJKhmkGmH8HvwxU8Cww4gY2jG5sKGdNAAkzTUtqdgsbfqR2nnPJdpEQ8yMnJgJEHbecm84FHmX4Ai",
+    "slot": 448363628,
+    "ts_utc": "2026-09-19T09:13:15.458923181Z",
+    "exact_amounts": null
+  },
+  "expected_new_dex": "multi_dex",
+  "description": "Exact live envelope; saved original canonical label retained here as historical evidence."
+}

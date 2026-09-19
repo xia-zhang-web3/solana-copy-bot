@@ -46,13 +46,21 @@ impl SwapParser {
     }
 
     fn detect_dex(&self, raw: &RawSwapObservation) -> Option<String> {
-        for program in &raw.program_ids {
-            if self.raydium_program_ids.iter().any(|id| id == program) {
-                return Some("raydium".to_string());
-            }
-            if self.pumpswap_program_ids.iter().any(|id| id == program) {
-                return Some("pumpswap".to_string());
-            }
+        // Classify configured families, not one execution venue or route leg.
+        // Aggregated observations invoking both families keep that ambiguity explicit.
+        let raydium = raw
+            .program_ids
+            .iter()
+            .any(|program| self.raydium_program_ids.iter().any(|id| id == program));
+        let pumpswap = raw
+            .program_ids
+            .iter()
+            .any(|program| self.pumpswap_program_ids.iter().any(|id| id == program));
+        match (raydium, pumpswap) {
+            (true, true) => return Some("multi_dex".to_string()),
+            (true, false) => return Some("raydium".to_string()),
+            (false, true) => return Some("pumpswap".to_string()),
+            (false, false) => {}
         }
 
         let hint = raw.dex_hint.to_lowercase();

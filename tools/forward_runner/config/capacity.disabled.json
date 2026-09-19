@@ -1,0 +1,60 @@
+{
+  "enabled": false,
+  "launch_authorized": false,
+  "duration_seconds": 28800,
+  "capture": {
+    "max_rows": 2000000,
+    "max_bytes": 51539607552
+  },
+  "planning_envelope": {
+    "baseline_wallets": 32,
+    "max_protected_wallet_union": 128,
+    "activity_multiplier": 4,
+    "scope_multiplier": 4,
+    "retained_pins_included": true,
+    "guard": "helpers/session_capacity.py"
+  },
+  "resource_proposal": {
+    "state_physical_bytes": 68719476736,
+    "wal_bytes_included_in_state": 8589934592,
+    "export_headroom_bytes": 51539607552,
+    "logs_bytes": 2147483648,
+    "relay_control_bytes": 67108864,
+    "disk_reserve_bytes": 34359738368,
+    "minimum_initial_free_bytes": 157840048128,
+    "app_memory_bytes": 4294967296,
+    "controller_memory_bytes": 268435456,
+    "relay_memory_each_bytes": 268435456,
+    "workers_memory_aggregate_bytes": 2147483648,
+    "container_memory_total_bytes": 8589934592
+  },
+  "budget": {
+    "total_usd": "100",
+    "already_reserved_usd": "7.26376575",
+    "remaining_usd": "92.73623425",
+    "new_reservation_usd": "0",
+    "eight_hour_mean_stream_usd": "9.556603451114867",
+    "eight_hour_fourfold_stream_usd": "38.22641380445947",
+    "eight_hour_fourfold_affordable": true,
+    "eight_hour_mean_actual_stream_usd": "9.11748929594115",
+    "eight_hour_fourfold_actual_stream_usd": "36.4699571837646",
+    "planning_stream_allowance_usd": "40",
+    "planning_http_allowance_usd": "10",
+    "planning_unallocated_headroom_usd": "42.73623425",
+    "authorization_basis": "Owner approved RPC budget expansion on 2026-09-19; curator selected USD100 total including historical charges. Launch remains disabled."
+  },
+  "launch_blockers": [
+    "matching_final_source_artifact"
+  ],
+  "defaults_changed": false,
+  "limitations": [
+    "Periodic physical guards permit sampling-interval overshoot",
+    "Full worker RSS peak unknown; memory proposal is not measured fourfold guarantee"
+  ],
+  "latest_local_linux_measurement": {
+    "free_bytes": 245600133120,
+    "host_free_bytes": 233101758464,
+    "evidence": "audit/2026-09-19/storage-budget-maintenance-20260919/DOCKER_AFTER.json",
+    "scope": "Stopped Docker after authorized disk expansion; launch preflight rechecks current free space"
+  }
+}
