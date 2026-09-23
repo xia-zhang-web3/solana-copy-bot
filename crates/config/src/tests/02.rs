@@ -108,3 +108,32 @@ fn execution_priority_fee_canary_rate_env_overrides_parse() {
         });
     });
 }
+
+#[test]
+fn native_first_buy_activation_requires_all_explicit_authorities() {
+    let mut e = ExecutionConfig::default();
+    e.canary_tiny_submit_enabled = true;
+    e.tiny_experiment.activate = true;
+    e.tiny_experiment.policy_mode = TinyPolicyMode::ProtectedNativeCapital;
+    e.native_fresh_buy = Some(NativeFreshBuyConfig {
+        policy: PROCESSED_SLOT_FENCE_AVAILABILITY_V1.into(),
+    });
+    e.owned_sell_preparation = Some(OwnedSellPreparationConfig {
+        policy: RPC_FINALIZED_OWNED_SELL_V1.into(), tiny_dispatch: true,
+        fractional_inventory: Some("whole_wallet_parent_program_fraction_v1".into()),
+        rpc_url: "http://127.0.0.1:1".into(), genesis_hash: "fixture".into(),
+        identity: "fixture".into(),
+    });
+    assert!(native_first_buy_activation(&e));
+    let enabled = e.clone();
+    for disabled in [
+        { let mut x = enabled.clone(); x.tiny_experiment.activate = false; x },
+        { let mut x = enabled.clone(); x.enabled = true; x },
+        { let mut x = enabled.clone(); x.canary_tiny_submit_enabled = false; x },
+        { let mut x = enabled.clone(); x.tiny_experiment.policy_mode = TinyPolicyMode::DecodedAmount; x },
+        { let mut x = enabled.clone(); x.native_fresh_buy = None; x },
+        { let mut x = enabled.clone(); x.owned_sell_preparation.as_mut().unwrap().tiny_dispatch = false; x },
+    ] {
+        assert!(!native_first_buy_activation(&disabled));
+    }
+}

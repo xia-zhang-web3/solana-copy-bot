@@ -29,17 +29,20 @@ struct Case {
     signature: String,
     now: chrono::DateTime<Utc>,
     io: Arc<NativeBuyMockIo>,
+    buy_lamports: u64,
+    payer_server: Option<crate::app_tests::native_rpc_fixture::Fixture>,
+    payer: Option<Arc<Mutex<crate::app_tests::initial_sol_rpc_fixture::FundingRpc>>>,
 }
 
-fn quote(now: chrono::DateTime<Utc>, out: &str) -> QuoteSample {
+fn quote_for_amount(now: chrono::DateTime<Utc>, out: &str, amount: &str) -> QuoteSample {
     let route = json!([{"swapInfo":{"label":"Metis"}}]);
-    let threshold = if out == "900" { "855" } else { "950" };
+    let threshold = match out { "900" => "855", "10000" => "9500", _ => "950" };
     let body = json!({"inputMint":SOL,"outputMint":MINT,
-        "inAmount":"1000000","outAmount":out,"otherAmountThreshold":threshold,
+        "inAmount":amount,"outAmount":out,"otherAmountThreshold":threshold,
         "swapMode":"ExactIn","slippageBps":500,"routePlan":route,"priceImpactPct":"0"});
     QuoteSample {
         http_request_started_ts: Some(now), quote_response_available_ts: Some(now),
-        in_amount: "1000000".into(), out_amount: out.into(),
+        in_amount: amount.into(), out_amount: out.into(),
         response_json: body.to_string(), price_impact_pct: Some(0.0),
         route_plan_json: Some(route.to_string()), in_decimals: Some(9),
         out_decimals: Some(3), latency_ms: 0,
@@ -47,11 +50,31 @@ fn quote(now: chrono::DateTime<Utc>, out: &str) -> QuoteSample {
 }
 
 async fn setup(fresh_out: &str, pending: bool) -> Result<Case> {
-    let (payload, signature, payer) = fixture::signed_payload_for_lamports(1_000_000)?;
-    let wallet = bs58::encode(payer).into_string();
+    setup_case(fresh_out, pending, false, false).await
+}
+async fn setup_case(fresh_out: &str, pending: bool, protected: bool, activate: bool) -> Result<Case> {
+    let buy_lamports = if protected { 10_000_000 } else { 1_000_000 };
+    let output_raw = if protected { "10000" } else { "1000" };
+    let (payload, signature, wallet_bytes) = if protected {
+        fixture::signed_payload_for_lamports_and_floor(buy_lamports, 985_000_000)?
+    } else {
+        fixture::signed_payload_for_lamports(buy_lamports)?
+    };
+    let wallet = bs58::encode(wallet_bytes).into_string();
     let mut config = fixture::config(&wallet);
-    config.canary_buy_size_sol = 0.001;
-    config.quote_canary_buy_size_sol = 0.001;
+    config.canary_buy_size_sol = buy_lamports as f64 / 1e9;
+    config.quote_canary_buy_size_sol = config.canary_buy_size_sol;
+    if protected {
+        config.tiny_experiment.policy_mode = copybot_config::TinyPolicyMode::ProtectedNativeCapital;
+    }
+    config.tiny_experiment.activate = activate;
+    let (payer_server, payer) = if protected {
+        let state = Arc::new(Mutex::new(crate::app_tests::initial_sol_rpc_fixture::FundingRpc::default()));
+        let server = crate::app_tests::initial_sol_rpc_fixture::FundingRpc::server(state.clone()).await?;
+        config.submit_adapter_http_url = server.endpoint.clone();
+        config.owned_sell_preparation.as_mut().unwrap().rpc_url = server.endpoint.clone();
+        (Some(server), Some(state))
+    } else { (None, None) };
     let path = format!("file:native-runner-{}-{}?mode=memory&cache=shared",
         std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
     let mut store = SqliteStore::open(&path)?;
@@ -66,22 +89,26 @@ async fn setup(fresh_out: &str, pending: bool) -> Result<Case> {
         params![LEADER,window,(now-Duration::seconds(3)).to_rfc3339()])?;
     sql.execute("INSERT INTO discovery_strategy_state(id,publication_runtime_mode,publication_last_published_at,publication_last_published_window_start,publication_policy_fingerprint,publication_wallet_ids_json,updated_at) VALUES(1,'healthy',?1,?2,'policy',?3,?4)",
         params![(now-Duration::seconds(3)).to_rfc3339(),window,json!([LEADER]).to_string(),now.to_rfc3339()])?;
+    // Replay runs under the same explicit activation config used by the tick.
     fixture::actual_source_replay(&store, &path, &config).await?;
     assert_eq!(store.list_native_buy_pending(1)?.len(), 1);
-    store.activate_tiny_experiment("fractional-test", &wallet, now)?;
+    if !protected {
+        store.activate_tiny_experiment("fractional-test", &wallet, now)?;
+    }
     let decoded = crate::execution_transaction_wire::decode_message(&payload, |_| Ok(()))?;
     let facts = crate::execution_native_rpc::synthetic_classic_funding(
-        &payload, payer, 1_000_000_000, 19_000, 120)?;
+        &payload, wallet_bytes, 1_000_000_000, 19_000, 120)?;
+    let post_native = 1_000_000_000 - buy_lamports - 19_000;
     let receipt = json!({"jsonrpc":"2.0","result":{"slot":120,
         "transaction":{"signatures":[signature],"message":{"accountKeys":[
             {"pubkey":wallet,"signer":true,"writable":true},
             {"pubkey":bs58::encode([42;32]).into_string(),"signer":false,"writable":true}]}},
         "meta":{"err":null,"fee":19000,"preBalances":[1_000_000_000,2_039_280],
-            "postBalances":[998_981_000,2_039_280],
+            "postBalances":[post_native,2_039_280],
             "preTokenBalances":[{"accountIndex":1,"owner":wallet,"mint":MINT,
                 "uiTokenAmount":{"amount":"0","decimals":3}}],
             "postTokenBalances":[{"accountIndex":1,"owner":wallet,"mint":MINT,
-                "uiTokenAmount":{"amount":"1000","decimals":3}}]}}});
+                "uiTokenAmount":{"amount":output_raw,"decimals":3}}]}}});
     let counts = Arc::new(Mutex::new(NativeBuyMockCounts::default()));
     let io = Arc::new(NativeBuyMockIo {
         runner: Some(NativeBuyRunnerOperands {
@@ -92,7 +119,8 @@ async fn setup(fresh_out: &str, pending: bool) -> Result<Case> {
                     {"pubkey":LEADER,"signer":true}]}}}),
             mint_account: json!({"context":{"slot":100},"value":{
                 "owner":copybot_storage_core::native_buy::SPL_TOKEN_PROGRAM}}),
-            initial_quote: quote(now, "1000"), fresh_quote: quote(now, fresh_out),
+            initial_quote: quote_for_amount(now, output_raw, &buy_lamports.to_string()),
+            fresh_quote: quote_for_amount(now, fresh_out, &buy_lamports.to_string()),
             priority: PriorityFeeSample { status: "ok".into(), lamports: Some(2000),
                 json: Some(crate::app_tests::priority_fee_fixture::total_json(2000)), error: None },
             adapter: NativeBuyMockAdapter { config: config.clone(), payload,
@@ -106,7 +134,8 @@ async fn setup(fresh_out: &str, pending: bool) -> Result<Case> {
                 "confirmationStatus":"confirmed"}]}}) },
         receipt, counts,
     });
-    Ok(Case { config, path, store, sql, wallet, signature, now, io })
+    Ok(Case { config, path, store, sql, wallet, signature, now, io,
+        buy_lamports, payer_server, payer })
 }
 
 async fn tick(case: &Case, config: &ExecutionConfig, store: &SqliteStore,
@@ -143,7 +172,116 @@ async fn native_buy_runner_actual_tick_receipt_h1000_fractional_sell_h750() -> R
     let position = case.store.load_execution_canary_open_position(MINT)?.expect("canonical BUY H");
     assert_eq!(position.qty_exact.unwrap().raw(), 1000);
     assert_eq!(position.cost_lamports.unwrap().as_u64(), 1_019_000);
-    sell_250(&mut case).await?;
+    sell_quarter(&mut case).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_buy_first_protected_activation_from_empty_db_through_tick() -> Result<()> {
+    let off = setup_case("10000", false, true, false).await?;
+    assert!(off.store.load_tiny_experiment(Utc::now())?.is_none());
+    let denied = tick(&off, &off.config, &off.store, off.io.clone()).await?;
+    assert_eq!((denied.state_machine_reserved, denied.state_machine_failed), (1, 1), "{denied:?}");
+    assert!(off.store.load_tiny_experiment(Utc::now())?.is_none());
+    assert_eq!(off.io.counts.lock().unwrap().send, 0);
+
+    let mut case = setup_case("10000", false, true, true).await?;
+    assert!(case.store.load_tiny_experiment(Utc::now())?.is_none());
+    assert_eq!(case.sql.query_row("SELECT count(*) FROM execution_tiny_native_policy", [],
+        |r| r.get::<_, i64>(0))?, 0);
+    assert_eq!(case.sql.query_row("SELECT count(*) FROM execution_canary_dispatch", [],
+        |r| r.get::<_, i64>(0))?, 0);
+    assert!(case.store.load_execution_canary_open_position(MINT)?.is_none());
+    let admitted = tick(&case, &case.config, &case.store, case.io.clone()).await?;
+    assert_eq!(admitted.state_machine_reserved, 1, "{admitted:?}");
+    assert_eq!(case.io.counts.lock().unwrap().send, 1, "{admitted:?}");
+    let policy = case.store.tiny_native_policy("fractional-test", &case.wallet, Utc::now())?;
+    assert_eq!((policy.initial_lamports, policy.original_reserve,
+        policy.floor_lamports, policy.allowance),
+        (1_000_000_000, 50_000_001, 985_000_000, 15_000_000));
+    let owned = case.store.load_execution_canary_open_position(MINT)?.expect("receipt-owned H");
+    assert_eq!(owned.qty_exact.unwrap().raw(), 10000);
+    assert_eq!(owned.cost_lamports.unwrap().as_u64(), 10_019_000);
+    let reopened = SqliteStore::open(&case.path)?;
+    let repeated = tick(&case, &case.config, &reopened, case.io.clone()).await?;
+    assert_eq!(repeated.state_machine_reserved, 0);
+    assert_eq!(case.io.counts.lock().unwrap().send, 1);
+    assert_eq!(reopened.tiny_native_policy("fractional-test", &case.wallet, Utc::now())?, policy);
+    sell_quarter(&mut case).await?;
+    let remaining = case.store.load_execution_canary_open_position(MINT)?.unwrap();
+    assert_eq!((remaining.qty_exact.unwrap().raw(), remaining.cost_lamports.unwrap().as_u64()), (7500, 7_514_250));
+    let payer_calls = case.payer_server.take().unwrap().finish().await?;
+    assert_eq!(payer_calls.iter().filter(|c| c.request["method"] == "getMultipleAccounts").count(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_buy_first_protected_activation_refuses_wrong_identity_and_payer() -> Result<()> {
+    for change in ["wallet", "id", "payer"] {
+        let case = setup_case("10000", false, true, true).await?;
+        let mut config = case.config.clone();
+        match change {
+            "wallet" => config.canary_wallet_pubkey = bs58::encode([3; 32]).into_string(),
+            "id" => config.tiny_experiment.id = Some("other-experiment".into()),
+            "payer" => {
+                case.payer.as_ref().unwrap().lock().unwrap()
+                    .rows.insert(case.wallet.clone(), Value::Null);
+            }
+            _ => unreachable!(),
+        }
+        let result = tick(&case, &config, &case.store, case.io.clone()).await;
+        if change == "wallet" {
+            assert!(result.unwrap_err().to_string().contains("owned_sell_wallet_identity"));
+        } else {
+            result?;
+        }
+        assert!(case.store.load_tiny_experiment(Utc::now())?.is_none(), "{change}");
+        assert_eq!(case.io.counts.lock().unwrap().send, 0, "{change}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_buy_first_protected_activation_rechecks_fence_after_payer_await() -> Result<()> {
+    let case = setup_case("10000", false, true, true).await?;
+    let seen = {
+        let mut payer = case.payer.as_ref().unwrap().lock().unwrap();
+        payer.delay_ms = 150;
+        payer.seen_accounts.clone()
+    };
+    let change_fence = async {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while seen.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        }).await?;
+        case.sql.execute("UPDATE native_buy_session_state SET active_session=NULL WHERE id=1", [])?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (result, mutation) = tokio::join!(tick(&case, &case.config, &case.store, case.io.clone()), change_fence);
+    mutation?;
+    let summary = result?;
+    assert_eq!(summary.state_machine_reserved, 1, "{summary:?}");
+    assert!(case.store.load_tiny_experiment(Utc::now())?.is_none());
+    assert_eq!(case.io.counts.lock().unwrap().send, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_buy_first_protected_activation_concurrent_ticks_do_not_rearm() -> Result<()> {
+    let case = setup_case("10000", false, true, true).await?;
+    let reopened = SqliteStore::open(&case.path)?;
+    let (first, second) = tokio::join!(
+        tick(&case, &case.config, &case.store, case.io.clone()),
+        tick(&case, &case.config, &reopened, case.io.clone()),
+    );
+    first?;
+    second?;
+    assert_eq!(case.io.counts.lock().unwrap().send, 1);
+    assert_eq!(case.sql.query_row("SELECT count(*) FROM execution_tiny_native_policy", [],
+        |r| r.get::<_, i64>(0))?, 1);
+    assert_eq!(case.sql.query_row("SELECT count(*) FROM execution_canary_dispatch", [],
+        |r| r.get::<_, i64>(0))?, 1);
     Ok(())
 }
 
@@ -213,7 +351,45 @@ async fn native_buy_runner_disabled_authority_recovers_pending_after_ram_reopen_
     Ok(())
 }
 
-async fn sell_250(case: &mut Case) -> Result<()> {
+#[tokio::test]
+async fn native_buy_protected_pending_reconciles_after_activation_disabled() -> Result<()> {
+    let case = setup_case("10000", true, true, true).await?;
+    let first = tick(&case, &case.config, &case.store, case.io.clone()).await?;
+    assert_eq!(first.state_machine_reserved, 1, "{first:?}");
+    assert_eq!(case.io.counts.lock().unwrap().send, 1);
+    assert!(case.store.load_execution_canary_open_position(MINT)?.is_none());
+    let mut disabled = case.config.clone();
+    disabled.tiny_experiment.activate = false;
+    disabled.native_fresh_buy = None;
+    let reopened = SqliteStore::open(&case.path)?;
+    let pending = tick(&case, &disabled, &reopened, case.io.clone()).await?;
+    assert_eq!(pending.state_machine_reserved, 0);
+    assert!(reopened.load_execution_canary_open_position(MINT)?.is_none());
+    let success_io = Arc::new(NativeBuyMockIo {
+        runner: None, initial_sol: case.io.initial_sol.clone(),
+        fee_lamports: case.io.fee_lamports, fee_slot: case.io.fee_slot,
+        expected_message_sha256: case.io.expected_message_sha256.clone(),
+        submit_signature: case.io.submit_signature.clone(),
+        confirmation: json!({"result":{"value":[{"err":null,"slot":120,
+            "confirmationStatus":"confirmed"}]}}),
+        receipt: case.io.receipt.clone(), counts: case.io.counts.clone(),
+    });
+    tick(&case, &disabled, &reopened, success_io.clone()).await?;
+    tick(&case, &disabled, &reopened, success_io).await?;
+    assert_eq!(reopened.load_execution_canary_open_position(MINT)?.unwrap()
+        .qty_exact.unwrap().raw(), 10000);
+    assert_eq!(case.io.counts.lock().unwrap().send, 1);
+    let order = reopened.load_execution_canary_order_by_signal(
+        &format!("native-buy-v1:{SOURCE_SIGNATURE}"))?.unwrap();
+    let fills: i64 = case.sql.query_row("SELECT count(*) FROM fills WHERE order_id=?1",
+        [&order.order_id], |r| r.get(0))?;
+    assert_eq!(fills, 1);
+    Ok(())
+}
+
+async fn sell_quarter(case: &mut Case) -> Result<()> {
+    let raw = case.buy_lamports / 1000;
+    let sold = raw / 4;
     let native = crate::app_tests::fractional::fractional_fixture::native_binding().await?;
     let mut evidence = crate::app_tests::fractional::fractional_tests::evidence()?;
     let mut inbox = AssociationInbox::open_ordered_sell_consumer(&case.path,
@@ -222,11 +398,11 @@ async fn sell_250(case: &mut Case) -> Result<()> {
     own.facts.signature = case.signature.clone();
     own.facts.slot = 120;
     own.facts.wallet = case.wallet.clone();
-    own.facts.amount_in_bits = 0.001f64.to_bits();
-    own.facts.amount_out_bits = 1.0f64.to_bits();
+    own.facts.amount_in_bits = (case.buy_lamports as f64 / 1e9).to_bits();
+    own.facts.amount_out_bits = (raw as f64 / 1000.0).to_bits();
     let exact = own.facts.exact_amounts.as_mut().unwrap();
-    exact.amount_in_raw = "1000000".into();
-    exact.amount_out_raw = "1000".into();
+    exact.amount_in_raw = case.buy_lamports.to_string();
+    exact.amount_out_raw = raw.to_string();
     inbox.persist_at(&delivery(3, copybot_core_types::association_delivery::DeliveryEvent::Admission(own.clone())),
         &copybot_core_types::association_delivery::CandidateGeneration::Unknown, case.now)?;
     let blockhash = native["anchors"][1]["terminal"]["ProviderAsserted"]["blockhash"]
@@ -283,31 +459,32 @@ async fn sell_250(case: &mut Case) -> Result<()> {
         crate::app_tests::association_parent_fixture::limits(),
         "http://127.0.0.1:1/", Utc::now)?;
     let QuoteClaimStep::Claimed(initial) = step else { anyhow::bail!("owned SELL not claimable") };
-    assert_eq!(initial.binding.raw, 1000);
+    assert_eq!(initial.binding.raw, raw);
     evidence.execution_accounts["value"][0]["account"]["data"]["parsed"]["info"]["owner"] =
         json!(case.wallet);
+    evidence.execution_accounts["value"][0]["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"] = json!(raw.to_string());
     let claim = crate::app_tests::fractional::fractional_tests::bind(&mut f, initial, evidence).await?;
-    assert_eq!(claim.binding.raw, 250);
+    assert_eq!(claim.binding.raw, sold);
     let before = f.db.store.load_execution_canary_open_position(MINT)?.unwrap();
     let prepared = crate::app_tests::fractional::fractional_financial_fixture::prepare(&f, &claim)?;
     let dispatch = crate::app_tests::fractional::fractional_financial_fixture::dispatch(&f, &prepared)?;
-    let sold = crate::app_tests::fractional::fractional_financial_fixture::receipt(&dispatch, 250);
+    let sold_receipt = crate::app_tests::fractional::fractional_financial_fixture::receipt(&dispatch, sold);
     f.db.store.mark_execution_canary_confirmed_unreconciled(&dispatch.order_id,
         &ExecutionCanaryReceiptProof { tx_signature: dispatch.tx_signature.clone(),
             wallet_pubkey: dispatch.wallet.clone(), token: dispatch.token.clone(), side: "sell".into(),
             confirmation_status: "confirmed".into(), slot: Some(151), confirmed_at: Utc::now(),
             reason: "mocked canonical receipt".into() }, Utc::now())?;
-    f.db.store.record_execution_canary_receipt_facts(&sold, Utc::now())?;
-    f.db.store.apply_execution_canary_sell_settlement(&sold, Utc::now())?;
+    f.db.store.record_execution_canary_receipt_facts(&sold_receipt, Utc::now())?;
+    f.db.store.apply_execution_canary_sell_settlement(&sold_receipt, Utc::now())?;
     let reopened = SqliteStore::open(&case.path)?;
-    reopened.apply_execution_canary_sell_settlement(&sold, Utc::now())?;
+    reopened.apply_execution_canary_sell_settlement(&sold_receipt, Utc::now())?;
     let after = reopened.load_execution_canary_open_position(MINT)?.unwrap();
-    assert_eq!(after.qty_exact.unwrap().raw(), 750);
+    assert_eq!(after.qty_exact.unwrap().raw(), raw-sold);
     let basis = before.cost_lamports.unwrap().as_u64();
-    let allocated = (basis * 250).div_ceil(1000);
-    assert_eq!((basis, allocated), (1_019_000, 254_750));
+    let allocated = (basis * sold).div_ceil(raw);
+    assert_eq!((basis, allocated), (case.buy_lamports + 19_000,
+        (case.buy_lamports + 19_000) / 4));
     assert_eq!(after.cost_lamports.unwrap().as_u64(), basis-allocated);
-    assert_eq!(after.cost_lamports.unwrap().as_u64(), 764_250);
     let cash = reopened.load_execution_canary_cash_settlement(&dispatch.order_id)?.unwrap();
     assert_eq!(cash.wallet_native_cash_delta.as_i128(), 981000);
     assert_eq!(cash.allocated_entry_basis.as_u64(), allocated);

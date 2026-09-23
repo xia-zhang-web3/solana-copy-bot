@@ -97,6 +97,38 @@ impl SqliteDiscoveryStore {
         observed_at: DateTime<Utc>,
         clock: impl Fn() -> Result<DateTime<Utc>>,
     ) -> Result<ProtectedNativePolicy> {
+        self.prepare_native_policy_inner(id, wallet, balance, reserve, slot, observed_at,
+            None, clock)
+    }
+
+    /// First native BUY only: the current decision and reserved order are checked
+    /// under the same write lock that creates the one-time protected anchor.
+    pub fn prepare_tiny_native_policy_for_native_buy(
+        &self,
+        id: &str,
+        wallet: &str,
+        balance: u64,
+        reserve: u64,
+        slot: u64,
+        observed_at: DateTime<Utc>,
+        binding: &crate::native_buy::NativeBuyActivationBinding,
+        clock: impl Fn() -> Result<DateTime<Utc>>,
+    ) -> Result<ProtectedNativePolicy> {
+        self.prepare_native_policy_inner(id, wallet, balance, reserve, slot, observed_at,
+            Some(binding), clock)
+    }
+
+    fn prepare_native_policy_inner(
+        &self,
+        id: &str,
+        wallet: &str,
+        balance: u64,
+        reserve: u64,
+        slot: u64,
+        observed_at: DateTime<Utc>,
+        binding: Option<&crate::native_buy::NativeBuyActivationBinding>,
+        clock: impl Fn() -> Result<DateTime<Utc>>,
+    ) -> Result<ProtectedNativePolicy> {
         ensure!(
             !id.is_empty()
                 && id.len() <= 128
@@ -114,6 +146,10 @@ impl SqliteDiscoveryStore {
             if let Some(e) = refresh(conn, now)? {
                 active(&e, id, wallet, now)?;
                 return load_policy(conn, &e);
+            }
+            if let Some(binding) = binding {
+                ensure!(crate::native_buy::activation_current(conn, binding, now)?,
+                    "native_buy_decision_changed");
             }
             ensure!(observed_at <= now && now.signed_duration_since(observed_at) <= Duration::seconds(30),
                 "tiny_capital_observation_time");

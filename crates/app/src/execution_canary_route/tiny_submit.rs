@@ -80,7 +80,8 @@ pub(crate) async fn process_buy<A: ExecutionSubmitAdapter>(
         summary.skipped_reason = Some("native_buy_tiny_route_disabled");
         return Ok(summary);
     }
-    if native.is_some() && config.tiny_experiment.activate {
+    if native.is_some() && config.tiny_experiment.activate
+        && !copybot_config::native_first_buy_activation(config) {
         summary.skipped_reason = Some("native_buy_activation_disabled");
         return Ok(summary);
     }
@@ -190,16 +191,19 @@ pub(crate) async fn process_buy<A: ExecutionSubmitAdapter>(
         reserve.order
     };
     let mut request = build_submit_request(config, signal, &order, metadata, None);
-    if let Err(error) = crate::execution_native_floor_policy::protected::prepare_request(
+    if let Err(error) = crate::execution_native_floor_policy::protected::prepare_request_guarded(
         store,
         config,
         &mut request,
         now,
+        native,
     )
     .await
     {
-        if error.to_string() == "tiny_capital_order_changed" {
-            summary.skipped_reason = Some("tiny_capital_order_changed");
+        if matches!(error.to_string().as_str(), "tiny_capital_order_changed" | "native_buy_decision_changed") {
+            summary.skipped_reason = Some(if error.to_string() == "tiny_capital_order_changed" {
+                "tiny_capital_order_changed"
+            } else { "native_buy_decision_changed" });
             summary.last_error = Some(error.to_string());
             return Ok(summary);
         }

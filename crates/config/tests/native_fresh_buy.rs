@@ -1,5 +1,5 @@
 use copybot_config::{
-    validate_association_delivery, AppConfig, NativeFreshBuyConfig,
+    validate_association_delivery, AppConfig, NativeFreshBuyConfig, TinyPolicyMode,
     PROCESSED_SLOT_FENCE_AVAILABILITY_V1,
 };
 
@@ -70,7 +70,7 @@ fn native_fresh_buy_defaults_off_and_accepts_only_explicit_policy() {
 }
 
 #[test]
-fn native_fresh_buy_requires_durable_owned_sell_and_existing_experiment() {
+fn native_fresh_buy_requires_durable_owned_sell_and_explicit_activation_policy() {
     for case in 0..8 {
         let mut c = configured();
         match case {
@@ -85,6 +85,16 @@ fn native_fresh_buy_requires_durable_owned_sell_and_existing_experiment() {
         }
         assert!(validate_association_delivery(&c).is_err(), "case {case}");
     }
+}
+
+#[test]
+fn native_fresh_buy_accepts_first_protected_activation_only_with_explicit_authority() {
+    let mut c = configured();
+    c.execution.tiny_experiment.policy_mode = TinyPolicyMode::ProtectedNativeCapital;
+    c.execution.tiny_experiment.activate = true;
+    validate_association_delivery(&c).unwrap();
+    c.execution.native_fresh_buy = None;
+    assert!(validate_association_delivery(&c).is_err());
 }
 
 #[test]

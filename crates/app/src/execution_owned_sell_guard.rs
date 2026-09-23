@@ -61,7 +61,8 @@ pub(crate) fn config(c: &ExecutionConfig, p: &Prepared) -> Result<()> {
             && c.quote_canary_enabled
             && c.swap_instructions_dry_run_enabled
             && c.swap_transaction_dry_run_enabled
-            && !c.tiny_experiment.activate,
+            && (!c.tiny_experiment.activate
+                || copybot_config::native_first_buy_activation(c)),
         "owned_sell_dispatch_mode"
     );
     ensure!(

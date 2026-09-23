@@ -2,7 +2,9 @@ use super::native_rpc_fixture::{Fixture, Reply};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[derive(Clone)]
 pub(super) struct FundingRpc {
@@ -10,6 +12,7 @@ pub(super) struct FundingRpc {
     pub fee: Option<u64>,
     pub rent: u64,
     pub delay_ms: u64,
+    pub seen_accounts: Arc<AtomicUsize>,
     pub rows: HashMap<String, Value>,
 }
 impl Default for FundingRpc {
@@ -19,6 +22,7 @@ impl Default for FundingRpc {
             fee: Some(19_000),
             rent: 2_039_280,
             delay_ms: 0,
+            seen_accounts: Arc::new(AtomicUsize::new(0)),
             rows: HashMap::new(),
         }
     }
@@ -33,6 +37,7 @@ impl FundingRpc {
             "getFeeForMessage" => json!({"context":{"slot":70},"value":self.fee}),
             "getMinimumBalanceForRentExemption" => json!(self.rent),
             "getMultipleAccounts" => {
+                self.seen_accounts.fetch_add(1, Ordering::SeqCst);
                 let rows: Vec<_> = request["params"][0]
                     .as_array()
                     .unwrap()
@@ -60,7 +65,12 @@ impl FundingRpc {
         json!({"jsonrpc":"2.0","id":request["id"],"result":result})
     }
     pub async fn server(state: Arc<Mutex<Self>>) -> anyhow::Result<Fixture> {
-        Fixture::start(false, move |r| Reply::json(state.lock().unwrap().reply(r))).await
+        Fixture::start(false, move |r| {
+            let state = state.lock().unwrap();
+            let mut reply = Reply::json(state.reply(r));
+            reply.delay = Duration::from_millis(state.delay_ms);
+            reply
+        }).await
     }
 }
 

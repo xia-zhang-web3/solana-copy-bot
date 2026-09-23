@@ -7,7 +7,7 @@ use crate::execution_quote_canary_helpers::DECISION_WOULD_EXECUTE;
 use crate::execution_submit_adapter::{
     JupiterMetisDryRunExecutionAdapter, NoSubmitExecutionAdapter,
 };
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
 use copybot_core_types::CopySignalRow;
@@ -69,6 +69,30 @@ impl NativeBuyGuard {
             now,
             self.max_age_seconds,
         )
+    }
+
+    pub(crate) fn activation_binding(
+        &self, store: &SqliteStore, config: &ExecutionConfig,
+        request: &crate::execution_submit_adapter::ExecutionSubmitRequest,
+        now: DateTime<Utc>,
+    ) -> Result<copybot_storage_core::native_buy::NativeBuyActivationBinding> {
+        ensure!(
+            copybot_config::native_first_buy_activation(config)
+                && self.signal_id == request.signal_id
+                && self.policy_identity == crate::execution_native_buy_rpc::policy_identity(config)?
+                && self.check_at(store, now)?,
+            "native_buy_decision_changed"
+        );
+        Ok(copybot_storage_core::native_buy::NativeBuyActivationBinding {
+            signal_id: self.signal_id.clone(),
+            decision_id: self.decision_id.clone(),
+            policy_identity: self.policy_identity.clone(),
+            max_age_seconds: self.max_age_seconds,
+            order_id: request.order_id.clone(),
+            client_order_id: request.client_order_id.clone(),
+            attempt: request.attempt,
+            route: request.route.clone(),
+        })
     }
 }
 

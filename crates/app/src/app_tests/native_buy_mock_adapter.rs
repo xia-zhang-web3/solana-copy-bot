@@ -6,7 +6,8 @@ use crate::execution_signing_envelope::{
 use crate::execution_submit_adapter::{
     execution_submit_intent_from_signed_envelope, ExecutionSimulationFuture,
     ExecutionSimulationResult, ExecutionSubmitAdapter, ExecutionSubmitPlan,
-    ExecutionSubmitRequest, ExecutionTransactionPlan, NoSubmitExecutionAdapter,
+    ExecutionSubmitRequest, ExecutionTransactionPlan, JupiterMetisDryRunExecutionAdapter,
+    NoSubmitExecutionAdapter,
 };
 use anyhow::Result;
 use copybot_config::ExecutionConfig;
@@ -24,7 +25,11 @@ impl ExecutionSubmitAdapter for NativeBuyMockAdapter {
     fn priority_fee_cap(&self) -> u64 { self.config.pretrade_max_priority_fee_lamports }
     fn build_transaction_plan(&self, request: &ExecutionSubmitRequest) -> Result<ExecutionTransactionPlan> {
         self.counts.lock().unwrap().unsigned_build += 1;
-        NoSubmitExecutionAdapter.build_transaction_plan(request)
+        if crate::execution_native_floor_policy::protected::enabled(&self.config) {
+            JupiterMetisDryRunExecutionAdapter::new(self.config.clone()).build_transaction_plan(request)
+        } else {
+            NoSubmitExecutionAdapter.build_transaction_plan(request)
+        }
     }
     fn simulate_transaction_plan<'a>(&'a self, _: &'a ExecutionTransactionPlan) -> ExecutionSimulationFuture<'a> {
         Box::pin(async { Ok(ExecutionSimulationResult { status: "ok".into(), error: None }) })

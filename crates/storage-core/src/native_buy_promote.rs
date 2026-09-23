@@ -116,13 +116,7 @@ impl SqliteDiscoveryStore {
         now: DateTime<Utc>,
         max_age_seconds: u64,
     ) -> Result<bool> {
-        let Some(signature) = signal_id.strip_prefix("native-buy-v1:") else { return Ok(false); };
-        let Some(d) = verify::load(&self.conn, signature)? else { return Ok(false); };
-        if d.signal_id != signal_id || d.decision_id != decision_id
-            || !verify::valid(&self.conn, &d, now, Some(max_age_seconds), true)?
-        { return Ok(false); }
-        let Some(value) = verify::candidate(&d) else { return Ok(false); };
-        signal_matches(&self.conn, &value)
+        recheck(&self.conn, signal_id, decision_id, now, max_age_seconds)
     }
 
     /// Immutable policy identity pinned before the first admission. Callers
@@ -160,6 +154,37 @@ impl SqliteDiscoveryStore {
             amount_out_decimals: exact.amount_out_decimals,
         }))
     }
+}
+
+fn recheck(c: &rusqlite::Connection, signal_id: &str, decision_id: &str,
+    now: DateTime<Utc>, max_age_seconds: u64) -> Result<bool> {
+    let Some(signature) = signal_id.strip_prefix("native-buy-v1:") else { return Ok(false); };
+    let Some(d) = verify::load(c, signature)? else { return Ok(false); };
+    if d.signal_id != signal_id || d.decision_id != decision_id
+        || !verify::valid(c, &d, now, Some(max_age_seconds), true)?
+    { return Ok(false); }
+    let Some(value) = verify::candidate(&d) else { return Ok(false); };
+    signal_matches(c, &value)
+}
+
+/// Called inside protected-anchor BEGIN IMMEDIATE, so a changed fence, signal,
+/// policy or reserved order cannot be accepted between recheck and insertion.
+pub(crate) fn activation_current(c: &rusqlite::Connection,
+    b: &super::NativeBuyActivationBinding, now: DateTime<Utc>) -> Result<bool> {
+    if !recheck(c, &b.signal_id, &b.decision_id, now, b.max_age_seconds)? {
+        return Ok(false);
+    }
+    let Some(signature) = b.signal_id.strip_prefix("native-buy-v1:") else { return Ok(false); };
+    let policy: Option<String> = c.query_row(
+        "SELECT f.policy_identity FROM native_buy_decisions d JOIN native_buy_fences f ON f.session=d.first_session WHERE d.signature=?1 AND d.signal_id=?2",
+        params![signature, b.signal_id], |r| r.get(0)).optional()?;
+    if policy.as_deref() != Some(b.policy_identity.as_str()) { return Ok(false); }
+    let order: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM orders WHERE order_id=?1 AND signal_id=?2 AND client_order_id=?3
+            AND attempt=?4 AND route=?5 AND status=?6 AND tx_signature IS NULL)",
+        params![b.order_id, b.signal_id, b.client_order_id, b.attempt, b.route,
+            crate::EXECUTION_STATUS_CANARY_CANDIDATE], |r| r.get(0))?;
+    Ok(order)
 }
 
 /// At most `limit` rows are verified on each tick. Persisting the keyset cursor

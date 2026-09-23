@@ -135,8 +135,9 @@ pub fn validate_association_delivery(c: &AppConfig) -> Result<()> {
         );
         ensure!(
             c.execution.tiny_experiment.id.is_some()
-                && !c.execution.tiny_experiment.activate,
-            "native_fresh_buy_existing_experiment_required"
+                && (!c.execution.tiny_experiment.activate
+                    || crate::native_first_buy_activation(&c.execution)),
+            "native_fresh_buy_activation_policy"
         );
         ensure!(
             c.execution.canary_max_signal_age_seconds > 0,

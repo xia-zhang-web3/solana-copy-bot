@@ -8,6 +8,7 @@ pub(crate) mod capture;
 mod verify;
 #[path = "native_buy_promote.rs"]
 mod promote;
+pub(crate) use promote::activation_current;
 
 pub const STATUS: &str = "native_buy_fenced_v1";
 pub const SPL_TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -19,6 +20,20 @@ pub struct NativeBuyFence {
     pub sampled_at: DateTime<Utc>,
     pub genesis_hash: String,
     pub policy_identity: String,
+}
+
+/// First-activation identity, checked under the same SQLite write lock as the
+/// protected native anchor. Constructed only after the runner's external checks.
+#[derive(Debug, Clone)]
+pub struct NativeBuyActivationBinding {
+    pub signal_id: String,
+    pub decision_id: String,
+    pub policy_identity: String,
+    pub max_age_seconds: u64,
+    pub order_id: String,
+    pub client_order_id: String,
+    pub attempt: u32,
+    pub route: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

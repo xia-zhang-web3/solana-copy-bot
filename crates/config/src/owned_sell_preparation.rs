@@ -80,8 +80,9 @@ pub fn validate_owned_sell_preparation(
     }
     e.tiny_experiment.validate(&e.canary_wallet_pubkey)?;
     ensure!(
-        e.tiny_experiment.id.is_some() && !e.tiny_experiment.activate,
-        "owned_sell_existing_experiment_required"
+        e.tiny_experiment.id.is_some()
+            && (!e.tiny_experiment.activate || crate::native_first_buy_activation(e)),
+        "owned_sell_activation_policy"
     );
     Ok(())
 }

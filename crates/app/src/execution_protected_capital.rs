@@ -123,6 +123,16 @@ pub(crate) async fn prepare_request(
     request: &mut ExecutionSubmitRequest,
     tick: DateTime<Utc>,
 ) -> Result<()> {
+    prepare_request_guarded(store, config, request, tick, None).await
+}
+
+pub(crate) async fn prepare_request_guarded(
+    store: &SqliteStore,
+    config: &ExecutionConfig,
+    request: &mut ExecutionSubmitRequest,
+    tick: DateTime<Utc>,
+    native: Option<&crate::execution_canary_route::NativeBuyGuard>,
+) -> Result<()> {
     if !request.side.eq_ignore_ascii_case("buy") {
         return Ok(());
     }
@@ -202,15 +212,20 @@ pub(crate) async fn prepare_request(
             "tiny_capital_order_changed"
         );
         let (balance, slot, time) = observation?.bound(wallet)?;
-        store.prepare_tiny_native_policy(
-            id,
-            &request.wallet_pubkey,
-            balance,
-            super::reserve_lamports(config.pretrade_min_sol_reserve)?,
-            slot,
-            time,
-            || clock(tick),
-        )?
+        let reserve = super::reserve_lamports(config.pretrade_min_sol_reserve)?;
+        if config.native_fresh_buy.is_some() {
+            let native = native.context("native_buy_activation_guard_required")?;
+            let binding = native.activation_binding(store, config, request, Utc::now())?;
+            store.prepare_tiny_native_policy_for_native_buy(
+                id, &request.wallet_pubkey, balance, reserve, slot, time,
+                &binding, || clock(tick),
+            )?
+        } else {
+            store.prepare_tiny_native_policy(
+                id, &request.wallet_pubkey, balance, reserve, slot, time,
+                || clock(tick),
+            )?
+        }
     };
     let proof = ContextProof {
         policy,

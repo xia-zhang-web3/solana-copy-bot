@@ -296,6 +296,12 @@ pub(super) fn signed_payload() -> Result<(String, String, [u8; 32])> {
 }
 
 pub(super) fn signed_payload_for_lamports(lamports: u64) -> Result<(String, String, [u8; 32])> {
+    signed_payload_for_lamports_and_floor(lamports, 50_000_001)
+}
+
+pub(super) fn signed_payload_for_lamports_and_floor(
+    lamports: u64, reserve_lamports: u64,
+) -> Result<(String, String, [u8; 32])> {
     let key = SigningKey::from_bytes(&[11; 32]);
     let payer = key.verifying_key().to_bytes();
     let mut instructions = crate::app_tests::priority_fee_fixture::budget(200_000, 10_000);
@@ -306,7 +312,7 @@ pub(super) fn signed_payload_for_lamports(lamports: u64) -> Result<(String, Stri
         payer,
         [9; 32],
         &instructions,
-        50_000_001,
+        reserve_lamports,
     )?;
     let mut wire = STANDARD.decode(floor.payload())?;
     let signature = key.sign(&wire[65..]);
