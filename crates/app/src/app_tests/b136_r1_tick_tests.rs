@@ -1,10 +1,10 @@
 //! Root V2 boundary, adapted to allow scheduling to return before RPC handshake.
 use super::{
-    b136_config, b136_endpoint_tests::sends, b136_fixture::Fixture, b136_r1_hooks as hooks,
-    b136_server::Server, strict_quote_fixture as q,
+    association_parent_fixture as parent, b136_config, b136_endpoint_tests::sends,
+    b136_fixture::Fixture, b136_r1_hooks as hooks, b136_server::Server, strict_quote_fixture as q,
 };
 use crate::execution_canary::ExecutionCanaryRunner;
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use chrono::Utc;
 use std::time::Duration;
 
@@ -13,17 +13,45 @@ pub(super) async fn pending(f: &Fixture, s: &Server) -> Result<copybot_config::A
     let c = b136_config::load(f, &s.url, true)?;
     f.ingress(&c).await?;
     let initial = f.runner(&c)?;
-    tokio::time::timeout(Duration::from_secs(4), async {
-        loop {
-            q::tick(&initial, &f.db).await?;
-            if !f.rows("rpc_owned_sell_dispatches")?.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+    let quote_wait_deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+    let mut last = None;
+    loop {
+        s.check()?;
+        if !f.rows("rpc_owned_sell_dispatches")?.is_empty() {
+            break;
         }
-        Ok::<_, anyhow::Error>(())
-    })
-    .await??;
+        let deadline = pending_deadline(f, s, quote_wait_deadline)?;
+        let summary =
+            match tokio::time::timeout_at(deadline, initial.process_tick(&f.db.store, Utc::now()))
+                .await
+            {
+                Ok(summary) => summary.with_context(|| {
+                    format!(
+                        "pending tick error: last={last:?} stage={:?}",
+                        pending_stage(f, s)
+                    )
+                })?,
+                Err(elapsed) => {
+                    s.check()?;
+                    if !f.rows("rpc_owned_sell_dispatches")?.is_empty() {
+                        break;
+                    }
+                    // A quote may have completed while this tick was waiting.
+                    // Switch from the pre-quote wait to its actual freshness clock.
+                    if pending_deadline(f, s, quote_wait_deadline)? > tokio::time::Instant::now() {
+                        continue;
+                    }
+                    return Err(elapsed).with_context(|| {
+                        format!(
+                            "pending tick timeout: last={last:?} stage={:?}",
+                            pending_stage(f, s)
+                        )
+                    });
+                }
+            };
+        last = Some(summary);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     tokio::time::sleep(Duration::from_millis(1150)).await;
     initial.process_tick(&f.db.store, Utc::now()).await?;
     drop(initial);
@@ -31,6 +59,56 @@ pub(super) async fn pending(f: &Fixture, s: &Server) -> Result<copybot_config::A
     assert_eq!(f.db.store.owned_sell_dispatch_ids(1)?.len(), 1);
     assert_eq!(sends(s), 1);
     Ok(c)
+}
+fn pending_deadline(
+    f: &Fixture,
+    s: &Server,
+    quote_wait_deadline: tokio::time::Instant,
+) -> Result<tokio::time::Instant> {
+    let Some(quote) =
+        f.db.store
+            .load_strict_sell_quote(&q::id(&f.meta), parent::limits(), Utc::now())?
+    else {
+        return Ok(quote_wait_deadline);
+    };
+    ensure!(
+        quote.outcome == copybot_storage_core::ordered_sell_quote::QuoteOutcome::Current,
+        "pending quote terminal: outcome={:?} reason={:?} stage={:?}",
+        quote.outcome,
+        quote.reason,
+        pending_stage(f, s),
+    );
+    let started = quote.http_started.context("pending quote clock missing")?;
+    let until = started
+        + chrono::Duration::milliseconds(
+            copybot_storage_core::ordered_sell_quote::MAX_QUOTE_AGE_MS,
+        );
+    let remaining = (until - Utc::now()).to_std().unwrap_or(Duration::ZERO);
+    Ok(tokio::time::Instant::now() + remaining)
+}
+fn pending_stage(f: &Fixture, s: &Server) -> Result<String> {
+    let quote =
+        f.db.store
+            .load_strict_sell_quote(&q::id(&f.meta), parent::limits(), Utc::now())?;
+    let methods: Vec<String> = s
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .take(24)
+        .map(|call| call["method"].as_str().unwrap_or("instructions").to_owned())
+        .collect();
+    Ok(format!(
+        "quote={:?} reason={:?} started={:?} handoffs={} unsigned={} dispatches={} job={:?} calls={methods:?} terminal={:?}",
+        quote.as_ref().map(|q| &q.outcome),
+        quote.as_ref().and_then(|q| q.reason.as_deref()),
+        quote.as_ref().and_then(|q| q.http_started),
+        f.rows("rpc_owned_sell_handoffs")?.len(),
+        f.handoffs()?,
+        f.rows("rpc_owned_sell_dispatches")?.len(),
+        hooks::read(&f.db.path),
+        s.terminal(),
+    ))
 }
 pub(super) async fn idle(f: &Fixture) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -130,6 +208,27 @@ pub(super) fn exact_settlement(
         super::b135_hooks::count(&c.execution.execution_signer_keypair_path),
         1
     );
+    Ok(())
+}
+#[tokio::test]
+async fn b136_pending_delayed_fee_keeps_actual_dispatch_within_quote_deadline() -> Result<()> {
+    let f = Fixture::new().await?;
+    let s = Server::new().await?;
+    let (at_fee, release_fee) = s.hold("getFeeForMessage:2");
+    let release_at = tokio::time::Instant::now() + Duration::from_millis(3900);
+    let (pending_result, held) = tokio::join!(pending(&f, &s), async {
+        tokio::time::timeout(Duration::from_secs(2), at_fee).await??;
+        tokio::time::sleep_until(release_at).await;
+        release_fee
+            .send(())
+            .map_err(|_| anyhow::anyhow!("held fee peer exited"))?;
+        Ok::<_, anyhow::Error>(())
+    });
+    held?;
+    pending_result?;
+    assert_eq!(f.rows("rpc_owned_sell_dispatches")?.len(), 1);
+    assert_eq!(sends(&s), 1);
+    s.healthy();
     Ok(())
 }
 #[tokio::test]

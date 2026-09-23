@@ -159,6 +159,14 @@ impl Server {
     pub fn terminal(&self) -> Option<String> {
         self.terminal.lock().unwrap().clone()
     }
+    pub fn check(&self) -> Result<()> {
+        ensure!(
+            !self.task.is_finished(),
+            "loopback peer terminated: {:?}",
+            self.terminal()
+        );
+        Ok(())
+    }
 }
 fn fault_response(f: &str, req: &Value, r: &mut Value) {
     if req["method"] == "getGenesisHash" {
