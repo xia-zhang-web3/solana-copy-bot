@@ -13,7 +13,15 @@ def record(tool, **fields):
 
 def main():
     tool, args = Path(sys.argv[0]).name, sys.argv[1:]
-    record(tool, argv=args)
+    if tool == 'cargo' and args[:1] == ['test']:
+        record(tool, argv=args, gate_env={
+            'RUST_MIN_STACK': os.environ.get('RUST_MIN_STACK'),
+            'RUST_TEST_NOCAPTURE': os.environ.get('RUST_TEST_NOCAPTURE'),
+            'RUST_BACKTRACE': os.environ.get('RUST_BACKTRACE'),
+            'fractional_fixture_root_present': 'FRACTIONAL_FIXTURE_ROOT' in os.environ,
+        })
+    else:
+        record(tool, argv=args)
     settings = json.loads(Path(os.environ['FIXTURE_SETTINGS']).read_text())
     if tool == 'rustc' and args == ['--version']:
         print('rustc synthetic-fixture (no compiler)')
@@ -54,6 +62,8 @@ def main():
     if settings['has_lib']:
         selectors += [['--bins']]  # Cargo permits this; tests must detect silent misclassification.
     if args in [prefix + selector + ['--', '--test-threads=1'] for selector in selectors]:
+        if package == 'copybot-app':
+            return settings.get('app_test_exit', 0)
         return settings.get('integration_exit', 0) if '--tests' in args else 0
     profile = 'release' if package == 'copybot-app' else 'operator-release'
     build = ['build', '--locked', '--target-dir', os.environ['CARGO_TARGET_DIR'],

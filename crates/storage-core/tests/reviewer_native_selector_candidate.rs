@@ -13,6 +13,27 @@ use copybot_core_types::association_delivery::{
 };
 use copybot_storage_core::{native_buy::SPL_TOKEN_PROGRAM, SqliteStore};
 
+#[test]
+fn reviewer_case_modules_keep_simultaneous_ram_databases_distinct() -> Result<()> {
+    let reviewer = Case::new()?;
+    let decision = native_buy_decision::decision_case::Case::new()?;
+    assert_ne!(reviewer.path, decision.path);
+    reviewer.sql.execute(
+        "INSERT INTO followlist(wallet_id,added_at,active) VALUES('reviewer-only',?1,1)",
+        [Utc::now().to_rfc3339()],
+    )?;
+    let present = |sql: &rusqlite::Connection| -> Result<i64> {
+        Ok(sql.query_row(
+            "SELECT count(*) FROM followlist WHERE wallet_id='reviewer-only'",
+            [],
+            |row| row.get(0),
+        )?)
+    };
+    assert_eq!(present(&reviewer.sql)?, 1);
+    assert_eq!(present(&decision.sql)?, 0);
+    Ok(())
+}
+
 fn reviewer_two_native_decisions(finalize_old: bool) -> Result<(Case, SqliteStore)> {
     let mut c = Case::new()?;
     c.fence("session-A", 6)?;

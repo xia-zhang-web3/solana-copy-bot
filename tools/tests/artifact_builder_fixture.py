@@ -22,7 +22,7 @@ REAL_TOOLS = ['build_operator_artifacts.sh', 'build_manifest.py', 'package_bins.
 
 
 class BuilderFixture:
-    def __init__(self, package=DASHBOARD, **settings):
+    def __init__(self, package=DASHBOARD, github_actions=False, **settings):
         self.temporary = tempfile.TemporaryDirectory(prefix='artifact-builder-')
         self.directory = Path(self.temporary.name)
         self.repo = self.directory / 'repo'
@@ -74,10 +74,20 @@ class BuilderFixture:
             path = self.bin / name
             path.write_text(f'#!{sys.executable}\n' + fake)
             path.chmod(0o755)
+        wrappers = (ROOT / 'tools/tests/artifact_builder_fake_wrappers.py').read_text()
+        for name in ['env', 'timeout']:
+            path = self.bin / name
+            path.write_text(f'#!{sys.executable}\n' + wrappers)
+            path.chmod(0o755)
         self.env = dict(os.environ)
         for key in ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'PROFILE', 'WANTED_BINS',
-                    'RUN_CHECKS', 'ALLOW_DIRTY', 'FORCE', 'BASH_ENV', 'ENV']:
+                    'RUN_CHECKS', 'ALLOW_DIRTY', 'FORCE', 'BASH_ENV', 'ENV', 'GITHUB_ACTIONS',
+                    'FRACTIONAL_FIXTURE_ROOT', 'RUST_MIN_STACK', 'RUST_TEST_NOCAPTURE',
+                    'RUST_BACKTRACE']:
             self.env.pop(key, None)
+        if github_actions:
+            self.env['GITHUB_ACTIONS'] = 'true'
+            self.env['FRACTIONAL_FIXTURE_ROOT'] = str(self.directory / 'excluded-input')
         self.env.update(PATH=str(self.bin), PYTHONPATH='', PYTHONDONTWRITEBYTECODE='1',
                         CARGO_NET_OFFLINE='true', CARGO_TARGET_DIR=str(self.target),
                         PACKAGE=package, ARTIFACT_ROOT=str(self.artifacts), ARTIFACT_ARCH='linux-x86_64',

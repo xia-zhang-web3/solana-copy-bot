@@ -1,7 +1,7 @@
 #[path = "common/association.rs"]
 mod fixture;
 #[path = "common/native_buy_decision_case.rs"]
-mod decision_case;
+pub(crate) mod decision_case;
 use decision_case::Case;
 
 use anyhow::Result;

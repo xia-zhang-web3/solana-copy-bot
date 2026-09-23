@@ -88,6 +88,34 @@ class ArtifactBuilderChecks(unittest.TestCase):
         result = f.verify()
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_app_ci_wrapper_keeps_budget_cleanup_and_fake_compiler(self):
+        f = self.fixture('copybot-app', github_actions=True)
+        result = f.build()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_checked(f, [['--bin', 'copybot-app']])
+        self.assertEqual([e['tool'] for e in f.events() if e['tool'] in ('env', 'timeout')],
+                         ['env', 'timeout'])
+        wrapper = next(e for e in f.events() if e['tool'] == 'timeout')
+        self.assertEqual(wrapper['argv'][:3], ['--signal=KILL', '1200s', 'cargo'])
+        test = next(e for e in f.events() if e['tool'] == 'cargo' and e['argv'][0] == 'test')
+        self.assertEqual(test['gate_env'], {
+            'RUST_MIN_STACK': '8388608', 'RUST_TEST_NOCAPTURE': '1',
+            'RUST_BACKTRACE': '1', 'fractional_fixture_root_present': False,
+        })
+        self.assert_package(f)
+
+    def test_app_ci_wrapper_propagates_test_failure_without_artifact(self):
+        f = self.fixture('copybot-app', github_actions=True, app_test_exit=37)
+        result = f.build()
+        self.assertEqual(result.returncode, 37, result.stderr)
+        self.assertEqual(self.commands(f), [
+            ['test', '--locked', '-p', 'copybot-app', '--bin', 'copybot-app',
+             '--', '--test-threads=1']])
+        self.assertFalse(any(e['tool'] == 'cargo' and e['argv'][0] == 'build'
+                             for e in f.events()))
+        self.assertFalse(f.artifacts.exists())
+        self.assertFalse(f.target.exists())
+
     def test_unchecked_smoke_does_not_execute_or_claim_guards_and_tests(self):
         f = self.fixture()
         result = f.build(checks=False)

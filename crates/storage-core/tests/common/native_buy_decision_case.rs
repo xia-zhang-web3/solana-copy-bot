@@ -13,19 +13,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_CASE: AtomicUsize = AtomicUsize::new(0);
 
-pub(super) struct Case {
+pub(crate) struct Case {
     _anchor: SqliteStore,
-    pub(super) sql: rusqlite::Connection,
+    pub(crate) sql: rusqlite::Connection,
     pub(super) inbox: AssociationInbox,
-    pub(super) path: std::path::PathBuf,
+    pub(crate) path: std::path::PathBuf,
     pub(super) now: chrono::DateTime<Utc>,
     pub(super) admission: AdmissionFacts,
 }
 impl Case {
-    pub(super) fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         let path = std::path::PathBuf::from(format!(
-            "file:native-buy-neg-{}-{}?mode=memory&cache=shared",
+            "file:native-buy-neg-{}-{}-{}?mode=memory&cache=shared",
             std::process::id(),
+            module_path!().replace("::", "-"),
             NEXT_CASE.fetch_add(1, Ordering::Relaxed)
         ));
         let mut anchor = SqliteStore::open(&path)?;

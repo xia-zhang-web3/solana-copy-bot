@@ -214,12 +214,37 @@ pub(super) fn exact_settlement(
 async fn b136_pending_delayed_fee_keeps_actual_dispatch_within_quote_deadline() -> Result<()> {
     let f = Fixture::new().await?;
     let s = Server::new().await?;
-    let (at_fee, release_fee) = s.hold("getFeeForMessage:2");
-    let release_at = tokio::time::Instant::now() + Duration::from_millis(3900);
+    let (at_first_fee, release_first_fee) = s.hold("getFeeForMessage:1");
+    let started = tokio::time::Instant::now();
     let (pending_result, held) = tokio::join!(pending(&f, &s), async {
-        tokio::time::timeout(Duration::from_secs(2), at_fee).await??;
-        tokio::time::sleep_until(release_at).await;
-        release_fee
+        wait_for_held_fee(&f, &s, at_first_fee, started).await?;
+        tokio::time::sleep_until(started + Duration::from_millis(3900)).await;
+        let (at_second_fee, release_second_fee) = s.hold("getFeeForMessage:2");
+        release_first_fee
+            .send(())
+            .map_err(|_| anyhow::anyhow!("first held fee peer exited"))?;
+        let reached_at = wait_for_held_fee(&f, &s, at_second_fee, started).await?;
+        ensure!(
+            reached_at >= started + Duration::from_millis(3900),
+            "second fee RPC was not late"
+        );
+        let min_hold = Duration::from_millis(150);
+        tokio::time::sleep_until(reached_at + min_hold).await;
+        ensure!(
+            tokio::time::Instant::now() >= reached_at + min_hold,
+            "held fee RPC was released immediately"
+        );
+        s.check()?;
+        let quote =
+            f.db.store
+                .load_strict_sell_quote(&q::id(&f.meta), parent::limits(), Utc::now())?;
+        ensure!(
+            quote.as_ref().map(|q| &q.outcome)
+                == Some(&copybot_storage_core::ordered_sell_quote::QuoteOutcome::Current),
+            "held fee release lost fresh quote: stage={:?}",
+            pending_stage(&f, &s)
+        );
+        release_second_fee
             .send(())
             .map_err(|_| anyhow::anyhow!("held fee peer exited"))?;
         Ok::<_, anyhow::Error>(())
@@ -230,6 +255,30 @@ async fn b136_pending_delayed_fee_keeps_actual_dispatch_within_quote_deadline() 
     assert_eq!(sends(&s), 1);
     s.healthy();
     Ok(())
+}
+async fn wait_for_held_fee(
+    f: &Fixture,
+    s: &Server,
+    mut reached: tokio::sync::oneshot::Receiver<()>,
+    started: tokio::time::Instant,
+) -> Result<tokio::time::Instant> {
+    let quote_wait_deadline = started + Duration::from_secs(4);
+    loop {
+        s.check()?;
+        let deadline = pending_deadline(f, s, quote_wait_deadline)?;
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "held fee RPC not reached: stage={:?}",
+            pending_stage(f, s)
+        );
+        tokio::select! {
+            result = &mut reached => {
+                result.context("held fee peer exited")?;
+                return Ok(tokio::time::Instant::now());
+            },
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+        }
+    }
 }
 #[tokio::test]
 async fn b136_mock_peer_survives_cancelled_socket() -> Result<()> {
