@@ -4,7 +4,7 @@ use super::{
     b136_server::Server, strict_quote_fixture as q,
 };
 use crate::execution_canary::ExecutionCanaryRunner;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use std::time::Duration;
 
@@ -25,7 +25,7 @@ pub(super) async fn pending(f: &Fixture, s: &Server) -> Result<copybot_config::A
     })
     .await??;
     tokio::time::sleep(Duration::from_millis(1150)).await;
-    let _ = q::tick(&initial, &f.db).await;
+    initial.process_tick(&f.db.store, Utc::now()).await?;
     drop(initial);
     idle(f).await?;
     assert_eq!(f.db.store.owned_sell_dispatch_ids(1)?.len(), 1);
@@ -60,17 +60,39 @@ pub(super) async fn harvest(
     f: &Fixture,
     r: &ExecutionCanaryRunner,
 ) -> Result<crate::execution_canary::ExecutionCanaryTickSummary> {
-    tokio::time::timeout(Duration::from_secs(4), async {
+    harvest_until(f, r, |s| s.orphan_recovery_reconciled > 0).await
+}
+pub(super) async fn harvest_pending(
+    f: &Fixture,
+    r: &ExecutionCanaryRunner,
+) -> Result<crate::execution_canary::ExecutionCanaryTickSummary> {
+    harvest_until(f, r, |s| {
+        s.orphan_recovery_checked > 0 && s.last_error.is_some()
+    })
+    .await
+}
+async fn harvest_until(
+    f: &Fixture,
+    r: &ExecutionCanaryRunner,
+    complete: impl Fn(&crate::execution_canary::ExecutionCanaryTickSummary) -> bool,
+) -> Result<crate::execution_canary::ExecutionCanaryTickSummary> {
+    let mut last = None;
+    let done = tokio::time::timeout(Duration::from_secs(4), async {
         loop {
             // Actual tick, no cancelling 250ms fixture wrapper.
             let summary = r.process_tick(&f.db.store, Utc::now()).await?;
-            if summary.orphan_recovery_checked > 0 {
+            if complete(&summary) {
                 return Ok(summary);
             }
+            last = Some(summary);
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
-    .await?
+    .await;
+    done.with_context(|| format!(
+        "recovery did not reach required result: last={last:?} job={:?} dispatches={:?} fees={:?}",
+        hooks::read(&f.db.path), f.rows("rpc_owned_sell_dispatches"), f.rows("execution_tiny_reservations")
+    ))?
 }
 pub(super) fn exact_settlement(
     f: &Fixture,
@@ -111,6 +133,46 @@ pub(super) fn exact_settlement(
     Ok(())
 }
 #[tokio::test]
+async fn b136_mock_peer_survives_cancelled_socket() -> Result<()> {
+    let s = Server::new().await?;
+    let socket = tokio::net::TcpStream::connect(s.url.trim_start_matches("http://")).await?;
+    drop(socket); // A cancelled RPC can close after accept, before sending any bytes.
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        reqwest::Client::new()
+            .post(&s.url)
+            .json(
+                &serde_json::json!({"jsonrpc":"2.0","id":1,"method":"getGenesisHash","params":[]}),
+            )
+            .send(),
+    )
+    .await??;
+    let wire: serde_json::Value = response.json().await?;
+    assert_eq!(wire["result"], "11111111111111111111111111111111");
+    use tokio::io::AsyncWriteExt;
+    let mut partial = tokio::net::TcpStream::connect(s.url.trim_start_matches("http://")).await?;
+    partial
+        .write_all(b"POST / HTTP/1.1\r\nContent-Length: 100\r\n\r\n{}")
+        .await?;
+    drop(partial);
+    let response = tokio::time::timeout(
+        Duration::from_secs(2),
+        reqwest::Client::new()
+            .post(&s.url)
+            .json(
+                &serde_json::json!({"jsonrpc":"2.0","id":2,"method":"getGenesisHash","params":[]}),
+            )
+            .send(),
+    )
+    .await??;
+    assert_eq!(
+        response.json::<serde_json::Value>().await?["result"],
+        "11111111111111111111111111111111"
+    );
+    s.healthy();
+    Ok(())
+}
+#[tokio::test]
 async fn b136_root_pending_recovery_rpc_must_not_hold_main_tick() -> Result<()> {
     let f = Fixture::new().await?;
     let s = Server::new().await?;
@@ -129,7 +191,16 @@ async fn b136_root_pending_recovery_rpc_must_not_hold_main_tick() -> Result<()> 
         recovery.process_tick(&f.db.store, Utc::now()),
     )
     .await??;
-    tokio::time::timeout(Duration::from_secs(2), at_rpc).await??;
+    tokio::time::timeout(Duration::from_secs(2), at_rpc)
+        .await
+        .with_context(|| {
+            format!(
+                "getSignatureStatuses not reached: server={:?} job={:?} dispatches={:?}",
+                s.terminal(),
+                hooks::read(&f.db.path),
+                f.rows("rpc_owned_sell_dispatches")
+            )
+        })??;
     let clone = recovery.clone();
     drop(recovery); // Remaining clone retains the same job, not a new pool.
     for _ in 0..20 {

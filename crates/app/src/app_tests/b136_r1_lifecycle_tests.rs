@@ -2,10 +2,10 @@ use super::{
     b136_endpoint_tests::sends,
     b136_fixture::Fixture,
     b136_r1_hooks as hooks,
-    b136_r1_tick_tests::{exact_settlement, harvest, idle, pending, stopped},
+    b136_r1_tick_tests::{exact_settlement, harvest, harvest_pending, idle, pending, stopped},
     b136_server::Server,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use std::time::Duration;
 
@@ -21,7 +21,16 @@ async fn b136_r1_pending_completion_releases_job_slot_and_retains_unknown_hold()
         *s.fault.lock().unwrap() = fault.into();
         let (at, release) = s.hold("getSignatureStatuses");
         r.process_tick(&f.db.store, Utc::now()).await?;
-        tokio::time::timeout(Duration::from_secs(2), at).await??;
+        tokio::time::timeout(Duration::from_secs(2), at)
+            .await
+            .with_context(|| {
+                format!(
+                    "getSignatureStatuses not reached: server={:?} job={:?} dispatches={:?}",
+                    s.terminal(),
+                    hooks::read(&f.db.path),
+                    f.rows("rpc_owned_sell_dispatches")
+                )
+            })??;
         // Hold the NEXT batch separately, after the first one reports pending.
         let next_method = if fault == "unknown" {
             "getSignatureStatuses"
@@ -34,7 +43,7 @@ async fn b136_r1_pending_completion_releases_job_slot_and_retains_unknown_hold()
         idle(&f).await?;
         let count = hooks::read(&f.db.path).scheduled;
         let (at_next, release_next) = s.hold(next_method);
-        let done = harvest(&f, &r).await?;
+        let done = harvest_pending(&f, &r).await?;
         assert_eq!(done.orphan_recovery_reconciled, 0);
         assert!(
             done.last_error.is_some(),
@@ -202,7 +211,16 @@ fn b136_r1_parent_shutdown_does_not_strand_or_panic_cancelled_recovery() -> Resu
         let r = f.runner(&disabled)?;
         let (at, release) = s.hold("getSignatureStatuses");
         r.process_tick(&f.db.store, Utc::now()).await?;
-        tokio::time::timeout(Duration::from_secs(2), at).await??;
+        tokio::time::timeout(Duration::from_secs(2), at)
+            .await
+            .with_context(|| {
+                format!(
+                    "getSignatureStatuses not reached: server={:?} job={:?} dispatches={:?}",
+                    s.terminal(),
+                    hooks::read(&f.db.path),
+                    f.rows("rpc_owned_sell_dispatches")
+                )
+            })??;
         assert_eq!(hooks::read(&f.db.path).running, 1);
         drop(r); // No yield or grace wait before shutting down the parent runtime.
         Ok::<_, anyhow::Error>((f, s, release))

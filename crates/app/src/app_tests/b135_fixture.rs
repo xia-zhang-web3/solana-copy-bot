@@ -129,7 +129,7 @@ impl Fixture {
     pub async fn drive(&self, r: &crate::execution_canary::ExecutionCanaryRunner) -> Result<()> {
         tokio::time::timeout(std::time::Duration::from_secs(4), async {
             loop {
-                super::strict_quote_fixture::tick(r, &self.db).await?;
+                r.process_tick(&self.db.store, Utc::now()).await?;
                 if self.handoffs()? == 1 {
                     return Ok(());
                 }

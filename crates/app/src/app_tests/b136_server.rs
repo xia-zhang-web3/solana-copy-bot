@@ -8,6 +8,7 @@ pub(super) struct Server {
     pub fault: Arc<Mutex<String>>,
     pause: Arc<Mutex<Option<Pause>>>,
     task: tokio::task::JoinHandle<Result<()>>,
+    terminal: Arc<Mutex<Option<String>>>,
 }
 struct Pause {
     method: String,
@@ -29,14 +30,21 @@ impl Server {
         let errors = fault.clone();
         let pause = Arc::new(Mutex::new(None::<Pause>));
         let held = pause.clone();
+        let terminal = Arc::new(Mutex::new(None));
+        let finished = terminal.clone();
         let task = tokio::spawn(async move {
-            loop {
+            let result: Result<()> = async {
+            'accept: loop {
                 let (mut s, _) = l.accept().await?;
                 let mut data = vec![];
                 let (header, length) = loop {
                     let mut b = [0; 4096];
                     let n = s.read(&mut b).await?;
-                    ensure!(n > 0 && data.len() < 1 << 20, "bounded request");
+                        if n == 0 {
+                            // A cancelled request may close before its full body arrives.
+                            continue 'accept;
+                        }
+                        ensure!(data.len() + n <= 1 << 20, "bounded request");
                     data.extend_from_slice(&b[..n]);
                     if let Some(i) = data.windows(4).position(|w| w == b"\r\n\r\n") {
                         let h = String::from_utf8(data[..i].to_vec())?;
@@ -103,8 +111,18 @@ impl Server {
                     s.write_all(b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /other\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await?;
                     continue;
                 }
-                s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{wire}",wire.len()).as_bytes()).await?;
+                if let Err(error) = s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{wire}",wire.len()).as_bytes()).await {
+                    match error.kind() {
+                        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset => continue 'accept,
+                        _ => return Err(error.into()),
+                    }
+                }
             }
+            }.await;
+            if let Err(error) = &result {
+                *finished.lock().unwrap() = Some(format!("{error:#}"));
+            }
+            result
         });
         Ok(Self {
             url,
@@ -112,6 +130,7 @@ impl Server {
             task,
             fault,
             pause,
+            terminal,
         })
     }
     pub fn hold(
@@ -131,7 +150,14 @@ impl Server {
         (reached, release)
     }
     pub fn healthy(&self) {
-        assert!(!self.task.is_finished(), "loopback peer ended unexpectedly");
+        assert!(
+            !self.task.is_finished(),
+            "loopback peer ended: {:?}",
+            *self.terminal.lock().unwrap()
+        );
+    }
+    pub fn terminal(&self) -> Option<String> {
+        self.terminal.lock().unwrap().clone()
     }
 }
 fn fault_response(f: &str, req: &Value, r: &mut Value) {

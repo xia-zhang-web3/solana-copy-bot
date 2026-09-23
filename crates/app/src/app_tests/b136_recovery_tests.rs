@@ -38,7 +38,7 @@ async fn await_dispatch(
 ) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(4), async {
         loop {
-            let _ = q::tick(r, &f.db).await;
+            r.process_tick(&f.db.store, chrono::Utc::now()).await?;
             if !f.rows("rpc_owned_sell_dispatches")?.is_empty() {
                 return Ok::<_, anyhow::Error>(());
             }
@@ -66,7 +66,7 @@ async fn b136_recovery_success_failed_unknown_stop_expiry_and_config_removal() -
         let before = f.rows("positions")?;
         await_dispatch(&f, &r).await?;
         tokio::time::sleep(Duration::from_millis(1150)).await;
-        let _ = q::tick(&r, &f.db).await;
+        r.process_tick(&f.db.store, chrono::Utc::now()).await?;
         drop(r);
         let id: String =
             f.db.sql
@@ -123,7 +123,11 @@ async fn b136_recovery_success_failed_unknown_stop_expiry_and_config_removal() -
                 None
             } else {
                 Some(19000)
-            }
+            },
+            "fault={fault} server={:?} dispatches={:?} reservations={:?}",
+            s.terminal(),
+            f.rows("rpc_owned_sell_dispatches"),
+            f.rows("execution_tiny_reservations")
         );
         if fault.starts_with("failed") {
             assert!(f
