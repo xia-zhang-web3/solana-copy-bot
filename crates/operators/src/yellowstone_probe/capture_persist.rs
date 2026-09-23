@@ -25,6 +25,82 @@ impl Drop for Cancel {
     }
 }
 
+enum DeadlineMode {
+    Immediate,
+    #[cfg(test)]
+    Armed(TestDeadline),
+}
+
+#[cfg(test)]
+pub(super) struct TestDeadline {
+    epoch: Arc<std::sync::OnceLock<Instant>>,
+    armed: tokio::sync::oneshot::Receiver<Instant>,
+}
+
+#[cfg(test)]
+pub(super) struct TestDeadlineArm {
+    epoch: Arc<std::sync::OnceLock<Instant>>,
+    armed: Option<tokio::sync::oneshot::Sender<Instant>>,
+}
+
+#[cfg(test)]
+impl TestDeadline {
+    pub(super) fn pair() -> (Self, TestDeadlineArm) {
+        let epoch = Arc::new(std::sync::OnceLock::new());
+        let (armed, receiver) = tokio::sync::oneshot::channel();
+        (
+            Self {
+                epoch: epoch.clone(),
+                armed: receiver,
+            },
+            TestDeadlineArm {
+                epoch,
+                armed: Some(armed),
+            },
+        )
+    }
+
+    pub(super) async fn persist_with<W>(
+        self,
+        files: CaptureFiles,
+        reason: &'static str,
+        request: Value,
+        receive_ns: u64,
+        limit: Duration,
+        write: W,
+    ) -> Outcome
+    where
+        W: FnMut(&Path, &[u8]) -> std::io::Result<()> + Send + 'static,
+    {
+        let started = Instant::now();
+        persist_with_deadline(
+            files,
+            reason,
+            request,
+            receive_ns,
+            limit,
+            write,
+            started,
+            DeadlineMode::Armed(self),
+        )
+        .await
+    }
+}
+
+#[cfg(test)]
+impl TestDeadlineArm {
+    pub(super) fn arm(mut self) -> Instant {
+        let started = Instant::now();
+        self.epoch.set(started).expect("deadline armed once");
+        self.armed
+            .take()
+            .expect("deadline sender available")
+            .send(started)
+            .expect("persistence owner still awaiting deadline");
+        started
+    }
+}
+
 pub(super) async fn persist(
     files: CaptureFiles,
     reason: &'static str,
@@ -36,18 +112,51 @@ pub(super) async fn persist(
 
 // Injectable I/O stays on the same persistence path in dedicated boundary tests.
 pub(super) async fn persist_with<W>(
+    files: CaptureFiles,
+    reason: &'static str,
+    request: Value,
+    receive_ns: u64,
+    limit: Duration,
+    write: W,
+) -> Outcome
+where
+    W: FnMut(&Path, &[u8]) -> std::io::Result<()> + Send + 'static,
+{
+    let started = Instant::now();
+    persist_with_deadline(
+        files,
+        reason,
+        request,
+        receive_ns,
+        limit,
+        write,
+        started,
+        DeadlineMode::Immediate,
+    )
+    .await
+}
+
+async fn persist_with_deadline<W>(
     mut files: CaptureFiles,
     reason: &'static str,
     request: Value,
     receive_ns: u64,
     limit: Duration,
     mut write: W,
+    started: Instant,
+    deadline_mode: DeadlineMode,
 ) -> Outcome
 where
     W: FnMut(&Path, &[u8]) -> std::io::Result<()> + Send + 'static,
 {
-    let started = Instant::now();
+    #[cfg(not(test))]
+    let _ = deadline_mode;
     let deadline = started + limit;
+    #[cfg(test)]
+    let controlled_epoch = match &deadline_mode {
+        DeadlineMode::Immediate => None,
+        DeadlineMode::Armed(control) => Some(control.epoch.clone()),
+    };
     let output = files.config.output.clone();
     let buffered_bytes = files.buffered_bytes;
     let buffered_count = files.pending.len();
@@ -65,10 +174,21 @@ where
             let check = || {
                 if stopped.load(Ordering::SeqCst) {
                     Err("persistence_cancelled")
-                } else if Instant::now() >= deadline {
-                    Err("persistence_deadline")
                 } else {
-                    Ok(())
+                    let expired = Instant::now() >= deadline;
+                    #[cfg(test)]
+                    let expired = if let Some(epoch) = controlled_epoch.as_ref() {
+                        epoch
+                            .get()
+                            .is_some_and(|start| Instant::now() >= *start + limit)
+                    } else {
+                        expired
+                    };
+                    if expired {
+                        Err("persistence_deadline")
+                    } else {
+                        Ok(())
+                    }
                 }
             };
             let mut stop = reason;
@@ -117,6 +237,13 @@ where
                 .is_ok();
             let _ = sender.send((manifest, stop, persisted));
         });
+    #[cfg(test)]
+    let deadline = match deadline_mode {
+        DeadlineMode::Immediate => deadline,
+        DeadlineMode::Armed(control) => {
+            control.armed.await.expect("test deadline must be armed") + limit
+        }
+    };
     let result = if worker.is_err() {
         None
     } else {
