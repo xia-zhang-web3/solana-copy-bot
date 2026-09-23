@@ -27,7 +27,7 @@ jobs:
   artifact:
     name: ${{ inputs.package }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       ARTIFACT_ARCH: linux-x86_64
       CARGO_TERM_COLOR: always
