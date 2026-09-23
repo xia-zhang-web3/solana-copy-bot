@@ -70,6 +70,7 @@ mod execution_native_rpc;
 mod execution_native_setup;
 mod execution_owned_sell_prepare;
 mod execution_owned_sell_rpc;
+mod execution_native_buy_rpc;
 mod execution_priority_fee;
 mod execution_priority_fee_proof;
 mod execution_priority_fee_wire;

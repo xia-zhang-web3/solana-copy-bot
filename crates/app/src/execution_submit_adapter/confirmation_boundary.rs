@@ -42,6 +42,45 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
     now: DateTime<Utc>,
     timeout_ms: u64,
 ) -> Result<ExecutionConfirmationBoundaryOutcome> {
+    #[cfg(test)]
+    return record_execution_rpc_confirmation_boundary_inner(
+        store, http, rpc_url, order_id, wallet_pubkey, now, timeout_ms, None,
+    )
+    .await;
+    #[cfg(not(test))]
+    record_execution_rpc_confirmation_boundary_inner(
+        store, http, rpc_url, order_id, wallet_pubkey, now, timeout_ms,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn record_execution_rpc_confirmation_boundary_mock(
+    store: &SqliteStore,
+    http: &reqwest::Client,
+    rpc_url: &str,
+    order_id: &str,
+    wallet_pubkey: &str,
+    now: DateTime<Utc>,
+    timeout_ms: u64,
+    mock: &crate::execution_canary_route::NativeBuyMockIo,
+) -> Result<ExecutionConfirmationBoundaryOutcome> {
+    record_execution_rpc_confirmation_boundary_inner(
+        store, http, rpc_url, order_id, wallet_pubkey, now, timeout_ms, Some(mock),
+    )
+    .await
+}
+
+async fn record_execution_rpc_confirmation_boundary_inner(
+    store: &SqliteStore,
+    http: &reqwest::Client,
+    rpc_url: &str,
+    order_id: &str,
+    wallet_pubkey: &str,
+    now: DateTime<Utc>,
+    timeout_ms: u64,
+    #[cfg(test)] mock: Option<&crate::execution_canary_route::NativeBuyMockIo>,
+) -> Result<ExecutionConfirmationBoundaryOutcome> {
     // Historical fills are immutable, including those created by older accounting code.
     if store.execution_canary_fill_exists(order_id)? {
         store.validate_execution_canary_cash_settlement_replay(order_id, wallet_pubkey)?;
@@ -78,7 +117,21 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
                 order.status != EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED,
                 "durable receipt proof missing"
             );
-            match fetch_rpc_signature_confirmation(http, rpc_url, &request, now, timeout_ms).await {
+            #[cfg(test)]
+            let status = if let Some(mock) = mock {
+                mock.count(|counts| counts.confirmation += 1);
+                tokio::task::yield_now().await;
+                super::rpc_confirmation::rpc_signature_confirmation_from_json(
+                    &request.tx_signature,
+                    now,
+                    mock.confirmation.clone(),
+                )
+            } else {
+                fetch_rpc_signature_confirmation(http, rpc_url, &request, now, timeout_ms).await
+            };
+            #[cfg(not(test))]
+            let status = fetch_rpc_signature_confirmation(http, rpc_url, &request, now, timeout_ms).await;
+            match status {
                 Ok(ExecutionConfirmationTrackerOutcome::Pending { reason, .. }) => {
                     return Ok(ExecutionConfirmationBoundaryOutcome {
                         pending: 1,
@@ -93,6 +146,10 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
                     let failure = error
                         .downcast_ref::<super::rpc_confirmation::SignatureTransactionFailed>()
                         .unwrap();
+                    #[cfg(test)]
+                    let mock_receipt = mock.map(|value| &value.receipt);
+                    #[cfg(not(test))]
+                    let mock_receipt = None;
                     return super::failed_expense::detected(
                         store,
                         http,
@@ -105,7 +162,7 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
                         &failure.error,
                         now,
                         timeout_ms,
-                        None,
+                        mock_receipt,
                     )
                     .await;
                 }
@@ -131,8 +188,18 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
     };
     // Persist network confirmation BEFORE any receipt I/O or accounting attempt.
     store.mark_execution_canary_confirmed_unreconciled(order_id, &proof, now)?;
+    #[cfg(test)]
+    let receipt = if let Some(mock) = mock {
+        mock.count(|counts| counts.receipt += 1);
+        tokio::task::yield_now().await;
+        super::rpc_receipt_facts::facts_from_transaction_json(order_id, &proof, &mock.receipt)
+    } else {
+        fetch_confirmed_receipt_facts(http, rpc_url, order_id, &proof, timeout_ms).await
+    };
+    #[cfg(not(test))]
+    let receipt = fetch_confirmed_receipt_facts(http, rpc_url, order_id, &proof, timeout_ms).await;
     let bundle =
-        match fetch_confirmed_receipt_facts(http, rpc_url, order_id, &proof, timeout_ms).await {
+        match receipt {
             Ok(facts) => facts,
             Err(error) if error.is::<ReceiptTransactionFailed>() => {
                 let failure = error.downcast_ref::<ReceiptTransactionFailed>().unwrap();

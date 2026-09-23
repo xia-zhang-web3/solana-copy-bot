@@ -11,6 +11,17 @@ pub(crate) fn read(
     l: InboxLimits,
     endpoint: &str,
 ) -> Result<std::result::Result<QuoteBinding, String>> {
+    match read_base(c, id, l, endpoint)? {
+        Ok(base) => super::fractional::apply(c, base),
+        Err(reason) => Ok(Err(reason)),
+    }
+}
+pub(crate) fn read_base(
+    c: &Connection,
+    id: &str,
+    l: InboxLimits,
+    endpoint: &str,
+) -> Result<std::result::Result<QuoteBinding, String>> {
     ordered::schema::required(c)?;
     let Some(i) = ordered::rows::load(c, id)? else {
         return Ok(Err("missing_intent".into()));
@@ -100,6 +111,7 @@ pub(crate) fn read(
         endpoint: endpoint.into(),
         raw: q.raw(),
         decimals: q.decimals(),
+        fractional: None,
         snapshot_version,
     }))
 }

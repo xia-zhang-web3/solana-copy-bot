@@ -8,6 +8,9 @@ pub struct OwnedSellPreparationConfig {
     pub policy: String,
     #[serde(default)]
     pub tiny_dispatch: bool,
+    /// Explicit opt-in; never changes the old full-owned SELL contract.
+    #[serde(default)]
+    pub fractional_inventory: Option<String>,
     pub rpc_url: String,
     pub genesis_hash: String,
     pub identity: String,
@@ -19,6 +22,12 @@ pub fn validate_owned_sell_preparation(
     let Some(p) = &e.owned_sell_preparation else {
         return Ok(());
     };
+    ensure!(
+        p.fractional_inventory
+            .as_deref()
+            .is_none_or(|v| v == "whole_wallet_parent_program_fraction_v1"),
+        "owned_sell_fractional_contract"
+    );
     ensure!(
         p.policy == RPC_FINALIZED_OWNED_SELL_V1,
         "owned_sell_policy_unsupported"

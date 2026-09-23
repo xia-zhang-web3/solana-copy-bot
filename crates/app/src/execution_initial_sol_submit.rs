@@ -21,6 +21,23 @@ pub(crate) async fn before_send(
     state: &SubmitState,
     tick_at: DateTime<Utc>,
 ) -> Option<ExecutionSubmitPlanOutcome> {
+    before_send_guarded(
+        store, request, envelope, intent, gate, transport, state, tick_at, None,
+    )
+    .await
+}
+
+pub(crate) async fn before_send_guarded(
+    store: &SqliteStore,
+    request: &ExecutionSubmitRequest,
+    envelope: &ExecutionSigningEnvelope,
+    intent: &ExecutionSubmitIntent,
+    gate: &ExecutionTinySubmitGate,
+    transport: &RpcExecutionSubmitTransport,
+    state: &SubmitState,
+    tick_at: DateTime<Utc>,
+    native: Option<&crate::execution_canary_route::NativeBuyGuard>,
+) -> Option<ExecutionSubmitPlanOutcome> {
     if !request.side.eq_ignore_ascii_case("buy") {
         return None;
     }
@@ -49,6 +66,18 @@ pub(crate) async fn before_send(
             "initial_sol_wallet",
         )?;
         // Keep the collector future out of the already nested daemon retry/tick stack.
+        #[cfg(test)]
+        if let Some(mock) = native.and_then(|guard| guard.mock_io()) {
+            mock.count(|counts| counts.initial_sol += 1);
+            tokio::task::yield_now().await;
+            return crate::execution_initial_sol::check_with_policy(
+                &intent.signed_transaction_base64,
+                wallet,
+                reserve,
+                &mock.initial_sol,
+                protected.as_ref(),
+            );
+        }
         Box::pin(crate::execution_initial_sol::collect_with_policy(
             transport.rpc_endpoint(),
             gate.submit_timeout_ms,
@@ -61,6 +90,9 @@ pub(crate) async fn before_send(
     })
     .await;
     // Applies equally to success and collector error: never fail/erase a changed order.
+    if native.is_some_and(|guard| !guard.check(store).unwrap_or(false)) {
+        return Some(refuse(request, "native_buy_decision_changed"));
+    }
     if let Err(reason) = unchanged(state, store, request) {
         return Some(refuse(request, reason));
     }

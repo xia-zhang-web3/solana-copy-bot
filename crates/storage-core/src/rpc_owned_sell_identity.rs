@@ -64,11 +64,34 @@ pub(crate) fn position(
 ) -> Result<()> {
     if let Some(bound) = owned(c, id)? {
         let b = &bound.handoff.snapshot.quote;
+        let held_raw = if let Some(d) = &b.fractional {
+            let facts =
+                crate::receipt_facts_rows::load(c, id)?.context("fraction_receipt_missing")?;
+            ensure!(
+                b.version == 2
+                    && d.version == 1
+                    && d.selected_raw == b.raw
+                    && crate::ordered_sell_quote::fractional::inventory::allocate(
+                        &[d.owned_raw],
+                        d.inventory.numerator,
+                        d.inventory.denominator.parse()?
+                    )?[0]
+                        == b.raw
+                    && facts
+                        .token_delta
+                        .as_ref()
+                        .is_some_and(|q| q.raw == -i128::from(b.raw) && q.decimals == b.decimals),
+                crate::SellSettlementUnsupported::OwnedSelectedQuantityChanged
+            );
+            d.owned_raw
+        } else {
+            b.raw
+        };
         ensure!(
             p.position_id == b.position_id
                 && p.opened_ts == b.position_opened_ts
                 && p.token == b.mint
-                && p.quantity.raw() == b.raw
+                && p.quantity.raw() == held_raw
                 && p.quantity.decimals() == b.decimals,
             crate::SellSettlementUnsupported::OwnedPositionChanged
         );

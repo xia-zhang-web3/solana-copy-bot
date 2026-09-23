@@ -117,6 +117,32 @@ pub fn validate_association_delivery(c: &AppConfig) -> Result<()> {
         );
     }
     crate::validate_owned_sell_preparation(&c.execution, &c.ingestion)?;
+    if let Some(native) = &c.execution.native_fresh_buy {
+        ensure!(
+            native.policy == crate::PROCESSED_SLOT_FENCE_AVAILABILITY_V1,
+            "native_fresh_buy_policy_unsupported"
+        );
+        ensure!(
+            c.ingestion.yellowstone_delivery_mode == "durable_association_v1"
+                && c.ingestion.source == "yellowstone_grpc"
+                && c.ingestion.capture_scope_db.is_none(),
+            "native_fresh_buy_delivery_mode"
+        );
+        ensure!(
+            c.execution.canary_tiny_submit_enabled
+                && crate::owned_sell_dispatch(&c.execution),
+            "native_fresh_buy_owned_sell_dispatch_required"
+        );
+        ensure!(
+            c.execution.tiny_experiment.id.is_some()
+                && !c.execution.tiny_experiment.activate,
+            "native_fresh_buy_existing_experiment_required"
+        );
+        ensure!(
+            c.execution.canary_max_signal_age_seconds > 0,
+            "native_fresh_buy_signal_age_limit_required"
+        );
+    }
     if c.ingestion.yellowstone_delivery_mode == "durable_association_v1" {
         ensure!(
             crate::owned_sell_flags(&c.execution),

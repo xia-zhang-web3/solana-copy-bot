@@ -1,0 +1,69 @@
+// Reviewer-only characterization: PASS reproduces an availability defect.
+// Install beside native_buy_decision.rs inside a private source snapshot only.
+// Includes the existing RAM-only Case fixture unchanged; production code is unchanged.
+include!("native_buy_decision.rs");
+
+fn reviewer_two_native_decisions(finalize_old: bool) -> Result<(Case, SqliteStore)> {
+    let mut c = Case::new()?;
+    c.fence("session-A", 6)?;
+    c.admit()?;
+    let old_terminal = if finalize_old {
+        c.asserted()
+    } else {
+        Terminal::Unresolved(Unresolved::EndOfStream)
+    };
+    c.terminal(old_terminal)?;
+    let store = c.store()?;
+    if finalize_old {
+        assert!(store.native_buy_record_finalized(
+            "source-buy", 7, SPL_TOKEN_PROGRAM, Utc::now()
+        )?);
+    }
+
+    // A new actual admission belongs to the current session. The older row is
+    // durably invalid because its session is closed/replaced; it is not deleted.
+    c.fence("session-B", 6)?;
+    c.admission.facts.signature = "source-buy-new".into();
+    let mut admission = fixture::event(1, DeliveryEvent::Admission(c.admission.clone()));
+    admission.session = "session-B".into();
+    c.inbox.persist_at(&admission, &CandidateGeneration::Unknown, Utc::now())?;
+    let mut terminal = fixture::event(2, DeliveryEvent::Terminal {
+        signature: c.admission.facts.signature.clone(),
+        expected: c.admission.clone(),
+        result: c.asserted(),
+    });
+    terminal.session = "session-B".into();
+    c.inbox.persist_at(&terminal, &CandidateGeneration::Unknown, Utc::now())?;
+    Ok((c, store))
+}
+
+#[test]
+fn reviewer_native_pending_limit_advances_past_old_invalid_admission() -> Result<()> {
+    let (c, store) = reviewer_two_native_decisions(false)?;
+    let visible = store.list_native_buy_pending(2)?;
+    assert_eq!(visible.len(), 1, "control: newer admission is eligible");
+    assert_eq!(visible[0].signature, "source-buy-new");
+    let first = store.list_native_buy_pending(1)?;
+    let reopened = c.store()?;
+    let second = reopened.list_native_buy_pending(1)?;
+    assert!(first.is_empty() || first[0].signature == "source-buy-new");
+    assert_eq!(second[0].signature, "source-buy-new");
+    Ok(())
+}
+
+#[test]
+fn reviewer_native_finalized_limit_advances_past_old_invalid_admission() -> Result<()> {
+    let (c, store) = reviewer_two_native_decisions(true)?;
+    assert!(store.native_buy_record_finalized(
+        "source-buy-new", 7, SPL_TOKEN_PROGRAM, Utc::now()
+    )?);
+    let visible = store.list_native_buy_finalized(2, Utc::now(), 10)?;
+    assert_eq!(visible.len(), 1, "control: newer finalized admission is eligible");
+    assert_eq!(visible[0].signature, "source-buy-new");
+    let first = store.list_native_buy_finalized(1, Utc::now(), 10)?;
+    let reopened = c.store()?;
+    let second = reopened.list_native_buy_finalized(1, Utc::now(), 10)?;
+    assert!(first.is_empty() || first[0].signature == "source-buy-new");
+    assert_eq!(second[0].signature, "source-buy-new");
+    Ok(())
+}

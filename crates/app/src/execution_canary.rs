@@ -13,6 +13,8 @@ use copybot_shadow::ShadowSignalResult;
 use copybot_storage_core::{ExecutionDryRunRecordOutcome, SqliteStore};
 use std::path::Path;
 use tracing::info;
+#[path = "execution_native_buy.rs"]
+mod native_buy;
 
 const CANARY_COPY_SIGNAL_STATUS: &str = "shadow_recorded";
 const CLOSE_QUOTE_RETRY_LOOKBACK_SECONDS: i64 = 24 * 60 * 60;
@@ -112,6 +114,8 @@ pub(crate) struct ExecutionCanaryRunner {
     owned_sell_recovery: Option<crate::execution_owned_sell_prepare::submit::recovery::Recovery>,
     source_sell_continuation: crate::execution_source_sell_continuation::Continuation,
     quote_canary: ExecutionQuoteCanaryRunner,
+    #[cfg(test)]
+    native_buy_mock: Option<std::sync::Arc<crate::execution_canary_route::NativeBuyMockIo>>,
 }
 
 impl ExecutionCanaryRunner {
@@ -121,8 +125,15 @@ impl ExecutionCanaryRunner {
             strict_quotes: false,
             owned_sell_recovery: None,
             quote_canary: ExecutionQuoteCanaryRunner::new(config.clone()).requiring_owner(),
+            #[cfg(test)]
+            native_buy_mock: None,
             config,
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn with_native_buy_mock(mut self,
+        mock: std::sync::Arc<crate::execution_canary_route::NativeBuyMockIo>) -> Self {
+        self.native_buy_mock = Some(mock); self
     }
 
     pub(crate) fn for_ingestion(
@@ -227,6 +238,7 @@ impl ExecutionCanaryRunner {
                     anyhow::bail!("{}", q.last_error.unwrap_or_default());
                 }
             }
+            self.process_native_buy_tick(store, now, &mut summary).await?;
             return Ok(summary);
         }
         if !self.config.canary_enabled {

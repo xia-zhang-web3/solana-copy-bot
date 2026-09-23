@@ -1,6 +1,10 @@
 //! Closed request-bound finalized collector. RPC is trusted, never local consensus.
+#[path = "execution_owned_sell_body.rs"]
+pub(crate) mod body;
 #[path = "execution_owned_sell_rpc_decode.rs"]
 mod decode;
+#[path = "execution_fractional_sell.rs"]
+pub(crate) mod fractional;
 use anyhow::{ensure, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::{ExecutionConfig, RPC_FINALIZED_OWNED_SELL_V1};
@@ -82,6 +86,14 @@ pub(crate) fn identity(c: &ExecutionConfig) -> Result<String> {
         c.pretrade_max_priority_fee_lamports,
         c.pretrade_min_sol_reserve,
     ))?);
+    let base = match &p.fractional_inventory {
+        Some(contract) => digest(serde_json::to_vec(&(
+            &base,
+            "fractional_inventory_binding_v1",
+            contract,
+        ))?),
+        None => base,
+    };
     if copybot_config::owned_sell_dispatch(c) {
         return Ok(digest(serde_json::to_vec(&(
             base,
@@ -193,6 +205,8 @@ pub(crate) async fn exchange(
 ) -> Result<Exchange> {
     check()?;
     let started = Utc::now();
+    let timeout = std::time::Duration::from_millis(c.quote_canary_timeout_ms.clamp(1, 10000));
+    let deadline = tokio::time::Instant::now() + timeout;
     let mut response = http
         .post(url.clone())
         .json(&request)
@@ -202,47 +216,35 @@ pub(crate) async fn exchange(
         .send()
         .await
         .map_err(|_| anyhow::anyhow!("owned_sell_rpc_transport"))?;
+    let head = body::Head {
+        endpoint_matches: response.url() == url,
+        status: response.status().as_u16(),
+        content_length: response.content_length(),
+    };
+    let bytes = body::bytes(
+        head,
+        body::SMALL_RPC_BYTES,
+        deadline,
+        check,
+        &mut response,
+        |r| {
+            Box::pin(async move {
+                r.chunk()
+                    .await
+                    .map_err(|_| anyhow::anyhow!("owned_sell_rpc_body"))
+            })
+        },
+    )
+    .await?;
+    let value = body::envelope(&bytes, &request)?;
     check()?;
-    ensure!(
-        response.url() == url && response.status().is_success(),
-        "owned_sell_rpc_endpoint_status"
-    );
-    ensure!(
-        response.content_length().unwrap_or(0) <= 1 << 20,
-        "owned_sell_rpc_response_bound"
-    );
-    let mut bytes = vec![];
-    loop {
-        let chunk = response
-            .chunk()
-            .await
-            .map_err(|_| anyhow::anyhow!("owned_sell_rpc_body"))?;
-        check()?;
-        let Some(chunk) = chunk else { break };
-        ensure!(
-            bytes.len() + chunk.len() <= 1 << 20,
-            "owned_sell_rpc_response_bound"
-        );
-        bytes.extend_from_slice(&chunk);
-    }
-    let value: Value =
-        serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("owned_sell_rpc_json"))?;
-    ensure!(
-        value["jsonrpc"] == "2.0"
-            && value.get("id") == request.get("id")
-            && value.get("error").is_none(),
-        "owned_sell_rpc_request_binding"
-    );
-    ensure!(
-        value.get("result").is_some_and(|v| !v.is_null()),
-        "owned_sell_rpc_result_missing"
-    );
+    let response_sha256 = digest(&bytes);
     Ok(Exchange {
         request_sha256: digest(serde_json::to_vec(&request)?),
         request,
         response: value,
-        response_json: String::from_utf8(bytes.clone())?,
-        response_sha256: digest(&bytes),
+        response_json: String::from_utf8(bytes)?,
+        response_sha256,
         started,
         completed: Utc::now(),
     })

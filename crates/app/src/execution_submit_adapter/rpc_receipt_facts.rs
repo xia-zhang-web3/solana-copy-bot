@@ -44,7 +44,7 @@ pub(super) async fn fetch_confirmed_receipt_facts(
     facts_from_transaction_json(order_id, proof, &value)
 }
 
-fn facts_from_transaction_json(
+pub(super) fn facts_from_transaction_json(
     order_id: &str,
     proof: &ExecutionCanaryReceiptProof,
     value: &Value,

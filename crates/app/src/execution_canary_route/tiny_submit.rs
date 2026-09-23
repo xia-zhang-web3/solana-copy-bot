@@ -1,27 +1,24 @@
+pub(super) use super::tiny_submit_reconcile::reconcile_existing_tiny_submit_order;
+use super::NativeBuyGuard;
+use super::tiny_submit_build::{build_simulated_signed_envelope, mark_canary_failed};
 use super::tiny_submit_buy_retry::{
     buy_retry_decision_for_signal, next_failed_buy_retry_signal, BuyRetryDecision,
 };
 use super::tiny_submit_candidate_cleanup::expire_stale_tiny_submit_candidates;
 use super::tiny_submit_request::build_submit_request;
-use super::tiny_submit_retry::{
-    is_tiny_submit_retry_ready, retry_existing_simulated_tiny_submit_order,
-};
-use super::tiny_submit_timeout::process_tiny_submit_timeout;
 use crate::execution_build_plan_metadata::{
-    load_execution_build_plan_metadata, record_execution_build_plan_metadata,
+    load_execution_build_plan_metadata,
 };
 use crate::execution_build_plan_refresh::{
     fresh_submit_gate_reason, refresh_tiny_buy_build_plan_metadata,
 };
 use crate::execution_canary_entry_gate::validate_execution_canary_entry_metadata;
 use crate::execution_canary_safety::live_pre_submit_safety_snapshot;
-use crate::execution_canary_signing_contract::record_execution_signing_envelope;
 use crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary;
 use crate::execution_canary_submit_contract::ExecutionTinySubmitGate;
-use crate::execution_source_sell_guard as source_guard;
 use crate::execution_submit_adapter::{
-    reconcile_execution_tiny_submit_confirmation, record_execution_tiny_submit_confirm_path,
-    ExecutionSubmitAdapter, ExecutionSubmitRequest, ExecutionTinySubmitConfirmPathOutcome,
+    ExecutionSubmitAdapter,
+    ExecutionBuildPlanMetadata, ExecutionTinySubmitConfirmPathOutcome,
     JupiterMetisDryRunExecutionAdapter, RpcExecutionSubmitTransport,
 };
 use anyhow::Result;
@@ -29,10 +26,7 @@ use chrono::{DateTime, Utc};
 use copybot_config::ExecutionConfig;
 use copybot_core_types::CopySignalRow;
 use copybot_storage_core::{
-    ExecutionCanaryOrder, ExecutionCanaryRecordOutcome, SqliteStore, EXECUTION_ERROR_BUILD_FAILED,
-    EXECUTION_ERROR_SIMULATION_FAILED, EXECUTION_SIMULATION_STATUS_FAILED,
-    EXECUTION_STATUS_CANARY_CONFIRMED, EXECUTION_STATUS_CANARY_FAILED,
-    EXECUTION_STATUS_CANARY_SUBMITTED,
+    ExecutionCanaryRecordOutcome, SqliteStore, EXECUTION_ERROR_BUILD_FAILED,
 };
 
 pub(crate) async fn process_tiny_submit_state_machine_for_route(
@@ -41,9 +35,69 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
     signal: &CopySignalRow,
     now: DateTime<Utc>,
 ) -> Result<ExecutionCanaryStateMachineSummary> {
+    let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    process_buy(config, store, signal, now, None, &adapter, None).await
+}
+
+mod native_buy_runner;
+pub(crate) use native_buy_runner::process_native_buy_state_machine_for_route;
+#[cfg(test)]
+pub(crate) use native_buy_runner::process_native_buy_with_mock_quote_and_adapter;
+
+async fn process_buy<A: ExecutionSubmitAdapter>(
+    config: &ExecutionConfig,
+    store: &SqliteStore,
+    signal: &CopySignalRow,
+    now: DateTime<Utc>,
+    native: Option<&NativeBuyGuard>,
+    adapter: &A,
+    refreshed_quote: Option<ExecutionBuildPlanMetadata>,
+) -> Result<ExecutionCanaryStateMachineSummary> {
     let mut summary = ExecutionCanaryStateMachineSummary::default();
+    // A committed send remains an obligation after the admission policy expires
+    // or is disabled. Reconciliation never turns this decision into another send.
+    if native.is_some() {
+        if let Some(existing) = store.load_execution_canary_order_by_signal(&signal.signal_id)? {
+            summary.existing = 1;
+            summary.last_order_id = Some(existing.order_id.clone());
+            reconcile_existing_tiny_submit_order(config, store, &existing, now, &mut summary)
+                .await?;
+            return Ok(summary);
+        }
+    }
+    if native.is_some()
+        && !config.native_fresh_buy.as_ref().is_some_and(|policy| {
+            policy.policy == copybot_config::PROCESSED_SLOT_FENCE_AVAILABILITY_V1
+        })
+    {
+        summary.skipped_reason = Some("native_buy_authority_disabled");
+        return Ok(summary);
+    }
+    if native.is_some()
+        && (!super::uses_swap_blueprint_state_machine(config)
+            || !config.canary_tiny_submit_enabled)
+    {
+        summary.skipped_reason = Some("native_buy_tiny_route_disabled");
+        return Ok(summary);
+    }
+    if native.is_some() && config.tiny_experiment.activate {
+        summary.skipped_reason = Some("native_buy_activation_disabled");
+        return Ok(summary);
+    }
     if let Some(reason) = pre_candidate_skip_reason(config, signal) {
         summary.skipped_reason = Some(reason);
+        return Ok(summary);
+    }
+    if native.is_some() && signal.status != "native_buy_fenced_v1" {
+        summary.skipped_reason = Some("native_buy_signal_status");
+        return Ok(summary);
+    }
+    if native.is_some() && !native_signal_matches(store, signal)? {
+        summary.skipped_reason = Some("native_buy_signal_changed");
+        return Ok(summary);
+    }
+    if !native_current(native, store)? {
+        summary.skipped_reason = Some("native_buy_decision_changed");
         return Ok(summary);
     }
     summary.candidates = 1;
@@ -55,7 +109,12 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
     if apply_safety(config, store, now, &mut summary)? {
         return Ok(summary);
     }
-    let retry_order = match buy_retry_decision_for_signal(config, store, &signal.signal_id, now)? {
+    let retry_decision = if native.is_some() {
+        BuyRetryDecision::None
+    } else {
+        buy_retry_decision_for_signal(config, store, &signal.signal_id, now)?
+    };
+    let retry_order = match retry_decision {
         BuyRetryDecision::Retry(order) => {
             summary.existing = 1;
             summary.last_order_id = Some(order.order_id.clone());
@@ -71,8 +130,38 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
         BuyRetryDecision::None => None,
     };
     let metadata = load_execution_build_plan_metadata(store, &signal.signal_id)?;
-    let http = reqwest::Client::new();
-    let metadata = refresh_tiny_buy_build_plan_metadata(&http, config, signal, metadata).await?;
+    let metadata = if let Some(fresh) = refreshed_quote {
+        #[cfg(test)]
+        if let Some(mock) = native.and_then(|guard| guard.mock_io()) {
+            mock.count(|counts| counts.quote += 1);
+        }
+        if native.is_none()
+            || metadata.quote_event_id.is_none()
+            || fresh.quote_event_id != metadata.quote_event_id
+        {
+            summary.skipped_reason = Some("native_buy_quote_binding");
+            return Ok(summary);
+        }
+        fresh
+    } else {
+        let http = reqwest::Client::new();
+        #[cfg(test)]
+        if let Some(mock) = native.and_then(|guard| guard.mock_io()) {
+            let runner = mock.runner.as_ref().ok_or_else(|| anyhow::anyhow!("native_runner_mock_missing"))?;
+            mock.count(|c| c.fresh_quote += 1);
+            crate::execution_build_plan_refresh::refresh_tiny_buy_build_plan_metadata_with_external_quote(
+                &http, config, signal, metadata, runner.fresh_quote.clone(),
+            ).await?
+        } else {
+            refresh_tiny_buy_build_plan_metadata(&http, config, signal, metadata).await?
+        }
+        #[cfg(not(test))]
+        refresh_tiny_buy_build_plan_metadata(&http, config, signal, metadata).await?
+    };
+    if !native_current(native, store)? {
+        summary.skipped_reason = Some("native_buy_decision_changed");
+        return Ok(summary);
+    }
     if let Some(reason) = validate_execution_canary_entry_metadata(config, &metadata) {
         let reason = fresh_submit_gate_reason(&metadata, reason);
         summary.entry_gate_blocked = 1;
@@ -124,18 +213,25 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
         )?;
         return Ok(summary);
     }
-    let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
+    if !native_current(native, store)? {
+        summary.skipped_reason = Some("native_buy_decision_changed");
+        return Ok(summary);
+    }
     let Some(envelope) =
-        build_simulated_signed_envelope(store, &adapter, &request, now, &mut summary).await?
+        build_simulated_signed_envelope(store, adapter, &request, now, &mut summary, native).await?
     else {
         return Ok(summary);
     };
+    if !native_current(native, store)? {
+        summary.skipped_reason = Some("native_buy_decision_changed");
+        return Ok(summary);
+    }
     let submit_gate = ExecutionTinySubmitGate::from_config(config);
     let submit_transport = RpcExecutionSubmitTransport::new(config.submit_adapter_http_url.clone());
     let confirmation_timeout_ms = config.max_confirm_seconds.saturating_mul(1_000).max(1);
-    let outcome = record_execution_tiny_submit_confirm_path(
+    let outcome = crate::execution_submit_adapter::record_execution_tiny_submit_confirm_path_guarded(
         store,
-        &adapter,
+        adapter,
         &request,
         &envelope,
         &submit_gate,
@@ -144,10 +240,30 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
         &config.submit_adapter_http_url,
         now,
         confirmation_timeout_ms,
+        native,
     )
     .await?;
     apply_tiny_submit_confirm_path_outcome(&mut summary, outcome);
     Ok(summary)
+}
+
+pub(super) fn native_current(native: Option<&NativeBuyGuard>, store: &SqliteStore) -> Result<bool> {
+    native.map_or(Ok(true), |guard| guard.check(store))
+}
+
+fn native_signal_matches(store: &SqliteStore, signal: &CopySignalRow) -> Result<bool> {
+    let Some(saved) = store.load_copy_signal_by_signal_id(&signal.signal_id)? else {
+        return Ok(false);
+    };
+    Ok(saved.signal_id == signal.signal_id
+        && saved.wallet_id == signal.wallet_id
+        && saved.side == signal.side
+        && saved.token == signal.token
+        && saved.notional_sol.to_bits() == signal.notional_sol.to_bits()
+        && saved.notional_lamports == signal.notional_lamports
+        && saved.notional_origin == signal.notional_origin
+        && saved.ts == signal.ts
+        && saved.status == signal.status)
 }
 
 pub(crate) async fn process_tiny_submit_reconciliation_sweep_for_route(
@@ -248,93 +364,6 @@ pub(super) fn apply_safety(
     Ok(false)
 }
 
-pub(super) async fn reconcile_existing_tiny_submit_order(
-    config: &ExecutionConfig,
-    store: &SqliteStore,
-    order: &ExecutionCanaryOrder,
-    now: DateTime<Utc>,
-    summary: &mut ExecutionCanaryStateMachineSummary,
-) -> Result<()> {
-    let restored;
-    if matches!(
-        order.status.as_str(),
-        copybot_storage_core::EXECUTION_STATUS_CANARY_EXPIRED
-            | copybot_storage_core::EXECUTION_STATUS_CANARY_FAILED
-    ) || (order.status == copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED
-        && order
-            .simulation_error
-            .as_deref()
-            .is_some_and(|s| s.starts_with("retry_after_unknown_submit_timeout")))
-    {
-        store.visit_execution_canary_reconciliation(
-            &order.order_id,
-            &config.canary_wallet_pubkey,
-            now,
-        )?;
-        restored = store
-            .load_execution_canary_order(&order.order_id)?
-            .expect("visited order");
-    } else {
-        restored = order.clone();
-    }
-    let order = &restored;
-    if !matches!(
-        order.status.as_str(),
-        EXECUTION_STATUS_CANARY_SUBMITTED
-            | EXECUTION_STATUS_CANARY_CONFIRMED
-            | copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED_UNRECONCILED
-    ) {
-        if is_tiny_submit_retry_ready(order) {
-            retry_existing_simulated_tiny_submit_order(config, store, order, now, summary).await?;
-        }
-        return Ok(());
-    }
-    store.visit_execution_canary_reconciliation(
-        &order.order_id,
-        &config.canary_wallet_pubkey,
-        now,
-    )?;
-    let confirmation_timeout_ms = config.max_confirm_seconds.saturating_mul(1_000).max(1);
-    if order
-        .tx_signature
-        .as_deref()
-        .is_none_or(|signature| signature.trim().is_empty())
-    {
-        process_tiny_submit_timeout(
-            store,
-            &order.order_id,
-            confirmation_timeout_ms,
-            config.max_submit_attempts,
-            now,
-            summary,
-        )?;
-        return Ok(());
-    }
-    let outcome = reconcile_execution_tiny_submit_confirmation(
-        store,
-        config,
-        &order.order_id,
-        &reqwest::Client::new(),
-        &config.submit_adapter_http_url,
-        now,
-        confirmation_timeout_ms,
-    )
-    .await?;
-    let confirmation_pending = outcome.confirmation_pending;
-    apply_tiny_submit_confirm_path_outcome(summary, outcome);
-    if confirmation_pending > 0 {
-        process_tiny_submit_timeout(
-            store,
-            &order.order_id,
-            confirmation_timeout_ms,
-            config.max_submit_attempts,
-            now,
-            summary,
-        )?;
-    }
-    Ok(())
-}
-
 pub(super) fn apply_tiny_submit_confirm_path_outcome(
     summary: &mut ExecutionCanaryStateMachineSummary,
     outcome: ExecutionTinySubmitConfirmPathOutcome,
@@ -351,140 +380,4 @@ pub(super) fn apply_tiny_submit_confirm_path_outcome(
     summary.sell_no_position = outcome.sell_no_position;
     summary.last_confirm_reason = outcome.reason.clone();
     summary.last_error = outcome.error.or(outcome.reason);
-}
-
-pub(super) async fn build_simulated_signed_envelope(
-    store: &SqliteStore,
-    adapter: &JupiterMetisDryRunExecutionAdapter,
-    request: &ExecutionSubmitRequest,
-    now: DateTime<Utc>,
-    summary: &mut ExecutionCanaryStateMachineSummary,
-) -> Result<Option<crate::execution_signing_envelope::ExecutionSigningEnvelope>> {
-    if source_guard::retry::state_result(
-        store,
-        now,
-        source_guard::request(
-            store,
-            request,
-            &[copybot_storage_core::EXECUTION_STATUS_CANARY_CANDIDATE],
-        ),
-        summary,
-    )?
-    .is_none()
-    {
-        return Ok(None);
-    }
-    let plan = match adapter.build_transaction_plan(request) {
-        Ok(plan) => plan,
-        Err(error) => {
-            mark_canary_failed(
-                store,
-                request,
-                now,
-                EXECUTION_ERROR_BUILD_FAILED,
-                error.to_string(),
-                summary,
-            )?;
-            return Ok(None);
-        }
-    };
-    record_execution_build_plan_metadata(store, &plan, now)?;
-    store.mark_execution_canary_built(&request.order_id, now)?;
-    summary.built = 1;
-    let Some(source) = source_guard::retry::state_result(
-        store,
-        now,
-        source_guard::request(
-            store,
-            request,
-            &[copybot_storage_core::EXECUTION_STATUS_CANARY_BUILT],
-        ),
-        summary,
-    )?
-    else {
-        return Ok(None);
-    };
-
-    let simulation_result = adapter.simulate_transaction_plan(&plan).await;
-    if source_guard::retry::state_result(
-        store,
-        now,
-        source_guard::recheck(source.as_ref(), store),
-        summary,
-    )?
-    .is_none()
-    {
-        return Ok(None);
-    }
-    let simulation = match simulation_result {
-        Ok(simulation) => simulation,
-        Err(error) => {
-            let error = error.to_string();
-            store.mark_execution_canary_simulated(
-                &request.order_id,
-                now,
-                EXECUTION_SIMULATION_STATUS_FAILED,
-                Some(&error),
-            )?;
-            mark_canary_failed(
-                store,
-                request,
-                now,
-                EXECUTION_ERROR_SIMULATION_FAILED,
-                error,
-                summary,
-            )?;
-            summary.simulated = 1;
-            return Ok(None);
-        }
-    };
-    store.mark_execution_canary_simulated(
-        &request.order_id,
-        now,
-        &simulation.status,
-        simulation.error.as_deref(),
-    )?;
-    summary.simulated = 1;
-    if simulation.status == EXECUTION_SIMULATION_STATUS_FAILED {
-        let error = simulation
-            .error
-            .unwrap_or_else(|| "simulation_failed".to_string());
-        mark_canary_failed(
-            store,
-            request,
-            now,
-            EXECUTION_ERROR_SIMULATION_FAILED,
-            error,
-            summary,
-        )?;
-        return Ok(None);
-    }
-
-    let signing = record_execution_signing_envelope(store, adapter, request, &plan, now)?;
-    if let Some(refusal) = signing.source_refusal.as_ref() {
-        source_guard::record_state(refusal, summary);
-        return Ok(None);
-    }
-    summary.signing_envelope_built = signing.built;
-    summary.last_signing_envelope_id = signing.envelope_id;
-    summary.last_signing_envelope_mode = signing.envelope_mode;
-    summary.failed = signing.failed;
-    summary.last_error = signing.error;
-    Ok(signing.envelope)
-}
-
-fn mark_canary_failed(
-    store: &SqliteStore,
-    request: &ExecutionSubmitRequest,
-    now: DateTime<Utc>,
-    code: &str,
-    error: String,
-    summary: &mut ExecutionCanaryStateMachineSummary,
-) -> Result<()> {
-    let order = store.mark_execution_canary_failed(&request.order_id, now, code, &error)?;
-    if order.status == EXECUTION_STATUS_CANARY_FAILED {
-        summary.failed = 1;
-        summary.last_error = Some(error);
-    }
-    Ok(())
 }

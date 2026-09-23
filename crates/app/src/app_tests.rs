@@ -46,6 +46,10 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 mod association_consumer_tests;
+#[path = "app_tests/native_buy_reviewer_consumer_candidate_tests.rs"]
+mod native_buy_reviewer_consumer_candidate_tests;
+#[path = "app_tests/native_buy_reviewer_quote_candidate_tests.rs"]
+mod native_buy_reviewer_quote_candidate_tests;
 mod association_fixture;
 mod association_frozen_tests;
 mod association_transport_tests;
@@ -669,6 +673,7 @@ mod b135_refusal_tests;
 mod b135_server;
 mod b135_state_tests;
 mod b135_transition_tests;
+mod fractional;
 
 #[path = "app_tests/tiny_parent_fixture.rs"]
 mod tiny_parent_fixture;

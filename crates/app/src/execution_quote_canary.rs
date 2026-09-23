@@ -27,6 +27,8 @@ mod builders;
 mod hot_observed;
 #[path = "execution_quote_canary_owned_sell.rs"]
 mod owned_sell;
+#[path = "execution_quote_canary_native_buy.rs"]
+mod native_buy;
 #[path = "execution_quote_canary_parallel_samples.rs"]
 mod parallel_samples;
 #[path = "execution_quote_canary_priority_retry.rs"]

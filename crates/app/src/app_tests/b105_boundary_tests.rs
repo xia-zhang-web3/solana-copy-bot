@@ -196,6 +196,7 @@ async fn b105_strict_headers_remain_distinct_from_full_body_and_required_validat
             endpoint: cfg.quote_canary_base_url.clone(),
             raw: 100,
             decimals: 6,
+            fractional: None,
             snapshot_version: "synthetic".into(),
         };
         let body = serde_json::json!({"inputMint":"Token","outputMint":b.output_mint,"swapMode":"ExactIn","inAmount":if valid {"100"} else {"99"},"outAmount":"5"}).to_string();

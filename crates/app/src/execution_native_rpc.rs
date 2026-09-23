@@ -6,6 +6,11 @@ mod request;
 mod response;
 pub(crate) mod token2022_rent;
 pub(crate) mod types;
+#[cfg(test)]
+#[path = "app_tests/native_buy_funding_fixture.rs"]
+mod native_buy_funding_fixture;
+#[cfg(test)]
+pub(crate) use native_buy_funding_fixture::synthetic_classic_funding;
 
 use self::rent_types::{ClassicAtaFundingFacts, ClassicAtaRentObservation};
 use self::request::{observe, observe_rent, observe_token2022_rent, Method};

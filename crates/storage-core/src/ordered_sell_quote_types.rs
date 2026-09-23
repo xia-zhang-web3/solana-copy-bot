@@ -18,6 +18,8 @@ pub struct QuoteBinding {
     pub endpoint: String,
     pub raw: u64,
     pub decimals: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fractional: Option<super::fractional::Binding>,
     /// Exact compact snapshot of validated references, order, financial/Shadow state.
     /// Anchor payloads remain in the original inbox; their identity is revalidated there.
     pub snapshot_version: String,

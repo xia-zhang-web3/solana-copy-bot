@@ -2,14 +2,17 @@
 //! cancellation. Admission snapshots execute synchronously at first app dequeue;
 //! the write then awaits off-thread without blocking maintenance branches.
 use anyhow::{Context, Result};
-use copybot_config::IngestionConfig;
-use copybot_core_types::association_delivery::{CandidateGeneration, DeliveryEvent};
+use copybot_config::{ExecutionConfig, IngestionConfig};
+use copybot_core_types::association_delivery::{CandidateGeneration, DeliveryEvent, SessionGap};
 use copybot_ingestion::{DeliveryEnvelope, DeliveryReceiver, IngestionService};
 use copybot_storage_core::{
     association_inbox::{AssociationInbox, InboxLimits},
     SqliteStore,
 };
 use tokio::task::JoinHandle;
+use crate::execution_native_buy_rpc;
+use crate::execution_owned_sell_rpc::fractional::transport::{Http, Transport};
+use copybot_storage_core::native_buy::NativeBuyFence;
 
 #[path = "association_shadow_wake.rs"]
 pub(crate) mod shadow_wake;
@@ -22,6 +25,11 @@ pub(crate) struct AssociationConsumer {
     recovery_pending: bool,
     pub(crate) shadow_wake: ShadowWake,
     pub(crate) pending: Option<Pending>,
+    // Own the dequeued envelope before any external fence await. A cancelled
+    // app-loop poll resumes this exact session without ACK or replacement.
+    intake: Option<(Option<DeliveryEnvelope>, CandidateGeneration, chrono::DateTime<chrono::Utc>)>,
+    native_buy: Option<ExecutionConfig>,
+    native_http: Option<reqwest::Client>,
 }
 impl AssociationConsumer {
     pub(crate) async fn start(
@@ -58,10 +66,46 @@ impl AssociationConsumer {
             recovery_pending,
             shadow_wake: ShadowWake::new(limits),
             pending: None,
+            intake: None,
+            native_buy: None,
+            native_http: None,
         }))
     }
+    pub(crate) async fn start_with_execution(
+        ingestion: &mut IngestionService,
+        c: &IngestionConfig,
+        execution: &ExecutionConfig,
+        path: &str,
+    ) -> Result<Option<Self>> {
+        let mut consumer = Self::start(ingestion, c, path).await?;
+        if let Some(value) = consumer.as_mut() {
+            if execution_native_buy_rpc::enabled(execution) {
+                execution_native_buy_rpc::policy_identity(execution)?;
+                value.native_buy = Some(execution.clone());
+                value.native_http = Some(reqwest::Client::new());
+            }
+        }
+        Ok(consumer)
+    }
     pub(crate) async fn poll(&mut self, store: &SqliteStore) -> Result<()> {
-        if self.pending.is_none() {
+        let Some(c) = self.native_buy.clone() else {
+            return self.poll_with_transport(store, None).await;
+        };
+        let client = self.native_http.clone().context("native buy HTTP client missing")?;
+        let mut rpc = Http {
+            http: &client,
+            config: &c,
+            url: crate::execution_owned_sell_rpc::endpoint(&c)?,
+            budget: Default::default(),
+        };
+        self.poll_with_transport(store, Some(&mut rpc)).await
+    }
+    pub(crate) async fn poll_with_transport(
+        &mut self,
+        store: &SqliteStore,
+        mut rpc: Option<&mut dyn Transport>,
+    ) -> Result<()> {
+        if self.pending.is_none() && self.intake.is_none() {
             // Ready delivery has priority; otherwise resume one durable dependency
             // through the same cancellation-safe pending writer.
             let envelope = tokio::select! {
@@ -80,12 +124,42 @@ impl AssociationConsumer {
                 Some(DeliveryEvent::Admission(a)) => store.association_candidate(&a.facts),
                 _ => CandidateGeneration::Unknown,
             };
-            let observed = chrono::Utc::now();
+            self.intake = Some((envelope, candidate, chrono::Utc::now()));
+        }
+        if self.pending.is_none() {
+            let envelope = self.intake.as_ref().and_then(|(e, _, _)| e.as_ref());
+            let fence = match (self.native_buy.as_ref(), envelope) {
+                (Some(c), Some(e)) if matches!(&e.delivery.event, DeliveryEvent::Session(SessionGap::StartedContinuityUnknown)) => {
+                    let rpc = rpc.as_deref_mut().context("native_buy_transport_missing")?;
+                    let mut check = || {
+                        anyhow::ensure!(
+                            !std::path::Path::new(&c.canary_kill_switch_path).exists(),
+                            "native_buy_kill_switch"
+                        );
+                        Ok(())
+                    };
+                    let evidence = execution_native_buy_rpc::fence(rpc, c, &e.delivery.session, &mut check).await?;
+                    Some(NativeBuyFence {
+                        session: evidence.session,
+                        processed_slot: evidence.processed_slot,
+                        sampled_at: evidence.sampled_at,
+                        genesis_hash: evidence.genesis_hash,
+                        policy_identity: evidence.policy_identity,
+                    })
+                }
+                _ => None,
+            };
+            let (envelope, candidate, observed) = self.intake.take().context("intake missing")?;
             let mut inbox = self.inbox.take().context("inbox unavailable")?;
             self.pending = Some(tokio::task::spawn_blocking(move || {
                 let result = (|| {
                     match &envelope {
-                        Some(e) => inbox.persist_at(&e.delivery, &candidate, observed)?,
+                        Some(e) => {
+                            inbox.persist_at(&e.delivery, &candidate, observed)?;
+                            if let Some(ref fence) = fence {
+                                inbox.record_native_buy_fence(fence)?;
+                            }
+                        }
                         None => inbox.recover_sell_preparation()?,
                     }
                     inbox.has_sell_preparation_work()

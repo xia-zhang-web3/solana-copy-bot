@@ -154,7 +154,14 @@ if [ "$RUN_CHECKS" = "1" ]; then
     cargo test --locked -p "$PACKAGE" --tests -- --test-threads=1
   elif [ "$PACKAGE" = "copybot-app" ]; then
     test_check="cargo test --locked -p copybot-app --bin copybot-app -- --test-threads=1"
-    cargo test --locked -p copybot-app --bin copybot-app -- --test-threads=1
+    if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+      echo "app_test_gate_timeout_seconds=300 rust_min_stack=8388608"
+      env -u FRACTIONAL_FIXTURE_ROOT RUST_MIN_STACK=8388608 \
+        timeout --signal=KILL 300s \
+        cargo test --locked -p copybot-app --bin copybot-app -- --test-threads=1
+    else
+      cargo test --locked -p copybot-app --bin copybot-app -- --test-threads=1
+    fi
   else
     test_check="cargo test --locked -p $PACKAGE --bins -- --test-threads=1; cargo test --locked -p $PACKAGE --tests -- --test-threads=1"
     cargo test --locked -p "$PACKAGE" --bins -- --test-threads=1

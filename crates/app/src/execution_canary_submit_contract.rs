@@ -133,6 +133,27 @@ pub(crate) async fn record_execution_tiny_submit_plan<A: ExecutionSubmitAdapter>
     transport: &RpcExecutionSubmitTransport,
     now: DateTime<Utc>,
 ) -> Result<ExecutionSubmitPlanOutcome> {
+    record_execution_tiny_submit_plan_guarded(
+        store, adapter, request, envelope, gate, transport, now, None,
+    )
+    .await
+}
+
+pub(crate) async fn record_execution_tiny_submit_plan_guarded<A: ExecutionSubmitAdapter>(
+    store: &SqliteStore,
+    adapter: &A,
+    request: &ExecutionSubmitRequest,
+    envelope: &ExecutionSigningEnvelope,
+    gate: &ExecutionTinySubmitGate,
+    transport: &RpcExecutionSubmitTransport,
+    now: DateTime<Utc>,
+    native: Option<&crate::execution_canary_route::NativeBuyGuard>,
+) -> Result<ExecutionSubmitPlanOutcome> {
+    if let Some(guard) = native {
+        if !guard.check(store)? {
+            return Ok(crate::execution_tiny_submit_state::reject("native_buy_decision_changed"));
+        }
+    }
     let state = match crate::execution_tiny_submit_state::eligible(store, request) {
         Ok(state) => state,
         Err(reason) => return Ok(crate::execution_tiny_submit_state::reject(reason)),
@@ -200,15 +221,15 @@ pub(crate) async fn record_execution_tiny_submit_plan<A: ExecutionSubmitAdapter>
             ) {
                 return record_submit_plan_failure(store, request, now, error.to_string());
             }
-            if let Some(rejection) = crate::execution_initial_sol_submit::before_send(
-                store, request, envelope, &intent, gate, transport, &state, now,
+            if let Some(rejection) = crate::execution_initial_sol_submit::before_send_guarded(
+                store, request, envelope, &intent, gate, transport, &state, now, native,
             )
             .await
             {
                 return Ok(rejection);
             }
-            crate::execution_tiny_submit_state::dispatch::send(
-                store, request, &intent, envelope, gate, transport, &state, now,
+            crate::execution_tiny_submit_state::dispatch::send_guarded(
+                store, request, &intent, envelope, gate, transport, &state, now, native,
             )
             .await
         }

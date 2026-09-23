@@ -17,6 +17,8 @@ pub(crate) mod snapshot;
 mod types;
 pub use types::*;
 const SOL: &str = "So11111111111111111111111111111111111111112";
+#[path = "fractional_sell.rs"]
+pub mod fractional;
 pub const MAX_QUOTE_AGE_MS: i64 = 5_000;
 
 impl SqliteDiscoveryStore {

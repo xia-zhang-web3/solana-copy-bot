@@ -4,7 +4,7 @@ use super::{
     RpcExecutionSubmitTransport,
 };
 use crate::execution_canary_submit_contract::{
-    record_execution_tiny_submit_plan, ExecutionSubmitPlanOutcome, ExecutionTinySubmitGate,
+    ExecutionSubmitPlanOutcome, ExecutionTinySubmitGate,
 };
 use crate::execution_signing_envelope::ExecutionSigningEnvelope;
 use crate::execution_tiny_entry_route::load_entry_route_plan_json_for_sell;
@@ -54,8 +54,30 @@ pub(crate) async fn record_execution_tiny_submit_confirm_path<A: ExecutionSubmit
     now: DateTime<Utc>,
     confirmation_timeout_ms: u64,
 ) -> Result<ExecutionTinySubmitConfirmPathOutcome> {
+    record_execution_tiny_submit_confirm_path_guarded(
+        store, adapter, request, envelope, gate, transport, confirmation_http,
+        confirmation_rpc_url, now, confirmation_timeout_ms, None,
+    )
+    .await
+}
+
+pub(crate) async fn record_execution_tiny_submit_confirm_path_guarded<A: ExecutionSubmitAdapter>(
+    store: &SqliteStore,
+    adapter: &A,
+    request: &ExecutionSubmitRequest,
+    envelope: &ExecutionSigningEnvelope,
+    gate: &ExecutionTinySubmitGate,
+    transport: &RpcExecutionSubmitTransport,
+    confirmation_http: &reqwest::Client,
+    confirmation_rpc_url: &str,
+    now: DateTime<Utc>,
+    confirmation_timeout_ms: u64,
+    native: Option<&crate::execution_canary_route::NativeBuyGuard>,
+) -> Result<ExecutionTinySubmitConfirmPathOutcome> {
     let submit =
-        record_execution_tiny_submit_plan(store, adapter, request, envelope, gate, transport, now)
+        crate::execution_canary_submit_contract::record_execution_tiny_submit_plan_guarded(
+            store, adapter, request, envelope, gate, transport, now, native,
+        )
             .await?;
     let mut outcome = outcome_from_submit(&submit);
     if submit.submitted == 0 {
@@ -66,6 +88,32 @@ pub(crate) async fn record_execution_tiny_submit_confirm_path<A: ExecutionSubmit
         outcome.reason = Some(SUBMITTED_WITHOUT_TX_SIGNATURE_REASON.to_string());
         return Ok(outcome);
     }
+    #[cfg(test)]
+    let confirmation = if let Some(mock) = native.and_then(|guard| guard.mock_io()) {
+        super::confirmation_boundary::record_execution_rpc_confirmation_boundary_mock(
+            store,
+            confirmation_http,
+            confirmation_rpc_url,
+            &request.order_id,
+            &request.wallet_pubkey,
+            now,
+            confirmation_timeout_ms,
+            mock,
+        )
+        .await?
+    } else {
+        record_execution_rpc_confirmation_boundary(
+            store,
+            confirmation_http,
+            confirmation_rpc_url,
+            &request.order_id,
+            &request.wallet_pubkey,
+            now,
+            confirmation_timeout_ms,
+        )
+        .await?
+    };
+    #[cfg(not(test))]
     let confirmation = record_execution_rpc_confirmation_boundary(
         store,
         confirmation_http,
@@ -88,6 +136,39 @@ pub(crate) async fn reconcile_execution_tiny_submit_confirmation(
     confirmation_rpc_url: &str,
     now: DateTime<Utc>,
     confirmation_timeout_ms: u64,
+) -> Result<ExecutionTinySubmitConfirmPathOutcome> {
+    reconcile_execution_tiny_submit_confirmation_inner(
+        store, config, order_id, confirmation_http, confirmation_rpc_url,
+        now, confirmation_timeout_ms, #[cfg(test)] None,
+    ).await
+}
+
+#[cfg(test)]
+pub(crate) async fn reconcile_execution_tiny_submit_confirmation_mock(
+    store: &SqliteStore,
+    config: &ExecutionConfig,
+    order_id: &str,
+    confirmation_http: &reqwest::Client,
+    confirmation_rpc_url: &str,
+    now: DateTime<Utc>,
+    confirmation_timeout_ms: u64,
+    mock: &crate::execution_canary_route::NativeBuyMockIo,
+) -> Result<ExecutionTinySubmitConfirmPathOutcome> {
+    reconcile_execution_tiny_submit_confirmation_inner(
+        store, config, order_id, confirmation_http, confirmation_rpc_url,
+        now, confirmation_timeout_ms, Some(mock),
+    ).await
+}
+
+async fn reconcile_execution_tiny_submit_confirmation_inner(
+    store: &SqliteStore,
+    config: &ExecutionConfig,
+    order_id: &str,
+    confirmation_http: &reqwest::Client,
+    confirmation_rpc_url: &str,
+    now: DateTime<Utc>,
+    confirmation_timeout_ms: u64,
+    #[cfg(test)] mock: Option<&crate::execution_canary_route::NativeBuyMockIo>,
 ) -> Result<ExecutionTinySubmitConfirmPathOutcome> {
     store.visit_execution_canary_reconciliation(order_id, &config.canary_wallet_pubkey, now)?;
     let Some(order) = store.load_execution_canary_order(order_id)? else {
@@ -132,6 +213,18 @@ pub(crate) async fn reconcile_execution_tiny_submit_confirmation(
         });
     }
 
+    #[cfg(test)]
+    let confirmation = if let Some(mock) = mock {
+        super::confirmation_boundary::record_execution_rpc_confirmation_boundary_mock(
+            store, confirmation_http, confirmation_rpc_url, order_id,
+            &config.canary_wallet_pubkey, now, confirmation_timeout_ms, mock,
+        ).await?
+    } else {
+        record_execution_rpc_confirmation_boundary(store, confirmation_http,
+            confirmation_rpc_url, order_id, &config.canary_wallet_pubkey,
+            now, confirmation_timeout_ms).await?
+    };
+    #[cfg(not(test))]
     let confirmation = record_execution_rpc_confirmation_boundary(
         store,
         confirmation_http,

@@ -31,6 +31,7 @@ pub enum SellSettlementUnsupported {
     ReceiptAlreadyClaimed,
     UnprovenReceiptOwnership,
     OwnedPositionChanged,
+    OwnedSelectedQuantityChanged,
     OwnedContributorsChanged,
     OwnedOriginReceiptChanged,
     DurableIdentity(crate::ReceiptFactsIdentityRejection),

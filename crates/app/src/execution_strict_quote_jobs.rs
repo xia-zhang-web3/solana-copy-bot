@@ -174,6 +174,18 @@ impl ExecutionQuoteCanaryRunner {
                     }
                     _ => return Ok(Step::Skipped),
                 };
+                let claim = if crate::execution_owned_sell_rpc::fractional::enabled(&config) {
+                    crate::execution_owned_sell_rpc::fractional::collect(
+                        &client, &mut store, &config, claim, limits,
+                    )
+                    .await?
+                } else {
+                    ensure!(
+                        claim.binding.fractional.is_none(),
+                        "fraction_contract_not_enabled"
+                    );
+                    claim
+                };
                 let binding = claim.binding.clone();
                 let mut recheck = || {
                     // Mutable capture keeps the connection owned by this Send job.

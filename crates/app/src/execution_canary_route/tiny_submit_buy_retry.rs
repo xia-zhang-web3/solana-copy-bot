@@ -67,6 +67,11 @@ pub(super) fn next_failed_buy_retry_signal(
     )?;
     for order in retry_candidates {
         if let Some(signal) = store.load_copy_signal_by_signal_id(&order.signal_id)? {
+            if signal.status == "native_buy_fenced_v1"
+                || signal.signal_id.starts_with("native-buy-v1:")
+            {
+                continue;
+            }
             return Ok(Some(signal));
         }
     }
@@ -80,6 +85,11 @@ pub(super) fn next_failed_buy_retry_signal(
             continue;
         }
         if let Some(signal) = store.load_copy_signal_by_signal_id(&order.signal_id)? {
+            if signal.status == "native_buy_fenced_v1"
+                || signal.signal_id.starts_with("native-buy-v1:")
+            {
+                continue;
+            }
             if store.has_later_copy_sell_signal(&signal.token, signal.ts)? {
                 continue;
             }

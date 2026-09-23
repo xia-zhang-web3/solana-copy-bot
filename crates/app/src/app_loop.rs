@@ -113,7 +113,7 @@ pub(super) async fn run_app_loop(
     let entry_quote_shadow_diagnostic = EntryQuoteShadowDiagnostic::new(execution_config.clone());
     let exit_policy_shadow_quote = ExitPolicyShadowQuoteDiagnostic::new(execution_config.clone());
     let market_exit_shadow_quote = MarketExitShadowQuoteDiagnostic::new(execution_config.clone());
-    let execution_canary_runner = ExecutionCanaryRunner::new(execution_config)
+    let execution_canary_runner = ExecutionCanaryRunner::new(execution_config.clone())
         .for_ingestion(&ingestion_config, &sqlite_path)?;
     execution_canary_runner.log_startup_status();
     let mut execution_canary_interval = time::interval(Duration::from_secs(
@@ -167,9 +167,10 @@ pub(super) async fn run_app_loop(
         }
     }
 
-    let mut association_consumer = crate::association_consumer::AssociationConsumer::start(
+    let mut association_consumer = crate::association_consumer::AssociationConsumer::start_with_execution(
         &mut ingestion,
         &ingestion_config,
+        &execution_config,
         &sqlite_path,
     )
     .await?;

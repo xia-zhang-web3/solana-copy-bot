@@ -49,7 +49,7 @@ mod rpc_receipt_facts;
 mod rpc_receipt_lifecycle;
 mod rpc_submit;
 mod submit_plan;
-mod tiny_runner;
+pub(crate) mod tiny_runner;
 mod transport;
 mod transport_record;
 
@@ -94,7 +94,8 @@ pub(crate) use self::submit_plan::{
 };
 pub(crate) use self::tiny_runner::{
     build_tiny_submit_reconciliation_request, reconcile_execution_tiny_submit_confirmation,
-    record_execution_tiny_submit_confirm_path, ExecutionTinySubmitConfirmPathOutcome,
+    record_execution_tiny_submit_confirm_path, record_execution_tiny_submit_confirm_path_guarded,
+    ExecutionTinySubmitConfirmPathOutcome,
 };
 pub(crate) use self::transport::{
     build_submit_transport_attempt, dry_run_no_send_submit_intent, ExecutionSubmitTransportAttempt,

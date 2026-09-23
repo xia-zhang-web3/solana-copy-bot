@@ -29,6 +29,29 @@ pub(crate) async fn refresh_tiny_buy_build_plan_metadata(
     signal: &CopySignalRow,
     metadata: ExecutionBuildPlanMetadata,
 ) -> Result<ExecutionBuildPlanMetadata> {
+    refresh_tiny_buy_build_plan_metadata_inner(
+        http, config, signal, metadata, #[cfg(test)] None,
+    ).await
+}
+
+#[cfg(test)]
+pub(crate) async fn refresh_tiny_buy_build_plan_metadata_with_external_quote(
+    http: &reqwest::Client,
+    config: &ExecutionConfig,
+    signal: &CopySignalRow,
+    metadata: ExecutionBuildPlanMetadata,
+    quote: crate::execution_quote_canary_helpers::QuoteSample,
+) -> Result<ExecutionBuildPlanMetadata> {
+    refresh_tiny_buy_build_plan_metadata_inner(http, config, signal, metadata, Some(quote)).await
+}
+
+async fn refresh_tiny_buy_build_plan_metadata_inner(
+    http: &reqwest::Client,
+    config: &ExecutionConfig,
+    signal: &CopySignalRow,
+    metadata: ExecutionBuildPlanMetadata,
+    #[cfg(test)] external_quote: Option<crate::execution_quote_canary_helpers::QuoteSample>,
+) -> Result<ExecutionBuildPlanMetadata> {
     if !signal.side.eq_ignore_ascii_case(SIDE_BUY) {
         return Ok(metadata);
     }
@@ -38,6 +61,10 @@ pub(crate) async fn refresh_tiny_buy_build_plan_metadata(
 
     let amount_raw = sol_to_lamports_raw(config.canary_buy_size_sol)?;
     let max_slippage_bps = quote_canary_slippage_limit_bps(config, SIDE_BUY);
+    #[cfg(test)]
+    if let Some(quote) = external_quote {
+        return Ok(apply_fresh_quote(metadata, quote, max_slippage_bps, QUOTE_SOURCE_GENERIC_METIS));
+    }
     if metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_PUMP_FUN_PAID) {
         match fetch_pump_fun_quote_sample(http, config, SIDE_BUY, &signal.token, &amount_raw).await
         {
@@ -220,6 +247,16 @@ fn apply_fresh_quote(
         metadata.decision_reason = Some(FRESH_SUBMIT_QUOTE_SLIPPAGE_ABOVE_LIMIT.to_string());
     }
     metadata
+}
+
+#[cfg(test)]
+pub(crate) fn refresh_tiny_buy_build_plan_metadata_with_mock_external_quote(
+    config: &ExecutionConfig,
+    metadata: ExecutionBuildPlanMetadata,
+    quote: crate::execution_quote_canary_helpers::QuoteSample,
+) -> ExecutionBuildPlanMetadata {
+    apply_fresh_quote(metadata, quote,
+        quote_canary_slippage_limit_bps(config, SIDE_BUY), QUOTE_SOURCE_GENERIC_METIS)
 }
 
 fn pump_fun_quote_is_completed(raw: &str) -> Option<bool> {

@@ -32,6 +32,16 @@ pub(crate) async fn run(
         return Ok(());
     }
     let b = q.binding.as_ref().context("owned_sell_quote_binding")?;
+    ensure!(
+        rpc::fractional::enabled(c) == b.fractional.is_some(),
+        "fraction_contract_binding"
+    );
+    if let Some(d) = &b.fractional {
+        ensure!(
+            d.producer_identity == rpc::identity(c)?,
+            "fraction_producer_changed"
+        );
+    }
     if store.has_owned_sell_handoff(&b.intent_id)? {
         return Ok(());
     }

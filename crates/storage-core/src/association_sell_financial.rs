@@ -110,13 +110,24 @@ pub(super) fn read(c: &Connection, token: &str, l: InboxLimits) -> Result<Option
         pending,
     }))
 }
-pub(super) fn source_signature(signal: &str, wallet: &str, token: &str) -> Option<String> {
+pub(super) fn source_signature(c: &Connection, signal: &str, wallet: &str, token: &str) -> Result<Option<String>> {
+    if let Some(signature) = signal.strip_prefix("native-buy-v1:") {
+        if signature.is_empty() || signature.contains(':') || signature.chars().any(char::is_whitespace) {
+            return Ok(None);
+        }
+        let bound: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_buy_decisions WHERE signature=?1 AND signal_id=?2 AND wallet=?3 AND mint=?4 AND late=0 AND finalized_at IS NOT NULL AND finalized_slot=source_slot)",
+            rusqlite::params![signature,signal,wallet,token],
+            |r| r.get(0),
+        )?;
+        return Ok(bound.then(|| signature.to_owned()));
+    }
     let suffix = format!(":{wallet}:buy:{token}");
-    let signature = signal.strip_prefix("shadow:")?.strip_suffix(&suffix)?;
-    (!signature.is_empty()
+    let Some(signature) = signal.strip_prefix("shadow:").and_then(|s| s.strip_suffix(&suffix)) else { return Ok(None); };
+    Ok((!signature.is_empty()
         && !signature.contains(':')
         && !signature.chars().any(char::is_whitespace))
-    .then(|| signature.to_owned())
+    .then(|| signature.to_owned()))
 }
 pub(super) fn first(
     c: &Connection,
@@ -177,7 +188,7 @@ pub(super) fn first(
     // Stable first fill of this source, never closest-by-time or replaced on retry.
     b.witness = match b.contributors.iter().find(|p| p.contributor.source_wallet == sell.admission.facts.wallet) {
         None => FirstWitness::Unknown(Reason::NoLeaderContributor),
-        Some(receipt) => match source_signature(&receipt.contributor.signal_id, &receipt.contributor.source_wallet, token) {
+        Some(receipt) => match source_signature(c, &receipt.contributor.signal_id, &receipt.contributor.source_wallet, token)? {
             None => FirstWitness::Unknown(Reason::MalformedSignal),
             Some(source_signature) => FirstWitness::Selected(Witness {
                 receipt: receipt.clone(), source_signature,

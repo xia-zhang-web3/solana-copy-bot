@@ -23,6 +23,7 @@ pub(crate) async fn prepare(
     transport: &RpcExecutionSubmitTransport,
     state: &SubmitState,
     tick: DateTime<Utc>,
+    native: Option<&crate::execution_canary_route::NativeBuyGuard>,
 ) -> Result<(TinyBudgetClaim, DateTime<Utc>)> {
     if matches!(state, SubmitState::Owned(_)) {
         return crate::execution_owned_sell_prepare::submit::guard::budget(
@@ -60,17 +61,44 @@ pub(crate) async fn prepare(
         "tiny_budget_identity"
     );
     ensure!(experiment.state == "active", "tiny_budget_stopped");
-    let client = CLIENT
-        .get_or_init(|| NativeFundingRpcClient::new().map_err(|_| ()))
-        .as_ref()
-        .map_err(|_| anyhow!("tiny_budget_rpc_client"))?;
-    let proof = client
-        .collect_fee_only(
-            transport.rpc_endpoint(),
-            Duration::from_millis(gate.submit_timeout_ms),
-            &intent.signed_transaction_base64,
-        )
-        .await?;
+    let (message, priority) = crate::execution_priority_fee_wire::decode_priority_fee_message(
+        &intent.signed_transaction_base64,
+    )?;
+    #[cfg(test)]
+    let mocked = native.and_then(|guard| guard.mock_io());
+    #[cfg(not(test))]
+    let mocked: Option<&()> = None;
+    let (total_fee, fee_slot) = if mocked.is_some() {
+        #[cfg(test)]
+        {
+            let mock = mocked.expect("mock checked");
+            ensure!(
+                message.binding.message_sha256 == mock.expected_message_sha256,
+                "native_buy_mock_fee_binding"
+            );
+            mock.count(|counts| counts.fee += 1);
+            tokio::task::yield_now().await;
+            (mock.fee_lamports, mock.fee_slot)
+        }
+        #[cfg(not(test))]
+        unreachable!()
+    } else {
+        let client = CLIENT
+            .get_or_init(|| NativeFundingRpcClient::new().map_err(|_| ()))
+            .as_ref()
+            .map_err(|_| anyhow!("tiny_budget_rpc_client"))?;
+        client
+            .collect_fee_only(
+                transport.rpc_endpoint(),
+                Duration::from_millis(gate.submit_timeout_ms),
+                &intent.signed_transaction_base64,
+            )
+            .await?
+            .bound_fee(&message.binding)?
+    };
+    if let Some(guard) = native {
+        ensure!(guard.check(store)?, "native_buy_decision_changed");
+    }
     // Re-read authoritative guards after the new await. No SQLite transaction is held.
     crate::execution_tiny_submit_state::unchanged(state, store, request)
         .map_err(|reason| anyhow!(reason))?;
@@ -102,10 +130,6 @@ pub(crate) async fn prepare(
         );
     }
     let identity = super::dispatch::identity(request, intent)?;
-    let (message, priority) = crate::execution_priority_fee_wire::decode_priority_fee_message(
-        &intent.signed_transaction_base64,
-    )?;
-    let (total_fee, fee_slot) = proof.bound_fee(&message.binding)?;
     let protected =
         crate::execution_native_floor_policy::protected::current_gate(store, gate, request, tick)?;
     let (buy_lamports, protected_capital) = if let Some(proof) = protected {

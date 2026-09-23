@@ -70,6 +70,20 @@ pub(crate) async fn send(
     state: &SubmitState,
     now: DateTime<Utc>,
 ) -> Result<ExecutionSubmitPlanOutcome> {
+    send_guarded(store, request, intent, envelope, gate, transport, state, now, None).await
+}
+
+pub(crate) async fn send_guarded(
+    store: &SqliteStore,
+    request: &ExecutionSubmitRequest,
+    intent: &ExecutionSubmitIntent,
+    envelope: &crate::execution_signing_envelope::ExecutionSigningEnvelope,
+    gate: &ExecutionTinySubmitGate,
+    transport: &RpcExecutionSubmitTransport,
+    state: &SubmitState,
+    now: DateTime<Utc>,
+    native: Option<&crate::execution_canary_route::NativeBuyGuard>,
+) -> Result<ExecutionSubmitPlanOutcome> {
     let identity = identity(request, intent)?;
     // Existing identity is reconciliation-only even after stop/config removal/deadline.
     if let Some(old) = store.load_execution_canary_dispatch(&request.order_id)? {
@@ -83,7 +97,7 @@ pub(crate) async fn send(
     }
     let tick_at = now;
     let (budget, now) = match super::budget::prepare(
-        store, request, intent, envelope, gate, transport, state, now,
+        store, request, intent, envelope, gate, transport, state, now, native,
     )
     .await
     {
@@ -91,9 +105,20 @@ pub(crate) async fn send(
         Err(error) if error.downcast_ref::<rusqlite::Error>().is_some() => return Err(error),
         Err(error) => return Ok(budget_refusal(&request.order_id, error)),
     };
+    if let Some(guard) = native {
+        if !guard.check(store)? {
+            return Ok(super::reject("native_buy_decision_changed"));
+        }
+    }
     let mut attempt = build_submit_transport_attempt(intent, gate.submit_timeout_ms, now)?;
     attempt.tx_signature_hint = Some(identity.tx_signature.clone());
     let clock = || {
+        if let Some(guard) = native {
+            let now = crate::execution_canary_safety::risk_clock::decision_time(tick_at)
+                .ok_or_else(|| anyhow::anyhow!("native_buy_decision_clock"))?;
+            ensure!(guard.check_at(store, now)?, "native_buy_decision_changed");
+            return Ok(now);
+        }
         if let SubmitState::Owned(p) = state {
             let c = gate
                 .buy_safety_config
@@ -117,7 +142,20 @@ pub(crate) async fn send(
     };
     let reason = if claim == ExecutionDispatchClaim::New {
         // No other await and no SQLite lock between committed permission and send.
-        let note = match transport.submit(&attempt).await {
+        #[cfg(test)]
+        let submitted = if let Some(mock) = native.and_then(|guard| guard.mock_io()) {
+            mock.count(|counts| counts.send += 1);
+            tokio::task::yield_now().await;
+            Ok(ExecutionSubmitTransportOutcome::SubmittedUnknown {
+                idempotency_key: attempt.idempotency_key.clone(),
+                tx_signature: mock.submit_signature.clone(),
+            })
+        } else {
+            transport.submit(&attempt).await
+        };
+        #[cfg(not(test))]
+        let submitted = transport.submit(&attempt).await;
+        let note = match submitted {
             Ok(ExecutionSubmitTransportOutcome::SubmittedUnknown { tx_signature, .. })
                 if tx_signature.as_deref() == Some(&identity.tx_signature) =>
             {

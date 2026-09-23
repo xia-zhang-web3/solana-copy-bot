@@ -1,7 +1,8 @@
 use super::tiny_submit::{
-    apply_tiny_submit_confirm_path_outcome, build_simulated_signed_envelope,
+    apply_tiny_submit_confirm_path_outcome,
     reconcile_existing_tiny_submit_order, tiny_submit_runtime_block_reason,
 };
+use super::tiny_submit_build::build_simulated_signed_envelope;
 use super::tiny_submit_request::build_submit_request;
 use super::tiny_submit_sell_metadata::{
     guarded_owned_position_sell_metadata, validate_tiny_sell_metadata,
@@ -312,7 +313,7 @@ pub(super) async fn process_tiny_submit_sell_quote_event(
     let request = build_submit_request(config, &signal, &order, metadata, entry_route_plan_json);
     let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
     let Some(envelope) =
-        build_simulated_signed_envelope(store, &adapter, &request, now, &mut summary).await?
+        build_simulated_signed_envelope(store, &adapter, &request, now, &mut summary, None).await?
     else {
         return Ok(Some(summary));
     };

@@ -61,6 +61,17 @@ impl AssociationInbox {
             }
         } else {
             apply(&tx, d, candidate)?;
+            if fresh {
+                crate::native_buy::capture::at_admission(&tx, d, observed)?;
+            }
+            if matches!(d.event, DeliveryEvent::Late { .. }) {
+                if let Some(signature) = signature {
+                    crate::native_buy::capture::mark_late(&tx, signature)?;
+                }
+            }
+            if matches!(d.event, DeliveryEvent::Session(SessionGap::Reset | SessionGap::Rejected(_) | SessionGap::Transport | SessionGap::Recovery)) {
+                crate::native_buy::capture::close_session(&tx, &d.session)?;
+            }
             tx.execute(
                 "INSERT INTO association_inbox_events(session,sequence,delivery) VALUES(?1,?2,?3)",
                 params![d.session, seq, wire],
