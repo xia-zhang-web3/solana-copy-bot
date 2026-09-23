@@ -228,13 +228,34 @@ fn entry_cash_actual_primary_unavailable_blocks_buy_keeps_partial_components_and
                 &db.store,
                 &db.conn()?,
                 "exec-canary:cash-b",
-                "shared",
+                "independent",
                 "cash-wallet",
                 "cash-mint",
                 1,
                 -4,
                 db.now,
             )?;
+            // Prove both settlements are valid before modeling a historical
+            // duplicate for the reader; the canonical writer must keep rejecting it.
+            db.store
+                .execution_canary_sell_cash_day(db.now + Duration::seconds(1))?;
+            let mut conn = db.conn()?;
+            let tx = conn.transaction()?;
+            for table in [
+                "orders",
+                "execution_canary_receipt_proofs",
+                "execution_canary_receipt_facts",
+            ] {
+                assert_eq!(
+                    tx.execute(
+                        &format!("UPDATE {table} SET tx_signature='shared' WHERE order_id='exec-canary:cash-b' AND tx_signature='independent'"),
+                        [],
+                    )?,
+                    1,
+                    "{table} historical receipt identity"
+                );
+            }
+            tx.commit()?;
         } else {
             db.conn()?
                 .execute("UPDATE fills SET position_id='missing'", [])?;

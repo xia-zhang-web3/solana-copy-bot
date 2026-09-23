@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chrono::{TimeZone, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use copybot_operators::track_b_entry_quote_report::{build_report, Cli};
 use rusqlite::{params, Connection};
 use tempfile::NamedTempFile;
@@ -219,18 +219,22 @@ impl TestDb {
         shadow_price: Option<f64>,
         delay_ms: i64,
     ) -> Result<()> {
+        let request_started =
+            Utc.with_ymd_and_hms(2026, 6, 23, 1, 0, 0).unwrap() + Duration::milliseconds(delay_ms);
         self.conn.execute(
             "INSERT INTO execution_quote_canary_events(
             event_id, wallet_id, token, side, quote_status, request_ts, signal_ts,
+                http_request_started_ts,
                 decision_delay_ms, quote_latency_ms, quote_price_sol, shadow_price_sol, error
-            ) VALUES (?1, ?2, ?3, 'sell', ?4, ?5, ?6, ?7, 100, ?8, ?9, ?10)",
+            ) VALUES (?1, ?2, ?3, 'sell', ?4, ?5, ?6, ?7, ?8, 100, ?9, ?10, ?11)",
             params![
                 format!("quote:market-exit-shadow-diag:{close_id}"),
                 wallet,
                 token,
                 status,
-                "2026-06-23T01:00:02+00:00",
+                request_started.to_rfc3339(),
                 "2026-06-23T01:00:00+00:00",
+                request_started.to_rfc3339(),
                 delay_ms,
                 quote_price,
                 shadow_price,
@@ -254,6 +258,7 @@ fn create_schema(conn: &Connection) -> Result<()> {
             quote_status TEXT NOT NULL,
             request_ts TEXT NOT NULL,
             signal_ts TEXT,
+            http_request_started_ts TEXT,
             decision_delay_ms INTEGER,
             quote_latency_ms INTEGER,
             quote_price_sol REAL,

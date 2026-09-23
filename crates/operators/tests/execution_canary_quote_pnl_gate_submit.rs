@@ -282,12 +282,24 @@ fn mark_submitted_order(
 }
 
 fn mark_retry_ready_order(store: &SqliteStore, name: &str, now: DateTime<Utc>) -> Result<String> {
-    let order_id = mark_submitted_order(store, name, now, None)?;
-    store.mark_execution_canary_retry_after_submit_timeout(
+    let signal = signal(name, now);
+    store.insert_copy_signal(&signal)?;
+    let order_id = store
+        .reserve_execution_canary_order(&signal.signal_id, "metis-swap-instructions-dry-run", now)?
+        .order
+        .order_id;
+    store.mark_execution_canary_built(&order_id, now + Duration::seconds(1))?;
+    store.mark_execution_canary_simulated(
         &order_id,
-        now + Duration::seconds(10),
-        Duration::seconds(1),
-        "retry_after_unknown_submit_timeout",
+        now + Duration::seconds(2),
+        EXECUTION_SIMULATION_STATUS_PASSED,
+        None,
+    )?;
+    // A known RPC-not-sent result is retryable; an unsigned submitted result is UNKNOWN.
+    store.mark_execution_canary_retry_after_submit_not_sent(
+        &order_id,
+        now + Duration::seconds(3),
+        "retry_after_rpc_submit_not_sent:rpc_send_transaction_error",
     )?;
     Ok(order_id)
 }

@@ -121,24 +121,42 @@ fn metadata_references_cannot_hide_changes_as_an_identical_replay() {
 fn no_input_is_identical_to_accepted76_including_portfolio_unavailable() {
     let f = Fixture::new("decimals-no-input", |_, _| {});
     f.pair_path("no-input", None);
-    let baseline = std::env::var_os("BATCH77_BASELINE_BIN_DIR").unwrap();
+    let baseline = std::env::var_os("BATCH77_BASELINE_BIN_DIR");
     for bin in BINS {
         let path = f.dir.join(format!("no-input.{bin}.json"));
         let mut current: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        let old_path = std::path::PathBuf::from(&baseline).join(bin);
-        let mut command = std::process::Command::new(old_path);
-        command
-            .args(["--json", "--db-path"])
-            .arg(&f.db)
-            .args(["--since", TS]);
-        if bin == BINS[1] {
-            command.arg("--no-live-wallet");
-        }
-        let out = command.output().unwrap();
-        assert!(out.status.success());
-        assert!(out.stderr.is_empty());
-        let mut old: Value = serde_json::from_slice(&out.stdout).unwrap();
-        std::fs::write(f.dir.join(format!("baseline.{bin}.json")), &out.stdout).unwrap();
+        let mut old: Value = if let Some(dir) = &baseline {
+            let mut command = std::process::Command::new(std::path::PathBuf::from(dir).join(bin));
+            command
+                .args(["--json", "--db-path"])
+                .arg(&f.db)
+                .args(["--since", TS]);
+            if bin == BINS[1] {
+                command.arg("--no-live-wallet");
+            }
+            let out = command.output().unwrap();
+            assert!(out.status.success());
+            assert!(out.stderr.is_empty());
+            serde_json::from_slice(&out.stdout).unwrap()
+        } else {
+            // Full reports captured from the sealed baseline binaries; CI has no
+            // access to those historical executables.
+            let report = match bin {
+                "copybot_execution_canary_quote_pnl" => include_str!(
+                    "fixtures/portfolio_no_input_baseline_copybot_execution_canary_quote_pnl.json"
+                ),
+                "copybot_execution_tiny_economics" => include_str!(
+                    "fixtures/portfolio_no_input_baseline_copybot_execution_tiny_economics.json"
+                ),
+                other => panic!("unknown baseline binary: {other}"),
+            };
+            serde_json::from_str(report).unwrap()
+        };
+        std::fs::write(
+            f.dir.join(format!("baseline.{bin}.json")),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
         strip_time(&mut current);
         strip_time(&mut old);
         assert_eq!(current, old);

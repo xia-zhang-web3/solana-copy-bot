@@ -247,7 +247,7 @@ fn buy_quote(
     decision_status: &str,
 ) -> ExecutionQuoteCanaryEventInsert {
     ExecutionQuoteCanaryEventInsert {
-        http_request_started_ts: None,
+        http_request_started_ts: Some(signal_ts + Duration::milliseconds(10)),
         quote_response_available_ts: None,
         event_id: format!("quote:buy:shadow-drop:{suffix}"),
         signal_id: Some(signal_id.to_string()),
@@ -320,7 +320,7 @@ fn record_failed_buy_order_with_error(
 ) -> Result<String> {
     let reserve = store.reserve_execution_canary_order(signal_id, ROUTE, signal_ts)?;
     store.record_execution_canary_build_plan_metadata(&ExecutionCanaryBuildPlanMetadata {
-        http_request_started_ts: None,
+        http_request_started_ts: Some(signal_ts + Duration::milliseconds(10)),
         quote_response_available_ts: None,
         order_id: reserve.order.order_id.clone(),
         signal_id: reserve.order.signal_id.clone(),

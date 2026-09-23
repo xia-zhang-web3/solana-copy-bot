@@ -165,8 +165,18 @@ impl Fixture {
     }
 }
 pub fn binary(bin: &str) -> PathBuf {
-    PathBuf::from(std::env::var_os("BATCH76_BIN_DIR").expect("set narrow dev binary directory"))
-        .join(bin)
+    if let Some(dir) = std::env::var_os("BATCH76_BIN_DIR") {
+        return PathBuf::from(dir).join(bin);
+    }
+    match bin {
+        "copybot_execution_canary_quote_pnl" => {
+            PathBuf::from(env!("CARGO_BIN_EXE_copybot_execution_canary_quote_pnl"))
+        }
+        "copybot_execution_tiny_economics" => {
+            PathBuf::from(env!("CARGO_BIN_EXE_copybot_execution_tiny_economics"))
+        }
+        other => panic!("unknown portfolio report binary: {other}"),
+    }
 }
 pub fn run(bin: &Path, db: &Path, input: Option<&Path>) -> (Value, i32) {
     let mut c = Command::new(bin);
