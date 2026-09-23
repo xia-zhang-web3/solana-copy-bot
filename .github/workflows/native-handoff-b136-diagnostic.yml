@@ -35,22 +35,12 @@ jobs:
           restore-keys: |
             cargo-artifact-${{ runner.os }}-copybot-app-
             cargo-artifact-${{ runner.os }}-
-      - name: Exact recovery failures with immediate output
+      - name: B136 predecessor context with immediate output
         shell: bash
         run: |
           set -euo pipefail
+          echo "context=all B136 tests in one serial libtest process"
           env -u FRACTIONAL_FIXTURE_ROOT RUST_MIN_STACK=8388608 RUST_BACKTRACE=1 \
-            timeout --signal=KILL 300s bash -s <<'BASH'
-          set +e
-          cargo test --locked -p copybot-app --bin copybot-app \
-            app_tests::b136_r1_lifecycle_tests::b136_r1_parent_shutdown_does_not_strand_or_panic_cancelled_recovery \
-            -- --exact --nocapture --test-threads=1
-          first=$?
-          echo "first_test_exit=$first"
-          cargo test --locked -p copybot-app --bin copybot-app \
-            app_tests::b136_recovery_tests::b136_recovery_success_failed_unknown_stop_expiry_and_config_removal \
-            -- --exact --nocapture --test-threads=1
-          second=$?
-          echo "second_test_exit=$second"
-          if [ "$first" -ne 0 ] || [ "$second" -ne 0 ]; then exit 1; fi
-          BASH
+            timeout --signal=KILL 300s \
+            cargo test --locked -p copybot-app --bin copybot-app \
+              app_tests::b136_ -- --nocapture --test-threads=1
