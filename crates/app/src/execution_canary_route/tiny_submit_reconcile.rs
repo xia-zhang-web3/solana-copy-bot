@@ -1,4 +1,6 @@
 //! Receipt-only native BUY recovery and existing tiny order reconciliation.
+#[cfg(test)]
+pub(crate) use crate::app_tests::native_buy_submit_helpers::process_native_buy_receipt_recovery_for_route_with_mock;
 use super::tiny_submit::apply_tiny_submit_confirm_path_outcome;
 use super::tiny_submit_retry::{is_tiny_submit_retry_ready, retry_existing_simulated_tiny_submit_order};
 use super::tiny_submit_timeout::process_tiny_submit_timeout;
@@ -29,22 +31,6 @@ pub(crate) async fn process_native_buy_receipt_recovery_for_route(
     Ok(summary)
 }
 
-#[cfg(test)]
-pub(crate) async fn process_native_buy_receipt_recovery_for_route_with_mock(
-    config: &ExecutionConfig, store: &SqliteStore, now: DateTime<Utc>,
-    mock: &super::NativeBuyMockIo,
-) -> Result<ExecutionCanaryStateMachineSummary> {
-    let mut summary = ExecutionCanaryStateMachineSummary::default();
-    let orders = store.list_native_buy_receipt_obligations(config.canary_batch_limit.max(1))?;
-    for order in orders {
-        summary.existing += 1;
-        summary.last_order_id = Some(order.order_id.clone());
-        reconcile_existing_tiny_submit_order_with_mock(
-            config, store, &order, now, &mut summary, mock,
-        ).await?;
-    }
-    Ok(summary)
-}
 
 pub(super) async fn reconcile_existing_tiny_submit_order(
     config: &ExecutionConfig,
@@ -58,18 +44,8 @@ pub(super) async fn reconcile_existing_tiny_submit_order(
     ).await
 }
 
-#[cfg(test)]
-async fn reconcile_existing_tiny_submit_order_with_mock(
-    config: &ExecutionConfig, store: &SqliteStore, order: &ExecutionCanaryOrder,
-    now: DateTime<Utc>, summary: &mut ExecutionCanaryStateMachineSummary,
-    mock: &super::NativeBuyMockIo,
-) -> Result<()> {
-    reconcile_existing_tiny_submit_order_inner(
-        config, store, order, now, summary, Some(mock),
-    ).await
-}
 
-async fn reconcile_existing_tiny_submit_order_inner(
+pub(crate) async fn reconcile_existing_tiny_submit_order_inner(
     config: &ExecutionConfig, store: &SqliteStore, order: &ExecutionCanaryOrder,
     now: DateTime<Utc>, summary: &mut ExecutionCanaryStateMachineSummary,
     #[cfg(test)] mock: Option<&super::NativeBuyMockIo>,

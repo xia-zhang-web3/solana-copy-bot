@@ -5,10 +5,10 @@ pub(crate) const CLASSIC_TOKEN_ACCOUNT_LENGTH: usize = 165;
 /// Scalar RPC observation: this method supplies NO context slot or snapshot proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClassicAtaRentObservation {
-    pub(super) data_length: usize,
-    pub(super) commitment: &'static str,
-    pub(super) lamports: u64,
-    pub(super) timing: ObservationTiming,
+    pub(crate) data_length: usize,
+    pub(crate) commitment: &'static str,
+    pub(crate) lamports: u64,
+    pub(crate) timing: ObservationTiming,
 }
 impl ClassicAtaRentObservation {
     pub(crate) fn data_length(&self) -> usize {
@@ -30,9 +30,9 @@ impl ClassicAtaRentObservation {
 /// Independent observations, not an atomic snapshot or a full native reserve budget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClassicAtaFundingFacts {
-    pub(super) native: NativeFundingRpcFacts,
-    pub(super) rent: ClassicAtaRentObservation,
-    pub(super) token2022: Option<super::token2022_rent::Token2022Collection>,
+    pub(crate) native: NativeFundingRpcFacts,
+    pub(crate) rent: ClassicAtaRentObservation,
+    pub(crate) token2022: Option<super::token2022_rent::Token2022Collection>,
 }
 impl ClassicAtaFundingFacts {
     pub(crate) fn token2022_collected(&self) -> bool {

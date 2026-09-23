@@ -74,7 +74,7 @@ impl ExecutionQuoteCanaryRunner {
         Ok(summary)
     }
 
-    fn record_native_buy_bundle(
+    pub(crate) fn record_native_buy_bundle(
         &self,
         store: &SqliteStore,
         guard: &NativeBuyGuard,
@@ -94,22 +94,5 @@ impl ExecutionQuoteCanaryRunner {
         native_owner.record_entry_event(store, bundle, summary)
     }
 
-    #[cfg(test)]
-    pub(crate) fn process_native_buy_signal_with_mock_external_quote(
-        &self, store: &SqliteStore, signal: &CopySignalRow,
-        guard: &NativeBuyGuard, now: DateTime<Utc>,
-        quote: QuoteSample, priority: Option<&PriorityFeeSample>,
-    ) -> Result<ExecutionQuoteCanaryTickSummary> {
-        ensure!(self.is_enabled() && signal.status == native_buy::STATUS,
-            "native_buy_quote_disabled");
-        let mut summary = ExecutionQuoteCanaryTickSummary::default();
-        if !guard.check(store)? { return Ok(summary); }
-        summary.entry_candidates = 1;
-        let bundle = self.build_entry_quote_event_with_mock_external_quote(
-            store, signal, now, quote, priority,
-        )?;
-        self.record_native_buy_bundle(store, guard, bundle, &mut summary)?;
-        Ok(summary)
-    }
 
 }

@@ -45,10 +45,8 @@ mod quote_fetch;
 mod summary;
 
 pub(crate) use parallel_samples::append_parallel_provider_samples;
-use provider_compare::{
-    buy_quote_price_and_slippage, generic_provider_sample, sell_quote_price_and_slippage,
-    QuoteEventBundle,
-};
+pub(crate) use provider_compare::{buy_quote_price_and_slippage, QuoteEventBundle};
+use provider_compare::{generic_provider_sample, sell_quote_price_and_slippage};
 pub(crate) use summary::ExecutionQuoteCanaryTickSummary;
 
 #[derive(Debug, Clone)]

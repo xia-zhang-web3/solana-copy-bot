@@ -30,6 +30,8 @@ use std::pin::Pin;
 
 mod confirmation;
 mod confirmation_boundary;
+#[cfg(test)]
+pub(crate) use self::confirmation_boundary::record_execution_rpc_confirmation_boundary_inner as test_record_execution_rpc_confirmation_boundary_inner;
 mod confirmed_fill;
 mod diagnostics;
 mod direct_builders;

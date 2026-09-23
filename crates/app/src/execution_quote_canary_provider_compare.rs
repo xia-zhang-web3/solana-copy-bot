@@ -181,7 +181,7 @@ fn pump_fun_quote_is_completed(sample: &ExecutionQuoteCanaryProviderSampleInsert
         .and_then(Value::as_bool)
 }
 
-pub(super) fn buy_quote_price_and_slippage(
+pub(crate) fn buy_quote_price_and_slippage(
     event: &ExecutionQuoteCanaryEventInsert,
     token_decimals: u8,
 ) -> (Option<f64>, Option<f64>) {

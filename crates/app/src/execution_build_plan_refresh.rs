@@ -15,6 +15,12 @@ use copybot_config::ExecutionConfig;
 use copybot_core_types::CopySignalRow;
 use serde_json::{Map, Number, Value};
 
+#[cfg(test)]
+pub(crate) use crate::app_tests::native_buy_quote_helpers::{
+    refresh_tiny_buy_build_plan_metadata_with_external_quote,
+    refresh_tiny_buy_build_plan_metadata_with_mock_external_quote,
+};
+
 pub(crate) const FRESH_SUBMIT_QUOTE_ERROR: &str = "fresh_submit_quote_error";
 pub(crate) const FRESH_SUBMIT_QUOTE_INVALID_PRICE: &str = "fresh_submit_quote_invalid_price";
 pub(crate) const FRESH_SUBMIT_QUOTE_SLIPPAGE_ABOVE_LIMIT: &str =
@@ -34,18 +40,8 @@ pub(crate) async fn refresh_tiny_buy_build_plan_metadata(
     ).await
 }
 
-#[cfg(test)]
-pub(crate) async fn refresh_tiny_buy_build_plan_metadata_with_external_quote(
-    http: &reqwest::Client,
-    config: &ExecutionConfig,
-    signal: &CopySignalRow,
-    metadata: ExecutionBuildPlanMetadata,
-    quote: crate::execution_quote_canary_helpers::QuoteSample,
-) -> Result<ExecutionBuildPlanMetadata> {
-    refresh_tiny_buy_build_plan_metadata_inner(http, config, signal, metadata, Some(quote)).await
-}
 
-async fn refresh_tiny_buy_build_plan_metadata_inner(
+pub(crate) async fn refresh_tiny_buy_build_plan_metadata_inner(
     http: &reqwest::Client,
     config: &ExecutionConfig,
     signal: &CopySignalRow,
@@ -206,7 +202,7 @@ fn route_plan_has_pump_fun_amm(route_plan_json: Option<&str>) -> bool {
     })
 }
 
-fn apply_fresh_quote(
+pub(crate) fn apply_fresh_quote(
     mut metadata: ExecutionBuildPlanMetadata,
     quote: crate::execution_quote_canary_helpers::QuoteSample,
     max_slippage_bps: u64,
@@ -249,15 +245,6 @@ fn apply_fresh_quote(
     metadata
 }
 
-#[cfg(test)]
-pub(crate) fn refresh_tiny_buy_build_plan_metadata_with_mock_external_quote(
-    config: &ExecutionConfig,
-    metadata: ExecutionBuildPlanMetadata,
-    quote: crate::execution_quote_canary_helpers::QuoteSample,
-) -> ExecutionBuildPlanMetadata {
-    apply_fresh_quote(metadata, quote,
-        quote_canary_slippage_limit_bps(config, SIDE_BUY), QUOTE_SOURCE_GENERIC_METIS)
-}
 
 fn pump_fun_quote_is_completed(raw: &str) -> Option<bool> {
     serde_json::from_str::<Value>(raw).ok().and_then(|value| {

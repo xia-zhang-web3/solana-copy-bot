@@ -14,7 +14,7 @@ use copybot_storage_core::{
 };
 
 impl ExecutionQuoteCanaryRunner {
-    fn initial_entry_quote_event(
+    pub(crate) fn initial_entry_quote_event(
         &self, store: &SqliteStore, signal: &CopySignalRow, now: DateTime<Utc>,
         priority_fee_sample: Option<&PriorityFeeSample>,
     ) -> Result<(ExecutionQuoteCanaryEventInsert, Option<u8>)> {
@@ -77,20 +77,6 @@ impl ExecutionQuoteCanaryRunner {
 
     }
 
-    #[cfg(test)]
-    pub(super) fn build_entry_quote_event_with_mock_external_quote(
-        &self, store: &SqliteStore, signal: &CopySignalRow, now: DateTime<Utc>,
-        quote: QuoteSample, priority: Option<&PriorityFeeSample>,
-    ) -> Result<QuoteEventBundle> {
-        let (mut event, token_decimals) = self.initial_entry_quote_event(
-            store, signal, now, priority,
-        )?;
-        let decimals = token_decimals.ok_or_else(|| anyhow::anyhow!("source_decimals_missing"))?;
-        apply_quote_sample_to_event(&mut event, quote);
-        (event.quote_price_sol, event.slippage_bps) =
-            buy_quote_price_and_slippage(&event, decimals);
-        Ok(QuoteEventBundle::event_only(event))
-    }
 
     pub(super) async fn build_entry_quote_event(
         &self,
@@ -104,15 +90,8 @@ impl ExecutionQuoteCanaryRunner {
         ).await
     }
 
-    #[cfg(test)]
-    pub(super) async fn build_entry_quote_event_with_external_quote(
-        &self, store: &SqliteStore, signal: &CopySignalRow, now: DateTime<Utc>,
-        priority_fee_sample: Option<&PriorityFeeSample>, quote: QuoteSample,
-    ) -> Result<QuoteEventBundle> {
-        self.build_entry_quote_event_inner(store, signal, now, priority_fee_sample, Some(quote)).await
-    }
 
-    async fn build_entry_quote_event_inner(
+    pub(crate) async fn build_entry_quote_event_inner(
         &self, store: &SqliteStore, signal: &CopySignalRow, now: DateTime<Utc>,
         priority_fee_sample: Option<&PriorityFeeSample>,
         #[cfg(test)] external_quote: Option<QuoteSample>,

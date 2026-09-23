@@ -23,67 +23,13 @@ pub(crate) struct NativeBuyGuard {
     max_age_seconds: u64,
     tick_at: DateTime<Utc>,
     #[cfg(test)]
-    mock_io: Option<std::sync::Arc<NativeBuyMockIo>>,
+    pub(crate) mock_io: Option<std::sync::Arc<NativeBuyMockIo>>,
 }
 
 #[cfg(test)]
-#[derive(Debug, Default)]
-pub(crate) struct NativeBuyMockCounts {
-    pub source_finality: usize,
-    pub priority: usize,
-    pub initial_quote: usize,
-    pub fresh_quote: usize,
-    pub unsigned_build: usize,
-    pub signing_envelope: usize,
-    pub quote: usize,
-    pub initial_sol: usize,
-    pub fee: usize,
-    pub send: usize,
-    pub confirmation: usize,
-    pub receipt: usize,
-}
-
-/// Only external observations are mocked. The same guards, dispatch claim,
-/// receipt parser and canonical settlement continue to run in the test.
-#[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct NativeBuyMockIo {
-    pub runner: Option<NativeBuyRunnerOperands>,
-    pub initial_sol: crate::execution_native_rpc::rent_types::ClassicAtaFundingFacts,
-    pub fee_lamports: u64,
-    pub fee_slot: u64,
-    pub expected_message_sha256: String,
-    pub submit_signature: Option<String>,
-    pub confirmation: serde_json::Value,
-    pub receipt: serde_json::Value,
-    pub counts: std::sync::Arc<std::sync::Mutex<NativeBuyMockCounts>>,
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct NativeBuyRunnerOperands {
-    pub finalized_genesis: String,
-    pub finalized_transaction: serde_json::Value,
-    pub mint_account: serde_json::Value,
-    pub initial_quote: crate::execution_quote_canary_helpers::QuoteSample,
-    pub fresh_quote: crate::execution_quote_canary_helpers::QuoteSample,
-    pub priority: crate::execution_quote_canary_helpers::PriorityFeeSample,
-    pub adapter: NativeBuyMockAdapter,
-}
-
-#[cfg(test)]
-mod native_buy_mock_adapter;
-#[cfg(test)]
-pub(crate) use native_buy_mock_adapter::NativeBuyMockAdapter;
-
-#[cfg(test)]
-impl NativeBuyMockIo {
-    pub(crate) fn count(&self, add: impl FnOnce(&mut NativeBuyMockCounts)) {
-        if let Ok(mut counts) = self.counts.lock() {
-            add(&mut counts);
-        }
-    }
-}
+pub(crate) use crate::app_tests::native_buy_mock_helpers::{
+    NativeBuyMockAdapter, NativeBuyMockCounts, NativeBuyMockIo, NativeBuyRunnerOperands,
+};
 
 impl NativeBuyGuard {
     pub(crate) fn new(
@@ -101,17 +47,6 @@ impl NativeBuyGuard {
             #[cfg(test)]
             mock_io: None,
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_mock_io(mut self, io: std::sync::Arc<NativeBuyMockIo>) -> Self {
-        self.mock_io = Some(io);
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mock_io(&self) -> Option<&NativeBuyMockIo> {
-        self.mock_io.as_deref()
     }
 
     pub(crate) fn check(&self, store: &SqliteStore) -> Result<bool> {
@@ -154,6 +89,10 @@ mod tiny_submit_sell_sweep;
 mod tiny_submit_source_write_off;
 mod tiny_submit_timeout;
 mod tiny_submit_wallet_balance;
+#[cfg(test)]
+pub(crate) use self::tiny_submit::process_buy as test_process_buy;
+#[cfg(test)]
+pub(crate) use self::tiny_submit_reconcile::reconcile_existing_tiny_submit_order_inner as test_reconcile_existing_tiny_submit_order_inner;
 
 use self::tiny_submit::{
     process_native_buy_state_machine_for_route, process_tiny_submit_reconciliation_sweep_for_route,
@@ -161,9 +100,9 @@ use self::tiny_submit::{
 };
 pub(crate) use self::tiny_submit_reconcile::process_native_buy_receipt_recovery_for_route;
 #[cfg(test)]
-pub(crate) use self::tiny_submit_reconcile::process_native_buy_receipt_recovery_for_route_with_mock;
+pub(crate) use crate::app_tests::native_buy_submit_helpers::process_native_buy_receipt_recovery_for_route_with_mock;
 #[cfg(test)]
-pub(crate) use self::tiny_submit::process_native_buy_with_mock_quote_and_adapter;
+pub(crate) use crate::app_tests::native_buy_submit_helpers::process_native_buy_with_mock_quote_and_adapter;
 
 pub(crate) async fn process_native_buy_candidate_for_route(
     config: &ExecutionConfig,

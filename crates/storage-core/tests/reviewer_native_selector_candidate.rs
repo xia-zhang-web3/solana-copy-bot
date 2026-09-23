@@ -1,7 +1,17 @@
-// Reviewer-only characterization: PASS reproduces an availability defect.
-// Install beside native_buy_decision.rs inside a private source snapshot only.
-// Includes the existing RAM-only Case fixture unchanged; production code is unchanged.
-include!("native_buy_decision.rs");
+//! Reviewer controls use the same isolated RAM Case fixture as native_buy_decision.
+#[path = "native_buy_decision.rs"]
+mod native_buy_decision;
+#[path = "common/association.rs"]
+mod fixture;
+#[path = "common/native_buy_decision_case.rs"]
+mod decision_case;
+use decision_case::Case;
+use anyhow::Result;
+use chrono::Utc;
+use copybot_core_types::association_delivery::{
+    CandidateGeneration, DeliveryEvent, Terminal, Unresolved,
+};
+use copybot_storage_core::{native_buy::SPL_TOKEN_PROGRAM, SqliteStore};
 
 fn reviewer_two_native_decisions(finalize_old: bool) -> Result<(Case, SqliteStore)> {
     let mut c = Case::new()?;

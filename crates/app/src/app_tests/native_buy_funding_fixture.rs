@@ -1,6 +1,6 @@
 //! In-process external account/fee observations for the native BUY route.
-use super::rent_types::{ClassicAtaFundingFacts, ClassicAtaRentObservation};
-use super::types::{
+use crate::execution_native_rpc::rent_types::{ClassicAtaFundingFacts, ClassicAtaRentObservation};
+use crate::execution_native_rpc::types::{
     AccountObservation, KeyedAccountObservation, NativeFundingRpcFacts, ObservationTiming,
     RpcObservation,
 };

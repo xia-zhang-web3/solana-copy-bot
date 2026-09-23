@@ -128,6 +128,9 @@ pub(crate) async fn record_execution_tiny_submit_confirm_path_guarded<A: Executi
     Ok(outcome)
 }
 
+#[cfg(test)]
+pub(crate) use crate::app_tests::native_buy_submit_helpers::reconcile_execution_tiny_submit_confirmation_mock;
+
 pub(crate) async fn reconcile_execution_tiny_submit_confirmation(
     store: &SqliteStore,
     config: &ExecutionConfig,
@@ -143,24 +146,8 @@ pub(crate) async fn reconcile_execution_tiny_submit_confirmation(
     ).await
 }
 
-#[cfg(test)]
-pub(crate) async fn reconcile_execution_tiny_submit_confirmation_mock(
-    store: &SqliteStore,
-    config: &ExecutionConfig,
-    order_id: &str,
-    confirmation_http: &reqwest::Client,
-    confirmation_rpc_url: &str,
-    now: DateTime<Utc>,
-    confirmation_timeout_ms: u64,
-    mock: &crate::execution_canary_route::NativeBuyMockIo,
-) -> Result<ExecutionTinySubmitConfirmPathOutcome> {
-    reconcile_execution_tiny_submit_confirmation_inner(
-        store, config, order_id, confirmation_http, confirmation_rpc_url,
-        now, confirmation_timeout_ms, Some(mock),
-    ).await
-}
 
-async fn reconcile_execution_tiny_submit_confirmation_inner(
+pub(crate) async fn reconcile_execution_tiny_submit_confirmation_inner(
     store: &SqliteStore,
     config: &ExecutionConfig,
     order_id: &str,

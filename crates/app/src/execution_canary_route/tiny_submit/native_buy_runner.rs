@@ -22,12 +22,3 @@ pub(crate) async fn process_native_buy_state_machine_for_route(
     let adapter = JupiterMetisDryRunExecutionAdapter::new(config.clone());
     process_buy(config, store, signal, now, Some(guard), &adapter, None).await
 }
-
-#[cfg(test)]
-pub(crate) async fn process_native_buy_with_mock_quote_and_adapter<A: ExecutionSubmitAdapter>(
-    config: &ExecutionConfig, store: &SqliteStore, signal: &CopySignalRow,
-    now: DateTime<Utc>, guard: &NativeBuyGuard, adapter: &A,
-    refreshed_quote: ExecutionBuildPlanMetadata,
-) -> Result<ExecutionCanaryStateMachineSummary> {
-    process_buy(config, store, signal, now, Some(guard), adapter, Some(refreshed_quote)).await
-}

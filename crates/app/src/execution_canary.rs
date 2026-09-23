@@ -115,7 +115,7 @@ pub(crate) struct ExecutionCanaryRunner {
     source_sell_continuation: crate::execution_source_sell_continuation::Continuation,
     quote_canary: ExecutionQuoteCanaryRunner,
     #[cfg(test)]
-    native_buy_mock: Option<std::sync::Arc<crate::execution_canary_route::NativeBuyMockIo>>,
+    pub(crate) native_buy_mock: Option<std::sync::Arc<crate::execution_canary_route::NativeBuyMockIo>>,
 }
 
 impl ExecutionCanaryRunner {
@@ -129,11 +129,6 @@ impl ExecutionCanaryRunner {
             native_buy_mock: None,
             config,
         }
-    }
-    #[cfg(test)]
-    pub(crate) fn with_native_buy_mock(mut self,
-        mock: std::sync::Arc<crate::execution_canary_route::NativeBuyMockIo>) -> Self {
-        self.native_buy_mock = Some(mock); self
     }
 
     pub(crate) fn for_ingestion(

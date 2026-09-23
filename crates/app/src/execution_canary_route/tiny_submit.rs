@@ -42,9 +42,9 @@ pub(crate) async fn process_tiny_submit_state_machine_for_route(
 mod native_buy_runner;
 pub(crate) use native_buy_runner::process_native_buy_state_machine_for_route;
 #[cfg(test)]
-pub(crate) use native_buy_runner::process_native_buy_with_mock_quote_and_adapter;
+pub(crate) use crate::app_tests::native_buy_submit_helpers::process_native_buy_with_mock_quote_and_adapter;
 
-async fn process_buy<A: ExecutionSubmitAdapter>(
+pub(crate) async fn process_buy<A: ExecutionSubmitAdapter>(
     config: &ExecutionConfig,
     store: &SqliteStore,
     signal: &CopySignalRow,

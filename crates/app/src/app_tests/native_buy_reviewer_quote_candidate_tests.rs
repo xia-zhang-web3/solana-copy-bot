@@ -3,11 +3,7 @@
 //! a synthetic observed source row in shared RAM. This does not claim full tick
 //! coverage: it checks actual observed lookup, actual price/slippage derivation,
 //! and actual quote decision finalization used by build_entry_quote_event.
-//! Include the unchanged current price module solely to access its pub(super)
-//! function; no financial implementation is copied or changed in this harness.
-mod actual_price {
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/execution_quote_canary_provider_compare.rs"));
-}
+//! Calls the shared production price helper; no financial implementation is copied.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -124,7 +120,8 @@ fn quote_at_financial_boundary(
         out_decimals: Some(3),
         latency_ms: 0,
     });
-    (event.quote_price_sol, event.slippage_bps) = actual_price::buy_quote_price_and_slippage(&event, 3);
+    (event.quote_price_sol, event.slippage_bps) =
+        crate::execution_quote_canary::buy_quote_price_and_slippage(&event, 3);
     if signal.status == "native_buy_fenced_v1" {
         event.signal_ts = None;
         event.decision_delay_ms = None;

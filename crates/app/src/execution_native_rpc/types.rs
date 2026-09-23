@@ -49,13 +49,13 @@ pub(crate) struct KeyedAccountObservation {
 /// fee: do not add them, or infer base fee, rent, refunds, route cost or pending reserve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeFundingRpcFacts {
-    pub(super) requirements: NativeFundingRequirements,
-    pub(super) requested_keys: Vec<PubkeyBytes>,
-    pub(super) commitment: &'static str,
-    pub(super) min_context_slot: Option<u64>,
-    pub(super) fee: RpcObservation<Option<u64>>,
-    pub(super) accounts: RpcObservation<Vec<KeyedAccountObservation>>,
-    pub(super) timing: ObservationTiming,
+    pub(crate) requirements: NativeFundingRequirements,
+    pub(crate) requested_keys: Vec<PubkeyBytes>,
+    pub(crate) commitment: &'static str,
+    pub(crate) min_context_slot: Option<u64>,
+    pub(crate) fee: RpcObservation<Option<u64>>,
+    pub(crate) accounts: RpcObservation<Vec<KeyedAccountObservation>>,
+    pub(crate) timing: ObservationTiming,
 }
 
 impl NativeFundingRpcFacts {

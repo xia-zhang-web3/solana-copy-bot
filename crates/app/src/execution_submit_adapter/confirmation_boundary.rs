@@ -33,6 +33,9 @@ pub(crate) struct ExecutionConfirmationBoundaryOutcome {
     pub(crate) cash_settlement: Option<copybot_storage_core::ExecutionCanaryCashSettlement>,
 }
 
+#[cfg(test)]
+pub(crate) use crate::app_tests::native_buy_submit_helpers::record_execution_rpc_confirmation_boundary_mock;
+
 pub(crate) async fn record_execution_rpc_confirmation_boundary(
     store: &SqliteStore,
     http: &reqwest::Client,
@@ -54,24 +57,8 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
     .await
 }
 
-#[cfg(test)]
-pub(crate) async fn record_execution_rpc_confirmation_boundary_mock(
-    store: &SqliteStore,
-    http: &reqwest::Client,
-    rpc_url: &str,
-    order_id: &str,
-    wallet_pubkey: &str,
-    now: DateTime<Utc>,
-    timeout_ms: u64,
-    mock: &crate::execution_canary_route::NativeBuyMockIo,
-) -> Result<ExecutionConfirmationBoundaryOutcome> {
-    record_execution_rpc_confirmation_boundary_inner(
-        store, http, rpc_url, order_id, wallet_pubkey, now, timeout_ms, Some(mock),
-    )
-    .await
-}
 
-async fn record_execution_rpc_confirmation_boundary_inner(
+pub(crate) async fn record_execution_rpc_confirmation_boundary_inner(
     store: &SqliteStore,
     http: &reqwest::Client,
     rpc_url: &str,
