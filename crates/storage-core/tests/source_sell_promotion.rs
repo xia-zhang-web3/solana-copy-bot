@@ -73,13 +73,14 @@ fn promotion_preserves_unfollowed_event_notional_witness_and_runnable_identity_a
             signal_count + 1
         );
         let mut after = snapshot(&db.conn()?, &["copy_signals", MARKER])?;
-        // Migration 0080 registers exactly the newly inserted legacy identity.
+        // Migrations 0080/0085 register the legacy identity with both owner IDs NULL.
         // Prove that sole metadata addition, then retain the all-other-tables check.
         let added = format!(
             "{:?}",
             vec![
                 rusqlite::types::Value::Text(binding.signal_id.clone()),
                 rusqlite::types::Value::Text(binding.signal_id.clone()),
+                rusqlite::types::Value::Null,
                 rusqlite::types::Value::Null,
             ]
         );
