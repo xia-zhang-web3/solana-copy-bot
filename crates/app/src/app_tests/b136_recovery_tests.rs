@@ -2,6 +2,7 @@ use super::{
     b136_config,
     b136_endpoint_tests::{finish, sends},
     b136_fixture::Fixture,
+    b136_r1_tick_tests::await_dispatch,
     b136_server::Server,
     strict_quote_fixture as q,
 };
@@ -32,20 +33,72 @@ async fn b136_concurrent_runners_one_signature_and_send() -> Result<()> {
     );
     Ok(())
 }
-async fn await_dispatch(
-    f: &Fixture,
-    r: &crate::execution_canary::ExecutionCanaryRunner,
-) -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(4), async {
-        loop {
-            r.process_tick(&f.db.store, chrono::Utc::now()).await?;
-            if !f.rows("rpc_owned_sell_dispatches")?.is_empty() {
-                return Ok::<_, anyhow::Error>(());
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await?
+#[tokio::test]
+async fn b136_recovery_dispatch_wait_accepts_late_fee_with_fresh_quote() -> Result<()> {
+    let f = Fixture::new().await?;
+    let s = Server::new().await?;
+    let c = b136_config::load(&f, &s.url, true)?;
+    f.ingress(&c).await?;
+    let r = f.runner(&c)?;
+    let (first, release_first) = s.hold("getFeeForMessage:1");
+    let started = tokio::time::Instant::now();
+    let (dispatch, held) = tokio::join!(await_dispatch(&f, &s, &r), async {
+        super::b136_r1_tick_tests::wait_for_held_fee(&f, &s, first, started).await?;
+        tokio::time::sleep_until(started + Duration::from_millis(3900)).await;
+        let (second, release_second) = s.hold("getFeeForMessage:2");
+        release_first.send(()).map_err(|_| anyhow::anyhow!("first fee exited"))?;
+        let second_at = super::b136_r1_tick_tests::wait_for_held_fee(&f, &s, second, started).await?;
+        tokio::time::sleep_until(second_at + Duration::from_millis(150)).await;
+        let quote = f.db.store.load_strict_sell_quote(&q::id(&f.meta),
+            super::association_parent_fixture::limits(), chrono::Utc::now())?.unwrap();
+        assert_eq!(quote.outcome, copybot_storage_core::ordered_sell_quote::QuoteOutcome::Current);
+        assert!(chrono::Utc::now() < quote.http_started.unwrap()
+            + chrono::Duration::milliseconds(copybot_storage_core::ordered_sell_quote::MAX_QUOTE_AGE_MS));
+        assert!(started.elapsed() >= Duration::from_millis(4050));
+        release_second.send(()).map_err(|_| anyhow::anyhow!("second fee exited"))?;
+        Ok::<_,anyhow::Error>(())
+    });
+    held?;
+    // Drain actual submit/recovery before asserting the old wait's result, so a
+    // RED control cannot leave a blocking RPC polling a shutting-down runtime.
+    finish(&f, &r).await?;
+    q::tick(&r, &f.db).await?;
+    drop(r);
+    super::b136_r1_tick_tests::idle(&f).await?;
+    assert_eq!(sends(&s),1);
+    assert_eq!(super::b135_hooks::count(&c.execution.execution_signer_keypair_path),1);
+    assert!(dispatch.is_ok(), "fresh quote dispatch wait failed: {dispatch:?}");
+    s.healthy();
+    Ok(())
+}
+
+#[tokio::test]
+async fn b136_recovery_dispatch_wait_stalled_quote_stays_bounded_without_signing() -> Result<()> {
+    let f = Fixture::new().await?;
+    let s = Server::new().await?;
+    let c = b136_config::load(&f, &s.url, true)?;
+    f.ingress(&c).await?;
+    let r = f.runner(&c)?;
+    let (reached, release) = s.hold("quote");
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(Duration::from_millis(
+        copybot_storage_core::ordered_sell_quote::MAX_QUOTE_AGE_MS as u64), async {
+        tokio::join!(await_dispatch(&f, &s, &r), reached)
+    }).await;
+    // Cancel the quote task before unblocking its peer; it must not create a
+    // preparation job or sign after the test's terminal wait result.
+    drop(r);
+    let _ = release.send(());
+    super::b136_r1_tick_tests::idle(&f).await?;
+    let (dispatch, at_quote) = result?;
+    at_quote?;
+    assert!(dispatch.is_err(), "stalled quote gained dispatch");
+    assert!(started.elapsed() >= Duration::from_secs(4));
+    assert_eq!(sends(&s),0);
+    assert_eq!(super::b135_hooks::count(&c.execution.execution_signer_keypair_path),0);
+    assert!(f.rows("rpc_owned_sell_dispatches")?.is_empty());
+    assert!(f.rows("rpc_owned_sell_handoffs")?.is_empty());
+    Ok(())
 }
 #[tokio::test]
 async fn b136_recovery_success_failed_unknown_stop_expiry_and_config_removal() -> Result<()> {
@@ -64,10 +117,11 @@ async fn b136_recovery_success_failed_unknown_stop_expiry_and_config_removal() -
         f.ingress(&c).await?;
         let r = f.runner(&c)?;
         let before = f.rows("positions")?;
-        await_dispatch(&f, &r).await?;
+        await_dispatch(&f, &s, &r).await?;
         tokio::time::sleep(Duration::from_millis(1150)).await;
         r.process_tick(&f.db.store, chrono::Utc::now()).await?;
         drop(r);
+        super::b136_r1_tick_tests::idle(&f).await?;
         let id: String =
             f.db.sql
                 .query_row("SELECT order_id FROM rpc_owned_sell_dispatches", [], |r| {
@@ -150,6 +204,8 @@ async fn b136_recovery_success_failed_unknown_stop_expiry_and_config_removal() -
         assert_eq!(f.rows("execution_tiny_reservations")?, fees);
         assert_eq!(f.rows("positions")?, after);
         println!("B136_RECOVERY {fault} stop+expired+policy_removed sends=1 actual_fee={fee:?} replay_once=true");
+        drop(recovery);
+        super::b136_r1_tick_tests::idle(&f).await?;
         s.healthy();
     }
     Ok(())

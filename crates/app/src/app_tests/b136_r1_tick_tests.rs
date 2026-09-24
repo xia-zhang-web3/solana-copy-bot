@@ -13,6 +13,18 @@ pub(super) async fn pending(f: &Fixture, s: &Server) -> Result<copybot_config::A
     let c = b136_config::load(f, &s.url, true)?;
     f.ingress(&c).await?;
     let initial = f.runner(&c)?;
+    await_dispatch(f, s, &initial).await?;
+    tokio::time::sleep(Duration::from_millis(1150)).await;
+    initial.process_tick(&f.db.store, Utc::now()).await?;
+    drop(initial);
+    idle(f).await?;
+    assert_eq!(f.db.store.owned_sell_dispatch_ids(1)?.len(), 1);
+    assert_eq!(sends(s), 1);
+    Ok(c)
+}
+pub(super) async fn await_dispatch(
+    f: &Fixture, s: &Server, initial: &ExecutionCanaryRunner,
+) -> Result<()> {
     let quote_wait_deadline = tokio::time::Instant::now() + Duration::from_secs(4);
     let mut last = None;
     loop {
@@ -21,6 +33,8 @@ pub(super) async fn pending(f: &Fixture, s: &Server) -> Result<copybot_config::A
             break;
         }
         let deadline = pending_deadline(f, s, quote_wait_deadline)?;
+        ensure!(tokio::time::Instant::now() < deadline,
+            "pending dispatch deadline: stage={:?}", pending_stage(f, s));
         let summary =
             match tokio::time::timeout_at(deadline, initial.process_tick(&f.db.store, Utc::now()))
                 .await
@@ -52,13 +66,7 @@ pub(super) async fn pending(f: &Fixture, s: &Server) -> Result<copybot_config::A
         last = Some(summary);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    tokio::time::sleep(Duration::from_millis(1150)).await;
-    initial.process_tick(&f.db.store, Utc::now()).await?;
-    drop(initial);
-    idle(f).await?;
-    assert_eq!(f.db.store.owned_sell_dispatch_ids(1)?.len(), 1);
-    assert_eq!(sends(s), 1);
-    Ok(c)
+    Ok(())
 }
 fn pending_deadline(
     f: &Fixture,
@@ -256,7 +264,7 @@ async fn b136_pending_delayed_fee_keeps_actual_dispatch_within_quote_deadline() 
     s.healthy();
     Ok(())
 }
-async fn wait_for_held_fee(
+pub(super) async fn wait_for_held_fee(
     f: &Fixture,
     s: &Server,
     mut reached: tokio::sync::oneshot::Receiver<()>,
