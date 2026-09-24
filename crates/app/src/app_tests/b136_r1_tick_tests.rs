@@ -77,7 +77,9 @@ fn pending_deadline(
         f.db.store
             .load_strict_sell_quote(&q::id(&f.meta), parent::limits(), Utc::now())?
     else {
-        return Ok(quote_wait_deadline);
+        return Ok(dispatch_wait_deadline_at(
+            None, quote_wait_deadline, Utc::now(), tokio::time::Instant::now(),
+        ));
     };
     ensure!(
         quote.outcome == copybot_storage_core::ordered_sell_quote::QuoteOutcome::Current,
@@ -87,12 +89,25 @@ fn pending_deadline(
         pending_stage(f, s),
     );
     let started = quote.http_started.context("pending quote clock missing")?;
+    Ok(dispatch_wait_deadline_at(
+        Some(started), quote_wait_deadline, Utc::now(), tokio::time::Instant::now(),
+    ))
+}
+pub(super) fn dispatch_wait_deadline_at(
+    quote_started: Option<chrono::DateTime<Utc>>,
+    quote_wait_deadline: tokio::time::Instant,
+    now_wall: chrono::DateTime<Utc>,
+    now_mono: tokio::time::Instant,
+) -> tokio::time::Instant {
+    let Some(started) = quote_started else {
+        return quote_wait_deadline;
+    };
     let until = started
         + chrono::Duration::milliseconds(
             copybot_storage_core::ordered_sell_quote::MAX_QUOTE_AGE_MS,
         );
-    let remaining = (until - Utc::now()).to_std().unwrap_or(Duration::ZERO);
-    Ok(tokio::time::Instant::now() + remaining)
+    let remaining = (until - now_wall).to_std().unwrap_or(Duration::ZERO);
+    now_mono + remaining
 }
 fn pending_stage(f: &Fixture, s: &Server) -> Result<String> {
     let quote =

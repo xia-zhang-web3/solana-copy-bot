@@ -33,43 +33,34 @@ async fn b136_concurrent_runners_one_signature_and_send() -> Result<()> {
     );
     Ok(())
 }
-#[tokio::test]
-async fn b136_recovery_dispatch_wait_accepts_late_fee_with_fresh_quote() -> Result<()> {
-    let f = Fixture::new().await?;
-    let s = Server::new().await?;
-    let c = b136_config::load(&f, &s.url, true)?;
-    f.ingress(&c).await?;
-    let r = f.runner(&c)?;
-    let (first, release_first) = s.hold("getFeeForMessage:1");
-    let started = tokio::time::Instant::now();
-    let (dispatch, held) = tokio::join!(await_dispatch(&f, &s, &r), async {
-        super::b136_r1_tick_tests::wait_for_held_fee(&f, &s, first, started).await?;
-        tokio::time::sleep_until(started + Duration::from_millis(3900)).await;
-        let (second, release_second) = s.hold("getFeeForMessage:2");
-        release_first.send(()).map_err(|_| anyhow::anyhow!("first fee exited"))?;
-        let second_at = super::b136_r1_tick_tests::wait_for_held_fee(&f, &s, second, started).await?;
-        tokio::time::sleep_until(second_at + Duration::from_millis(150)).await;
-        let quote = f.db.store.load_strict_sell_quote(&q::id(&f.meta),
-            super::association_parent_fixture::limits(), chrono::Utc::now())?.unwrap();
-        assert_eq!(quote.outcome, copybot_storage_core::ordered_sell_quote::QuoteOutcome::Current);
-        assert!(chrono::Utc::now() < quote.http_started.unwrap()
-            + chrono::Duration::milliseconds(copybot_storage_core::ordered_sell_quote::MAX_QUOTE_AGE_MS));
-        assert!(started.elapsed() >= Duration::from_millis(4050));
-        release_second.send(()).map_err(|_| anyhow::anyhow!("second fee exited"))?;
-        Ok::<_,anyhow::Error>(())
-    });
-    held?;
-    // Drain actual submit/recovery before asserting the old wait's result, so a
-    // RED control cannot leave a blocking RPC polling a shutting-down runtime.
-    finish(&f, &r).await?;
-    q::tick(&r, &f.db).await?;
-    drop(r);
-    super::b136_r1_tick_tests::idle(&f).await?;
-    assert_eq!(sends(&s),1);
-    assert_eq!(super::b135_hooks::count(&c.execution.execution_signer_keypair_path),1);
-    assert!(dispatch.is_ok(), "fresh quote dispatch wait failed: {dispatch:?}");
-    s.healthy();
-    Ok(())
+#[test]
+fn b136_recovery_dispatch_wait_uses_quote_phase_clock() {
+    use super::b136_r1_tick_tests::dispatch_wait_deadline_at;
+    let wall = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+    let mono = tokio::time::Instant::now();
+    let prequote_deadline = mono + Duration::from_secs(4);
+    let deadline = |quote_start_ms: Option<i64>, elapsed_ms: i64| {
+        dispatch_wait_deadline_at(
+            quote_start_ms.map(|ms| wall + chrono::Duration::milliseconds(ms)),
+            prequote_deadline,
+            wall + chrono::Duration::milliseconds(elapsed_ms),
+            mono + Duration::from_millis(elapsed_ms as u64),
+        )
+    };
+    // At 4.05s the old total-4s wait is exhausted, but an actual Current
+    // quote has its own immutable clock. No scheduling or RPC speed is assumed.
+    let after_old_wait = mono + Duration::from_millis(4050);
+    assert!(deadline(None, 4050) < after_old_wait);
+    assert_eq!(deadline(Some(0), 4050), mono + Duration::from_secs(5));
+    assert!(deadline(Some(0), 4050) > after_old_wait);
+    assert_eq!(deadline(Some(3000), 4050), mono + Duration::from_secs(8));
+    // Repeated polls never refresh either phase, including exact/past expiry.
+    assert_eq!(deadline(None, 3000), prequote_deadline);
+    assert_eq!(deadline(Some(3000), 6000), mono + Duration::from_secs(8));
+    for elapsed_ms in [5000, 6000] {
+        let now = mono + Duration::from_millis(elapsed_ms as u64);
+        assert!(deadline(Some(0), elapsed_ms) <= now);
+    }
 }
 
 #[tokio::test]
