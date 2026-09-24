@@ -11,6 +11,22 @@ use fixture::Db;
 use rusqlite::{params, Connection, StatementStatus};
 use std::path::Path;
 
+// This integration crate includes ownership only to exercise its exact claim_sql.
+// Its unused verifier branch cannot name a crate-private library helper. Keep a
+// fail-loud shim here; receipt behavior is exercised through SqliteStore below.
+mod rpc_owned_sell_handoff {
+    pub mod dispatch {
+        pub mod identity {
+            pub(crate) fn token_side(
+                _: &rusqlite::Connection,
+                _: &str,
+            ) -> anyhow::Result<(String, String)> {
+                unreachable!("index query probe must not execute the receipt verifier")
+            }
+        }
+    }
+}
+
 const MIGRATIONS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../migrations");
 const INDEXES: [&str; 3] = [
     "idx_buy_receipt_proofs_signature",
