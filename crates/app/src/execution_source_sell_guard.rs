@@ -104,6 +104,9 @@ pub(crate) fn request(
     if crate::execution_owner_buy_authority::request(store, r, statuses)?.is_some() {
         return Ok(None);
     }
+    if crate::execution_owner_exit_authority::request(store, r, statuses)?.is_some() {
+        return Ok(None);
+    }
     let mut state = order(store, &r.order_id, statuses)?;
     if state.is_none() && r.side.eq_ignore_ascii_case("sell") {
         return Err(on_order(
@@ -136,6 +139,9 @@ pub(crate) fn signing(
     p: &crate::execution_submit_adapter::ExecutionTransactionPlan,
 ) -> Result<()> {
     if crate::execution_owner_buy_authority::plan(store, r, p)? {
+        return Ok(());
+    }
+    if crate::execution_owner_exit_authority::plan(store, r, p)? {
         return Ok(());
     }
     if request(

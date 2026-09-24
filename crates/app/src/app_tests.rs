@@ -48,6 +48,8 @@ use std::path::{Path, PathBuf};
 mod association_consumer_tests;
 pub(crate) mod owner_buy_fixture;
 mod owner_buy_tests;
+mod owner_exit_tests;
+mod owner_exit_test_fixture;
 pub(crate) mod owner_buy_wire_fixture;
 mod owner_buy_wire_tests;
 pub(crate) mod owner_buy_protected_fixture;

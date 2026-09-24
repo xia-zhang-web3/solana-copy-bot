@@ -71,6 +71,13 @@ pub(crate) fn plan(conn: &Connection, order_id: &str) -> Result<ExecutionCanaryS
         .and_then(|v| u64::try_from(v).ok())
         .ok_or(Unsupported::TokenQuantityOutOfRange)?;
     let expected_position = sell_settlement_position::load(conn, &receipt.token)?;
+    crate::owner_exit_binding::validate_position(
+        conn,
+        order_id,
+        Some(&expected_position.position_id),
+        &expected_position.token,
+        Some(expected_position.quantity),
+    )?;
     crate::rpc_owned_sell_handoff::dispatch::identity::position(
         conn,
         order_id,

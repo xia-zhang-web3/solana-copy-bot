@@ -110,6 +110,9 @@ fn apply_on_conn(
             p.remaining_quantity.raw().to_string(), cost, accounted_at.to_rfc3339()
         ],
     )?;
+    if p.receipt.order_id.starts_with("exec-canary:owner-exit:") {
+        crate::receipt_trade_cycle::record_on_conn(conn, &p, accounted_at)?;
+    }
     complete_receipt_accounting(conn, &fresh.order_id)?;
     Ok(ExecutionCanaryCashSettlementResult {
         already_accounted: false,

@@ -118,6 +118,7 @@ pub fn validate_association_delivery(c: &AppConfig) -> Result<()> {
     }
     crate::validate_owned_sell_preparation(&c.execution, &c.ingestion)?;
     crate::validate_owner_technical_buy(&c.execution)?;
+    crate::validate_owner_exit(&c.execution)?;
     if let Some(native) = &c.execution.native_fresh_buy {
         ensure!(
             native.policy == crate::PROCESSED_SLOT_FENCE_AVAILABILITY_V1,

@@ -120,6 +120,8 @@ impl SqliteDiscoveryStore {
             }
             crate::tiny_experiment::settle(conn,id,&task.tx_signature,&facts.wallet,facts.payer.as_deref(),
                 facts.transaction_fee_lamports.as_deref().map(str::parse::<u64>).transpose()?,"failed",now)?;
+            crate::owner_exit_fee::settle(conn,id,&task.tx_signature,&facts.wallet,facts.payer.as_deref(),
+                facts.transaction_fee_lamports.as_deref().map(str::parse::<u64>).transpose()?,"failed",now)?;
             let complete=fee.is_some() && facts.native_delta()?.is_some();
             let reason=if complete {"failed_expense_recorded"} else if facts.fee_coverage==Coverage::Invalid {"failed_receipt_fee_invalid"} else if fee.is_none() {"failed_receipt_fee_or_payer_unknown"} else {"failed_receipt_native_unknown"};
             conn.execute("UPDATE execution_failed_expense_tasks SET slot=COALESCE(slot,?2),status=?3,reason=?4 WHERE order_id=?1",params![id,facts.slot.to_string(),if complete {"complete"} else {"pending"},reason])?;

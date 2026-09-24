@@ -13,6 +13,7 @@ mod env_parsing;
 mod loader;
 mod native_fresh_buy;
 mod owner_technical_buy;
+mod owner_exit;
 mod owned_sell_preparation;
 mod risk_validation;
 mod schema;
@@ -23,6 +24,7 @@ pub use owned_sell_preparation::{
 };
 pub use native_fresh_buy::{native_first_buy_activation, NativeFreshBuyConfig, PROCESSED_SLOT_FENCE_AVAILABILITY_V1};
 pub use owner_technical_buy::{validate_owner_technical_buy, OwnerTechnicalBuyConfig, OWNER_TECHNICAL_BUY_V1};
+pub use owner_exit::{validate_owner_exit, OwnerExitConfig, OWNER_EXIT_V1};
 pub use tiny_experiment::{TinyExperimentConfig, TinyPolicyMode};
 
 pub use self::discovery_v2_identity::{

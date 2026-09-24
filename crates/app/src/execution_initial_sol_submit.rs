@@ -38,8 +38,14 @@ pub(crate) async fn before_send_guarded(
     tick_at: DateTime<Utc>,
     native: Option<&crate::execution_canary_route::NativeBuyGuard>,
 ) -> Option<ExecutionSubmitPlanOutcome> {
-    if !request.side.eq_ignore_ascii_case("buy") {
+    let owner_exit = request.signal_id.starts_with("owner-exit:")
+        && request.side.eq_ignore_ascii_case("sell");
+    if !request.side.eq_ignore_ascii_case("buy") && !owner_exit {
         return None;
+    }
+    if owner_exit {
+        return owner_exit_before_send(store, request, envelope, intent, gate,
+            transport, state, tick_at).await;
     }
     let result = Box::pin(async {
         let config = gate
@@ -130,6 +136,73 @@ pub(crate) async fn before_send_guarded(
         Ok(()) => None,
         Err(error) => Some(safe_failure(store, request, tick_at, error)),
     }
+}
+
+async fn owner_exit_before_send(
+    store: &SqliteStore, request: &ExecutionSubmitRequest,
+    envelope: &ExecutionSigningEnvelope, intent: &ExecutionSubmitIntent,
+    gate: &ExecutionTinySubmitGate, transport: &RpcExecutionSubmitTransport,
+    state: &SubmitState, tick_at: DateTime<Utc>,
+) -> Option<ExecutionSubmitPlanOutcome> {
+    let result = async {
+        let config = gate.buy_safety_config.as_ref()
+            .ok_or_else(|| anyhow!("owner_exit_policy_unavailable"))?;
+        let exit = crate::execution_owner_exit_authority::request(store, request,
+            &[copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED])?
+            .ok_or_else(|| anyhow!("owner_exit_intent_missing"))?;
+        let check = || crate::execution_owner_exit_authority::current(config, store,
+            &exit, crate::execution_canary_safety::risk_clock::decision_time(tick_at)
+                .ok_or_else(|| anyhow!("owner_exit_clock"))?);
+        check()?;
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never()).build()?;
+        crate::execution_owner_exit_quote::verify_balance(&http, config, &exit, &check).await?;
+        let body: serde_json::Value = http.post(transport.rpc_endpoint())
+            .json(&serde_json::json!({"jsonrpc":"2.0","id":"owner-exit-native",
+                "method":"getBalance","params":[exit.wallet,{"commitment":"confirmed"}]}))
+            .timeout(std::time::Duration::from_millis(gate.submit_timeout_ms.max(1)))
+            .send().await?.error_for_status()?.json().await?;
+        check()?;
+        ensure!(body["jsonrpc"] == "2.0" && body["id"] == "owner-exit-native"
+            && body.get("error").is_none()
+            && body["result"]["context"]["slot"].as_u64().is_some_and(|v| v > 0),
+            "owner_exit_native_rpc");
+        let balance = body["result"]["value"].as_u64()
+            .ok_or_else(|| anyhow!("owner_exit_native_balance_missing"))?;
+        let rent_body: serde_json::Value = http.post(transport.rpc_endpoint())
+            .json(&serde_json::json!({"jsonrpc":"2.0","id":"owner-exit-rent",
+                "method":"getMinimumBalanceForRentExemption","params":[165]}))
+            .timeout(std::time::Duration::from_millis(gate.submit_timeout_ms.max(1)))
+            .send().await?.error_for_status()?.json().await?;
+        check()?;
+        ensure!(rent_body["jsonrpc"] == "2.0" && rent_body["id"] == "owner-exit-rent"
+            && rent_body.get("error").is_none(), "owner_exit_rent_rpc");
+        let rent = rent_body["result"].as_u64()
+            .ok_or_else(|| anyhow!("owner_exit_rent_unknown"))?;
+        // The signed route is a USDC input. Reserve a complete transaction-fee
+        // bound and one classic WSOL ATA rent even if that ATA already exists.
+        let needed = exit.min_reserve_lamports
+            .checked_add(copybot_storage_core::TINY_TRANSACTION_FEE)
+            .ok_or_else(|| anyhow!("owner_exit_native_overflow"))?
+            .checked_add(rent)
+            .ok_or_else(|| anyhow!("owner_exit_native_overflow"))?;
+        ensure!(balance >= needed, "owner_exit_native_floor_insufficient");
+        check()?;
+        Ok::<(), anyhow::Error>(())
+    }.await;
+    if let Err(reason) = unchanged(state, store, request) {
+        return Some(refuse(request, reason));
+    }
+    let result = result.and_then(|_| {
+        crate::execution_priority_fee_proof::validate_submit(store, request, envelope,
+            intent, gate.pretrade_max_priority_fee_lamports)?;
+        crate::execution_native_floor_policy::verify_submit_payload(request,
+            &intent.signed_transaction_base64, gate.pretrade_min_sol_reserve,
+            &gate.execution_wallet_pubkey)
+    });
+    match result { Ok(()) => None,
+        Err(error) => Some(safe_failure(store, request, tick_at, error)) }
 }
 
 fn safe_failure(

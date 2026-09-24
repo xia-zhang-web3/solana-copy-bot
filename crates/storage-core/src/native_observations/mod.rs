@@ -1,6 +1,6 @@
 mod merge;
 pub(crate) mod report;
-mod storage;
+pub(crate) mod storage;
 mod types;
 mod validation;
 pub use report::{NativeObservationReport, NativeObservationReportRow};

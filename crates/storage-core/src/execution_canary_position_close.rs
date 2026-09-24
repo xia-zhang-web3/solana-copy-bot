@@ -118,6 +118,9 @@ pub(crate) fn close_execution_canary_open_position_on_conn(
         crate::legacy_sell_receipt_ownership::validate(conn, order_id, token)?;
     }
     let Some(position) = load_open_position_for_close(conn, token)? else {
+        if let Some(id) = order_id {
+            crate::owner_exit_binding::validate_position(conn, id, None, token, None)?;
+        }
         insert_no_position_sell_fill_marker(
             conn,
             order_id,
@@ -129,6 +132,15 @@ pub(crate) fn close_execution_canary_open_position_on_conn(
         )?;
         return Ok(no_position_close_result(token));
     };
+    if let Some(id) = order_id {
+        crate::owner_exit_binding::validate_position(
+            conn,
+            id,
+            Some(&position.position_id),
+            token,
+            position.qty_exact,
+        )?;
+    }
     let receipt_exact = match order_id {
         Some(id) => conn.query_row(
             "SELECT status = ?2 FROM orders WHERE order_id = ?1",

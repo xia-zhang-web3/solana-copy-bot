@@ -1,6 +1,8 @@
 //! Final tiny-only policy; all I/O completes before the synchronous durable claim.
 #[path = "execution_tiny_budget_amount.rs"]
 mod amount;
+#[path = "execution_tiny_budget_owner_exit.rs"]
+mod owner_exit;
 use super::SubmitState;
 use crate::execution_canary_submit_contract::ExecutionTinySubmitGate;
 use crate::execution_native_rpc::NativeFundingRpcClient;
@@ -25,6 +27,10 @@ pub(crate) async fn prepare(
     tick: DateTime<Utc>,
     native: Option<&crate::execution_canary_route::NativeBuyGuard>,
 ) -> Result<(TinyBudgetClaim, DateTime<Utc>)> {
+    if let SubmitState::OwnerExit { intent: owner, .. } = state {
+        return owner_exit::prepare(store, request, intent, envelope, gate,
+            transport, state, tick, owner).await;
+    }
     if matches!(state, SubmitState::Owned(_)) {
         return crate::execution_owned_sell_prepare::submit::guard::budget(
             store, request, intent, envelope, gate, transport,

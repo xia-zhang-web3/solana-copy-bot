@@ -56,6 +56,7 @@ impl Default for SystemConfig {
 pub struct ExecutionConfig {
     pub native_fresh_buy: Option<crate::NativeFreshBuyConfig>,
     pub owner_technical_buy: Option<crate::OwnerTechnicalBuyConfig>,
+    pub owner_exit: Option<crate::OwnerExitConfig>,
     pub owned_sell_preparation: Option<crate::OwnedSellPreparationConfig>,
     pub tiny_experiment: crate::TinyExperimentConfig,
     pub enabled: bool,
@@ -119,6 +120,7 @@ impl Default for ExecutionConfig {
         Self {
             native_fresh_buy: None,
             owner_technical_buy: None,
+            owner_exit: None,
             tiny_experiment: Default::default(),
             owned_sell_preparation: None,
             enabled: false,

@@ -144,6 +144,11 @@ fn settle_budget(
     f: &ExecutionCanaryReceiptFacts,
     now: DateTime<Utc>,
 ) -> Result<()> {
+    crate::owner_exit_fee::settle(
+        conn, &f.order_id, &f.tx_signature, &f.wallet_pubkey,
+        f.fee_payer.as_deref(), f.transaction_fee.map(|v| v.as_u64()),
+        "successful", now,
+    )?;
     crate::tiny_experiment::settle(
         conn,
         &f.order_id,

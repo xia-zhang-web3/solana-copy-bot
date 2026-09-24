@@ -89,6 +89,8 @@ pub(crate) struct ExecutionCanaryRunner {
     pub(crate) native_buy_mock: Option<std::sync::Arc<crate::execution_canary_route::NativeBuyMockIo>>,
     #[cfg(test)]
     pub(crate) owner_buy_adapter: Option<std::sync::Arc<crate::app_tests::owner_buy_fixture::SignedAdapter>>,
+    #[cfg(test)]
+    pub(crate) owner_exit_adapter: Option<std::sync::Arc<crate::app_tests::owner_buy_fixture::SignedAdapter>>,
 }
 
 impl ExecutionCanaryRunner {
@@ -102,6 +104,8 @@ impl ExecutionCanaryRunner {
             native_buy_mock: None,
             #[cfg(test)]
             owner_buy_adapter: None,
+            #[cfg(test)]
+            owner_exit_adapter: None,
             config,
         }
     }
@@ -186,6 +190,18 @@ impl ExecutionCanaryRunner {
             wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
             ..ExecutionCanaryTickSummary::default()
         };
+        if self.config.owner_exit.is_some() {
+            #[cfg(test)]
+            if let Some(adapter) = self.owner_exit_adapter.as_ref() {
+                let owner = crate::execution_owner_exit::tick_with_adapter(
+                    &self.config, store, now, adapter.as_ref()).await?;
+                apply_state_machine_summary(&mut summary, owner);
+                return Ok(summary);
+            }
+            let owner = crate::execution_owner_exit::tick(&self.config, store, now).await?;
+            apply_state_machine_summary(&mut summary, owner);
+            return Ok(summary);
+        }
         if self.strict_quotes {
             if let Some(done) = self
                 .owned_sell_recovery
@@ -340,6 +356,10 @@ impl ExecutionCanaryRunner {
             wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
             ..ExecutionCanaryTickSummary::default()
         };
+        if self.config.owner_exit.as_ref().is_some_and(|p| p.activate) {
+            summary.skipped_reason = Some("owner_exit_exclusive");
+            return Ok(summary);
+        }
         if self.strict_quotes || !self.config.canary_enabled {
             summary.skipped_reason = Some("disabled");
             return Ok(summary);

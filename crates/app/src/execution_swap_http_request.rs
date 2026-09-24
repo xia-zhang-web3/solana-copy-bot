@@ -47,7 +47,8 @@ pub(crate) fn swap_request_body(
         "quoteResponse": quote_response,
         "dynamicComputeUnitLimit": true,
     });
-    if plan.signal_id.starts_with("owner-buy:") {
+    if plan.signal_id.starts_with("owner-buy:")
+        || plan.signal_id.starts_with("owner-exit:") {
         body["dynamicSlippage"] = Value::Bool(false);
         body["useSharedAccounts"] = Value::Bool(false);
     }

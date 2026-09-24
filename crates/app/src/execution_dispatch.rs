@@ -135,12 +135,20 @@ pub(crate) async fn send_guarded(
             crate::execution_owner_buy_authority::current(config, store, intent, now)?;
             crate::execution_owner_buy_authority::fresh_quote(request, now)?;
         }
+        if let SubmitState::OwnerExit { intent, .. } = state {
+            let config = gate.buy_safety_config.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("owner_exit_config_missing"))?;
+            crate::execution_owner_exit_authority::current(config, store, intent, now)?;
+            crate::execution_owner_exit_authority::fresh_quote(request, now)?;
+        }
         Ok(now)
     };
     let claim_result = match state {
         SubmitState::Owned(p) => store.claim_owned_sell_dispatch(p, &identity, &budget, clock),
         SubmitState::OwnerTechnicalBuy { order, .. } =>
             store.claim_owner_technical_buy_dispatch(order, &identity, &budget, clock),
+        SubmitState::OwnerExit { order, .. } =>
+            store.claim_owner_exit_dispatch(order, &identity, &budget, clock),
         SubmitState::Legacy { order, signal } => store
             .claim_tiny_experiment_dispatch_with_clock(order, signal, &identity, &budget, clock),
     };

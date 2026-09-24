@@ -25,6 +25,12 @@ fn key(value: &str) -> Result<()> {
 /// Fresh legacy SELL, after fill replay and before any writes on the same conn.
 /// No receipt remains unproven legacy/import accounting, not an inferred owner.
 pub(crate) fn validate(conn: &Connection, order_id: &str, current_token: &str) -> Result<()> {
+    let owner_exit: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM orders WHERE order_id=?1 AND signal_id LIKE 'owner-exit:%')",
+        [order_id], |r| r.get(0))?;
+    if owner_exit {
+        return crate::owner_exit::validate_sell_receipt(conn, order_id, current_token);
+    }
     let mut tables = Vec::new();
     let mut identity = None;
     for (table, migration) in TABLES {

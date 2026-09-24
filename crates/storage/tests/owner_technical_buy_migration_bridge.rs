@@ -28,7 +28,7 @@ fn legacy_runner_upgrades_owner_source_without_losing_existing_order() -> Result
           VALUES('copy','leader','buy','mint',0.01,'2026-09-24T12:00:00Z','shadow_recorded');
         INSERT INTO orders(order_id,signal_id,route,submit_ts,status,client_order_id)
           VALUES('exec-canary:copy','copy','metis','2026-09-24T12:00:00Z','execution_canary_candidate','client');")?;
-    assert_eq!(store.run_migrations(&migrations())?, 1);
+    assert_eq!(store.run_migrations(&migrations())?, 3);
     assert_eq!(store.run_migrations(&migrations())?, 0);
     let old_order: String = conn.query_row(
         "SELECT signal_id FROM orders WHERE order_id='exec-canary:copy'", [], |r| r.get(0),

@@ -92,6 +92,11 @@ pub(crate) async fn build_simulated_signed_envelope<A: ExecutionSubmitAdapter>(
             &[copybot_storage_core::EXECUTION_STATUS_CANARY_BUILT],
         )?;
     }
+    if request.signal_id.starts_with("owner-exit:") {
+        crate::execution_owner_exit_authority::request(
+            store, request, &[copybot_storage_core::EXECUTION_STATUS_CANARY_BUILT],
+        )?;
+    }
     let simulation = match simulation_result {
         Ok(simulation) => simulation,
         Err(error) => {
@@ -148,6 +153,15 @@ pub(crate) async fn build_simulated_signed_envelope<A: ExecutionSubmitAdapter>(
             .ok_or_else(|| anyhow::anyhow!("owner_buy_clock"))?;
         crate::execution_owner_buy_authority::current(config, store, &intent, signing_now)?;
         crate::execution_owner_buy_authority::fresh_quote(request, signing_now)?;
+    }
+    if let Some(intent) = crate::execution_owner_exit_authority::request(
+        store, request, &[copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED],
+    )? {
+        let config = adapter.native_floor_config()?;
+        let signing_now = crate::execution_canary_safety::risk_clock::decision_time(now)
+            .ok_or_else(|| anyhow::anyhow!("owner_exit_clock"))?;
+        crate::execution_owner_exit_authority::current(config, store, &intent, signing_now)?;
+        crate::execution_owner_exit_authority::fresh_quote(request, signing_now)?;
     }
     let signing = record_execution_signing_envelope(store, adapter, request, &plan, now)?;
     if let Some(refusal) = signing.source_refusal.as_ref() {

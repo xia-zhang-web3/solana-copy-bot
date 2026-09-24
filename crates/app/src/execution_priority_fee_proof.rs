@@ -60,6 +60,7 @@ pub(crate) fn build_envelope<A: ExecutionSubmitAdapter + ?Sized>(
             )?;
             let floor = if request.side.eq_ignore_ascii_case("buy")
                 || plan.side.eq_ignore_ascii_case("buy")
+                || request.signal_id.starts_with("owner-exit:")
             {
                 crate::execution_native_floor_policy::verify_signing_payload(
                     adapter.native_floor_config()?,
@@ -75,6 +76,11 @@ pub(crate) fn build_envelope<A: ExecutionSubmitAdapter + ?Sized>(
                     request, &payload.serialized_transaction_base64,
                 )?)
             } else { None };
+            let exit_wire = if request.signal_id.starts_with("owner-exit:") {
+                Some(crate::execution_owner_exit_wire::verify(
+                    request, &payload.serialized_transaction_base64,
+                )?)
+            } else { None };
             let mut envelope = if let Some(signed) =
                 adapter.sign_serialized_transaction(request, plan, &payload)?
             {
@@ -87,6 +93,9 @@ pub(crate) fn build_envelope<A: ExecutionSubmitAdapter + ?Sized>(
                 envelope_payload(&envelope)?,
             )?;
             if let Some(proof) = owner_wire {
+                proof.verify_same_payload(envelope_payload(&envelope)?)?;
+            }
+            if let Some(proof) = exit_wire {
                 proof.verify_same_payload(envelope_payload(&envelope)?)?;
             }
             let after = prove(

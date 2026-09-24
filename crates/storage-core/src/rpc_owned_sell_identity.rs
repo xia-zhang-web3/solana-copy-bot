@@ -55,6 +55,9 @@ pub(crate) fn token_side(c: &Connection, id: &str) -> Result<(String, String)> {
     if let Some(p) = owned(c, id)? {
         return Ok((p.handoff.snapshot.quote.mint, "sell".into()));
     }
+    if id.starts_with("exec-canary:owner-exit:") {
+        return crate::owner_exit::token_side(c, id);
+    }
     if id.starts_with("exec-canary:owner-buy:") {
         let (identity,intent,mint):(String,String,String)=c.query_row(
             "SELECT o.signal_id,s.owner_buy_intent_id,i.mint FROM orders o

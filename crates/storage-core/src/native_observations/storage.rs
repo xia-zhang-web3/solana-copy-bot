@@ -7,7 +7,7 @@ use anyhow::{ensure, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
-pub(super) fn load(
+pub(crate) fn load(
     conn: &Connection,
     id: &str,
 ) -> Result<Option<(NativeAccountObservations, Option<String>)>> {
@@ -77,6 +77,11 @@ impl SqliteDiscoveryStore {
             Ok(false)
         })?;
         ensure!(!conflict, "native_observation_conflict");
+        if b.facts.order_id.starts_with("exec-canary:owner-buy:")
+            || b.facts.order_id.starts_with("exec-canary:owner-exit:")
+        {
+            self.materialize_receipt_cash_components(&b.facts.order_id, now)?;
+        }
         Ok(())
     }
 }

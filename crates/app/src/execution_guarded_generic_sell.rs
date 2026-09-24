@@ -90,24 +90,31 @@ fn assemble_unsigned(
             && plan.wallet_pubkey == config.execution_signer_pubkey,
         "instruction_bundle_wallet_identity_mismatch"
     );
-    // Explicit account operands are supplied by the bundle; lookup metadata is
-    // never chain proof. The existing serializer preserves every instruction and
-    // creates exactly one payer signer with a zero signature. No SELL native floor.
-    let bytes = crate::execution_solana_tx::serialize_unsigned_legacy_transaction(
-        pubkey(&plan.wallet_pubkey)?,
-        instructions.blockhash(),
-        instructions.instructions(),
-    )?;
-    ensure!(
-        bytes.len() <= 1232,
-        "instruction_bundle_legacy_packet_too_large"
-    );
-    let payload = STANDARD.encode(bytes);
+    // The owner exit carries the same final native-floor instruction as its BUY.
+    // Other SELL routes preserve their existing serializer.
+    let payload = if plan.signal_id.starts_with("owner-exit:") {
+        let reserve = crate::execution_native_floor_policy::required_for_plan(config, plan)?
+            .ok_or_else(|| anyhow::anyhow!("owner_exit_floor_missing"))?;
+        crate::execution_native_floor::prepare_final_native_floor(
+            pubkey(&plan.wallet_pubkey)?, instructions.blockhash(),
+            instructions.instructions(), reserve,
+        )?.payload().to_owned()
+    } else {
+        let bytes = crate::execution_solana_tx::serialize_unsigned_legacy_transaction(
+            pubkey(&plan.wallet_pubkey)?, instructions.blockhash(),
+            instructions.instructions(),
+        )?;
+        ensure!(bytes.len() <= 1232, "instruction_bundle_legacy_packet_too_large");
+        STANDARD.encode(bytes)
+    };
     crate::execution_priority_fee_proof::prove(
         binding.request(),
         &payload,
         config.pretrade_max_priority_fee_lamports,
     )?;
+    if plan.signal_id.starts_with("owner-exit:") {
+        crate::execution_owner_exit_wire::verify(binding.request(), &payload)?;
+    }
     crate::execution_signing_envelope::build_serialized_transaction_execution_envelope(
         binding.request(),
         plan,

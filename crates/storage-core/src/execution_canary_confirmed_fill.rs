@@ -204,7 +204,7 @@ impl SqliteDiscoveryStore {
                 "execution canary fill order {order_id} requires confirmed tx_signature"
             ));
         }
-        if order.signal_id.starts_with("owner-buy:") {
+        if order.signal_id.starts_with("owner-buy:") || order.signal_id.starts_with("owner-exit:") {
             let (_, side) = self.execution_receipt_token_side(order_id)?;
             anyhow::ensure!(side.eq_ignore_ascii_case(expected_side),
                 "owner buy fill side mismatch");
@@ -282,7 +282,9 @@ fn validate_canary_fill_order(
             order.order_id
         ));
     }
-    let signal_side: String = if order.signal_id.starts_with("owner-buy:") {
+    let signal_side: String = if order.signal_id.starts_with("owner-exit:") {
+        crate::owner_exit::token_side(conn, &order.order_id)?.1
+    } else if order.signal_id.starts_with("owner-buy:") {
         crate::rpc_owned_sell_handoff::dispatch::identity::token_side(conn, &order.order_id)?.1
     } else { conn
         .query_row(
@@ -350,7 +352,9 @@ fn confirm_order_if_submitted(
 }
 
 fn validate_fill_token(conn: &Connection, order: &ExecutionCanaryOrder, token: &str) -> Result<()> {
-    let expected: String = if order.signal_id.starts_with("owner-buy:") {
+    let expected: String = if order.signal_id.starts_with("owner-exit:") {
+        crate::owner_exit::token_side(conn, &order.order_id)?.0
+    } else if order.signal_id.starts_with("owner-buy:") {
         crate::rpc_owned_sell_handoff::dispatch::identity::token_side(conn, &order.order_id)?.0
     } else { conn.query_row(
         "SELECT token FROM copy_signals WHERE signal_id = ?1",

@@ -197,13 +197,40 @@ pub(crate) async fn fetch_owner_quote_sample(
     complete_attempt(result, clock)
 }
 
+/// The one-position owner exit uses the same closed V1 Raydium route, with
+/// USDC as input and native SOL as output.
+pub(crate) async fn fetch_owner_exit_quote_sample(
+    http: &reqwest::Client, config: &ExecutionConfig, input_mint: &str,
+    amount_raw: &str, slippage_bps: u64,
+) -> QuoteAttemptResult {
+    let mut clock = None;
+    let result = async {
+        let request = build_owner_direct_quote_request(http, config, input_mint,
+            crate::execution_quote_canary_helpers::SOL_MINT, amount_raw, slippage_bps)?;
+        clock = Some(QuoteAttemptClock::start());
+        let value = fetch_quote_json_once(http, request).await
+            .map_err(|error| anyhow!(error.message))?;
+        quote_sample_from_json(value).map(crate::execution_quote_timing::response_available)
+    }.await;
+    complete_attempt(result, clock)
+}
+
 pub(crate) fn build_owner_quote_request(
     http: &reqwest::Client, config: &ExecutionConfig, output_mint: &str,
     amount_raw: &str, slippage_bps: u64,
 ) -> Result<reqwest::Request> {
+    build_owner_direct_quote_request(http, config,
+        crate::execution_quote_canary_helpers::SOL_MINT, output_mint,
+        amount_raw, slippage_bps)
+}
+
+fn build_owner_direct_quote_request(
+    http: &reqwest::Client, config: &ExecutionConfig, input_mint: &str,
+    output_mint: &str, amount_raw: &str, slippage_bps: u64,
+) -> Result<reqwest::Request> {
     let mut request = build_quote_request(http, &config.quote_canary_base_url,
         &config.quote_canary_api_key, config.quote_canary_timeout_ms,
-        crate::execution_quote_canary_helpers::SOL_MINT, output_mint, amount_raw, slippage_bps)?;
+        input_mint, output_mint, amount_raw, slippage_bps)?;
     let original: Vec<(String, String)> = request.url().query_pairs()
         .filter(|(key, _)| key != "instructionVersion")
         .map(|(key,value)| (key.into_owned(),value.into_owned())).collect();

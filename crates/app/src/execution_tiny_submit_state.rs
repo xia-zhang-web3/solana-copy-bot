@@ -10,6 +10,10 @@ pub(crate) mod budget;
 pub(crate) mod dispatch;
 
 pub(crate) enum SubmitState {
+    OwnerExit {
+        order: ExecutionCanaryOrder,
+        intent: copybot_storage_core::OwnerExitIntent,
+    },
     OwnerTechnicalBuy {
         order: ExecutionCanaryOrder,
         intent: copybot_storage_core::OwnerTechnicalBuyIntent,
@@ -59,6 +63,18 @@ pub(crate) fn eligible(
             return Err("owner_buy_receipt_pending");
         }
         return Ok(SubmitState::OwnerTechnicalBuy { order, intent });
+    }
+    if request.signal_id.starts_with("owner-exit:") {
+        let intent = crate::execution_owner_exit_authority::request(
+            store, request, &[EXECUTION_STATUS_CANARY_SIMULATED],
+        ).map_err(|_| "owner_exit_submit_identity")?
+            .ok_or("owner_exit_origin_missing")?;
+        if store.execution_canary_receipt_submit_block_reason(
+            &request.order_id, &request.token, "sell",
+        ).map_err(|_| "tiny_submit_state_unavailable")?.is_some() {
+            return Err("owner_exit_receipt_pending");
+        }
+        return Ok(SubmitState::OwnerExit { order, intent });
     }
     let signal = store
         .load_copy_signal_by_signal_id(&order.signal_id)
@@ -114,6 +130,10 @@ pub(crate) fn unchanged(
     if let (SubmitState::OwnerTechnicalBuy { order: a, intent: x },
         SubmitState::OwnerTechnicalBuy { order: b, intent: y }) = (before, &after) {
         return if a == b && x == y { Ok(()) } else { Err("initial_sol_order_changed") };
+    }
+    if let (SubmitState::OwnerExit { order: a, intent: x },
+        SubmitState::OwnerExit { order: b, intent: y }) = (before, &after) {
+        return if a == b && x == y { Ok(()) } else { Err("owner_exit_order_changed") };
     }
     let (before_order, a, after_order, b) = match (before, &after) {
         (SubmitState::Owned(a), SubmitState::Owned(b)) if a == b => return Ok(()),

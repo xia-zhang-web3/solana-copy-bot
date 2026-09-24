@@ -53,10 +53,15 @@ pub(crate) fn required_for_plan(
             "tiny_capital_mode_conflict"
         );
     }
-    if !config.canary_tiny_submit_enabled || !plan.side.eq_ignore_ascii_case("buy") {
+    let owner_exit = plan.signal_id.starts_with("owner-exit:")
+        && plan.side.eq_ignore_ascii_case("sell");
+    if !config.canary_tiny_submit_enabled
+        || (!plan.side.eq_ignore_ascii_case("buy") && !owner_exit) {
         return Ok(None);
     }
-    let reserve = if protected::enabled(config) {
+    let reserve = if owner_exit {
+        reserve_lamports(config.pretrade_min_sol_reserve)?
+    } else if protected::enabled(config) {
         plan.metadata
             .protected_capital
             .as_deref()
@@ -117,7 +122,9 @@ pub(crate) fn verify_submit_payload(
     current_reserve_sol: f64,
     current_wallet: &str,
 ) -> Result<()> {
-    if !request.side.eq_ignore_ascii_case("buy") {
+    if !request.side.eq_ignore_ascii_case("buy")
+        && !(request.signal_id.starts_with("owner-exit:")
+            && request.side.eq_ignore_ascii_case("sell")) {
         return Ok(());
     }
     let reserve = match request.metadata.protected_capital.as_deref() {
