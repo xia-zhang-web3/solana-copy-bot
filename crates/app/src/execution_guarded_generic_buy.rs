@@ -87,10 +87,25 @@ pub(crate) fn assemble(
         "instruction_bundle_floor_policy_binding"
     );
     let (binding, instructions) = bundle.verified_parts(plan)?;
+    let mut executable = instructions.instructions().to_vec();
+    // Jupiter omits CU-price for an explicitly requested zero total fee. Encode
+    // that same zero for owner BUY only; the final wire fee parser stays strict.
+    let budget = crate::execution_pumpswap_accounts::compute_budget_program_id();
+    if plan.signal_id.starts_with("owner-buy:") && plan.side == "buy"
+        && crate::execution_priority_fee::metadata_fee(&binding.request().metadata)?
+            == crate::execution_priority_fee::PriorityFee::TotalPriorityFeeLamports(0)
+        && !executable.iter().any(|ix| ix.program_id == budget && ix.data.first() == Some(&3))
+    {
+        executable.insert(0, crate::execution_solana_tx::SolanaInstruction {
+            program_id: budget,
+            accounts: Vec::new(),
+            data: [vec![3], 0_u64.to_le_bytes().to_vec()].concat(),
+        });
+    }
     let prepared = crate::execution_native_floor::prepare_final_native_floor(
         pubkey(&plan.wallet_pubkey)?,
         instructions.blockhash(),
-        instructions.instructions(),
+        &executable,
         reserve,
     )?;
     let payload = prepared.payload();

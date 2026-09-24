@@ -45,6 +45,87 @@ fn owner_buy_wire_real_v1_raydium_exact_input_and_message_binding() -> Result<()
     assert!(proof.verify_same_payload(altered.payload()).is_err());
     Ok(())
 }
+
+#[test]
+fn owner_buy_wire_recorded_v2_bundle_assembles_with_exact_zero_fee_and_bindings() -> Result<()> {
+    use crate::execution_instruction_bundle_binding::BundleRequest;
+    use crate::execution_submit_adapter::{ExecutionSubmitAdapter, JupiterMetisDryRunExecutionAdapter};
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use serde_json::Value;
+
+    // Exact public quote/response, no signer, provider, freshness or authority claim.
+    let quote: Value = serde_json::from_str(include_str!(
+        "generic_buy_fixtures/owner-sol-usdc-20260924-quote.json"))?;
+    let recorded: Value = serde_json::from_str(include_str!(
+        "generic_buy_fixtures/owner-sol-usdc-20260924-instructions.json"))?;
+    let mut r = request();
+    r.wallet_pubkey = "BwVw8ncEpWU7TwMTgysvwjQ85eEhKAMVbd7WU1iTE9Mk".into();
+    r.wallet_id = r.wallet_pubkey.clone();
+    r.metadata.quote_event_id = Some("recorded-public-fixture".into());
+    r.metadata.quote_status = Some("ok".into());
+    r.metadata.slippage_bps = Some(50.0);
+    r.metadata.quote_out_amount_raw = Some(quote["outAmount"].as_str().unwrap().into());
+    r.metadata.quote_response_json = Some(quote.to_string());
+    r.metadata.route_plan_json = Some(quote["routePlan"].to_string());
+    r.metadata.priority_fee_lamports = Some(0);
+    r.metadata.priority_fee_json = Some(super::priority_fee_fixture::total_json(0));
+    let mut config = super::generic_buy_fixture::config("http://127.0.0.1:9");
+    config.canary_wallet_pubkey = r.wallet_pubkey.clone();
+    config.execution_signer_pubkey = r.wallet_pubkey.clone();
+    config.pretrade_max_priority_fee_lamports = 50_000;
+    let assemble = |r: &ExecutionSubmitRequest, response: &Value| -> Result<String> {
+        let plan = JupiterMetisDryRunExecutionAdapter::new(config.clone())
+            .build_transaction_plan(r)?;
+        let bundle = BundleRequest::capture(&plan)?.bind(response)?;
+        Ok(crate::execution_guarded_generic_buy::assemble(
+            &config, &plan, &bundle, 50_000_001)?.serialized_transaction_base64)
+    };
+    let payload = assemble(&r, &recorded)?;
+    let proof = verify(&r, &payload)?;
+    assert_eq!(proof.decoded_amount_lamports(), 10_000_000);
+    proof.verify_same_payload(&payload)?;
+    let fee = crate::execution_priority_fee_wire::decode_priority_fee(&payload)?;
+    assert_eq!((fee.limit.get(), fee.price, fee.total), (60_973, 0, 0));
+    let wallet = parse_pubkey(&r.wallet_pubkey, "recorded_wallet")?;
+    crate::execution_native_floor::verify_final_native_floor(&payload, wallet, 50_000_001)?;
+
+    // Every new RaydiumV2 account role/binding remains closed after privilege promotion.
+    for index in [9, 10, 11, 15, 16, 17] {
+        let mut bad = recorded.clone();
+        bad["swapInstruction"]["accounts"][index]["pubkey"] = json!(format_pubkey(&[87;32]));
+        bad["swapInstruction"]["accounts"][index]["isSigner"] = json!(false);
+        assert!(verify(&r, &assemble(&r, &bad)?).is_err(), "account {index}");
+    }
+    for index in [12, 13, 14] {
+        let mut bad = recorded.clone();
+        let flag = &mut bad["swapInstruction"]["accounts"][index]["isWritable"];
+        *flag = json!(!flag.as_bool().unwrap());
+        assert!(verify(&r, &assemble(&r, &bad)?).is_err(), "role {index}");
+    }
+    for (offset, byte) in [(12,7), (12,106), (16,1), (24,1), (32,51), (34,1)] {
+        let mut bad = recorded.clone();
+        let mut data = STANDARD.decode(bad["swapInstruction"]["data"].as_str().unwrap())?;
+        data[offset] = byte;
+        bad["swapInstruction"]["data"] = json!(STANDARD.encode(data));
+        assert!(verify(&r, &assemble(&r, &bad)?).is_err(), "data {offset}/{byte}");
+    }
+    for nonzero in [false, true] {
+        let mut other = r.clone();
+        if nonzero {
+            other.metadata.priority_fee_lamports = Some(1);
+            other.metadata.priority_fee_json = Some(super::priority_fee_fixture::total_json(1));
+        } else { other.signal_id = "native-buy:fixture".into(); }
+        assert!(assemble(&other, &recorded).unwrap_err().to_string()
+            .contains("explicit_cu_price_required"));
+    }
+    let mut malformed = recorded.clone();
+    let mut price = malformed["computeBudgetInstructions"][0].clone();
+    price["data"] = json!(STANDARD.encode([3]));
+    malformed["computeBudgetInstructions"].as_array_mut().unwrap().push(price);
+    assert!(assemble(&r, &malformed).unwrap_err().to_string()
+        .contains("duplicate_or_malformed_price"));
+    Ok(())
+}
 #[test]
 fn owner_buy_wire_amount_output_slippage_and_platform_fee_are_exact() -> Result<()> {
     for (index, value, reason) in [(16,1,"exact_input"),(24,1,"exact_output"),

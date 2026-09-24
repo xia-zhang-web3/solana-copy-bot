@@ -2,6 +2,9 @@
 //! Jupiter V1 route/Swap IDL pinned at:
 //! https://github.com/jup-ag/jupiter-cpi/blob/12bc5f67b94a2c3edc74d6e721a19442124a0bad/idl.json
 //! Cross-checked: instruction-parser e6f77951377847c579112e6a16d8c17c5c092485.
+//! RaydiumV2=105: jup-ag/rfq-v2-sdk f3f30ff2af48f63c11f326a486b8b0eb9611714f,
+//! fill-decoder/idls/aggregator.json. AMM V2 accounts: raydium-io/raydium-amm
+//! d26944bfb76fb5fa8f91e5d440c2050ed358ef81, program/src/instruction.rs:swap_base_in_v2.
 use crate::execution_pumpswap_accounts::*;
 use crate::execution_solana_tx::{PubkeyBytes, SolanaAccountMeta};
 use crate::execution_submit_adapter::ExecutionSubmitRequest;
@@ -66,10 +69,7 @@ pub(crate) fn verify(request: &ExecutionSubmitRequest, payload: &str) -> Result<
     ensure!(swap["inputMint"] == quote["inputMint"] && swap["outputMint"] == quote["outputMint"]
         && swap["inAmount"] == quote["inAmount"] && swap["outAmount"] == quote["outAmount"],
         "owner_buy_wire_quote_step");
-    let tag = match swap["label"].as_str() {
-        Some("Raydium") => 7,
-        _ => bail!("owner_buy_wire_unsupported_dex"),
-    };
+    ensure!(swap["label"] == "Raydium", "owner_buy_wire_unsupported_dex");
     let amm = parse_pubkey(swap["ammKey"].as_str().context("owner_buy_wire_quote_amm")?,
         "owner_buy_wire_amm")?;
     let jupiter = parse_pubkey(JUPITER, "owner_buy_wire_program")?;
@@ -83,7 +83,7 @@ pub(crate) fn verify(request: &ExecutionSubmitRequest, payload: &str) -> Result<
         if instruction.program.pubkey != jupiter { continue; }
         ensure!(route_index.replace(instruction.index).is_none(), "owner_buy_wire_multiple_routes");
         verify_route(instruction, wallet, source, destination, mint, jupiter,
-            amm, tag, output, request.slippage_tolerance_bps)?;
+            amm, output, request.slippage_tolerance_bps)?;
     }
     let route_index = route_index.context("owner_buy_wire_route_missing")?;
     setup::verify(&message.instructions, route_index, wallet, source, destination, mint)?;
@@ -93,12 +93,23 @@ pub(crate) fn verify(request: &ExecutionSubmitRequest, payload: &str) -> Result<
 fn verify_route(
     instruction: &DecodedInstruction, wallet: PubkeyBytes, source: PubkeyBytes,
     destination: PubkeyBytes, mint: PubkeyBytes, jupiter: PubkeyBytes,
-    amm: PubkeyBytes, tag: u8, output: u64, slippage: u64,
+    amm: PubkeyBytes, output: u64, slippage: u64,
 ) -> Result<()> {
     ensure!(!instruction.program.is_writable && !instruction.program.is_signer,
         "owner_buy_wire_program_role");
+    // Both supported Swap variants are fieldless. Select the exact account ABI
+    // from the Borsh enum byte, never from a quote label or an account-count guess.
+    let mut cursor = Cursor { bytes: &instruction.data, offset: 0 };
+    ensure!(cursor.take(8)? == ROUTE && cursor.take(4)? == 1_u32.to_le_bytes(),
+        "owner_buy_wire_route_layout");
+    let tag = cursor.byte()?;
+    let count = match tag {
+        7 => 27,
+        105 => 18,
+        _ => bail!("owner_buy_wire_swap_variant"),
+    };
     let a = &instruction.accounts;
-    ensure!(a.len() == 27 && a[0] == SolanaAccountMeta::readonly(token_program_id())
+    ensure!(a.len() == count && a[0] == SolanaAccountMeta::readonly(token_program_id())
         && a[1] == SolanaAccountMeta::signer_writable(wallet)
         && a[2] == SolanaAccountMeta::writable(source)
         && a[3] == SolanaAccountMeta::writable(destination)
@@ -108,27 +119,24 @@ fn verify_route(
         && a[6] == SolanaAccountMeta::readonly(jupiter)
         && a[7] == SolanaAccountMeta::readonly(pda(&[b"__event_authority"], &jupiter))
         && a[8] == SolanaAccountMeta::readonly(jupiter), "owner_buy_wire_route_accounts");
-    // Same pinned IDL, raydiumSwap: remaining accounts are an exact 18-entry block.
+    // Classic Raydium has 18 remaining accounts; RaydiumV2 has program + 8 CPI accounts.
     // The AMM program owns pool semantics; bind its identity, quoted pool and user ends.
     let r = &a[9..];
+    let (source_index, destination_index, owner_index) = if tag == 7 { (15,16,17) } else { (6,7,8) };
     ensure!(r[0] == SolanaAccountMeta::readonly(parse_pubkey(RAYDIUM, "owner_buy_wire_dex")?)
         && r[1] == SolanaAccountMeta::readonly(token_program_id())
         && r[2] == SolanaAccountMeta::writable(amm)
-        && r[15] == SolanaAccountMeta::writable(source)
-        && r[16] == SolanaAccountMeta::writable(destination)
-        && r[17] == SolanaAccountMeta::signer_writable(wallet),
+        && r[source_index] == SolanaAccountMeta::writable(source)
+        && r[destination_index] == SolanaAccountMeta::writable(destination)
+        && r[owner_index] == SolanaAccountMeta::signer_writable(wallet),
         "owner_buy_wire_dex_accounts");
-    for (index, account) in r[3..15].iter().enumerate() {
-        let writable = ![3, 7, 14].contains(&(index + 3));
+    for (index, account) in r[3..source_index].iter().enumerate() {
+        let writable = if tag == 7 { ![3, 7, 14].contains(&(index + 3)) } else { index != 0 };
         ensure!(!account.is_signer && account.is_writable == writable,
             "owner_buy_wire_dex_account_role");
     }
     // Parse from the start, including the Vec length and every supported enum field.
     // No suffix extraction: an unknown enum, truncated field or trailing byte rejects.
-    let mut cursor = Cursor { bytes: &instruction.data, offset: 0 };
-    ensure!(cursor.take(8)? == ROUTE && cursor.take(4)? == 1_u32.to_le_bytes(),
-        "owner_buy_wire_route_layout");
-    ensure!(cursor.byte()? == tag, "owner_buy_wire_swap_variant");
     ensure!(cursor.take(3)? == [100, 0, 1], "owner_buy_wire_route_topology");
     ensure!(cursor.u64()? == AMOUNT, "owner_buy_wire_exact_input");
     ensure!(cursor.u64()? == output, "owner_buy_wire_exact_output");
