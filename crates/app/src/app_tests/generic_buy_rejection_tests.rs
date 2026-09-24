@@ -4,6 +4,53 @@ use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 
+#[test]
+fn owner_jupiter_recorded_metadata_preserves_instructions_and_closed_schema() -> Result<()> {
+    use crate::execution_instruction_bundle::{pubkey, InstructionBundle};
+
+    // Public, recorded Jupiter response; only schema/operand compatibility is tested.
+    let recorded: Value = serde_json::from_str(include_str!(
+        "generic_buy_fixtures/owner-sol-usdc-20260924-instructions.json"
+    ))?;
+    let wallet = pubkey("BwVw8ncEpWU7TwMTgysvwjQ85eEhKAMVbd7WU1iTE9Mk")?;
+    let parsed = InstructionBundle::parse(&recorded, wallet)?;
+    let metadata = [
+        "loadedAccountsDataSize",
+        "loadedAccountsDataSizeLimit",
+        "transactionVersion",
+    ];
+    let mut without_metadata = recorded.clone();
+    for field in metadata {
+        without_metadata.as_object_mut().unwrap().remove(field);
+    }
+    let old_schema = InstructionBundle::parse(&without_metadata, wallet)?;
+    assert_eq!(parsed.instructions(), old_schema.instructions());
+    assert_eq!(parsed.blockhash(), old_schema.blockhash());
+
+    for (pointer, field) in [
+        ("", "additionalInstructions"),
+        ("/swapInstruction", "extraData"),
+        ("/swapInstruction/accounts/0", "privileges"),
+    ] {
+        let mut value = recorded.clone();
+        value.pointer_mut(pointer).unwrap()[field] = json!([]);
+        let error = InstructionBundle::parse(&value, wallet).unwrap_err();
+        assert_eq!(error.to_string(), "instruction_bundle_unknown_field");
+    }
+    for field in metadata {
+        for bad in [json!(-1), json!("0"), json!(false), json!({})] {
+            let mut value = recorded.clone();
+            value[field] = bad;
+            let error = InstructionBundle::parse(&value, wallet).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("instruction_bundle_metadata_type:{field}")
+            );
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn batch111_malformed_bundle_refusals_are_terminal() -> Result<()> {
     let original: Value = serde_json::from_str(INSTRUCTIONS)?;

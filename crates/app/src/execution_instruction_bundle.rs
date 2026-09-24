@@ -43,9 +43,25 @@ impl InstructionBundle {
                 "simulationError",
                 "timeTaken",
                 "createAtaTimeTaken",
+                "loadedAccountsDataSize",
+                "loadedAccountsDataSizeLimit",
+                "transactionVersion",
                 "error",
             ],
         )?;
+        // Reporting metadata never selects instructions, fees or the locally compiled wire.
+        for field in [
+            "loadedAccountsDataSize",
+            "loadedAccountsDataSizeLimit",
+            "transactionVersion",
+        ] {
+            if let Some(value) = object.get(field) {
+                ensure!(
+                    value.is_null() || value.as_u64().is_some(),
+                    "instruction_bundle_metadata_type:{field}"
+                );
+            }
+        }
         let mut budget = ParseBudget::default();
         let ledger = optional_instruction(
             required(object, "tokenLedgerInstruction")?,
