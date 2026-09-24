@@ -180,3 +180,36 @@ pub(crate) fn build_quote_request(
         .build()
         .map_err(|error| anyhow!("quote canary request failed: {error}"))
 }
+
+/// Technical owner lane: one V1 direct Raydium quote; no Discovery filter is changed.
+pub(crate) async fn fetch_owner_quote_sample(
+    http: &reqwest::Client, config: &ExecutionConfig, output_mint: &str,
+    amount_raw: &str, slippage_bps: u64,
+) -> QuoteAttemptResult {
+    let mut clock = None;
+    let result = async {
+        let request = build_owner_quote_request(http, config, output_mint, amount_raw, slippage_bps)?;
+        clock = Some(QuoteAttemptClock::start());
+        let value = fetch_quote_json_once(http, request).await
+            .map_err(|error| anyhow!(error.message))?;
+        quote_sample_from_json(value).map(crate::execution_quote_timing::response_available)
+    }.await;
+    complete_attempt(result, clock)
+}
+
+pub(crate) fn build_owner_quote_request(
+    http: &reqwest::Client, config: &ExecutionConfig, output_mint: &str,
+    amount_raw: &str, slippage_bps: u64,
+) -> Result<reqwest::Request> {
+    let mut request = build_quote_request(http, &config.quote_canary_base_url,
+        &config.quote_canary_api_key, config.quote_canary_timeout_ms,
+        crate::execution_quote_canary_helpers::SOL_MINT, output_mint, amount_raw, slippage_bps)?;
+    let original: Vec<(String, String)> = request.url().query_pairs()
+        .filter(|(key, _)| key != "instructionVersion")
+        .map(|(key,value)| (key.into_owned(),value.into_owned())).collect();
+    request.url_mut().query_pairs_mut().clear().extend_pairs(original)
+        .append_pair("instructionVersion", "V1")
+        .append_pair("onlyDirectRoutes", "true")
+        .append_pair("dexes", "Raydium");
+    Ok(request)
+}

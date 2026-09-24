@@ -25,6 +25,10 @@ pub(crate) fn sample() -> Option<(DateTime<Utc>, Option<DateTime<Utc>>)> {
 pub(super) fn at<F: Future>(time: DateTime<Utc>, future: F) -> impl Future<Output = F::Output> {
     sequence([time], future)
 }
+
+pub(super) fn advance_to(time: DateTime<Utc>) {
+    CLOCK.with(|clock| clock.borrow_mut().times = VecDeque::from([time]));
+}
 pub(super) fn sequence<F: Future>(
     times: impl IntoIterator<Item = DateTime<Utc>>,
     future: F,

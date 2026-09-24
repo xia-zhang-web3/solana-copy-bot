@@ -175,7 +175,7 @@ pub(crate) fn decode_global_config_account(data: &[u8]) -> Result<PumpSwapGlobal
     })
 }
 
-fn pda(seeds: &[&[u8]], program_id: &PubkeyBytes) -> PubkeyBytes {
+pub(crate) fn pda(seeds: &[&[u8]], program_id: &PubkeyBytes) -> PubkeyBytes {
     for bump in (0_u8..=u8::MAX).rev() {
         let bump_seed = [bump];
         let mut with_bump = seeds.to_vec();

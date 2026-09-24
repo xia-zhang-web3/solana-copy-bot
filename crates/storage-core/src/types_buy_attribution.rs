@@ -26,6 +26,7 @@ pub enum BuyAttributionIssue {
     MissingOrder,
     MissingSignal,
     MissingSourceWallet,
+    OwnerTechnicalBuyHasNoSourceWallet,
     MissingReceiptFacts,
     ReceiptIdentityConflict,
     /// Multiple order claims for the same execution wallet and transaction signature.

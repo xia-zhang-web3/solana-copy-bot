@@ -73,39 +73,10 @@ pub(crate) struct ExecutionCanaryTickSummary {
     pub last_state_machine_order_id: Option<String>,
 }
 
-impl ExecutionCanaryTickSummary {
-    pub(crate) fn has_status_change(&self) -> bool {
-        self.source_sell_production.visits > 0
-            || self.pre_submit_refusals.count() > 0
-            || self.source_sell_write_off_refusals.count() > 0
-            || self.source_sell_refusals.count() > 0
-            || self.inserted > 0
-            || self.existing > 0
-            || self.skipped_reason.is_some()
-            || self.quote_entry_inserted > 0
-            || self.quote_entry_existing > 0
-            || self.quote_entry_errors > 0
-            || self.quote_close_inserted > 0
-            || self.quote_close_existing > 0
-            || self.quote_close_errors > 0
-            || self.quote_would_execute > 0
-            || self.quote_would_force_exit > 0
-            || self.quote_would_skip > 0
-            || self.quote_decision_unknown > 0
-            || self.state_machine_reserved > 0
-            || self.state_machine_existing > 0
-            || self.state_machine_built > 0
-            || self.state_machine_simulated > 0
-            || self.state_machine_submit_disabled > 0
-            || self.state_machine_failed > 0
-            || self.state_machine_safety_blocked > 0
-            || self.state_machine_entry_gate_blocked > 0
-            || (self.orphan_recovery_checked > 0 && self.last_error.is_some())
-            || self.orphan_recovery_recovered > 0
-            || self.orphan_recovery_reconciled > 0
-            || self.orphan_recovery_errors > 0
-    }
-}
+#[path = "execution_canary_status_change.rs"]
+mod status_change;
+#[path = "execution_canary_dry_run.rs"]
+mod dry_run;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ExecutionCanaryRunner {
@@ -116,6 +87,8 @@ pub(crate) struct ExecutionCanaryRunner {
     quote_canary: ExecutionQuoteCanaryRunner,
     #[cfg(test)]
     pub(crate) native_buy_mock: Option<std::sync::Arc<crate::execution_canary_route::NativeBuyMockIo>>,
+    #[cfg(test)]
+    pub(crate) owner_buy_adapter: Option<std::sync::Arc<crate::app_tests::owner_buy_fixture::SignedAdapter>>,
 }
 
 impl ExecutionCanaryRunner {
@@ -127,8 +100,21 @@ impl ExecutionCanaryRunner {
             quote_canary: ExecutionQuoteCanaryRunner::new(config.clone()).requiring_owner(),
             #[cfg(test)]
             native_buy_mock: None,
+            #[cfg(test)]
+            owner_buy_adapter: None,
             config,
         }
+    }
+    async fn process_owner_buy_tick(
+        &self, store: &SqliteStore, now: DateTime<Utc>,
+    ) -> Result<crate::execution_canary_state_machine::ExecutionCanaryStateMachineSummary> {
+        #[cfg(test)]
+        if let Some(adapter) = self.owner_buy_adapter.as_ref() {
+            return crate::execution_owner_buy::tick_with_adapter(
+                &self.config, store, now, adapter.as_ref(),
+            ).await;
+        }
+        crate::execution_owner_buy::tick(&self.config, store, now).await
     }
 
     pub(crate) fn for_ingestion(
@@ -234,7 +220,13 @@ impl ExecutionCanaryRunner {
                 }
             }
             self.process_native_buy_tick(store, now, &mut summary).await?;
+            let owner = self.process_owner_buy_tick(store, now).await?;
+            apply_state_machine_summary(&mut summary, owner);
             return Ok(summary);
+        }
+        if self.config.owner_technical_buy.is_some() {
+            let owner = self.process_owner_buy_tick(store, now).await?;
+            apply_state_machine_summary(&mut summary, owner);
         }
         if !self.config.canary_enabled {
             summary.skipped_reason = Some("disabled");
@@ -314,6 +306,10 @@ impl ExecutionCanaryRunner {
             signals
         };
         for signal in &signals {
+            if signal.side.eq_ignore_ascii_case("buy")
+                && self.config.owner_technical_buy.as_ref().is_some_and(|p| p.activate) {
+                continue;
+            }
             if self.quote_canary.entry_pending(&signal.signal_id) {
                 continue;
             }
@@ -346,6 +342,11 @@ impl ExecutionCanaryRunner {
         };
         if self.strict_quotes || !self.config.canary_enabled {
             summary.skipped_reason = Some("disabled");
+            return Ok(summary);
+        }
+        if signal.side.eq_ignore_ascii_case("buy")
+            && self.config.owner_technical_buy.as_ref().is_some_and(|p| p.activate) {
+            summary.skipped_reason = Some("owner_buy_exclusive");
             return Ok(summary);
         }
         if Path::new(&self.config.canary_kill_switch_path).exists() {
@@ -448,43 +449,6 @@ impl ExecutionCanaryRunner {
             apply_quote_summary(&mut summary, quote_summary);
         }
         Ok(summary)
-    }
-
-    fn process_dry_run_orders(
-        &self,
-        store: &SqliteStore,
-        now: DateTime<Utc>,
-        since: DateTime<Utc>,
-        summary: &mut ExecutionCanaryTickSummary,
-    ) -> Result<Vec<CopySignalRow>> {
-        let signals = store
-            .list_execution_canary_ready_candidates(
-                CANARY_COPY_SIGNAL_STATUS,
-                since,
-                self.config.canary_batch_limit.max(1),
-                self.quote_canary.is_enabled(),
-            )
-            .context("failed loading execution canary candidates")?
-            .into_iter()
-            .filter(|s| !self.quote_canary.entry_pending(&s.signal_id))
-            .collect::<Vec<_>>();
-        summary.candidates = signals.len();
-        for signal in &signals {
-            let outcome = store
-                .record_execution_dry_run_order(&signal.signal_id, &self.config.canary_route, now)
-                .with_context(|| {
-                    format!(
-                        "failed recording execution dry-run order for signal {}",
-                        signal.signal_id
-                    )
-                })?;
-            summary.last_signal_id = Some(signal.signal_id.clone());
-            match outcome {
-                ExecutionDryRunRecordOutcome::Inserted => summary.inserted += 1,
-                ExecutionDryRunRecordOutcome::Existing => summary.existing += 1,
-            }
-        }
-        Ok(signals)
     }
 
     async fn process_latest_close_quote_event(

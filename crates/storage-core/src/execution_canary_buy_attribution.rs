@@ -67,7 +67,13 @@ pub(crate) fn read_on_conn(conn: &Connection, token: &str) -> Result<Attribution
                 fill_token == token && basis == "legacy_unclassified",
                 Issue::IdentityConflict
             );
-            let source = buy_fill_identity::source(conn, &id, token)?.ok_or(Issue::MissingOrder)?;
+            let source = buy_fill_identity::source(conn, &id, token)?.ok_or_else(|| {
+                if id.starts_with("exec-canary:owner-buy:") {
+                    Issue::OwnerTechnicalBuyHasNoSourceWallet
+                } else {
+                    Issue::MissingOrder
+                }
+            })?;
             ensure!(
                 source.status == EXECUTION_STATUS_CANARY_CONFIRMED,
                 Issue::NotConfirmed

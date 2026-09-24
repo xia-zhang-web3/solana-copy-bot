@@ -12,6 +12,7 @@ mod discovery_v2_identity;
 mod env_parsing;
 mod loader;
 mod native_fresh_buy;
+mod owner_technical_buy;
 mod owned_sell_preparation;
 mod risk_validation;
 mod schema;
@@ -21,6 +22,7 @@ pub use owned_sell_preparation::{
     OwnedSellPreparationConfig, RPC_FINALIZED_OWNED_SELL_V1,
 };
 pub use native_fresh_buy::{native_first_buy_activation, NativeFreshBuyConfig, PROCESSED_SLOT_FENCE_AVAILABILITY_V1};
+pub use owner_technical_buy::{validate_owner_technical_buy, OwnerTechnicalBuyConfig, OWNER_TECHNICAL_BUY_V1};
 pub use tiny_experiment::{TinyExperimentConfig, TinyPolicyMode};
 
 pub use self::discovery_v2_identity::{

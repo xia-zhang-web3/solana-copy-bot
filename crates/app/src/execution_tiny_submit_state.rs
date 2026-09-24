@@ -10,6 +10,10 @@ pub(crate) mod budget;
 pub(crate) mod dispatch;
 
 pub(crate) enum SubmitState {
+    OwnerTechnicalBuy {
+        order: ExecutionCanaryOrder,
+        intent: copybot_storage_core::OwnerTechnicalBuyIntent,
+    },
     Legacy {
         order: ExecutionCanaryOrder,
         signal: CopySignalRow,
@@ -37,6 +41,24 @@ pub(crate) fn eligible(
             .is_some_and(|s| !s.trim().is_empty())
     {
         return Err("tiny_order_not_submit_eligible");
+    }
+    if request.signal_id.starts_with("owner-buy:") {
+        let intent = crate::execution_owner_buy_authority::request(
+            store, request, &[EXECUTION_STATUS_CANARY_SIMULATED],
+        )
+        .map_err(|_| "owner_buy_submit_identity")?
+        .ok_or("owner_buy_origin_missing")?;
+        if store.execution_canary_unresolved_buy()
+            .map_err(|_| "tiny_submit_state_unavailable")?
+        {
+            return Err(copybot_storage_core::EXECUTION_UNRESOLVED_BUY_REASON);
+        }
+        if store.execution_canary_receipt_submit_block_reason(
+            &request.order_id, &request.token, "buy",
+        ).map_err(|_| "tiny_submit_state_unavailable")?.is_some() {
+            return Err("owner_buy_receipt_pending");
+        }
+        return Ok(SubmitState::OwnerTechnicalBuy { order, intent });
     }
     let signal = store
         .load_copy_signal_by_signal_id(&order.signal_id)
@@ -89,6 +111,10 @@ pub(crate) fn unchanged(
             "initial_sol_order_changed"
         }
     })?;
+    if let (SubmitState::OwnerTechnicalBuy { order: a, intent: x },
+        SubmitState::OwnerTechnicalBuy { order: b, intent: y }) = (before, &after) {
+        return if a == b && x == y { Ok(()) } else { Err("initial_sol_order_changed") };
+    }
     let (before_order, a, after_order, b) = match (before, &after) {
         (SubmitState::Owned(a), SubmitState::Owned(b)) if a == b => return Ok(()),
         (

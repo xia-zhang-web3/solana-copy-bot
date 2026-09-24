@@ -10,6 +10,15 @@ use copybot_config::{ExecutionConfig, TinyPolicyMode};
 use copybot_storage_core::{ProtectedCapitalClaim, ProtectedNativePolicy, SqliteStore};
 use std::{sync::OnceLock, time::Duration};
 
+#[path = "execution_owner_buy_protected.rs"]
+mod owner;
+
+#[derive(Debug, Clone, PartialEq)]
+enum OriginBinding {
+    Copy(serde_json::Value),
+    Owner(copybot_storage_core::OwnerTechnicalBuyIntent),
+}
+
 /// Private constructor; skipped by metadata deserialization. Only a closed collector
 /// plus the durable singleton can create this preparation context.
 #[derive(Debug, Clone, PartialEq)]
@@ -17,7 +26,7 @@ pub(crate) struct ContextProof {
     policy: ProtectedNativePolicy,
     binding: BundleRequest,
     requested: u64,
-    signal: serde_json::Value,
+    signal: OriginBinding,
     decision_tick: DateTime<Utc>,
 }
 fn clock(tick: DateTime<Utc>) -> Result<DateTime<Utc>> {
@@ -105,6 +114,9 @@ pub(crate) fn current(
     let now = clock(tick)?;
     proof.validate_config(config, now)?;
     proof.verify_request(request)?;
+    if let OriginBinding::Owner(intent) = &proof.signal {
+        crate::execution_owner_buy_authority::current(config, store, intent, now)?;
+    }
     ensure!(
         signal_binding(store, request)? == proof.signal,
         "tiny_capital_order_changed"
@@ -142,6 +154,9 @@ pub(crate) async fn prepare_request_guarded(
             "tiny_capital_mode_conflict"
         );
         return Ok(());
+    }
+    if request.signal_id.starts_with("owner-buy:") {
+        return owner::prepare(store, config, request, tick).await;
     }
     ensure!(
         config.canary_tiny_submit_enabled,
@@ -243,7 +258,14 @@ pub(crate) async fn prepare_request_guarded(
 fn signal_binding(
     store: &SqliteStore,
     request: &ExecutionSubmitRequest,
-) -> Result<serde_json::Value> {
+) -> Result<OriginBinding> {
+    if let Some(intent) = crate::execution_owner_buy_authority::request(store, request, &[
+        copybot_storage_core::EXECUTION_STATUS_CANARY_CANDIDATE,
+        copybot_storage_core::EXECUTION_STATUS_CANARY_BUILT,
+        copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED,
+    ])? {
+        return Ok(OriginBinding::Owner(intent));
+    }
     let order = store
         .load_execution_canary_order(&request.order_id)?
         .context("tiny_submit_order_missing")?;
@@ -261,7 +283,7 @@ fn signal_binding(
             && s.side.eq_ignore_ascii_case(&request.side),
         "tiny_capital_order_changed"
     );
-    Ok(serde_json::json!([
+    Ok(OriginBinding::Copy(serde_json::json!([
         s.signal_id,
         s.wallet_id,
         s.side,
@@ -271,7 +293,7 @@ fn signal_binding(
         s.notional_sol.to_bits(),
         s.notional_lamports.map(|n| n.as_u64()),
         s.notional_origin
-    ]))
+    ])))
 }
 
 pub(crate) fn current_gate(

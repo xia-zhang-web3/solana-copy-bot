@@ -70,6 +70,11 @@ pub(crate) fn build_envelope<A: ExecutionSubmitAdapter + ?Sized>(
             } else {
                 None
             };
+            let owner_wire = if crate::execution_owner_buy_wire::required(request) {
+                Some(crate::execution_owner_buy_wire::verify(
+                    request, &payload.serialized_transaction_base64,
+                )?)
+            } else { None };
             let mut envelope = if let Some(signed) =
                 adapter.sign_serialized_transaction(request, plan, &payload)?
             {
@@ -81,6 +86,9 @@ pub(crate) fn build_envelope<A: ExecutionSubmitAdapter + ?Sized>(
                 floor.as_ref(),
                 envelope_payload(&envelope)?,
             )?;
+            if let Some(proof) = owner_wire {
+                proof.verify_same_payload(envelope_payload(&envelope)?)?;
+            }
             let after = prove(
                 request,
                 envelope_payload(&envelope)?,

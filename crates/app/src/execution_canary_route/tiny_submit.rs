@@ -368,7 +368,7 @@ pub(super) fn apply_safety(
     Ok(false)
 }
 
-pub(super) fn apply_tiny_submit_confirm_path_outcome(
+pub(crate) fn apply_tiny_submit_confirm_path_outcome(
     summary: &mut ExecutionCanaryStateMachineSummary,
     outcome: ExecutionTinySubmitConfirmPathOutcome,
 ) {

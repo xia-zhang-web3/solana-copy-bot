@@ -204,6 +204,12 @@ impl SqliteDiscoveryStore {
                 "execution canary fill order {order_id} requires confirmed tx_signature"
             ));
         }
+        if order.signal_id.starts_with("owner-buy:") {
+            let (_, side) = self.execution_receipt_token_side(order_id)?;
+            anyhow::ensure!(side.eq_ignore_ascii_case(expected_side),
+                "owner buy fill side mismatch");
+            return Ok(order);
+        }
         let signal = self
             .load_copy_signal_by_signal_id(&order.signal_id)?
             .ok_or_else(|| anyhow!("missing copy signal for execution canary order {order_id}"))?;
@@ -276,7 +282,9 @@ fn validate_canary_fill_order(
             order.order_id
         ));
     }
-    let signal_side: String = conn
+    let signal_side: String = if order.signal_id.starts_with("owner-buy:") {
+        crate::rpc_owned_sell_handoff::dispatch::identity::token_side(conn, &order.order_id)?.1
+    } else { conn
         .query_row(
             "SELECT side FROM copy_signals WHERE signal_id = ?1 LIMIT 1",
             params![order.signal_id],
@@ -289,7 +297,7 @@ fn validate_canary_fill_order(
                 "missing copy signal for execution canary order {}",
                 order.order_id
             )
-        })?;
+        })? };
     if !signal_side.eq_ignore_ascii_case(expected_side) {
         return Err(anyhow!(
             "execution canary fill order {} expected {expected_side} signal, got {signal_side}",
@@ -342,11 +350,13 @@ fn confirm_order_if_submitted(
 }
 
 fn validate_fill_token(conn: &Connection, order: &ExecutionCanaryOrder, token: &str) -> Result<()> {
-    let expected: String = conn.query_row(
+    let expected: String = if order.signal_id.starts_with("owner-buy:") {
+        crate::rpc_owned_sell_handoff::dispatch::identity::token_side(conn, &order.order_id)?.0
+    } else { conn.query_row(
         "SELECT token FROM copy_signals WHERE signal_id = ?1",
         [&order.signal_id],
         |r| r.get(0),
-    )?;
+    )? };
     anyhow::ensure!(expected == token, "confirmed fill token mismatch");
     Ok(())
 }

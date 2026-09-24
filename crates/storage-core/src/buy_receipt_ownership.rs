@@ -84,7 +84,15 @@ pub(crate) fn validate(conn: &Connection, order_id: &str) -> Result<()> {
         };
         key(&wallet)?;
         key(&signature)?;
-        let binding: Option<(String, String, String)> = conn
+        let binding: Option<(String, String, String)> = if order_id.starts_with("exec-canary:owner-buy:") {
+            let signature: Option<String> = conn.query_row(
+                "SELECT tx_signature FROM orders WHERE order_id=?1", [order_id], |r| r.get(0),
+            ).optional()?.flatten();
+            signature.map(|sig| {
+                crate::rpc_owned_sell_handoff::dispatch::identity::token_side(conn, order_id)
+                    .map(|(mint, side)| (sig, mint, side))
+            }).transpose()?
+        } else { conn
             .query_row(
                 "SELECT o.tx_signature,s.token,s.side FROM orders o
              JOIN copy_signals s ON s.signal_id=o.signal_id WHERE o.order_id=?1",
@@ -92,7 +100,7 @@ pub(crate) fn validate(conn: &Connection, order_id: &str) -> Result<()> {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
-            .context("load durable BUY receipt binding")?;
+            .context("load durable BUY receipt binding")? };
         ensure!(
             binding.is_some_and(|(sig, mint, direction)| sig == signature
                 && mint == token

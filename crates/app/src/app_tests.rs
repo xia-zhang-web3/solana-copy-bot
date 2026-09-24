@@ -46,6 +46,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 mod association_consumer_tests;
+pub(crate) mod owner_buy_fixture;
+mod owner_buy_tests;
+pub(crate) mod owner_buy_wire_fixture;
+mod owner_buy_wire_tests;
+pub(crate) mod owner_buy_protected_fixture;
+mod owner_buy_protected_tests;
 #[path = "app_tests/native_buy_funding_fixture.rs"]
 pub(crate) mod native_buy_funding_fixture;
 #[path = "app_tests/native_buy_mock_helpers.rs"]

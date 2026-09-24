@@ -47,6 +47,10 @@ pub(crate) fn swap_request_body(
         "quoteResponse": quote_response,
         "dynamicComputeUnitLimit": true,
     });
+    if plan.signal_id.starts_with("owner-buy:") {
+        body["dynamicSlippage"] = Value::Bool(false);
+        body["useSharedAccounts"] = Value::Bool(false);
+    }
     match blueprint.priority_fee {
         crate::execution_priority_fee::PriorityFee::MicroLamportsPerComputeUnit(price) => {
             body["computeUnitPriceMicroLamports"] = json!(price)

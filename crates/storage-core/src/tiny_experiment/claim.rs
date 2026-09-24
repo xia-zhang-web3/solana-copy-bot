@@ -80,6 +80,7 @@ fn reserve_inner(
     );
     match d.side.as_str() {
         "buy" => {
+            crate::owner_technical_buy::verify_tiny_budget_owner_buy(conn, &e.id, d, p)?;
             ensure!(
                 buys == 0 && e.buy_order_id.is_none(),
                 "tiny_budget_buy_slot"

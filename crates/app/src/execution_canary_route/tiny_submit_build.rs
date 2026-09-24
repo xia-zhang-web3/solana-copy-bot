@@ -13,7 +13,7 @@ use copybot_storage_core::{
     EXECUTION_SIMULATION_STATUS_FAILED, EXECUTION_STATUS_CANARY_FAILED,
 };
 
-pub(super) async fn build_simulated_signed_envelope<A: ExecutionSubmitAdapter>(
+pub(crate) async fn build_simulated_signed_envelope<A: ExecutionSubmitAdapter>(
     store: &SqliteStore,
     adapter: &A,
     request: &ExecutionSubmitRequest,
@@ -85,6 +85,13 @@ pub(super) async fn build_simulated_signed_envelope<A: ExecutionSubmitAdapter>(
     {
         return Ok(None);
     }
+    if request.signal_id.starts_with("owner-buy:") {
+        crate::execution_owner_buy_authority::request(
+            store,
+            request,
+            &[copybot_storage_core::EXECUTION_STATUS_CANARY_BUILT],
+        )?;
+    }
     let simulation = match simulation_result {
         Ok(simulation) => simulation,
         Err(error) => {
@@ -132,6 +139,15 @@ pub(super) async fn build_simulated_signed_envelope<A: ExecutionSubmitAdapter>(
     if !native_current(native, store)? {
         summary.skipped_reason = Some("native_buy_decision_changed");
         return Ok(None);
+    }
+    if let Some(intent) = crate::execution_owner_buy_authority::request(
+        store, request, &[copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED],
+    )? {
+        let config = adapter.native_floor_config()?;
+        let signing_now = crate::execution_canary_safety::risk_clock::decision_time(now)
+            .ok_or_else(|| anyhow::anyhow!("owner_buy_clock"))?;
+        crate::execution_owner_buy_authority::current(config, store, &intent, signing_now)?;
+        crate::execution_owner_buy_authority::fresh_quote(request, signing_now)?;
     }
     let signing = record_execution_signing_envelope(store, adapter, request, &plan, now)?;
     if let Some(refusal) = signing.source_refusal.as_ref() {

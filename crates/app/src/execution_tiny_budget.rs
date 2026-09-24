@@ -50,6 +50,10 @@ pub(crate) async fn prepare(
     );
     let activation = crate::execution_canary_safety::risk_clock::decision_time(tick)
         .ok_or_else(|| anyhow!("tiny_budget_clock"))?;
+    if let SubmitState::OwnerTechnicalBuy { intent, .. } = state {
+        crate::execution_owner_buy_authority::current(config, store, intent, activation)?;
+        crate::execution_owner_buy_authority::fresh_quote(request, activation)?;
+    }
     if policy.activate && !crate::execution_native_floor_policy::protected::enabled(config) {
         store.activate_tiny_experiment(id, &request.wallet_pubkey, activation)?;
     }
@@ -64,6 +68,11 @@ pub(crate) async fn prepare(
     let (message, priority) = crate::execution_priority_fee_wire::decode_priority_fee_message(
         &intent.signed_transaction_base64,
     )?;
+    let owner_wire = if crate::execution_owner_buy_wire::required(request) {
+        Some(crate::execution_owner_buy_wire::verify(
+            request, &intent.signed_transaction_base64,
+        )?)
+    } else { None };
     #[cfg(test)]
     let mocked = native.and_then(|guard| guard.mock_io());
     #[cfg(not(test))]
@@ -102,6 +111,14 @@ pub(crate) async fn prepare(
     // Re-read authoritative guards after the new await. No SQLite transaction is held.
     crate::execution_tiny_submit_state::unchanged(state, store, request)
         .map_err(|reason| anyhow!(reason))?;
+    if let SubmitState::OwnerTechnicalBuy { intent, .. } = state {
+        let now = crate::execution_canary_safety::risk_clock::decision_time(tick)
+            .ok_or_else(|| anyhow!("tiny_budget_clock"))?;
+        crate::execution_owner_buy_authority::current(
+            config, store, intent, now,
+        )?;
+        crate::execution_owner_buy_authority::fresh_quote(request, now)?;
+    }
     crate::execution_source_sell_guard::request(
         store,
         request,
@@ -142,7 +159,8 @@ pub(crate) async fn prepare(
             )?,
             floor,
         )?;
-        (None, Some(proof.claim(floor)?))
+        (owner_wire.as_ref().map(|proof| proof.decoded_amount_lamports()),
+            Some(proof.claim(floor)?))
     } else if request.side.eq_ignore_ascii_case("buy") {
         (Some(amount::buy(&message, &request.wallet_pubkey)?), None)
     } else {

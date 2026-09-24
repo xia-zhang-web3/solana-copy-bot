@@ -5,6 +5,14 @@ pub mod native_buy;
 pub mod association_sell_preparation;
 mod association_sell_types;
 pub mod order_identity_migration;
+pub mod owner_technical_buy_migration;
+mod owner_technical_buy;
+mod owner_technical_buy_protected;
+pub use owner_technical_buy::{
+    owner_technical_buy_client_order_id, owner_technical_buy_identity_id,
+    owner_technical_buy_order_id, ExecutionOrderOrigin, OwnerTechnicalBuyIntent,
+    OwnerTechnicalBuyIntentRecordOutcome,
+};
 pub mod ordered_sell_quote;
 pub mod ordered_source_sell;
 mod quote_http_timing;

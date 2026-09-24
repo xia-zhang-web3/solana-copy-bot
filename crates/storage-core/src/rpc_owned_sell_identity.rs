@@ -55,6 +55,17 @@ pub(crate) fn token_side(c: &Connection, id: &str) -> Result<(String, String)> {
     if let Some(p) = owned(c, id)? {
         return Ok((p.handoff.snapshot.quote.mint, "sell".into()));
     }
+    if id.starts_with("exec-canary:owner-buy:") {
+        let (identity,intent,mint):(String,String,String)=c.query_row(
+            "SELECT o.signal_id,s.owner_buy_intent_id,i.mint FROM orders o
+             JOIN execution_order_sources s ON s.identity_id=o.signal_id
+             JOIN owner_technical_buy_intents i ON i.intent_id=s.owner_buy_intent_id
+             WHERE o.order_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        ensure!(identity==crate::owner_technical_buy::owner_technical_buy_identity_id(&intent)
+            && id==crate::owner_technical_buy::owner_technical_buy_order_id(&intent),
+            "owner_buy_receipt_origin_conflict");
+        return Ok((mint,"buy".into()));
+    }
     c.query_row("SELECT s.token,s.side FROM orders o JOIN copy_signals s ON s.signal_id=o.signal_id WHERE o.order_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?))).context("receipt signal missing")
 }
 pub(crate) fn position(

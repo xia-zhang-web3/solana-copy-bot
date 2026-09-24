@@ -55,6 +55,7 @@ impl Default for SystemConfig {
 #[serde(default)]
 pub struct ExecutionConfig {
     pub native_fresh_buy: Option<crate::NativeFreshBuyConfig>,
+    pub owner_technical_buy: Option<crate::OwnerTechnicalBuyConfig>,
     pub owned_sell_preparation: Option<crate::OwnedSellPreparationConfig>,
     pub tiny_experiment: crate::TinyExperimentConfig,
     pub enabled: bool,
@@ -117,6 +118,7 @@ impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
             native_fresh_buy: None,
+            owner_technical_buy: None,
             tiny_experiment: Default::default(),
             owned_sell_preparation: None,
             enabled: false,

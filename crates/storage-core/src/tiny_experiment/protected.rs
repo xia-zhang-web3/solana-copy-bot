@@ -98,7 +98,7 @@ impl SqliteDiscoveryStore {
         clock: impl Fn() -> Result<DateTime<Utc>>,
     ) -> Result<ProtectedNativePolicy> {
         self.prepare_native_policy_inner(id, wallet, balance, reserve, slot, observed_at,
-            None, clock)
+            None, None, clock)
     }
 
     /// First native BUY only: the current decision and reserved order are checked
@@ -115,7 +115,19 @@ impl SqliteDiscoveryStore {
         clock: impl Fn() -> Result<DateTime<Utc>>,
     ) -> Result<ProtectedNativePolicy> {
         self.prepare_native_policy_inner(id, wallet, balance, reserve, slot, observed_at,
-            Some(binding), clock)
+            Some(binding), None, clock)
+    }
+
+    /// Explicit owner origin, checked with the immutable intent and reserved order
+    /// under the same lock that creates (or reuses) the protected native anchor.
+    pub fn prepare_tiny_native_policy_for_owner_buy(
+        &self, id: &str, wallet: &str, balance: u64, reserve: u64,
+        slot: u64, observed_at: DateTime<Utc>,
+        intent: &crate::OwnerTechnicalBuyIntent, order: &crate::ExecutionCanaryOrder,
+        clock: impl Fn() -> Result<DateTime<Utc>>,
+    ) -> Result<ProtectedNativePolicy> {
+        self.prepare_native_policy_inner(id, wallet, balance, reserve, slot, observed_at,
+            None, Some((intent, order)), clock)
     }
 
     fn prepare_native_policy_inner(
@@ -127,6 +139,7 @@ impl SqliteDiscoveryStore {
         slot: u64,
         observed_at: DateTime<Utc>,
         binding: Option<&crate::native_buy::NativeBuyActivationBinding>,
+        owner: Option<(&crate::OwnerTechnicalBuyIntent, &crate::ExecutionCanaryOrder)>,
         clock: impl Fn() -> Result<DateTime<Utc>>,
     ) -> Result<ProtectedNativePolicy> {
         ensure!(
@@ -143,6 +156,10 @@ impl SqliteDiscoveryStore {
         );
         self.with_immediate_transaction_retry("prepare native anchor", |conn| {
             let now = clock()?;
+            if let Some((intent, order)) = owner {
+                crate::owner_technical_buy_protected::activation_current(
+                    self, intent, order, id, wallet, reserve, now)?;
+            }
             if let Some(e) = refresh(conn, now)? {
                 active(&e, id, wallet, now)?;
                 return load_policy(conn, &e);
@@ -159,6 +176,10 @@ impl SqliteDiscoveryStore {
                 VALUES(1,?1,?2,?3,?4,?3,'active','protected_native_capital')", params![id,wallet,now.to_rfc3339(),deadline.to_rfc3339()])?;
             conn.execute("INSERT INTO execution_tiny_native_policy VALUES(?1,?2,1,?3,?4,?5,15000000,?6,?7)",
                 params![id,wallet,balance.to_string(),reserve.to_string(),floor.to_string(),slot.to_string(),observed_at.to_rfc3339()])?;
+            if let Some((intent, order)) = owner {
+                crate::owner_technical_buy_protected::activation_current(
+                    self, intent, order, id, wallet, reserve, clock()?)?;
+            }
             load_policy(conn, &load(conn)?.context("tiny_capital_policy_missing")?)
         })
     }
@@ -182,7 +203,10 @@ pub(super) fn validate_claim(
 ) -> Result<bool> {
     match (mode(conn)?.as_str(), &p.protected_capital, p.buy_lamports) {
         ("decoded_amount", None, Some(amount)) => Ok((1..=TINY_BUY_LAMPORTS).contains(&amount)),
-        ("protected_native_capital", Some(proof), None) => {
+        ("protected_native_capital", Some(proof), amount) => {
+            if amount.is_some() {
+                crate::owner_technical_buy_protected::decoded_claim(conn, &e.id, p)?;
+            }
             ensure!(
                 load_policy(conn, e)? == proof.policy,
                 "tiny_capital_policy_binding"

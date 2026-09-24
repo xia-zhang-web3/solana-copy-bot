@@ -24,6 +24,14 @@ pub(crate) fn source(conn: &Connection, order_id: &str, token: &str) -> Result<O
     let Some((signal_id, status)) = order else {
         return Ok(None);
     };
+    if order_id.starts_with("exec-canary:owner-buy:") {
+        let (saved_token, side)=crate::rpc_owned_sell_handoff::dispatch::identity::token_side(conn,order_id)?;
+        ensure!(saved_token==token && side=="buy"
+            && signal_id.starts_with("owner-buy:"),Issue::IdentityConflict);
+        // An owner BUY has no leader/source wallet. The fill remains linked to its
+        // explicit order origin; source-triggered SELL attribution stays unavailable.
+        return Ok(None);
+    }
     let (wallet_id, signal_token, side): (String, String, String) = conn
         .query_row(
             "SELECT wallet_id,token,side FROM copy_signals WHERE signal_id=?1",

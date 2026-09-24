@@ -127,11 +127,20 @@ pub(crate) async fn send_guarded(
             crate::execution_owned_sell_prepare::submit::guard::live(request)?;
             crate::execution_owned_sell_prepare::submit::guard::config(c, p)?;
         }
-        crate::execution_canary_safety::risk_clock::decision_time(tick_at)
-            .ok_or_else(|| anyhow::anyhow!("tiny_budget_clock"))
+        let now = crate::execution_canary_safety::risk_clock::decision_time(tick_at)
+            .ok_or_else(|| anyhow::anyhow!("tiny_budget_clock"))?;
+        if let SubmitState::OwnerTechnicalBuy { intent, .. } = state {
+            let config = gate.buy_safety_config.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("owner_buy_config_missing"))?;
+            crate::execution_owner_buy_authority::current(config, store, intent, now)?;
+            crate::execution_owner_buy_authority::fresh_quote(request, now)?;
+        }
+        Ok(now)
     };
     let claim_result = match state {
         SubmitState::Owned(p) => store.claim_owned_sell_dispatch(p, &identity, &budget, clock),
+        SubmitState::OwnerTechnicalBuy { order, .. } =>
+            store.claim_owner_technical_buy_dispatch(order, &identity, &budget, clock),
         SubmitState::Legacy { order, signal } => store
             .claim_tiny_experiment_dispatch_with_clock(order, signal, &identity, &budget, clock),
     };
