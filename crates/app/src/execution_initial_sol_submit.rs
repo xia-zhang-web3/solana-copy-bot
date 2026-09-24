@@ -44,8 +44,8 @@ pub(crate) async fn before_send_guarded(
         return None;
     }
     if owner_exit {
-        return owner_exit_before_send(store, request, envelope, intent, gate,
-            transport, state, tick_at).await;
+        return Box::pin(owner_exit_before_send(store, request, envelope, intent, gate,
+            transport, state, tick_at)).await;
     }
     let result = Box::pin(async {
         let config = gate
