@@ -1,6 +1,6 @@
 # Project Recovery Plan
 
-## Current decision: Run10 stopped after a transient RPC fence failure
+## Current decision: Run11 prepared under STOP for one owner launch
 
 The owner activated Run10 once. Its preserved `LIVE_RESULT.json` reports
 `APP_EXITED` after about five minutes; `NO_SIGNAL` describes the financial
@@ -22,10 +22,18 @@ eligibility still requires a same-session epoch no older than 120 seconds;
 proof mismatch, STOP and the immutable cohort deadline remain hard failures.
 Scoped periodic recovery, initial cancellation/retry and actual offline
 daemon BUY-to-SELL tests passed. An independent review accepted the changed
-path and file/dependency constraints. Next action: publish the accepted
-`copybot-app/release` diff, install the exact matching artifact into a fresh
-stopped Run11 package, carry all Run07-Run10 provider obligations and complete
-local preflight. No live recovery or automatic copy is yet proved.
+path and file/dependency constraints. The `copybot-app/release` artifact from
+commit `b1cf0816a71a922e23c39ee3c84314af593a0fcd` and CI run
+`36194787410` was installed into a separate Run11 package with all 88
+migrations. The prior release remains available for rollback. Run11 carried
+33 RPC attempts, 400 CU, 210,000 nanoUSD and 1,717,783,779 accounted stream
+bytes from Run07-Run10. Its own financial state is empty, STOP is set, and
+five containers were created but never started. Network-none startup without
+a signer, 18 helper tests, independent package review, 43-file seal and final
+local activation preflight passed. The remaining provider allowances and all
+trading caps are listed in the private Run11 README. Next authorized action:
+the owner may run its one-shot activation command once. A live automatic
+copy or real RPC recovery remains unproved until that run's receipt/evidence.
 
 ## Prior decision: run 09 pre-start refusal; stopped run 10 prepared
 
