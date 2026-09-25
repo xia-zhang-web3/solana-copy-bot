@@ -322,6 +322,39 @@ impl SqliteDiscoveryStore {
         tx.commit()?;
         Ok(Some(result))
     }
+    /// Compare the completed record without another graph walk. The caller
+    /// must pair this with a freshly validated owned snapshot on the same
+    /// connection and a data_version fence around both reads. Later external
+    /// commits require full re-evaluation; the handoff does its own atomic
+    /// graph check before any dispatch.
+    pub fn matches_persisted_current_strict_quote(
+        &self,
+        expected: &QuoteObservation,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let Some(binding) = expected.binding.as_ref() else {
+            return Ok(false);
+        };
+        let tx = self.conn.unchecked_transaction()?;
+        schema::required(&tx)?;
+        let row = rows::load(&tx, &binding.intent_id)?;
+        let binding_wire = serde_json::to_string(binding)?;
+        let matches = row
+            .and_then(|row| {
+                if row.lease.is_some() || row.binding.as_deref() != Some(binding_wire.as_str()) {
+                    return None;
+                }
+                row.record
+            })
+            .map(|wire| serde_json::from_str::<QuoteObservation>(&wire))
+            .transpose()?
+            .as_ref()
+            == Some(expected)
+            && expected.outcome == QuoteOutcome::Current
+            && fresh(expected, now);
+        tx.commit()?;
+        Ok(matches)
+    }
 }
 pub(crate) fn fresh(r: &QuoteObservation, now: DateTime<Utc>) -> bool {
     let Some(b) = &r.binding else {

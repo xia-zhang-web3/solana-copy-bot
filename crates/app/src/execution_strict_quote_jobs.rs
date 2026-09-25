@@ -129,18 +129,29 @@ impl ExecutionQuoteCanaryRunner {
         pool.jobs = remaining;
         if !self.is_enabled()
             || (crate::execution_technical_cohort::active(&self.config)
-                && crate::execution_technical_cohort::before_deadline(&self.config).is_err()) {
+                && crate::execution_technical_cohort::before_deadline(&self.config).is_err())
+        {
             return Ok(summary);
         }
-        let slots = (JOBS - pool.jobs.len()).min(self.config.canary_batch_limit.max(1) as usize);
+        // A technical cohort has at most one source SELL. Keep its quote and
+        // preparation in one job until ownership is reserved (or the job ends):
+        // a second claim must not replace the quote record while the first
+        // job is still performing its guarded preparation.
+        let slots =
+            if crate::execution_technical_cohort::active(&self.config) && !pool.jobs.is_empty() {
+                0
+            } else {
+                (JOBS - pool.jobs.len()).min(self.config.canary_batch_limit.max(1) as usize)
+            };
         for _ in 0..slots {
             let path = strict.path.clone();
             let limits = strict.limits;
             let config = self.config.clone();
             let client = self.http.clone();
-            let live = crate::execution_owned_sell_prepare::submit::guard::Live(Arc::new(
-                std::sync::atomic::AtomicBool::new(true),
-            ));
+            let live = crate::execution_owned_sell_prepare::submit::guard::Live(
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                Arc::new(std::sync::atomic::AtomicI64::new(-1)),
+            );
             let owner = live.clone();
             let handle = tokio::spawn(async move {
                 let endpoint = reqwest::Url::parse(&config.quote_canary_base_url)?;

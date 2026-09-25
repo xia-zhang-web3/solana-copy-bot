@@ -42,6 +42,47 @@ fn strict_quote_exact_claim_result_duplicate_and_legacy_exclusion() -> Result<()
     Ok(())
 }
 #[test]
+fn current_record_fast_check_requires_external_version_fence() -> Result<()> {
+    let f = fixture()?;
+    let now = Utc::now();
+    let c = claim(&f, now)?;
+    let current =
+        f.db.store
+            .complete_strict_sell_quote(&c, limits(), observation(&c, now), || now)?;
+    assert!(f
+        .db
+        .store
+        .matches_persisted_current_strict_quote(&current, now)?);
+    let mut altered = current.clone();
+    altered.response_out_raw = Some("1".into());
+    assert!(!f
+        .db
+        .store
+        .matches_persisted_current_strict_quote(&altered, now)?);
+    assert!(!f
+        .db
+        .store
+        .matches_persisted_current_strict_quote(&current, now + Duration::seconds(6),)?);
+    let before = f.db.store.sqlite_data_version()?;
+    f.db.conn()?.execute(
+        "UPDATE positions SET qty_raw='4000',qty=4 WHERE token='mint'",
+        [],
+    )?;
+    assert_ne!(f.db.store.sqlite_data_version()?, before);
+    assert!(f
+        .db
+        .store
+        .matches_persisted_current_strict_quote(&current, now)?);
+    assert_eq!(
+        f.db.store
+            .load_strict_sell_quote(ID, limits(), now)?
+            .unwrap()
+            .outcome,
+        QuoteOutcome::Stale
+    );
+    Ok(())
+}
+#[test]
 fn strict_quote_http_clock_and_response_unknown_pairs() -> Result<()> {
     for case in [
         "valid",

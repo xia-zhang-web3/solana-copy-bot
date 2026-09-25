@@ -17,19 +17,17 @@ pub struct OwnedSellSnapshot {
     pub facts: Vec<ExecutionCanaryReceiptFacts>,
 }
 pub(crate) fn read(c: &Connection, b: &QuoteBinding, l: InboxLimits) -> Result<OwnedSellSnapshot> {
-    let current = crate::ordered_sell_quote::snapshot::read(c, &b.intent_id, l, &b.endpoint)?;
+    let current = crate::ordered_sell_quote::snapshot::read_with_preparation(
+        c,
+        &b.intent_id,
+        l,
+        &b.endpoint,
+    )?;
     ensure!(
-        current.as_ref().ok() == Some(b),
+        current.as_ref().ok().map(|(binding, _)| binding) == Some(b),
         "owned_sell_snapshot_changed"
     );
-    let i = crate::ordered_source_sell::rows::load(c, &b.intent_id)?
-        .context("owned_sell_intent_missing")?;
-    let p = crate::association_sell_preparation::on_connection(
-        c,
-        &i.first.sell.admission.facts.signature,
-        l,
-    )?
-    .context("owned_sell_preparation_missing")?;
+    let (_, p) = current.expect("validated owned SELL snapshot");
     let mut facts = vec![];
     for r in &p.current.current_contributors {
         let f = crate::receipt_facts_rows::load(c, &r.contributor.order_id)?

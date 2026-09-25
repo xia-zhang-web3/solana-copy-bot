@@ -1,7 +1,7 @@
 //! Typed, single-owner transfer into the canonical dispatch and tiny reservation.
 #[path = "rpc_owned_sell_identity.rs"]
 pub mod identity;
-use super::{recheck_state, Handoff};
+use super::{recheck_state_common, Handoff};
 use crate::{
     association_inbox::InboxLimits, ExecutionCanaryDispatch, ExecutionDispatchClaim,
     SqliteDiscoveryStore, TinyBudgetClaim,
@@ -37,6 +37,9 @@ impl Prepared {
         Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM rpc_owned_sell_handoffs WHERE intent_id=?1 AND owner=?2 AND order_id=?3 AND config_sha256=?4 AND snapshot=?5 AND authority=?6 AND quote=?7 AND signature=?8 AND position_id=?9 AND experiment_id=?10 AND wallet=?11 AND deadline=?12 AND fee_reserve=100000 AND state='unsigned_prepared' AND unsigned_payload=?13 AND message_sha256=?14 AND total_fee=?15 AND priority_fee=?16)",params![h.intent_id,h.owner,h.order_id,h.config_sha256,serde_json::to_string(&h.snapshot)?,h.authority,serde_json::to_string(&h.quote)?,h.snapshot.sell.facts.signature,h.snapshot.quote.position_id,h.experiment_id,h.wallet,h.deadline.to_rfc3339(),self.payload,self.message_sha256,self.total_fee,self.priority_fee],|r|r.get(0))?)
     }
     pub(crate) fn recheck(&self, c: &Connection, now: DateTime<Utc>) -> Result<()> {
+        self.recheck_common(c, now, true)
+    }
+    fn recheck_common(&self, c: &Connection, now: DateTime<Utc>, graph: bool) -> Result<()> {
         required(c)?;
         ensure!(
             crate::tiny_experiment::owned_snapshot(c)? == self.experiment,
@@ -62,12 +65,13 @@ impl Prepared {
             )?,
             "owned_sell_already_consumed"
         );
-        recheck_state(
+        recheck_state_common(
             c,
             &self.handoff,
             self.inbox_limits(),
             now,
             "unsigned_prepared",
+            graph,
         )
     }
 }
@@ -83,6 +87,26 @@ impl SqliteDiscoveryStore {
         p.recheck(&tx, now)?;
         tx.commit()?;
         Ok(())
+    }
+    /// The caller first completed a full handoff check on this connection.
+    /// A foreign commit invalidates the shortcut; the dispatch claim always
+    /// performs the full graph check under its immediate transaction.
+    pub fn recheck_owned_sell_prepared_at_version(
+        &self,
+        p: &Prepared,
+        expected_version: i64,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        if self.sqlite_data_version()? != expected_version {
+            return Ok(false);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        if self.sqlite_data_version()? != expected_version {
+            return Ok(false);
+        }
+        p.recheck_common(&tx, now, false)?;
+        tx.commit()?;
+        Ok(self.sqlite_data_version()? == expected_version)
     }
     pub fn claim_owned_sell_dispatch(
         &self,

@@ -1,16 +1,18 @@
 use anyhow::{ensure, Result};
+use copybot_storage_core::ordered_sell_quote::fractional::inventory::Evidence;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use copybot_storage_core::ordered_sell_quote::fractional::inventory::Evidence;
 
 pub(super) struct NativeCohort {
     pub buy_signature: String,
     pub buy_rpc: Value,
+    pub source_sell_rpc: Value,
     pub evidence: Evidence,
     pub owned_raw: u64,
     pub sold_raw: u64,
     pub native_after_buy: u64,
+    pub sell_receipt_slot: u64,
 }
 
 impl NativeCohort {
@@ -18,9 +20,17 @@ impl NativeCohort {
         let method = r["method"].as_str()?;
         let result = match method {
             "getTransaction" if r["params"][0] == self.buy_signature => self.buy_rpc.clone(),
+            "getTransaction"
+                if r["params"][0] == self.source_sell_rpc["transaction"]["signatures"][0] =>
+            {
+                self.source_sell_rpc.clone()
+            }
             "getBlock" if r["params"][0] == self.evidence.slot => self.evidence.block.clone(),
             "getBlock" => self.evidence.parent.clone(),
-            "getTokenAccountsByOwnerAtSlot" => self.evidence.pages.iter()
+            "getTokenAccountsByOwnerAtSlot" => self
+                .evidence
+                .pages
+                .iter()
                 .find(|p| r["params"][1]["programId"] == p.program)
                 .map(|p| p.response.clone())?,
             "getTokenAccountsByOwner" => self.evidence.execution_accounts.clone(),
@@ -30,18 +40,42 @@ impl NativeCohort {
                     if i == 0 { super::initial_sol_rpc_fixture::system(1_000_000_000) }
                     else { Value::Null }
                 }).collect::<Vec<_>>() }),
+            "getFeeForMessage" => json!({"context":{"slot":self.evidence.slot + 1},
+                "value":19000}),
+            "simulateTransaction" => json!({"context":{"slot":self.evidence.slot + 1},
+                "value":{"err":null,"logs":[],"unitsConsumed":100000}}),
             _ => return None,
         };
         Some(json!({"jsonrpc":"2.0","id":r["id"],"result":result}))
     }
     fn signed_sell_receipt(&self, r: &Value, result: &mut Value) {
-        if r["method"] != "getTransaction" || r["params"][0] == self.buy_signature
-            || r["params"][0] == "41d8jCJEnTMrriqGyfJvamJYsakyHb8VhtvTWeFyiDnx4NhAWjBR8fYo11PjgZFEhSdogM4Q31EZWY8dgVrdfjwb"
-            || result["result"]["slot"] != 152 { return; }
+        if self.evidence.slot > 150 {
+            if r["method"] == "isBlockhashValid"
+                && result["result"]["value"] == true
+                && result["result"]["context"]["slot"] == 152
+            {
+                result["result"]["context"]["slot"] = json!(self.sell_receipt_slot);
+            }
+            if r["method"] == "getSignatureStatuses" {
+                result["result"]["context"]["slot"] = json!(self.sell_receipt_slot);
+                if !result["result"]["value"][0].is_null() {
+                    result["result"]["value"][0]["slot"] = json!(self.sell_receipt_slot);
+                }
+            }
+        }
+        if r["method"] != "getTransaction"
+            || r["params"][0] == self.buy_signature
+            || r["params"][0] == self.source_sell_rpc["transaction"]["signatures"][0]
+            || result["result"]["slot"] != 152
+        {
+            return;
+        }
+        result["result"]["slot"] = json!(self.sell_receipt_slot);
         let receipt = &mut result["result"]["meta"];
         receipt["preBalances"][0] = json!(self.native_after_buy);
         receipt["postBalances"][0] = json!(self.native_after_buy + 981_000);
-        receipt["preTokenBalances"][0]["uiTokenAmount"]["amount"] = json!(self.owned_raw.to_string());
+        receipt["preTokenBalances"][0]["uiTokenAmount"]["amount"] =
+            json!(self.owned_raw.to_string());
         receipt["postTokenBalances"][0]["uiTokenAmount"]["amount"] =
             json!((self.owned_raw - self.sold_raw).to_string());
     }

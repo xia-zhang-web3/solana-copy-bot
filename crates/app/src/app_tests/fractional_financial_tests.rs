@@ -138,3 +138,28 @@ async fn fractional_stale_decision_blocks_predispatch_without_release() -> Resul
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn prepared_fast_guard_falls_back_after_foreign_decision_change() -> Result<()> {
+    let mut f = Fixture::new().await?;
+    money::budget(&f)?;
+    let old = f.claim()?;
+    let claim = f::bind(&mut f, old, f::evidence()?).await?;
+    let p = money::prepare(&f, &claim)?;
+    let version = f.db.store.sqlite_data_version()?;
+    assert!(f
+        .db
+        .store
+        .recheck_owned_sell_prepared_at_version(&p, version, Utc::now())?);
+    f.db.sql.execute("UPDATE fractional_sell_decisions SET decision=json_set(decision,'$.decision_id','substituted')",[])?;
+    assert!(!f
+        .db
+        .store
+        .recheck_owned_sell_prepared_at_version(&p, version, Utc::now())?);
+    assert!(f
+        .db
+        .store
+        .recheck_owned_sell_prepared(&p, Utc::now())
+        .is_err());
+    Ok(())
+}

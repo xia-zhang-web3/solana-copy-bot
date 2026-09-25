@@ -1,6 +1,33 @@
 # Project Recovery Plan
 
-## Current decision: run 08 four-hour upgrade accepted before publication
+## Current decision: run 09 capacity repair accepted offline
+
+Run 08 was used once and stopped after `BlockCapacity`; it made no order or
+send. The saved main outcome remains `APP_EXITED`, with `NO_SIGNAL` as the
+financial state. Run 07 and Run 08 evidence, ledgers, databases, clocks and
+authorities remain untouched. The prepared technical cohort 09 package is
+configured to carry all prior provider accounting and retain the authorized
+$50 total provider model, four-hour window, one BUY at most 0.01 SOL and one
+source SELL. No paid ingress, signature or live trade was used in preparation.
+
+The offline capacity repair was independently accepted on 2026-09-25 for the
+specified synthetic profile: 450 full blocks across 180 simulated seconds,
+36,000 continuous parent blocks across 14,400 seconds, bot BUY anchor and a
+source SELL through daemon receipt/accounting, restart without a second send,
+and process RSS under the unchanged 2 GiB app limit. The old 32-block profile
+reproduced `BlockCapacity`. See
+[Run09 offline acceptance](audit/2026-09-25/technical-cohort-09-capacity/OFFLINE_ACCEPTANCE_RU.md)
+for measured cache, durable meter, memory and their limits. Run 08 full block
+payloads were unavailable; live maximum and strategy profitability remain
+unproved.
+
+The source decision authorizes a matching `copybot-app/release` artifact and
+isolated Run09 installation. Current launch authority is determined by the
+new package's STOP, matching artifact binding and final local preflight; the
+owner command may be used only after that package is sealed. No new financial
+activation is performed by this repair.
+
+## Prior decision: run 08 four-hour upgrade accepted before publication
 
 The run 07 stream association and SQLite reader repairs were installed in the
 stopped, unused run 08 package with a matching one-hour artifact. The owner

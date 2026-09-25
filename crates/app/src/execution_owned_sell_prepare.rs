@@ -49,7 +49,17 @@ pub(crate) async fn run(
         q.response_sha256.as_deref() == Some(&rpc::digest(&body)),
         "owned_sell_quote_body_binding"
     );
+    let baseline_version = store.sqlite_data_version()?;
     let s = store.owned_sell_snapshot(b, l)?;
+    ensure!(
+        store.matches_persisted_current_strict_quote(&q, Utc::now())?,
+        "owned_sell_quote_stale"
+    );
+    ensure!(
+        store.sqlite_data_version()? == baseline_version,
+        "owned_sell_snapshot_changed"
+    );
+    let mut data_version = baseline_version;
     let e = c
         .tiny_experiment
         .id
@@ -62,6 +72,7 @@ pub(crate) async fn run(
             .load_execution_canary_open_position(&b.mint)?
             .context("owned_sell_position_missing")?,
     )?;
+    selection.recheck(store)?;
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
@@ -75,18 +86,35 @@ pub(crate) async fn run(
             !std::path::Path::new(&c.canary_kill_switch_path).exists(),
             "kill_switch_active"
         );
+        let now = Utc::now();
         ensure!(
-            store.owned_sell_snapshot(b, l)? == s,
-            "owned_sell_snapshot_changed"
-        );
-        let fresh = store
-            .load_strict_sell_quote(&b.intent_id, l, Utc::now())?
-            .context("owned_sell_quote_missing")?;
-        ensure!(
-            fresh == q && fresh.outcome == QuoteOutcome::Current,
+            q.http_started.is_some_and(|t| now >= t
+                && now - t
+                    <= chrono::Duration::milliseconds(
+                        copybot_storage_core::ordered_sell_quote::MAX_QUOTE_AGE_MS
+                    )),
             "owned_sell_quote_stale"
         );
-        selection.recheck(store)?;
+        // This connection makes no writes during RPC collection. When another
+        // connection commits, re-evaluate the full durable graph and quote.
+        // The reservation below always performs its own full atomic recheck.
+        let current_version = store.sqlite_data_version()?;
+        if current_version != data_version {
+            ensure!(
+                store.owned_sell_snapshot(b, l)? == s,
+                "owned_sell_snapshot_changed"
+            );
+            ensure!(
+                store.matches_persisted_current_strict_quote(&q, now)?,
+                "owned_sell_quote_stale"
+            );
+            selection.recheck(store)?;
+            ensure!(
+                store.sqlite_data_version()? == current_version,
+                "owned_sell_snapshot_changed"
+            );
+            data_version = current_version;
+        }
         store.check_owned_sell_budget_policy(
             e,
             &c.canary_wallet_pubkey,
@@ -108,6 +136,7 @@ pub(crate) async fn run(
         .await
         .context("owned_sell_deadline")??;
     check()?;
+    let before_reserve = store.sqlite_data_version()?;
     let h = store.reserve_owned_sell_handoff(
         &s,
         &q,
@@ -118,6 +147,11 @@ pub(crate) async fn run(
         &c.canary_wallet_pubkey,
         Utc::now,
     )?;
+    let mut handoff_version = store.sqlite_data_version()?;
+    ensure!(
+        handoff_version == before_reserve,
+        "owned_sell_snapshot_changed"
+    );
     let experiment = if copybot_config::owned_sell_dispatch(c) {
         store.load_tiny_experiment(Utc::now())?;
         Some(store.owned_sell_experiment_snapshot()?)
@@ -171,7 +205,16 @@ pub(crate) async fn run(
             protected,
             Utc::now(),
         )?;
-        store.recheck_owned_sell_handoff(&h, l, Utc::now())
+        if !store.recheck_owned_sell_handoff_at_version(&h, l, handoff_version, Utc::now())? {
+            let before = store.sqlite_data_version()?;
+            store.recheck_owned_sell_handoff(&h, l, Utc::now())?;
+            ensure!(
+                store.sqlite_data_version()? == before,
+                "owned_sell_snapshot_changed"
+            );
+            handoff_version = before;
+        }
+        Ok(())
     };
     let left = (h.deadline - Utc::now())
         .to_std()
@@ -215,6 +258,7 @@ pub(crate) async fn run(
         c.pretrade_min_sol_reserve,
         &c.execution_signer_pubkey,
     )?;
+    let before_complete = store.sqlite_data_version()?;
     store.complete_owned_sell_handoff(
         &h,
         l,
@@ -225,6 +269,12 @@ pub(crate) async fn run(
         Utc::now,
     )?;
     if copybot_config::owned_sell_dispatch(c) {
+        let after_complete = store.sqlite_data_version()?;
+        ensure!(after_complete == before_complete, "owned_sell_snapshot_changed");
+        live.1.store(
+            after_complete,
+            std::sync::atomic::Ordering::SeqCst,
+        );
         submit::run(
             store,
             c,

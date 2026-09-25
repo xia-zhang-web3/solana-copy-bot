@@ -84,3 +84,5 @@ mod capture_scope_fixture;
 mod capture_scope_tests;
 #[path = "../source_tests/capture_scope_bridge_tests.rs"]
 mod capture_scope_bridge_tests;
+#[path = "../source_tests/association_capacity_tests.rs"]
+mod association_capacity_tests;

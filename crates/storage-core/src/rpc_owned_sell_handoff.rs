@@ -36,7 +36,8 @@ impl SqliteDiscoveryStore {
         now: DateTime<Utc>,
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        let e = crate::tiny_experiment::check_owned_sell_owner(&tx, id, wallet, token, position, now)?;
+        let e =
+            crate::tiny_experiment::check_owned_sell_owner(&tx, id, wallet, token, position, now)?;
         cohort_sell_deadline(&tx, e.buy_order_id.as_deref().unwrap_or(""), id, token, now)?;
         let mode: String = tx.query_row(
             "SELECT policy_mode FROM execution_tiny_experiment WHERE singleton=1",
@@ -123,12 +124,18 @@ impl SqliteDiscoveryStore {
             "owned_sell_experiment_origins"
         );
         let cohort_deadline = cohort_sell_deadline(
-            &tx, e.buy_order_id.as_deref().unwrap_or(""), experiment, &b.mint, now,
+            &tx,
+            e.buy_order_id.as_deref().unwrap_or(""),
+            experiment,
+            &b.mint,
+            now,
         )?;
         if cohort_deadline.is_some() {
             let reserved: i64 = tx.query_row(
                 "SELECT count(*) FROM rpc_owned_sell_handoffs WHERE experiment_id=?1",
-                [experiment], |r|r.get(0))?;
+                [experiment],
+                |r| r.get(0),
+            )?;
             ensure!(reserved < 1, "technical_cohort_sell_limit");
         }
         let deadline = (quote.http_started.context("owned_sell_quote_clock")?
@@ -169,6 +176,25 @@ impl SqliteDiscoveryStore {
         recheck(&tx, h, l, now)?;
         tx.commit()?;
         Ok(())
+    }
+    /// Cheap repeated guard only while a preceding full handoff check and
+    /// these reads observe one unchanged external SQLite commit epoch. The
+    /// caller must perform the full check when this returns false. Completion
+    /// and dispatch always use their full atomic checks.
+    pub fn recheck_owned_sell_handoff_at_version(
+        &self,
+        h: &Handoff,
+        l: InboxLimits,
+        expected_version: i64,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        if self.sqlite_data_version()? != expected_version {
+            return Ok(false);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        recheck_state_common(&tx, h, l, now, "preparing", false)?;
+        tx.commit()?;
+        Ok(self.sqlite_data_version()? == expected_version)
     }
     pub fn complete_owned_sell_handoff(
         &self,
@@ -218,15 +244,27 @@ fn recheck_state(
     now: DateTime<Utc>,
     state: &str,
 ) -> Result<()> {
+    recheck_state_common(c, h, l, now, state, true)
+}
+fn recheck_state_common(
+    c: &rusqlite::Connection,
+    h: &Handoff,
+    l: InboxLimits,
+    now: DateTime<Utc>,
+    state: &str,
+    verify_graph: bool,
+) -> Result<()> {
     required(c)?;
     ensure!(
         now < h.deadline && crate::ordered_sell_quote::fresh(&h.quote, now),
         "owned_sell_deadline"
     );
-    ensure!(
-        rpc_owned_sell_snapshot::read(c, &h.snapshot.quote, l)? == h.snapshot,
-        "owned_sell_snapshot_changed"
-    );
+    if verify_graph {
+        ensure!(
+            rpc_owned_sell_snapshot::read(c, &h.snapshot.quote, l)? == h.snapshot,
+            "owned_sell_snapshot_changed"
+        );
+    }
     let same:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM rpc_owned_sell_handoffs WHERE intent_id=?1 AND owner=?2 AND order_id=?3 AND config_sha256=?4 AND snapshot=?5 AND authority=?6 AND quote=?7 AND signature=?8 AND position_id=?9 AND experiment_id=?10 AND wallet=?11 AND deadline=?12 AND fee_reserve=100000 AND state=?13)",params![h.intent_id,h.owner,h.order_id,h.config_sha256,serde_json::to_string(&h.snapshot)?,h.authority,serde_json::to_string(&h.quote)?,h.snapshot.sell.facts.signature,h.snapshot.quote.position_id,h.experiment_id,h.wallet,h.deadline.to_rfc3339(),state],|r|r.get(0))?;
     ensure!(same, "owned_sell_owner_changed");
     let e = crate::tiny_experiment::check_owned_sell_owner(
@@ -238,38 +276,63 @@ fn recheck_state(
         now,
     )?;
     if let Some(deadline) = cohort_sell_deadline(
-        c, e.buy_order_id.as_deref().unwrap_or(""), &h.experiment_id,
-        &h.snapshot.quote.mint, now,
+        c,
+        e.buy_order_id.as_deref().unwrap_or(""),
+        &h.experiment_id,
+        &h.snapshot.quote.mint,
+        now,
     )? {
-        ensure!(h.deadline <= deadline, "technical_cohort_sell_deadline_binding");
+        ensure!(
+            h.deadline <= deadline,
+            "technical_cohort_sell_deadline_binding"
+        );
         let reserved: i64 = c.query_row(
             "SELECT count(*) FROM rpc_owned_sell_handoffs WHERE experiment_id=?1",
-            [&h.experiment_id], |r|r.get(0))?;
+            [&h.experiment_id],
+            |r| r.get(0),
+        )?;
         ensure!(reserved <= 1, "technical_cohort_sell_limit");
     }
     Ok(())
 }
 
 fn cohort_sell_deadline(
-    c: &rusqlite::Connection, buy_order_id: &str, experiment: &str,
-    mint: &str, now: DateTime<Utc>,
+    c: &rusqlite::Connection,
+    buy_order_id: &str,
+    experiment: &str,
+    mint: &str,
+    now: DateTime<Utc>,
 ) -> Result<Option<DateTime<Utc>>> {
-    if !crate::native_buy::cohort::available(c)? { return Ok(None); }
-    let origin: Option<(String,String,String)> = c.query_row(
-        "SELECT b.run_id,b.mint,b.policy_identity FROM orders o
+    if !crate::native_buy::cohort::available(c)? {
+        return Ok(None);
+    }
+    let origin: Option<(String, String, String)> = c
+        .query_row(
+            "SELECT b.run_id,b.mint,b.policy_identity FROM orders o
          JOIN copy_signals s ON s.signal_id=o.signal_id AND s.side='buy'
          JOIN native_buy_decisions d ON d.signal_id=o.signal_id
          JOIN native_buy_cohort_decisions b ON b.signature=d.signature
          WHERE o.order_id=?1",
-        [buy_order_id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-    let Some((run_id,source_mint,policy)) = origin else { return Ok(None); };
-    let authority = crate::native_buy::cohort::load(c)?
-        .context("technical_cohort_sell_authority_missing")?;
-    ensure!(run_id == authority.run_id && experiment == run_id
-        && source_mint == mint && policy == authority.policy_identity,
-        "technical_cohort_sell_origin");
-    ensure!(now >= authority.activated_at && now < authority.deadline,
-        "technical_cohort_sell_deadline");
+            [buy_order_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((run_id, source_mint, policy)) = origin else {
+        return Ok(None);
+    };
+    let authority =
+        crate::native_buy::cohort::load(c)?.context("technical_cohort_sell_authority_missing")?;
+    ensure!(
+        run_id == authority.run_id
+            && experiment == run_id
+            && source_mint == mint
+            && policy == authority.policy_identity,
+        "technical_cohort_sell_origin"
+    );
+    ensure!(
+        now >= authority.activated_at && now < authority.deadline,
+        "technical_cohort_sell_deadline"
+    );
     Ok(Some(authority.deadline))
 }
 pub(crate) fn required(c: &rusqlite::Connection) -> Result<()> {

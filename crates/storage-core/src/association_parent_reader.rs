@@ -1,6 +1,13 @@
 use super::*;
 use copybot_core_types::association_delivery::ProviderAssertion;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+#[derive(Clone)]
+struct CachedBlock {
+    bytes: usize,
+    observation: ParentObservation,
+    session: String,
+    sequence: u64,
+}
 /// One reader/budget for all relations and contributors in one SQLite snapshot.
 /// Every indexed lookup and emitted path element consumes count; serialized
 /// payloads/container charges consume bytes even on repeated/shared path visits.
@@ -13,6 +20,8 @@ pub(in crate::association_sell_preparation) struct Reader<'a> {
     has_observations: bool,
     dependencies: BTreeSet<String>,
     paths: Vec<ProviderPath>,
+    hashes: HashMap<String, Option<(String, Option<String>)>>,
+    blocks: HashMap<String, CachedBlock>,
 }
 impl<'a> Reader<'a> {
     pub(in crate::association_sell_preparation) fn new(
@@ -33,6 +42,8 @@ impl<'a> Reader<'a> {
             has_observations,
             dependencies: BTreeSet::new(),
             paths: vec![],
+            hashes: HashMap::new(),
+            blocks: HashMap::new(),
         };
         let _ = reader.charge(512);
         Ok(reader)
@@ -57,7 +68,18 @@ impl<'a> Reader<'a> {
             return Ok(Some(e));
         }
         self.dependencies.insert(k.hash.clone());
-        let known:Option<(String,Option<String>)>=self.c.query_row("SELECT first_slot,contradiction_slot FROM association_parent_hashes WHERE block_hash=?1",[&k.hash],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        // Cache only for this one evaluation/snapshot. Every visit still pays
+        // the same logical count/byte charge and contributes dependencies.
+        let known = if let Some(saved) = self.hashes.get(&k.hash) {
+            saved.clone()
+        } else {
+            let loaded: Option<(String, Option<String>)> = self.c
+                .prepare_cached("SELECT first_slot,contradiction_slot FROM association_parent_hashes WHERE block_hash=?1")?
+                .query_row([&k.hash], |r| Ok((r.get(0)?, r.get(1)?)))
+                .optional()?;
+            self.hashes.insert(k.hash.clone(), loaded.clone());
+            loaded
+        };
         Ok(known
             .filter(|(slot, conflict)| slot != &k.slot.to_string() || conflict.is_some())
             .map(|_| Check::Blocked(Reason::ParentHashSlotConflict)))
@@ -120,28 +142,57 @@ impl<'a> Reader<'a> {
             }
             self.dependencies.insert(cursor.hash.clone());
             let wire_key = key(&cursor)?;
-            let size:Option<(bool,usize,usize)>=self.c.query_row("SELECT contradiction IS NOT NULL,length(CAST(first_observation AS BLOB)),length(CAST(first_session AS BLOB)) FROM association_parent_blocks WHERE block_key=?1",[&wire_key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-            let Some((conflict, n, session_bytes)) = size else {
-                return Ok(Check::Unknown(Reason::ParentGap));
+            let block = if let Some(saved) = self.blocks.get(&wire_key).cloned() {
+                if let Err(e) = self.charge(saved.bytes) {
+                    return Ok(e);
+                }
+                saved
+            } else {
+                let size: Option<(bool, usize, usize)> = self.c
+                    .prepare_cached("SELECT contradiction IS NOT NULL,length(CAST(first_observation AS BLOB)),length(CAST(first_session AS BLOB)) FROM association_parent_blocks WHERE block_key=?1")?
+                    .query_row([&wire_key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .optional()?;
+                let Some((conflict, n, session_bytes)) = size else {
+                    return Ok(Check::Unknown(Reason::ParentGap));
+                };
+                if conflict {
+                    return Ok(Check::Blocked(Reason::ParentConflict));
+                }
+                let Some(bytes) = n
+                    .checked_add(session_bytes)
+                    .and_then(|v| v.checked_add(512))
+                else {
+                    return Ok(Check::Unknown(Reason::ParentTraversalBound));
+                };
+                // Keep the size guard ahead of materializing the raw row,
+                // including on the first visit to this block.
+                if let Err(e) = self.charge(bytes) {
+                    return Ok(e);
+                }
+                let (raw, session, sequence): (String, String, u64) = self.c
+                    .prepare_cached("SELECT first_observation,first_session,first_sequence FROM association_parent_blocks WHERE block_key=?1")?
+                    .query_row([&wire_key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+                let observation: ParentObservation = serde_json::from_str(&raw)?;
+                ensure!(
+                    observation.child == cursor
+                        && observation.issue == observation.expected_issue(),
+                    "corrupt parent graph identity/validation"
+                );
+                let block = CachedBlock {
+                    bytes,
+                    observation,
+                    session,
+                    sequence,
+                };
+                self.blocks.insert(wire_key, block.clone());
+                block
             };
-            if conflict {
-                return Ok(Check::Blocked(Reason::ParentConflict));
-            }
-            let Some(bytes) = n
-                .checked_add(session_bytes)
-                .and_then(|v| v.checked_add(512))
-            else {
-                return Ok(Check::Unknown(Reason::ParentTraversalBound));
-            };
-            if let Err(e) = self.charge(bytes) {
-                return Ok(e);
-            }
-            let (raw,session,sequence):(String,String,u64)=self.c.query_row("SELECT first_observation,first_session,first_sequence FROM association_parent_blocks WHERE block_key=?1",[wire_key],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
-            let observation: ParentObservation = serde_json::from_str(&raw)?;
-            ensure!(
-                observation.child == cursor && observation.issue == observation.expected_issue(),
-                "corrupt parent graph identity/validation"
-            );
+            let CachedBlock {
+                observation,
+                session,
+                sequence,
+                ..
+            } = block;
             if let Some(issue) = observation.issue {
                 use copybot_core_types::association_parent::ParentIssue;
                 return Ok(match issue {

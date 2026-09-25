@@ -1,9 +1,13 @@
 //! One caller-owned SQLite snapshot; never opens/reinitializes the ingestion inbox.
 use super::*;
-use crate::{association_sell_preparation::FirstWitness, ordered_source_sell as ordered};
-use anyhow::{ensure, Context};
+use crate::{
+    association_sell_preparation::{FirstWitness, ValidatedPreparation},
+    ordered_source_sell as ordered,
+};
+use anyhow::Context;
 use copybot_core_types::association_delivery::CandidateGeneration;
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 
 pub(crate) fn read(
     c: &Connection,
@@ -11,8 +15,21 @@ pub(crate) fn read(
     l: InboxLimits,
     endpoint: &str,
 ) -> Result<std::result::Result<QuoteBinding, String>> {
-    match read_base(c, id, l, endpoint)? {
-        Ok(base) => super::fractional::apply(c, base),
+    Ok(read_with_preparation(c, id, l, endpoint)?.map(|(binding, _)| binding))
+}
+/// Return the already validated preparation so callers that need receipt facts
+/// do not traverse the same complete parent graph a second time.
+pub(crate) fn read_with_preparation(
+    c: &Connection,
+    id: &str,
+    l: InboxLimits,
+    endpoint: &str,
+) -> Result<std::result::Result<(QuoteBinding, ValidatedPreparation), String>> {
+    match read_base_with_preparation(c, id, l, endpoint)? {
+        Ok((base, preparation)) => match super::fractional::apply(c, base)? {
+            Ok(binding) => Ok(Ok((binding, preparation))),
+            Err(reason) => Ok(Err(reason)),
+        },
         Err(reason) => Ok(Err(reason)),
     }
 }
@@ -22,6 +39,14 @@ pub(crate) fn read_base(
     l: InboxLimits,
     endpoint: &str,
 ) -> Result<std::result::Result<QuoteBinding, String>> {
+    Ok(read_base_with_preparation(c, id, l, endpoint)?.map(|(binding, _)| binding))
+}
+fn read_base_with_preparation(
+    c: &Connection,
+    id: &str,
+    l: InboxLimits,
+    endpoint: &str,
+) -> Result<std::result::Result<(QuoteBinding, ValidatedPreparation), String>> {
     ordered::schema::required(c)?;
     let Some(i) = ordered::rows::load(c, id)? else {
         return Ok(Err("missing_intent".into()));
@@ -79,7 +104,7 @@ pub(crate) fn read_base(
             )
         })
         .collect::<Vec<_>>();
-    let snapshot_version = serde_json::to_string(&(
+    let snapshot_wire = serde_json::to_string(&(
         "strict_quote_snapshot_v1",
         &i.first.candidate,
         &i.staged_at,
@@ -92,26 +117,36 @@ pub(crate) fn read_base(
         &p.current.parent_paths,
         anchors,
     ))?;
-    ensure!(
-        snapshot_version.len() <= 120_000,
-        "strict quote snapshot budget"
-    );
-    Ok(Ok(QuoteBinding {
-        version: 1,
-        intent_id: id.into(),
-        policy: i.policy,
-        position_id: position_id.clone(),
-        position_opened_ts: opened_ts.clone(),
-        source_signature: w.source_signature.clone(),
-        source_wallet: w.receipt.contributor.source_wallet.clone(),
-        mint: token.clone(),
-        output_mint: SOL.into(),
-        side: "sell".into(),
-        provider: crate::PROVIDER_GENERIC_METIS.into(),
-        endpoint: endpoint.into(),
-        raw: q.raw(),
-        decimals: q.decimals(),
-        fractional: None,
-        snapshot_version,
-    }))
+    // Short snapshots retain their historical identity. A long, fully checked
+    // parent path remains bound without copying its entire graph into every
+    // quote/fractional decision. The persisted graph is never pruned here.
+    let snapshot_version = if snapshot_wire.len() <= 120_000 {
+        snapshot_wire
+    } else {
+        format!(
+            "strict_quote_snapshot_v2:sha256:{:x}",
+            Sha256::digest(snapshot_wire.as_bytes())
+        )
+    };
+    Ok(Ok((
+        QuoteBinding {
+            version: 1,
+            intent_id: id.into(),
+            policy: i.policy,
+            position_id: position_id.clone(),
+            position_opened_ts: opened_ts.clone(),
+            source_signature: w.source_signature.clone(),
+            source_wallet: w.receipt.contributor.source_wallet.clone(),
+            mint: token.clone(),
+            output_mint: SOL.into(),
+            side: "sell".into(),
+            provider: crate::PROVIDER_GENERIC_METIS.into(),
+            endpoint: endpoint.into(),
+            raw: q.raw(),
+            decimals: q.decimals(),
+            fractional: None,
+            snapshot_version,
+        },
+        p,
+    )))
 }

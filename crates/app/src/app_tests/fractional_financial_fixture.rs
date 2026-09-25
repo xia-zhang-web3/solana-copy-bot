@@ -33,7 +33,9 @@ pub(super) fn prepare(f: &Fixture, claim: &QuoteClaim) -> Result<Prepared> {
     prepare_with_config(f, claim, &c, "fractional-test")
 }
 pub(super) fn prepare_with_config(
-    f: &Fixture, claim: &QuoteClaim, c: &copybot_config::ExecutionConfig,
+    f: &Fixture,
+    claim: &QuoteClaim,
+    c: &copybot_config::ExecutionConfig,
     experiment_id: &str,
 ) -> Result<Prepared> {
     let l = super::association_parent_fixture::limits();
@@ -136,6 +138,7 @@ pub(super) fn prepare_with_config(
     native.metadata.rpc_owned_live =
         Some(crate::execution_owned_sell_prepare::submit::guard::Live(
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            std::sync::Arc::new(std::sync::atomic::AtomicI64::new(-1)),
         ));
     assert!(native.metadata.owned_sell_amount.is_none());
     assert_eq!(

@@ -7,7 +7,10 @@ use copybot_config::ExecutionConfig;
 use copybot_storage_core::{rpc_owned_sell_handoff::dispatch::Prepared, SqliteStore};
 
 #[derive(Debug, Clone)]
-pub(crate) struct Live(pub(crate) std::sync::Arc<std::sync::atomic::AtomicBool>);
+pub(crate) struct Live(
+    pub(crate) std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) std::sync::Arc<std::sync::atomic::AtomicI64>,
+);
 impl PartialEq for Live {
     fn eq(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.0, &other.0)
@@ -50,7 +53,27 @@ pub(crate) fn request(store: &SqliteStore, r: &ExecutionSubmitRequest) -> Result
             && r.metadata.quote_response_json.as_ref().map(rpc::digest) == h.quote.response_sha256,
         "owned_sell_request_changed"
     );
-    store.recheck_owned_sell_prepared(p, Utc::now())?;
+    let version = r
+        .metadata
+        .rpc_owned_live
+        .as_ref()
+        .context("owned_sell_runner_cancelled")?
+        .1
+        .load(std::sync::atomic::Ordering::SeqCst);
+    if version < 0 || !store.recheck_owned_sell_prepared_at_version(p, version, Utc::now())? {
+        let before = store.sqlite_data_version()?;
+        store.recheck_owned_sell_prepared(p, Utc::now())?;
+        ensure!(
+            store.sqlite_data_version()? == before,
+            "owned_sell_snapshot_changed"
+        );
+        r.metadata
+            .rpc_owned_live
+            .as_ref()
+            .context("owned_sell_runner_cancelled")?
+            .1
+            .store(before, std::sync::atomic::Ordering::SeqCst);
+    }
     Ok(p.clone())
 }
 pub(crate) fn config(c: &ExecutionConfig, p: &Prepared) -> Result<()> {
@@ -62,8 +85,7 @@ pub(crate) fn config(c: &ExecutionConfig, p: &Prepared) -> Result<()> {
             && c.quote_canary_enabled
             && c.swap_instructions_dry_run_enabled
             && c.swap_transaction_dry_run_enabled
-            && (!c.tiny_experiment.activate
-                || copybot_config::native_first_buy_activation(c)),
+            && (!c.tiny_experiment.activate || copybot_config::native_first_buy_activation(c)),
         "owned_sell_dispatch_mode"
     );
     ensure!(

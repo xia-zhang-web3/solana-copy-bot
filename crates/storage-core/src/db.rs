@@ -51,6 +51,14 @@ impl SqliteDiscoveryStore {
         self.read_only
     }
 
+    /// Changes when another connection commits to this database. The caller
+    /// must not write through this connection while using it as a read cache.
+    pub fn sqlite_data_version(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .pragma_query_value(None, "data_version", |row| row.get(0))?)
+    }
+
     pub(crate) fn sqlite_table_exists(&self, table: &str) -> Result<bool> {
         let exists = self
             .conn
