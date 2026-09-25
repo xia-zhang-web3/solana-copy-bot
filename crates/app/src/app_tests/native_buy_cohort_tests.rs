@@ -178,6 +178,11 @@ async fn replay_cohort_sell_after_buy(case: &super::native_buy_runner_tests::Cas
     let mut consumer = crate::association_consumer::AssociationConsumer::start_with_execution(
         &mut ingestion, &app.ingestion, &app.execution, &case.path).await?
         .context("cohort ingress consumer")?;
+    let inbox_limits = copybot_storage_core::association_inbox::InboxLimits {
+        count: 20_000, bytes: 128 << 20, busy_ms: 100,
+    };
+    let before_usage = copybot_storage_core::association_inbox::AssociationInbox::open_ordered_sell_consumer(
+        &case.path, inbox_limits)?.usage()?;
     let source_wallet = chain["source"]["signer"].as_str().context("source wallet")?.to_owned();
     let source_signature = chain["source"]["signature"].as_str().context("source signature")?.to_owned();
     let old_wallet = chain["our"]["signer"].as_str().context("fixture bot wallet")?;
@@ -232,9 +237,11 @@ async fn replay_cohort_sell_after_buy(case: &super::native_buy_runner_tests::Cas
         rusqlite::params![source_signature, case.signature, chain["sell"]["signature"].as_str()], |r| r.get(0))?;
     assert_eq!(foreign, 0, "foreign swaps reached durable identity storage");
     let inbox = copybot_storage_core::association_inbox::AssociationInbox::open_ordered_sell_consumer(
-        &case.path, copybot_storage_core::association_inbox::InboxLimits {
-            count: 20_000, bytes: 128 << 20, busy_ms: 100,
-        })?;
+        &case.path, inbox_limits)?;
+    let after_usage = inbox.usage()?;
+    assert!(after_usage.0 <= before_usage.0 + 100
+        && after_usage.1 <= before_usage.1 + (8 << 20),
+        "742 foreign swaps grew the logical inbox: {before_usage:?} -> {after_usage:?}");
     let preparation = inbox.sell_preparation(chain["sell"]["signature"].as_str().unwrap())?;
     assert!(preparation.is_some(),
         "streamed source SELL lacks preparation");
