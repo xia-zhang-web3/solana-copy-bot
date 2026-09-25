@@ -103,9 +103,11 @@ async fn run(cancel: bool) -> Result<(i64, i64, i64)> {
         } // app-loop select cancellation: poll and dequeued envelope are dropped.
         assert!(consumer.pending.is_none(), "fence still awaits; no writer yet");
         let mut failed = Parsed(|_request: Value| async move {
-            bail!("temporary mocked fence RPC failure")
+            bail!("owned_sell_rpc_transport")
         });
-        assert!(consumer.poll_with_transport(&store, Some(&mut failed)).await.is_err());
+        consumer.poll_with_transport(&store, Some(&mut failed)).await?;
+        assert!(consumer.fence_retry_at.is_some(), "session remains unacknowledged for retry");
+        consumer.fence_retry_at = Some(tokio::time::Instant::now());
     } else {
         consumer.poll_with_transport(&store, Some(&mut ready)).await?;
     }

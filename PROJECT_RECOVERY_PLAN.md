@@ -1,6 +1,33 @@
 # Project Recovery Plan
 
-## Current decision: run 09 pre-start refusal; stopped run 10 ready
+## Current decision: Run10 stopped after a transient RPC fence failure
+
+The owner activated Run10 once. Its preserved `LIVE_RESULT.json` reports
+`APP_EXITED` after about five minutes; `NO_SIGNAL` describes the financial
+state, not completion of the four-hour observation. The daemon exited with
+`owned_sell_rpc_transport` at 21:12:05 UTC. Five processed-slot fence epochs
+had been saved through 21:11:03 UTC; the next periodic fence failed before
+writing an epoch. All five containers are stopped with STOP set. The DB has
+no cohort decision, order, dispatch, receipt, fill or position; no trade was
+submitted. The Run10 ledger ended at 33 RPC attempts, 400 CU and 210,000
+nanoUSD, inclusive of prior carryover. Its stream backend counted
+1,581,808,029 received bytes and 2,097,152 connection headroom bytes. Run10
+is used and must not be reactivated.
+
+The narrow daemon repair keeps the consumer alive after transport, body or
+deadline failure on the periodic fence and retries after 15 seconds. It
+does not write a successful epoch for a failed request. Initial session
+envelopes remain unacknowledged until their fence succeeds. Existing cohort
+eligibility still requires a same-session epoch no older than 120 seconds;
+proof mismatch, STOP and the immutable cohort deadline remain hard failures.
+Scoped periodic recovery, initial cancellation/retry and actual offline
+daemon BUY-to-SELL tests passed. An independent review accepted the changed
+path and file/dependency constraints. Next action: publish the accepted
+`copybot-app/release` diff, install the exact matching artifact into a fresh
+stopped Run11 package, carry all Run07-Run10 provider obligations and complete
+local preflight. No live recovery or automatic copy is yet proved.
+
+## Prior decision: run 09 pre-start refusal; stopped run 10 prepared
 
 The owner used Run09 once. Its preserved `LIVE_RESULT.json` reports
 `REFUSED_OR_UNKNOWN`, `FileExistsError` and a missing database. The helper

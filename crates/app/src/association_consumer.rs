@@ -34,6 +34,7 @@ pub(crate) struct AssociationConsumer {
     cohort_deadline: Option<chrono::DateTime<chrono::Utc>>,
     active_session: Option<String>,
     pub(crate) next_fence_at: Option<tokio::time::Instant>,
+    pub(crate) fence_retry_at: Option<tokio::time::Instant>,
     epoch_intake: Option<NativeBuyFence>,
     pending_epoch: bool,
 }
@@ -97,6 +98,7 @@ impl AssociationConsumer {
             cohort_deadline: deadline,
             active_session: None,
             next_fence_at: None,
+            fence_retry_at: None,
             epoch_intake: None,
             pending_epoch: false,
         }))
@@ -135,6 +137,10 @@ impl AssociationConsumer {
         store: &SqliteStore,
         mut rpc: Option<&mut dyn Transport>,
     ) -> Result<()> {
+        if let Some(when) = self.fence_retry_at {
+            tokio::time::sleep_until(when).await;
+            self.fence_retry_at = None;
+        }
         if self.pending.is_none() && self.intake.is_none() && self.epoch_intake.is_none() {
             // Ready delivery has priority; otherwise resume one durable dependency
             // through the same cancellation-safe pending writer.
@@ -170,7 +176,15 @@ impl AssociationConsumer {
                         "native_buy_kill_switch");
                     Ok(())
                 };
-                let evidence = execution_native_buy_rpc::fence(rpc, c, session, &mut check).await?;
+                let evidence = match execution_native_buy_rpc::fence(rpc, c, session, &mut check).await {
+                    Ok(evidence) => evidence,
+                    Err(error) if retryable_fence_rpc(&error) => {
+                        self.next_fence_at = Some(tokio::time::Instant::now()
+                            + std::time::Duration::from_secs(15));
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                };
                 self.epoch_intake = Some(NativeBuyFence {
                     session: evidence.session, processed_slot: evidence.processed_slot,
                     sampled_at: evidence.sampled_at, genesis_hash: evidence.genesis_hash,
@@ -217,7 +231,16 @@ impl AssociationConsumer {
                         );
                         Ok(())
                     };
-                    let evidence = execution_native_buy_rpc::fence(rpc, c, &e.delivery.session, &mut check).await?;
+                    let evidence = match execution_native_buy_rpc::fence(rpc, c, &e.delivery.session, &mut check).await {
+                        Ok(evidence) => evidence,
+                        Err(error) if retryable_fence_rpc(&error) => {
+                            // Keep the unacknowledged session envelope until its fence succeeds.
+                            self.fence_retry_at = Some(tokio::time::Instant::now()
+                                + std::time::Duration::from_secs(15));
+                            return Ok(());
+                        }
+                        Err(error) => return Err(error),
+                    };
                     Some(NativeBuyFence {
                         session: evidence.session,
                         processed_slot: evidence.processed_slot,
@@ -295,6 +318,10 @@ impl AssociationConsumer {
         drop(envelope);
         Ok(())
     }
+}
+fn retryable_fence_rpc(error: &anyhow::Error) -> bool {
+    matches!(error.root_cause().to_string().as_str(),
+        "owned_sell_rpc_transport" | "owned_sell_rpc_body" | "owned_sell_rpc_deadline")
 }
 pub(crate) async fn poll(
     consumer: &mut Option<AssociationConsumer>,

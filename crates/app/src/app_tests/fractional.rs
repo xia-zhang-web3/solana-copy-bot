@@ -31,3 +31,5 @@ mod native_buy_rpc_tests;
 mod native_buy_runner_tests;
 #[path = "native_buy_cohort_tests.rs"]
 mod native_buy_cohort_tests;
+#[path = "cohort_fence_retry_tests.rs"]
+mod cohort_fence_retry_tests;
