@@ -1,6 +1,6 @@
 # Project Recovery Plan
 
-## Current decision: technical cohort code accepted; package pending
+## Current decision: technical cohort package accepted and stopped
 
 The first owner BUY→SELL cycle below remains confirmed and stopped. For the next
 source-driven canary, an independent review accepted the offline code diff: a
@@ -9,8 +9,14 @@ BUY without Discovery publication; one source SELL may sell receipt-owned quanti
 The fixed one-hour authority, 120-second source age, processed-slot epochs,
 one-BUY/one-SELL limits and restart reconciliation passed scoped checks. An
 integrated replay and separate old-fence storage test compose the timing proof;
-they do not establish live performance. Matching CI artifact, isolated stopped
-package and exact-config local preflight are still required before any user run.
+they do not establish live performance. CI run 36119057313 passed for app commit
+`e684ab88ae771cd4524edfb665486af4b03cdaca`; its matching release and a
+verified previous release are installed in isolated `technical-cohort-07`.
+Independent package review accepted the recipe. An exact active-config startup
+using the installed binary, disposable DB, STOP and `network none` passed; all
+five final containers remain created, never started. The sealed local activation
+preflight passed with final state empty and broker ledger zero. No live source
+BUY/SELL, signature, provider request or financial activation occurred.
 
 Decision: yes. The daemon sold the single confirmed owner BUY position without
 a source SELL, resolved an unknown dispatch through its finalized receipt, and
@@ -76,8 +82,10 @@ STOP is present and all five run06 containers have exited.
 
 One secondary final DB read in the launcher recorded `OutcomeReadError` without
 its reason. The same isolated reader and direct DB inspection now return
-`CLOSED_CONFIRMED`, and DB integrity checks pass. The next action is matching
-artifact installation and stopped-package preflight.
+`CLOSED_CONFIRMED`, and DB integrity checks pass. The new cohort helper preserves
+the safe failure fact in `finally`. Its next user action, if authorized, is one
+bounded launch command; an open position at deadline remains open until a
+separate decision. No source event or profitable outcome is promised.
 
 Limits: this single negative cycle proves neither future route availability nor
 the profitability of a trading strategy. Provider budget accounting is a model;
