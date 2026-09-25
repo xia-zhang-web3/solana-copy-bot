@@ -1,6 +1,16 @@
 # Project Recovery Plan
 
-## Current decision: first owner BUY to SELL cycle confirmed
+## Current decision: technical cohort code accepted; package pending
+
+The first owner BUY→SELL cycle below remains confirmed and stopped. For the next
+source-driven canary, an independent review accepted the offline code diff: a
+preselected technical cohort can bind one fresh source BUY to one protected bot
+BUY without Discovery publication; one source SELL may sell receipt-owned quantity.
+The fixed one-hour authority, 120-second source age, processed-slot epochs,
+one-BUY/one-SELL limits and restart reconciliation passed scoped checks. An
+integrated replay and separate old-fence storage test compose the timing proof;
+they do not establish live performance. Matching CI artifact, isolated stopped
+package and exact-config local preflight are still required before any user run.
 
 Decision: yes. The daemon sold the single confirmed owner BUY position without
 a source SELL, resolved an unknown dispatch through its finalized receipt, and
@@ -66,9 +76,8 @@ STOP is present and all five run06 containers have exited.
 
 One secondary final DB read in the launcher recorded `OutcomeReadError` without
 its reason. The same isolated reader and direct DB inspection now return
-`CLOSED_CONFIRMED`, and DB integrity checks pass. The next action is to record
-this first measured cycle and assess actual provider billing and a broader
-sample before any strategy profitability decision. No further trade is implied.
+`CLOSED_CONFIRMED`, and DB integrity checks pass. The next action is matching
+artifact installation and stopped-package preflight.
 
 Limits: this single negative cycle proves neither future route availability nor
 the profitability of a trading strategy. Provider budget accounting is a model;

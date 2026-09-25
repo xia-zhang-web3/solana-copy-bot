@@ -8,10 +8,25 @@ pub(crate) mod capture;
 mod verify;
 #[path = "native_buy_promote.rs"]
 mod promote;
+#[path = "native_buy_cohort.rs"]
+pub(crate) mod cohort;
 pub(crate) use promote::activation_current;
 
 pub const STATUS: &str = "native_buy_fenced_v1";
 pub const SPL_TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+pub const CLASSIC_SPL_MINT_POLICY: &str = "classic_spl_mint_v1";
+
+/// Preselected, one-BUY test authority. This never represents Discovery GREEN.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TechnicalCohortAuthority {
+    pub run_id: String,
+    pub wallet_ids: Vec<String>,
+    pub mint_policy: String,
+    pub activated_at: DateTime<Utc>,
+    pub deadline: DateTime<Utc>,
+    pub max_buy_count: u32,
+    pub policy_identity: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeBuyFence {

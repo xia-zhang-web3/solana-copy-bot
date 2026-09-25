@@ -1,4 +1,4 @@
-use super::{verify, NativeBuyCandidate, NativeBuyPending, NativeBuySourceAmounts, SPL_TOKEN_PROGRAM, STATUS};
+use super::{cohort, verify, NativeBuyCandidate, NativeBuyPending, NativeBuySourceAmounts, SPL_TOKEN_PROGRAM, STATUS};
 use crate::{ExecutionCanaryOrder, SqliteDiscoveryStore};
 use anyhow::{ensure, Result};
 use chrono::{DateTime, Utc};
@@ -123,6 +123,9 @@ impl SqliteDiscoveryStore {
     /// compare this to the current execution config after every await.
     pub fn native_buy_policy_identity(&self, signal_id: &str) -> Result<Option<String>> {
         let Some(signature) = signal_id.strip_prefix("native-buy-v1:") else { return Ok(None); };
+        if let Some(binding) = cohort::binding(&self.conn, signature)? {
+            return Ok(Some(binding.policy_identity));
+        }
         Ok(self.conn.query_row(
             "SELECT f.policy_identity FROM native_buy_decisions d JOIN native_buy_fences f ON f.session=d.first_session WHERE d.signature=?1 AND d.signal_id=?2",
             params![signature,signal_id], |r| r.get(0)).optional()?)
@@ -175,9 +178,13 @@ pub(crate) fn activation_current(c: &rusqlite::Connection,
         return Ok(false);
     }
     let Some(signature) = b.signal_id.strip_prefix("native-buy-v1:") else { return Ok(false); };
-    let policy: Option<String> = c.query_row(
-        "SELECT f.policy_identity FROM native_buy_decisions d JOIN native_buy_fences f ON f.session=d.first_session WHERE d.signature=?1 AND d.signal_id=?2",
-        params![signature, b.signal_id], |r| r.get(0)).optional()?;
+    let policy: Option<String> = if let Some(binding) = cohort::binding(c, signature)? {
+        Some(binding.policy_identity)
+    } else {
+        c.query_row(
+            "SELECT f.policy_identity FROM native_buy_decisions d JOIN native_buy_fences f ON f.session=d.first_session WHERE d.signature=?1 AND d.signal_id=?2",
+            params![signature, b.signal_id], |r| r.get(0)).optional()?
+    };
     if policy.as_deref() != Some(b.policy_identity.as_str()) { return Ok(false); }
     let order: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM orders WHERE order_id=?1 AND signal_id=?2 AND client_order_id=?3

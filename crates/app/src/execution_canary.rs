@@ -219,6 +219,7 @@ impl ExecutionCanaryRunner {
             // Default durable mode is quote-only. Explicit finalized preparation
             // continues within its bounded jobs and never enters legacy execution below.
             if self.quote_canary.is_enabled()
+                && !crate::execution_technical_cohort::active(&self.config)
                 && !Path::new(&self.config.canary_kill_switch_path).exists()
             {
                 let q = self

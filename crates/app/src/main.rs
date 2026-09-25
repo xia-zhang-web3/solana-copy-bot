@@ -71,6 +71,7 @@ mod execution_native_setup;
 mod execution_owned_sell_prepare;
 mod execution_owned_sell_rpc;
 mod execution_native_buy_rpc;
+mod execution_technical_cohort;
 mod execution_owner_buy_authority;
 mod execution_owner_exit_authority;
 mod execution_owner_exit_quote;

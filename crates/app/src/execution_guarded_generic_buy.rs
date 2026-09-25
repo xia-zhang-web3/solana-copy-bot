@@ -89,9 +89,13 @@ pub(crate) fn assemble(
     let (binding, instructions) = bundle.verified_parts(plan)?;
     let mut executable = instructions.instructions().to_vec();
     // Jupiter omits CU-price for an explicitly requested zero total fee. Encode
-    // that same zero for owner BUY only; the final wire fee parser stays strict.
+    // that same zero for the two explicitly bound native BUY authorities; the
+    // final wire fee parser stays strict.
     let budget = crate::execution_pumpswap_accounts::compute_budget_program_id();
-    if plan.signal_id.starts_with("owner-buy:") && plan.side == "buy"
+    if (plan.signal_id.starts_with("owner-buy:")
+        || (plan.signal_id.starts_with("native-buy-v1:")
+            && crate::execution_technical_cohort::active(config)))
+        && plan.side == "buy"
         && crate::execution_priority_fee::metadata_fee(&binding.request().metadata)?
             == crate::execution_priority_fee::PriorityFee::TotalPriorityFeeLamports(0)
         && !executable.iter().any(|ix| ix.program_id == budget && ix.data.first() == Some(&3))

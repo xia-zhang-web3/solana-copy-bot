@@ -54,6 +54,7 @@ pub(crate) fn request(store: &SqliteStore, r: &ExecutionSubmitRequest) -> Result
     Ok(p.clone())
 }
 pub(crate) fn config(c: &ExecutionConfig, p: &Prepared) -> Result<()> {
+    crate::execution_technical_cohort::before_deadline(c)?;
     ensure!(
         copybot_config::owned_sell_dispatch(c)
             && copybot_config::owned_sell_flags(c)

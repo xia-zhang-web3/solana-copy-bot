@@ -34,7 +34,7 @@ use serde_json::{json, Value};
 
 pub(super) const SOL: &str = "So11111111111111111111111111111111111111112";
 pub(super) const GENESIS: &str = "11111111111111111111111111111111";
-pub(super) const MINT: &str = "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8";
+pub(crate) const MINT: &str = "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8";
 pub(super) const LEADER: &str = "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi";
 pub(super) const SOURCE_SIGNATURE: &str =
     "31R69oCVXJaEuUtWz7Cx4BChaiqeXPkfUGHJg6WKUUry3FTn1V7wkn2s11GA83AVTxksTENbh1A3Lh667zuRSpxj";
@@ -202,6 +202,11 @@ pub(super) async fn actual_source_replay(
         Ok(json!({"jsonrpc":"2.0","id":request["id"],"result":result}))
     });
     consumer.poll_with_transport(store, Some(&mut rpc)).await?;
+    if execution.technical_cohort.as_ref().is_some_and(|p| p.activate) {
+        assert!(consumer.next_fence_at.is_some());
+        consumer.next_fence_at = Some(tokio::time::Instant::now());
+        consumer.poll_with_transport(store, Some(&mut rpc)).await?;
+    }
     for (offset, name) in [(1, "source"), (2, "block-100")] {
         sender.send(ReplayInput::Update { offset_ns: offset,
             payload: std::fs::read(input.join(format!("{name}.pb")))?,

@@ -127,7 +127,9 @@ impl ExecutionQuoteCanaryRunner {
             }
         }
         pool.jobs = remaining;
-        if !self.is_enabled() {
+        if !self.is_enabled()
+            || (crate::execution_technical_cohort::active(&self.config)
+                && crate::execution_technical_cohort::before_deadline(&self.config).is_err()) {
             return Ok(summary);
         }
         let slots = (JOBS - pool.jobs.len()).min(self.config.canary_batch_limit.max(1) as usize);

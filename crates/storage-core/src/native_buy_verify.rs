@@ -1,4 +1,4 @@
-use super::{NativeBuyCandidate, NativeBuyPending};
+use super::{cohort, NativeBuyCandidate, NativeBuyPending, CLASSIC_SPL_MINT_POLICY};
 use crate::association_inbox;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -75,6 +75,9 @@ pub(super) fn valid(
     if exact.is_none_or(|x| x.amount_out_decimals > 18
         || x.amount_out_raw.parse::<u64>().ok().is_none_or(|v| v == 0))
     { return Ok(false); }
+    if let Some(binding) = cohort::binding(c, &d.signature)? {
+        return valid_cohort(c, d, &binding, admitted, now, max_age_seconds, need_finality);
+    }
     let fence: Option<(i64,String,String,String)> = c.query_row(
         "SELECT processed_slot,sampled_at,genesis_hash,policy_identity FROM native_buy_fences WHERE session=?1",
         [&d.session], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
@@ -101,6 +104,38 @@ pub(super) fn valid(
     if [d.follow_added_at.as_str(),d.cohort_updated_at.as_str(),d.published_at.as_str()].iter().any(|raw| time(raw).is_none_or(|t| t > admitted)) { return Ok(false); }
     if need_finality {
         let (Some(finalized),Some(slot)) = (d.finalized_at.as_deref().and_then(time), d.finalized_slot) else { return Ok(false); };
+        if finalized < admitted || finalized > now || slot != d.slot { return Ok(false); }
+    } else if d.finalized_at.is_some() != d.finalized_slot.is_some() { return Ok(false); }
+    Ok(true)
+}
+
+fn valid_cohort(
+    c: &Connection, d: &Decision, b: &cohort::DecisionBinding,
+    admitted: DateTime<Utc>, now: DateTime<Utc>,
+    max_age_seconds: Option<u64>, need_finality: bool,
+) -> Result<bool> {
+    let Some(authority) = cohort::load(c)? else { return Ok(false); };
+    let Some(epoch) = cohort::epoch(c, b.epoch_id)? else { return Ok(false); };
+    if authority.run_id != b.run_id || authority.mint_policy != CLASSIC_SPL_MINT_POLICY
+        || authority.max_buy_count != 1 || !authority.wallet_ids.contains(&d.wallet)
+        || authority.policy_identity != b.policy_identity
+        || b.wallet != d.wallet || b.mint != d.mint || b.admitted_at != d.admitted_at
+        || d.follow_id != 0 || !d.follow_added_at.is_empty()
+        || !d.cohort.is_empty() || !d.window.is_empty() || !d.cohort_updated_at.is_empty()
+        || !d.publication_fingerprint.is_empty() || !d.published_at.is_empty()
+        || admitted < authority.activated_at || admitted >= authority.deadline
+        || now >= authority.deadline
+        || epoch.session != d.session || epoch.slot <= 0 || d.slot <= epoch.slot
+        || epoch.sampled_at < authority.activated_at || epoch.sampled_at > admitted
+        || epoch.genesis.is_empty() || epoch.policy != authority.policy_identity
+        || too_old(epoch.sampled_at, now, max_age_seconds.unwrap_or(120).min(120))
+        || too_old(admitted, now, max_age_seconds.unwrap_or(120).min(120))
+    { return Ok(false); }
+    let active: Option<String> = c.query_row(
+        "SELECT active_session FROM native_buy_session_state WHERE id=1",[],|r|r.get(0)).optional()?.flatten();
+    if active.as_deref() != Some(d.session.as_str()) { return Ok(false); }
+    if need_finality {
+        let (Some(finalized),Some(slot)) = (d.finalized_at.as_deref().and_then(time),d.finalized_slot) else { return Ok(false); };
         if finalized < admitted || finalized > now || slot != d.slot { return Ok(false); }
     } else if d.finalized_at.is_some() != d.finalized_slot.is_some() { return Ok(false); }
     Ok(true)

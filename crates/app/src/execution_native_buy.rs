@@ -39,6 +39,11 @@ impl ExecutionCanaryRunner {
         if !execution_native_buy_rpc::enabled(&self.config) {
             return Ok(());
         }
+        if crate::execution_technical_cohort::active(&self.config)
+            && crate::execution_technical_cohort::before_deadline(&self.config).is_err() {
+            summary.skipped_reason = Some("technical_cohort_deadline");
+            return Ok(());
+        }
         if Path::new(&self.config.canary_kill_switch_path).exists() {
             summary.skipped_reason = Some("kill_switch_active");
             return Ok(());
@@ -78,6 +83,7 @@ impl ExecutionCanaryRunner {
                 budget: Default::default(),
             });
             let mut check = || {
+                crate::execution_technical_cohort::before_deadline(&self.config)?;
                 anyhow::ensure!(
                     !Path::new(&self.config.canary_kill_switch_path).exists(),
                     "native_buy_kill_switch"

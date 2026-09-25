@@ -74,7 +74,9 @@ pub(crate) async fn process_buy<A: ExecutionSubmitAdapter>(
         return Ok(summary);
     }
     if native.is_some()
-        && (!super::uses_swap_blueprint_state_machine(config)
+        && (!(super::uses_swap_blueprint_state_machine(config)
+            || (crate::execution_technical_cohort::active(config)
+                && config.canary_route == "jupiter_swap_instructions"))
             || !config.canary_tiny_submit_enabled)
     {
         summary.skipped_reason = Some("native_buy_tiny_route_disabled");

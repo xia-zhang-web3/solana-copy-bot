@@ -30,6 +30,12 @@ pub(super) fn budget(f: &Fixture) -> Result<()> {
 }
 pub(super) fn prepare(f: &Fixture, claim: &QuoteClaim) -> Result<Prepared> {
     let c = f::config(f)?;
+    prepare_with_config(f, claim, &c, "fractional-test")
+}
+pub(super) fn prepare_with_config(
+    f: &Fixture, claim: &QuoteClaim, c: &copybot_config::ExecutionConfig,
+    experiment_id: &str,
+) -> Result<Prepared> {
     let l = super::association_parent_fixture::limits();
     let b = &claim.binding;
     let body = json!({"inputMint":b.mint,"outputMint":b.output_mint,"inAmount":b.raw.to_string(),"outAmount":"1000000","otherAmountThreshold":"950000","swapMode":"ExactIn","slippageBps":100,"routePlan":[{"swapInfo":{"label":"Jupiter"}}]});
@@ -60,7 +66,7 @@ pub(super) fn prepare(f: &Fixture, claim: &QuoteClaim) -> Result<Prepared> {
         l,
         &crate::execution_owned_sell_rpc::identity(&c)?,
         "synthetic mocked finalized RPC authority; no signing permit",
-        "fractional-test",
+        experiment_id,
         &c.canary_wallet_pubkey,
         Utc::now,
     )?;

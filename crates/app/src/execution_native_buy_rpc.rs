@@ -24,14 +24,23 @@ pub(crate) fn enabled(c: &ExecutionConfig) -> bool {
 
 pub(crate) fn policy_identity(c: &ExecutionConfig) -> Result<String> {
     ensure!(enabled(c), "native_buy_policy_disabled");
-    Ok(crate::execution_owned_sell_rpc::digest(serde_json::to_vec(&(
+    let base = crate::execution_owned_sell_rpc::digest(serde_json::to_vec(&(
         PROCESSED_SLOT_FENCE_AVAILABILITY_V1,
         crate::execution_owned_sell_rpc::identity(c)?,
         c.canary_max_signal_age_seconds,
         c.canary_buy_size_sol.to_bits(),
         c.quote_canary_buy_size_sol.to_bits(),
         c.canary_kill_switch_path.as_str(),
-    ))?))
+    ))?);
+    if let Some(p) = c.technical_cohort.as_ref().filter(|p| p.activate) {
+        return Ok(crate::execution_owned_sell_rpc::digest(serde_json::to_vec(&(
+            base, p.policy.as_str(), p.run_id.as_str(), &p.wallet_ids,
+            p.mint_policy.as_str(), p.route.as_str(), p.activated_at.as_str(),
+            p.deadline.as_str(), p.max_wait_seconds, p.max_buy_count,
+            p.max_source_sell_count,
+        ))?));
+    }
+    Ok(base)
 }
 
 async fn result<T: Transport + ?Sized>(

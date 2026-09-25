@@ -1,4 +1,4 @@
-use super::NativeBuyFence;
+use super::{cohort, NativeBuyFence};
 use crate::association_inbox::AssociationInbox;
 use anyhow::{ensure, Result};
 use chrono::{DateTime, Utc};
@@ -69,6 +69,9 @@ pub(crate) fn at_admission(c: &Connection, d: &Delivery, observed: DateTime<Utc>
         || f.signature.is_empty() || f.wallet.is_empty() || f.token_out.is_empty()
     { return Ok(()); }
     let Some(amount) = exact_lamports(a) else { return Ok(()); };
+    if let Some(authority) = cohort::load(c)? {
+        return cohort_admission(c, d, observed, amount, &authority);
+    }
     let fence: Option<(i64, String, String, String)> = c.query_row(
         "SELECT processed_slot,sampled_at,genesis_hash,policy_identity FROM native_buy_fences WHERE session=?1",
         [&d.session], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
@@ -88,6 +91,42 @@ pub(crate) fn at_admission(c: &Connection, d: &Delivery, observed: DateTime<Utc>
     if signal_id.len() > 256 || decision_id.len() > 256 { return Ok(()); }
     c.execute("INSERT OR IGNORE INTO native_buy_decisions(signature,decision_id,signal_id,first_session,first_sequence,admission,admitted_at,wallet,mint,source_slot,amount_lamports,follow_id,follow_added_at,source_cohort,cohort_window_start,cohort_updated_at,publication_fingerprint,publication_published_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
         params![f.signature,decision_id,signal_id,d.session,i64::try_from(d.sequence)?,serde_json::to_string(a)?,observed.to_rfc3339(),f.wallet,f.token_out,i64::try_from(f.slot)?,amount,follow_id,follow_added_at,cohort,window,updated,fingerprint,published])?;
+    Ok(())
+}
+
+fn cohort_admission(
+    c: &Connection, d: &Delivery, observed: DateTime<Utc>, amount: i64,
+    authority: &super::TechnicalCohortAuthority,
+) -> Result<()> {
+    let DeliveryEvent::Admission(a) = &d.event else { return Ok(()); };
+    let f = &a.facts;
+    if observed < authority.activated_at || observed >= authority.deadline
+        || !authority.wallet_ids.contains(&f.wallet) { return Ok(()); }
+    let consumed: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM native_buy_cohort_decisions WHERE run_id=?1)",
+        [&authority.run_id], |r|r.get(0))?;
+    if consumed { return Ok(()); }
+    let Some(epoch) = cohort::latest_epoch(c, &d.session)? else { return Ok(()); };
+    if epoch.session != d.session || epoch.slot <= 0 || f.slot <= epoch.slot as u64
+        || epoch.sampled_at < authority.activated_at || epoch.sampled_at > observed
+        || observed.signed_duration_since(epoch.sampled_at) > chrono::Duration::seconds(120)
+        || epoch.genesis.is_empty() || epoch.policy != authority.policy_identity
+    { return Ok(()); }
+    let active: Option<String> = c.query_row(
+        "SELECT active_session FROM native_buy_session_state WHERE id=1",[],|r|r.get(0)).optional()?.flatten();
+    if active.as_deref() != Some(d.session.as_str()) { return Ok(()); }
+    let signal_id = format!("native-buy-v1:{}", f.signature);
+    let decision_id = format!("native-buy-decision-v1:{}", f.signature);
+    if signal_id.len() > 256 || decision_id.len() > 256 { return Ok(()); }
+    let inserted = c.execute("INSERT OR IGNORE INTO native_buy_decisions(signature,decision_id,signal_id,first_session,first_sequence,admission,admitted_at,wallet,mint,source_slot,amount_lamports,follow_id,follow_added_at,source_cohort,cohort_window_start,cohort_updated_at,publication_fingerprint,publication_published_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,0,'','','','','','')",
+        params![f.signature,decision_id,signal_id,d.session,i64::try_from(d.sequence)?,
+            serde_json::to_string(a)?,observed.to_rfc3339(),f.wallet,f.token_out,
+            i64::try_from(f.slot)?,amount])?;
+    if inserted == 1 {
+        c.execute("INSERT INTO native_buy_cohort_decisions(signature,run_id,fence_epoch_id,wallet,mint,admitted_at,policy_identity) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![f.signature,authority.run_id,epoch.id,f.wallet,f.token_out,
+                observed.to_rfc3339(),authority.policy_identity])?;
+    }
     Ok(())
 }
 

@@ -29,3 +29,5 @@ mod native_buy_route_mock_tests;
 mod native_buy_rpc_tests;
 #[path = "native_buy_runner_tests.rs"]
 mod native_buy_runner_tests;
+#[path = "native_buy_cohort_tests.rs"]
+mod native_buy_cohort_tests;
