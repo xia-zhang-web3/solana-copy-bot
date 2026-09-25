@@ -93,11 +93,26 @@ fn assemble_unsigned(
     // The owner exit carries the same final native-floor instruction as its BUY.
     // Other SELL routes preserve their existing serializer.
     let payload = if plan.signal_id.starts_with("owner-exit:") {
+        let mut executable = instructions.instructions().to_vec();
+        // Jupiter may omit CU-price for an explicitly requested zero total.
+        // Encode that zero for this owner exit; final wire fee proof stays strict.
+        let budget = crate::execution_pumpswap_accounts::compute_budget_program_id();
+        if plan.side == "sell"
+            && crate::execution_priority_fee::metadata_fee(&binding.request().metadata)?
+                == crate::execution_priority_fee::PriorityFee::TotalPriorityFeeLamports(0)
+            && !executable.iter().any(|ix| ix.program_id == budget && ix.data.first() == Some(&3))
+        {
+            executable.insert(0, crate::execution_solana_tx::SolanaInstruction {
+                program_id: budget,
+                accounts: Vec::new(),
+                data: [vec![3], 0_u64.to_le_bytes().to_vec()].concat(),
+            });
+        }
         let reserve = crate::execution_native_floor_policy::required_for_plan(config, plan)?
             .ok_or_else(|| anyhow::anyhow!("owner_exit_floor_missing"))?;
         crate::execution_native_floor::prepare_final_native_floor(
             pubkey(&plan.wallet_pubkey)?, instructions.blockhash(),
-            instructions.instructions(), reserve,
+            &executable, reserve,
         )?.payload().to_owned()
     } else {
         let bytes = crate::execution_solana_tx::serialize_unsigned_legacy_transaction(
@@ -113,6 +128,14 @@ fn assemble_unsigned(
         config.pretrade_max_priority_fee_lamports,
     )?;
     if plan.signal_id.starts_with("owner-exit:") {
+        if crate::execution_priority_fee::metadata_fee(&binding.request().metadata)?
+            == crate::execution_priority_fee::PriorityFee::TotalPriorityFeeLamports(0)
+        {
+            ensure!(
+                crate::execution_priority_fee_wire::decode_priority_fee(&payload)?.price == 0,
+                "owner_exit_zero_priority_mismatch"
+            );
+        }
         crate::execution_owner_exit_wire::verify(binding.request(), &payload)?;
     }
     crate::execution_signing_envelope::build_serialized_transaction_execution_envelope(

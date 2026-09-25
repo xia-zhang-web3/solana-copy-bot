@@ -199,7 +199,7 @@ fn response(r: &Value, s: &mut State) -> Result<Value> {
         return Ok(quote());
     }
     if method == "instructions" {
-        return bundle();
+        return if s.mode == "omit-price" { bundle_without_price() } else { bundle() };
     }
     let wallet = wallet();
     let result = match method {
@@ -259,7 +259,7 @@ fn response(r: &Value, s: &mut State) -> Result<Value> {
     };
     Ok(json!({"jsonrpc":"2.0","id":r["id"],"result":result}))
 }
-fn bundle() -> Result<Value> {
+pub(super) fn bundle() -> Result<Value> {
     let all = instructions(key().verifying_key().to_bytes())?;
     let encode = |ix: &SolanaInstruction| {
         json!({"programId":bs58::encode(ix.program_id).into_string(),
@@ -274,6 +274,11 @@ fn bundle() -> Result<Value> {
         "otherInstructions":[],"addressLookupTableAddresses":[],
         "simulationError":null,"blockhashWithMetadata":{"blockhash":vec![9;32],
             "lastValidBlockHeight":1,"fetchedAt":{"secs_since_epoch":1,"nanos_since_epoch":0}}}))
+}
+pub(super) fn bundle_without_price() -> Result<Value> {
+    let mut value = bundle()?;
+    value["computeBudgetInstructions"].as_array_mut().unwrap().remove(1);
+    Ok(value)
 }
 fn receipt(payload: &str, signature: &str, wallet: &str) -> Result<Value> {
     let message = crate::execution_transaction_wire::decode_message(payload, |_| Ok(()))?;

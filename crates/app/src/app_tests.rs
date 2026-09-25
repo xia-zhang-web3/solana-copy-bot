@@ -50,6 +50,7 @@ pub(crate) mod owner_buy_fixture;
 mod owner_buy_tests;
 mod owner_exit_tests;
 mod owner_exit_test_fixture;
+mod owner_exit_assembler_tests;
 pub(crate) mod owner_buy_wire_fixture;
 mod owner_buy_wire_tests;
 pub(crate) mod owner_buy_protected_fixture;
