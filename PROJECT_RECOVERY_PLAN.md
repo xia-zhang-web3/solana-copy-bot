@@ -1,22 +1,35 @@
 # Project Recovery Plan
 
-## Current decision: technical cohort package accepted and stopped
+## Current decision: stopped technical cohort package ready for one owner launch
 
-The first owner BUY→SELL cycle below remains confirmed and stopped. For the next
-source-driven canary, an independent review accepted the offline code diff: a
-preselected technical cohort can bind one fresh source BUY to one protected bot
-BUY without Discovery publication; one source SELL may sell receipt-owned quantity.
-The fixed one-hour authority, 120-second source age, processed-slot epochs,
-one-BUY/one-SELL limits and restart reconciliation passed scoped checks. An
-integrated replay and separate old-fence storage test compose the timing proof;
-they do not establish live performance. CI run 36119057313 passed for app commit
-`e684ab88ae771cd4524edfb665486af4b03cdaca`; its matching release and a
-verified previous release are installed in isolated `technical-cohort-07`.
-Independent package review accepted the recipe. An exact active-config startup
-using the installed binary, disposable DB, STOP and `network none` passed; all
-five final containers remain created, never started. The sealed local activation
-preflight passed with final state empty and broker ledger zero. No live source
-BUY/SELL, signature, provider request or financial activation occurred.
+The first owner BUY→SELL cycle below remains confirmed and stopped. The next
+source-driven canary uses three preselected source wallets, at most one fresh
+source BUY, one protected bot BUY, and one source SELL of receipt-owned quantity.
+It does not publish Discovery GREEN. Its fixed 3,600-second authority, 120-second
+source age, processed-slot epochs, BUY1/SELL1 caps and restart reconciliation
+passed scoped checks. The first admitted source BUY consumes the only slot before
+mint/quote/build; refusal can yield `NO_EXECUTED_BUY` without a second candidate.
+
+Independent review found that the initial `e684ab88…` release suppressed the
+strict source SELL scheduler in active cohort and that the one-shot helper stopped
+on a normal pending BUY. The daemon condition and helper were repaired. A causal
+offline test drives BUY receipt→source SELL→main runner tick→quote→build→simulation
+→one send→receipt/accounting, then restart without another send. It fails with
+the original scheduler condition and passes with the fix. Pending work and
+unknown sends retain the original deadline; incomplete orders remain `UNKNOWN`
+at STOP. Independent code/helper review accepted this scope.
+
+The accepted repair is commit `7f644eec4a3ff5c1abb19d263b9d7a54c9fd6c28`.
+Matching `copybot-app/release` GitHub Actions run `36124811451` passed and its
+artifact is installed as current in isolated `technical-cohort-07`. The prior
+`2f309477…` rollback and defective `e684ab88…` release remain stored. The new
+binary passed exact active-config startup in a disposable DB with STOP,
+`network none`, and no signer; orders, receipts, signatures and provider calls
+were zero. A new 44-file seal and local activation preflight passed. All five
+final containers remain created and never started; final state is empty, ledger
+is zero, STOP remains, and no financial authority or clock was consumed.
+Independent package review accepted the stopped package for one future owner
+command. Live copying and strategy profitability are not yet proved.
 
 Decision: yes. The daemon sold the single confirmed owner BUY position without
 a source SELL, resolved an unknown dispatch through its finalized receipt, and
