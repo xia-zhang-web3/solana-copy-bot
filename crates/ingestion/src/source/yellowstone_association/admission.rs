@@ -95,6 +95,11 @@ impl YellowstoneAssociation<'_> {
                 Cause::Tick,
             ));
         };
+        if self.admission_wallets.is_some_and(|wallets| !wallets.contains(&facts.signer)) {
+            return Ok((Admission::NotChecked {
+                used_program_fallback: decoded.used_program_fallback,
+            }, Cause::Tick));
+        }
         let metadata = 1024
             + [
                 &facts.signature,

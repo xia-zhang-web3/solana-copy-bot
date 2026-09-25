@@ -187,8 +187,11 @@ pub(super) async fn actual_source_replay(
     config.execution = execution.clone();
     copybot_config::validate_association_delivery(&config)?;
     let (sender, receiver) = tokio::sync::mpsc::channel(4);
-    let mut ingestion = IngestionService::with_replay(
-        &config, receiver, "native-route-source".into(),
+    let authority = crate::execution_technical_cohort::authority(execution)?;
+    let scope = authority.as_ref().map(|a|
+        crate::execution_technical_cohort::admission_wallets(a, execution)).transpose()?;
+    let mut ingestion = IngestionService::with_replay_scoped(
+        &config, receiver, "native-route-source".into(), scope,
     )?;
     let mut consumer = AssociationConsumer::start_with_execution(
         &mut ingestion, &config.ingestion, &config.execution, path,

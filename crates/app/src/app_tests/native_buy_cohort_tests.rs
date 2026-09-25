@@ -1,9 +1,10 @@
 //! Source producer to native BUY receipt and source-owned fractional SELL.
-use super::native_buy_runner_tests::{seed_source_sell, setup_case, setup_case_with_config, sell_quarter, tick};
+use super::native_buy_runner_tests::{setup_case, setup_case_with_config, sell_quarter, tick};
 use crate::app_tests::b136_server::{NativeCohort, Server};
 use crate::execution_canary::ExecutionCanaryRunner;
 use crate::execution_canary_route::NativeBuyMockIo;
 use anyhow::{Context, Result};
+use copybot_ingestion::{IngestionService, ReplayInput};
 use copybot_storage_core::SqliteStore;
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -19,7 +20,6 @@ async fn cohort_source_sell_runs_through_actual_daemon_tick_and_settles_once() -
         super::native_buy_runner_tests::fixture::signed_payload_for_lamports_and_floor(
             10_000_000, 985_000_000)?;
     let wallet = bs58::encode(wallet_bytes).into_string();
-
     let old: Value = serde_json::from_slice(&std::fs::read(
         crate::app_tests::b136_fixture::inputs().join("our-rpc.json"))?)?;
     let historical_wallet = old["transaction"]["message"]["accountKeys"][0]["pubkey"]
@@ -67,7 +67,7 @@ async fn cohort_source_sell_runs_through_actual_daemon_tick_and_settles_once() -
     let funding_calls = server.calls.lock().unwrap().iter()
         .filter(|c| c["method"] == "getMultipleAccounts").count();
     assert_eq!(funding_calls, 1, "initial native BUY funding proof");
-    seed_source_sell(&case).await?;
+    replay_cohort_sell_after_buy(&case).await?;
     let config = case.config.clone();
     let chain: Value = serde_json::from_slice(&std::fs::read(
         super::b135_fixture::inputs().join("chain.json"))?)?;
@@ -136,6 +136,126 @@ async fn cohort_source_sell_runs_through_actual_daemon_tick_and_settles_once() -
     assert_eq!(server.calls.lock().unwrap().iter()
         .filter(|c| c["method"] == "getMultipleAccounts").count(), funding_calls);
     assert_eq!(case.io.counts.lock().unwrap().send, 1);
+    Ok(())
+}
+
+fn replace_equal(mut wire: Vec<u8>, old: &[u8], new: &[u8]) -> Result<Vec<u8>> {
+    anyhow::ensure!(old.len() == new.len(), "fixture replacement length");
+    let mut count = 0;
+    for at in 0..=wire.len() - old.len() {
+        if &wire[at..at + old.len()] == old {
+            wire[at..at + old.len()].copy_from_slice(new);
+            count += 1;
+        }
+    }
+    anyhow::ensure!(count > 0, "fixture replacement missing");
+    Ok(wire)
+}
+
+fn rewrite_identity(wire: Vec<u8>, old_wallet: &str, wallet: &str,
+    old_signature: &str, signature: &str) -> Result<Vec<u8>> {
+    let old_raw_wallet = bs58::decode(old_wallet).into_vec()?;
+    let raw_wallet = bs58::decode(wallet).into_vec()?;
+    let old_raw_signature = bs58::decode(old_signature).into_vec()?;
+    let raw_signature = bs58::decode(signature).into_vec()?;
+    let wire = replace_equal(wire, &old_raw_wallet, &raw_wallet)?;
+    let wire = replace_equal(wire, old_wallet.as_bytes(), wallet.as_bytes())?;
+    replace_equal(wire, &old_raw_signature, &raw_signature)
+}
+
+async fn replay_cohort_sell_after_buy(case: &super::native_buy_runner_tests::Case) -> Result<()> {
+    let input = crate::app_tests::b136_fixture::inputs();
+    let chain: Value = serde_json::from_slice(&std::fs::read(input.join("chain.json"))?)?;
+    let mut app = super::association_fixture::config(&chain);
+    app.execution = case.config.clone();
+    copybot_config::validate_association_delivery(&app)?;
+    let authority = crate::execution_technical_cohort::authority(&case.config)?
+        .context("active test cohort")?;
+    let scope = crate::execution_technical_cohort::admission_wallets(&authority, &case.config)?;
+    let (sender, receiver) = tokio::sync::mpsc::channel(4);
+    let mut ingestion = IngestionService::with_replay_scoped(
+        &app, receiver, "cohort-source-sell".into(), Some(scope))?;
+    let mut consumer = crate::association_consumer::AssociationConsumer::start_with_execution(
+        &mut ingestion, &app.ingestion, &app.execution, &case.path).await?
+        .context("cohort ingress consumer")?;
+    let source_wallet = chain["source"]["signer"].as_str().context("source wallet")?.to_owned();
+    let source_signature = chain["source"]["signature"].as_str().context("source signature")?.to_owned();
+    let old_wallet = chain["our"]["signer"].as_str().context("fixture bot wallet")?;
+    let old_signature = chain["our"]["signature"].as_str().context("fixture bot signature")?;
+    let source = std::fs::read(input.join("source.pb"))?;
+    let our = rewrite_identity(std::fs::read(input.join("cohort-our.pb"))?,
+        old_wallet, &case.wallet, old_signature, &case.signature)?;
+    let block_our = rewrite_identity(std::fs::read(input.join("cohort-block-120.pb"))?,
+        old_wallet, &case.wallet, old_signature, &case.signature)?;
+    let frames = [source.clone(), our, std::fs::read(input.join("sell.pb"))?,
+        std::fs::read(input.join("block-100.pb"))?, block_our,
+        std::fs::read(input.join("block-150.pb"))?];
+    let source_signature_for_replay = source_signature.clone();
+    let producer = tokio::spawn(async move {
+        for n in 0..742u16 {
+            let foreign_wallet = bs58::encode([2u8; 32]).into_string();
+            let mut raw_signature = [91u8; 64];
+            raw_signature[..2].copy_from_slice(&n.to_le_bytes());
+            let foreign_signature = bs58::encode(raw_signature).into_string();
+            let payload = rewrite_identity(source.clone(), &source_wallet, &foreign_wallet,
+                &source_signature_for_replay, &foreign_signature)?;
+            sender.send(ReplayInput::Update { offset_ns: u64::from(n) + 1, payload }).await?;
+        }
+        for (n, payload) in frames.into_iter().enumerate() {
+            sender.send(ReplayInput::Update { offset_ns: 743 + n as u64, payload }).await?;
+        }
+        sender.send(ReplayInput::End(750)).await?;
+        Ok::<(), anyhow::Error>(())
+    });
+    let mut rpc = crate::execution_owned_sell_rpc::fractional::transport::Parsed(
+        |request: Value| async move {
+            let result = match request["method"].as_str() {
+                Some("getGenesisHash") => json!("11111111111111111111111111111111"),
+                Some("getSlot") => json!(99),
+                other => anyhow::bail!("unexpected cohort fence method: {other:?}"),
+            };
+            Ok(json!({"jsonrpc":"2.0","id":request["id"],"result":result}))
+        });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match consumer.poll_with_transport(&case.store, Some(&mut rpc)).await {
+                Ok(()) => {},
+                Err(error) if error.to_string() == "association delivery stopped" => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    }).await??;
+    producer.await??;
+    let db = Connection::open(&case.path)?;
+    let foreign: i64 = db.query_row("SELECT count(*) FROM association_inbox_identities WHERE signature NOT IN (?1,?2,?3)",
+        rusqlite::params![source_signature, case.signature, chain["sell"]["signature"].as_str()], |r| r.get(0))?;
+    assert_eq!(foreign, 0, "foreign swaps reached durable identity storage");
+    let inbox = copybot_storage_core::association_inbox::AssociationInbox::open_ordered_sell_consumer(
+        &case.path, copybot_storage_core::association_inbox::InboxLimits {
+            count: 20_000, bytes: 128 << 20, busy_ms: 100,
+        })?;
+    let preparation = inbox.sell_preparation(chain["sell"]["signature"].as_str().unwrap())?;
+    assert!(preparation.is_some(),
+        "streamed source SELL lacks preparation");
+    Ok(())
+}
+
+#[tokio::test]
+async fn streamed_sell_without_bot_anchor_or_parent_edge_has_no_trade_authority() -> Result<()> {
+    use super::association_parent_fixture as parent;
+    use crate::app_tests::b136_fixture::{self, Fixture};
+    for omitted in ["our", "block-120"] {
+        let fixture = Fixture::new().await?;
+        let mut frames = parent::frames(&fixture.meta);
+        frames.retain(|name| name != omitted);
+        parent::stage_at(&fixture.db, b136_fixture::inputs(), &fixture.meta,
+            frames, "missing-cohort-proof", false).await?;
+        let proof = parent::read(&fixture.db, &fixture.meta)?;
+        assert_eq!(proof.current.trade_authority, "trade_authority_none", "{omitted}");
+        assert!(proof.current.anchors.iter().any(|anchor| anchor.conflict
+            || anchor.terminal.is_none()) || proof.current.parent_paths.len() < 2, "{omitted}");
+    }
     Ok(())
 }
 

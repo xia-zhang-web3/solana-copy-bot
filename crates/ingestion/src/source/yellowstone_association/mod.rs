@@ -34,6 +34,7 @@ pub(in crate::source) struct Programs<'a> {
 pub(in crate::source) struct YellowstoneAssociation<'a> {
     limits: Limits,
     programs: Programs<'a>,
+    admission_wallets: Option<&'a HashSet<String>>,
     session: Session,
     offset: Duration,
     ended: bool,
@@ -79,6 +80,7 @@ impl<'a> YellowstoneAssociation<'a> {
         Ok(Self {
             limits,
             programs,
+            admission_wallets: None,
             session,
             offset: Duration::ZERO,
             ended: false,
@@ -88,5 +90,8 @@ impl<'a> YellowstoneAssociation<'a> {
             blocks: BTreeMap::new(),
             action: None,
         })
+    }
+    pub(in crate::source) fn restrict_wallets(&mut self, wallets: &'a HashSet<String>) {
+        self.admission_wallets = Some(wallets);
     }
 }

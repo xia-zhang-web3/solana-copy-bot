@@ -28,7 +28,7 @@ impl<'a> Bridge<'a> {
             id: [0; 16],
             generation: 0,
         };
-        let adapter = a::YellowstoneAssociation::new(
+        let mut adapter = a::YellowstoneAssociation::new(
             session,
             a::Limits {
                 pending: b(&c.pending),
@@ -48,6 +48,10 @@ impl<'a> Bridge<'a> {
             },
         )
         .map_err(|e| anyhow::anyhow!("association limits {e:?}"))?;
+        if let Some(wallets) = runtime.admission_wallets.as_ref() {
+            anyhow::ensure!(!wallets.is_empty(), "empty admission wallet scope");
+            adapter.restrict_wallets(wallets);
+        }
         Ok(Self {
             adapter,
             session,

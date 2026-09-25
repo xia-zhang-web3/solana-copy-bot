@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use copybot_config::IngestionConfig;
 use copybot_core_types::SwapEvent;
 use parser::SwapParser;
+use std::collections::HashSet;
 use source::{fetch_recent_raw_swaps_for_wallets, IngestionSource, RawSwapObservation};
 
 pub use source::durable::{DeliveryEnvelope, DeliveryReceiver, ReplayInput};
@@ -59,23 +60,41 @@ impl IngestionService {
         input: tokio::sync::mpsc::Receiver<ReplayInput>,
         session: String,
     ) -> Result<Self> {
+        Self::with_replay_scoped(config, input, session, None)
+    }
+    #[doc(hidden)]
+    pub fn with_replay_scoped(
+        config: &copybot_config::AppConfig,
+        input: tokio::sync::mpsc::Receiver<ReplayInput>,
+        session: String,
+        wallets: Option<HashSet<String>>,
+    ) -> Result<Self> {
         let mut service = Self::build_for_app(config)?;
         anyhow::ensure!(
             service.source.is_none(),
             "replay cannot bypass legacy source"
         );
         service.prepared_delivery =
-            Some(DeliveryReceiver::replay(&config.ingestion, session, input)?);
+            Some(DeliveryReceiver::replay(&config.ingestion, session, input, wallets)?);
         Ok(service)
     }
     pub fn take_delivery(&mut self, session: String) -> Result<Option<DeliveryReceiver>> {
+        self.take_delivery_scoped(session, None)
+    }
+    pub fn take_delivery_scoped(
+        &mut self,
+        session: String,
+        wallets: Option<HashSet<String>>,
+    ) -> Result<Option<DeliveryReceiver>> {
         if let Some(prepared) = self.prepared_delivery.take() {
+            anyhow::ensure!(prepared.wallet_scope() == wallets.as_ref(),
+                "prepared delivery wallet scope mismatch");
             self.delivery_config = None;
             return Ok(Some(prepared));
         }
         self.delivery_config
             .take()
-            .map(|c| DeliveryReceiver::start(&c, session))
+            .map(|c| DeliveryReceiver::start(&c, session, wallets))
             .transpose()
     }
     pub async fn next_swap(&mut self) -> Result<Option<SwapEvent>> {

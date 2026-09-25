@@ -8,6 +8,7 @@ mod conflicts;
 mod lifecycle;
 mod limits_tests;
 mod resource_tests;
+mod scoped_admission_tests;
 
 pub(super) fn limits() -> Limits {
     Limits {

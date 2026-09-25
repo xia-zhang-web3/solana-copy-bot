@@ -8,6 +8,7 @@ use copybot_core_types::association_delivery::{DeliveryEvent, SessionGap};
 use prost::Message;
 use tokio::sync::mpsc;
 use yellowstone_grpc_proto::prelude::SubscribeUpdate;
+use std::collections::HashSet;
 #[derive(Debug)]
 pub enum ReplayInput {
     Update { offset_ns: u64, payload: Vec<u8> },
@@ -21,6 +22,7 @@ impl DeliveryReceiver {
         config: &IngestionConfig,
         session: String,
         mut input: mpsc::Receiver<ReplayInput>,
+        wallet_scope: Option<HashSet<String>>,
     ) -> Result<Self> {
         copybot_config::validate_delivery_source(config)?;
         ensure!(
@@ -31,7 +33,9 @@ impl DeliveryReceiver {
             .yellowstone_association
             .clone()
             .context("association limits")?;
-        let runtime = super::super::YellowstoneGrpcSource::new(config)?.runtime_config;
+        let mut runtime = (*super::super::YellowstoneGrpcSource::new(config)?.runtime_config).clone();
+        runtime.admission_wallets = wallet_scope.clone();
+        let runtime = std::sync::Arc::new(runtime);
         let (tx, rx) = queue::channel(limits.queue.count, limits.queue.bytes);
         let task = tokio::spawn(async move {
             let mut bridge = Bridge::new(&runtime, &limits, session, tx)?;
@@ -75,6 +79,7 @@ impl DeliveryReceiver {
         Ok(Self {
             rx,
             task: Some(task),
+            wallet_scope,
         })
     }
 }

@@ -78,6 +78,7 @@ fn yellowstone_subscribe_request_uses_confirmed_commitment_and_program_filters()
         seen_signatures_limit: 5_000,
         seen_signatures_ttl: Duration::from_secs(60),
         interested_program_ids: interested,
+        admission_wallets: None,
         raydium_program_ids: HashSet::new(),
         pumpswap_program_ids: HashSet::new(),
         telemetry: Arc::new(IngestionTelemetry::default()),

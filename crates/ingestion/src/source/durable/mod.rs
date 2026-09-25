@@ -11,27 +11,33 @@ use anyhow::{Context, Result};
 use copybot_config::IngestionConfig;
 pub use queue::DeliveryEnvelope;
 use tokio::{sync::mpsc, task::JoinHandle};
+use std::collections::HashSet;
 
 pub struct DeliveryReceiver {
     rx: mpsc::Receiver<DeliveryEnvelope>,
     task: Option<JoinHandle<Result<()>>>,
+    wallet_scope: Option<HashSet<String>>,
 }
 impl DeliveryReceiver {
-    pub fn start(config: &IngestionConfig, session: String) -> Result<Self> {
+    pub fn start(config: &IngestionConfig, session: String, wallet_scope: Option<HashSet<String>>) -> Result<Self> {
         copybot_config::validate_delivery_source(config)?;
         let limits = config
             .yellowstone_association
             .as_ref()
             .context("association limits")?;
-        let runtime = super::YellowstoneGrpcSource::new(config)?.runtime_config;
+        let mut runtime = (*super::YellowstoneGrpcSource::new(config)?.runtime_config).clone();
+        runtime.admission_wallets = wallet_scope.clone();
+        let runtime = std::sync::Arc::new(runtime);
         let (tx, rx) = queue::channel(limits.queue.count, limits.queue.bytes);
         let limits = limits.clone();
         let task = tokio::spawn(async move { transport::run(runtime, limits, session, tx).await });
         Ok(Self {
             rx,
             task: Some(task),
+            wallet_scope,
         })
     }
+    pub fn wallet_scope(&self) -> Option<&HashSet<String>> { self.wallet_scope.as_ref() }
     pub fn stop(&mut self) {
         self.rx.close();
         if let Some(task) = self.task.take() {

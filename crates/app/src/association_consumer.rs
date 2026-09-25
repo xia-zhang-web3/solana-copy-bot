@@ -69,6 +69,10 @@ impl AssociationConsumer {
         let authority = execution.map(execution_technical_cohort::authority)
             .transpose()?.flatten();
         let deadline = authority.as_ref().map(|a| a.deadline);
+        let admission_wallets = authority.as_ref()
+            .map(|a| execution.context("cohort execution config")
+                .and_then(|c| execution_technical_cohort::admission_wallets(a, c)))
+            .transpose()?;
         let inbox = tokio::task::spawn_blocking(move || {
             let mut inbox = AssociationInbox::open_ordered_sell_consumer(path, limits)?;
             if let Some(authority) = authority.as_ref() {
@@ -79,7 +83,7 @@ impl AssociationConsumer {
         .await??;
         let recovery_pending = inbox.has_sell_preparation_work()?;
         let receiver = ingestion
-            .take_delivery(AssociationInbox::new_session_id())?
+            .take_delivery_scoped(AssociationInbox::new_session_id(), admission_wallets)?
             .context("missing delivery receiver")?;
         Ok(Some(Self {
             receiver,

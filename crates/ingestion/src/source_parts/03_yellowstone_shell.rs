@@ -12,6 +12,7 @@ impl Drop for YellowstonePipeline {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct YellowstoneRuntimeConfig {
     pub(in crate::source) capture: Option<Arc<super::scoped_capture::ScopedCapture>>,
     pub(in crate::source) grpc_url: String,
@@ -24,6 +25,7 @@ pub(crate) struct YellowstoneRuntimeConfig {
     pub(in crate::source) seen_signatures_limit: usize,
     pub(in crate::source) seen_signatures_ttl: Duration,
     pub(in crate::source) interested_program_ids: HashSet<String>,
+    pub(in crate::source) admission_wallets: Option<HashSet<String>>,
     pub(in crate::source) raydium_program_ids: HashSet<String>,
     pub(in crate::source) pumpswap_program_ids: HashSet<String>,
     pub(in crate::source) telemetry: Arc<IngestionTelemetry>,

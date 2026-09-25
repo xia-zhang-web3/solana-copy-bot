@@ -1,6 +1,42 @@
 # Project Recovery Plan
 
-## Current decision: stopped technical cohort package ready for one owner launch
+## Current decision: run 07 repair accepted offline; new stopped package pending
+
+The scoped local admission filter and live/stopped WAL reader passed independent
+review on 2026-09-25. Targeted tests include 742 irrelevant swaps, a causal
+source BUY→bot BUY→source SELL through the daemon scheduler and accounting,
+restart without a second send, missing-anchor and missing-parent refusals, and
+live/stopped/crash WAL reads. A matching CI release and isolated stopped package
+remain necessary before another owner command. The paid provider stream is still
+broad; local filtering only limits retained association state.
+
+The owner-authorized one-shot command ran once on 2026-09-25. The daemon exited
+about 26 seconds after startup because the durable association inbox reached its
+128 MiB logical byte cap. The source stream had admitted 742 swaps from 713
+distinct wallets; none belonged to the three authorized cohort wallets. The
+helper's live read-only SQLite reader also returned `SQLITE_CANTOPEN`, so its
+preserved `LIVE_RESULT.json` says `UNKNOWN`. A stopped, direct read of the same
+DB returned `NO_SIGNAL`: no cohort decision, order, unresolved dispatch,
+receipt, fill or position. That read narrows the incident but does not rewrite
+the original result or prove an on-chain balance. The broker ledger contains
+seven RPC requests and a $0.000042 modeled charge. STOP and all five containers
+are stopped. Run 07 must never be activated again.
+
+The next technical blocker is the broad DEX subscription and persistence of
+unrelated wallets; a second blocker is the live outcome reader's SQLite access.
+A proposed leader-only subscription passed narrow local tests, but independent
+review rejected it: it would omit the bot BUY receipt anchor and the continuous
+parent-block chain required to authorize a later source SELL. That draft code
+was removed. A bounded source design must retain both anchors and parent
+continuity, then pass a causal multi-block BUY→bot BUY→source SELL test. An
+offline Docker reproducer established that the read-only SQLite bind works
+while a WAL writer is open and returns `SQLITE_CANTOPEN` after the last writer
+closes; the reader must distinguish those states without ignoring live WAL.
+Only after independent review, a matching new artifact and a fresh stopped
+package may the owner consider one new activation. No live copy or strategy
+profitability was established by run 07.
+
+## Prior decision: stopped technical cohort package ready for one owner launch
 
 The first owner BUY→SELL cycle below remains confirmed and stopped. The next
 source-driven canary uses three preselected source wallets, at most one fresh

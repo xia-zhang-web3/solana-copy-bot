@@ -110,6 +110,7 @@ impl YellowstoneGrpcSource {
             seen_signatures_limit: config.seen_signatures_limit.max(500),
             seen_signatures_ttl: Duration::from_millis(config.seen_signatures_ttl_ms.max(1_000)),
             interested_program_ids,
+            admission_wallets: None,
             raydium_program_ids: config.raydium_program_ids.iter().cloned().collect(),
             pumpswap_program_ids: config.pumpswap_program_ids.iter().cloned().collect(),
             telemetry: Arc::new(IngestionTelemetry::default()),
