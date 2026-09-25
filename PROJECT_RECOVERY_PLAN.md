@@ -1,6 +1,34 @@
 # Project Recovery Plan
 
-## Current decision: run 09 concurrent SELL repair accepted offline, artifact pending
+## Current decision: run 09 pre-start refusal; stopped run 10 ready
+
+The owner used Run09 once. Its preserved `LIVE_RESULT.json` reports
+`REFUSED_OR_UNKNOWN`, `FileExistsError` and a missing database. The helper
+tried to exclusively create `control/settings.json`, which the stopped
+package had already prepared. All five Run09 containers remained created and
+never started; no authority, lease, financial clock, database, order or send
+was created. STOP is set. Its provider ledger stayed at the carried 14 RPC
+attempts, 160 CU and 84,000 nanoUSD. The one-shot attempt marker remains;
+Run09 must not be retried or reset.
+
+An isolated Run10 package now validates the prepared settings before writing
+authority or lease. Its preflight checks and seal bind that file. Targeted
+helper/limit tests passed 13/13, reader lifecycle 5/5, and an independent
+review accepted the helper and Run09-to-Run10 no-spend carryover. Deployable
+code, config limits and migrations did not change, so Run10 reuses the
+verified `copybot-app/release` artifact from commit `70a937d9` and CI run
+`36180646007`. Its disposable network-none/no-signer startup, 44-file seal,
+local activation preflight and separate independent package review passed.
+Run10 has STOP, empty financial state, no activation marker/authority/clocks,
+the same carried ledger obligations and five never-started containers. The
+four-hour, $50 provider model, one BUY at most 0.01 SOL and one source SELL
+limits remain unchanged. Preparation made no provider call, signature or
+trade. The next authorized action is one owner execution of Run10's sealed
+`activate_cohort_once.py`. Actual copying and profitability are unproved.
+The exact package decision and command are in the private Run10 README and
+`evidence/INDEPENDENT_PACKAGE_REVIEW_RU.md`.
+
+## Prior decision: run 09 concurrent SELL repair accepted offline, artifact pending
 
 Independent review accepted the narrow concurrent SELL repair on 2026-09-25.
 Unrelated parent-block commits after a durable SELL reserve or complete no
