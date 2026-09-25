@@ -39,7 +39,7 @@ pub fn validate_technical_cohort(e: &crate::ExecutionConfig) -> Result<()> {
         "technical_cohort_run_id");
     ensure!(p.route == "jupiter_swap_instructions" && e.canary_route == p.route,
         "technical_cohort_route");
-    ensure!((121..=3600).contains(&p.max_wait_seconds)
+    ensure!((121..=14_400).contains(&p.max_wait_seconds)
         && p.max_buy_count == 1 && p.max_source_sell_count == 1,
         "technical_cohort_window_or_count");
     ensure!(e.native_fresh_buy.as_ref().is_some_and(|native|
@@ -55,6 +55,9 @@ pub fn validate_technical_cohort(e: &crate::ExecutionConfig) -> Result<()> {
         && e.canary_max_daily_loss_sol <= 0.02
         && e.pretrade_max_priority_fee_lamports <= 50_000
         && e.pretrade_min_sol_reserve >= 0.160_200_031
+        && e.quote_canary_slippage_bps <= 50
+        && e.quote_canary_buy_slippage_bps <= 50
+        && e.quote_canary_sell_slippage_bps <= 50
         && e.max_submit_attempts == 1,
         "technical_cohort_financial_caps");
     ensure!(!e.enabled && e.canary_entry_submit_enabled == p.activate

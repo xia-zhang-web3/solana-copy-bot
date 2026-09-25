@@ -44,7 +44,8 @@ pub(in crate::app_tests::fractional) async fn sell_quarter(case: &mut Case) -> R
             &h.experiment_id, &h.wallet, &h.snapshot.quote.mint,
             &h.snapshot.quote.position_id, true, deadline,
         ).unwrap_err();
-        assert!(denied.to_string().contains("technical_cohort_sell_deadline"), "{denied:#}");
+        assert!(denied.to_string().contains("technical_cohort_sell_deadline")
+            || denied.to_string().contains("tiny_budget_deadline"), "{denied:#}");
     }
     let dispatch = crate::app_tests::fractional::fractional_financial_fixture::dispatch(&f, &prepared)?;
     let sold_receipt = crate::app_tests::fractional::fractional_financial_fixture::receipt(&dispatch, sold);

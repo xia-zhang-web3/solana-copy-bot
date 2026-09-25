@@ -21,6 +21,7 @@ pub const TINY_PRIORITY_FEE: u64 = 50_000;
 pub const TINY_TOTAL_FEE: u64 = 300_000;
 pub const TINY_EXIT_RESERVE: u64 = 200_000;
 pub const TINY_HORIZON_SECONDS: i64 = 3600;
+const TECHNICAL_COHORT_MAX_HORIZON_SECONDS: i64 = 14_400;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TinyExperiment {
@@ -73,10 +74,19 @@ pub(super) fn load(conn: &Connection) -> Result<Option<TinyExperiment>> {
         )| {
             let activated_at = activation.parse()?;
             let deadline = deadline.parse()?;
-            ensure!(
-                activated_at + Duration::seconds(TINY_HORIZON_SECONDS) == deadline,
-                "tiny_budget_deadline_corrupt"
-            );
+            let cohort = crate::native_buy::cohort::load(conn)?;
+            let expected_deadline = if let Some(authority) = cohort.filter(|a| a.run_id == id) {
+                ensure!(protected::mode(conn)? == "protected_native_capital"
+                    && authority.activated_at <= activated_at
+                    && activated_at < authority.deadline
+                    && authority.deadline - authority.activated_at
+                        <= Duration::seconds(TECHNICAL_COHORT_MAX_HORIZON_SECONDS),
+                    "tiny_budget_deadline_corrupt");
+                authority.deadline
+            } else {
+                activated_at + Duration::seconds(TINY_HORIZON_SECONDS)
+            };
+            ensure!(expected_deadline == deadline, "tiny_budget_deadline_corrupt");
             Ok(TinyExperiment {
                 id,
                 wallet,

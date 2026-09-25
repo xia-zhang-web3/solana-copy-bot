@@ -7,7 +7,7 @@ use copybot_core_types::association_delivery::{
 };
 use copybot_storage_core::{
     association_inbox::AssociationInbox,
-    native_buy::{NativeBuyFence, TechnicalCohortAuthority, CLASSIC_SPL_MINT_POLICY, SPL_TOKEN_PROGRAM},
+    native_buy::{NativeBuyActivationBinding, NativeBuyFence, TechnicalCohortAuthority, CLASSIC_SPL_MINT_POLICY, SPL_TOKEN_PROGRAM},
     SqliteStore,
 };
 
@@ -106,5 +106,44 @@ fn stale_epoch_foreign_wallet_and_replayed_slot_never_gain_authority() -> Result
         assert!(store.list_native_buy_pending(2)?.is_empty());
         assert!(store.native_buy_ready("untrusted-source",now,120)?.is_none());
     }
+    Ok(())
+}
+
+#[test]
+fn cohort_protected_tiny_budget_keeps_sell_authority_past_one_hour_only_until_cohort_deadline() -> Result<()> {
+    let (_dir,path)=fixture::db();
+    let now=Utc::now();
+    let mut auth=authority(now);
+    auth.activated_at=now-Duration::seconds(10);
+    auth.deadline=auth.activated_at+Duration::hours(4);
+    let mut inbox=AssociationInbox::open(&path,fixture::limits())?;
+    inbox.register_technical_cohort_authority(&auth)?;
+    inbox.record_native_buy_fence_epoch(&fence(now-Duration::seconds(5),5))?;
+    let a=admission("source-buy-four-hours","leader","classic-mint",7);
+    inbox.persist_at(&fixture::event(1,DeliveryEvent::Admission(a.clone())),
+        &CandidateGeneration::Unknown,now)?;
+    inbox.persist_at(&fixture::event(2,DeliveryEvent::Terminal {
+        signature:a.facts.signature.clone(),expected:a.clone(),result:terminal(&a),
+    }),&CandidateGeneration::Unknown,now)?;
+    let store=SqliteStore::open(&path)?;
+    assert!(store.native_buy_record_finalized(&a.facts.signature,7,SPL_TOKEN_PROGRAM,now)?);
+    let candidate=store.native_buy_ready(&a.facts.signature,now,120)?.unwrap();
+    let order=store.reserve_execution_canary_order(&candidate.signal_id,
+        "jupiter_swap_instructions",now)?.order;
+    let binding=NativeBuyActivationBinding {
+        signal_id:candidate.signal_id,decision_id:candidate.decision_id,
+        policy_identity:auth.policy_identity.clone(),max_age_seconds:120,
+        order_id:order.order_id,client_order_id:order.client_order_id,
+        attempt:order.attempt,route:order.route,
+    };
+    let policy=store.prepare_tiny_native_policy_for_native_buy(
+        &auth.run_id,"bot-wallet",175_200_031,160_200_031,8,now,
+        &binding,||Ok(now))?;
+    assert_eq!(policy.deadline,auth.deadline);
+    drop(store);
+    let reopened=SqliteStore::open(&path)?;
+    assert_eq!(reopened.load_tiny_experiment(now+Duration::hours(1)+Duration::seconds(1))?
+        .unwrap().state,"active");
+    assert_eq!(reopened.load_tiny_experiment(auth.deadline)?.unwrap().state,"stopped");
     Ok(())
 }

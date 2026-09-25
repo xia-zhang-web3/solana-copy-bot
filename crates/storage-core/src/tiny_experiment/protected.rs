@@ -171,7 +171,20 @@ impl SqliteDiscoveryStore {
             ensure!(observed_at <= now && now.signed_duration_since(observed_at) <= Duration::seconds(30),
                 "tiny_capital_observation_time");
             let floor = floor(balance, reserve)?;
-            let deadline = now.checked_add_signed(Duration::seconds(TINY_HORIZON_SECONDS)).context("tiny_budget_clock_overflow")?;
+            let deadline = if let (Some(binding), Some(authority)) =
+                (binding, crate::native_buy::cohort::load(conn)?)
+            {
+                ensure!(authority.run_id == id
+                    && authority.policy_identity == binding.policy_identity
+                    && authority.activated_at <= now && now < authority.deadline
+                    && authority.deadline - authority.activated_at
+                        <= Duration::seconds(TECHNICAL_COHORT_MAX_HORIZON_SECONDS),
+                    "tiny_budget_cohort_authority");
+                authority.deadline
+            } else {
+                now.checked_add_signed(Duration::seconds(TINY_HORIZON_SECONDS))
+                    .context("tiny_budget_clock_overflow")?
+            };
             conn.execute("INSERT INTO execution_tiny_experiment(singleton,experiment_id,wallet,activated_at,deadline,last_decision_at,state,policy_mode)
                 VALUES(1,?1,?2,?3,?4,?3,'active','protected_native_capital')", params![id,wallet,now.to_rfc3339(),deadline.to_rfc3339()])?;
             conn.execute("INSERT INTO execution_tiny_native_policy VALUES(?1,?2,1,?3,?4,?5,15000000,?6,?7)",

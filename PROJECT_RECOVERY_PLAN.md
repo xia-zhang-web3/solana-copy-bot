@@ -1,5 +1,30 @@
 # Project Recovery Plan
 
+## Current decision: run 08 four-hour upgrade accepted before publication
+
+The run 07 stream association and SQLite reader repairs were installed in the
+stopped, unused run 08 package with a matching one-hour artifact. The owner
+authorized a provider model of at most $50 and an overall window of at most
+four hours, retaining one BUY of at most 0.01 SOL and one source SELL. Run 07's
+seven RPC attempts, 80 compute units, 42,000 nanoUSD, and 47,881,652 stream
+bytes remain charged in the new package budget. The original run 07 UNKNOWN,
+database, and ledger remain untouched.
+
+The narrow upgrade extends the technical cohort validator and the protected
+native tiny budget to the same immutable four-hour cohort deadline. Ordinary
+tiny experiments remain limited to 3,600 seconds. The package derives its
+active config deadline from the first outbound session clock, so reconnect or
+restart cannot extend the authority. Trading caps, native floor, fee caps,
+one-send rule, and source ownership remain in force. Independent review
+accepted this code and package diff on 2026-09-25 after scoped config, storage,
+daemon and helper checks. Its acceptance is local: publication of a matching
+`copybot-app/release` artifact, installation in run 08, disposable offline
+startup, package seal, and final activation preflight remain required. STOP is
+set; no new provider use, signature, or transaction has occurred.
+
+Next action: publish this accepted diff, install and verify the exact CI
+artifact, then finish the stopped package and return one future owner command.
+
 ## Current decision: run 07 repair accepted offline; new stopped package pending
 
 The scoped local admission filter and live/stopped WAL reader passed independent

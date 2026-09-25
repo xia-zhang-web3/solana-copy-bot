@@ -63,7 +63,7 @@ async fn cohort_source_sell_runs_through_actual_daemon_tick_and_settles_once() -
         (signature.as_str(), wallet.as_str()));
     let bought = tick(&case, &case.config, &case.store, case.io.clone()).await?;
     assert_eq!(bought.state_machine_reserved, 1, "{bought:?}");
-    assert_eq!(case.io.counts.lock().unwrap().send, 1);
+    assert_eq!(case.io.counts.lock().unwrap().send, 1, "{bought:?}");
     let funding_calls = server.calls.lock().unwrap().iter()
         .filter(|c| c["method"] == "getMultipleAccounts").count();
     assert_eq!(funding_calls, 1, "initial native BUY funding proof");
