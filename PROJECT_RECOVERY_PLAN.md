@@ -1,14 +1,14 @@
 # Project Recovery Plan
 
-## Current decision: one owner exit for the confirmed run04 position
+## Current decision: first owner BUY to SELL cycle confirmed
 
-Decision question: can the daemon sell the single confirmed owner BUY position
-without a source SELL, then close and classify the trade from confirmed receipts
-without resending an unknown transaction?
+Decision: yes. The daemon sold the single confirmed owner BUY position without
+a source SELL, resolved an unknown dispatch through its finalized receipt, and
+closed and classified the trade without a second send.
 
-The original run04 remains stopped. Its confirmed BUY order is
-`exec-canary:owner-buy:copybot-owner-buy-20260924-04-usdc-01`; its open position
-holds 1,167,085 raw USDC (6 decimals) in wallet
+The original run04 remains stopped and unchanged. Its confirmed BUY order is
+`exec-canary:owner-buy:copybot-owner-buy-20260924-04-usdc-01`; its source
+snapshot recorded an open position of 1,167,085 raw USDC (6 decimals) in wallet
 `BwVw8ncEpWU7TwMTgysvwjQ85eEhKAMVbd7WU1iTE9Mk`. The BUY receipt shows a
 10,000,000 lamport swap input, 5,000 lamport transaction fee, 1,488,440
 lamports retained as USDC ATA rent, and a total wallet debit of 11,493,440
@@ -38,24 +38,38 @@ Its matching `copybot-app/release` artifact from GitHub Actions run
 `36110384699` was installed. The user's first one-shot command for run05 exited
 at config validation: durable association requires both execution flags false,
 while owner exit needs tiny submit enabled. No SELL order, dispatch, receipt or
-fill was created; the position remains open. The run05 ledger records six RPC
+fill was created; its copied position remained open. The run05 ledger records six RPC
 attempts, 60 CU and $0.0000315 at the provider model rate; stream use was zero.
 Run05 and its control files remain stopped and consumed.
 
-Run06 is a new stopped local package using the accepted binary and supported
+Run06 was a new stopped local package using the accepted binary and supported
 legacy Yellowstone delivery mode. It carries run05's provider attempts into
 its new ledger, so the $5 total model ceiling is not reset. The source run04
 BUY facts remain unchanged; the copied database passed migrations 0086/0087
 offline. The installed binary passed an offline startup check with tiny submit
 enabled and no network. An independent review accepted the changed config,
-budget carryover and one-position bounds; all five containers are created and
+budget carryover and one-position bounds; all five containers were created and
 the final local preflight passed with STOP and no authority or clock.
 
-Next authorized action: the owner may run the single run06 activation command
-from its package. This starts a fresh wallet/ATA/rent/floor preflight and one
-bounded daemon SELL window. Record the actual result only from the live receipt
-and position state; reconcile UNKNOWN without another send.
+The owner ran the one-shot run06 command. Its single SELL signature
+`3kV7UXd46zqio44QHdynYUKdiejPr778WGiu7QQDZGMopd1sydzsDXSBoGqxSrrcLsRetEHASYg3ABv4bnbjPAPx`
+was finalized at slot 450303335. The 1,167,085 raw USDC position is closed
+with quantity zero. The broker ledger records one `sendTransaction`; no
+unresolved dispatch or pending failed expense remains. BUY swap input was
+10,000,000 lamports, SELL swap output 9,936,399, and each transaction fee was
+5,000. Priority fees were zero. The economic cycle result is −73,601 lamports;
+wallet cash changed by −1,562,041 lamports because 1,488,440 remains as rent
+in the now-empty USDC ATA. The historical receipt decomposition flags remain
+unresolved; the new separate cash-component rows classify both sides with zero
+unclassified residual. Independent read-only postflight accepted this result.
+STOP is present and all five run06 containers have exited.
 
-Limits: a live V1 direct Raydium quote is still unknown until activation; an
-unsupported route fails closed. Local tests and artifact checks do not prove a
-live SELL, transaction receipt or profitability.
+One secondary final DB read in the launcher recorded `OutcomeReadError` without
+its reason. The same isolated reader and direct DB inspection now return
+`CLOSED_CONFIRMED`, and DB integrity checks pass. The next action is to record
+this first measured cycle and assess actual provider billing and a broader
+sample before any strategy profitability decision. No further trade is implied.
+
+Limits: this single negative cycle proves neither future route availability nor
+the profitability of a trading strategy. Provider budget accounting is a model;
+the actual provider invoice is not established by this run.
