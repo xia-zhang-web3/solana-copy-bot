@@ -25,8 +25,8 @@ pub(super) struct Case {
     pub(super) path: String,
     pub(super) store: SqliteStore,
     sql: Connection,
-    wallet: String,
-    signature: String,
+    pub(super) wallet: String,
+    pub(super) signature: String,
     now: chrono::DateTime<Utc>,
     pub(super) io: Arc<NativeBuyMockIo>,
     buy_lamports: u64,
@@ -53,6 +53,13 @@ async fn setup(fresh_out: &str, pending: bool) -> Result<Case> {
     setup_case(fresh_out, pending, false, false, false).await
 }
 pub(super) async fn setup_case(fresh_out: &str, pending: bool, protected: bool, activate: bool, cohort: bool) -> Result<Case> {
+    setup_case_with_config(fresh_out, pending, protected, activate, cohort, None, |_| {}).await
+}
+pub(super) async fn setup_case_with_config(
+    fresh_out: &str, pending: bool, protected: bool, activate: bool, cohort: bool,
+    path_override: Option<String>,
+    configure: impl FnOnce(&mut ExecutionConfig),
+) -> Result<Case> {
     let buy_lamports = if protected { 10_000_000 } else { 1_000_000 };
     let output_raw = if protected { "10000" } else { "1000" };
     let (payload, signature, wallet_bytes) = if protected {
@@ -90,8 +97,9 @@ pub(super) async fn setup_case(fresh_out: &str, pending: bool, protected: bool, 
         config.owned_sell_preparation.as_mut().unwrap().rpc_url = server.endpoint.clone();
         (Some(server), Some(state))
     } else { (None, None) };
-    let path = format!("file:native-runner-{}-{}?mode=memory&cache=shared",
-        std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
+    configure(&mut config);
+    let path = path_override.unwrap_or_else(|| format!("file:native-runner-{}-{}?mode=memory&cache=shared",
+        std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     let mut store = SqliteStore::open(&path)?;
     store.run_migrations(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../migrations")))?;
     copybot_storage_core::ensure_discovery_v2_schema(&store)?;
@@ -406,4 +414,4 @@ async fn native_buy_protected_pending_reconciles_after_activation_disabled() -> 
 
 #[path = "native_buy_runner_sell_fixture.rs"]
 mod sell_fixture;
-pub(super) use sell_fixture::sell_quarter;
+pub(super) use sell_fixture::{seed_source_sell, sell_quarter};

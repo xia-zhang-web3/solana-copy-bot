@@ -2,6 +2,50 @@ use anyhow::{ensure, Result};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use copybot_storage_core::ordered_sell_quote::fractional::inventory::Evidence;
+
+pub(super) struct NativeCohort {
+    pub buy_signature: String,
+    pub buy_rpc: Value,
+    pub evidence: Evidence,
+    pub owned_raw: u64,
+    pub sold_raw: u64,
+    pub native_after_buy: u64,
+}
+
+impl NativeCohort {
+    fn response(&self, r: &Value) -> Option<Value> {
+        let method = r["method"].as_str()?;
+        let result = match method {
+            "getTransaction" if r["params"][0] == self.buy_signature => self.buy_rpc.clone(),
+            "getBlock" if r["params"][0] == self.evidence.slot => self.evidence.block.clone(),
+            "getBlock" => self.evidence.parent.clone(),
+            "getTokenAccountsByOwnerAtSlot" => self.evidence.pages.iter()
+                .find(|p| r["params"][1]["programId"] == p.program)
+                .map(|p| p.response.clone())?,
+            "getTokenAccountsByOwner" => self.evidence.execution_accounts.clone(),
+            "getMinimumBalanceForRentExemption" => json!(2_039_280),
+            "getMultipleAccounts" => json!({"context":{"slot":151},"value":
+                r["params"][0].as_array()?.iter().enumerate().map(|(i, _)| {
+                    if i == 0 { super::initial_sol_rpc_fixture::system(1_000_000_000) }
+                    else { Value::Null }
+                }).collect::<Vec<_>>() }),
+            _ => return None,
+        };
+        Some(json!({"jsonrpc":"2.0","id":r["id"],"result":result}))
+    }
+    fn signed_sell_receipt(&self, r: &Value, result: &mut Value) {
+        if r["method"] != "getTransaction" || r["params"][0] == self.buy_signature
+            || r["params"][0] == "41d8jCJEnTMrriqGyfJvamJYsakyHb8VhtvTWeFyiDnx4NhAWjBR8fYo11PjgZFEhSdogM4Q31EZWY8dgVrdfjwb"
+            || result["result"]["slot"] != 152 { return; }
+        let receipt = &mut result["result"]["meta"];
+        receipt["preBalances"][0] = json!(self.native_after_buy);
+        receipt["postBalances"][0] = json!(self.native_after_buy + 981_000);
+        receipt["preTokenBalances"][0]["uiTokenAmount"]["amount"] = json!(self.owned_raw.to_string());
+        receipt["postTokenBalances"][0]["uiTokenAmount"]["amount"] =
+            json!((self.owned_raw - self.sold_raw).to_string());
+    }
+}
 pub(super) struct Server {
     pub url: String,
     pub calls: Arc<Mutex<Vec<Value>>>,
@@ -22,6 +66,12 @@ impl Drop for Server {
 }
 impl Server {
     pub async fn new() -> Result<Self> {
+        Self::with_native(None).await
+    }
+    pub async fn for_native_cohort(native: NativeCohort) -> Result<Self> {
+        Self::with_native(Some(native)).await
+    }
+    async fn with_native(native: Option<NativeCohort>) -> Result<Self> {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let url = format!("http://{}", l.local_addr()?);
         let calls = Arc::new(Mutex::new(vec![]));
@@ -100,11 +150,13 @@ impl Server {
                     p.release.await?;
                 }
                 let fault = errors.lock().unwrap().clone();
-                let custom = super::b136_rpc::response(&req, &captured.lock().unwrap(), &fault)?;
+                let custom = native.as_ref().and_then(|n| n.response(&req))
+                    .or(super::b136_rpc::response(&req, &captured.lock().unwrap(), &fault)?);
                 let mut result = match custom {
                     Some(v) => v,
                     None => respond(&req)?,
                 };
+                if let Some(native) = &native { native.signed_sell_receipt(&req, &mut result); }
                 fault_response(&fault, &req, &mut result);
                 let wire = result.to_string();
                 if fault == "endpoint" && req["method"] == "getGenesisHash" {

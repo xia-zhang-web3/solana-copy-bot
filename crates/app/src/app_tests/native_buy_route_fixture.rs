@@ -304,7 +304,7 @@ pub(super) fn signed_payload_for_lamports(lamports: u64) -> Result<(String, Stri
     signed_payload_for_lamports_and_floor(lamports, 50_000_001)
 }
 
-pub(super) fn signed_payload_for_lamports_and_floor(
+pub(in crate::app_tests::fractional) fn signed_payload_for_lamports_and_floor(
     lamports: u64, reserve_lamports: u64,
 ) -> Result<(String, String, [u8; 32])> {
     let key = SigningKey::from_bytes(&[11; 32]);

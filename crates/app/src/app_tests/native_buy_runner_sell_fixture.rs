@@ -3,62 +3,8 @@ use super::*;
 pub(in crate::app_tests::fractional) async fn sell_quarter(case: &mut Case) -> Result<()> {
     let raw = case.buy_lamports / 1000;
     let sold = raw / 4;
-    let native = crate::app_tests::fractional::fractional_fixture::native_binding().await?;
+    seed_source_sell(case).await?;
     let mut evidence = crate::app_tests::fractional::fractional_tests::evidence()?;
-    let mut inbox = AssociationInbox::open_ordered_sell_consumer(&case.path,
-        InboxLimits { count: 1000, bytes: 8 << 20, busy_ms: 100 })?;
-    let mut own = admission();
-    own.facts.signature = case.signature.clone();
-    own.facts.slot = 120;
-    own.facts.wallet = case.wallet.clone();
-    own.facts.amount_in_bits = (case.buy_lamports as f64 / 1e9).to_bits();
-    own.facts.amount_out_bits = (raw as f64 / 1000.0).to_bits();
-    let exact = own.facts.exact_amounts.as_mut().unwrap();
-    exact.amount_in_raw = case.buy_lamports.to_string();
-    exact.amount_out_raw = raw.to_string();
-    inbox.persist_at(&delivery(3, copybot_core_types::association_delivery::DeliveryEvent::Admission(own.clone())),
-        &copybot_core_types::association_delivery::CandidateGeneration::Unknown, case.now)?;
-    let blockhash = native["anchors"][1]["terminal"]["ProviderAsserted"]["blockhash"]
-        .as_str().unwrap().to_owned();
-    inbox.persist_at(&delivery(4, copybot_core_types::association_delivery::DeliveryEvent::Terminal {
-        signature: case.signature.clone(), expected: own,
-        result: copybot_core_types::association_delivery::Terminal::ProviderAsserted(
-            copybot_core_types::association_delivery::ProviderAssertion {
-                slot: 120, blockhash, signature: case.signature.clone(),
-                transaction_index: 0, block_time: copybot_core_types::association_delivery::BlockTime::Missing,
-            }),
-    }), &copybot_core_types::association_delivery::CandidateGeneration::Unknown, case.now)?;
-    let sell: copybot_core_types::association_delivery::AdmissionFacts =
-        serde_json::from_value(native["anchors"][2]["identity"]["admission"].clone())?;
-    let generation = case.store.association_candidate(&sell.facts);
-    inbox.persist_at(&delivery(5, copybot_core_types::association_delivery::DeliveryEvent::Admission(sell.clone())),
-        &generation, case.now)?;
-    let sell_blockhash = native["anchors"][2]["terminal"]["ProviderAsserted"]["blockhash"]
-        .as_str().unwrap().to_owned();
-    inbox.persist_at(&delivery(6, copybot_core_types::association_delivery::DeliveryEvent::Terminal {
-        signature: sell.facts.signature.clone(), expected: sell.clone(),
-        result: copybot_core_types::association_delivery::Terminal::ProviderAsserted(
-            copybot_core_types::association_delivery::ProviderAssertion {
-                slot: 150, blockhash: sell_blockhash, signature: sell.facts.signature.clone(),
-                transaction_index: 0, block_time: copybot_core_types::association_delivery::BlockTime::Missing,
-            }),
-    }), &generation, case.now)?;
-    for (i, path) in native["parent_paths"].as_array().unwrap().iter().take(2).enumerate() {
-        let edge = &path["edges"][0];
-        let parent = copybot_core_types::association_parent::ParentObservation {
-            child: serde_json::from_value(edge["child"].clone())?,
-            parent: serde_json::from_value(edge["parent"].clone())?, issue: None,
-        };
-        inbox.persist_at(&delivery(7+i as u64,
-            copybot_core_types::association_delivery::DeliveryEvent::Parent(parent)),
-            &copybot_core_types::association_delivery::CandidateGeneration::Unknown, case.now)?;
-    }
-    for _ in 0..20 {
-        if !inbox.has_sell_preparation_work()? { break; }
-        inbox.recover_sell_preparation()?;
-    }
-    assert!(inbox.sell_preparation(&sell.facts.signature)?.is_some());
-    drop(inbox);
     let mut meta: Value = serde_json::from_slice(&std::fs::read(
         crate::app_tests::b135_fixture::inputs().join("chain.json"))?)?;
     meta["our"]["signer"] = json!(case.wallet);
@@ -129,5 +75,65 @@ pub(in crate::app_tests::fractional) async fn sell_quarter(case: &mut Case) -> R
         "SELECT transaction_fee FROM execution_canary_receipt_facts WHERE order_id=?1",
         [&dispatch.order_id], |r| r.get(0))?;
     assert_eq!(fee.as_deref(), Some("19000"));
+    Ok(())
+}
+
+pub(in crate::app_tests::fractional) async fn seed_source_sell(case: &Case) -> Result<()> {
+    let raw = case.buy_lamports / 1000;
+    let native = crate::app_tests::fractional::fractional_fixture::native_binding().await?;
+    let mut inbox = AssociationInbox::open_ordered_sell_consumer(&case.path,
+        InboxLimits { count: 1000, bytes: 8 << 20, busy_ms: 100 })?;
+    let mut own = admission();
+    own.facts.signature = case.signature.clone();
+    own.facts.slot = 120;
+    own.facts.wallet = case.wallet.clone();
+    own.facts.amount_in_bits = (case.buy_lamports as f64 / 1e9).to_bits();
+    own.facts.amount_out_bits = (raw as f64 / 1000.0).to_bits();
+    let exact = own.facts.exact_amounts.as_mut().unwrap();
+    exact.amount_in_raw = case.buy_lamports.to_string();
+    exact.amount_out_raw = raw.to_string();
+    inbox.persist_at(&delivery(3, copybot_core_types::association_delivery::DeliveryEvent::Admission(own.clone())),
+        &copybot_core_types::association_delivery::CandidateGeneration::Unknown, case.now)?;
+    let blockhash = native["anchors"][1]["terminal"]["ProviderAsserted"]["blockhash"]
+        .as_str().unwrap().to_owned();
+    inbox.persist_at(&delivery(4, copybot_core_types::association_delivery::DeliveryEvent::Terminal {
+        signature: case.signature.clone(), expected: own,
+        result: copybot_core_types::association_delivery::Terminal::ProviderAsserted(
+            copybot_core_types::association_delivery::ProviderAssertion {
+                slot: 120, blockhash, signature: case.signature.clone(),
+                transaction_index: 0, block_time: copybot_core_types::association_delivery::BlockTime::Missing,
+            }),
+    }), &copybot_core_types::association_delivery::CandidateGeneration::Unknown, case.now)?;
+    let sell: copybot_core_types::association_delivery::AdmissionFacts =
+        serde_json::from_value(native["anchors"][2]["identity"]["admission"].clone())?;
+    let generation = case.store.association_candidate(&sell.facts);
+    inbox.persist_at(&delivery(5, copybot_core_types::association_delivery::DeliveryEvent::Admission(sell.clone())),
+        &generation, case.now)?;
+    let sell_blockhash = native["anchors"][2]["terminal"]["ProviderAsserted"]["blockhash"]
+        .as_str().unwrap().to_owned();
+    inbox.persist_at(&delivery(6, copybot_core_types::association_delivery::DeliveryEvent::Terminal {
+        signature: sell.facts.signature.clone(), expected: sell.clone(),
+        result: copybot_core_types::association_delivery::Terminal::ProviderAsserted(
+            copybot_core_types::association_delivery::ProviderAssertion {
+                slot: 150, blockhash: sell_blockhash, signature: sell.facts.signature.clone(),
+                transaction_index: 0, block_time: copybot_core_types::association_delivery::BlockTime::Missing,
+            }),
+    }), &generation, case.now)?;
+    for (i, path) in native["parent_paths"].as_array().unwrap().iter().take(2).enumerate() {
+        let edge = &path["edges"][0];
+        let parent = copybot_core_types::association_parent::ParentObservation {
+            child: serde_json::from_value(edge["child"].clone())?,
+            parent: serde_json::from_value(edge["parent"].clone())?, issue: None,
+        };
+        inbox.persist_at(&delivery(7+i as u64,
+            copybot_core_types::association_delivery::DeliveryEvent::Parent(parent)),
+            &copybot_core_types::association_delivery::CandidateGeneration::Unknown, case.now)?;
+    }
+    for _ in 0..20 {
+        if !inbox.has_sell_preparation_work()? { break; }
+        inbox.recover_sell_preparation()?;
+    }
+    assert!(inbox.sell_preparation(&sell.facts.signature)?.is_some());
+    drop(inbox);
     Ok(())
 }
