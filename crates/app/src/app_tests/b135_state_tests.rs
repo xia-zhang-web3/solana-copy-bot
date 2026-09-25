@@ -31,6 +31,9 @@ async fn b135_held_rpc_rechecks_generation_receipt_contributors_amount() -> Resu
         assert!(
             error.contains("changed")
                 || error.contains("snapshot")
+                || (matches!(case, "generation" | "amount")
+                    && error.contains("source_sell_amount_stale"))
+                || (case == "contributor" && error.contains("owned_sell_quote_stale"))
                 || (case == "receipt" && error.contains("receipt facts native delta mismatch")),
             "{case}:{error}"
         );

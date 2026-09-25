@@ -43,6 +43,16 @@ send. Во время RPC проверяется состояние lease, pendi
 Mock replay не подтверждает реальную задержку провайдера, исполнение live SELL
 или доходность. Платных provider calls, подписей и отправок в подготовке нет.
 
+Первый CI run `36178875556` на `c0ecffc6` не выпустил artifact: полный app
+test gate дал 1202 PASS, 47 ignored и один FAIL в существующем B135 test.
+Тест по-прежнему требовал старый текст `changed/snapshot` для каждого
+изменения во время RPC. При новом порядке проверок те же четыре опасных
+изменения безопасно отказывают раньше: generation и amount как
+`source_sell_amount_stale`, contributor как `owned_sell_quote_stale`, receipt
+как `receipt facts native delta mismatch`; handoff остаётся нулевым.
+Узко уточнено именно это ожидание без изменения production кода. Целевой
+повтор четырёх случаев PASS; нужен новый успешный matching CI run.
+
 ## Объём изменения
 
 Только SELL preparation/ownership, fractional progress и причинные fixtures.
