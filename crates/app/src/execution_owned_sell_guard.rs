@@ -61,18 +61,13 @@ pub(crate) fn request(store: &SqliteStore, r: &ExecutionSubmitRequest) -> Result
         .1
         .load(std::sync::atomic::Ordering::SeqCst);
     if version < 0 || !store.recheck_owned_sell_prepared_at_version(p, version, Utc::now())? {
-        let before = store.sqlite_data_version()?;
         store.recheck_owned_sell_prepared(p, Utc::now())?;
-        ensure!(
-            store.sqlite_data_version()? == before,
-            "owned_sell_snapshot_changed"
-        );
         r.metadata
             .rpc_owned_live
             .as_ref()
             .context("owned_sell_runner_cancelled")?
             .1
-            .store(before, std::sync::atomic::Ordering::SeqCst);
+            .store(store.sqlite_data_version()?, std::sync::atomic::Ordering::SeqCst);
     }
     Ok(p.clone())
 }

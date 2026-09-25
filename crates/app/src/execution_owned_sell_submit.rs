@@ -89,6 +89,9 @@ pub(super) async fn recover(
     c: &ExecutionConfig,
 ) -> Result<recovery::Completed> {
     let mut completed = recovery::Completed::default();
+    if store.expired_owned_sell_preparation(Utc::now())? {
+        completed.pending_reason = Some("owned_sell_preparation_held_no_resend".into());
+    }
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())

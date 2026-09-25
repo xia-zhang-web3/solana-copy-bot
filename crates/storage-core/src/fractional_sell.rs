@@ -145,6 +145,18 @@ impl SqliteDiscoveryStore {
         tx.commit()?;
         Ok(())
     }
+    /// Cheap progress fence between bounded RPC reads. The complete parent graph
+    /// is checked at reservation and again under the completion writer lock.
+    pub fn recheck_fractional_collection_progress(
+        &self,
+        claim: &QuoteClaim,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        progress(&tx, claim, now)?;
+        tx.commit()?;
+        Ok(())
+    }
     /// The verifier derives N/D from complete raw program pages + canonical full-prefix
     /// and the native source facts. There is no public set-N/D or set-selected-raw API.
     pub fn complete_fractional_sell(
@@ -275,6 +287,13 @@ fn collection(
     l: InboxLimits,
     now: DateTime<Utc>,
 ) -> Result<()> {
+    progress(c, claim, now)?;
+    let base = snapshot::read_base(c, &claim.intent_id, l, &claim.binding.endpoint)?
+        .map_err(anyhow::Error::msg)?;
+    ensure!(base == claim.binding, "fraction_generation_changed");
+    Ok(())
+}
+fn progress(c: &Connection, claim: &QuoteClaim, now: DateTime<Utc>) -> Result<()> {
     ensure!(
         now < claim.lease_until && claim.binding.fractional.is_none(),
         "fraction_collection_deadline"
@@ -284,9 +303,6 @@ fn collection(
             .is_none(),
         "fraction_prior_receipt_pending"
     );
-    let base = snapshot::read_base(c, &claim.intent_id, l, &claim.binding.endpoint)?
-        .map_err(anyhow::Error::msg)?;
-    ensure!(base == claim.binding, "fraction_generation_changed");
     let row = rows::load(c, &claim.intent_id)?.context("fraction_claim_missing")?;
     ensure!(
         row.owner == claim.owner

@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 static COHORT_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 #[tokio::test]
 async fn cohort_source_sell_runs_through_actual_daemon_tick_and_settles_once() -> Result<()> {
     cohort_source_sell_case(false).await
@@ -125,28 +124,6 @@ async fn cohort_source_sell_case(sustained: bool) -> Result<()> {
         .filter(|c| c["method"] == "getMultipleAccounts")
         .count();
     assert_eq!(funding_calls, 1, "initial native BUY funding proof");
-    replay_cohort_sell_after_buy(&case, sustained).await?;
-    if sustained {
-        let db = Connection::open(&case.path)?;
-        let intent: String = db.query_row(
-            "SELECT intent_id FROM ordered_source_sell_intents LIMIT 1",
-            [],
-            |r| r.get(0),
-        )?;
-        let snapshot = case.store.strict_sell_quote_snapshot(
-            &intent,
-            copybot_storage_core::association_inbox::InboxLimits {
-                count: 500_000,
-                bytes: 512 << 20,
-                busy_ms: 100,
-            },
-            &case.config.quote_canary_base_url,
-        )?;
-        assert!(
-            snapshot.is_ok(),
-            "full-window strict quote binding: {snapshot:?}"
-        );
-    }
     let config = case.config.clone();
     let chain: Value = serde_json::from_slice(&std::fs::read(
         super::b135_fixture::inputs().join("chain.json"),
@@ -161,10 +138,25 @@ async fn cohort_source_sell_case(sustained: bool) -> Result<()> {
         .for_ingestion(&app.ingestion, &case.path)?
         .with_native_buy_mock(case.io.clone());
     let db = Connection::open(&case.path)?;
-    let sell_id = tokio::time::timeout(Duration::from_secs(30), async {
+    let simulation_hold = sustained.then(|| server.hold("simulateTransaction"));
+    let settle = async {
+        let mut claim_busy = 0usize;
         loop {
             server.check()?;
-            let summary = runner.process_tick(&case.store, chrono::Utc::now()).await?;
+            let summary = match runner.process_tick(&case.store, chrono::Utc::now()).await {
+                Ok(summary) => summary,
+                Err(error) if sustained && error.to_string().contains("strict_quote_claim: database is locked") => {
+                    let held: i64 = db.query_row("SELECT count(*) FROM rpc_owned_sell_handoffs", [], |r| r.get(0))?;
+                    anyhow::ensure!(held == 0, "SQLite lock after SELL ownership: {error:#}");
+                    let lease: Option<String> = db.query_row("SELECT lease_until FROM ordered_sell_quote_results LIMIT 1", [], |r| r.get(0)).optional()?.flatten();
+                    claim_busy += 1;
+                    eprintln!("sustained claim_busy={claim_busy} durable_quote_lease={}", lease.is_some());
+                    anyhow::ensure!(claim_busy <= 12, "strict quote claim repeatedly locked");
+                    tokio::time::sleep(Duration::from_secs(15)).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let id: Option<String> = db
                 .query_row(
                     "SELECT order_id FROM rpc_owned_sell_dispatches LIMIT 1",
@@ -178,29 +170,34 @@ async fn cohort_source_sell_case(sustained: bool) -> Result<()> {
                     .load_execution_canary_cash_settlement(&id)?
                     .is_some()
                 {
+                    if sustained { eprintln!("sustained claim_busy={claim_busy}"); }
                     return Ok::<_, anyhow::Error>(id);
                 }
             }
             anyhow::ensure!(summary.last_error.is_none(), "{summary:?}");
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(if sustained {
+                Duration::from_secs(15)
+            } else {
+                Duration::from_millis(10)
+            }).await;
         }
-    })
+    };
+    let release_simulation = cohort_replay::hold_sell_under_ingress(&server, &case, simulation_hold);
+    let (sell_id, ()) = tokio::time::timeout(
+        Duration::from_secs(if sustained { 900 } else { 30 }),
+        async { tokio::try_join!(replay_cohort_sell_after_buy(&case, sustained, settle), release_simulation) },
+    )
     .await
-    .context("cohort SELL did not settle via daemon tick")??;
+    .context("cohort SELL did not settle via daemon tick with ingress")??;
     let cash = case
         .store
         .load_execution_canary_cash_settlement(&sell_id)?
         .context("SELL cash settlement")?;
+    let (quote_to_dispatch_ms, deadline_margin_ms) = cohort_replay::sell_quote_window(&db)?;
+    assert!(deadline_margin_ms > 0);
     if sustained {
-        let wire: String = db.query_row(
-            "SELECT binding FROM ordered_sell_quote_results LIMIT 1",
-            [],
-            |r| r.get(0),
-        )?;
-        let binding: Value = serde_json::from_str(&wire)?;
-        assert!(binding["snapshot_version"]
-            .as_str()
-            .is_some_and(|v| v.starts_with("strict_quote_snapshot_v2:sha256:") && v.len() == 96));
+        eprintln!("sustained quote_to_dispatch_ms={quote_to_dispatch_ms} deadline_margin_ms={deadline_margin_ms}");
+        cohort_replay::assert_long_snapshot_binding(&db)?;
     }
     assert_eq!(
         (cash.sold_quantity.raw(), cash.remaining_quantity.raw()),

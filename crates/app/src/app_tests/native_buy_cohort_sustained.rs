@@ -168,7 +168,8 @@ pub(super) async fn send(
     old_signature: &str,
     bot_wallet: &str,
     bot_signature: &str,
-) -> Result<()> {
+    mut settled: tokio::sync::oneshot::Receiver<()>,
+) -> Result<usize> {
     let source = std::fs::read(input.join("source.pb"))?;
     let our = super::rewrite_identity(
         std::fs::read(input.join("cohort-our.pb"))?,
@@ -225,11 +226,18 @@ pub(super) async fn send(
                 template,
                 slot,
                 &parent_hash,
-                Some(if index < 450 { &transactions } else { &[] }),
+                Some(if index < 450 || index >= FILLER_COUNT - 150 {
+                    &transactions
+                } else {
+                    &[]
+                }),
             )?,
         )
         .await?;
         parent_hash = hash(slot);
+        if index >= FILLER_COUNT - 150 {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        }
     }
     let sell_raw = std::fs::read(input.join("sell.pb"))?;
     let sell = replace(
@@ -248,10 +256,26 @@ pub(super) async fn send(
         None,
     )?;
     let sell_ns = 2_000_000_000 + FILLER_COUNT * STEP_NS;
+    let sell_hash = std::str::from_utf8(only_bytes(only_bytes(&sell_block, 5)?, 2)?)?.to_owned();
     update(sender, sell_ns, sell).await?;
     update(sender, sell_ns + STEP_NS, sell_block).await?;
-    sender
-        .send(ReplayInput::End(sell_ns + 1_000_000_000))
-        .await?;
-    Ok(())
+    parent_hash = sell_hash;
+    // The daemon must prepare and settle with parent commits still arriving.
+    // Keep the ordinary 400 ms cadence until its receipt is durable.
+    let mut tail = 0usize;
+    while tail < 225 {
+        tokio::select! {
+            result = &mut settled => { result?; break; }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(400)) => {
+                let slot = SELL_SLOT + 1 + tail as u64;
+                update(sender, sell_ns + (tail as u64 + 2) * STEP_NS,
+                    block_frame(template, slot, &parent_hash, Some(&[]))?).await?;
+                parent_hash = hash(slot);
+                tail += 1;
+            }
+        }
+    }
+    anyhow::ensure!(tail < 225, "SELL did not settle under continuing parent ingress");
+    sender.send(ReplayInput::End(sell_ns + (tail as u64 + 3) * STEP_NS)).await?;
+    Ok(tail)
 }

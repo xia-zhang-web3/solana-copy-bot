@@ -6,7 +6,7 @@ use crate::execution_submit_adapter::{
 };
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD, Engine};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use copybot_storage_core::{ordered_sell_quote::*, rpc_owned_sell_handoff::dispatch::Prepared, *};
 use serde_json::json;
 pub(super) fn budget(f: &Fixture) -> Result<()> {
@@ -37,6 +37,27 @@ pub(super) fn prepare_with_config(
     claim: &QuoteClaim,
     c: &copybot_config::ExecutionConfig,
     experiment_id: &str,
+) -> Result<Prepared> {
+    prepare_with_commit_clocks(f, claim, c, experiment_id, Utc::now, Utc::now)
+}
+pub(super) fn prepare_with_commit_clocks(
+    f: &Fixture,
+    claim: &QuoteClaim,
+    c: &copybot_config::ExecutionConfig,
+    experiment_id: &str,
+    reserve_clock: impl FnMut() -> DateTime<Utc>,
+    complete_clock: impl FnMut() -> DateTime<Utc>,
+) -> Result<Prepared> {
+    prepare_with_stage_hook(f, claim, c, experiment_id, reserve_clock, complete_clock, |_| Ok(()))
+}
+pub(super) fn prepare_with_stage_hook(
+    f: &Fixture,
+    claim: &QuoteClaim,
+    c: &copybot_config::ExecutionConfig,
+    experiment_id: &str,
+    reserve_clock: impl FnMut() -> DateTime<Utc>,
+    complete_clock: impl FnMut() -> DateTime<Utc>,
+    before_complete: impl FnOnce(&copybot_storage_core::rpc_owned_sell_handoff::Handoff) -> Result<()>,
 ) -> Result<Prepared> {
     let l = super::association_parent_fixture::limits();
     let b = &claim.binding;
@@ -70,7 +91,7 @@ pub(super) fn prepare_with_config(
         "synthetic mocked finalized RPC authority; no signing permit",
         experiment_id,
         &c.canary_wallet_pubkey,
-        Utc::now,
+        reserve_clock,
     )?;
     let request=ExecutionSubmitRequest {order_id:h.order_id.clone(),signal_id:h.intent_id.clone(),client_order_id:h.owner.clone(),attempt:1,route:c.canary_route.clone(),wallet_id:b.source_wallet.clone(),token:b.mint.clone(),side:"sell".into(),buy_size_sol:0.0,slippage_tolerance_bps:100,wallet_pubkey:c.canary_wallet_pubkey.clone(),entry_route_plan_json:None,metadata:ExecutionBuildPlanMetadata {quote_event_id:Some(h.intent_id.clone()),quote_source:Some(b.provider.clone()),quote_request_ts:Some(now),http_request_started_ts:Some(now),quote_response_available_ts:Some(now),quote_status:Some("ok".into()),quote_in_amount_raw:Some(b.raw.to_string()),quote_out_amount_raw:Some("1000000".into()),quote_response_json:Some(body.to_string()),route_plan_json:Some(body["routePlan"].to_string()),priority_fee_status:Some("ok".into()),priority_fee_source:Some("configured_cap".into()),priority_fee_lamports:Some(22000),priority_fee_json:Some(json!({"version":1,"source":"configured_cap","unit":"total_priority_fee_lamports","value":22000}).to_string()),..Default::default()}};
     let plan =
@@ -105,6 +126,7 @@ pub(super) fn prepare_with_config(
     let (message, fee) = crate::execution_priority_fee_wire::decode_priority_fee_message(
         &unsigned.serialized_transaction_base64,
     )?;
+    before_complete(&h)?;
     f.db.store.complete_owned_sell_handoff(
         &h,
         l,
@@ -112,7 +134,7 @@ pub(super) fn prepare_with_config(
         &message.binding.message_sha256,
         19000,
         fee.total,
-        Utc::now,
+        complete_clock,
     )?;
     let prepared = Prepared {
         handoff: h,
@@ -152,6 +174,20 @@ pub(super) fn prepare_with_config(
     Ok(prepared)
 }
 pub(super) fn dispatch(f: &Fixture, p: &Prepared) -> Result<ExecutionCanaryDispatch> {
+    let (d, b) = dispatch_candidate(p);
+    assert!(matches!(
+        f.db.store
+            .claim_owned_sell_dispatch(p, &d, &b, || Ok(Utc::now()))?,
+        ExecutionDispatchClaim::New
+    ));
+    assert!(matches!(
+        f.db.store
+            .claim_owned_sell_dispatch(p, &d, &b, || Ok(Utc::now()))?,
+        ExecutionDispatchClaim::Existing
+    ));
+    Ok(d)
+}
+pub(super) fn dispatch_candidate(p: &Prepared) -> (ExecutionCanaryDispatch, TinyBudgetClaim) {
     let h = &p.handoff;
     // Mock signer/transport identity, never a user's key or a real signed transaction.
     let d = ExecutionCanaryDispatch {
@@ -179,17 +215,7 @@ pub(super) fn dispatch(f: &Fixture, p: &Prepared) -> Result<ExecutionCanaryDispa
         priority_fee: p.priority_fee,
         fee_slot: 151,
     };
-    assert!(matches!(
-        f.db.store
-            .claim_owned_sell_dispatch(p, &d, &b, || Ok(Utc::now()))?,
-        ExecutionDispatchClaim::New
-    ));
-    assert!(matches!(
-        f.db.store
-            .claim_owned_sell_dispatch(p, &d, &b, || Ok(Utc::now()))?,
-        ExecutionDispatchClaim::Existing
-    ));
-    Ok(d)
+    (d, b)
 }
 pub(super) fn receipt(d: &ExecutionCanaryDispatch, sold: u64) -> ExecutionCanaryReceiptFacts {
     use copybot_core_types::{Lamports, SignedLamports};

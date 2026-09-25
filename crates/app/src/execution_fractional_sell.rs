@@ -68,11 +68,10 @@ pub(crate) async fn bind_transport(
         .context("fraction_policy")?;
     let mut read = async |method: &str, params: Value| -> Result<Value> {
         let store = &mut *store;
-        // Preserve full provenance/generation checks around the logical response.
         // Per-chunk progress checks must not rerun the whole SQL proof graph hundreds
-        // of times: stop/lease/deadline are checked during acquisition, and a changed
-        // generation is refused after body completion, before verifier or quote.
-        store.recheck_fractional_collection(&claim, limits, Utc::now())?;
+        // of times: stop/lease/deadline are checked during acquisition. The complete
+        // graph is checked again under the completion writer lock, before proof or quote.
+        store.recheck_fractional_collection_progress(&claim, Utc::now())?;
         let mut check = || {
             ensure!(
                 !std::path::Path::new(&c.canary_kill_switch_path).exists(),
@@ -89,7 +88,7 @@ pub(crate) async fn bind_transport(
             json!({"jsonrpc":"2.0","id":"fractional-inventory-v1","method":method,"params":params});
         let mut response = rpc.read(request.clone(), &mut check).await?;
         check()?;
-        store.recheck_fractional_collection(&claim, limits, Utc::now())?;
+        store.recheck_fractional_collection_progress(&claim, Utc::now())?;
         ensure!(
             response["jsonrpc"] == "2.0"
                 && response["id"] == request["id"]

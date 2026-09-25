@@ -165,16 +165,17 @@ impl ExecutionQuoteCanaryRunner {
                 let endpoint = endpoint.to_string();
                 let preparation = config.owned_sell_preparation.is_some();
                 let prepared = tokio::task::spawn_blocking(move || -> Result<_> {
-                    let store = SqliteStore::open(path)?;
+                    let store = SqliteStore::open(path).context("strict_quote_store_open")?;
                     store.set_busy_timeout(std::time::Duration::from_millis(limits.busy_ms))?;
                     let claim = if preparation {
                         store.claim_strict_sell_quote_for_owned_preparation(
                             limits,
                             &endpoint,
                             Utc::now,
-                        )?
+                        ).context("strict_quote_claim")?
                     } else {
-                        store.claim_strict_sell_quote(limits, &endpoint, Utc::now)?
+                        store.claim_strict_sell_quote(limits, &endpoint, Utc::now)
+                            .context("strict_quote_claim")?
                     };
                     Ok((store, claim))
                 })
@@ -191,7 +192,7 @@ impl ExecutionQuoteCanaryRunner {
                     crate::execution_owned_sell_rpc::fractional::collect(
                         &client, &mut store, &config, claim, limits,
                     )
-                    .await?
+                    .await.context("strict_quote_fractional_collect")?
                 } else {
                     ensure!(
                         claim.binding.fractional.is_none(),
@@ -214,8 +215,9 @@ impl ExecutionQuoteCanaryRunner {
                     )
                 };
                 let (mut store, observation) = tokio::task::spawn_blocking(move || -> Result<_> {
-                    let observation =
-                        store.complete_strict_sell_quote(&claim, limits, observation, Utc::now)?;
+                    let observation = store
+                        .complete_strict_sell_quote(&claim, limits, observation, Utc::now)
+                        .context("strict_quote_complete")?;
                     Ok((store, observation))
                 })
                 .await??;
@@ -233,7 +235,7 @@ impl ExecutionQuoteCanaryRunner {
                             owner,
                         ))
                     })
-                    .await??;
+                    .await?.context("strict_quote_owned_prepare")?;
                 }
                 Ok(Step::Completed)
             });

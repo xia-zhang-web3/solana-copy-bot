@@ -63,6 +63,24 @@ impl SqliteDiscoveryStore {
             |r| r.get(0),
         )?)
     }
+    pub fn owned_sell_handoff_dispatched(&self, id: &str) -> Result<bool> {
+        required(&self.conn)?;
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM rpc_owned_sell_dispatches WHERE intent_id=?1)",
+            [id],
+            |r| r.get(0),
+        )?)
+    }
+    /// A pre-dispatch hold cannot be resent by receipt reconciliation. Expose
+    /// it after its immutable quote deadline instead of silently skipping it.
+    pub fn expired_owned_sell_preparation(&self, now: DateTime<Utc>) -> Result<bool> {
+        required(&self.conn)?;
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM rpc_owned_sell_handoffs h LEFT JOIN rpc_owned_sell_dispatches d ON d.intent_id=h.intent_id WHERE d.intent_id IS NULL AND h.deadline<=?1)",
+            [now.to_rfc3339()],
+            |r| r.get(0),
+        )?)
+    }
     pub fn reserve_owned_sell_handoff(
         &self,
         snapshot: &OwnedSellSnapshot,
@@ -177,24 +195,19 @@ impl SqliteDiscoveryStore {
         tx.commit()?;
         Ok(())
     }
-    /// Cheap repeated guard only while a preceding full handoff check and
-    /// these reads observe one unchanged external SQLite commit epoch. The
-    /// caller must perform the full check when this returns false. Completion
-    /// and dispatch always use their full atomic checks.
-    pub fn recheck_owned_sell_handoff_at_version(
+    /// Repeated liveness/owner check during unsigned build. Parent changes
+    /// remain untrusted until completion and dispatch recheck the full graph
+    /// under their own immediate writer transactions.
+    pub fn recheck_owned_sell_handoff_progress(
         &self,
         h: &Handoff,
         l: InboxLimits,
-        expected_version: i64,
         now: DateTime<Utc>,
-    ) -> Result<bool> {
-        if self.sqlite_data_version()? != expected_version {
-            return Ok(false);
-        }
+    ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         recheck_state_common(&tx, h, l, now, "preparing", false)?;
         tx.commit()?;
-        Ok(self.sqlite_data_version()? == expected_version)
+        Ok(())
     }
     pub fn complete_owned_sell_handoff(
         &self,

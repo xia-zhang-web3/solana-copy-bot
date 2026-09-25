@@ -43,23 +43,21 @@ pub(crate) async fn run(
         );
     }
     if store.has_owned_sell_handoff(&b.intent_id)? {
+        ensure!(
+            store.owned_sell_handoff_dispatched(&b.intent_id)?,
+            "owned_sell_preparation_held_no_resend"
+        );
         return Ok(());
     }
     ensure!(
         q.response_sha256.as_deref() == Some(&rpc::digest(&body)),
         "owned_sell_quote_body_binding"
     );
-    let baseline_version = store.sqlite_data_version()?;
-    let s = store.owned_sell_snapshot(b, l)?;
+    let s = store.owned_sell_snapshot(b, l).context("owned_sell_initial_snapshot")?;
     ensure!(
         store.matches_persisted_current_strict_quote(&q, Utc::now())?,
         "owned_sell_quote_stale"
     );
-    ensure!(
-        store.sqlite_data_version()? == baseline_version,
-        "owned_sell_snapshot_changed"
-    );
-    let mut data_version = baseline_version;
     let e = c
         .tiny_experiment
         .id
@@ -95,26 +93,14 @@ pub(crate) async fn run(
                     )),
             "owned_sell_quote_stale"
         );
-        // This connection makes no writes during RPC collection. When another
-        // connection commits, re-evaluate the full durable graph and quote.
-        // The reservation below always performs its own full atomic recheck.
-        let current_version = store.sqlite_data_version()?;
-        if current_version != data_version {
-            ensure!(
-                store.owned_sell_snapshot(b, l)? == s,
-                "owned_sell_snapshot_changed"
-            );
-            ensure!(
-                store.matches_persisted_current_strict_quote(&q, now)?,
-                "owned_sell_quote_stale"
-            );
-            selection.recheck(store)?;
-            ensure!(
-                store.sqlite_data_version()? == current_version,
-                "owned_sell_snapshot_changed"
-            );
-            data_version = current_version;
-        }
+        // RPC reads cannot own or dispatch. Keep the quote and wallet checks
+        // live here; reserve compares the complete graph with `s` under its
+        // IMMEDIATE writer lock before any durable financial ownership.
+        ensure!(
+            store.matches_persisted_current_strict_quote(&q, now)?,
+            "owned_sell_quote_stale"
+        );
+        selection.recheck(store)?;
         store.check_owned_sell_budget_policy(
             e,
             &c.canary_wallet_pubkey,
@@ -131,12 +117,12 @@ pub(crate) async fn run(
         );
     let left = (rpc_deadline - Utc::now())
         .to_std()
-        .context("owned_sell_deadline")?;
+        .context("owned_sell_rpc_window")?;
     let authority = tokio::time::timeout(left, rpc::collect(&http, c, &s, &mut check))
         .await
-        .context("owned_sell_deadline")??;
+        .context("owned_sell_rpc_collect_deadline")?
+        .context("owned_sell_rpc_collect")?;
     check()?;
-    let before_reserve = store.sqlite_data_version()?;
     let h = store.reserve_owned_sell_handoff(
         &s,
         &q,
@@ -146,12 +132,9 @@ pub(crate) async fn run(
         e,
         &c.canary_wallet_pubkey,
         Utc::now,
-    )?;
-    let mut handoff_version = store.sqlite_data_version()?;
-    ensure!(
-        handoff_version == before_reserve,
-        "owned_sell_snapshot_changed"
-    );
+    ).context("owned_sell_reserve")?;
+    // Reserve has already checked the full graph atomically and read it back.
+    // Parent-only commits after that point must not strand the durable hold.
     let experiment = if copybot_config::owned_sell_dispatch(c) {
         store.load_tiny_experiment(Utc::now())?;
         Some(store.owned_sell_experiment_snapshot()?)
@@ -205,20 +188,12 @@ pub(crate) async fn run(
             protected,
             Utc::now(),
         )?;
-        if !store.recheck_owned_sell_handoff_at_version(&h, l, handoff_version, Utc::now())? {
-            let before = store.sqlite_data_version()?;
-            store.recheck_owned_sell_handoff(&h, l, Utc::now())?;
-            ensure!(
-                store.sqlite_data_version()? == before,
-                "owned_sell_snapshot_changed"
-            );
-            handoff_version = before;
-        }
+        store.recheck_owned_sell_handoff_progress(&h, l, Utc::now())?;
         Ok(())
     };
     let left = (h.deadline - Utc::now())
         .to_std()
-        .context("owned_sell_deadline")?;
+        .context("owned_sell_build_window")?;
     let prepared = tokio::time::timeout(
         left,
         crate::execution_guarded_generic_sell::prepare_owned(
@@ -226,7 +201,7 @@ pub(crate) async fn run(
         ),
     )
     .await
-    .context("owned_sell_deadline")??;
+    .context("owned_sell_build_deadline")??;
     check()?;
     let (message, priority) = crate::execution_priority_fee_wire::decode_priority_fee_message(
         &prepared.serialized_transaction_base64,
@@ -237,7 +212,7 @@ pub(crate) async fn run(
             rpc::endpoint(c)?.as_str(),
             (h.deadline - Utc::now())
                 .to_std()
-                .context("owned_sell_deadline")?,
+                .context("owned_sell_fee_window")?,
             &prepared.serialized_transaction_base64,
         )
         .await?;
@@ -258,7 +233,6 @@ pub(crate) async fn run(
         c.pretrade_min_sol_reserve,
         &c.execution_signer_pubkey,
     )?;
-    let before_complete = store.sqlite_data_version()?;
     store.complete_owned_sell_handoff(
         &h,
         l,
@@ -267,10 +241,9 @@ pub(crate) async fn run(
         total,
         priority.total,
         Utc::now,
-    )?;
+    ).context("owned_sell_complete")?;
     if copybot_config::owned_sell_dispatch(c) {
         let after_complete = store.sqlite_data_version()?;
-        ensure!(after_complete == before_complete, "owned_sell_snapshot_changed");
         live.1.store(
             after_complete,
             std::sync::atomic::Ordering::SeqCst,
@@ -291,7 +264,7 @@ pub(crate) async fn run(
             &authority,
             live,
         )
-        .await?;
+        .await.context("owned_sell_submit")?;
     }
     Ok(())
 }

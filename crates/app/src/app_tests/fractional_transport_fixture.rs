@@ -128,6 +128,13 @@ impl Transport for Mock {
                                         [],
                                     )?;
                                 }
+                                "parent_conflict" => {
+                                    let c = rusqlite::Connection::open(&s.db)?;
+                                    anyhow::ensure!(c.execute(
+                                        "UPDATE association_parent_blocks SET contradiction='test parent conflict' WHERE EXISTS(SELECT 1 FROM association_parent_dependencies d WHERE block_key LIKE '%'||d.block_hash||'%')",
+                                        [],
+                                    )? > 0, "fixture parent dependency missing");
+                                }
                                 "expired" => {
                                     tokio::time::sleep(std::time::Duration::from_millis(1100)).await
                                 }

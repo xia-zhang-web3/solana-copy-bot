@@ -1,6 +1,30 @@
 # Project Recovery Plan
 
-## Current decision: run 09 capacity repair accepted offline
+## Current decision: run 09 concurrent SELL repair accepted offline, artifact pending
+
+Independent review accepted the narrow concurrent SELL repair on 2026-09-25.
+Unrelated parent-block commits after a durable SELL reserve or complete no
+longer cause a false terminal failure. Full ownership, amount and parent-graph
+checks remain atomic at reserve, complete and final dispatch; a relevant
+conflict still refuses the SELL. An undispatched hold stays explicit and
+cannot silently trigger a second send. The accepted release-profile offline
+replay used 36,000 synthetic parent blocks representing 14,400 logical
+seconds, including full blocks in the final TTL. Parent commits continued
+during simulation and blockhash acquisition. One mock SELL settled and was
+accounted for; restart did not send again. This was a 167-second local test,
+not four hours of live provider traffic. See the
+[Run09 concurrent SELL decision](audit/2026-09-25/technical-cohort-09-concurrent/ACCEPTANCE_RU.md).
+
+The changed deployable code now requires one matching `copybot-app/release`
+GitHub Actions artifact installed into the same unused, stopped Run09
+package, with the accepted `0ed4176` release retained for rollback. Update
+binding and seal, then pass final local package preflight before presenting
+the one-shot owner command. This preparation must make no provider call,
+signature or trade. The accepted $50/four-hour/trading/resource caps and
+Run07/Run08 accounting remain unchanged. Live SELL timing, actual block-size
+maximum and profitability remain unknown.
+
+## Prior decision: run 09 capacity repair accepted offline
 
 Run 08 was used once and stopped after `BlockCapacity`; it made no order or
 send. The saved main outcome remains `APP_EXITED`, with `NO_SIGNAL` as the

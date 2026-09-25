@@ -104,6 +104,25 @@ async fn fractional_transport_large_native_250_750() -> Result<()> {
     Ok(())
 }
 #[tokio::test]
+async fn fractional_transport_parent_conflict_during_collection_never_proves_sell() -> Result<()> {
+    let mut f = Fixture::new().await?;
+    let claim = f.claim()?;
+    let mock = t::Mock::new(&f, "parent_conflict")?;
+    let error = t::bind(&mut f, claim, mock).await.unwrap_err();
+    assert!(error.to_string().contains("strict_policy") || error.to_string().contains("fraction_generation_changed"), "{error:#}");
+    let state: String = f.db.sql.query_row(
+        "SELECT state FROM fractional_sell_decisions", [], |r| r.get(0),
+    )?;
+    assert_eq!(state, "collecting");
+    assert_eq!(f.db.sql.query_row(
+        "SELECT count(*) FROM rpc_owned_sell_handoffs", [], |r| r.get::<_, i64>(0),
+    )?, 0);
+    assert_eq!(f.db.sql.query_row(
+        "SELECT count(*) FROM ordered_sell_quote_results WHERE record IS NOT NULL", [], |r| r.get::<_, i64>(0),
+    )?, 0);
+    Ok(())
+}
+#[tokio::test]
 async fn fractional_transport_saved_twelve_capacity_only() -> Result<()> {
     for i in 1..=12 {
         let raw = super::fractional_synthetic_fixture::capacity_body(i)?;

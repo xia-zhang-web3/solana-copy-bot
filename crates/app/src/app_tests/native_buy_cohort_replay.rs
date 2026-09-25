@@ -1,5 +1,36 @@
 use super::*;
 
+pub(super) async fn hold_sell_under_ingress(
+    server: &Server,
+    case: &super::super::native_buy_runner_tests::Case,
+    hold: Option<(tokio::sync::oneshot::Receiver<()>, tokio::sync::oneshot::Sender<()>)>,
+) -> Result<()> {
+    if let Some((reached, release)) = hold {
+        reached.await.context("SELL simulation never reached")?;
+        let (blockhash_reached, blockhash_release) = server.hold("isBlockhashValid");
+        let monitor = Connection::open(&case.path)?;
+        let parents = || -> Result<i64> {
+            Ok(monitor.query_row("SELECT count(*) FROM association_parent_blocks", [], |r| r.get(0))?)
+        };
+        let before_simulation = parents()?;
+        wait_parent_commit(&parents, before_simulation, "SELL simulation").await?;
+        release.send(()).map_err(|_| anyhow::anyhow!("SELL simulation release lost"))?;
+        blockhash_reached.await.context("SELL blockhash check never reached")?;
+        let before_blockhash = parents()?;
+        wait_parent_commit(&parents, before_blockhash, "SELL blockhash").await?;
+        blockhash_release.send(()).map_err(|_| anyhow::anyhow!("SELL blockhash release lost"))?;
+    }
+    Ok(())
+}
+async fn wait_parent_commit(parents: &impl Fn() -> Result<i64>, before: i64, stage: &str) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if parents()? > before { return Ok::<_, anyhow::Error>(()); }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }).await.with_context(|| format!("no committed parent during {stage}"))?
+}
+
 pub(super) fn apply_sustained_capacity(app: &mut copybot_config::AppConfig) {
     let limits = app.ingestion.yellowstone_association.as_mut().unwrap();
     limits.blocks.count = 192;
@@ -7,6 +38,31 @@ pub(super) fn apply_sustained_capacity(app: &mut copybot_config::AppConfig) {
     limits.metadata_bytes = 96 << 20;
     limits.inbox.count = 500_000;
     limits.inbox.bytes = 512 << 20;
+    limits.sqlite_busy_ms = 5_000;
+}
+pub(super) fn sell_quote_window(db: &Connection) -> Result<(i64, i64)> {
+    let (quote, deadline): (String, String) = db.query_row(
+        "SELECT quote,deadline FROM rpc_owned_sell_handoffs LIMIT 1", [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let quote: copybot_storage_core::ordered_sell_quote::QuoteObservation = serde_json::from_str(&quote)?;
+    let started = quote.http_started.context("SELL quote start")?;
+    let deadline = chrono::DateTime::parse_from_rfc3339(&deadline)?.with_timezone(&chrono::Utc);
+    let consumed: String = db.query_row(
+        "SELECT consumed_at FROM rpc_owned_sell_dispatches LIMIT 1", [], |r| r.get(0),
+    )?;
+    let consumed = chrono::DateTime::parse_from_rfc3339(&consumed)?.with_timezone(&chrono::Utc);
+    Ok(((consumed - started).num_milliseconds(), (deadline - consumed).num_milliseconds()))
+}
+pub(super) fn assert_long_snapshot_binding(db: &Connection) -> Result<()> {
+    let wire: String = db.query_row(
+        "SELECT binding FROM ordered_sell_quote_results LIMIT 1", [], |r| r.get(0),
+    )?;
+    let binding: Value = serde_json::from_str(&wire)?;
+    anyhow::ensure!(binding["snapshot_version"].as_str().is_some_and(
+        |v| v.starts_with("strict_quote_snapshot_v2:sha256:") && v.len() == 96,
+    ), "long parent snapshot digest missing");
+    Ok(())
 }
 
 fn replace_equal(mut wire: Vec<u8>, old: &[u8], new: &[u8]) -> Result<Vec<u8>> {
@@ -41,10 +97,14 @@ fn rewrite_identity(
 #[path = "native_buy_cohort_sustained.rs"]
 pub(super) mod sustained_load;
 
-pub(super) async fn replay_cohort_sell_after_buy(
+pub(super) async fn replay_cohort_sell_after_buy<F>(
     case: &super::super::native_buy_runner_tests::Case,
     sustained: bool,
-) -> Result<()> {
+    on_sell: F,
+) -> Result<String>
+where
+    F: std::future::Future<Output = Result<String>>,
+{
     let input = crate::app_tests::b136_fixture::inputs();
     let chain: Value = serde_json::from_slice(&std::fs::read(input.join("chain.json"))?)?;
     let mut app = super::super::association_fixture::config(&chain);
@@ -74,7 +134,7 @@ pub(super) async fn replay_cohort_sell_after_buy(
     let inbox_limits = copybot_storage_core::association_inbox::InboxLimits {
         count: if sustained { 500_000 } else { 20_000 },
         bytes: if sustained { 512 << 20 } else { 128 << 20 },
-        busy_ms: 100,
+        busy_ms: if sustained { 5_000 } else { 100 },
     };
     let before_usage =
         copybot_storage_core::association_inbox::AssociationInbox::open_ordered_sell_consumer(
@@ -124,6 +184,7 @@ pub(super) async fn replay_cohort_sell_after_buy(
     let bot_signature = case.signature.clone();
     let old_wallet = old_wallet.to_owned();
     let old_signature = old_signature.to_owned();
+    let (settled_tx, settled_rx) = tokio::sync::oneshot::channel();
     let producer = tokio::spawn(async move {
         for n in 0..742u16 {
             let foreign_wallet = bs58::encode([2u8; 32]).into_string();
@@ -145,15 +206,17 @@ pub(super) async fn replay_cohort_sell_after_buy(
                 .await?;
         }
         if sustained {
-            sustained_load::send(
+            let tail = sustained_load::send(
                 &sender,
                 &input,
                 &old_wallet,
                 &old_signature,
                 &bot_wallet,
                 &bot_signature,
+                settled_rx,
             )
             .await?;
+            anyhow::ensure!(tail >= 2, "parent writer did not overlap daemon SELL");
         } else {
             for (n, payload) in frames.into_iter().enumerate() {
                 sender
@@ -177,14 +240,18 @@ pub(super) async fn replay_cohort_sell_after_buy(
             Ok(json!({"jsonrpc":"2.0","id":request["id"],"result":result}))
         },
     );
-    tokio::time::timeout(
+    let consume = tokio::time::timeout(
         Duration::from_secs(if sustained { 900 } else { 10 }),
         async {
             loop {
-                match consumer
+                let poll_started = std::time::Instant::now();
+                let result = consumer
                     .poll_with_transport(&case.store, Some(&mut rpc))
-                    .await
-                {
+                    .await;
+                if sustained && poll_started.elapsed() > Duration::from_secs(2) {
+                    eprintln!("sustained ingress poll elapsed_ms={}", poll_started.elapsed().as_millis());
+                }
+                match result {
                     Ok(()) => {}
                     Err(error) if error.to_string() == "association delivery stopped" => break,
                     Err(error) => return Err(error),
@@ -192,8 +259,13 @@ pub(super) async fn replay_cohort_sell_after_buy(
             }
             Ok::<(), anyhow::Error>(())
         },
-    )
-    .await??;
+    );
+    let settle = async {
+        let id = on_sell.await?;
+        let _ = settled_tx.send(());
+        Ok::<String, anyhow::Error>(id)
+    };
+    let (_, sell_id) = tokio::try_join!(async { consume.await??; Ok::<(), anyhow::Error>(()) }, settle)?;
     producer.await??;
     let db = Connection::open(&case.path)?;
     let foreign: i64 = db.query_row(
@@ -241,5 +313,5 @@ pub(super) async fn replay_cohort_sell_after_buy(
         preparation.is_some(),
         "streamed source SELL lacks preparation"
     );
-    Ok(())
+    Ok(sell_id)
 }
