@@ -65,6 +65,8 @@ fn test_runtime_config(telemetry: Arc<IngestionTelemetry>) -> Arc<HeliusRuntimeC
     })
 }
 
+#[path = "../source_tests/durable_telemetry_tests.rs"]
+mod durable_telemetry_tests;
 #[path = "../source_tests/01_helius_and_queue.rs"]
 mod helius_and_queue;
 #[path = "../source_tests/03_rpc_backfill.rs"]
@@ -78,11 +80,11 @@ mod pumpswap_tests;
 #[path = "../source_tests/delivery_queue_tests.rs"]
 mod delivery_queue_tests;
 
+#[path = "../source_tests/association_capacity_tests.rs"]
+mod association_capacity_tests;
+#[path = "../source_tests/capture_scope_bridge_tests.rs"]
+mod capture_scope_bridge_tests;
 #[path = "../source_tests/capture_scope_fixture.rs"]
 mod capture_scope_fixture;
 #[path = "../source_tests/capture_scope_tests.rs"]
 mod capture_scope_tests;
-#[path = "../source_tests/capture_scope_bridge_tests.rs"]
-mod capture_scope_bridge_tests;
-#[path = "../source_tests/association_capacity_tests.rs"]
-mod association_capacity_tests;

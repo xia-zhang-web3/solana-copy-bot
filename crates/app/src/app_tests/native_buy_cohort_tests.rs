@@ -14,16 +14,22 @@ use std::time::Duration;
 static COHORT_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 #[tokio::test]
 async fn cohort_source_sell_runs_through_actual_daemon_tick_and_settles_once() -> Result<()> {
-    cohort_source_sell_case(false).await
+    cohort_source_sell_case(false, false).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "explicit large offline 180-second block-stream capacity proof"]
 async fn cohort_sustained_blocks_keep_buy_anchor_and_settle_sell_once() -> Result<()> {
-    cohort_source_sell_case(true).await
+    cohort_source_sell_case(true, false).await
 }
 
-async fn cohort_source_sell_case(sustained: bool) -> Result<()> {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "coordinated local tonic transport through Run14 relay fixture"]
+async fn cohort_actual_transport_relay_reconnect_settles_once() -> Result<()> {
+    cohort_source_sell_case(false, true).await
+}
+
+async fn cohort_source_sell_case(sustained: bool, actual_transport: bool) -> Result<()> {
     let _only_cohort = COHORT_TEST.lock().await;
     let (_, signature, wallet_bytes) =
         super::native_buy_runner_tests::fixture::signed_payload_for_lamports_and_floor(
@@ -183,9 +189,16 @@ async fn cohort_source_sell_case(sustained: bool) -> Result<()> {
         }
     };
     let release_simulation = cohort_replay::hold_sell_under_ingress(&server, &case, simulation_hold);
+    let ingestion = async {
+        if actual_transport {
+            cohort_replay::transport_cohort_sell_after_buy(&case, settle).await
+        } else {
+            cohort_replay::replay_cohort_sell_after_buy(&case, sustained, settle).await
+        }
+    };
     let (sell_id, ()) = tokio::time::timeout(
         Duration::from_secs(if sustained { 900 } else { 30 }),
-        async { tokio::try_join!(replay_cohort_sell_after_buy(&case, sustained, settle), release_simulation) },
+        async { tokio::try_join!(ingestion, release_simulation) },
     )
     .await
     .context("cohort SELL did not settle via daemon tick with ingress")??;
@@ -302,7 +315,7 @@ async fn cohort_source_sell_case(sustained: bool) -> Result<()> {
 
 #[path = "native_buy_cohort_replay.rs"]
 mod cohort_replay;
-use cohort_replay::{replay_cohort_sell_after_buy, sustained_load};
+use cohort_replay::sustained_load;
 
 #[tokio::test]
 async fn streamed_sell_without_bot_anchor_or_parent_edge_has_no_trade_authority() -> Result<()> {
@@ -339,74 +352,8 @@ async fn streamed_sell_without_bot_anchor_or_parent_edge_has_no_trade_authority(
     Ok(())
 }
 
-#[test]
-fn cohort_native_buy_zero_fee_uses_real_jupiter_assembler() -> Result<()> {
-    use crate::execution_instruction_bundle_binding::BundleRequest;
-    use crate::execution_submit_adapter::{
-        ExecutionBuildPlanMetadata, ExecutionSubmitAdapter, ExecutionSubmitRequest,
-        JupiterMetisDryRunExecutionAdapter,
-    };
-    use serde_json::Value;
-    let quote: Value = serde_json::from_str(include_str!(
-        "generic_buy_fixtures/owner-sol-usdc-20260924-quote.json"
-    ))?;
-    let bundle: Value = serde_json::from_str(include_str!(
-        "generic_buy_fixtures/owner-sol-usdc-20260924-instructions.json"
-    ))?;
-    let wallet = "BwVw8ncEpWU7TwMTgysvwjQ85eEhKAMVbd7WU1iTE9Mk";
-    let mut c = super::super::generic_buy_fixture::config("http://127.0.0.1:9");
-    c.canary_route = "jupiter_swap_instructions".into();
-    c.canary_wallet_pubkey = wallet.into();
-    c.execution_signer_pubkey = wallet.into();
-    c.pretrade_max_priority_fee_lamports = 50_000;
-    c.technical_cohort = Some(copybot_config::TechnicalCohortConfig {
-        policy: copybot_config::TECHNICAL_COHORT_V1.into(),
-        activate: true,
-        run_id: "assembler-fixture".into(),
-        wallet_ids: vec!["leader".into()],
-        mint_policy: copybot_config::CLASSIC_SPL_MINT_V1.into(),
-        route: c.canary_route.clone(),
-        activated_at: "fixture".into(),
-        deadline: "fixture".into(),
-        max_wait_seconds: 3600,
-        max_buy_count: 1,
-        max_source_sell_count: 1,
-    });
-    let request = ExecutionSubmitRequest {
-        order_id: "exec-canary:native-buy-v1:fixture".into(),
-        signal_id: "native-buy-v1:fixture".into(),
-        client_order_id: "copybot:native-buy-v1:fixture".into(),
-        attempt: 1,
-        route: c.canary_route.clone(),
-        wallet_id: "leader".into(),
-        token: quote["outputMint"].as_str().unwrap().into(),
-        side: "buy".into(),
-        buy_size_sol: 0.01,
-        slippage_tolerance_bps: 50,
-        wallet_pubkey: wallet.into(),
-        entry_route_plan_json: None,
-        metadata: ExecutionBuildPlanMetadata {
-            quote_event_id: Some("cohort-fixture-quote".into()),
-            quote_status: Some("ok".into()),
-            quote_in_amount_raw: Some("10000000".into()),
-            quote_out_amount_raw: quote["outAmount"].as_str().map(str::to_owned),
-            quote_response_json: Some(quote.to_string()),
-            route_plan_json: Some(quote["routePlan"].to_string()),
-            priority_fee_status: Some("ok".into()),
-            priority_fee_lamports: Some(0),
-            priority_fee_json: Some(super::super::priority_fee_fixture::total_json(0)),
-            ..Default::default()
-        },
-    };
-    let plan =
-        JupiterMetisDryRunExecutionAdapter::new(c.clone()).build_transaction_plan(&request)?;
-    let bound = BundleRequest::capture(&plan)?.bind(&bundle)?;
-    let payload = crate::execution_guarded_generic_buy::assemble(&c, &plan, &bound, 50_000_001)?
-        .serialized_transaction_base64;
-    let fee = crate::execution_priority_fee_wire::decode_priority_fee(&payload)?;
-    assert_eq!((fee.price, fee.total), (0, 0));
-    Ok(())
-}
+#[path = "native_buy_cohort_assembler_test.rs"]
+mod assembler_test;
 
 #[tokio::test]
 async fn cohort_actual_producer_after_wait_buys_once_and_source_sell_keeps_remainder() -> Result<()>

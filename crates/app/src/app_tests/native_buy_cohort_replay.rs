@@ -105,6 +105,28 @@ pub(super) async fn replay_cohort_sell_after_buy<F>(
 where
     F: std::future::Future<Output = Result<String>>,
 {
+    cohort_sell_after_buy(case, sustained, false, on_sell).await
+}
+
+pub(super) async fn transport_cohort_sell_after_buy<F>(
+    case: &super::super::native_buy_runner_tests::Case,
+    on_sell: F,
+) -> Result<String>
+where
+    F: std::future::Future<Output = Result<String>>,
+{
+    cohort_sell_after_buy(case, false, true, on_sell).await
+}
+
+async fn cohort_sell_after_buy<F>(
+    case: &super::super::native_buy_runner_tests::Case,
+    sustained: bool,
+    actual_transport: bool,
+    on_sell: F,
+) -> Result<String>
+where
+    F: std::future::Future<Output = Result<String>>,
+{
     let input = crate::app_tests::b136_fixture::inputs();
     let chain: Value = serde_json::from_slice(&std::fs::read(input.join("chain.json"))?)?;
     let mut app = super::super::association_fixture::config(&chain);
@@ -116,32 +138,11 @@ where
     let authority = crate::execution_technical_cohort::authority(&case.config)?
         .context("active test cohort")?;
     let scope = crate::execution_technical_cohort::admission_wallets(&authority, &case.config)?;
-    let (sender, receiver) = tokio::sync::mpsc::channel(4);
-    let mut ingestion = IngestionService::with_replay_scoped(
-        &app,
-        receiver,
-        "cohort-source-sell".into(),
-        Some(scope),
-    )?;
-    let mut consumer = crate::association_consumer::AssociationConsumer::start_with_execution(
-        &mut ingestion,
-        &app.ingestion,
-        &app.execution,
-        &case.path,
-    )
-    .await?
-    .context("cohort ingress consumer")?;
     let inbox_limits = copybot_storage_core::association_inbox::InboxLimits {
         count: if sustained { 500_000 } else { 20_000 },
         bytes: if sustained { 512 << 20 } else { 128 << 20 },
         busy_ms: if sustained { 5_000 } else { 100 },
     };
-    let before_usage =
-        copybot_storage_core::association_inbox::AssociationInbox::open_ordered_sell_consumer(
-            &case.path,
-            inbox_limits,
-        )?
-        .usage()?;
     let source_wallet = chain["source"]["signer"]
         .as_str()
         .context("source wallet")?
@@ -179,13 +180,57 @@ where
         block_our,
         std::fs::read(input.join("block-150.pb"))?,
     ];
+    if actual_transport {
+        let directory = std::path::PathBuf::from(std::env::var("COHORT_TRANSPORT_DIR")?);
+        std::fs::create_dir_all(&directory)?;
+        let prior_signature = bs58::encode([92_u8; 64]).into_string();
+        let prior = rewrite_identity(
+            source.clone(), &source_wallet, &source_wallet,
+            &source_signature, &prior_signature,
+        )?;
+        for (name, bytes) in [
+            ("pre-source.pb", prior), ("source.pb", frames[0].clone()),
+            ("cohort-our.pb", frames[1].clone()),
+            ("sell.pb", frames[2].clone()),
+            ("block-100.pb", frames[3].clone()),
+            ("cohort-block-120.pb", frames[4].clone()),
+            ("block-150.pb", frames[5].clone()),
+        ] {
+            std::fs::write(directory.join(name), bytes)?;
+        }
+        std::fs::write(directory.join("streams-ready"), b"ready")?;
+        let relay_url = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if let Ok(url) = std::fs::read_to_string(directory.join("relay-url.txt")) {
+                    break Ok::<_, anyhow::Error>(url);
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await??;
+        app.ingestion.yellowstone_grpc_url = relay_url.trim().into();
+    }
+    let (sender, receiver) = tokio::sync::mpsc::channel(4);
+    let mut ingestion = if actual_transport {
+        IngestionService::build_for_app(&app)?
+    } else {
+        IngestionService::with_replay_scoped(
+            &app, receiver, "cohort-source-sell".into(), Some(scope),
+        )?
+    };
+    let mut consumer = crate::association_consumer::AssociationConsumer::start_with_execution(
+        &mut ingestion, &app.ingestion, &app.execution, &case.path,
+    ).await?.context("cohort ingress consumer")?;
+    let before_usage =
+        copybot_storage_core::association_inbox::AssociationInbox::open_ordered_sell_consumer(
+            &case.path, inbox_limits,
+        )?.usage()?;
     let source_signature_for_replay = source_signature.clone();
     let bot_wallet = case.wallet.clone();
     let bot_signature = case.signature.clone();
     let old_wallet = old_wallet.to_owned();
     let old_signature = old_signature.to_owned();
     let (settled_tx, settled_rx) = tokio::sync::oneshot::channel();
-    let producer = tokio::spawn(async move {
+    let producer = (!actual_transport).then(|| tokio::spawn(async move {
         for n in 0..742u16 {
             let foreign_wallet = bs58::encode([2u8; 32]).into_string();
             let mut raw_signature = [91u8; 64];
@@ -229,7 +274,7 @@ where
             sender.send(ReplayInput::End(750)).await?;
         }
         Ok::<(), anyhow::Error>(())
-    });
+    }));
     let mut rpc = crate::execution_owned_sell_rpc::fractional::transport::Parsed(
         |request: Value| async move {
             let result = match request["method"].as_str() {
@@ -240,14 +285,20 @@ where
             Ok(json!({"jsonrpc":"2.0","id":request["id"],"result":result}))
         },
     );
+    let (completed_tx, mut completed_rx) = tokio::sync::oneshot::channel();
     let consume = tokio::time::timeout(
         Duration::from_secs(if sustained { 900 } else { 10 }),
         async {
             loop {
                 let poll_started = std::time::Instant::now();
-                let result = consumer
-                    .poll_with_transport(&case.store, Some(&mut rpc))
-                    .await;
+                let result = if actual_transport {
+                    tokio::select! {
+                        _ = &mut completed_rx => break,
+                        result = consumer.poll_with_transport(&case.store, Some(&mut rpc)) => result,
+                    }
+                } else {
+                    consumer.poll_with_transport(&case.store, Some(&mut rpc)).await
+                };
                 if sustained && poll_started.elapsed() > Duration::from_secs(2) {
                     eprintln!("sustained ingress poll elapsed_ms={}", poll_started.elapsed().as_millis());
                 }
@@ -263,10 +314,26 @@ where
     let settle = async {
         let id = on_sell.await?;
         let _ = settled_tx.send(());
+        let _ = completed_tx.send(());
         Ok::<String, anyhow::Error>(id)
     };
     let (_, sell_id) = tokio::try_join!(async { consume.await??; Ok::<(), anyhow::Error>(()) }, settle)?;
-    producer.await??;
+    if let Some(producer) = producer { producer.await??; }
+    if actual_transport {
+        let (wire, persisted) = consumer.diagnostic_snapshots();
+        anyhow::ensure!(wire.reconnects >= 1
+            && wire.reconnect_stages[copybot_ingestion::TransportStage::Stream as usize] >= 1
+            && wire.reconnect_classes[copybot_ingestion::TransportClass::Unavailable as usize] >= 1,
+            "transport reconnect cause missing: {wire:?}");
+        anyhow::ensure!(wire.selected_source >= 2 && wire.selected_bot >= 1
+            && wire.admissions >= 3,
+            "selected source/bot admissions missing: {wire:?}");
+        anyhow::ensure!(persisted.session_gaps >= 1 && persisted.admissions >= 3
+            && persisted.last_parent_slot == Some(150),
+            "consumer lost gap or current parent: {persisted:?}");
+        anyhow::ensure!(wire.queue_wait_over_100ms == 0,
+            "fixture queue fell behind consumer: {wire:?}");
+    }
     let db = Connection::open(&case.path)?;
     let foreign: i64 = db.query_row(
         "SELECT count(*) FROM association_inbox_identities WHERE signature NOT IN (?1,?2,?3)",
@@ -277,7 +344,8 @@ where
         ],
         |r| r.get(0),
     )?;
-    assert_eq!(foreign, 0, "foreign swaps reached durable identity storage");
+    assert_eq!(foreign, i64::from(actual_transport),
+        "unexpected identities beyond the deliberate pre-gap source");
     let inbox =
         copybot_storage_core::association_inbox::AssociationInbox::open_ordered_sell_consumer(
             &case.path,

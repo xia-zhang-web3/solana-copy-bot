@@ -7,10 +7,13 @@ use chrono::{DateTime, Utc};
 use copybot_config::IngestionConfig;
 use copybot_core_types::SwapEvent;
 use parser::SwapParser;
-use std::collections::HashSet;
 use source::{fetch_recent_raw_swaps_for_wallets, IngestionSource, RawSwapObservation};
+use std::collections::HashSet;
 
-pub use source::durable::{DeliveryEnvelope, DeliveryReceiver, ReplayInput};
+pub use source::durable::{
+    DeliveryEnvelope, DeliveryReceiver, DurableIngressSnapshot, ReplayInput, TransportClass,
+    TransportStage,
+};
 pub use source::IngestionRuntimeSnapshot;
 
 #[derive(Debug, Clone, Default)]
@@ -74,8 +77,17 @@ impl IngestionService {
             service.source.is_none(),
             "replay cannot bypass legacy source"
         );
-        service.prepared_delivery =
-            Some(DeliveryReceiver::replay(&config.ingestion, session, input, wallets)?);
+        service.prepared_delivery = Some(DeliveryReceiver::replay(
+            &config.ingestion,
+            session,
+            input,
+            wallets.clone(),
+            wallets.as_ref().and_then(|scope| {
+                scope
+                    .contains(&config.execution.canary_wallet_pubkey)
+                    .then(|| config.execution.canary_wallet_pubkey.clone())
+            }),
+        )?);
         Ok(service)
     }
     pub fn take_delivery(&mut self, session: String) -> Result<Option<DeliveryReceiver>> {
@@ -86,15 +98,29 @@ impl IngestionService {
         session: String,
         wallets: Option<HashSet<String>>,
     ) -> Result<Option<DeliveryReceiver>> {
+        self.take_delivery_scoped_labeled(session, wallets, None)
+    }
+    pub fn take_delivery_scoped_labeled(
+        &mut self,
+        session: String,
+        wallets: Option<HashSet<String>>,
+        bot_signer: Option<String>,
+    ) -> Result<Option<DeliveryReceiver>> {
         if let Some(prepared) = self.prepared_delivery.take() {
-            anyhow::ensure!(prepared.wallet_scope() == wallets.as_ref(),
-                "prepared delivery wallet scope mismatch");
+            anyhow::ensure!(
+                prepared.wallet_scope() == wallets.as_ref(),
+                "prepared delivery wallet scope mismatch"
+            );
+            anyhow::ensure!(
+                prepared.bot_signer() == bot_signer.as_deref(),
+                "prepared delivery bot telemetry label mismatch"
+            );
             self.delivery_config = None;
             return Ok(Some(prepared));
         }
         self.delivery_config
             .take()
-            .map(|c| DeliveryReceiver::start(&c, session, wallets))
+            .map(|c| DeliveryReceiver::start_labeled(&c, session, wallets, bot_signer))
             .transpose()
     }
     pub async fn next_swap(&mut self) -> Result<Option<SwapEvent>> {

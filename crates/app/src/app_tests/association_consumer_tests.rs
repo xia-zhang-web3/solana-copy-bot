@@ -169,3 +169,51 @@ async fn b89_write_failure_stops_receive_without_ack() -> Result<()> {
     assert!(consumer.poll(&db.store).await.is_err());
     Ok(())
 }
+
+#[test]
+fn durable_telemetry_keeps_parent_fence_and_admission_distinct() {
+    use crate::association_ingress_telemetry::AssociationIngressTelemetry;
+    use copybot_core_types::association_parent::{BlockKey, ParentObservation};
+    let mut telemetry = AssociationIngressTelemetry::default();
+    telemetry.note_persisted(
+        Some(&DeliveryEvent::Session(SessionGap::StartedContinuityUnknown)),
+        Some(12), 5,
+    );
+    telemetry.note_persisted(Some(&DeliveryEvent::Parent(ParentObservation {
+        child: BlockKey { slot: 10, hash: String::new() },
+        parent: BlockKey { slot: 9, hash: String::new() },
+        issue: None,
+    })), None, 8);
+    telemetry.note_persisted(Some(&DeliveryEvent::Admission(AdmissionFacts {
+        facts: CheckedFacts {
+            signature: String::new(), slot: 10, wallet: String::new(),
+            token_in: String::new(), token_out: String::new(),
+            amount_in_bits: 0, amount_out_bits: 0, exact_amounts: None,
+            programs: vec![], dex: String::new(), program_fallback: false,
+        },
+        info: InfoIdentity { encoded: vec![], float_bits: vec![] },
+        message_time: MessageTime::Missing,
+    })), None, 9);
+    let snapshot = telemetry.snapshot();
+    assert_eq!(snapshot.persisted, 3);
+    assert_eq!(snapshot.parents, 1);
+    assert_eq!(snapshot.admissions, 1);
+    assert_eq!(snapshot.session_starts, 1);
+    assert_eq!(snapshot.last_parent_slot, Some(10));
+    assert_eq!(snapshot.last_fence_slot, Some(12));
+    assert_eq!(snapshot.processed_minus_parent_slots, Some(2));
+    assert_eq!(snapshot.persist_ms_p95, 9);
+
+    telemetry.note_persisted(Some(&DeliveryEvent::Session(SessionGap::Reset)), None, 1);
+    let after_gap = telemetry.snapshot();
+    assert_eq!(after_gap.session_gaps, 1);
+    assert_eq!(after_gap.last_parent_slot, None);
+    assert_eq!(after_gap.last_fence_slot, None);
+    telemetry.note_persisted(None, Some(20), 1);
+    telemetry.note_persisted(Some(&DeliveryEvent::Parent(ParentObservation {
+        child: BlockKey { slot: 22, hash: String::new() },
+        parent: BlockKey { slot: 21, hash: String::new() },
+        issue: None,
+    })), None, 1);
+    assert_eq!(telemetry.snapshot().processed_minus_parent_slots, Some(-2));
+}

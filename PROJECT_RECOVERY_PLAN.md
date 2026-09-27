@@ -1,6 +1,110 @@
 # Project Recovery Plan
 
-## Current decision: Run11 prepared under STOP for one owner launch
+## Current decision: Run14 HOLD for systemic ingress repair
+
+The owner activated Run13 once. It stopped after 2,605 seconds with
+`REFUSED_OR_UNKNOWN` because one `vm_resources` Docker exec returned code 1.
+The child failure source was not recorded and is not proven. The saved final
+financial outcome is `NO_SIGNAL`: SQLite `quick_check` passes and cohort
+decision, order, dispatch, unresolved dispatch, receipt, fill and position
+tables are empty. Run13 is used, all five containers exited, STOP is set and
+it must not be reactivated. Its ledger ends at 439 cumulative RPC attempts,
+6,240 CU and 3,276,000 nanoUSD. Stream use, including connection headroom,
+brings cumulative Run07–Run13 accounted bytes to 40,375,494,187.
+
+Run12/13 persisted no Admission at all. Run13's twelve transport reconnects
+left 420–478-slot gaps between saved segments; its saved Parents were also
+behind processed RPC fences. The count of missed trades and the cause of each
+historical reconnect remain unknown. The existing Run14 seal was revoked;
+`READY_FOR_USER_ACTIVATION.json` is absent, STOP remains set, and the package
+must not be launched. Its installed `b1cf0816...` binary is the prior version.
+The current batch adds safe probe/relay failure classes and durable ingress
+funnel/slot/queue timing telemetry, then requires one actual offline transport
+through relay and consumer, independent review, a matching new CI artifact,
+installation into this same unused Run14 package, reseal, and local preflight.
+No paid provider request or financial activation belongs to this preparation.
+
+All prior spending was carried into a separate stopped package: future caps
+are 475,020,581,333 stream bytes, 981 connection attempts, 2,493,760 RPC CU
+and 1,496,724,000 nanoUSD HTTP/RPC within the unchanged $50 provider model.
+Trading remains limited to four hours, one BUY at most 0.01 SOL and one linked
+source SELL. The formerly passing 54-file seal/preflight applied only to the
+superseded package state. Financial state is empty and all five containers
+remain never started. Next authorized action: complete and independently
+review this repair under STOP; issue a new command only after matching artifact
+installation and current local preflight. Automatic copying and profitability
+remain unproved until live receipt.
+
+## Prior decision: Run13 sealed under STOP after Run12 resource probe failure
+
+The owner activated Run12 once. After about 94 minutes it returned
+`REFUSED_OR_UNKNOWN`: the supervisor's `vm_resources` probe failed when its
+Python `docker exec` returned 137. The saved final financial outcome is
+`NO_SIGNAL`, not a submitted transaction of unknown outcome. The stopped Run12
+database passes SQLite `quick_check` and has no cohort decision, order,
+dispatch, unresolved dispatch, receipt, fill or position. STOP is set, all
+five containers are stopped, and Run12 must not be reactivated. The historical
+cause of exit 137 is not established. Its ledger ends at 308 cumulative RPC
+attempts, 4,390 CU and 2,304,750 nanoUSD; accounted stream use through Run12
+is 26,598,748,080 bytes including connection headroom.
+
+Run13 changes only the package's resource probe helper: native `grep` and
+`df` replace a Python child in the 256 MiB stream backend. The same memory
+and disk floors apply. One immediate retry is allowed only for exit 137;
+another 137, any other error, or malformed output stops the run. Targeted
+helper tests passed 4/4 and a real offline probe in a 256 MiB container
+passed. The unchanged, successful CI `copybot-app/release` artifact from commit
+`b1cf0816a71a922e23c39ee3c84314af593a0fcd` and all 88 migrations were
+installed and verified with rollback retained. No daemon rebuild or paid
+provider call was needed.
+
+The new package carries all 308 prior RPC attempts and stream obligations;
+remaining caps are 488,797,327,440 stream bytes, 994 connection attempts,
+2,495,610 RPC CU and 1,497,695,250 nanoUSD for HTTP/RPC within the existing
+$50 provider model. Its four-hour limit, one BUY at most 0.01 SOL and one
+linked source SELL remain unchanged. Independent package review accepted the
+changed helper and carryover. The 52-file seal and final local activation
+preflight passed. Run13 has empty financial state, STOP, and five containers
+created but never started. Next authorized action: the owner may execute the
+Run13 one-shot activation command once from its private `README_RU.md`.
+Automatic copying and profitability remain unproved until live execution;
+the repaired probe has not yet run through a live four-hour window.
+
+## Prior decision: Run12 sealed under STOP after Run11 block capacity exit
+
+The owner activated Run11 once. It returned `APP_EXITED` after about 126 seconds
+with `association input rejected: BlockCapacity`; `NO_SIGNAL` is only its
+financial state. Its durable inbox contains 377 parent events and exactly 192
+accepted parents within the last 60 seconds, reaching the configured count cap
+of 192. No cohort decision, order, dispatch, receipt, fill or position exists.
+STOP is set, all five Run11 containers are stopped, and Run11 must not be
+reactivated. Its ledger ended at 44 attempts, 540 CU and 283,500 nanoUSD;
+stream use plus connection headroom brought cumulative Run07-Run11 accounted
+stream bytes to 2,440,489,717.
+
+A separate Run12 package keeps the same accepted `copybot-app/release` artifact
+from commit `b1cf0816a71a922e23c39ee3c84314af593a0fcd` and successful CI
+run `36194787410`; the artifact and 88 migrations were freshly installed and
+verified in its isolated package. Only its runtime association cache changes
+to 384 blocks / 768 MiB with the same 60-second TTL. The app container memory
+cap rises from 2 to 3 GiB; four broker containers remain at 256 MiB each.
+The total cap is 4 GiB within the 5,157,683,200-byte Docker VM. No trading or
+provider cap changes. The new ledger carries all previous use, and new state
+is empty under STOP with five never-started containers.
+
+A scoped offline bridge replay admitted 201 full synthetic blocks per 60
+seconds at 3,145,222 encoded bytes each, then settled a partial source SELL
+with one mock send and no duplicate after restart. The first harness attempt
+failed on test-thread stack size; the direct process with a 16 MiB test stack
+passed. No paid provider call, signature or financial submit was made. An
+independent review accepted the config, carryover, artifact and package. The
+48-file seal and final local activation preflight passed. The macOS replay
+peak RSS does not prove Linux live memory, and actual Run11 encoded block
+sizes were not retained. Next authorized action: the owner may run Run12's
+one-shot activation command once, listed in its private `README_RU.md`.
+Automatic copying and profitability remain unproved until live receipt.
+
+## Prior decision: Run11 prepared under STOP for one owner launch
 
 The owner activated Run10 once. Its preserved `LIVE_RESULT.json` reports
 `APP_EXITED` after about five minutes; `NO_SIGNAL` describes the financial

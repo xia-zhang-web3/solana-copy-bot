@@ -41,6 +41,7 @@ mod app_loop_relevant_swap;
 mod app_loop_shadow;
 mod app_loop_shutdown;
 mod association_consumer;
+mod association_ingress_telemetry;
 mod config_contract;
 mod discovery_runtime;
 mod entry_quote_shadow_diagnostic;

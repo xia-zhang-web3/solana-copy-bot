@@ -6,9 +6,9 @@ use anyhow::{ensure, Context, Result};
 use copybot_config::IngestionConfig;
 use copybot_core_types::association_delivery::{DeliveryEvent, SessionGap};
 use prost::Message;
+use std::collections::HashSet;
 use tokio::sync::mpsc;
 use yellowstone_grpc_proto::prelude::SubscribeUpdate;
-use std::collections::HashSet;
 #[derive(Debug)]
 pub enum ReplayInput {
     Update { offset_ns: u64, payload: Vec<u8> },
@@ -23,6 +23,7 @@ impl DeliveryReceiver {
         session: String,
         mut input: mpsc::Receiver<ReplayInput>,
         wallet_scope: Option<HashSet<String>>,
+        bot_signer: Option<String>,
     ) -> Result<Self> {
         copybot_config::validate_delivery_source(config)?;
         ensure!(
@@ -33,12 +34,23 @@ impl DeliveryReceiver {
             .yellowstone_association
             .clone()
             .context("association limits")?;
-        let mut runtime = (*super::super::YellowstoneGrpcSource::new(config)?.runtime_config).clone();
+        let mut runtime =
+            (*super::super::YellowstoneGrpcSource::new(config)?.runtime_config).clone();
         runtime.admission_wallets = wallet_scope.clone();
         let runtime = std::sync::Arc::new(runtime);
         let (tx, rx) = queue::channel(limits.queue.count, limits.queue.bytes);
+        let telemetry = std::sync::Arc::new(super::telemetry::DurableIngressTelemetry::default());
+        let task_telemetry = std::sync::Arc::clone(&telemetry);
+        let task_bot = bot_signer.clone();
         let task = tokio::spawn(async move {
-            let mut bridge = Bridge::new(&runtime, &limits, session, tx)?;
+            let mut bridge = Bridge::new(
+                &runtime,
+                &limits,
+                session,
+                tx,
+                task_bot,
+                std::sync::Arc::clone(&task_telemetry),
+            )?;
             bridge
                 .emit(
                     0,
@@ -54,9 +66,18 @@ impl DeliveryReceiver {
                             payload.len() <= limits.input_bytes,
                             "replay transport input budget"
                         );
-                        bridge
-                            .update(offset_ns, &SubscribeUpdate::decode(payload.as_slice())?)
-                            .await?;
+                        let update = SubscribeUpdate::decode(payload.as_slice())?;
+                        use yellowstone_grpc_proto::prelude::subscribe_update::UpdateOneof;
+                        match update.update_oneof.as_ref() {
+                            Some(UpdateOneof::Transaction(tx)) => {
+                                task_telemetry.received_transaction(tx.slot)
+                            }
+                            Some(UpdateOneof::Block(block)) => {
+                                task_telemetry.received_block(block.slot)
+                            }
+                            _ => {}
+                        }
+                        bridge.update(offset_ns, &update).await?;
                     }
                     ReplayInput::Tick(ns) => bridge.push(ns, Input::Tick).await?,
                     ReplayInput::Reset(ns) => bridge.reset(ns).await?,
@@ -80,6 +101,8 @@ impl DeliveryReceiver {
             rx,
             task: Some(task),
             wallet_scope,
+            bot_signer,
+            telemetry,
         })
     }
 }

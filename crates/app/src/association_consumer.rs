@@ -14,6 +14,8 @@ use crate::execution_native_buy_rpc;
 use crate::execution_technical_cohort;
 use crate::execution_owned_sell_rpc::fractional::transport::{Http, Transport};
 use copybot_storage_core::native_buy::NativeBuyFence;
+use crate::association_ingress_telemetry::AssociationIngressTelemetry;
+use std::time::Instant;
 
 #[path = "association_shadow_wake.rs"]
 pub(crate) mod shadow_wake;
@@ -37,8 +39,20 @@ pub(crate) struct AssociationConsumer {
     pub(crate) fence_retry_at: Option<tokio::time::Instant>,
     epoch_intake: Option<NativeBuyFence>,
     pending_epoch: bool,
+    pending_started_at: Option<Instant>,
+    pending_fence_slot: Option<u64>,
+    telemetry: AssociationIngressTelemetry,
 }
 impl AssociationConsumer {
+    pub(crate) fn diagnostic_snapshots(
+        &self,
+    ) -> (
+        copybot_ingestion::DurableIngressSnapshot,
+        crate::association_ingress_telemetry::AssociationIngressSnapshot,
+    ) {
+        (self.receiver.ingress_snapshot(), self.telemetry.snapshot())
+    }
+
     pub(crate) async fn start(
         ingestion: &mut IngestionService,
         c: &IngestionConfig,
@@ -74,6 +88,9 @@ impl AssociationConsumer {
             .map(|a| execution.context("cohort execution config")
                 .and_then(|c| execution_technical_cohort::admission_wallets(a, c)))
             .transpose()?;
+        let bot_signer = authority.as_ref().and_then(|_| {
+            execution.map(|c| c.canary_wallet_pubkey.clone())
+        });
         let inbox = tokio::task::spawn_blocking(move || {
             let mut inbox = AssociationInbox::open_ordered_sell_consumer(path, limits)?;
             if let Some(authority) = authority.as_ref() {
@@ -84,7 +101,9 @@ impl AssociationConsumer {
         .await??;
         let recovery_pending = inbox.has_sell_preparation_work()?;
         let receiver = ingestion
-            .take_delivery_scoped(AssociationInbox::new_session_id(), admission_wallets)?
+            .take_delivery_scoped_labeled(
+                AssociationInbox::new_session_id(), admission_wallets, bot_signer,
+            )?
             .context("missing delivery receiver")?;
         Ok(Some(Self {
             receiver,
@@ -101,6 +120,9 @@ impl AssociationConsumer {
             fence_retry_at: None,
             epoch_intake: None,
             pending_epoch: false,
+            pending_started_at: None,
+            pending_fence_slot: None,
+            telemetry: AssociationIngressTelemetry::default(),
         }))
     }
     pub(crate) async fn start_with_execution(
@@ -205,6 +227,8 @@ impl AssociationConsumer {
             if let Some(epoch) = self.epoch_intake.take() {
                 let mut inbox = self.inbox.take().context("inbox unavailable")?;
                 self.pending_epoch = true;
+                self.pending_started_at = Some(Instant::now());
+                self.pending_fence_slot = Some(epoch.processed_slot);
                 self.pending = Some(tokio::task::spawn_blocking(move || {
                     let result = (|| {
                         inbox.record_native_buy_fence_epoch(&epoch)?;
@@ -253,6 +277,8 @@ impl AssociationConsumer {
             };
             let (envelope, candidate, observed) = self.intake.take().context("intake missing")?;
             let mut inbox = self.inbox.take().context("inbox unavailable")?;
+            self.pending_started_at = Some(Instant::now());
+            self.pending_fence_slot = fence.as_ref().map(|value| value.processed_slot);
             self.pending = Some(tokio::task::spawn_blocking(move || {
                 let result = (|| {
                     match &envelope {
@@ -295,6 +321,13 @@ impl AssociationConsumer {
         // Notify retains its permit across this ACK and select cancellation.
         self.recovery_pending = result?;
         self.inbox = Some(inbox);
+        let elapsed_ms = self.pending_started_at.take()
+            .map(|start| start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0);
+        self.telemetry.note_persisted(
+            envelope.as_ref().map(|value| &value.delivery.event),
+            self.pending_fence_slot.take(), elapsed_ms,
+        );
         if self.pending_epoch {
             self.pending_epoch = false;
             self.next_fence_at = Some(tokio::time::Instant::now()

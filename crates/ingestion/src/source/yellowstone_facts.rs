@@ -28,6 +28,19 @@ pub(super) struct YellowstoneSwapFacts {
 pub(super) struct DecodedYellowstoneSwap {
     pub(super) facts: Result<Option<YellowstoneSwapFacts>>,
     pub(super) used_program_fallback: bool,
+    pub(super) miss: Option<DecodeMiss>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+pub(super) enum DecodeMiss {
+    Vote,
+    Failed,
+    UninterestedProgram,
+    NoAttributedSwap,
+    InvalidAmount,
+    UnsupportedPumpSwap,
+    Unclassified,
 }
 
 /// Pure extraction: no clock, I/O, telemetry mutation or message timestamp.
@@ -39,16 +52,19 @@ pub(super) fn decode_yellowstone_swap_facts(
     pumpswap_program_ids: &HashSet<String>,
 ) -> DecodedYellowstoneSwap {
     let mut used_program_fallback = false;
+    let mut miss = None;
     let facts = decode(
         tx_update,
         interested_program_ids,
         raydium_program_ids,
         pumpswap_program_ids,
         &mut used_program_fallback,
+        &mut miss,
     );
     DecodedYellowstoneSwap {
         facts,
         used_program_fallback,
+        miss,
     }
 }
 
@@ -58,6 +74,7 @@ fn decode(
     raydium_program_ids: &HashSet<String>,
     pumpswap_program_ids: &HashSet<String>,
     used_program_fallback: &mut bool,
+    miss: &mut Option<DecodeMiss>,
 ) -> Result<Option<YellowstoneSwapFacts>> {
     if tx_update.slot == 0 {
         return Err(anyhow!("missing slot in yellowstone update"));
@@ -66,6 +83,7 @@ fn decode(
         return Err(anyhow!("missing status in yellowstone update"));
     };
     if tx_info.is_vote {
+        *miss = Some(DecodeMiss::Vote);
         return Ok(None);
     }
 
@@ -73,6 +91,7 @@ fn decode(
         return Err(anyhow!("missing status in yellowstone update"));
     };
     if tx_meta_has_error(meta) {
+        *miss = Some(DecodeMiss::Failed);
         return Ok(None);
     }
 
@@ -107,6 +126,7 @@ fn decode(
         .iter()
         .any(|id| interested_program_ids.contains(id))
     {
+        *miss = Some(DecodeMiss::UninterestedProgram);
         return Ok(None);
     }
 
@@ -115,13 +135,17 @@ fn decode(
             super::native_attribution::proto::infer(message, meta, &signer, pumpswap_program_ids)
         }) {
             Some(value) => value,
-            None => return Ok(None),
+            None => {
+                *miss = Some(DecodeMiss::NoAttributedSwap);
+                return Ok(None);
+            }
         };
     if !amount_in.amount.is_finite()
         || !amount_out.amount.is_finite()
         || amount_in.amount <= 0.0
         || amount_out.amount <= 0.0
     {
+        *miss = Some(DecodeMiss::InvalidAmount);
         return Ok(None);
     }
 
@@ -144,6 +168,7 @@ fn decode(
         meta,
         pumpswap_program_ids,
     ) {
+        *miss = Some(DecodeMiss::UnsupportedPumpSwap);
         return Ok(None);
     }
 

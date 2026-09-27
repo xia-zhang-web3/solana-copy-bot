@@ -238,6 +238,66 @@ async fn scoped_replay_keeps_three_leaders_bot_buy_sell_and_parent_chain() -> Re
     Ok(())
 }
 
+#[tokio::test]
+async fn durable_funnel_separates_no_swap_foreign_source_and_bot() -> Result<()> {
+    use super::super::delivery_tests::input;
+    use crate::source::yellowstone_facts::DecodeMiss;
+    let scope = HashSet::from([wallet(11), wallet(14)]);
+    let mut no_swap = attributed_pair(false, 221, 801, 1)?.0;
+    let meta = tx_mut(&mut no_swap)
+        .transaction
+        .as_mut()
+        .unwrap()
+        .meta
+        .as_mut()
+        .unwrap();
+    meta.pre_token_balances.clear();
+    meta.post_token_balances.clear();
+    meta.pre_balances.clear();
+    meta.post_balances.clear();
+    let source = YellowstoneGrpcSource::new(&config())?;
+    let decoded = crate::source::yellowstone_facts::decode_yellowstone_swap_facts(
+        transaction(&no_swap),
+        &source.runtime_config.interested_program_ids,
+        &source.runtime_config.raydium_program_ids,
+        &source.runtime_config.pumpswap_program_ids,
+    );
+    assert_eq!(decoded.miss, Some(DecodeMiss::NoAttributedSwap));
+    let mut c = super::super::delivery_tests::policy();
+    c.execution.canary_wallet_pubkey = wallet(14);
+    let (tx, rx) = mpsc::channel(8);
+    let mut service =
+        crate::IngestionService::with_replay_scoped(&c, rx, "funnel".into(), Some(scope.clone()))?;
+    let mut receiver = service
+        .take_delivery_scoped_labeled("unused".into(), Some(scope), Some(wallet(14)))?
+        .unwrap();
+    let updates = [
+        foreign(800)?,
+        no_swap,
+        attributed_pair(false, 11, 802, 2)?.0,
+        attributed_pair(false, 14, 803, 3)?.0,
+    ];
+    for (index, update) in updates.into_iter().enumerate() {
+        tx.send(input(index as u64 + 1, update)).await?;
+    }
+    tx.send(ReplayInput::End(5)).await?;
+    let mut admissions = Vec::new();
+    while let Some(envelope) = receiver.next().await? {
+        if let DeliveryEvent::Admission(a) = envelope.delivery.event {
+            admissions.push(a.facts.wallet);
+        }
+    }
+    assert_eq!(admissions, vec![wallet(11), wallet(14)]);
+    let s = receiver.ingress_snapshot();
+    assert_eq!(s.received_transactions, 4);
+    assert_eq!(s.decoded_swaps, 3);
+    assert_eq!(s.decode_misses[DecodeMiss::NoAttributedSwap as usize], 1);
+    assert_eq!(s.foreign_signer, 1);
+    assert_eq!((s.selected_source, s.selected_bot, s.admissions), (1, 1, 2));
+    assert_eq!(s.admission_rejections, 0);
+    Ok(())
+}
+
 #[test]
 fn scoped_selected_duplicate_and_conflict_remain_linked_to_first_admission() -> Result<()> {
     let source = YellowstoneGrpcSource::new(&config())?;

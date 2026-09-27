@@ -1,4 +1,5 @@
 use super::*;
+use crate::source::yellowstone_facts::DecodeMiss;
 use prost::Message;
 use std::sync::Arc;
 use yellowstone_grpc_proto::prelude::SubscribeUpdateTransaction;
@@ -90,15 +91,25 @@ impl YellowstoneAssociation<'_> {
         let Some(facts) = decoded.facts.map_err(|_| Rejection::FactsDecodeError)? else {
             return Ok((
                 Admission::NotChecked {
+                    reason: NotCheckedReason::Decode(
+                        decoded.miss.unwrap_or(DecodeMiss::Unclassified),
+                    ),
                     used_program_fallback: decoded.used_program_fallback,
                 },
                 Cause::Tick,
             ));
         };
-        if self.admission_wallets.is_some_and(|wallets| !wallets.contains(&facts.signer)) {
-            return Ok((Admission::NotChecked {
-                used_program_fallback: decoded.used_program_fallback,
-            }, Cause::Tick));
+        if self
+            .admission_wallets
+            .is_some_and(|wallets| !wallets.contains(&facts.signer))
+        {
+            return Ok((
+                Admission::NotChecked {
+                    reason: NotCheckedReason::ForeignSigner,
+                    used_program_fallback: decoded.used_program_fallback,
+                },
+                Cause::Tick,
+            ));
         }
         let metadata = 1024
             + [

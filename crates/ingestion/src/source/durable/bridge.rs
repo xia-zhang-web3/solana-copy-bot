@@ -1,10 +1,10 @@
 use super::super::{yellowstone_association as a, YellowstoneRuntimeConfig};
-use super::{convert, queue::Sender};
+use super::{convert, queue::Sender, telemetry::DurableIngressTelemetry};
 use a::limits::Budget;
 use anyhow::Result;
 use copybot_config::AssociationDeliveryConfig;
 use copybot_core_types::association_delivery::*;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 pub(super) struct Bridge<'a> {
     adapter: a::YellowstoneAssociation<'a>,
     session: a::Session,
@@ -12,6 +12,9 @@ pub(super) struct Bridge<'a> {
     base_name: String,
     sequence: u64,
     tx: Sender,
+    bot_signer: Option<String>,
+    telemetry: Arc<DurableIngressTelemetry>,
+    scoped: bool,
 }
 impl<'a> Bridge<'a> {
     pub(super) fn new(
@@ -19,6 +22,8 @@ impl<'a> Bridge<'a> {
         c: &AssociationDeliveryConfig,
         name: String,
         tx: Sender,
+        bot_signer: Option<String>,
+        telemetry: Arc<DurableIngressTelemetry>,
     ) -> Result<Self> {
         let b = |v: &copybot_config::DeliveryBudget| Budget {
             count: v.count,
@@ -59,9 +64,16 @@ impl<'a> Bridge<'a> {
             base_name: name,
             sequence: 0,
             tx,
+            bot_signer,
+            telemetry,
+            scoped: runtime.admission_wallets.is_some(),
         })
     }
     pub(super) async fn emit(&mut self, ns: u64, event: DeliveryEvent) -> Result<()> {
+        let parent_slot = match &event {
+            DeliveryEvent::Parent(parent) => Some(parent.child.slot),
+            _ => None,
+        };
         let d = Delivery {
             session: self.name.clone(),
             sequence: self.sequence,
@@ -72,7 +84,12 @@ impl<'a> Bridge<'a> {
             .sequence
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("delivery sequence exhausted"))?;
-        self.tx.send(d).await
+        let wait = self.tx.send_timed(d).await?;
+        self.telemetry.queue_wait(wait);
+        if let Some(slot) = parent_slot {
+            self.telemetry.parent(slot);
+        }
+        Ok(())
     }
     pub(super) async fn push(&mut self, ns: u64, input: a::Input<'_>) -> Result<()> {
         let context = a::Context {
@@ -90,6 +107,8 @@ impl<'a> Bridge<'a> {
         let admission = match self.adapter.push(context, input) {
             Ok(v) => v,
             Err(r) => {
+                self.telemetry
+                    .rejected(matches!(r, a::Rejection::FactsDecodeError));
                 self.emit(
                     ns,
                     DeliveryEvent::Session(SessionGap::Rejected(format!("{r:?}"))),
@@ -104,6 +123,15 @@ impl<'a> Bridge<'a> {
                 anyhow::bail!("association input rejected: {r:?}");
             }
         };
+        let bot = match &admission {
+            a::Admission::Transaction(id) | a::Admission::Duplicate(id) => {
+                self.adapter.admitted(*id).is_some_and(|(checked, _)| {
+                    self.bot_signer.as_deref() == Some(checked.facts.signer.as_str())
+                })
+            }
+            _ => false,
+        };
+        self.telemetry.admission(&admission, bot, self.scoped);
         match admission {
             a::Admission::Block => {
                 let parent = super::parent::observation(parent_input.expect("admitted block"));

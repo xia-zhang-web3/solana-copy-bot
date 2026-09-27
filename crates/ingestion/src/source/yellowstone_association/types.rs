@@ -34,9 +34,17 @@ pub(in crate::source) enum Input<'a> {
 pub(in crate::source) enum Admission {
     Transaction(ResultId),
     Duplicate(ResultId),
-    NotChecked { used_program_fallback: bool },
+    NotChecked {
+        reason: NotCheckedReason,
+        used_program_fallback: bool,
+    },
     Block,
     Control,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::source) enum NotCheckedReason {
+    Decode(yellowstone_facts::DecodeMiss),
+    ForeignSigner,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::source) enum Rejection {

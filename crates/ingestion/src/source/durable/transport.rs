@@ -1,5 +1,9 @@
 use super::super::{yellowstone_association as a, YellowstoneRuntimeConfig};
-use super::{bridge::Bridge, queue::Sender};
+use super::{
+    bridge::Bridge,
+    queue::Sender,
+    telemetry::{DurableIngressTelemetry, TransportClass, TransportStage},
+};
 use anyhow::{Context, Result};
 use copybot_config::AssociationDeliveryConfig;
 use copybot_core_types::association_delivery::{DeliveryEvent, SessionGap};
@@ -30,9 +34,11 @@ pub(super) async fn run(
     limits: AssociationDeliveryConfig,
     session: String,
     tx: Sender,
+    bot_signer: Option<String>,
+    telemetry: Arc<DurableIngressTelemetry>,
 ) -> Result<()> {
     let start = Instant::now();
-    let mut bridge = Bridge::new(&c, &limits, session, tx)?;
+    let mut bridge = Bridge::new(&c, &limits, session, tx, bot_signer, Arc::clone(&telemetry))?;
     bridge
         .emit(
             0,
@@ -49,18 +55,32 @@ pub(super) async fn run(
                 builder = builder
                     .tls_config(tonic::transport::ClientTlsConfig::new().with_native_roots())?;
             }
-            let mut client = builder
+            let client = builder
                 .connect_timeout(Duration::from_millis(c.connect_timeout_ms))
                 .timeout(Duration::from_millis(c.subscribe_timeout_ms))
                 .max_decoding_message_size(limits.input_bytes)
                 .connect()
                 .await?;
-            Ok::<_, anyhow::Error>(client.subscribe_with_request(Some(request(&c))).await?)
+            Ok::<_, anyhow::Error>(client)
         }
         .await;
-        let (mut sink, mut stream) = match connection {
+        let mut client = match connection {
             Ok(v) => v,
-            Err(_) => {
+            Err(error) => {
+                telemetry.reconnect(TransportStage::Connect, TransportClass::error(&error));
+                bridge
+                    .emit(ns(), DeliveryEvent::Session(SessionGap::Transport))
+                    .await?;
+                bridge.reset(ns()).await?;
+                tokio::time::sleep(Duration::from_millis(backoff)).await;
+                backoff = backoff.saturating_mul(2).min(c.reconnect_max_ms);
+                continue;
+            }
+        };
+        let (mut sink, mut stream) = match client.subscribe_with_request(Some(request(&c))).await {
+            Ok(v) => v,
+            Err(error) => {
+                telemetry.reconnect(TransportStage::Subscribe, TransportClass::subscribe(&error));
                 bridge
                     .emit(ns(), DeliveryEvent::Session(SessionGap::Transport))
                     .await?;
@@ -75,10 +95,18 @@ pub(super) async fn run(
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
-                _=tick.tick()=>bridge.push(ns(),a::Input::Tick).await?,
+                _=tick.tick()=>{
+                    bridge.push(ns(),a::Input::Tick).await?;
+                    telemetry.maybe_report();
+                },
                 v=stream.next()=>match v {
                     Some(Ok(update))=>{
                         let at=ns();
+                        match update.update_oneof.as_ref() {
+                            Some(subscribe_update::UpdateOneof::Transaction(tx)) => telemetry.received_transaction(tx.slot),
+                            Some(subscribe_update::UpdateOneof::Block(block)) => telemetry.received_block(block.slot),
+                            _ => {}
+                        }
                         // Transport cap covers the entire envelope; adapter input cap
                         // covers its tx/block. Decoded allocations are still bounded by proto.
                         if update.encoded_len()>limits.input_bytes {
@@ -88,15 +116,20 @@ pub(super) async fn run(
                         }
                         match update.update_oneof.as_ref() {
                             Some(subscribe_update::UpdateOneof::Transaction(_)|subscribe_update::UpdateOneof::Block(_))=>bridge.update(at,&update).await?,
-                            Some(subscribe_update::UpdateOneof::Ping(_))=>if sink.send(SubscribeRequest{ping:Some(SubscribeRequestPing{id:1}),..Default::default()}).await.is_err(){break;},
+                            Some(subscribe_update::UpdateOneof::Ping(_))=>if sink.send(SubscribeRequest{ping:Some(SubscribeRequestPing{id:1}),..Default::default()}).await.is_err(){
+                                telemetry.reconnect(TransportStage::Ping, TransportClass::Other);
+                                break;
+                            },
                             _=>{}
                         }
                     }
-                    Some(Err(_))=>{
+                    Some(Err(error))=>{
+                        telemetry.reconnect(TransportStage::Stream, TransportClass::status(&error));
                         bridge.emit(ns(),DeliveryEvent::Session(SessionGap::Transport)).await?;
                         break;
                     }
                     None=>{
+                        telemetry.reconnect(TransportStage::End, TransportClass::End);
                         bridge.push(ns(),a::Input::End).await?;
                         bridge.emit(ns(),DeliveryEvent::Session(SessionGap::End)).await?;
                         break;

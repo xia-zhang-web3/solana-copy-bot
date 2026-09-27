@@ -1,6 +1,7 @@
 use anyhow::{ensure, Result};
 use copybot_core_types::association_delivery::Delivery;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 /// Permits are held until the app finishes persistence, not just until dequeue.
 pub struct DeliveryEnvelope {
@@ -30,7 +31,8 @@ pub(in crate::source) fn channel(
     )
 }
 impl Sender {
-    pub(in crate::source) async fn send(&self, delivery: Delivery) -> Result<()> {
+    /// Time waiting for charged permits and channel acceptance, after encoding.
+    pub(in crate::source) async fn send_timed(&self, delivery: Delivery) -> Result<Duration> {
         let charge = serde_json::to_vec(&delivery)?
             .len()
             .checked_add(512)
@@ -39,6 +41,7 @@ impl Sender {
             charge <= self.max_bytes,
             "delivery queue input exceeds byte budget"
         );
+        let start = Instant::now();
         let count = self.count.clone().acquire_owned().await?;
         let bytes = self
             .bytes
@@ -52,6 +55,7 @@ impl Sender {
                 _bytes: bytes,
             })
             .await
-            .map_err(|_| anyhow::anyhow!("delivery consumer closed"))
+            .map_err(|_| anyhow::anyhow!("delivery consumer closed"))?;
+        Ok(start.elapsed())
     }
 }
