@@ -1,6 +1,6 @@
 # Project Recovery Plan
 
-## Current decision: Run14 HOLD for systemic ingress repair
+## Current decision: Run14 sealed under STOP for one bounded user launch
 
 The owner activated Run13 once. It stopped after 2,605 seconds with
 `REFUSED_OR_UNKNOWN` because one `vm_resources` Docker exec returned code 1.
@@ -15,25 +15,37 @@ brings cumulative Run07–Run13 accounted bytes to 40,375,494,187.
 Run12/13 persisted no Admission at all. Run13's twelve transport reconnects
 left 420–478-slot gaps between saved segments; its saved Parents were also
 behind processed RPC fences. The count of missed trades and the cause of each
-historical reconnect remain unknown. The existing Run14 seal was revoked;
-`READY_FOR_USER_ACTIVATION.json` is absent, STOP remains set, and the package
-must not be launched. Its installed `b1cf0816...` binary is the prior version.
-The current batch adds safe probe/relay failure classes and durable ingress
-funnel/slot/queue timing telemetry, then requires one actual offline transport
-through relay and consumer, independent review, a matching new CI artifact,
-installation into this same unused Run14 package, reseal, and local preflight.
-No paid provider request or financial activation belongs to this preparation.
+historical reconnect remain unknown. Run14 now has safe probe/relay failure
+classes and bounded durable ingress funnel, slot and queue timing telemetry.
+A local tonic Geyser fixture through the actual transport, `Relay.pump`,
+consumer, SQLite and daemon tick covered reconnect, a gap, source BUY, bot BUY
+anchor, source SELL and restart with no second mock send. The 2.3-second
+offline scenario cannot prove the historical provider cause or four-hour live
+freshness. Independently reviewed code and package evidence is in the private
+Run14 `evidence/SYSTEMIC_CODE_REVIEW_RU.md` and
+`evidence/INDEPENDENT_PACKAGE_REVIEW_RU.md`.
+
+Clean published commit `da3c7300aca7f928b3ddd3b21efe14a947d5e7a5`
+passed GitHub Actions run `36340667022` for `copybot-app/release`; the
+16m12s package step was within the cold-build budget. The exact verified
+artifact and 88 unchanged migrations are installed in the same unused Run14
+package. Prior `b1cf0816...` is retained and verified for rollback. There
+were no config, dependency, trading-limit or migration changes. The 65-file
+new seal and local activation preflight passed; STOP is present, financial
+state is empty, and all five containers remain `created`, never started.
+No paid provider request, signer use, submission or financial activation
+occurred during this repair and installation.
 
 All prior spending was carried into a separate stopped package: future caps
 are 475,020,581,333 stream bytes, 981 connection attempts, 2,493,760 RPC CU
 and 1,496,724,000 nanoUSD HTTP/RPC within the unchanged $50 provider model.
 Trading remains limited to four hours, one BUY at most 0.01 SOL and one linked
 source SELL. The formerly passing 54-file seal/preflight applied only to the
-superseded package state. Financial state is empty and all five containers
-remain never started. Next authorized action: complete and independently
-review this repair under STOP; issue a new command only after matching artifact
-installation and current local preflight. Automatic copying and profitability
-remain unproved until live receipt.
+superseded package state. Next authorized action: the owner may execute the
+one-shot command in the Run14 `README_RU.md` once; at UNKNOWN or other refusal
+do not re-run it. The command shows bounded ingress progress. Source activity,
+automatic copying, four-hour live freshness and profitability remain unproved
+until actual live evidence and receipts.
 
 ## Prior decision: Run13 sealed under STOP after Run12 resource probe failure
 
