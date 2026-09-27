@@ -1,51 +1,37 @@
 # Project Recovery Plan
 
-## Current decision: Run14 sealed under STOP for one bounded user launch
+## Current decision: Run14 used; no repeat or identical paid run
 
-The owner activated Run13 once. It stopped after 2,605 seconds with
-`REFUSED_OR_UNKNOWN` because one `vm_resources` Docker exec returned code 1.
-The child failure source was not recorded and is not proven. The saved final
-financial outcome is `NO_SIGNAL`: SQLite `quick_check` passes and cohort
-decision, order, dispatch, unresolved dispatch, receipt, fill and position
-tables are empty. Run13 is used, all five containers exited, STOP is set and
-it must not be reactivated. Its ledger ends at 439 cumulative RPC attempts,
-6,240 CU and 3,276,000 nanoUSD. Stream use, including connection headroom,
-brings cumulative Run07–Run13 accounted bytes to 40,375,494,187.
+The owner activated Run14 once. STOP appeared after about 3,590 seconds,
+before its four-hour deadline; the launcher finalized after 3,606 seconds
+with `REFUSED_OR_UNKNOWN`, retaining only `ValueError`. The supervisor's
+`normal_stop` means it observed STOP, not that the window expired normally.
+The origin of STOP and the exact failed helper call are unproved. The stopped database
+independently reads `NO_SIGNAL` with zero decisions, orders, dispatch, receipts,
+fills and positions. STOP is set and all five containers are exited. Run14
+must not be reactivated. Its complete incident decision and evidence are in
+[`audit/2026-09-27/run14-systemic-review/RUN14_LIVE_INCIDENT_RU.md`](audit/2026-09-27/run14-systemic-review/RUN14_LIVE_INCIDENT_RU.md).
 
-Run12/13 persisted no Admission at all. Run13's twelve transport reconnects
-left 420–478-slot gaps between saved segments; its saved Parents were also
-behind processed RPC fences. The count of missed trades and the cause of each
-historical reconnect remain unknown. Run14 now has safe probe/relay failure
-classes and bounded durable ingress funnel, slot and queue timing telemetry.
-A local tonic Geyser fixture through the actual transport, `Relay.pump`,
-consumer, SQLite and daemon tick covered reconnect, a gap, source BUY, bot BUY
-anchor, source SELL and restart with no second mock send. The 2.3-second
-offline scenario cannot prove the historical provider cause or four-hour live
-freshness. Independently reviewed code and package evidence is in the private
-Run14 `evidence/SYSTEMIC_CODE_REVIEW_RU.md` and
-`evidence/INDEPENDENT_PACKAGE_REVIEW_RU.md`.
+The daemon observed 902,865 transactions and 241,162 decoded swaps, but no
+selected source or Admission across its saved one-hour stream; 18 reconnects
+prevent a claim of complete observation. The terminal's repeated `AWAITING`
+was a local parser error: app logs have flat tracing JSON, while the helper
+expects nested fields. Offline fault injection also shows a failed Docker
+inspect can escape the monitoring loop as bare `ValueError`; the exact Run14
+failure call is not preserved. The monitor starts a Docker reader roughly every
+0.5 seconds, a concrete VM load source. The brief observed VirtualMachine CPU
+spike subsided after STOP; its precise cause is unproved.
 
-Clean published commit `da3c7300aca7f928b3ddd3b21efe14a947d5e7a5`
-passed GitHub Actions run `36340667022` for `copybot-app/release`; the
-16m12s package step was within the cold-build budget. The exact verified
-artifact and 88 unchanged migrations are installed in the same unused Run14
-package. Prior `b1cf0816...` is retained and verified for rollback. There
-were no config, dependency, trading-limit or migration changes. The 65-file
-new seal and local activation preflight passed; STOP is present, financial
-state is empty, and all five containers remain `created`, never started.
-No paid provider request, signer use, submission or financial activation
-occurred during this repair and installation.
-
-All prior spending was carried into a separate stopped package: future caps
-are 475,020,581,333 stream bytes, 981 connection attempts, 2,493,760 RPC CU
-and 1,496,724,000 nanoUSD HTTP/RPC within the unchanged $50 provider model.
-Trading remains limited to four hours, one BUY at most 0.01 SOL and one linked
-source SELL. The formerly passing 54-file seal/preflight applied only to the
-superseded package state. Next authorized action: the owner may execute the
-one-shot command in the Run14 `README_RU.md` once; at UNKNOWN or other refusal
-do not re-run it. The command shows bounded ingress progress. Source activity,
-automatic copying, four-hour live freshness and profitability remain unproved
-until actual live evidence and receipts.
+The ledger now holds 593 cumulative attempts, 8,510 CU and 4,467,750 nanoUSD;
+the Run14 relay observed 19,184,389,247 upstream bytes plus 19,922,944
+connection-headroom bytes. The $50 cumulative provider model and unchanged
+trade limits are not reset. Next authorized action is a narrow offline helper
+repair: bounded read/inspect cadence and typed failures, safe continuation
+through transient observation errors, correct flat-JSON progress, causal tests
+and independent review. Build target `NONE` if only private helpers change.
+Do not create or activate another paid package until fresh source activity is
+evidenced and its scope/budget is explicit. Automatic copying and profitability
+remain unproved.
 
 ## Prior decision: Run13 sealed under STOP after Run12 resource probe failure
 
