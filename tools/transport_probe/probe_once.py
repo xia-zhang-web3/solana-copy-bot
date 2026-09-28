@@ -5,6 +5,7 @@ import time
 from probe_common import *
 from probe_docker import create, init_volume, stop
 from probe_preflight import preflight
+from probe_observation import summarize
 
 
 def _financial_counts():
@@ -40,23 +41,7 @@ def observation(cid):
     text = docker(['logs', '--tail', '2000', cid], include_stderr=True)
     (ROOT / 'evidence/app-tail.log').write_text(text)
     (ROOT / 'evidence/app-tail.log').chmod(0o600)
-    transport = []
-    funnel = None
-    for line in text.splitlines():
-        try:
-            value = json.loads(line)
-        except ValueError:
-            continue
-        fields = value.get('fields', {})
-        if fields.get('message') == 'durable ingress transport boundary':
-            transport.append({k: fields.get(k) for k in ['stage', 'class', 'grpc_code', 'message', 'causes',
-                'connection_age_ms', 'last_received_transaction_slot', 'last_received_block_slot',
-                'last_emitted_parent_slot', 'last_durably_stored_parent_slot']})
-            # tracing's record message and the sanitized error text use different fields.
-            transport[-1]['error_message'] = fields.get('error_message')
-        if fields.get('message') == 'durable ingress funnel':
-            funnel = fields
-    return dict(transport=transport[-12:], ingress=funnel)
+    return summarize(text)
 
 
 def seal():

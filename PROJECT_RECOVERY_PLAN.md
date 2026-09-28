@@ -1,6 +1,6 @@
 # Project Recovery Plan
 
-## Current decision: Run15 stopped; local transport repair accepted, install pending
+## Current decision: Run15 stopped; repair installed, read-only owner decision next
 Run15 stopped after 23 reconnects: STOP, five containers exited, NO_SIGNAL;
 orders/receipts/fills/positions/dispatch/decisions0. Supervisor normal_stop;
 launcher LIVE_RESULT absent. Original DB/authority/clocks/ledger retained.
@@ -13,10 +13,10 @@ New controls6/6, checkpoint4/4 and migration rollback2/2 independently PASS.
 Genuine tonic→both relays→daemon model2.96s: BUY1/SELL1, partial remainder,
 UNKNOWN/restart/receipt reconciliation, no second send. Live execution unproved.
 CI followup fixed single-family scope regression: new scope3/affected daemon4 PASS.
-App fd4 artifact SUCCESS; Storage restore timeout repair retains10min/full gate, hosted pending.
+App fd4 artifact installed; Storage b992 full gate752PASS/job7m4, architecturePASS.
 Production deps unchanged; two existing locked crates added only as test deps.
 Deleted obsolete isolated debug cache: freed41.8GB; financial history retained.
-Prepared stopped read-only probe for separate owner decision: ≤480s/4GiB/
+Installed stopped read-only probe; local preflightPASS, separate owner decision: ≤480s/4GiB/
 $0.40 model/3 upstream attempts, HTTP/CU/sign/submit0, permanent STOP.
 No new paid action; do not repeat Run15 or issue a new financial launch. Evidence: [transport preparation](audit/2026-09-28/run15-full-path/TRANSPORT_RECOVERY_PREPARATION_RU.md).
 

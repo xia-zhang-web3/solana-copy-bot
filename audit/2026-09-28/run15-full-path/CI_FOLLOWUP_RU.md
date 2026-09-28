@@ -57,7 +57,15 @@ namespace `cargo-storage-registry`; key/prefix не допускают стар�
 Независимый concrete workflow controls6/6PASS; runtime/dependencies не менялись.
 
 Appartifact fd4c86714525da04fe8415c2e4772203f10e1507 run36471088698 SUCCESS,
-release compile74с. Новый workflow-only commit не меняет runtime/migrations/lock: 
+release compile74с. Новый workflow-only commit не меняет runtime/migrations/lock:
 matching fd4 artifact переиспользуется, новая app сборка не нужна. Проверены
 archive/binary hashes, clean manifest/полный bin set/89 migrations; остановленная
 установка в отдельный read-only probe сохраняет e7 rollback. READY ещё не выдан.
+
+## Завершённый gate
+
+Storage run36473615434 b992d369d6e5c8c14eb126d19fde3df64a8fa7d0 SUCCESS:
+189 blocks,752PASS/0FAIL/8ignored; cold test compile83с, job7м4с. Новый sources
+cache был miss, restore меньше секунды. Full locked gate и10мин сохранены.
+Architecture36473615476 SUCCESS. App fd4 matching artifact уже установлен
+отдельно под STOP; поздний helper parser исправлен без app/runtime изменения.

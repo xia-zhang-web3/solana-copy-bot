@@ -52,8 +52,16 @@ orders/dispatch/receipt/fill/position/decision = 0. Supervisor сохранил
 - Architecture guards `--changed` и `--all`: PASS.
 
 Новый build target: **copybot-app/release**, нормальный matching GitHub Actions
-artifact. Установка и финальный stopped preflight ещё выполняются; этот файл
-не является READY seal или разрешением платного запуска.
+artifact fd4c86714525da04fe8415c2e4772203f10e1507 установлен в отдельный probe.
+AppCI1211PASS/0FAIL/50ignored; release compile74с. StorageCI b992:752PASS/
+0FAIL/8ignored, job7м4с при10мин; cold compile83с. Runtime/migrations/lock
+между fd4 и cache-only b992 идентичны. Локальный installed startup в сети none
+и stopped preflight PASS:89 migrations, финансовые rows0,13 lifecycle Session
+events и4 распознанных transport boundaries. Контролируемый Docker stop
+завершился137/OOMfalse; graceful shutdown этим proof не доказан. Ни provider,
+ни signer, ни старый Run15 DB не были доступны proof контейнеру. Три будущих
+probe containers created, ни разу не started. Независимый READY seal и отдельное
+разрешение владельца требуются перед платным read-only соединением.
 
 Production dependencies не изменились. Две dev-only зависимости tonic/futures
 уже присутствовали в locked ingestion graph: нужны настоящему loopback transport
@@ -83,3 +91,12 @@ provider replay требуют внешнего наблюдения; восьм
 
 Private evidence: `run15-stream-repair-01`, `run15-transport-offline` и
 `run15-transport-probe-01` под `.codex/private/native-handoff-local-experiment-01`.
+
+## Последний узкий helper repair
+
+Настоящий installed log имеет timestamp/ANSI/level prefix и flat JSON payload.
+Новый parser принимает этот формат, pure JSON и nested fields; arbitrary prefix
+и неверные shapes отвергаются с явным unparsed count. Controls3/3PASS независимо;
+фактический APP.log02 дал4 transport events с error_message/slots, unparsed0.
+App runtime и бинарник не менялись. Старые preparation failures сохранены;
+обычные readiness/классификационные ошибки helper исправлены без новых расходов.
