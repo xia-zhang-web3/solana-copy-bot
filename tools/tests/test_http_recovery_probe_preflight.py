@@ -21,7 +21,7 @@ class PreflightTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / 'package'
-        for name in ['control', 'config', 'state', 'evidence', 'install/migrations',
+        for name in ['control', 'config', 'state', 'evidence', 'install/migrations', 'install/state',
                      'install/bin/packages/copybot-app/current']:
             (self.root / name).mkdir(parents=True, exist_ok=True)
         for name in ['STOP', 'HTTP_STOP', 'STREAM_STOP']:
@@ -88,6 +88,7 @@ fetch_concurrency=4
                 mounts.append(dict(Type='bind', Source=str(self.key), Destination='/run/provider/alchemy-api-key', RW=False))
             self.metadata[cid] = dict(Id=cid, Name='/'+pf.RUN+'-'+role, Platform='linux', RestartCount=0,
                 Config=dict(Image=pf.APP_IMAGE if role=='observation-app' else pf.PY_IMAGE, User='501:20',
+                    Entrypoint=['/usr/bin/env'], Cmd=list(pf.APP_COMMAND),
                     Labels={pf.LABEL:pf.RUN,'copybot.role':role}),
                 State=dict(Status='created',Running=False,StartedAt='0001-01-01T00:00:00Z',OOMKilled=False),
                 HostConfig=dict(NetworkMode=network,PortBindings={},ReadonlyRootfs=True,
@@ -167,6 +168,22 @@ fetch_concurrency=4
             self.key.write_bytes(original)
         with mock.patch.object(pf.sys, 'platform', 'linux'):
             self.assertEqual(pf.host_mount_path('/host_mnt/Users/example'), Path('/host_mnt/Users/example'))
+
+    def test_actual_daemon_config_command_and_nested_state_mountpoint_are_required(self):
+        config = self.metadata[self.ids['observation-app']]['Config']
+        for command in [
+            ['COPYBOT_CONFIG_PATH=/run/probe-config/read-only.toml', '/opt/copybot/bin/copybot-app'],
+            ['/opt/copybot/bin/copybot-app'],
+            ['-i', '/opt/copybot/bin/copybot-app', '--config', '/foreign.toml'],
+        ]:
+            config['Cmd'] = command
+            with self.assertRaisesRegex(ValueError, 'probe_app_config_command'):
+                self.check()
+        config['Cmd'] = list(pf.APP_COMMAND)
+        nested = self.root / 'install/state'
+        nested.rmdir()
+        with self.assertRaisesRegex(ValueError, 'probe_nested_state_mountpoint'):
+            self.check()
 
 
 if __name__=='__main__':unittest.main()

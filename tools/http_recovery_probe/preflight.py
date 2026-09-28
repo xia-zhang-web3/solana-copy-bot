@@ -14,6 +14,8 @@ ROLES = {'observation-app', 'stream-front', 'stream-backend', 'http-front', 'htt
 LABEL = 'copybot.http-recovery-probe'
 PY_IMAGE = 'sha256:09ecaa87c6799c8d8ee0dfb779905d97e5f667ab97d866cc47ff9f949ffb7b3b'
 APP_IMAGE = 'docker.io/library/ubuntu@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254'
+APP_COMMAND = ['-i', 'SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt',
+               '/opt/copybot/bin/copybot-app', '--config', '/run/probe-config/read-only.toml']
 FLAGS = ['enabled', 'canary_tiny_submit_enabled', 'canary_enabled', 'canary_entry_submit_enabled',
          'quote_canary_enabled', 'swap_instructions_dry_run_enabled', 'swap_transaction_dry_run_enabled',
          'entry_quote_shadow_diagnostic_enabled', 'exit_policy_shadow_quote_enabled',
@@ -54,6 +56,8 @@ def unused(root):
         for name in ['ATTEMPT.json', 'PROBE_CLOCK.json', 'LEASE.json', 'RESULT.json', 'LIVE_RESULT.json']:
             require(not (directory / name).exists(), 'probe_consumed:' + name)
     require(not any((root / 'state').iterdir()), 'probe_state_already_used')
+    nested = root / 'install/state'
+    require(nested.is_dir() and not any(nested.iterdir()), 'probe_nested_state_mountpoint_missing_or_used')
     for path in root.rglob('*'):
         if not path.is_file():
             continue
@@ -150,6 +154,9 @@ def containers(root, inspect, policy):
         labels, state, host = value['Config']['Labels'], value['State'], value['HostConfig']
         require(value['Config']['Image'] == (APP_IMAGE if role == 'observation-app' else PY_IMAGE)
                 and value.get('Platform') == 'linux', 'probe_cached_image_identity')
+        if role == 'observation-app':
+            require(value['Config'].get('Entrypoint') == ['/usr/bin/env']
+                    and value['Config'].get('Cmd') == APP_COMMAND, 'probe_app_config_command')
         require(value['Id'] == cid and value['Name'] == '/' + RUN + '-' + role
                 and labels.get(LABEL) == RUN and labels.get('copybot.role') == role, 'probe_container_ownership')
         require(state['Status'] == 'created' and not state['Running'] and not state.get('OOMKilled', False)

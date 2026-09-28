@@ -21,6 +21,7 @@ def prepare(previous, source_run, package, baseline, repository):
     package.mkdir(mode=0o700)
     for name in ['config', 'control', 'state', 'install', 'evidence', 'ca', 'scripts']:
         (package / name).mkdir(mode=0o700)
+    (package / 'install/state').mkdir(mode=0o700)  # Nested state mount under readonly install.
     for name in ['STOP', 'STREAM_STOP', 'HTTP_STOP']:
         (package / 'control' / name).write_text('inactive preparation; owner permission pending\n')
     for name in ['hosts', 'resolv.conf', 'settings.json']:

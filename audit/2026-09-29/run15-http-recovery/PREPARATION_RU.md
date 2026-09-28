@@ -23,7 +23,7 @@
 | Stale BUY → reopen → последующий live BUY | PASS; старый BUY не расходует слот |
 | Broker reserve, STOP, allowlist, RPC error/raw attribution | PASS; независимые бюджетные controls PASS |
 | Broker 8 MiB × 4 concurrent, каждый role 256 MiB | PASS; backend peak179474432, front115707904 bytes; OOM0 |
-| Остановленный package preflight helper | 5/5 hermetic controls PASS; установленная проверка отдельно ниже |
+| Остановленный package preflight helper | 7/7 controls PASS; actual CLI, Docker Desktop paths и nested state mount; установленная проверка отдельно ниже |
 
 Сохранённые HTTP requests просили `rewards=false`: original null rewards правильно отвергаются как неполный ответ `rewards=true`. Только в offline копии моделируются empty rewards/partitions; исторические rewards этим не доказаны. Транзакции corpus сохранены; новые rent/fee факты из модели не объявляются live фактами.
 
