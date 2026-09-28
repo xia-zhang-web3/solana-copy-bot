@@ -174,6 +174,8 @@ pub(super) async fn run_app_loop(
         &sqlite_path,
     )
     .await?;
+    let execution_canary_runner = execution_canary_runner.with_ingress_hold(
+        association_consumer.as_ref().and_then(|c| c.http_continuity_hold()));
     let association_mode = association_consumer.is_some();
     let shadow_wake = association_consumer.as_ref().map(|c| c.shadow_wake.clone());
     #[cfg(test)]

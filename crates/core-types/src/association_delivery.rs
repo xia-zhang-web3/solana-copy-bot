@@ -25,10 +25,17 @@ pub struct CheckedFacts {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageTime {
-    CreatedAt { seconds: i64, nanos: u32 },
+    CreatedAt {
+        seconds: i64,
+        nanos: u32,
+    },
     Missing,
     InvalidNanos(i32),
     OutOfRangeSeconds(i64),
+    /// Confirmed HTTP block evidence, never a fresh stream message clock.
+    RecoveredBlock {
+        block_time: Option<i64>,
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BlockTime {

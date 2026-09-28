@@ -4,6 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod association_delivery;
+mod http_recovery;
+pub use http_recovery::HttpRecoveryConfig;
 pub use association_delivery::{
     validate_association_delivery, validate_delivery_source, AssociationDeliveryConfig,
     DeliveryBudget,

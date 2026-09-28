@@ -110,3 +110,7 @@ mod durable_transport_fixture;
 mod durable_transport_relay_tests;
 #[path = "../source_tests/durable_replay_checkpoint_tests.rs"]
 mod durable_replay_checkpoint_tests;
+#[path = "../source_tests/reader_capture_scope_tests.rs"]
+mod reader_capture_scope_tests;
+#[path = "../source_tests/http_transport_recovery_tests.rs"]
+mod http_transport_recovery_tests;

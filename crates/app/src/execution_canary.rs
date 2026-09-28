@@ -82,6 +82,7 @@ mod dry_run;
 pub(crate) struct ExecutionCanaryRunner {
     config: ExecutionConfig,
     strict_quotes: bool,
+    pub(super) ingress_hold: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     owned_sell_recovery: Option<crate::execution_owned_sell_prepare::submit::recovery::Recovery>,
     source_sell_continuation: crate::execution_source_sell_continuation::Continuation,
     quote_canary: ExecutionQuoteCanaryRunner,
@@ -98,6 +99,7 @@ impl ExecutionCanaryRunner {
         Self {
             source_sell_continuation: Default::default(),
             strict_quotes: false,
+            ingress_hold: None,
             owned_sell_recovery: None,
             quote_canary: ExecutionQuoteCanaryRunner::new(config.clone()).requiring_owner(),
             #[cfg(test)]
@@ -136,6 +138,10 @@ impl ExecutionCanaryRunner {
             .as_ref()
             .map(|_| crate::execution_owned_sell_prepare::submit::recovery::Recovery::new(path));
         self.quote_canary = self.quote_canary.with_strict_quotes(strict);
+        if ingestion.yellowstone_http_recovery.is_some() {
+            self = self.with_ingress_hold(Some(std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(true))));
+        }
         Ok(self)
     }
 
@@ -190,6 +196,12 @@ impl ExecutionCanaryRunner {
             wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
             ..ExecutionCanaryTickSummary::default()
         };
+        if self.ingress_pending() {
+            self.reconcile_owned_sell(&mut summary)?;
+            self.reconcile_native_buy_tick(store, now, &mut summary).await?;
+            summary.skipped_reason = Some("ingress_http_recovery_pending");
+            return Ok(summary);
+        }
         if self.config.owner_exit.is_some() {
             #[cfg(test)]
             if let Some(adapter) = self.owner_exit_adapter.as_ref() {
@@ -203,16 +215,7 @@ impl ExecutionCanaryRunner {
             return Ok(summary);
         }
         if self.strict_quotes {
-            if let Some(done) = self
-                .owned_sell_recovery
-                .as_ref()
-                .context("strict owned recovery missing")?
-                .tick(&self.config)?
-            {
-                summary.orphan_recovery_checked = done.checked;
-                summary.orphan_recovery_reconciled = done.reconciled;
-                summary.last_error = done.pending_reason;
-            }
+            self.reconcile_owned_sell(&mut summary)?;
             if Path::new(&self.config.canary_kill_switch_path).exists() {
                 summary.skipped_reason = Some("kill_switch_active");
             }
@@ -576,3 +579,6 @@ fn copy_signal_from_shadow_signal(
 mod hot_jobs;
 #[path = "execution_canary_hot_resume.rs"]
 mod hot_resume;
+
+#[path = "execution_ingress_hold.rs"]
+mod ingress_hold;

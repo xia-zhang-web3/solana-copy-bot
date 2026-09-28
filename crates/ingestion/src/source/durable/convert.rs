@@ -1,3 +1,4 @@
+pub(in crate::source) use super::super::http_recovery::identity::info_equivalent;
 use super::super::yellowstone_association as a;
 use super::super::yellowstone_message_time::{
     CreatedAtUnavailable as M, YellowstoneMessageTime as T,
@@ -84,6 +85,7 @@ pub(super) fn late(v: &a::LateEvidence) -> Late {
 
 pub(super) fn message_time(time: T) -> MessageTime {
     match time {
+        T::RecoveredBlock { block_time } => MessageTime::RecoveredBlock { block_time },
         T::AvailableCreatedAt(t) => MessageTime::CreatedAt {
             seconds: t.timestamp(),
             nanos: t.timestamp_subsec_nanos(),

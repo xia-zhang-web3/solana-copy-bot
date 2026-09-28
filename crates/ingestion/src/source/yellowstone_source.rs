@@ -99,6 +99,7 @@ impl YellowstoneGrpcSource {
         let runtime_config = YellowstoneRuntimeConfig {
             capture,
             grpc_url: grpc_url.to_string(),
+            http_recovery: config.yellowstone_http_recovery.clone(),
             x_token: x_token.to_string(),
             connect_timeout_ms: config.yellowstone_connect_timeout_ms.max(500),
             subscribe_timeout_ms: config.yellowstone_subscribe_timeout_ms.max(1_000),

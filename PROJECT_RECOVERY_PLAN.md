@@ -1,24 +1,24 @@
 # Project Recovery Plan
 
-## Current decision: Run15 stopped; repair installed, read-only owner decision next
-Run15 stopped after 23 reconnects: STOP, five containers exited, NO_SIGNAL;
-orders/receipts/fills/positions/dispatch/decisions0. Supervisor normal_stop;
-launcher LIVE_RESULT absent. Original DB/authority/clocks/ledger retained.
-Cumulative HTTP996/19020CU/$0.0099855 model; stream83,722,698,801 bytes.
-Historical live Internal cause UNKNOWN; no new financial run is authorized.
-Bounded redacted diagnostics and relay EOF drain are independently accepted.
-SQLite0089 scoped cursor/replay checks exact parent/hash/full Info before fresh
-Admission, preserves first facts/UNKNOWN, and restores commit before ACK/restart.
-New controls6/6, checkpoint4/4 and migration rollback2/2 independently PASS.
-Genuine tonic→both relays→daemon model2.96s: BUY1/SELL1, partial remainder,
-UNKNOWN/restart/receipt reconciliation, no second send. Live execution unproved.
-CI followup fixed single-family scope regression: new scope3/affected daemon4 PASS.
-App fd4 artifact installed; Storage b992 full gate752PASS/job7m4, architecturePASS.
-Production deps unchanged; two existing locked crates added only as test deps.
-Deleted obsolete isolated debug cache: freed41.8GB; financial history retained.
-Installed stopped read-only probe; local preflightPASS, separate owner decision: ≤480s/4GiB/
-$0.40 model/3 upstream attempts, HTTP/CU/sign/submit0, permanent STOP.
-No new paid action; do not repeat Run15 or issue a new financial launch. Evidence: [transport preparation](audit/2026-09-28/run15-full-path/TRANSPORT_RECOVERY_PREPARATION_RU.md).
+## Current decision: HTTP recovery prepared; stopped installation and owner read-only decision
+
+Run15/probe01 remain consumed and stopped; their DB/authority/clocks/ledger are retained.
+The full-block replay refusal is addressed by bounded confirmed HTTP catchup with
+continued live intake, full chain/Info comparison and durable ACK before new sends.
+Recovered BUY cannot become a fresh candidate. Source SELL/UNKNOWN/restart money
+model, bad-anchor no-send, mid-catchup restart and live-refusal/Drop holds are checked.
+Measured foreign individual decode work is removed; full-block traffic remains.
+The genuine paired workload covers60 full blocks/82590 full-body TX plus12330
+individual updates per20-second period, not four hours of wall time.
+External DataLoss cause and live/TLS/container throughput remain UNKNOWN.
+Build target is copybot-app/release through matching GitHub Actions; stopped package
+installation/preflight and rollback are tracked in [HTTP preparation](audit/2026-09-29/run15-http-recovery/PREPARATION_RU.md).
+New package run15-http-recovery-probe-02 remains under STOP/HTTP_STOP/STREAM_STOP;
+five planned containers never start during preparation, no signer or financial authority.
+Cumulative model$7.928686412, HTTP996/19020CU and stream85026403600 bytes are retained.
+Next owner decision: one read-only480s/4GiB/max3-upstream probe, HTTP≤1024attempts/
+40960CU, additional model≤$0.421504 within$50. No paid or financial run is authorized
+by this preparation. Automatic copying/profitability remain unproved.
 
 ## Run14 incident baseline: no repeat or identical paid run
 

@@ -10,6 +10,7 @@ use copybot_storage_core::{rpc_owned_sell_handoff::dispatch::Prepared, SqliteSto
 pub(crate) struct Live(
     pub(crate) std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(crate) std::sync::Arc<std::sync::atomic::AtomicI64>,
+    pub(crate) Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 );
 impl PartialEq for Live {
     fn eq(&self, other: &Self) -> bool {
@@ -24,6 +25,11 @@ pub(crate) fn live(r: &ExecutionSubmitRequest) -> Result<()> {
             .is_some_and(|c| c.0.load(std::sync::atomic::Ordering::SeqCst)),
         "owned_sell_runner_cancelled"
     );
+    continuity(r.metadata.rpc_owned_live.as_ref().context("owned_sell_runner_cancelled")?)
+}
+pub(crate) fn continuity(live: &Live) -> Result<()> {
+    ensure!(!live.2.as_ref().is_some_and(|h| h.load(std::sync::atomic::Ordering::SeqCst)),
+        "ingress_http_recovery_pending");
     Ok(())
 }
 pub(crate) fn request(store: &SqliteStore, r: &ExecutionSubmitRequest) -> Result<Prepared> {

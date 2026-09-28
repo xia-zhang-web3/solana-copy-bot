@@ -16,6 +16,7 @@ impl Drop for YellowstonePipeline {
 pub(crate) struct YellowstoneRuntimeConfig {
     pub(in crate::source) capture: Option<Arc<super::scoped_capture::ScopedCapture>>,
     pub(in crate::source) grpc_url: String,
+    pub(in crate::source) http_recovery: Option<copybot_config::HttpRecoveryConfig>,
     pub(in crate::source) x_token: String,
     pub(in crate::source) connect_timeout_ms: u64,
     pub(in crate::source) subscribe_timeout_ms: u64,

@@ -16,19 +16,31 @@ use std::{
 };
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::prelude::*;
-fn request(c: &YellowstoneRuntimeConfig, recovery: bool, from_slot: Option<u64>) -> SubscribeRequest {
+#[path = "http_transport.rs"]
+mod http_transport;
+#[cfg(test)]
+pub(in crate::source) use http_transport::TestReader;
+fn request(
+    c: &YellowstoneRuntimeConfig,
+    recovery: bool,
+    from_slot: Option<u64>,
+) -> SubscribeRequest {
     let mut req = super::super::yellowstone_request::build_yellowstone_subscribe_request(c);
     req.blocks.insert(
         "copybot-containing-blocks".into(),
         SubscribeRequestFilterBlocks {
-            account_include: if recovery { Vec::new() } else { c.interested_program_ids.iter().cloned().collect() },
+            account_include: if recovery {
+                Vec::new()
+            } else {
+                c.interested_program_ids.iter().cloned().collect()
+            },
             include_transactions: Some(true),
             include_accounts: Some(false),
             include_entries: Some(false),
             ..Default::default()
         },
     );
-    req.from_slot=from_slot;
+    req.from_slot = from_slot;
     req
 }
 pub(super) async fn run(
@@ -42,13 +54,22 @@ pub(super) async fn run(
 ) -> Result<()> {
     let start = Instant::now();
     let mut bridge = Bridge::new(&c, &limits, session, tx, bot_signer, Arc::clone(&telemetry))?;
-    if let Some(cursor)=recovery { bridge.enable_recovery(cursor,&limits)?; }
+    if let Some(cursor) = recovery {
+        bridge.enable_recovery(cursor, &limits)?;
+    }
     bridge
         .emit(
             0,
             DeliveryEvent::Session(SessionGap::StartedContinuityUnknown),
         )
         .await?;
+    if let Some(http) = c.http_recovery.as_ref() {
+        anyhow::ensure!(
+            bridge.recovery_enabled(),
+            "http_recovery_requires_durable_cursor"
+        );
+        return http_transport::run(&c, &limits, http, bridge, start, telemetry).await;
+    }
     let ns = || u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let mut backoff = c.reconnect_initial_ms;
     loop {
@@ -88,8 +109,11 @@ pub(super) async fn run(
                 continue;
             }
         };
-        let from_slot=bridge.begin_replay()?;
-        let (mut sink, mut stream) = match client.subscribe_with_request(Some(request(&c,bridge.recovery_enabled(),from_slot))).await {
+        let from_slot = bridge.begin_replay()?;
+        let (mut sink, mut stream) = match client
+            .subscribe_with_request(Some(request(&c, bridge.recovery_enabled(), from_slot)))
+            .await
+        {
             Ok(v) => v,
             Err(error) => {
                 diagnostics::report(
@@ -98,9 +122,18 @@ pub(super) async fn run(
                     connection_started,
                     ErrorDetails::subscribe(&error, &secrets),
                 );
-                if from_slot.is_some() && matches!(&error, yellowstone_grpc_client::GeyserGrpcClientError::TonicStatus(status)
-                    if super::recovery::definitive_history_code(status.code())) {
-                    bridge.emit(ns(),DeliveryEvent::Session(SessionGap::Rejected("ReplayRequestUnavailable".into()))).await?;
+                if from_slot.is_some()
+                    && matches!(&error, yellowstone_grpc_client::GeyserGrpcClientError::TonicStatus(status)
+                    if super::recovery::definitive_history_code(status.code()))
+                {
+                    bridge
+                        .emit(
+                            ns(),
+                            DeliveryEvent::Session(SessionGap::Rejected(
+                                "ReplayRequestUnavailable".into(),
+                            )),
+                        )
+                        .await?;
                     anyhow::bail!("durable_replay_request_unavailable");
                 }
                 bridge
@@ -137,7 +170,13 @@ pub(super) async fn run(
                             anyhow::bail!("delivery transport envelope exceeds budget");
                         }
                         match update.update_oneof.as_ref() {
-                            Some(subscribe_update::UpdateOneof::Transaction(_)|subscribe_update::UpdateOneof::Block(_))=>if let Err(error)=bridge.update(at,&update).await {
+                            Some(subscribe_update::UpdateOneof::Transaction(_)|subscribe_update::UpdateOneof::Block(_))=>if let Err(error)={
+                                let stage=Instant::now();
+                                let result=bridge.update(at,&update).await;
+                                telemetry.processing.update_kind(matches!(update.update_oneof,
+                                    Some(subscribe_update::UpdateOneof::Block(_))), stage.elapsed());
+                                result
+                            } {
                                 let reason=error.root_cause().to_string();
                                 let bounded=if reason.starts_with("replay_") && reason.len()<=128
                                     && reason.bytes().all(|b| b.is_ascii_alphanumeric() || b==b'_') {

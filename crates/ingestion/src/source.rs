@@ -29,6 +29,7 @@ mod queue;
 mod rate_limit;
 mod reorder;
 mod rpc_backfill;
+pub(crate) mod http_recovery;
 mod target_balance_rows;
 mod telemetry;
 mod yellowstone;

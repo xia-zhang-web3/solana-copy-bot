@@ -1,7 +1,6 @@
 //! Association asserted by one supplied provider message, never canonicality,
 //! finality or cryptographic inclusion. No subscriptions or runtime consumers.
 use chrono::{DateTime, Utc};
-use prost::Message;
 use std::collections::HashSet;
 use yellowstone_grpc_proto::prelude::{
     SubscribeUpdateBlock, SubscribeUpdateTransaction, SubscribeUpdateTransactionInfo,
@@ -73,7 +72,7 @@ pub(super) enum AssociationRefusal {
 ///
 /// Limits apply after transport/deserialization allocations. Only signatures of
 /// other transactions are scanned; block accounts/rewards/entries are untouched.
-/// The bounded re-encodings plus explicit float-bit comparison cover every field;
+/// Decoded semantic equality plus explicit float-bit comparison cover every Info field;
 /// they do not recover unknown fields discarded during protobuf decoding.
 pub(super) fn associate_yellowstone_transaction(
     expected: &SubscribeUpdateTransaction,
@@ -117,8 +116,7 @@ pub(super) fn associate_yellowstone_transaction(
     }
     let selected = selected.ok_or(Refusal::NotFoundInMessage)?;
     bounds::check_info(selected, InfoSide::Selected)?;
-    // Re-encoding uses at most 2 * MAX_INFO_BYTES; no block clone or reconstruction.
-    if info.encode_to_vec() != selected.encode_to_vec() || !same_float_bits(info, selected) {
+    if !super::http_recovery::identity::info_equal(info, selected) {
         return Err(Refusal::InfoMismatch);
     }
     let decoded = decode_yellowstone_swap_facts(

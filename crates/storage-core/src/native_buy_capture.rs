@@ -64,6 +64,11 @@ impl AssociationInbox {
 pub(crate) fn at_admission(c: &Connection, d: &Delivery, observed: DateTime<Utc>) -> Result<()> {
     if !available(c)? { return Ok(()); }
     let DeliveryEvent::Admission(a) = &d.event else { return Ok(()); };
+    // HTTP catch-up proves inventory/continuity, never a new fresh BUY.
+    // Keep the original block clock in provenance; do not spend the one-shot slot.
+    if matches!(a.message_time, copybot_core_types::association_delivery::MessageTime::RecoveredBlock { .. }) {
+        return Ok(());
+    }
     let f = &a.facts;
     if f.token_in != SOL || f.token_out == SOL || f.program_fallback
         || f.signature.is_empty() || f.wallet.is_empty() || f.token_out.is_empty()

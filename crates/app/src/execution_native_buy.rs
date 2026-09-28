@@ -12,7 +12,7 @@ use copybot_storage_core::{native_buy::SPL_TOKEN_PROGRAM, SqliteStore};
 use std::path::Path;
 
 impl ExecutionCanaryRunner {
-    pub(super) async fn process_native_buy_tick(
+    pub(super) async fn reconcile_native_buy_tick(
         &self,
         store: &SqliteStore,
         now: DateTime<Utc>,
@@ -36,6 +36,12 @@ impl ExecutionCanaryRunner {
             &self.config, store, now,
         ).await?;
         apply_state_machine_summary(summary, recovered);
+        Ok(())
+    }
+    pub(super) async fn process_native_buy_tick(
+        &self, store: &SqliteStore, now: DateTime<Utc>, summary: &mut ExecutionCanaryTickSummary,
+    ) -> Result<()> {
+        self.reconcile_native_buy_tick(store, now, summary).await?;
         if !execution_native_buy_rpc::enabled(&self.config) {
             return Ok(());
         }
@@ -83,6 +89,7 @@ impl ExecutionCanaryRunner {
                 budget: Default::default(),
             });
             let mut check = || {
+                anyhow::ensure!(!self.ingress_pending(), "ingress_http_recovery_pending");
                 crate::execution_technical_cohort::before_deadline(&self.config)?;
                 anyhow::ensure!(
                     !Path::new(&self.config.canary_kill_switch_path).exists(),
@@ -130,7 +137,7 @@ impl ExecutionCanaryRunner {
                 &candidate.signal_id,
                 &candidate.decision_id,
                 now,
-            )?;
+            )?.with_ingress_hold(self.ingress_hold.clone());
             #[cfg(test)]
             let guard = if let Some(mock) = &self.native_buy_mock {
                 guard.with_mock_io(mock.clone())

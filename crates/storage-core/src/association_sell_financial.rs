@@ -139,7 +139,8 @@ pub(super) fn first(
     use copybot_core_types::association_delivery::MessageTime;
     let clock = match (&sell.admission.message_time, observed) {
         (_, None) => MessageClockCheck::HistoricalUnknown,
-        (MessageTime::Missing, _) => MessageClockCheck::Missing,
+        // HTTP blockTime is preserved provenance, not a fabricated created_at.
+        (MessageTime::Missing | MessageTime::RecoveredBlock { .. }, _) => MessageClockCheck::Missing,
         (MessageTime::CreatedAt { seconds, nanos }, Some(at)) => {
             if *nanos >= 1_000_000_000
                 || chrono::DateTime::from_timestamp(*seconds, *nanos).is_none()

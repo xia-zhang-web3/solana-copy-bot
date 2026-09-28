@@ -48,6 +48,9 @@ pub(crate) struct AssociationConsumer {
     replay_scope: Option<copybot_core_types::association_recovery::ReplayScope>,
 }
 impl AssociationConsumer {
+    pub(crate) fn http_continuity_hold(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        self.receiver.http_continuity_hold()
+    }
     pub(crate) fn diagnostic_snapshots(
         &self,
     ) -> (
@@ -311,6 +314,9 @@ impl AssociationConsumer {
         if let Some(head)=checkpoint {self.receiver.acknowledge_checkpoint(head)?;}
         if let Some(parent)=envelope.as_ref().and_then(|e|e.delivery.event.parent_observation()) {
             self.receiver.acknowledge_parent(parent.child.slot);
+        }
+        if let Some(envelope) = envelope.as_ref() {
+            self.receiver.acknowledge_delivery(envelope.elapsed());
         }
         self.recovery_pending = work;
         self.inbox = Some(inbox);

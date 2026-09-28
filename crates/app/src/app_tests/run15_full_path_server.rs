@@ -68,7 +68,12 @@ impl Server {
                 } else {
                     serde_json::from_slice(&raw[offset..offset + len])?
                 };
-                record.lock().unwrap().push(request.clone());
+                let request_index = {
+                    let mut calls = record.lock().unwrap();
+                    let index = calls.len();
+                    calls.push(request.clone());
+                    index
+                };
                 if matches!(
                     request["method"].as_str(),
                     Some("simulateTransaction" | "sendTransaction")
@@ -85,7 +90,7 @@ impl Server {
                     })
                     .await??;
                     let mut calls = record.lock().unwrap();
-                    let last = calls.last_mut().unwrap();
+                    let last = &mut calls[request_index];
                     last["model_parent_before"] = json!(before);
                     last["model_parent_after"] = json!(after);
                 }
@@ -98,6 +103,7 @@ impl Server {
                 )?;
                 let body = result.to_string();
                 s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await?;
+                record.lock().unwrap()[request_index]["model_response_completed"] = json!(true);
             }
         });
         Ok(Self {

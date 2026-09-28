@@ -22,6 +22,7 @@ pub(crate) struct NativeBuyGuard {
     policy_identity: String,
     max_age_seconds: u64,
     tick_at: DateTime<Utc>,
+    ingress_hold: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     #[cfg(test)]
     pub(crate) mock_io: Option<std::sync::Arc<NativeBuyMockIo>>,
 }
@@ -44,9 +45,15 @@ impl NativeBuyGuard {
             policy_identity: crate::execution_native_buy_rpc::policy_identity(config)?,
             max_age_seconds: config.canary_max_signal_age_seconds,
             tick_at,
+            ingress_hold: None,
             #[cfg(test)]
             mock_io: None,
         })
+    }
+
+    pub(crate) fn with_ingress_hold(mut self, hold: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) -> Self {
+        self.ingress_hold = hold;
+        self
     }
 
     pub(crate) fn check(&self, store: &SqliteStore) -> Result<bool> {
@@ -58,6 +65,9 @@ impl NativeBuyGuard {
     }
 
     pub(crate) fn check_at(&self, store: &SqliteStore, now: DateTime<Utc>) -> Result<bool> {
+        if self.ingress_hold.as_ref().is_some_and(|h| h.load(std::sync::atomic::Ordering::SeqCst)) {
+            return Ok(false);
+        }
         if store.native_buy_policy_identity(&self.signal_id)?.as_deref()
             != Some(self.policy_identity.as_str())
         {

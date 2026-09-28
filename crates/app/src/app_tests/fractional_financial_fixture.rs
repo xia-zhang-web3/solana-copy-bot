@@ -161,6 +161,7 @@ pub(super) fn prepare_with_stage_hook(
         Some(crate::execution_owned_sell_prepare::submit::guard::Live(
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             std::sync::Arc::new(std::sync::atomic::AtomicI64::new(-1)),
+            None,
         ));
     assert!(native.metadata.owned_sell_amount.is_none());
     assert_eq!(

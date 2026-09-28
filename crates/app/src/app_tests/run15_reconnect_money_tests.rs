@@ -16,11 +16,21 @@ use std::{path::PathBuf, sync::atomic::Ordering, time::Duration};
 #[ignore = "explicit saved corpus/config and offline model boundaries"]
 async fn tonic_two_relays_break_after_buy_replays_sell_unknown_restart_no_send_two() -> Result<()> {
     for unknown in [true] {
-        scenario(unknown).await?;
+        scenario(unknown, false, false).await?;
     }
     Ok(())
 }
-async fn scenario(unknown: bool) -> Result<()> {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "explicit saved corpus and genuine local HTTP recovery"]
+async fn tonic_two_relays_http_catchup_sell_unknown_restart_no_send_two() -> Result<()> {
+    scenario(true, true, false).await
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "real HTTP anchor conflict after recovered source SELL"]
+async fn tonic_two_relays_http_bad_anchor_never_sends_recovered_sell() -> Result<()> {
+    scenario(true, true, true).await
+}
+async fn scenario(unknown: bool, http_mode: bool, bad_anchor: bool) -> Result<()> {
     let corpus = PathBuf::from(std::env::var("COPYBOT_RUN15_CORPUS_DIR")?);
     let input = PathBuf::from(std::env::var("COPYBOT_RUN15_FRAMES_DIR")?);
     let config_path = PathBuf::from(std::env::var("COPYBOT_RUN15_RUNTIME_CONFIG")?);
@@ -36,7 +46,44 @@ async fn scenario(unknown: bool) -> Result<()> {
     let rpc_buy = f::parsed(&model, &payload)?;
     let server = Server::new(e, rpc_buy, unknown, root.join("model.db")).await?;
     let mut app = f::config(&config_path, &root, &server.url, &model)?;
-    let fixture = Fixture::build(&input, &model)?;
+    let mut fixture = Fixture::build(&input, &model)?;
+    fixture.http_mode = http_mode;
+    if http_mode {
+        // The old model encoder omitted returnData absence. Serve a complete
+        // modeled gRPC Info matching the independent complete HTTP projection.
+        let Some(yellowstone_grpc_proto::prelude::subscribe_update::UpdateOneof::Block(b)) =
+            fixture.follower.update_oneof.as_mut()
+        else {
+            unreachable!()
+        };
+        *b = copybot_ingestion::normalize_confirmed_http_block(
+            b.slot,
+            &super::run15_http_rpc_fixture::block(b)?,
+        )?;
+    }
+    let recovery_http = if http_mode {
+        Some(
+            super::run15_http_rpc_fixture::Http::start(
+                fixture.clone(),
+                &corpus,
+                root.join("raw-http"),
+                bad_anchor,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if let Some(http) = &recovery_http {
+        app.ingestion.yellowstone_http_recovery = Some(copybot_config::HttpRecoveryConfig {
+            broker_url: http.url.clone(),
+            broker_token: String::new(),
+            range_slots: 1024,
+            fetch_concurrency: app.ingestion.fetch_concurrency,
+            max_response_bytes: 8_388_608,
+            timeout_ms: 5000,
+        });
+    }
     let control = fixture.control.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
@@ -70,6 +117,7 @@ async fn scenario(unknown: bool) -> Result<()> {
     )
     .await?
     .context("actual cohort consumer")?;
+    let runner = runner.with_ingress_hold(consumer.http_continuity_hold());
     let mut fence =
         crate::execution_owned_sell_rpc::fractional::transport::Parsed(|r: Value| async move {
             let result = match r["method"].as_str() {
@@ -136,7 +184,8 @@ async fn scenario(unknown: bool) -> Result<()> {
                 )
                 .optional()?;
             if let Some(id) = id {
-                if server.sends() == 1
+                let send_completed = server.calls.lock().unwrap().iter().any(|r| r["method"] == "sendTransaction" && r["model_response_completed"] == true);
+                if server.sends() == 1 && send_completed
                     && (unknown || store.load_execution_canary_cash_settlement(&id)?.is_some())
                 {
                     break Ok::<_, anyhow::Error>(id);
@@ -156,11 +205,32 @@ async fn scenario(unknown: bool) -> Result<()> {
         control.done.store(true, Ordering::SeqCst);
         Ok::<_, anyhow::Error>(id)
     };
-    let ((wire, _interval), id) = tokio::time::timeout(Duration::from_secs(120), async {
+    let outcome = tokio::time::timeout(Duration::from_secs(120), async {
         tokio::try_join!(consume, settle)
     })
     .await
-    .context("full daemon model timeout")??;
+    .context("full daemon model timeout")?;
+    if bad_anchor {
+        let error = outcome.expect_err("conflicting HTTP anchor accepted");
+        assert!(format!("{error:#}").contains("confirmed_http_recovery_refused"), "{error:#}");
+        assert_eq!(io.counts.lock().unwrap().send, 1, "confirmed BUY missing");
+        assert_eq!(server.sends(), 0, "SELL sent before full-chain validation");
+        let recovered_sells: i64 = sql.query_row("SELECT count(*) FROM association_inbox_identities WHERE json_extract(admission,'$.facts.slot')=451313058", [], |r|r.get(0))?;
+        assert_eq!(recovered_sells, 1, "negative control never reached recovered SELL");
+        let order_count: i64 = sql.query_row("SELECT count(*) FROM orders o JOIN copy_signals s ON s.signal_id=o.signal_id WHERE s.side='sell'", [], |r|r.get(0))?;
+        assert_eq!(order_count, 0);
+        std::fs::write(evidence_root.join("http-bad-anchor-money.json"), serde_json::to_vec_pretty(&json!({"result":"OFFLINE_NEGATIVE_PASS","error":format!("{error:#}"),"recovered_source_sell":recovered_sells,"buy_send":1,"sell_send":0}))?)?;
+        control.done.store(true, Ordering::SeqCst);
+        drop(consumer); tonic.abort(); relays.finish().await?;
+        return Ok(());
+    }
+    let ((wire, _interval), id) = outcome?;
+    if http_mode {
+        let progress = &wire.processing.http_recovery;
+        assert!(progress.caught_up_to_anchor, "{progress:?}");
+        assert!(progress.durable_completed_slot >= progress.live_anchor_slot, "{progress:?}");
+        assert!(progress.max_backlog_slots > progress.current_backlog_slots, "{progress:?}");
+    }
     let tail = control.tail.lock().unwrap().len();
     assert!(tail > 0, "no stream commits overlapped SELL");
     assert_eq!(
@@ -213,7 +283,14 @@ async fn scenario(unknown: bool) -> Result<()> {
         )?,
         1
     );
-    assert!(control.requests.lock().unwrap()[1].is_some());
+    assert_eq!(control.requests.lock().unwrap()[1].is_none(), http_mode);
+    if let Some(http) = &recovery_http {
+        let calls = http.calls.lock().unwrap();
+        assert!(calls.iter().any(|c| c["method"] == "getBlocks"));
+        assert!(calls
+            .iter()
+            .any(|c| c["method"] == "getBlock" && c["params"][0] == frames::SELL_SLOT));
+    }
     drop(consumer);
     drop(runner);
     drop(store);
@@ -232,6 +309,7 @@ async fn scenario(unknown: bool) -> Result<()> {
     )
     .await?
     .context("restart consumer")?;
+    let recovered = recovered.with_ingress_hold(restarted_consumer.http_continuity_hold());
     tokio::time::timeout(Duration::from_secs(5), async {
         while control.requests.lock().unwrap().len() <= requests_before {
             restarted_consumer
@@ -247,7 +325,10 @@ async fn scenario(unknown: bool) -> Result<()> {
     })
     .await
     .context("durable cursor restoration on restart")??;
-    assert!(control.requests.lock().unwrap().last().unwrap().is_some());
+    assert_eq!(
+        control.requests.lock().unwrap().last().unwrap().is_none(),
+        http_mode
+    );
     control.done.store(true, Ordering::SeqCst);
     drop(restarted_consumer);
     if unknown {
@@ -319,13 +400,16 @@ async fn scenario(unknown: bool) -> Result<()> {
     }
     let output = PathBuf::from(std::env::var("COPYBOT_RUN15_EVIDENCE_DIR")?);
     std::fs::write(
-        output.join(format!("tonic-recovery-unknown-{unknown}.json")),
+        output.join(format!(
+            "tonic-recovery-http-{http_mode}-unknown-{unknown}.json"
+        )),
         serde_json::to_vec_pretty(&json!({
         "result":"OFFLINE_MODEL_PASS","source":"actual response727 BUY / response725 SELL; unchanged slots/signatures/raw",
         "follower_receipt":format!("explicit synthetic Jupiter Raydium BUY 10m lamports→{} raw",f::OWNED),
         "parent_pages":"modeled complete parent program pages; not historical HTTP facts",
-        "continuity":"sparse modeled skipped-slot headers; actual mixed SELL block retained; true tonic break/replay",
+        "continuity":"sparse modeled skipped-slot headers; original mixed SELL transactions retained, block rewards/partitions modeled empty because saved request rewards=false; true tonic break/HTTP recovery",
         "subscription_from_slots":*control.requests.lock().unwrap(),
+        "http_recovery":http_mode,"http_progress":format!("{:?}",wire.processing.http_recovery),"http_calls":recovery_http.as_ref().map(|h|h.calls.lock().unwrap().clone()),
         "sell_boundary":"model non-DEX bundle, simulation and receipt; no execution claim",
         "source_n":n,"source_d":d,"follower_h":h,"sold_raw":raw,"remaining_raw":f::OWNED-f::SOLD,
         "unknown_before_restart":unknown,"buy_send":1,"sell_send_after_restart":server.sends(),

@@ -12,10 +12,11 @@ use std::collections::HashSet;
 
 pub use source::durable::{
     replay_scope,
-    DeliveryEnvelope, DeliveryReceiver, DurableIngressSnapshot, ReplayInput, TransportClass,
+    DeliveryEnvelope, DeliveryReceiver, DurableIngressSnapshot, HttpRecoverySnapshot, IngressProcessingSnapshot, TimingSnapshot, ReplayInput, TransportClass,
     TransportStage,
 };
 pub use source::IngestionRuntimeSnapshot;
+pub use source::http_recovery::normalize_confirmed_http_block;
 
 #[derive(Debug, Clone, Default)]
 pub struct IngestionBackfillReport {

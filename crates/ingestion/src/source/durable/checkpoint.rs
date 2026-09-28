@@ -17,6 +17,7 @@ pub(super) struct BlockRecovery {
     byte_bound: usize,
     block_bound: usize,
     known: std::collections::HashMap<String, AdmissionFacts>,
+    last_checkpoint: Option<u64>,
 }
 impl Bridge<'_> {
     pub(in crate::source::durable) fn enable_recovery(
@@ -44,6 +45,7 @@ impl Bridge<'_> {
             byte_bound: limits.pending.bytes,
             block_bound: limits.blocks.count,
             known,
+            last_checkpoint: None,
         });
         Ok(())
     }
@@ -69,8 +71,54 @@ impl Bridge<'_> {
     pub(in crate::source::durable) fn recovery_enabled(&self) -> bool {
         self.recovery.is_some()
     }
+    pub(in crate::source::durable) fn begin_capture(
+        &mut self,
+    ) -> Result<std::sync::Arc<super::super::capture_scope::CaptureScope>> {
+        let r = self
+            .recovery
+            .as_ref()
+            .context("http_capture_requires_recovery_scope")?;
+        let durable = r
+            .known
+            .keys()
+            .filter_map(|s| bs58::decode(s).into_vec().ok());
+        let scope = super::super::capture_scope::CaptureScope::new(
+            &r.cursor.scope.wallets,
+            durable,
+            self.adapter.known_signatures_bytes(),
+            r.cursor.http_hold.clone(),
+        );
+        self.capture_scope = Some(scope.clone());
+        Ok(scope)
+    }
+    pub(in crate::source::durable) fn set_http_hold(&self, hold: bool) {
+        if let Some(r) = &self.recovery {
+            r.cursor.set_http_hold(hold);
+        }
+    }
     pub(in crate::source::durable) fn replay_waiting_anchor(&self) -> bool {
         self.recovery.as_ref().is_some_and(|r| !r.gate.ready())
+    }
+    pub(in crate::source::durable) async fn wait_checkpoint(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<()> {
+        let Some(r) = self.recovery.as_ref() else {
+            anyhow::bail!("http_recovery_requires_cursor");
+        };
+        let Some(slot) = r.last_checkpoint else {
+            return Ok(());
+        };
+        tokio::time::timeout(timeout, async {
+            loop {
+                if r.cursor.committed_slot()?.is_some_and(|s| s >= slot) {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .context("http_recovery_checkpoint_ack_timeout")?
     }
     fn selected(&self, info: &SubscribeUpdateTransactionInfo) -> bool {
         let signature = bs58::encode(&info.signature).into_string();
@@ -129,7 +177,13 @@ impl Bridge<'_> {
             .cloned();
         if let Some(original) = original {
             let observed = convert::info(info);
-            if original.facts.slot != slot || original.info != observed {
+            if original.facts.slot != slot
+                || !super::super::super::http_recovery::identity::info_equivalent(
+                    &original.info,
+                    &observed,
+                )
+            {
+                self.set_http_hold(true);
                 self.emit(
                     at,
                     DeliveryEvent::Duplicate {
@@ -175,6 +229,29 @@ impl Bridge<'_> {
         at: u64,
         block: &SubscribeUpdateBlock,
     ) -> Result<()> {
+        self.recovery_block_time(at, block, YellowstoneMessageTime::from_created_at(None))
+            .await
+    }
+    pub(in crate::source::durable) async fn http_block(
+        &mut self,
+        at: u64,
+        block: &SubscribeUpdateBlock,
+    ) -> Result<()> {
+        self.recovery_block_time(
+            at,
+            block,
+            YellowstoneMessageTime::RecoveredBlock {
+                block_time: block.block_time.as_ref().map(|t| t.timestamp),
+            },
+        )
+        .await
+    }
+    async fn recovery_block_time(
+        &mut self,
+        at: u64,
+        block: &SubscribeUpdateBlock,
+        time: YellowstoneMessageTime,
+    ) -> Result<()> {
         // Reject partial/ambiguous producer blocks before association can emit
         // provider assertions for previously pending transactions.
         ensure!(
@@ -202,13 +279,7 @@ impl Bridge<'_> {
             "replay_durable_info_missing"
         );
         for info in &block.transactions {
-            self.verify_known(
-                at,
-                block.slot,
-                info,
-                YellowstoneMessageTime::from_created_at(None),
-            )
-            .await?;
+            self.verify_known(at, block.slot, info, time).await?;
         }
         let ready = self
             .recovery
@@ -226,7 +297,7 @@ impl Bridge<'_> {
                     transaction: Some(info.clone()),
                     slot: block.slot,
                 };
-                self.hold_selected(&tx, YellowstoneMessageTime::from_created_at(None))?;
+                self.hold_selected(&tx, time)?;
             }
             return self.emit(at, DeliveryEvent::Parent(observation)).await;
         }
@@ -247,17 +318,13 @@ impl Bridge<'_> {
                 transaction: Some(info.clone()),
                 slot: block.slot,
             };
-            self.push(
-                at,
-                a::Input::Transaction(&tx, YellowstoneMessageTime::from_created_at(None)),
-            )
-            .await?;
+            self.push(at, a::Input::Transaction(&tx, time)).await?;
             let signature = bs58::encode(&info.signature).into_string();
-            if self.adapter.has_signature(&signature) {
+            if let Some((_, original_info)) = self.adapter.admitted_signature(&signature) {
                 claims.push(CheckpointClaim {
                     signature,
                     transaction_index: info.index,
-                    info: convert::info(info),
+                    info: convert::info(original_info),
                 });
             }
         }
@@ -278,6 +345,8 @@ impl Bridge<'_> {
                 claims,
             }),
         )
-        .await
+        .await?;
+        self.recovery.as_mut().expect("recovery").last_checkpoint = Some(block.slot);
+        Ok(())
     }
 }

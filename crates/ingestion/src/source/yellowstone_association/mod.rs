@@ -48,6 +48,23 @@ impl<'a> YellowstoneAssociation<'a> {
     pub(in crate::source) fn has_signature(&self, signature: &str) -> bool {
         self.signatures.contains_key(signature)
     }
+    pub(in crate::source) fn known_signatures_bytes(&self) -> std::collections::HashSet<Vec<u8>> {
+        self.records
+            .values()
+            .filter_map(|r| r.tx.transaction.as_ref().map(|i| i.signature.clone()))
+            .collect()
+    }
+    pub(in crate::source) fn admitted_signature(
+        &self,
+        signature: &str,
+    ) -> Option<(
+        &CheckedTransaction,
+        &yellowstone_grpc_proto::prelude::SubscribeUpdateTransactionInfo,
+    )> {
+        self.signatures
+            .get(signature)
+            .and_then(|id| self.admitted(*id))
+    }
     /// First checked facts are observable immediately after successful admission,
     /// before draining a possibly already-ready terminal. No decoder duplication.
     pub(in crate::source) fn admitted(

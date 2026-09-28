@@ -95,6 +95,7 @@ impl TransportClass {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableIngressSnapshot {
+    pub processing: super::processing_telemetry::IngressProcessingSnapshot,
     pub received_transactions: u64,
     pub received_blocks: u64,
     /// Supported swap facts classified by this adapter (excludes duplicate short-circuit).
@@ -129,6 +130,7 @@ pub struct DurableIngressSnapshot {
 
 #[derive(Default)]
 pub(crate) struct DurableIngressTelemetry {
+    pub(crate) processing: super::processing_telemetry::IngressProcessingTelemetry,
     received_transactions: AtomicU64,
     received_blocks: AtomicU64,
     decoded_swaps: AtomicU64,
@@ -171,6 +173,8 @@ impl DurableIngressTelemetry {
     pub(crate) fn acknowledge_parent(&self, slot: u64) {
         self.last_durably_stored_parent_slot
             .fetch_max(slot, Ordering::Relaxed);
+        self.processing
+            .durable_parent(slot, self.last_received_block_slot.load(Ordering::Relaxed));
     }
     pub(crate) fn admission(&self, result: &Admission, bot: bool, scoped: bool) {
         match result {
@@ -222,6 +226,7 @@ impl DurableIngressTelemetry {
     pub(crate) fn snapshot(&self) -> DurableIngressSnapshot {
         let get = |v: &AtomicU64| v.load(Ordering::Relaxed);
         DurableIngressSnapshot {
+            processing: self.processing.snapshot(),
             received_transactions: get(&self.received_transactions),
             received_blocks: get(&self.received_blocks),
             decoded_swaps: get(&self.decoded_swaps),
@@ -263,6 +268,7 @@ impl DurableIngressTelemetry {
         }
         let s = self.snapshot();
         tracing::info!(
+            processing = ?s.processing,
             received_transactions = s.received_transactions,
             received_blocks = s.received_blocks,
             decoded_swaps = s.decoded_swaps,

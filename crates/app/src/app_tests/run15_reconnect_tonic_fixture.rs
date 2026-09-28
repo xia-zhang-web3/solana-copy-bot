@@ -29,8 +29,23 @@ pub(super) struct Fixture {
     pub middle: Vec<SubscribeUpdate>,
     pub follower: SubscribeUpdate,
     pub sell: SubscribeUpdate,
+    pub http_mode: bool,
 }
 impl Fixture {
+    pub fn blocks(&self) -> Vec<SubscribeUpdateBlock> {
+        let mut updates = vec![self.source.clone()];
+        updates.extend(self.middle.clone());
+        updates.push(self.follower.clone());
+        updates.push(self.sell.clone());
+        updates.extend(self.control.tail.lock().unwrap().clone());
+        updates
+            .into_iter()
+            .filter_map(|u| match u.update_oneof {
+                Some(subscribe_update::UpdateOneof::Block(b)) => Some(b),
+                _ => None,
+            })
+            .collect()
+    }
     pub fn build(input: &std::path::Path, model: &serde_json::Value) -> Result<Self> {
         let (tx, source) = frames::source_buy(input)?;
         let mut source = SubscribeUpdate::decode(source.as_slice())?;
@@ -86,6 +101,7 @@ impl Fixture {
         .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             control: Arc::new(Control::default()),
+            http_mode: false,
             source,
             late_tx: SubscribeUpdate::decode(tx.as_slice())?,
             middle,
@@ -149,10 +165,18 @@ impl geyser_server::Geyser for Fixture {
                     .await;
                 return;
             }
-            let floor = request
-                .from_slot
-                .expect("durable checkpoint must survive reconnect/restart");
-            if connection == 2 {
+            let floor = if fixture.http_mode {
+                assert_eq!(
+                    request.from_slot, None,
+                    "HTTP mode sent rejected replay parameter"
+                );
+                frames::SELL_SLOT + fixture.control.tail.lock().unwrap().len() as u64 + 1
+            } else {
+                request
+                    .from_slot
+                    .expect("durable checkpoint must survive reconnect/restart")
+            };
+            if connection == 2 && !fixture.http_mode {
                 assert_eq!(
                     floor,
                     frames::BOT_SLOT - 1,

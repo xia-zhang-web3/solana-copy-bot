@@ -24,6 +24,7 @@ pub(crate) async fn run(
     body: String,
     live: submit::guard::Live,
 ) -> Result<()> {
+    submit::guard::continuity(&live)?;
     ensure!(
         copybot_config::owned_sell_flags(c),
         "owned_sell_unsigned_only_flags"
@@ -75,6 +76,7 @@ pub(crate) async fn run(
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let mut check = || {
+        submit::guard::continuity(&live)?;
         let store = &mut *store;
         ensure!(
             live.0.load(std::sync::atomic::Ordering::SeqCst),
@@ -164,6 +166,7 @@ pub(crate) async fn run(
         "owned_sell_preparation_amount"
     );
     let mut check = || {
+        submit::guard::continuity(&live)?;
         let store = &mut *store;
         ensure!(
             live.0.load(std::sync::atomic::Ordering::SeqCst),

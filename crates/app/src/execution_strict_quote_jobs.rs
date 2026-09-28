@@ -48,6 +48,7 @@ pub(crate) struct StrictQuotes {
     path: PathBuf,
     limits: InboxLimits,
     pool: Arc<Mutex<Pool>>,
+    ingress_hold: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 impl StrictQuotes {
     pub(crate) fn for_ingestion(
@@ -78,10 +79,15 @@ impl StrictQuotes {
                 busy_ms: l.sqlite_busy_ms,
             },
             pool: Arc::new(Mutex::new(Pool { jobs: vec![] })),
+            ingress_hold: None,
         }))
     }
 }
 impl ExecutionQuoteCanaryRunner {
+    pub(crate) fn with_ingress_hold(mut self, hold: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        if let Some(strict) = self.strict.as_mut() { strict.ingress_hold = Some(hold); }
+        self
+    }
     pub(crate) fn with_strict_quotes(mut self, config: Option<StrictQuotes>) -> Self {
         self.strict = config;
         self
@@ -127,7 +133,8 @@ impl ExecutionQuoteCanaryRunner {
             }
         }
         pool.jobs = remaining;
-        if !self.is_enabled()
+        if strict.ingress_hold.as_ref().is_some_and(|h| h.load(std::sync::atomic::Ordering::SeqCst))
+            || !self.is_enabled()
             || (crate::execution_technical_cohort::active(&self.config)
                 && crate::execution_technical_cohort::before_deadline(&self.config).is_err())
         {
@@ -151,6 +158,7 @@ impl ExecutionQuoteCanaryRunner {
             let live = crate::execution_owned_sell_prepare::submit::guard::Live(
                 Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 Arc::new(std::sync::atomic::AtomicI64::new(-1)),
+                strict.ingress_hold.clone(),
             );
             let owner = live.clone();
             let handle = tokio::spawn(async move {

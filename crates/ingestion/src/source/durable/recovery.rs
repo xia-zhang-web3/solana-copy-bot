@@ -6,7 +6,10 @@ use copybot_core_types::association_parent::{BlockKey, ParentObservation};
 use copybot_core_types::association_recovery::{DurableCheckpoint, ReplayScope};
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 use yellowstone_grpc_proto::prelude::SubscribeUpdateBlock;
 
@@ -32,6 +35,7 @@ pub(super) struct RecoveryCursor {
     pub(super) scope: ReplayScope,
     head: Arc<Mutex<Option<DurableCheckpoint>>>,
     limits: copybot_config::DeliveryBudget,
+    pub(super) http_hold: Option<Arc<AtomicBool>>,
 }
 impl RecoveryCursor {
     pub(super) fn new(
@@ -47,7 +51,13 @@ impl RecoveryCursor {
             scope,
             head: Arc::new(Mutex::new(head)),
             limits,
+            http_hold: None,
         })
+    }
+    pub(super) fn set_http_hold(&self, hold: bool) {
+        if let Some(flag) = &self.http_hold {
+            flag.store(hold, Ordering::Release);
+        }
     }
     pub(super) fn snapshot(&self) -> Result<Option<DurableCheckpoint>> {
         Ok(self
@@ -55,6 +65,14 @@ impl RecoveryCursor {
             .lock()
             .map_err(|_| anyhow::anyhow!("replay_cursor_poisoned"))?
             .clone())
+    }
+    pub(super) fn committed_slot(&self) -> Result<Option<u64>> {
+        Ok(self
+            .head
+            .lock()
+            .map_err(|_| anyhow::anyhow!("replay_cursor_poisoned"))?
+            .as_ref()
+            .map(|h| h.block.observation.child.slot))
     }
     pub(super) fn acknowledge(&self, head: DurableCheckpoint) -> Result<()> {
         validate(&self.scope, &head, &self.limits)?;
@@ -172,7 +190,10 @@ impl RecoveryGate {
                     ensure!(
                         matches.next().is_none()
                             && info.index == claim.transaction_index
-                            && convert::info(info) == claim.info,
+                            && super::super::http_recovery::identity::info_equivalent(
+                                &convert::info(info),
+                                &claim.info
+                            ),
                         "replay_anchor_info_changed"
                     );
                 }

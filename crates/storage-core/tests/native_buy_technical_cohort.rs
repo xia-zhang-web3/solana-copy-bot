@@ -147,3 +147,36 @@ fn cohort_protected_tiny_budget_keeps_sell_authority_past_one_hour_only_until_co
     assert_eq!(reopened.load_tiny_experiment(auth.deadline)?.unwrap().state,"stopped");
     Ok(())
 }
+
+#[test]
+fn recovered_buy_preserves_age_and_leaves_slot_for_later_live_candidate_after_restart() -> Result<()> {
+    use copybot_core_types::association_delivery::MessageTime;
+    let (_dir,path)=fixture::db(); let now=Utc::now()-Duration::seconds(5);
+    let auth=authority(now); let mut inbox=AssociationInbox::open(&path,fixture::limits())?;
+    inbox.register_technical_cohort_authority(&auth)?;
+    inbox.record_native_buy_fence_epoch(&fence(now-Duration::seconds(1),6))?;
+    let mut old=admission("recovered-old-buy","leader","classic-mint",7);
+    let original=now.timestamp()-600;
+    old.message_time=MessageTime::RecoveredBlock { block_time:Some(original) };
+    inbox.persist_at(&fixture::event(1,DeliveryEvent::Admission(old.clone())),&CandidateGeneration::Unknown,now)?;
+    inbox.persist_at(&fixture::event(2,DeliveryEvent::Terminal { signature:old.facts.signature.clone(),expected:old.clone(),result:terminal(&old) }),&CandidateGeneration::Unknown,now)?;
+    drop(inbox);
+    let sql=rusqlite::Connection::open(&path)?;
+    assert_eq!(sql.query_row("SELECT count(*) FROM native_buy_cohort_decisions",[],|r|r.get::<_,i64>(0))?,0);
+    let recorded:String=sql.query_row("SELECT admission FROM association_inbox_identities WHERE signature=?1",[&old.facts.signature],|r|r.get(0))?;
+    let recorded:copybot_core_types::association_delivery::AdmissionFacts=serde_json::from_str(&recorded)?;
+    assert_eq!(recorded,old);
+    let store=SqliteStore::open(&path)?;
+    assert!(store.list_native_buy_pending(2)?.is_empty());
+    let mut reopened=AssociationInbox::open(&path,fixture::limits())?;
+    reopened.register_technical_cohort_authority(&auth)?;
+    reopened.record_native_buy_fence_epoch(&fence(now+Duration::seconds(1),8))?;
+    let live=admission("subsequent-live-buy","leader","classic-mint",9);
+    reopened.persist_at(&fixture::event(3,DeliveryEvent::Admission(live.clone())),&CandidateGeneration::Unknown,now+Duration::seconds(2))?;
+    reopened.persist_at(&fixture::event(4,DeliveryEvent::Terminal { signature:live.facts.signature.clone(),expected:live.clone(),result:terminal(&live) }),&CandidateGeneration::Unknown,now+Duration::seconds(2))?;
+    assert_eq!(sql.query_row("SELECT count(*) FROM native_buy_cohort_decisions",[],|r|r.get::<_,i64>(0))?,1);
+    assert_eq!(store.list_native_buy_pending(2)?.len(),1);
+    assert!(store.native_buy_record_finalized(&live.facts.signature,9,SPL_TOKEN_PROGRAM,now+Duration::seconds(2))?);
+    assert!(store.native_buy_ready(&live.facts.signature,now+Duration::seconds(2),120)?.is_some());
+    Ok(())
+}

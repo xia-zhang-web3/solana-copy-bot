@@ -18,6 +18,7 @@ pub(super) struct Bridge<'a> {
     telemetry: Arc<DurableIngressTelemetry>,
     scoped: bool,
     recovery: Option<checkpoint::BlockRecovery>,
+    capture_scope: Option<Arc<super::capture_scope::CaptureScope>>,
 }
 impl<'a> Bridge<'a> {
     pub(super) fn new(
@@ -71,9 +72,15 @@ impl<'a> Bridge<'a> {
             telemetry,
             scoped: runtime.admission_wallets.is_some(),
             recovery: None,
+            capture_scope: None,
         })
     }
     pub(super) async fn emit(&mut self, ns: u64, event: DeliveryEvent) -> Result<()> {
+        if matches!(&event, DeliveryEvent::Session(gap)
+            if !matches!(gap, SessionGap::StartedContinuityUnknown))
+        {
+            self.set_http_hold(true);
+        }
         let parent_slot = event.parent_observation().map(|parent| parent.child.slot);
         let d = Delivery {
             session: self.name.clone(),
@@ -105,7 +112,13 @@ impl<'a> Bridge<'a> {
             a::Input::Block(block) => Some(*block),
             _ => None,
         };
-        let admission = match self.adapter.push(context, input) {
+        let stage = std::time::Instant::now();
+        let result = self.adapter.push(context, input);
+        self.telemetry.processing.association(stage.elapsed());
+        if let Some(scope) = &self.capture_scope {
+            scope.replace_known(self.adapter.known_signatures_bytes());
+        }
+        let admission = match result {
             Ok(v) => v,
             Err(r) => {
                 self.telemetry
@@ -136,7 +149,9 @@ impl<'a> Bridge<'a> {
         match admission {
             a::Admission::Block => {
                 let parent = super::parent::observation(parent_input.expect("admitted block"));
-                if self.recovery.is_none() { self.emit(ns, DeliveryEvent::Parent(parent)).await?; }
+                if self.recovery.is_none() {
+                    self.emit(ns, DeliveryEvent::Parent(parent)).await?;
+                }
             }
             a::Admission::Transaction(id) => {
                 let (c, i) = self
@@ -206,11 +221,19 @@ impl<'a> Bridge<'a> {
         );
         match update.update_oneof.as_ref() {
             Some(UpdateOneof::Transaction(tx)) => {
-                if self.recovery.is_some() { self.recovery_transaction(at,tx,time).await }
-                else { self.push(at, a::Input::Transaction(tx, time)).await }
+                if self.recovery.is_some() {
+                    self.recovery_transaction(at, tx, time).await
+                } else {
+                    self.push(at, a::Input::Transaction(tx, time)).await
+                }
             }
-            Some(UpdateOneof::Block(b)) => if self.recovery.is_some() { self.recovery_block(at,b).await }
-                else { self.push(at, a::Input::Block(b)).await },
+            Some(UpdateOneof::Block(b)) => {
+                if self.recovery.is_some() {
+                    self.recovery_block(at, b).await
+                } else {
+                    self.push(at, a::Input::Block(b)).await
+                }
+            }
             _ => Ok(()),
         }
     }

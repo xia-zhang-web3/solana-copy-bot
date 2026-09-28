@@ -6,8 +6,15 @@ use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 /// Permits are held until the app finishes persistence, not just until dequeue.
 pub struct DeliveryEnvelope {
     pub delivery: Delivery,
+    created_at: Instant,
     _bytes: OwnedSemaphorePermit,
     _count: OwnedSemaphorePermit,
+}
+impl DeliveryEnvelope {
+    /// Includes queue wait, processing and committed acknowledgement latency.
+    pub fn elapsed(&self) -> Duration {
+        self.created_at.elapsed()
+    }
 }
 pub(in crate::source) struct Sender {
     tx: mpsc::Sender<DeliveryEnvelope>,
@@ -33,6 +40,7 @@ pub(in crate::source) fn channel(
 impl Sender {
     /// Time waiting for charged permits and channel acceptance, after encoding.
     pub(in crate::source) async fn send_timed(&self, delivery: Delivery) -> Result<Duration> {
+        let created_at = Instant::now();
         let charge = serde_json::to_vec(&delivery)?
             .len()
             .checked_add(512)
@@ -51,6 +59,7 @@ impl Sender {
         self.tx
             .send(DeliveryEnvelope {
                 delivery,
+                created_at,
                 _count: count,
                 _bytes: bytes,
             })
