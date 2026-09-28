@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 SOURCE = Path(__file__).resolve().parents[1] / 'http_recovery_probe/preflight.py'
 spec = importlib.util.spec_from_file_location('http_probe_preflight', SOURCE)
@@ -144,6 +145,28 @@ fetch_concurrency=4
         path=self.root/'control/http-policy.json';policy=pf.read(path)
         policy['prior_model_nano_usd']=0;save(path,policy)
         with self.assertRaisesRegex(ValueError,'probe_carryover_model'):self.check()
+
+    def test_desktop_bind_translation_preserves_package_scope_and_provider_digest(self):
+        cid = self.ids['http-backend']
+        mounts = self.metadata[cid]['Mounts']
+        provider = next(m for m in mounts if m['Destination'] == '/run/provider/alchemy-api-key')
+        provider['Source'] = '/host_mnt' + str(self.key)
+        ca = dict(Type='bind', Source='/host_mnt' + str(self.root / 'config'),
+                  Destination='/run/probe-config', RW=False)
+        mounts.append(ca)
+        with mock.patch.object(pf.sys, 'platform', 'darwin'):
+            self.assertEqual(self.check()['never_started_containers'], 5)
+            ca['Source'] = '/host_mnt' + str(self.history)
+            with self.assertRaisesRegex(ValueError, 'probe_foreign_mount'):
+                self.check()
+            ca['Source'] = '/host_mnt' + str(self.root / 'config')
+            original = self.key.read_bytes()
+            self.key.write_bytes(b'wrong offline key')
+            with self.assertRaisesRegex(ValueError, 'probe_provider_mount'):
+                self.check()
+            self.key.write_bytes(original)
+        with mock.patch.object(pf.sys, 'platform', 'linux'):
+            self.assertEqual(pf.host_mount_path('/host_mnt/Users/example'), Path('/host_mnt/Users/example'))
 
 
 if __name__=='__main__':unittest.main()

@@ -11,8 +11,8 @@ Measured foreign individual decode work is removed; full-block traffic remains.
 The genuine paired workload covers60 full blocks/82590 full-body TX plus12330
 individual updates per20-second period, not four hours of wall time.
 External DataLoss cause and live/TLS/container throughput remain UNKNOWN.
-Build target is copybot-app/release through matching GitHub Actions; stopped package
-installation/preflight and rollback are tracked in [HTTP preparation](audit/2026-09-29/run15-http-recovery/PREPARATION_RU.md).
+Daemon build stays copybot-app/release at61db22bd; accepted Docker Desktop mount inspection repair is tooling-only.
+Installation/preflight, separate helper binding and rollback are tracked in [HTTP preparation](audit/2026-09-29/run15-http-recovery/PREPARATION_RU.md).
 New package run15-http-recovery-probe-02 remains under STOP/HTTP_STOP/STREAM_STOP;
 five planned containers never start during preparation, no signer or financial authority.
 Cumulative model$7.928686412, HTTP996/19020CU and stream85026403600 bytes are retained.

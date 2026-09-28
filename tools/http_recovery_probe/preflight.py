@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tomllib
 
 RUN = 'copybot-run15-http-recovery-probe-02'
@@ -36,6 +37,14 @@ def digest(path):
         for block in iter(lambda: source.read(1024 * 1024), b''):
             value.update(block)
     return value.hexdigest()
+
+
+def host_mount_path(source):
+    require(isinstance(source, str) and Path(source).is_absolute(), 'probe_absolute_mount_required')
+    # Docker Desktop exposes some macOS binds through its Linux VM prefix.
+    if sys.platform == 'darwin' and source.startswith('/host_mnt/'):
+        source = source[len('/host_mnt'):]
+    return Path(source).resolve()
 
 
 def unused(root):
@@ -158,9 +167,9 @@ def containers(root, inspect, policy):
                 require(mount['Name'].startswith(RUN + '-') and target.startswith('/relay'), 'probe_volume_scope')
             elif target == '/run/provider/alchemy-api-key':
                 require(role == 'http-backend' and mount['RW'] is False
-                        and digest(mount['Source']) == policy['rpc_key_sha256'], 'probe_provider_mount')
+                        and digest(host_mount_path(mount['Source'])) == policy['rpc_key_sha256'], 'probe_provider_mount')
             else:
-                require(mount['Type'] == 'bind' and Path(mount['Source']).resolve().is_relative_to(root.resolve()),
+                require(mount['Type'] == 'bind' and host_mount_path(mount['Source']).is_relative_to(root.resolve()),
                         'probe_foreign_mount')
                 if mount['RW']:
                     require(target == '/control' or (role == 'observation-app' and target == '/opt/copybot/state'),
