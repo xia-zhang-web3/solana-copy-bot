@@ -45,6 +45,9 @@ pub(in crate::source) struct YellowstoneAssociation<'a> {
     action: Option<Action>,
 }
 impl<'a> YellowstoneAssociation<'a> {
+    pub(in crate::source) fn has_signature(&self, signature: &str) -> bool {
+        self.signatures.contains_key(signature)
+    }
     /// First checked facts are observable immediately after successful admission,
     /// before draining a possibly already-ready terminal. No decoder duplication.
     pub(in crate::source) fn admitted(

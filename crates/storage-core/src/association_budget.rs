@@ -57,5 +57,8 @@ fn in_snapshot(c: &Connection, mode: ConsumerMode) -> Result<(usize, usize)> {
             .checked_add(b)
             .ok_or_else(|| anyhow::anyhow!("inbox bytes overflow"))?;
     }
+    let (n,b) = crate::association_replay::usage(c)?;
+    count = count.checked_add(n).ok_or_else(|| anyhow::anyhow!("inbox count overflow"))?;
+    bytes = bytes.checked_add(b).ok_or_else(|| anyhow::anyhow!("inbox bytes overflow"))?;
     Ok((count, bytes))
 }

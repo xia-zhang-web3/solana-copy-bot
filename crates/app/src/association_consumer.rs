@@ -21,7 +21,10 @@ use std::time::Instant;
 pub(crate) mod shadow_wake;
 use shadow_wake::ShadowWake;
 
-type Pending = JoinHandle<(AssociationInbox, Option<DeliveryEnvelope>, Result<bool>)>;
+#[path = "association_consumer_replay.rs"]
+mod replay;
+
+type Pending = JoinHandle<(AssociationInbox, Option<DeliveryEnvelope>, Result<(bool, Option<copybot_core_types::association_recovery::DurableCheckpoint>)>)>;
 pub(crate) struct AssociationConsumer {
     receiver: DeliveryReceiver,
     inbox: Option<AssociationInbox>,
@@ -42,6 +45,7 @@ pub(crate) struct AssociationConsumer {
     pending_started_at: Option<Instant>,
     pending_fence_slot: Option<u64>,
     telemetry: AssociationIngressTelemetry,
+    replay_scope: Option<copybot_core_types::association_recovery::ReplayScope>,
 }
 impl AssociationConsumer {
     pub(crate) fn diagnostic_snapshots(
@@ -81,30 +85,8 @@ impl AssociationConsumer {
         let path = path.to_owned();
         // This durable mode selects provider_order_strict_v1. Schema/recovery
         // must succeed before opening a provider connection. Legacy stays separate.
-        let authority = execution.map(execution_technical_cohort::authority)
-            .transpose()?.flatten();
-        let deadline = authority.as_ref().map(|a| a.deadline);
-        let admission_wallets = authority.as_ref()
-            .map(|a| execution.context("cohort execution config")
-                .and_then(|c| execution_technical_cohort::admission_wallets(a, c)))
-            .transpose()?;
-        let bot_signer = authority.as_ref().and_then(|_| {
-            execution.map(|c| c.canary_wallet_pubkey.clone())
-        });
-        let inbox = tokio::task::spawn_blocking(move || {
-            let mut inbox = AssociationInbox::open_ordered_sell_consumer(path, limits)?;
-            if let Some(authority) = authority.as_ref() {
-                inbox.register_technical_cohort_authority(authority)?;
-            }
-            Ok::<_, anyhow::Error>(inbox)
-        })
-        .await??;
-        let recovery_pending = inbox.has_sell_preparation_work()?;
-        let receiver = ingestion
-            .take_delivery_scoped_labeled(
-                AssociationInbox::new_session_id(), admission_wallets, bot_signer,
-            )?
-            .context("missing delivery receiver")?;
+        let (inbox,receiver,recovery_pending,deadline,replay_scope)=
+            replay::open_and_start(ingestion,c,execution,path,limits).await?;
         Ok(Some(Self {
             receiver,
             inbox: Some(inbox),
@@ -123,6 +105,7 @@ impl AssociationConsumer {
             pending_started_at: None,
             pending_fence_slot: None,
             telemetry: AssociationIngressTelemetry::default(),
+            replay_scope,
         }))
     }
     pub(crate) async fn start_with_execution(
@@ -232,7 +215,7 @@ impl AssociationConsumer {
                 self.pending = Some(tokio::task::spawn_blocking(move || {
                     let result = (|| {
                         inbox.record_native_buy_fence_epoch(&epoch)?;
-                        inbox.has_sell_preparation_work()
+                        Ok((inbox.has_sell_preparation_work()?, None))
                     })();
                     (inbox, None, result)
                 }));
@@ -279,6 +262,7 @@ impl AssociationConsumer {
             let mut inbox = self.inbox.take().context("inbox unavailable")?;
             self.pending_started_at = Some(Instant::now());
             self.pending_fence_slot = fence.as_ref().map(|value| value.processed_slot);
+            let replay_scope=self.replay_scope.clone();
             self.pending = Some(tokio::task::spawn_blocking(move || {
                 let result = (|| {
                     match &envelope {
@@ -294,7 +278,11 @@ impl AssociationConsumer {
                         }
                         None => inbox.recover_sell_preparation()?,
                     }
-                    inbox.has_sell_preparation_work()
+                    let checkpoint=if matches!(envelope.as_ref().map(|e|&e.delivery.event),
+                        Some(DeliveryEvent::ParentCheckpoint(_))) {
+                        inbox.replay_checkpoint(replay_scope.as_ref().context("checkpoint scope missing")?)?
+                    } else {None};
+                    Ok((inbox.has_sell_preparation_work()?,checkpoint))
                 })();
                 (inbox, envelope, result)
             }));
@@ -319,7 +307,12 @@ impl AssociationConsumer {
         }
         // A stale blocking result must not consume a newer close notification.
         // Notify retains its permit across this ACK and select cancellation.
-        self.recovery_pending = result?;
+        let (work,checkpoint)=result?;
+        if let Some(head)=checkpoint {self.receiver.acknowledge_checkpoint(head)?;}
+        if let Some(parent)=envelope.as_ref().and_then(|e|e.delivery.event.parent_observation()) {
+            self.receiver.acknowledge_parent(parent.child.slot);
+        }
+        self.recovery_pending = work;
         self.inbox = Some(inbox);
         let elapsed_ms = self.pending_started_at.take()
             .map(|start| start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)

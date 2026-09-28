@@ -11,6 +11,7 @@ use source::{fetch_recent_raw_swaps_for_wallets, IngestionSource, RawSwapObserva
 use std::collections::HashSet;
 
 pub use source::durable::{
+    replay_scope,
     DeliveryEnvelope, DeliveryReceiver, DurableIngressSnapshot, ReplayInput, TransportClass,
     TransportStage,
 };
@@ -122,6 +123,18 @@ impl IngestionService {
             .take()
             .map(|c| DeliveryReceiver::start_labeled(&c, session, wallets, bot_signer))
             .transpose()
+    }
+    pub fn take_delivery_recovering_labeled(
+        &mut self, session: String, wallets: HashSet<String>, bot_signer: Option<String>,
+        restored: Option<copybot_core_types::association_recovery::DurableCheckpoint>,
+    ) -> Result<Option<DeliveryReceiver>> {
+        if let Some(prepared)=self.prepared_delivery.take() {
+            anyhow::ensure!(prepared.wallet_scope()==Some(&wallets), "prepared delivery wallet scope mismatch");
+            anyhow::ensure!(prepared.bot_signer()==bot_signer.as_deref(), "prepared delivery bot telemetry label mismatch");
+            self.delivery_config=None;
+            return Ok(Some(prepared));
+        }
+        self.delivery_config.take().map(|c| DeliveryReceiver::start_recovering_labeled(&c,session,wallets,bot_signer,restored)).transpose()
     }
     pub async fn next_swap(&mut self) -> Result<Option<SwapEvent>> {
         loop {

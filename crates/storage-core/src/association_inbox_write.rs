@@ -42,7 +42,7 @@ impl AssociationInbox {
             DeliveryEvent::Terminal { signature, .. } | DeliveryEvent::Late { signature, .. } => {
                 Some(signature.as_str())
             }
-            DeliveryEvent::Session(_) | DeliveryEvent::Parent(_) => None,
+            DeliveryEvent::Session(_) | DeliveryEvent::Parent(_) | DeliveryEvent::ParentCheckpoint(_) => None,
         };
         let fresh = signature
             .map(|s| identity(&tx, s))
@@ -84,9 +84,10 @@ impl AssociationInbox {
         )?;
         ensure!(saved == wire, "inbox event write ignored or changed");
         let mut proof = crate::association_sell_preparation::Readback::new(self.mode);
-        if matches!(&d.event, DeliveryEvent::Parent(_)) {
+        if d.event.parent_observation().is_some() {
             crate::association_sell_preparation::parent(&tx, d, &mut proof)?;
         }
+        let checkpoint = crate::association_replay::record(&tx, d, self.limits)?;
         crate::association_sell_preparation::event(
             &tx,
             signature,
@@ -99,6 +100,9 @@ impl AssociationInbox {
         check_budget(&tx, self.limits, self.mode)?;
         proof.verify(&tx)?;
         tx.commit()?;
+        if let Some(checkpoint) = checkpoint.as_deref() {
+            crate::association_replay::verify(&self.conn, checkpoint)?;
+        }
         proof.verify(&self.conn)?;
         let saved: String = self.conn.query_row(
             "SELECT delivery FROM association_inbox_events WHERE session=?1 AND sequence=?2",
@@ -201,7 +205,7 @@ fn apply(c: &Connection, d: &Delivery, candidate: &CandidateGeneration) -> Resul
                 set_conflict(c, signature)?;
             }
         }
-        DeliveryEvent::Session(_) | DeliveryEvent::Parent(_) => {}
+        DeliveryEvent::Session(_) | DeliveryEvent::Parent(_) | DeliveryEvent::ParentCheckpoint(_) => {}
     }
     Ok(())
 }

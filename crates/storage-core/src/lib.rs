@@ -1,6 +1,7 @@
 pub mod capture_scope;
 mod association_candidate;
 pub mod association_inbox;
+mod association_replay;
 pub mod native_buy;
 pub mod association_sell_preparation;
 mod association_sell_types;

@@ -103,6 +103,7 @@ impl DeliveryReceiver {
             wallet_scope,
             bot_signer,
             telemetry,
+            recovery: None,
         })
     }
 }

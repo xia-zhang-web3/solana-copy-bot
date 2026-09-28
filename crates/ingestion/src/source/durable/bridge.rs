@@ -5,6 +5,8 @@ use anyhow::Result;
 use copybot_config::AssociationDeliveryConfig;
 use copybot_core_types::association_delivery::*;
 use std::{sync::Arc, time::Duration};
+#[path = "checkpoint.rs"]
+mod checkpoint;
 pub(super) struct Bridge<'a> {
     adapter: a::YellowstoneAssociation<'a>,
     session: a::Session,
@@ -15,6 +17,7 @@ pub(super) struct Bridge<'a> {
     bot_signer: Option<String>,
     telemetry: Arc<DurableIngressTelemetry>,
     scoped: bool,
+    recovery: Option<checkpoint::BlockRecovery>,
 }
 impl<'a> Bridge<'a> {
     pub(super) fn new(
@@ -67,13 +70,11 @@ impl<'a> Bridge<'a> {
             bot_signer,
             telemetry,
             scoped: runtime.admission_wallets.is_some(),
+            recovery: None,
         })
     }
     pub(super) async fn emit(&mut self, ns: u64, event: DeliveryEvent) -> Result<()> {
-        let parent_slot = match &event {
-            DeliveryEvent::Parent(parent) => Some(parent.child.slot),
-            _ => None,
-        };
+        let parent_slot = event.parent_observation().map(|parent| parent.child.slot);
         let d = Delivery {
             session: self.name.clone(),
             sequence: self.sequence,
@@ -135,7 +136,7 @@ impl<'a> Bridge<'a> {
         match admission {
             a::Admission::Block => {
                 let parent = super::parent::observation(parent_input.expect("admitted block"));
-                self.emit(ns, DeliveryEvent::Parent(parent)).await?;
+                if self.recovery.is_none() { self.emit(ns, DeliveryEvent::Parent(parent)).await?; }
             }
             a::Admission::Transaction(id) => {
                 let (c, i) = self
@@ -205,9 +206,11 @@ impl<'a> Bridge<'a> {
         );
         match update.update_oneof.as_ref() {
             Some(UpdateOneof::Transaction(tx)) => {
-                self.push(at, a::Input::Transaction(tx, time)).await
+                if self.recovery.is_some() { self.recovery_transaction(at,tx,time).await }
+                else { self.push(at, a::Input::Transaction(tx, time)).await }
             }
-            Some(UpdateOneof::Block(b)) => self.push(at, a::Input::Block(b)).await,
+            Some(UpdateOneof::Block(b)) => if self.recovery.is_some() { self.recovery_block(at,b).await }
+                else { self.push(at, a::Input::Block(b)).await },
             _ => Ok(()),
         }
     }

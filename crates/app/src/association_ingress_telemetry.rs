@@ -56,7 +56,8 @@ impl AssociationIngressTelemetry {
         }
         self.persist_ms.push_back(elapsed_ms);
         match event {
-            Some(DeliveryEvent::Parent(parent)) => {
+            Some(event) if event.parent_observation().is_some() => {
+                let parent=event.parent_observation().expect("parent observation");
                 self.parents = self.parents.saturating_add(1);
                 self.last_parent_slot = Some(parent.child.slot);
             }

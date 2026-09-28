@@ -2,7 +2,8 @@ use super::super::{yellowstone_association as a, YellowstoneRuntimeConfig};
 use super::{
     bridge::Bridge,
     queue::Sender,
-    telemetry::{DurableIngressTelemetry, TransportClass, TransportStage},
+    telemetry::{DurableIngressTelemetry, TransportStage},
+    transport_diagnostics::{self as diagnostics, ErrorDetails},
 };
 use anyhow::{Context, Result};
 use copybot_config::AssociationDeliveryConfig;
@@ -15,18 +16,19 @@ use std::{
 };
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::prelude::*;
-fn request(c: &YellowstoneRuntimeConfig) -> SubscribeRequest {
+fn request(c: &YellowstoneRuntimeConfig, recovery: bool, from_slot: Option<u64>) -> SubscribeRequest {
     let mut req = super::super::yellowstone_request::build_yellowstone_subscribe_request(c);
     req.blocks.insert(
         "copybot-containing-blocks".into(),
         SubscribeRequestFilterBlocks {
-            account_include: c.interested_program_ids.iter().cloned().collect(),
+            account_include: if recovery { Vec::new() } else { c.interested_program_ids.iter().cloned().collect() },
             include_transactions: Some(true),
             include_accounts: Some(false),
             include_entries: Some(false),
             ..Default::default()
         },
     );
+    req.from_slot=from_slot;
     req
 }
 pub(super) async fn run(
@@ -36,9 +38,11 @@ pub(super) async fn run(
     tx: Sender,
     bot_signer: Option<String>,
     telemetry: Arc<DurableIngressTelemetry>,
+    recovery: Option<super::recovery::RecoveryCursor>,
 ) -> Result<()> {
     let start = Instant::now();
     let mut bridge = Bridge::new(&c, &limits, session, tx, bot_signer, Arc::clone(&telemetry))?;
+    if let Some(cursor)=recovery { bridge.enable_recovery(cursor,&limits)?; }
     bridge
         .emit(
             0,
@@ -48,6 +52,8 @@ pub(super) async fn run(
     let ns = || u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let mut backoff = c.reconnect_initial_ms;
     loop {
+        let connection_started = Instant::now();
+        let secrets = [c.grpc_url.as_str(), c.x_token.as_str()];
         let connection = async {
             let mut builder = GeyserGrpcClient::build_from_shared(c.grpc_url.clone())?
                 .x_token(Some(c.x_token.as_str()))?;
@@ -67,7 +73,12 @@ pub(super) async fn run(
         let mut client = match connection {
             Ok(v) => v,
             Err(error) => {
-                telemetry.reconnect(TransportStage::Connect, TransportClass::error(&error));
+                diagnostics::report(
+                    &telemetry,
+                    TransportStage::Connect,
+                    connection_started,
+                    ErrorDetails::error(&error, &secrets),
+                );
                 bridge
                     .emit(ns(), DeliveryEvent::Session(SessionGap::Transport))
                     .await?;
@@ -77,10 +88,21 @@ pub(super) async fn run(
                 continue;
             }
         };
-        let (mut sink, mut stream) = match client.subscribe_with_request(Some(request(&c))).await {
+        let from_slot=bridge.begin_replay()?;
+        let (mut sink, mut stream) = match client.subscribe_with_request(Some(request(&c,bridge.recovery_enabled(),from_slot))).await {
             Ok(v) => v,
             Err(error) => {
-                telemetry.reconnect(TransportStage::Subscribe, TransportClass::subscribe(&error));
+                diagnostics::report(
+                    &telemetry,
+                    TransportStage::Subscribe,
+                    connection_started,
+                    ErrorDetails::subscribe(&error, &secrets),
+                );
+                if from_slot.is_some() && matches!(&error, yellowstone_grpc_client::GeyserGrpcClientError::TonicStatus(status)
+                    if super::recovery::definitive_history_code(status.code())) {
+                    bridge.emit(ns(),DeliveryEvent::Session(SessionGap::Rejected("ReplayRequestUnavailable".into()))).await?;
+                    anyhow::bail!("durable_replay_request_unavailable");
+                }
                 bridge
                     .emit(ns(), DeliveryEvent::Session(SessionGap::Transport))
                     .await?;
@@ -115,21 +137,33 @@ pub(super) async fn run(
                             anyhow::bail!("delivery transport envelope exceeds budget");
                         }
                         match update.update_oneof.as_ref() {
-                            Some(subscribe_update::UpdateOneof::Transaction(_)|subscribe_update::UpdateOneof::Block(_))=>bridge.update(at,&update).await?,
-                            Some(subscribe_update::UpdateOneof::Ping(_))=>if sink.send(SubscribeRequest{ping:Some(SubscribeRequestPing{id:1}),..Default::default()}).await.is_err(){
-                                telemetry.reconnect(TransportStage::Ping, TransportClass::Other);
+                            Some(subscribe_update::UpdateOneof::Transaction(_)|subscribe_update::UpdateOneof::Block(_))=>if let Err(error)=bridge.update(at,&update).await {
+                                let reason=error.root_cause().to_string();
+                                let bounded=if reason.starts_with("replay_") && reason.len()<=128
+                                    && reason.bytes().all(|b| b.is_ascii_alphanumeric() || b==b'_') {
+                                    reason
+                                } else { "association_refused".into() };
+                                bridge.emit(at,DeliveryEvent::Session(SessionGap::Rejected(bounded))).await?;
+                                return Err(error).context("durable replay/association refused");
+                            },
+                            Some(subscribe_update::UpdateOneof::Ping(_))=>if let Err(error) = sink.send(SubscribeRequest{ping:Some(SubscribeRequestPing{id:1}),..Default::default()}).await {
+                                diagnostics::report(&telemetry, TransportStage::Ping, connection_started, ErrorDetails::error(&anyhow::Error::new(error), &secrets));
                                 break;
                             },
                             _=>{}
                         }
                     }
                     Some(Err(error))=>{
-                        telemetry.reconnect(TransportStage::Stream, TransportClass::status(&error));
+                        diagnostics::report(&telemetry, TransportStage::Stream, connection_started, ErrorDetails::status(&error, &secrets));
+                        if bridge.replay_waiting_anchor() && super::recovery::definitive_history_code(error.code()) {
+                            bridge.emit(ns(),DeliveryEvent::Session(SessionGap::Rejected("ReplayHistoryUnavailable".into()))).await?;
+                            anyhow::bail!("durable_replay_history_unavailable");
+                        }
                         bridge.emit(ns(),DeliveryEvent::Session(SessionGap::Transport)).await?;
                         break;
                     }
                     None=>{
-                        telemetry.reconnect(TransportStage::End, TransportClass::End);
+                        diagnostics::report(&telemetry, TransportStage::End, connection_started, ErrorDetails::eof());
                         bridge.push(ns(),a::Input::End).await?;
                         bridge.emit(ns(),DeliveryEvent::Session(SessionGap::End)).await?;
                         break;

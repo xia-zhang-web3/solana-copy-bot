@@ -100,3 +100,13 @@ mod run15_version_tests;
 mod jupiter_raydium_fixture;
 #[path = "../source_tests/jupiter_raydium_attribution_tests.rs"]
 mod jupiter_raydium_attribution_tests;
+
+#[path = "../source_tests/durable_transport_diagnostics_tests.rs"]
+mod durable_transport_diagnostics_tests;
+
+#[path = "../source_tests/durable_transport_fixture.rs"]
+mod durable_transport_fixture;
+#[path = "../source_tests/durable_transport_relay_tests.rs"]
+mod durable_transport_relay_tests;
+#[path = "../source_tests/durable_replay_checkpoint_tests.rs"]
+mod durable_replay_checkpoint_tests;

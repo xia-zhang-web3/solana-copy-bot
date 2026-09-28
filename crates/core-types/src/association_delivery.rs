@@ -83,6 +83,7 @@ pub enum SessionGap {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeliveryEvent {
     Parent(crate::association_parent::ParentObservation),
+    ParentCheckpoint(crate::association_recovery::BlockCheckpoint),
     Admission(AdmissionFacts),
     Duplicate {
         original: AdmissionFacts,
@@ -101,6 +102,15 @@ pub enum DeliveryEvent {
         evidence: Late,
     },
     Session(SessionGap),
+}
+impl DeliveryEvent {
+    pub fn parent_observation(&self) -> Option<&crate::association_parent::ParentObservation> {
+        match self {
+            Self::Parent(parent) => Some(parent),
+            Self::ParentCheckpoint(checkpoint) => Some(&checkpoint.observation),
+            _ => None,
+        }
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Delivery {

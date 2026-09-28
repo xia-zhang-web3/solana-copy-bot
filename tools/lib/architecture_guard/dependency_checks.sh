@@ -23,8 +23,8 @@ allowed_app_dependency_specs() {
   # must stay narrowly tied to signing serialized Solana transactions.
   # PumpSwap direct execution needs SHA-256 PDA derivation and ed25519 curve
   # checks in the live daemon; keep these dependencies scoped to transaction
-  # assembly, not reporting or operator tooling. The two exact dev-only wire
-  # pins reuse ingestion types in offline source-to-daemon causal tests.
+  # assembly, not reporting or operator tooling. Dev-only wire and loopback
+  # transport specs reuse ingestion's locked crates for causal reconnect tests.
   cat <<'EOF'
 dependencies.base64->base64::"0.22.1"
 dependencies.bs58->bs58::"0.5.1"
@@ -33,6 +33,8 @@ dependencies.ed25519-dalek->ed25519-dalek::"2.1.1"
 dependencies.sha2->sha2::"0.10.9"
 dev-dependencies.prost->prost::"=0.14.3"
 dev-dependencies.yellowstone-grpc-proto->yellowstone-grpc-proto::"=12.6.0"
+dev-dependencies.tonic->tonic::"=0.14.4"
+dev-dependencies.futures-util->futures-util::"0.3.31"
 EOF
 }
 

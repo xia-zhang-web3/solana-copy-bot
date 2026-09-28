@@ -2,10 +2,10 @@
 import json
 import os
 from pathlib import Path
-import selectors
 import socket
 import sys
 import time
+from relay_pump import pump
 
 def read(path,default=None):
     try:return json.loads(path.read_text())
@@ -14,7 +14,10 @@ def save(path,value):
     tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(value));tmp.chmod(0o600);tmp.replace(path)
 
 class Relay:
-    def __init__(self,role,directory,sockpath):
+    def __init__(self,role,directory,sockpath,stop_filename='STOP'):
+        if stop_filename not in ('STOP','STREAM_STOP'):raise ValueError('invalid_relay_stop_name')
+        self.stop_path=directory/stop_filename
+        self.stop_request_path=directory/(stop_filename+'_REQUEST.json')
         self.role=role;self.d=directory;self.sockpath=sockpath;self.cfg=read(directory/'settings.json')
         self.state={'run_id':self.cfg['run_id'],'generation':self.cfg['generation'],'role':role,
             'phase':'starting','received_bytes':0,'upstream_received_bytes':0,'upstream_sent_bytes':0,
@@ -27,7 +30,7 @@ class Relay:
         return self.last_lease
     def valid(self):
         lease=self.lease()
-        return not(self.d/'STOP').exists()and not(self.d/'STOP_REQUEST.json').exists()and lease.get('generation')==self.cfg['generation']and lease.get('expires_unix',0)>time.time()and(not lease.get('deadline_unix')or lease['deadline_unix']>time.time())
+        return not self.stop_path.exists()and not self.stop_request_path.exists()and lease.get('generation')==self.cfg['generation']and lease.get('expires_unix',0)>time.time()and(not lease.get('deadline_unix')or lease['deadline_unix']>time.time())
     def allowance(self):
         if self.role=='front':return 65536
         lease=self.lease()
@@ -41,38 +44,9 @@ class Relay:
             self.last_save=time.monotonic();self.state['updated_unix']=time.time()
             save(self.d/(self.role+'-status.json'),self.state)
     def pump(self,left,right,initial=b''):
-        buffers={left:bytearray(),right:bytearray(initial)};peer={left:right,right:left};sel=selectors.DefaultSelector()
-        for stream in peer:stream.setblocking(False)
-        reason='STOP_OR_LEASE'
-        try:
-            while self.valid():
-                self.status();remaining=self.allowance()
-                for stream in peer:
-                    mask=selectors.EVENT_WRITE if buffers[stream]else 0
-                    if remaining>0 and len(buffers[peer[stream]])<65536:mask|=selectors.EVENT_READ
-                    try:sel.unregister(stream)
-                    except KeyError:pass
-                    if mask:sel.register(stream,mask)
-                for key,mask in sel.select(.05):
-                    stream=key.fileobj
-                    if mask&selectors.EVENT_WRITE:
-                        n=stream.send(buffers[stream]);del buffers[stream][:n]
-                        if self.role=='backend'and stream is right:self.state['upstream_sent_bytes']+=n
-                    if mask&selectors.EVENT_READ:
-                        size=min(16384,self.allowance(),65536-len(buffers[peer[stream]]))
-                        if size<=0:continue
-                        data=stream.recv(size)
-                        if not data:return 'CLIENT_EOF'if stream is left else'UPSTREAM_EOF'
-                        self.state['received_bytes']+=len(data)
-                        if self.role=='backend'and stream is right:self.state['upstream_received_bytes']+=len(data)
-                        buffers[peer[stream]].extend(data);self.last_progress=time.monotonic()
-        finally:
-            sel.close()
-            for stream in peer:
-                try:stream.shutdown(socket.SHUT_RDWR)
-                except OSError:pass
-                stream.close()
-        return reason
+        return pump(self,left,right,initial)
+    def before_upstream_attempt(self):
+        pass
     def run(self):
         listener=socket.socket(socket.AF_INET if self.role=='front'else socket.AF_UNIX,socket.SOCK_STREAM)
         listener.settimeout(.2)
@@ -82,7 +56,7 @@ class Relay:
             listener.bind(str(self.sockpath));self.sockpath.chmod(0o600)
         listener.listen(8);self.status(True,phase='ready');failures=0;retry_not_before=0
         try:
-            while not(self.d/'STOP').exists():
+            while not self.stop_path.exists():
                 if not self.valid():
                     self.status(phase='waiting_lease');time.sleep(.1);continue
                 try:client,_=listener.accept()
@@ -103,6 +77,13 @@ class Relay:
                         if not self.valid():client.close();continue
                         if self.allowance()<1024**2:
                             client.close();self.status(True,phase='waiting_credit');time.sleep(.1);continue
+                        cap=self.cfg.get('max_connections')
+                        if cap is not None and (type(cap) is not int or cap<1):
+                            raise ValueError('invalid_upstream_attempt_cap')
+                        if cap is not None and self.state['connect_attempts']>=cap:
+                            client.close();self.stop_path.touch(mode=0o600)
+                            self.status(True,phase='connection_cap_reached');continue
+                        self.before_upstream_attempt()
                         # Every upstream attempt reserves its own receive-window/shutdown margin.
                         self.state['connection_headroom_bytes']+=1024**2
                         self.state['connect_attempts']+=1;self.status(True,phase='connecting')

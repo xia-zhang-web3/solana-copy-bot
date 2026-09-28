@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MISS_COUNT: usize = 8;
 const STAGE_COUNT: usize = 5;
-const CLASS_COUNT: usize = 9;
+const CLASS_COUNT: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
@@ -29,6 +29,7 @@ pub enum TransportClass {
     Internal,
     Other,
     End,
+    DataLoss,
 }
 impl TransportStage {
     fn index(self) -> usize {
@@ -48,7 +49,8 @@ impl TransportClass {
             Code::PermissionDenied => Self::Permission,
             Code::ResourceExhausted => Self::Resource,
             Code::InvalidArgument => Self::InvalidArgument,
-            Code::Internal | Code::DataLoss => Self::Internal,
+            Code::Internal => Self::Internal,
+            Code::DataLoss => Self::DataLoss,
             _ => Self::Other,
         }
     }
@@ -114,6 +116,8 @@ pub struct DurableIngressSnapshot {
     pub last_received_block_slot: u64,
     /// Last Parent emitted to the delivery queue, before SQLite acknowledgement.
     pub last_parent_slot: u64,
+    /// Parent acknowledged only after the runtime committed its SQLite envelope.
+    pub last_durably_stored_parent_slot: u64,
     pub queue_wait_count: u64,
     pub queue_wait_ms_total: u64,
     pub queue_wait_ms_max: u64,
@@ -139,6 +143,7 @@ pub(crate) struct DurableIngressTelemetry {
     last_transaction_slot: AtomicU64,
     last_received_block_slot: AtomicU64,
     last_parent_slot: AtomicU64,
+    last_durably_stored_parent_slot: AtomicU64,
     queue_wait_count: AtomicU64,
     queue_wait_ms_total: AtomicU64,
     queue_wait_ms_max: AtomicU64,
@@ -162,6 +167,10 @@ impl DurableIngressTelemetry {
     }
     pub(crate) fn parent(&self, slot: u64) {
         self.last_parent_slot.store(slot, Ordering::Relaxed);
+    }
+    pub(crate) fn acknowledge_parent(&self, slot: u64) {
+        self.last_durably_stored_parent_slot
+            .fetch_max(slot, Ordering::Relaxed);
     }
     pub(crate) fn admission(&self, result: &Admission, bot: bool, scoped: bool) {
         match result {
@@ -227,6 +236,7 @@ impl DurableIngressTelemetry {
             last_transaction_slot: get(&self.last_transaction_slot),
             last_received_block_slot: get(&self.last_received_block_slot),
             last_parent_slot: get(&self.last_parent_slot),
+            last_durably_stored_parent_slot: get(&self.last_durably_stored_parent_slot),
             queue_wait_count: get(&self.queue_wait_count),
             queue_wait_ms_total: get(&self.queue_wait_ms_total),
             queue_wait_ms_max: get(&self.queue_wait_ms_max),
@@ -275,6 +285,7 @@ impl DurableIngressTelemetry {
             last_transaction_slot = s.last_transaction_slot,
             last_received_block_slot = s.last_received_block_slot,
             last_parent_slot = s.last_parent_slot,
+            last_durably_stored_parent_slot = s.last_durably_stored_parent_slot,
             queue_wait_ms_max = s.queue_wait_ms_max,
             queue_wait_over_100ms = s.queue_wait_over_100ms,
             reconnects = s.reconnects,
@@ -291,6 +302,7 @@ impl DurableIngressTelemetry {
             reconnect_permission = s.reconnect_classes[TransportClass::Permission as usize],
             reconnect_invalid_argument =
                 s.reconnect_classes[TransportClass::InvalidArgument as usize],
+            reconnect_data_loss = s.reconnect_classes[TransportClass::DataLoss as usize],
             reconnect_internal = s.reconnect_classes[TransportClass::Internal as usize],
             reconnect_other = s.reconnect_classes[TransportClass::Other as usize],
             reconnect_end_class = s.reconnect_classes[TransportClass::End as usize],

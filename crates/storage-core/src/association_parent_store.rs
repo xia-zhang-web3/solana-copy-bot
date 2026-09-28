@@ -1,5 +1,5 @@
 use super::*;
-use copybot_core_types::association_delivery::{Delivery, DeliveryEvent};
+use copybot_core_types::association_delivery::Delivery;
 const ROW: &str = "SELECT json_array(first_observation,first_session,first_sequence,contradiction) FROM association_parent_blocks WHERE block_key=?1";
 const HASH: &str = "SELECT json_array(first_slot,contradiction_slot) FROM association_parent_hashes WHERE block_hash=?1";
 /// First observation is immutable. Missing/malformed -> known is a contradiction,
@@ -9,9 +9,7 @@ pub(in crate::association_sell_preparation) fn put(
     d: &Delivery,
     p: &mut Readback,
 ) -> Result<()> {
-    let DeliveryEvent::Parent(o) = &d.event else {
-        unreachable!()
-    };
+    let o = d.event.parent_observation().expect("parent delivery");
     ensure!(
         o.issue == o.expected_issue(),
         "unvalidated parent observation tag"

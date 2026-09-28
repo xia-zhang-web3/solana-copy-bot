@@ -10,6 +10,8 @@ pub struct IngestionConfig {
     pub capture_scope_db: Option<String>,
     pub yellowstone_delivery_mode: String,
     pub yellowstone_association: Option<crate::AssociationDeliveryConfig>,
+    /// Explicit observation-only replay scope; all financial activation is forbidden.
+    pub yellowstone_replay_wallets: Vec<String>,
     pub helius_ws_url: String,
     pub helius_http_url: String,
     pub helius_http_urls: Vec<String>,
@@ -53,6 +55,7 @@ impl Default for IngestionConfig {
             capture_scope_db: None,
             yellowstone_delivery_mode: "legacy".into(),
             yellowstone_association: None,
+            yellowstone_replay_wallets: Vec::new(),
             helius_ws_url: "wss://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
             helius_http_url: "https://mainnet.helius-rpc.com/?api-key=REPLACE_ME".to_string(),
             helius_http_urls: Vec::new(),

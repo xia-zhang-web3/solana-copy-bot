@@ -1,24 +1,24 @@
 # Project Recovery Plan
 
-## Current decision: Run15 full Raydium path locally proved; matching install pending
-
-Source7EoQc9N9QrGMf6JR2j8yy4rmY1ZsexPuAXoTCQtDDbSF is bound to Run15.
-Captured legacy/classic BUY727/SELL725 facts at2026-09-28T12:05:57.965312Z
-do not promise future activity or a full roundtrip.
-Proto12.6 preserves config at tonic decode; config/v1 creates no financial Admission.
-Mixed prefix inventory now proves exact raw/ownership or refuses relevant unknowns.
-Direct AMM v4 source and exact one-hop Jupiter→Ray follower BUY anchors are supported.
-The full daemon offline scenario PASS89.83s: actual sources, modeled follower/parent
-pages/SELL execution boundary, config143/v1Admission0, partial10475397raw sold,
-257418781raw remaining, continued commits, UNKNOWN/restart/no second send.
-Independent causal repeat PASS92.20s; source/config/carry-only review PASS.
-BUY decomposition stays unresolved; modeled cash settlement is no strategy P/L proof.
-Cumulative HTTP779/15870CU/$0.00833175 and stream59581108989bytes/62connections
-retained. New provider/stream/trade0; target copybot-app/release via exact-SHA CI.
-Run15 STOP, empty state, no authority/clocks/containers; oldda3 pending replacement.
-Next: matching artifact installation/stopped preflight; owner activation separate.
-Caps: BUY1≤0.01SOL,sourceSELL1,4h,$50,50bps,priority50000,loss0.02SOL,floor160200031,one submit; no forced exit.
-See [source facts](audit/2026-09-28/run14-live-review/SOURCE_SELECTION_V1_READ_RESULT_RU.md) and [full-path preparation](audit/2026-09-28/run15-full-path/PREPARATION_RU.md).
+## Current decision: Run15 stopped; local transport repair accepted, install pending
+Run15 stopped after 23 reconnects: STOP, five containers exited, NO_SIGNAL;
+orders/receipts/fills/positions/dispatch/decisions0. Supervisor normal_stop;
+launcher LIVE_RESULT absent. Original DB/authority/clocks/ledger retained.
+Cumulative HTTP996/19020CU/$0.0099855 model; stream83,722,698,801 bytes.
+Historical live Internal cause UNKNOWN; no new financial run is authorized.
+Bounded redacted diagnostics and relay EOF drain are independently accepted.
+SQLite0089 scoped cursor/replay checks exact parent/hash/full Info before fresh
+Admission, preserves first facts/UNKNOWN, and restores commit before ACK/restart.
+New controls6/6, checkpoint4/4 and migration rollback2/2 independently PASS.
+Genuine tonic→both relays→daemon model2.96s: BUY1/SELL1, partial remainder,
+UNKNOWN/restart/receipt reconciliation, no second send. Live execution unproved.
+Architecture changed/all PASS; copybot-app debug compile29.95s/shared cache.
+CI copybot-app/release matching artifact/install/preflight remain in progress.
+Production deps unchanged; two existing locked crates added only as test deps.
+Deleted obsolete isolated debug cache: freed41.8GB; financial history retained.
+Prepared stopped read-only probe for separate owner decision: ≤480s/4GiB/
+$0.40 model/3 upstream attempts, HTTP/CU/sign/submit0, permanent STOP.
+No new paid action; do not repeat Run15 or issue a new financial launch. Evidence: [transport preparation](audit/2026-09-28/run15-full-path/TRANSPORT_RECOVERY_PREPARATION_RU.md).
 
 ## Run14 incident baseline: no repeat or identical paid run
 

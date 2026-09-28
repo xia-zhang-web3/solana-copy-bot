@@ -60,6 +60,8 @@ mod run15_full_path_frames;
 mod run15_full_path_fixture;
 mod run15_full_path_server;
 mod run15_full_path_tests;
+mod run15_reconnect_tonic_fixture;
+mod run15_reconnect_money_tests;
 mod owner_buy_wire_tests;
 pub(crate) mod owner_buy_protected_fixture;
 mod owner_buy_protected_tests;

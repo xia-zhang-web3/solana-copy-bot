@@ -108,6 +108,18 @@ pub fn validate_delivery_source(c: &IngestionConfig) -> Result<()> {
 }
 pub fn validate_association_delivery(c: &AppConfig) -> Result<()> {
     validate_delivery_source(&c.ingestion)?;
+    if !c.ingestion.yellowstone_replay_wallets.is_empty() {
+        let wallets=&c.ingestion.yellowstone_replay_wallets;
+        ensure!(c.ingestion.yellowstone_delivery_mode == "durable_association_v1"
+            && wallets.len() <= 4 && wallets.iter().all(|w| (32..=44).contains(&w.len()))
+            && wallets.iter().collect::<std::collections::HashSet<_>>().len()==wallets.len(),
+            "observation_replay_wallet_scope");
+        let e=&c.execution;
+        ensure!(!e.enabled && !e.canary_tiny_submit_enabled && !e.canary_entry_submit_enabled
+            && !e.tiny_experiment.activate && e.native_fresh_buy.is_none()
+            && e.owner_technical_buy.is_none() && e.owner_exit.is_none()
+            && e.technical_cohort.is_none(), "observation_replay_financial_activation_forbidden");
+    }
     if c.ingestion.capture_scope_db.is_some() {
         ensure!(
             !c.execution.enabled
