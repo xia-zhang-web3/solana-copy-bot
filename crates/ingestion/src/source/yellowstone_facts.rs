@@ -41,6 +41,18 @@ pub(super) enum DecodeMiss {
     InvalidAmount,
     UnsupportedPumpSwap,
     Unclassified,
+    UnsupportedMessageConfig,
+}
+
+/// The proto retains this marker at tonic decode time. Config presence means
+/// an unsupported V1 message, even if a provider sends `versioned=false`.
+pub(super) fn unsupported_message_config(
+    info: &yellowstone_grpc_proto::prelude::SubscribeUpdateTransactionInfo,
+) -> bool {
+    info.transaction
+        .as_ref()
+        .and_then(|tx| tx.message.as_ref())
+        .is_some_and(|message| message.config.is_some())
 }
 
 /// Pure extraction: no clock, I/O, telemetry mutation or message timestamp.
@@ -82,6 +94,10 @@ fn decode(
     let Some(tx_info) = tx_update.transaction.as_ref() else {
         return Err(anyhow!("missing status in yellowstone update"));
     };
+    if unsupported_message_config(tx_info) {
+        *miss = Some(DecodeMiss::UnsupportedMessageConfig);
+        return Ok(None);
+    }
     if tx_info.is_vote {
         *miss = Some(DecodeMiss::Vote);
         return Ok(None);

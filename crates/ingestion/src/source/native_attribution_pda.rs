@@ -23,3 +23,22 @@ pub(super) fn associated(owner: &str, mint: &str) -> Option<String> {
     }
     None
 }
+
+pub(super) fn event_authority(program: &str) -> Option<String> {
+    let program = bs58::decode(program).into_vec().ok()?;
+    if program.len() != 32 {
+        return None;
+    }
+    for bump in (1..=u8::MAX).rev() {
+        let mut h = Sha256::new();
+        h.update(b"__event_authority");
+        h.update([bump]);
+        h.update(&program);
+        h.update(b"ProgramDerivedAddress");
+        let bytes: [u8; 32] = h.finalize().into();
+        if CompressedEdwardsY(bytes).decompress().is_none() {
+            return Some(bs58::encode(bytes).into_string());
+        }
+    }
+    None
+}

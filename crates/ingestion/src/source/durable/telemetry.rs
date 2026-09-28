@@ -4,7 +4,7 @@ use crate::source::yellowstone_facts::DecodeMiss;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const MISS_COUNT: usize = 7;
+const MISS_COUNT: usize = 8;
 const STAGE_COUNT: usize = 5;
 const CLASS_COUNT: usize = 9;
 
@@ -105,7 +105,8 @@ pub struct DurableIngressSnapshot {
     pub duplicates: u64,
     pub foreign_signer: u64,
     pub decode_errors: u64,
-    /// Vote, failed, other program, no attributed swap, invalid amount, unsupported PumpSwap, unclassified.
+    /// Vote, failed, other program, no attributed swap, invalid amount, unsupported
+    /// PumpSwap, unclassified, unsupported message config.
     pub decode_misses: [u64; MISS_COUNT],
     pub admission_rejections: u64,
     pub last_transaction_slot: u64,
@@ -268,6 +269,8 @@ impl DurableIngressTelemetry {
             decode_invalid_amount = s.decode_misses[DecodeMiss::InvalidAmount as usize],
             decode_unsupported_pumpswap = s.decode_misses[DecodeMiss::UnsupportedPumpSwap as usize],
             decode_unclassified = s.decode_misses[DecodeMiss::Unclassified as usize],
+            decode_unsupported_message_config =
+                s.decode_misses[DecodeMiss::UnsupportedMessageConfig as usize],
             admission_rejections = s.admission_rejections,
             last_transaction_slot = s.last_transaction_slot,
             last_received_block_slot = s.last_received_block_slot,

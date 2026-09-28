@@ -23,6 +23,8 @@ pub(super) fn build_yellowstone_subscribe_request(
                 .collect(),
             account_exclude: Vec::new(),
             account_required: Vec::new(),
+            cuckoo_account_include: None,
+            token_accounts: None,
         },
     );
 

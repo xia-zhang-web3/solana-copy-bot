@@ -79,6 +79,10 @@ pub(crate) async fn prepare(
             request, &intent.signed_transaction_base64,
         )?)
     } else { None };
+    if crate::execution_technical_cohort::active(config)
+        && request.signal_id.starts_with("native-buy-v1:") && request.side == "buy" {
+        crate::execution_owner_buy_wire::verify_cohort(request, &intent.signed_transaction_base64)?;
+    }
     #[cfg(test)]
     let mocked = native.and_then(|guard| guard.mock_io());
     #[cfg(not(test))]

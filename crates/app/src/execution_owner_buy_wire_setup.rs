@@ -6,7 +6,7 @@ use anyhow::{bail, ensure, Result};
 
 pub(super) fn verify(
     instructions: &[DecodedInstruction], route: usize, wallet: PubkeyBytes,
-    source: PubkeyBytes, destination: PubkeyBytes, mint: PubkeyBytes,
+    source: PubkeyBytes, destination: PubkeyBytes, mint: PubkeyBytes, input: u64,
 ) -> Result<()> {
     let mut created = [false; 2];
     let mut funded = false;
@@ -43,7 +43,7 @@ pub(super) fn verify(
             let amount = u64::from_le_bytes(i.data[4..].try_into()?);
             if before {
                 ensure!(!funded && !synced && a[1] == A::writable(source)
-                    && amount == 10_000_000, "owner_buy_wire_wrap_amount_or_destination");
+                    && amount == input, "owner_buy_wire_wrap_amount_or_destination");
                 funded = true;
             } else {
                 // Exact reserve is proved independently by the native-floor policy.

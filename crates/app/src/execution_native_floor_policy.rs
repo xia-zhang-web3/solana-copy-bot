@@ -94,6 +94,10 @@ pub(crate) fn verify_signing_payload(
             && request.wallet_pubkey == plan.wallet_pubkey,
         "native_floor_plan_identity_mismatch"
     );
+    if crate::execution_technical_cohort::active(config)
+        && request.signal_id.starts_with("native-buy-v1:") && request.side == "buy" {
+        crate::execution_owner_buy_wire::verify_cohort(request, payload)?;
+    }
     let Some(reserve) = required_for_plan(config, plan)? else {
         return Ok(None);
     };

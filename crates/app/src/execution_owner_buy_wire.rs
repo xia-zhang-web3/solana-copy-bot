@@ -45,8 +45,25 @@ pub(crate) fn verify(request: &ExecutionSubmitRequest, payload: &str) -> Result<
         && request.wallet_pubkey == request.wallet_id && request.token == USDC
         && request.buy_size_sol == 0.01 && request.slippage_tolerance_bps <= 50,
         "owner_buy_wire_request");
+    verify_bound(request, payload, USDC, AMOUNT)
+}
+
+/// Technical copies must use the same closed Raydium receipt profile as their exit proof.
+/// This is a byte/ABI gate; a provider quote label alone does not select the route.
+pub(crate) fn verify_cohort(request: &ExecutionSubmitRequest, payload: &str) -> Result<OwnerBuyWireProof> {
+    ensure!(request.signal_id.starts_with("native-buy-v1:") && request.side == "buy"
+        && request.slippage_tolerance_bps <= 50, "cohort_buy_wire_request");
+    let amount = request.metadata.quote_in_amount_raw.as_deref()
+        .context("cohort_buy_wire_amount")?.parse::<u64>()?;
+    ensure!((1..=copybot_storage_core::TINY_BUY_LAMPORTS).contains(&amount),
+        "cohort_buy_wire_amount");
+    verify_bound(request, payload, &request.token, amount)
+}
+
+fn verify_bound(request: &ExecutionSubmitRequest, payload: &str, token: &str, amount: u64) -> Result<OwnerBuyWireProof> {
+    ensure!(payload.len() <= 1644, "owner_buy_wire_size");
     let wallet = parse_pubkey(&request.wallet_pubkey, "owner_buy_wire_wallet")?;
-    let mint = parse_pubkey(USDC, "owner_buy_wire_mint")?;
+    let mint = parse_pubkey(token, "owner_buy_wire_mint")?;
     let source = associated_token_address(&wallet, &wsol_mint(), &token_program_id());
     let destination = associated_token_address(&wallet, &mint, &token_program_id());
     let quote: Value = serde_json::from_str(request.metadata.quote_response_json.as_deref()
@@ -54,8 +71,8 @@ pub(crate) fn verify(request: &ExecutionSubmitRequest, payload: &str) -> Result<
     let output = quote["outAmount"].as_str().context("owner_buy_wire_quote_output")?
         .parse::<u64>()?;
     ensure!(output > 0 && quote["inputMint"] == crate::execution_quote_canary_helpers::SOL_MINT
-        && quote["outputMint"] == USDC && quote["inAmount"] == AMOUNT.to_string()
-        && request.metadata.quote_in_amount_raw.as_deref() == Some("10000000")
+        && quote["outputMint"] == token && quote["inAmount"] == amount.to_string()
+        && request.metadata.quote_in_amount_raw.as_deref() == Some(amount.to_string().as_str())
         && request.metadata.quote_out_amount_raw.as_deref() == Some(output.to_string().as_str())
         && quote["swapMode"] == "ExactIn"
         && quote["slippageBps"].as_u64() == Some(request.slippage_tolerance_bps)
@@ -83,17 +100,17 @@ pub(crate) fn verify(request: &ExecutionSubmitRequest, payload: &str) -> Result<
         if instruction.program.pubkey != jupiter { continue; }
         ensure!(route_index.replace(instruction.index).is_none(), "owner_buy_wire_multiple_routes");
         verify_route(instruction, wallet, source, destination, mint, jupiter,
-            amm, output, request.slippage_tolerance_bps)?;
+            amm, amount, output, request.slippage_tolerance_bps)?;
     }
     let route_index = route_index.context("owner_buy_wire_route_missing")?;
-    setup::verify(&message.instructions, route_index, wallet, source, destination, mint)?;
-    Ok(OwnerBuyWireProof { amount: AMOUNT, message_sha256: message.binding.message_sha256 })
+    setup::verify(&message.instructions, route_index, wallet, source, destination, mint, amount)?;
+    Ok(OwnerBuyWireProof { amount, message_sha256: message.binding.message_sha256 })
 }
 
 fn verify_route(
     instruction: &DecodedInstruction, wallet: PubkeyBytes, source: PubkeyBytes,
     destination: PubkeyBytes, mint: PubkeyBytes, jupiter: PubkeyBytes,
-    amm: PubkeyBytes, output: u64, slippage: u64,
+    amm: PubkeyBytes, input: u64, output: u64, slippage: u64,
 ) -> Result<()> {
     ensure!(!instruction.program.is_writable && !instruction.program.is_signer,
         "owner_buy_wire_program_role");
@@ -138,7 +155,7 @@ fn verify_route(
     // Parse from the start, including the Vec length and every supported enum field.
     // No suffix extraction: an unknown enum, truncated field or trailing byte rejects.
     ensure!(cursor.take(3)? == [100, 0, 1], "owner_buy_wire_route_topology");
-    ensure!(cursor.u64()? == AMOUNT, "owner_buy_wire_exact_input");
+    ensure!(cursor.u64()? == input, "owner_buy_wire_exact_input");
     ensure!(cursor.u64()? == output, "owner_buy_wire_exact_output");
     ensure!(cursor.take(2)? == (slippage as u16).to_le_bytes() && cursor.byte()? == 0,
         "owner_buy_wire_slippage_or_fee");

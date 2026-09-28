@@ -21,6 +21,14 @@ pub(super) struct Server {
 #[tonic::async_trait]
 impl geyser_server::Geyser for Server {
     type SubscribeStream = Pin<Box<dyn Stream<Item = Result<SubscribeUpdate, Status>> + Send>>;
+    type SubscribeDeshredStream =
+        Pin<Box<dyn Stream<Item = Result<SubscribeUpdateDeshred, Status>> + Send>>;
+    async fn subscribe_deshred(
+        &self,
+        _: Request<Streaming<SubscribeDeshredRequest>>,
+    ) -> Result<Response<Self::SubscribeDeshredStream>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
     async fn subscribe(
         &self,
         request: Request<Streaming<SubscribeRequest>>,

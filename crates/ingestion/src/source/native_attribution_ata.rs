@@ -6,6 +6,28 @@ use super::{
 };
 
 pub(super) fn prove(v: &View, parent: usize, a: &[usize], buy: bool, sol: u64) -> Option<usize> {
+    profile(v, parent, a, buy, sol, false).map(|proof| proof.0)
+}
+
+/// Jupiter can create its target ATA during the first purchase. Unlike an
+/// absent balance default, this requires the full classic creation witness.
+pub(super) fn prove_jupiter(
+    v: &View,
+    parent: usize,
+    a: &[usize],
+    sol: u64,
+) -> Option<(usize, Option<usize>)> {
+    profile(v, parent, a, true, sol, true)
+}
+
+fn profile(
+    v: &View,
+    parent: usize,
+    a: &[usize],
+    buy: bool,
+    sol: u64,
+    new_target: bool,
+) -> Option<(usize, Option<usize>)> {
     let top = v.top.as_ref()?;
     if !depth_matches(top.get(parent)?, 1) {
         return None;
@@ -14,6 +36,7 @@ pub(super) fn prove(v: &View, parent: usize, a: &[usize], buy: bool, sol: u64) -
     let trader = a[1];
     let mut steps = Vec::new();
     let mut target_ata = None;
+    let mut target_creation = None;
     // R1: validate binding before treating a System/SPL instruction as unrelated.
     for (index, ix) in top.iter().enumerate() {
         if index == parent {
@@ -24,24 +47,41 @@ pub(super) fn prove(v: &View, parent: usize, a: &[usize], buy: bool, sol: u64) -
             return None;
         }
         if keys.iter().any(|i| [a[5], a[6], a[7], a[8]].contains(i)) {
-            // The BUY builder also invokes idempotent creation for an existing
-            // target ATA. Full rows/native presence and no CPI prove that no target
-            // account creation is being silently counted as this swap's setup.
+            // Existing targets need paired rows and no creation CPI. Jupiter's
+            // first target is accepted only with the full classic creation group.
             if keys.contains(&a[6]) {
                 if target_ata.replace(index).is_some()
                     || !buy
                     || index >= parent
                     || !identity(v, ix, trader, a[6], a[4])
-                    || *v.pre.as_ref()?.get(a[6])? == 0
-                    || v.pre.as_ref()?.get(a[6])? != v.post.as_ref()?.get(a[6])?
-                    || v.inner
-                        .as_ref()?
-                        .iter()
-                        .any(|(i, g)| *i == index && !g.is_empty())
                 {
                     return None;
                 }
-                v.pair(a[6], v.key(trader)?, v.key(a[4])?)?;
+                if *v.pre.as_ref()?.get(a[6])? == 0 {
+                    if !new_target || v.pre_tokens.as_ref()?.iter().any(|r| r.index == a[6]) {
+                        return None;
+                    }
+                    let rent = creation(v, index, trader, a[6], a[4])?;
+                    let post = v.row(v.post_tokens.as_ref()?, a[6])?;
+                    if post.owner != v.key(trader)?
+                        || post.mint != v.key(a[4])?
+                        || post.program != TOKEN
+                        || *v.post.as_ref()?.get(a[6])? != rent
+                    {
+                        return None;
+                    }
+                    target_creation = Some(index);
+                } else {
+                    if v.pre.as_ref()?.get(a[6])? != v.post.as_ref()?.get(a[6])?
+                        || v.inner
+                            .as_ref()?
+                            .iter()
+                            .any(|(i, g)| *i == index && !g.is_empty())
+                    {
+                        return None;
+                    }
+                    v.pair(a[6], v.key(trader)?, v.key(a[4])?)?;
+                }
                 continue;
             }
             if keys.iter().any(|i| [a[6], a[7], a[8]].contains(i)) {
@@ -64,10 +104,11 @@ pub(super) fn prove(v: &View, parent: usize, a: &[usize], buy: bool, sol: u64) -
     {
         return None;
     }
-    // The new class never handles a new/closed target account, even if its rows
-    // are spuriously populated. Persistent target balances must exist on both sides.
-    if *v.pre.as_ref()?.get(a[6])? == 0
-        || v.pre.as_ref()?.get(a[6])? != v.post.as_ref()?.get(a[6])?
+    // Pump keeps its persistent target rule. Only the explicitly proven Jupiter
+    // creation can supply a new target; a closed target is always unsupported.
+    if target_creation.is_none()
+        && (*v.pre.as_ref()?.get(a[6])? == 0
+            || v.pre.as_ref()?.get(a[6])? != v.post.as_ref()?.get(a[6])?)
     {
         return None;
     }
@@ -81,18 +122,23 @@ pub(super) fn prove(v: &View, parent: usize, a: &[usize], buy: bool, sol: u64) -
             return None;
         }
     }
-    let mut groups = v.inner.as_ref()?.iter().filter(|(i, _)| *i == create_index);
+    creation(v, create_index, trader, temp, a[3])?;
+    Some((create_index, target_creation))
+}
+
+fn creation(v: &View, index: usize, trader: usize, account: usize, mint: usize) -> Option<u64> {
+    let mut groups = v.inner.as_ref()?.iter().filter(|(i, _)| *i == index);
     let (_, group) = groups.next()?;
     if groups.next().is_some() || group.len() != 4 {
         return None;
     }
-    if !matches_ix(&group[0], 2, TOKEN, &[a[3]], &Op::AccountSize)
-        || !matches_ix(&group[2], 2, TOKEN, &[temp], &Op::ImmutableOwner)
+    if !matches_ix(&group[0], 2, TOKEN, &[mint], &Op::AccountSize)
+        || !matches_ix(&group[2], 2, TOKEN, &[account], &Op::ImmutableOwner)
         || !matches_ix(
             &group[3],
             2,
             TOKEN,
-            &[temp, a[3]],
+            &[account, mint],
             &Op::Init(v.key(trader)?.to_owned()),
         )
     {
@@ -113,7 +159,7 @@ pub(super) fn prove(v: &View, parent: usize, a: &[usize], buy: bool, sol: u64) -
             &group[1],
             2,
             SYSTEM,
-            &[trader, temp],
+            &[trader, account],
             &Op::CreateAccount {
                 lamports,
                 space,
@@ -123,7 +169,7 @@ pub(super) fn prove(v: &View, parent: usize, a: &[usize], buy: bool, sol: u64) -
     {
         return None;
     }
-    Some(create_index)
+    Some(lamports)
 }
 
 fn identity(v: &View, ix: &Instruction, trader: usize, account: usize, mint: usize) -> bool {

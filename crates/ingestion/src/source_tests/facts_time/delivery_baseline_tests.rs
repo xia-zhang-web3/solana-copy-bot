@@ -23,6 +23,15 @@ struct Fixture(
 impl geyser_server::Geyser for Fixture {
     type SubscribeStream =
         Pin<Box<dyn futures_util::Stream<Item = Result<SubscribeUpdate, tonic::Status>> + Send>>;
+    type SubscribeDeshredStream = Pin<
+        Box<dyn futures_util::Stream<Item = Result<SubscribeUpdateDeshred, tonic::Status>> + Send>,
+    >;
+    async fn subscribe_deshred(
+        &self,
+        _: tonic::Request<tonic::Streaming<SubscribeDeshredRequest>>,
+    ) -> Result<tonic::Response<Self::SubscribeDeshredStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented("fixture"))
+    }
     async fn subscribe(
         &self,
         request: tonic::Request<tonic::Streaming<SubscribeRequest>>,
@@ -262,12 +271,24 @@ async fn durable_loopback_reports_funnel_parent_and_safe_stream_failure() -> Res
     let update = cases::base(false, false);
     let tx = transaction(&update);
     let slot = tx.slot;
+    let mut unsupported = tx.clone();
+    let info = unsupported.transaction.as_mut().unwrap();
+    info.signature = vec![81; 64];
+    info.index = 1;
+    let transaction = info.transaction.as_mut().unwrap();
+    transaction.signatures[0] = info.signature.clone();
+    let message = transaction.message.as_mut().unwrap();
+    message.versioned = true;
+    message.config = Some(TransactionConfig::default());
     let block = SubscribeUpdateBlock {
         slot: tx.slot,
         blockhash: bs58::encode([80u8; 32]).into_string(),
         parent_slot: tx.slot - 1,
         parent_blockhash: bs58::encode([79u8; 32]).into_string(),
-        transactions: vec![tx.transaction.as_ref().unwrap().clone()],
+        transactions: vec![
+            tx.transaction.as_ref().unwrap().clone(),
+            unsupported.transaction.as_ref().unwrap().clone(),
+        ],
         ..Default::default()
     };
     let block = SubscribeUpdate {
@@ -282,7 +303,14 @@ async fn durable_loopback_reports_funnel_parent_and_safe_stream_failure() -> Res
     let server = tokio::spawn(
         tonic::transport::Server::builder()
             .add_service(geyser_server::GeyserServer::new(Fixture(
-                Arc::new(Mutex::new(vec![update, block])),
+                Arc::new(Mutex::new(vec![
+                    SubscribeUpdate {
+                        update_oneof: Some(subscribe_update::UpdateOneof::Transaction(unsupported)),
+                        ..Default::default()
+                    },
+                    update,
+                    block,
+                ])),
                 true,
                 true,
                 None,
@@ -331,7 +359,14 @@ async fn durable_loopback_reports_funnel_parent_and_safe_stream_failure() -> Res
     assert_eq!((admissions, parents), (1, 1));
     assert_eq!(
         (s.received_transactions, s.received_blocks, s.admissions),
-        (1, 1, 1)
+        (2, 1, 1)
+    );
+    // The real client/tonic codec must retain config: losing tag 7 would make
+    // the first clone a second valid swap and fail this admission count.
+    assert_eq!(
+        s.decode_misses
+            [crate::source::yellowstone_facts::DecodeMiss::UnsupportedMessageConfig as usize],
+        1
     );
     assert_eq!(s.last_parent_slot, slot);
     assert_eq!(s.last_received_block_slot, slot);

@@ -88,3 +88,15 @@ mod capture_scope_bridge_tests;
 mod capture_scope_fixture;
 #[path = "../source_tests/capture_scope_tests.rs"]
 mod capture_scope_tests;
+#[path = "../source_tests/source_selection_rpc.rs"]
+mod source_selection_rpc;
+#[path = "../source_tests/source_selection_replay.rs"]
+mod source_selection_replay;
+#[path = "../source_tests/run15_mixed_rpc.rs"]
+mod run15_mixed_rpc;
+#[path = "../source_tests/run15_version_tests.rs"]
+mod run15_version_tests;
+#[path = "../source_tests/jupiter_raydium_fixture.rs"]
+mod jupiter_raydium_fixture;
+#[path = "../source_tests/jupiter_raydium_attribution_tests.rs"]
+mod jupiter_raydium_attribution_tests;

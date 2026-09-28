@@ -62,6 +62,12 @@ pub(crate) fn record_execution_signing_envelope<A: ExecutionSubmitAdapter>(
         .and_then(|_| adapter.build_signing_envelope(request, plan))
         .and_then(|envelope| {
             validate_execution_signing_envelope(&envelope, request, plan)?;
+            if request.signal_id.starts_with("native-buy-v1:") && request.side == "buy"
+                && adapter.native_floor_config().is_ok_and(crate::execution_technical_cohort::active) {
+                crate::execution_owner_buy_wire::verify_cohort(request,
+                    envelope.signed_transaction_base64.as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("cohort_buy_wire_payload_missing"))?)?;
+            }
             crate::execution_priority_fee_proof::persist(
                 store,
                 request,

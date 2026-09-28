@@ -40,6 +40,8 @@ fn build_transaction_filter_subscribe_request(program_ids: &[String]) -> Subscri
             account_include: program_ids.to_vec(),
             account_exclude: Vec::new(),
             account_required: Vec::new(),
+            cuckoo_account_include: None,
+            token_accounts: None,
         },
     );
 

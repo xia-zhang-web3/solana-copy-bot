@@ -4,6 +4,8 @@
 mod rows;
 #[path = "fractional_inventory_schema.rs"]
 mod schema;
+#[path = "fractional_inventory_source.rs"]
+mod source;
 use super::QuoteBinding;
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -244,3 +246,10 @@ pub(super) fn verify(
         denominator: denominator.to_string(),
     })
 }
+
+#[cfg(test)]
+#[path = "fractional_inventory_corpus_tests.rs"]
+mod corpus_tests;
+#[cfg(test)]
+#[path = "fractional_inventory_metadata_tests.rs"]
+mod metadata_tests;

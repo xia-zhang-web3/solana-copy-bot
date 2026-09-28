@@ -32,9 +32,8 @@ async fn cohort_actual_transport_relay_reconnect_settles_once() -> Result<()> {
 async fn cohort_source_sell_case(sustained: bool, actual_transport: bool) -> Result<()> {
     let _only_cohort = COHORT_TEST.lock().await;
     let (_, signature, wallet_bytes) =
-        super::native_buy_runner_tests::fixture::signed_payload_for_lamports_and_floor(
-            10_000_000,
-            985_000_000,
+        crate::app_tests::run15_buy_wire_fixture::signed(
+            super::native_buy_runner_tests::fixture::MINT, 10_000_000, 10_000, 985_000_000,
         )?;
     let wallet = bs58::encode(wallet_bytes).into_string();
     let old: Value = serde_json::from_slice(&std::fs::read(

@@ -1,4 +1,4 @@
-//! Narrow supported jsonParsed PumpSwap operands, without an event timestamp.
+//! Closed PumpSwap and AMM v4 finalized operands, without an event timestamp.
 use anyhow::{ensure, Context, Result};
 use copybot_core_types::association_delivery::AdmissionFacts;
 use copybot_storage_core::{
@@ -6,12 +6,15 @@ use copybot_storage_core::{
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
+#[path = "execution_owned_sell_raydium.rs"]
+mod raydium;
 const PUMP: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 const SOL: &str = "So11111111111111111111111111111111111111112";
 const TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 fn basic<'a>(v: &'a Value, sig: &str, wallet: &str, slot: u64) -> Result<Vec<&'a str>> {
     ensure!(
-        v["version"] == "legacy" || v["version"] == 0,
+        (v["version"] == "legacy" || v["version"] == 0)
+            && v.pointer("/transaction/message/transactionConfig").is_none(),
         "owned_sell_transaction_version"
     );
     ensure!(
@@ -41,16 +44,29 @@ fn basic<'a>(v: &'a Value, sig: &str, wallet: &str, slot: u64) -> Result<Vec<&'a
         "owned_sell_accounts"
     );
     let mut keys = vec![];
+    let raw = accounts[0].is_string();
+    if raw {
+        ensure!(v.pointer("/transaction/message/header/numRequiredSignatures")
+            .and_then(Value::as_u64) == Some(1), "owned_sell_account_identity");
+    }
     for (i, a) in accounts.iter().enumerate() {
-        let k = a["pubkey"].as_str().context("owned_sell_account_key")?;
+        let k = if raw {a.as_str()} else {a["pubkey"].as_str()}
+            .context("owned_sell_account_key")?;
         crate::execution_pumpswap_accounts::parse_pubkey(k, "owned_sell_account")?;
-        ensure!(
-            !keys.contains(&k)
-                && a["signer"].as_bool() == Some(i == 0)
-                && a["writable"].is_boolean(),
-            "owned_sell_account_identity"
-        );
+        ensure!(!keys.contains(&k) && (raw || (a["signer"].as_bool() == Some(i == 0)
+            && a["writable"].is_boolean())), "owned_sell_account_identity");
         keys.push(k);
+    }
+    if raw && v["version"] == 0 {
+        for field in ["writable", "readonly"] {
+            for a in v["meta"]["loadedAddresses"][field].as_array()
+                .context("owned_sell_loaded_accounts")? {
+                let k = a.as_str().context("owned_sell_loaded_account")?;
+                crate::execution_pumpswap_accounts::parse_pubkey(k, "owned_sell_loaded_account")?;
+                ensure!(!keys.contains(&k) && keys.len() < 256, "owned_sell_account_identity");
+                keys.push(k);
+            }
+        }
     }
     ensure!(keys[0] == wallet, "owned_sell_wallet_binding");
     for field in ["preBalances", "postBalances"] {
@@ -188,7 +204,7 @@ fn swap<'a>(
     );
     Ok((a[5].as_str().unwrap(), a[6].as_str().unwrap()))
 }
-pub(super) fn buy(v: &Value, r: &ReceiptAnchor, f: &ExecutionCanaryReceiptFacts) -> Result<()> {
+pub(crate) fn buy(v: &Value, r: &ReceiptAnchor, f: &ExecutionCanaryReceiptFacts) -> Result<()> {
     ensure!(
         f.tx_signature == r.contributor.tx_signature
             && f.wallet_pubkey == r.wallet
@@ -208,6 +224,16 @@ pub(super) fn buy(v: &Value, r: &ReceiptAnchor, f: &ExecutionCanaryReceiptFacts)
             v["meta"]["fee"].as_u64() == Some(fee.as_u64()),
             "owned_sell_buy_fee_receipt"
         );
+    }
+    if raydium::supported(v, &keys)? {
+        let swap = raydium::prove(v, &keys, &r.wallet, &r.token, r.decimals, false)?;
+        ensure!(swap.input <= copybot_storage_core::TINY_BUY_LAMPORTS
+            && swap.output.to_string() == r.raw, "owned_sell_buy_amount_cap");
+        raydium::buy_target_delta(v, &keys, &r.wallet, &r.token, r.decimals, &swap)?;
+        ensure!(f.token_delta.as_ref().is_some_and(|d|
+            d.raw == i128::from(swap.output) && d.decimals == r.decimals),
+            "owned_sell_buy_receipt_delta");
+        return Ok(());
     }
     let ixs = v
         .pointer("/transaction/message/instructions")
@@ -240,7 +266,7 @@ pub(super) fn buy(v: &Value, r: &ReceiptAnchor, f: &ExecutionCanaryReceiptFacts)
     );
     Ok(())
 }
-pub(super) fn sell(v: &Value, s: &AdmissionFacts) -> Result<u64> {
+pub(crate) fn sell(v: &Value, s: &AdmissionFacts) -> Result<u64> {
     let f = &s.facts;
     let e = f
         .exact_amounts
@@ -252,6 +278,14 @@ pub(super) fn sell(v: &Value, s: &AdmissionFacts) -> Result<u64> {
     );
     let keys = basic(v, &f.signature, &f.wallet, f.slot)?;
     let raw = e.amount_in_raw.parse::<u64>()?;
+    if raydium::supported(v, &keys)? {
+        let swap = raydium::prove(v, &keys, &f.wallet, &f.token_in, e.amount_in_decimals, true)?;
+        ensure!(swap.input == raw && swap.output.to_string() == e.amount_out_raw
+            && delta(v, &keys, &f.wallet, swap.base, &f.token_in, e.amount_in_decimals)? == -i128::from(raw)
+            && delta(v, &keys, &f.wallet, swap.quote, SOL, 9)? == i128::from(swap.output),
+            "owned_sell_source_decoded_amount");
+        return Ok(f.slot);
+    }
     let (base, quote) = swap(v, &keys, &f.wallet, &f.token_in, true, raw)?;
     ensure!(
         delta(v, &keys, &f.wallet, base, &f.token_in, e.amount_in_decimals)? == -i128::from(raw)

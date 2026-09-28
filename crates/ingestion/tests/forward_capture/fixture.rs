@@ -74,6 +74,7 @@ pub fn update(f: &Value) -> SubscribeUpdate {
                             recent_blockhash: bytes(&m["recentBlockhash"]),
                             instructions: list(&m["instructions"], ix),
                             versioned: r["version"] == 0,
+                            config: None,
                             address_table_lookups: list(&m["addressTableLookups"], |a| {
                                 MessageAddressTableLookup {
                                     account_key: bytes(&a["accountKey"]),

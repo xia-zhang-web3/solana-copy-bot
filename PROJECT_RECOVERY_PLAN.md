@@ -1,6 +1,26 @@
 # Project Recovery Plan
 
-## Current decision: Run14 used; no repeat or identical paid run
+## Current decision: Run15 full Raydium path locally proved; matching install pending
+
+Source7EoQc9N9QrGMf6JR2j8yy4rmY1ZsexPuAXoTCQtDDbSF is bound to Run15.
+Captured legacy/classic BUY727/SELL725 facts at2026-09-28T12:05:57.965312Z
+do not promise future activity or a full roundtrip.
+Proto12.6 preserves config at tonic decode; config/v1 creates no financial Admission.
+Mixed prefix inventory now proves exact raw/ownership or refuses relevant unknowns.
+Direct AMM v4 source and exact one-hop Jupiter→Ray follower BUY anchors are supported.
+The full daemon offline scenario PASS89.83s: actual sources, modeled follower/parent
+pages/SELL execution boundary, config143/v1Admission0, partial10475397raw sold,
+257418781raw remaining, continued commits, UNKNOWN/restart/no second send.
+Independent causal repeat PASS92.20s; source/config/carry-only review PASS.
+BUY decomposition stays unresolved; modeled cash settlement is no strategy P/L proof.
+Cumulative HTTP779/15870CU/$0.00833175 and stream59581108989bytes/62connections
+retained. New provider/stream/trade0; target copybot-app/release via exact-SHA CI.
+Run15 STOP, empty state, no authority/clocks/containers; oldda3 pending replacement.
+Next: matching artifact installation/stopped preflight; owner activation separate.
+Caps: BUY1≤0.01SOL,sourceSELL1,4h,$50,50bps,priority50000,loss0.02SOL,floor160200031,one submit; no forced exit.
+See [source facts](audit/2026-09-28/run14-live-review/SOURCE_SELECTION_V1_READ_RESULT_RU.md) and [full-path preparation](audit/2026-09-28/run15-full-path/PREPARATION_RU.md).
+
+## Run14 incident baseline: no repeat or identical paid run
 
 The owner activated Run14 once. STOP appeared after about 3,590 seconds,
 before its four-hour deadline; the launcher finalized after 3,606 seconds
@@ -22,16 +42,14 @@ failure call is not preserved. The monitor starts a Docker reader roughly every
 0.5 seconds, a concrete VM load source. The brief observed VirtualMachine CPU
 spike subsided after STOP; its precise cause is unproved.
 
-The ledger now holds 593 cumulative attempts, 8,510 CU and 4,467,750 nanoUSD;
+The incident ledger holds 593 cumulative attempts, 8,510 CU and 4,467,750 nanoUSD;
 the Run14 relay observed 19,184,389,247 upstream bytes plus 19,922,944
 connection-headroom bytes. The $50 cumulative provider model and unchanged
-trade limits are not reset. Next authorized action is a narrow offline helper
-repair: bounded read/inspect cadence and typed failures, safe continuation
-through transient observation errors, correct flat-JSON progress, causal tests
-and independent review. Build target `NONE` if only private helpers change.
-Do not create or activate another paid package until fresh source activity is
-evidenced and its scope/budget is explicit. Automatic copying and profitability
-remain unproved.
+trade limits are not reset. The offline helper repair above addresses the
+reproduced observer faults; it does not establish the exact historical cause
+of Run14's `ValueError`. Do not create or activate another trading package
+until fresh source activity is evidenced and its scope/budget is explicit.
+Automatic copying and profitability remain unproved.
 
 ## Prior decision: Run13 sealed under STOP after Run12 resource probe failure
 

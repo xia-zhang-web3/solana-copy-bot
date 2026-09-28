@@ -6,6 +6,8 @@ use super::SOL_MINT;
 mod ata;
 #[path = "native_attribution_json.rs"]
 pub(super) mod json;
+#[path = "native_attribution_jupiter.rs"]
+mod jupiter;
 #[path = "native_attribution_lifecycle.rs"]
 mod lifecycle;
 #[path = "native_attribution_pda.rs"]

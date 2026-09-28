@@ -53,6 +53,28 @@ impl YellowstoneAssociation<'_> {
         let info = tx.transaction.as_ref().ok_or(Rejection::InputBounds(
             AssociationRefusal::MissingExpectedInfo,
         ))?;
+        // Unsupported swaps never enter history. Keep the envelope cap, then
+        // refuse the format before legacy/v0 info bounds can end the session.
+        if super::super::yellowstone_facts::unsupported_message_config(info) {
+            if tx.encoded_len() > self.limits.input_bytes {
+                return Err(Rejection::InputTooLarge);
+            }
+            // A changed format for an already admitted identity is still a
+            // conflicting provider observation, not an unrelated skipped swap.
+            let signature = bs58::encode(&info.signature).into_string();
+            if let Some(id) = self.signatures.get(&signature).copied() {
+                if self.retained(&self.records[&id], context.offset) {
+                    return Ok((Admission::Duplicate(id), Cause::Conflict(id)));
+                }
+            }
+            return Ok((
+                Admission::NotChecked {
+                    reason: NotCheckedReason::Decode(DecodeMiss::UnsupportedMessageConfig),
+                    used_program_fallback: false,
+                },
+                Cause::Tick,
+            ));
+        }
         association::bounds::check_info(info, association::InfoSide::Expected)
             .map_err(Rejection::InputBounds)?;
         if info.signature.len() != 64 {

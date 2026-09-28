@@ -2,7 +2,7 @@
 #[path = "execution_owned_sell_body.rs"]
 pub(crate) mod body;
 #[path = "execution_owned_sell_rpc_decode.rs"]
-mod decode;
+pub(crate) mod decode;
 #[path = "execution_fractional_sell.rs"]
 pub(crate) mod fractional;
 use anyhow::{ensure, Context, Result};

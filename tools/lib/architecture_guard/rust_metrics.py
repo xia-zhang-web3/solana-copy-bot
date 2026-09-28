@@ -58,12 +58,12 @@ def inline_metrics(text):
         stripped = text[tail_offset:].lstrip()
         if not ITEM.match(stripped):
             continue
-        count += 1
         item_start = tail_offset + len(text[tail_offset:]) - len(stripped)
         semicolon = text.find(';', item_start)
         brace = text.find('{', item_start)
         if brace == -1 or (semicolon != -1 and semicolon < brace):
             continue
+        count += 1
         end = matching_brace_end(text, brace)
         body_lines += text[item_start:end + 1].count('\n') + 1
     tests = 0

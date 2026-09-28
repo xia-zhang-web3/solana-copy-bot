@@ -35,13 +35,16 @@ pub(super) struct Case {
 }
 
 fn quote_for_amount(now: chrono::DateTime<Utc>, out: &str, amount: &str,
-    slippage_bps: u64) -> QuoteSample {
+    slippage_bps: u64, cohort: bool) -> QuoteSample {
     let route = json!([{"swapInfo":{"label":"Metis"}}]);
     let threshold = (out.parse::<u64>().expect("fixture amount")
         * (10_000 - slippage_bps) / 10_000).to_string();
-    let body = json!({"inputMint":SOL,"outputMint":MINT,
+    let body = if cohort {
+        crate::app_tests::run15_buy_wire_fixture::quote(MINT, amount.parse().unwrap(), out.parse().unwrap(), slippage_bps)
+    } else {json!({"inputMint":SOL,"outputMint":MINT,
         "inAmount":amount,"outAmount":out,"otherAmountThreshold":threshold,
-        "swapMode":"ExactIn","slippageBps":slippage_bps,"routePlan":route,"priceImpactPct":"0"});
+        "swapMode":"ExactIn","slippageBps":slippage_bps,"routePlan":route,"priceImpactPct":"0"})};
+    let route = body["routePlan"].clone();
     QuoteSample {
         http_request_started_ts: Some(now), quote_response_available_ts: Some(now),
         in_amount: amount.into(), out_amount: out.into(),
@@ -64,7 +67,10 @@ pub(super) async fn setup_case_with_config(
 ) -> Result<Case> {
     let buy_lamports = if protected { 10_000_000 } else { 1_000_000 };
     let output_raw = if protected { "10000" } else { "1000" };
-    let (payload, signature, wallet_bytes) = if protected {
+    let (payload, signature, wallet_bytes) = if cohort {
+        crate::app_tests::run15_buy_wire_fixture::signed(MINT, buy_lamports,
+            output_raw.parse()?, if protected {985_000_000} else {50_000_001})?
+    } else if protected {
         fixture::signed_payload_for_lamports_and_floor(buy_lamports, 985_000_000)?
     } else {
         fixture::signed_payload_for_lamports(buy_lamports)?
@@ -150,9 +156,9 @@ pub(super) async fn setup_case_with_config(
             mint_account: json!({"context":{"slot":100},"value":{
                 "owner":copybot_storage_core::native_buy::SPL_TOKEN_PROGRAM}}),
             initial_quote: quote_for_amount(now, output_raw, &buy_lamports.to_string(),
-                config.quote_canary_buy_slippage_bps),
+                config.quote_canary_buy_slippage_bps, cohort),
             fresh_quote: quote_for_amount(now, fresh_out, &buy_lamports.to_string(),
-                config.quote_canary_buy_slippage_bps),
+                config.quote_canary_buy_slippage_bps, cohort),
             priority: PriorityFeeSample { status: "ok".into(), lamports: Some(2000),
                 json: Some(crate::app_tests::priority_fee_fixture::total_json(2000)), error: None },
             adapter: NativeBuyMockAdapter { config: config.clone(), payload,

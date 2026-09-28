@@ -71,7 +71,10 @@ pub(in crate::source) fn infer(
         post_tokens: rows(&meta.post_token_balances, None),
         keys,
     };
-    attribute(&v, signer, programs)
+    match super::jupiter::attribute(&v, signer) {
+        Attribution::NotApplicable => attribute(&v, signer, programs),
+        attribution => attribution,
+    }
 }
 
 fn rows(rows: &[TokenBalance], only_owned_sol: Option<&str>) -> Option<Vec<Row>> {

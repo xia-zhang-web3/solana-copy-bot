@@ -1,4 +1,4 @@
-//! Raw transaction shape required by the frozen inventory producer, v0/legacy subset.
+//! Raw transaction shape required by the bounded inventory producer; v1 metadata never authorizes a signal.
 use anyhow::{ensure, Context, Result};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -70,6 +70,7 @@ pub(super) fn check(t: &Value, key_count: usize) -> Result<()> {
                     | "header"
                     | "instructions"
                     | "recentBlockhash"
+                    | "transactionConfig"
             )),
         "fraction_message_shape"
     );
