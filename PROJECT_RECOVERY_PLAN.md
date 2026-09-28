@@ -12,8 +12,8 @@ Admission, preserves first facts/UNKNOWN, and restores commit before ACK/restart
 New controls6/6, checkpoint4/4 and migration rollback2/2 independently PASS.
 Genuine tonic→both relays→daemon model2.96s: BUY1/SELL1, partial remainder,
 UNKNOWN/restart/receipt reconciliation, no second send. Live execution unproved.
-Architecture changed/all PASS; copybot-app debug compile29.95s/shared cache.
-CI copybot-app/release matching artifact/install/preflight remain in progress.
+CI followup fixed single-family scope regression: new scope3/affected daemon4 PASS.
+Storage cache post-save timeout repaired with10min/full locked gate retained; release pending.
 Production deps unchanged; two existing locked crates added only as test deps.
 Deleted obsolete isolated debug cache: freed41.8GB; financial history retained.
 Prepared stopped read-only probe for separate owner decision: ≤480s/4GiB/

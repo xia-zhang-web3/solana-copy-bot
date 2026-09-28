@@ -63,12 +63,16 @@ class StorageSemanticWorkflow(unittest.TestCase):
     def test_rust_and_cache_follow_artifact_flow_with_separate_target(self):
         source, _, _, steps = parts()
         artifact = ARTIFACT.read_text()
-        for shared in ('actions/checkout@v4', 'actions/cache@v4',
+        for shared in ('actions/checkout@v4',
                        'rustc --version\n          cargo --version',
                        '~/.cargo/git\n            ~/.cargo/registry',
                        "hashFiles('Cargo.lock', 'rust-toolchain*', '.cargo/**')"):
             self.assertIn(shared, artifact)
             self.assertIn(shared, source)
+        self.assertIn('uses: actions/cache@v4', artifact)
+        self.assertEqual(source.count('uses: actions/cache/restore@v4'), 1)
+        self.assertNotIn('uses: actions/cache@v4', source)
+        self.assertNotIn('actions/cache/save', source)
         setup = steps.split('      - name: Storage semantic tests\n')[0]
         self.assertEqual(setup.count('        run:'), 2)
         self.assertIn('      - name: Rust versions\n        shell: bash\n'

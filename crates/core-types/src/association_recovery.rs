@@ -16,13 +16,15 @@ impl ReplayScope {
         self.policy == "durable_checkpoint_replay_v1"
             && sorted_nonempty(&self.wallets, 16)
             && sorted_nonempty(&self.programs, 256)
-            && sorted_nonempty(&self.raydium_programs, 256)
-            && sorted_nonempty(&self.pumpswap_programs, 256)
+            && sorted_partition(&self.raydium_programs, 256)
+            && sorted_partition(&self.pumpswap_programs, 256)
     }
 }
 fn sorted_nonempty(values: &[String], max: usize) -> bool {
-    !values.is_empty()
-        && values.len() <= max
+    !values.is_empty() && sorted_partition(values, max)
+}
+fn sorted_partition(values: &[String], max: usize) -> bool {
+    values.len() <= max
         && values.iter().all(|v| !v.is_empty() && v.len() <= 128)
         && values.windows(2).all(|pair| pair[0] < pair[1])
 }
