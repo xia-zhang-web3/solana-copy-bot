@@ -155,3 +155,33 @@ Paid provider calls, stream и live trades при независимой про�
 Main dirty tree сохранён. Pre-existing accepted paths не переаудировались.
 Matching release/install/preflight и future source freshness/continuity не входят
 в эту приёмку. Run15 до завершения stopped rollout остаётся под STOP.
+
+## Addendum: узкое исправление CI-фикстуры
+
+GitHub Actions run36436898783 для `d63eee3180715b77b862a092990d62c92aeda235`
+остановился на одном app test:1210PASS/1FAIL/49ignored.
+`fractional_full_prefix_inflow_is_in_denominator` получил
+`fraction_prefix_owned_metadata_missing`. Release build не начинался.
+Причина и журнал сохранены в private `CI_REPAIR_01.json` и
+`CI_ARTIFACT_36436898783_FULL_JOB.log`.
+
+Независимо прочитан единственный code diff: test-only
+`crates/app/src/app_tests/fractional_synthetic_fixture.rs`. Raw header prefix
+делает второй известный source account index7 writable; snapshot содержит его
+30000raw, однако старые pre/post rows этот account пропускали. Фикстура теперь
+явно содержит неизменённые pre30000/post30000, доказывая отсутствие движения.
+Production ownership/metadata guards и assertions D40001/selected249 неизменны.
+
+Оба затронутых теста независимо повторены на existing test binary:
+
+- `fractional_full_prefix_inflow_is_in_denominator`:1/1PASS,0.15s.
+- `fractional_reference_schema_rejections_before_quote`:1/1PASS,0.57s.
+
+Binary SHA256 после test-only rebuild:
+`5bf64fbd6f35ce9bc45b8fd1a7efed18cbb7dead7481a05383077f0dc1fd6485`.
+Reviewer build **NONE**, stack8388608; fixture127lines, net+4, waiver0.
+Provider calls/stream/trades0. Full causal runtime и его fixture не менялись;
+предыдущая независимая приёмка92.20s применяется без повторного full replay.
+
+**ACCEPT_SCOPED** для этого CI repair. Следующий шаг — новый matching commit/CI
+artifact и stopped install/preflight; предыдущий failed CI не объявляется зелёным.

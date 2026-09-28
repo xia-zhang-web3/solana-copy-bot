@@ -97,3 +97,14 @@ oversize waiver0. Architecture --changed64files и --all PASS, git diff --check 
 New production modules≤298lines, causal test345, projection125+tests66,
 app_tests726≤800. Подробный line-count inventory сохранён в private evidence;
 в текущем source/test/tool delta55files; точный commit stat после приёмки.
+
+## Исправление artifact CI
+
+Первый exact-SHA run36436898783: app gate1210PASS/1FAIL/49ignored за408.54с;
+release build не начался. Storage Semantic и Architecture Guard прошли.
+Отказ `fraction_prefix_owned_metadata_missing` обнаружил неполный старый synthetic
+prefix: второй source account writable, но без неизменных pre/post30000raw.
+Fixture дополнен этими metadata; production guard не изменён. Сохраняются
+denominator40001 и raw249; focused PASS0.18с, warm test/debug build17.20с.
+Причина и полные job logs сохранены private. GitHub CLI cached partial log
+не содержал отказ; raw job log получен с разрешением ANSI, вывод очищен локально.

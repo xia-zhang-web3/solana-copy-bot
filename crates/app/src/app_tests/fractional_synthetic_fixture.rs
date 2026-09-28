@@ -79,12 +79,16 @@ pub(super) fn evidence(prefix_inflow: bool) -> Result<Evidence> {
         "data":transfer(u64::from(prefix_inflow))}]);
     earlier["meta"]["innerInstructions"] = json!([]);
     earlier["meta"]["logMessages"] = json!([]);
-    earlier["meta"]["preTokenBalances"] = json!([balance(wallet, mint, "10000")]);
-    earlier["meta"]["postTokenBalances"] = json!([balance(
-        wallet,
-        mint,
-        if prefix_inflow { "10001" } else { "10000" }
-    )]);
+    // The raw header makes the second known source account writable too.
+    // Complete metadata proves its balance is unchanged, rather than inferring it.
+    let mut unchanged_second = balance(wallet, mint, "30000");
+    unchanged_second["accountIndex"] = json!(7);
+    earlier["meta"]["preTokenBalances"] =
+        json!([balance(wallet, mint, "10000"), unchanged_second.clone()]);
+    earlier["meta"]["postTokenBalances"] = json!([
+        balance(wallet, mint, if prefix_inflow { "10001" } else { "10000" }),
+        unchanged_second
+    ]);
     let source = token_account(&keys[5], wallet, mint, "10000");
     let second = token_account(&keys[7], wallet, mint, "30000");
     let own = token_account(&keys[6], ours, mint, "1000");
