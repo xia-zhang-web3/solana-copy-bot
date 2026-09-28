@@ -77,9 +77,10 @@ class StorageSemanticWorkflow(unittest.TestCase):
         self.assertEqual(setup.count('        run:'), 2)
         self.assertIn('      - name: Rust versions\n        shell: bash\n'
                       '        run: |\n          rustc --version\n          cargo --version\n', setup)
-        self.assertIn('            target/storage-semantic\n', setup)
-        self.assertIn('          key: cargo-storage-semantic-${{ runner.os }}-', setup)
-        self.assertIn('          restore-keys: |\n            cargo-storage-semantic-${{ runner.os }}-\n', setup)
+        self.assertNotIn('            target/storage-semantic\n', setup)
+        self.assertEqual(source.count('target/storage-semantic'), 1)
+        self.assertIn('          key: cargo-storage-registry-${{ runner.os }}-', setup)
+        self.assertIn('          restore-keys: |\n            cargo-storage-registry-${{ runner.os }}-\n', setup)
         self.assertIn('      - name: Workflow contract\n        shell: bash\n'
                       '        run: python3 -B -m unittest discover -s tools/tests '
                       '-p test_storage_semantic_workflow.py -v\n', setup)

@@ -25,18 +25,17 @@ jobs:
           rustc --version
           cargo --version
 
-      # Reuse existing state; post-test compression of 5.3GB exceeded this job's
-      # ten-minute budget after every semantic test had already passed.
+      # Reuse downloaded dependencies only. Restoring the 5.3GB target took
+      # 3m24s and still recompiled changed storage before the full semantic gate.
       - name: Cache cargo state
         uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/git
             ~/.cargo/registry
-            target/storage-semantic
-          key: cargo-storage-semantic-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain*', '.cargo/**') }}
+          key: cargo-storage-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain*', '.cargo/**') }}
           restore-keys: |
-            cargo-storage-semantic-${{ runner.os }}-
+            cargo-storage-registry-${{ runner.os }}-
 
       - name: Workflow contract
         shell: bash

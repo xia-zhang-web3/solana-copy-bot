@@ -44,3 +44,20 @@ workflow controls и причины подготовки. CLI summaries поте
 Независимый review validation и workflow принят; публикация узкого followup →
 успешный matching artifact → остановленная установка → installed network-none
 preflight → отдельное решение владельца о read-only stream probe.
+
+## Повторный timeout и cache-only исправление
+
+Run36471043876 снова CANCELLED: unpack того же5589855359-byte target cache
+занял3м24с, после него thin storage recompile1м38с. До timeout575PASS/0FAIL;
+остальные tests не завершены. Это не полный PASS. Старый меньший cache уже
+недоступен. Workflow теперь восстанавливает только cargo registry/git в новом
+namespace `cargo-storage-registry`; key/prefix не допускают старый target archive.
+Первый hosted run будет cache miss/cold thin target. Полный locked storage gate,
+отдельный target, failure propagation и10мин сохранены. Новый gate требуется.
+Независимый concrete workflow controls6/6PASS; runtime/dependencies не менялись.
+
+Appartifact fd4c86714525da04fe8415c2e4772203f10e1507 run36471088698 SUCCESS,
+release compile74с. Новый workflow-only commit не меняет runtime/migrations/lock: 
+matching fd4 artifact переиспользуется, новая app сборка не нужна. Проверены
+archive/binary hashes, clean manifest/полный bin set/89 migrations; остановленная
+установка в отдельный read-only probe сохраняет e7 rollback. READY ещё не выдан.
