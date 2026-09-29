@@ -64,7 +64,9 @@ class GuardCase(unittest.TestCase):
         return command(['git', *args], self.root, self.env, input=input).stdout.strip()
 
     def lock(self):
-        command(['cargo', 'tree', '--offline', '--edges', 'normal,build,dev'], self.root, self.env)
+        # The fixture needs a resolved Cargo.lock; dependency traversal belongs
+        # to the guards under test. Keep generation bounded on a cold CI runner.
+        command(['cargo', 'generate-lockfile', '--offline'], self.root, self.env, timeout=30)
 
     def commit(self):
         self.git('add', '.')
