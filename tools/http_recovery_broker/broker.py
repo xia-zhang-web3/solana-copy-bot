@@ -21,6 +21,7 @@ from evidence import archive, archive_failure, archive_delivery
 from budget import Ledger, Refused
 from policy import Gate, MAX_REQUEST, offline_target, response_limit, upstream, validate_route
 from delivery import Delivery
+from control_reader import request_facts
 from front_delivery import deliver_response
 from frames import read_frame, write_frame
 from diagnostics import broker_fact
@@ -49,11 +50,13 @@ class BackendHandler(socketserver.BaseRequestHandler):
     def handle(self):
         rpc_method, reservation, stage = None, None, 'request'
         self.delivery = None
+        self.request_facts = None
         try:
             packet = read_frame(self.request)
             raw = base64.b64decode(packet['body'], validate=True)
             stage = 'route'
             route, rpc_method = validate_route(packet['method'], packet['path'], raw)
+            self.request_facts = request_facts(raw)
             if len(raw) > MAX_REQUEST or packet['route'] != route:
                 raise Refused('request_invalid')
             if route == 'quote':
@@ -86,6 +89,7 @@ class BackendHandler(socketserver.BaseRequestHandler):
                 gate.check()
                 if self.delivery is not None:
                     self.delivery.remaining()
+                    self.delivery.control_read_recovery = getattr(gate, 'first_read_recovery', None)
         except Refused as error:
             self.failure('refused', rpc_method, reservation, stage, error)
             return
@@ -132,7 +136,7 @@ class BackendHandler(socketserver.BaseRequestHandler):
             self.failure('failed', rpc_method, reservation, stage, error, status)
 
     def failure(self, kind, method, reservation, stage, error, status=None, response=None):
-        fact = broker_fact(kind, method, reservation, stage, error, status, self.delivery)
+        fact = broker_fact(kind, method, reservation, stage, error, status, self.delivery, self.request_facts)
         archive_failure(self.server.control, fact, response)
         try:
             self.request.settimeout(1)
@@ -212,12 +216,16 @@ class FrontHandler(BaseHTTPRequestHandler):
             return
         body = self.rfile.read(int(raw_length))
         self.delivery = None
+        self.request_facts = None
+        rpc_method = None
         try:
             route, rpc_method = validate_route(self.command, self.path, body)
+            self.request_facts = request_facts(body)
             if route == 'rpc' and rpc_method in {'getBlock', 'getBlocks'}:
                 self.delivery = Delivery(self.server.control, body)
         except Refused as error:
-            self._broker_error(403, broker_fact('refused', None, None, 'route', error), persist=True)
+            self._broker_error(403, broker_fact('refused', rpc_method, None, 'route', error,
+                                              request=self.request_facts), persist=True)
             return
         is_submit = route == 'rpc' and rpc_method == 'sendTransaction'
         packet = {'route': route, 'method': self.command, 'path': self.path,

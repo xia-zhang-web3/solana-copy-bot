@@ -1,6 +1,8 @@
 //! Actual saved04 results through Rust→real HTTPS broker→durable ACK→live tail.
 mod fixture;
 mod live;
+#[path = "../lease_docker_replay_tests.rs"]
+mod lease_docker_replay_tests;
 use super::{config, initialize_empty, persist, Servers};
 use crate::{source::http_recovery::ConfirmedHttpRecovery, DeliveryReceiver};
 use copybot_core_types::{association_delivery::*, association_parent::*, association_recovery::*};

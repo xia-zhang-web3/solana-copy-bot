@@ -6,6 +6,7 @@ from pathlib import Path
 import time
 
 from budget import Refused
+from control_reader import read_clock, safe_control_fact
 
 UPSTREAM_SECONDS = 8.0
 DELIVERY_SECONDS = 12.0
@@ -25,6 +26,7 @@ class Delivery:
         self.session_end = None
         self.session_deadline_unix_ms = None
         self.timings = {}
+        self.control_read_recovery = None
         self.request_id = self.slot = None
         if request is not None:
             value = json.loads(request)
@@ -33,7 +35,7 @@ class Delivery:
             self.request_id = identity if type(identity) is int and 0 <= identity <= 2**64 - 1 else None
             self.slot = params[0] if params and type(params[0]) is int and params[0] > 0 else None
         try:
-            clock = json.loads((Path(control) / 'PROBE_CLOCK.json').read_text())
+            clock = read_clock(control)
             if (type(clock['deadline_unix']) not in {int, float} or
                     not math.isfinite(clock['deadline_unix'])):
                 raise ValueError()
@@ -66,11 +68,14 @@ class Delivery:
             self.timings[name] = self.timings.get(name, 0) + round((time.monotonic() - start) * 1000)
 
     def facts(self):
-        return {'request_id': self.request_id, 'slot': self.slot,
+        value = {'request_id': self.request_id, 'slot': self.slot,
                 'elapsed_ms': max(0, round((time.monotonic() - self.started) * 1000)),
                 'deadline_ms': max(0, round((self.end - self.started) * 1000)),
                 'session_deadline_unix_ms': self.session_deadline_unix_ms,
                 'timings_ms': dict(self.timings)}
+        if self.control_read_recovery is not None:
+            value['control_read_recovery'] = safe_control_fact(self.control_read_recovery)
+        return value
 
     def trace(self, method, reservation):
         return dict(schema='http_recovery_delivery_v1', method=method,

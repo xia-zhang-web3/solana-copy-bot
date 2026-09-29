@@ -9,6 +9,7 @@ from urllib.parse import quote, urlsplit
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'helpers'))
 from budget import CU, Refused
+from control_reader import check_control
 
 RPC_PATH = '/rpc'
 MAX_REQUEST = 1_048_576
@@ -64,21 +65,9 @@ class Gate:
         self.policy = policy
 
     def check(self):
-        d, p = self.directory, self.policy
-        if p.get('profile') != 'read_only_http_recovery_v1' or not (d / 'STOP').is_file():
-            raise Refused('permanent_financial_stop_required')
-        if (d / 'HTTP_STOP').exists() or (d / 'STREAM_STOP').exists():
-            raise Refused('read_only_stop_present')
-        try:
-            lease = json.loads((d / 'LEASE.json').read_text())
-            clock = json.loads((d / 'PROBE_CLOCK.json').read_text())
-            if (lease.get('generation') != 1 or lease.get('expires_unix', 0) <= time.time()
-                    or clock.get('run_id') != p['run_id'] or clock.get('duration_seconds') != 480
-                    or clock.get('deadline_unix') != clock.get('first_attempt_unix', 0) + 480
-                    or time.time() >= clock['deadline_unix']):
-                raise Refused('read_only_clock_or_lease_invalid')
-        except (OSError, ValueError, KeyError, TypeError):
-            raise Refused('read_only_clock_or_lease_invalid') from None
+        self.last_fact = check_control(self.directory, self.policy)
+        if 'first_missing_snapshot' in self.last_fact and not hasattr(self, 'first_read_recovery'):
+            self.first_read_recovery = self.last_fact
 
     def outbound_attempt(self):
         self.check()  # The first stream attempt owns the shared immutable deadline.

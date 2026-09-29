@@ -4,6 +4,7 @@ import json
 import socket
 import ssl
 import subprocess
+from control_reader import safe_control_fact
 
 METHODS = {'getGenesisHash', 'getBalance', 'getAccountInfo',
            'getMinimumBalanceForRentExemption', 'getTokenAccountsByOwner'}
@@ -43,7 +44,7 @@ CAUSE_TYPES = {'Refused', 'ValueError', 'KeyError', 'TypeError', 'OSError',
                'DeadlineExceededTimeout', 'BrokenPipeError'}
 
 
-def broker_fact(kind, method, reservation, stage, error, status=None, delivery=None):
+def broker_fact(kind, method, reservation, stage, error, status=None, delivery=None, request=None):
     """Closed wire facts; raw exception text may contain provider credentials."""
     reason = exception_reason(error)
     verify = getattr(error, 'verify_code', None) if isinstance(error, ssl.SSLCertVerificationError) else None
@@ -63,6 +64,12 @@ def broker_fact(kind, method, reservation, stage, error, status=None, delivery=N
             'verify_code': verify}
     if delivery is not None:
         value.update(delivery.facts())
+    if isinstance(request, dict):
+        for key in ('request_id', 'slot'):
+            item = request.get(key)
+            if type(item) is int and 0 <= item <= 2**64-1:
+                value[key] = item
+    value.update(safe_control_fact(getattr(error, 'control_fact', None)))
     return value
 
 

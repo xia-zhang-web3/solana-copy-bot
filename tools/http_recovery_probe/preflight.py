@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tomllib
 
-RUN = 'copybot-run15-http-recovery-probe-05'
+RUN = 'copybot-run15-http-recovery-probe-06'
 ROLES = {'observation-app', 'stream-front', 'stream-backend', 'http-front', 'http-backend'}
 LABEL = 'copybot.http-recovery-probe'
 PY_IMAGE = 'sha256:09ecaa87c6799c8d8ee0dfb779905d97e5f667ab97d866cc47ff9f949ffb7b3b'

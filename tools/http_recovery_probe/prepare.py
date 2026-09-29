@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from uds_volume import prepare_uds
 
-RUN = 'copybot-run15-http-recovery-probe-05'
+RUN = 'copybot-run15-http-recovery-probe-06'
 CLIENT_TIMEOUT_MS = 15_000
 
 
