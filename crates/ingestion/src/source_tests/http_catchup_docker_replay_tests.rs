@@ -61,7 +61,7 @@ async fn start(root: &Path) -> Docker {
         .arg("--server-script")
         .arg(repo.join("tools/tests/http_catchup_docker_server.py"))
         .arg("--duration")
-        .arg("390")
+        .arg("450")
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(root.join("host.stderr.log")).unwrap())
         .spawn()

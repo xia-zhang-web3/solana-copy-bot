@@ -1,20 +1,11 @@
 # Project Recovery Plan
 
-## Current decision: offline HTTP repair; artifact preparation pending
-
-Probe02 is consumed and stopped: [live result](audit/2026-09-29/run15-http-recovery/LIVE_PROBE_RESULT_RU.md).
-Its exact live HTTP cause remains UNKNOWN. CA binding and lost broker diagnostics
-are confirmed preparation defects. No recovery, automatic copying or profitability proof.
-The corrective batch binds verified CA, pins actual app WorkingDir=/opt/copybot,
-archives typed failed/refused outcomes and checks broker errors before RPC identity.
-Local actual HTTPS and Rust adapter controls pass; independent source review and
-matching copybot-app/release CI artifact plus stopped installation are in progress.
-[Corrective scope and evidence](audit/2026-09-29/run15-http-recovery/CORRECTIVE_PREPARATION_RU.md).
-New probe03 has STOP/HTTP_STOP/STREAM_STOP, no clock/authority/state, five containers
-created and never started. Old Run15/probes, reservations and history remain intact.
-Carryover model $7.960362665; HTTP 997/19030 CU; stream 85366468402 bytes; invoice UNKNOWN.
-Next authorized action: complete offline review, exact artifact installation and preflight.
-A new paid probe requires a separate owner decision. No new spending or trading.
+## Current result: local Linux HTTP recovery passed; Probe08 remains stopped
+Decision: can the exact release daemon close the 180-slot gap, continue linked ACKs for at least 60 seconds of arriving full blocks, and resume after restart below 3 GiB? **Yes in the bounded offline replay.** The previous app902 OOM before anchor; that result remains incident evidence. This result does not establish live provider recovery, trading or profitability.
+The durable live queue and association cache now hold compact encoded full blocks and decode only when consumed. Exact float-bit fallback preserves `-0.0` and NaN duplicate semantics. Parent/hash, complete-block checks and BUY/source-SELL association remain. Direct telemetry in the 3 GiB Linux app measured queue maximum 134 blocks/599,120,672 bytes and cache maximum 301 blocks/1,347,809,373 bytes. Cgroup peak was 2,085,453,824 bytes; OOM=false.
+The replay used four concurrent HTTP requests, a required response delayed >8 seconds, one real IncompleteRead retry, and a 417 ms full-block producer. It reached anchor 451679839 in about 60.5 seconds, then accepted over 61 seconds of continuing input; backlog peaked at 214 and fell to zero. After restart with the same installed binary and clock, linked durable ACK reached 451680203. The app was deliberately stopped after both phases; Docker exit 137 here was not an OOM. The offline fixture made zero provider calls, signatures and submissions; financial tables stayed empty.
+Published runtime commit `5a0ae2f39a8b7aac82d264137be844592d4212e4` passed [Operator Artifacts CI](https://github.com/xia-zhang-web3/solana-copy-bot/actions/runs/36603534654); matching `copybot-app/release` binary and all 89 migrations are installed in isolated Probe08 with prior release retained for rollback. Stopped-package preflight returned `PASS_STOPPED_OWNER_DECISION_PENDING`: five containers never started, STOP×3, no grant, clock, lease, attempt or state. The source, live queue/cache and exact Linux replay evidence is in [memory repair decision](audit/2026-09-29/run15-http-recovery/HTTP_MEMORY_RECOVERY_ACCEPTANCE_RU.md). [Independent review](/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/run15-http-memory-repair-01/evidence/INDEPENDENT_MEMORY_FINAL_REVIEW.json) accepted this offline scope.
+The original 480-second window, three connections, one restart, 1024 HTTP/40,960 CU, $0.421504 incremental model and cumulative $50 cap remain. Prior $8.128810124 model spend and 895 historical SHA obligations are preserved. This batch spent zero. Run07 remains used; the isolated worktree did not write to main. Build target/profile: `copybot-app/release` via matching CI (warm release build 77 seconds), no local release build; dependencies and migrations unchanged. No oversized-file waiver. Next action: a separate owner decision for any paid read-only probe; none is launched in this batch.
 
 ## Run14 incident baseline: no repeat or identical paid run
 

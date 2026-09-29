@@ -13,7 +13,7 @@ pub(super) const ANCHOR: u64 = 451_679_839;
 pub(super) const FIRST: u64 = CURSOR - 1;
 pub(super) const PERIOD_MS: u64 = 417;
 // Keep full-sized producer blocks flowing for a measured 60 seconds past ACK.
-pub(super) const TAIL: u64 = ANCHOR + 400;
+pub(super) const TAIL: u64 = ANCHOR + 800;
 pub(super) fn digest(raw: &[u8]) -> String {
     format!("{:x}", Sha256::digest(raw))
 }

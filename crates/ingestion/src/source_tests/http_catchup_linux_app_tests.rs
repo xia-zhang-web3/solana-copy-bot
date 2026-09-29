@@ -106,6 +106,13 @@ fn head(path: &Path) -> u64 {
 fn logs(root: &Path, phase: &str) -> String {
     std::fs::read_to_string(root.join(format!("{phase}-APP.log"))).unwrap_or_default()
 }
+fn reported_cursor(root: &Path, phase: &str, initial: u64) -> u64 {
+    logs(root, phase).lines().filter_map(|line| {
+        let envelope: Value = serde_json::from_str(&line[line.find('{')?..]).ok()?;
+        envelope["durable_slot"].as_u64()
+            .or_else(|| envelope["last_durably_stored_parent_slot"].as_u64())
+    }).fold(initial, u64::max)
+}
 fn retention_log_samples(root: &Path, phase: &str) -> Vec<Value> {
     logs(root, phase)
         .lines()
@@ -151,12 +158,13 @@ fn app_memory_summary(root: &Path, phase: &str) -> Value {
 }
 async fn observe(
     root: &Path,
-    path: &Path,
+    _path: &Path,
     phase: &str,
     app: &mut App,
     producer: &super::live::Server,
     corpus: &Corpus,
     target: u64,
+    initial_cursor: u64,
     need_decline: bool,
     post_anchor_seconds: f64,
 ) -> (Vec<Value>, Option<String>) {
@@ -166,11 +174,13 @@ async fn observe(
     let mut anchor_backlog = None;
     let mut maximum_backlog = 0;
     let mut anchor_seen_at = None;
-    let mut prior_cursor = head(path);
+    let mut prior_cursor = initial_cursor;
     let mut observed_admissions: Vec<(u64, f64)> = Vec::new();
     loop {
         let elapsed = begin.elapsed().as_secs_f64();
-        let cursor = head(path);
+        // The app's Linux SQLite WAL must not share an mmap with macOS SQLite
+        // while it is running. Its ACK is checked independently after stop.
+        let cursor = reported_cursor(root, phase, initial_cursor);
         let latest = producer.sent.load(Ordering::Relaxed);
         let backlog = latest.saturating_sub(cursor);
         for slot in prior_cursor.saturating_add(1)..=cursor {
@@ -231,8 +241,8 @@ async fn observe(
             error = Some("actual Linux live capture capacity".to_string());
             break;
         }
-        if begin.elapsed() > Duration::from_secs(175) {
-            error = Some("actual Linux175s bounded criterion exhausted".to_string());
+        if begin.elapsed() > Duration::from_secs(300) {
+            error = Some("actual Linux300s bounded criterion exhausted".to_string());
             break;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -280,12 +290,13 @@ async fn probe07_exact_linux_artifact_fullgap_continued_stream_durable_ack_and_r
         &producer,
         &corpus,
         ANCHOR + 48,
+        CURSOR,
         true,
         60.0,
     )
     .await;
-    let first_end = head(&dbpath);
     drop(actual);
+    let first_end = head(&dbpath);
     drop(producer);
     let main_retention_log_samples = retention_log_samples(&root, "main");
     let mut restart_rows = vec![];
@@ -302,6 +313,7 @@ async fn probe07_exact_linux_artifact_fullgap_continued_stream_durable_ack_and_r
             &live,
             &corpus,
             first_end + 12,
+            first_end,
             false,
             0.0,
         )

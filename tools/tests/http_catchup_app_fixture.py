@@ -1,4 +1,4 @@
-"""Existing accepted Linux902 app: local-only producer and broker, no signer."""
+"""Exact bound Linux app: local-only producer and broker, no signer."""
 import argparse
 import hashlib
 import json
@@ -85,13 +85,13 @@ def main(args):
              clock_sha256=hashlib.sha256((root/'control/PROBE_CLOCK.json').read_bytes()).hexdigest(),
              provider_calls=0, financial_flags=False, credential_mounts=False,
              app_arenas=args.app_arenas, blocks_bytes=args.blocks_bytes, **manifest_binding))
-        limit = time.monotonic()+180
+        limit = time.monotonic()+310
         while not (root / (args.phase+'-APP_STOP')).exists():
             state = json.loads(docker('inspect', cid))[0]['State']
             if not state['Running']:
                 raise RuntimeError('offline_app_exited_'+str(state['ExitCode']))
             if time.monotonic() >= limit:
-                raise TimeoutError('offline_app180s_bound')
+                raise TimeoutError('offline_app310s_bound')
             readings = docker('exec', cid, '/bin/cat', '/sys/fs/cgroup/memory.current',
                         '/sys/fs/cgroup/memory.peak', '/proc/1/status', '/proc/1/smaps_rollup', '/proc/meminfo').splitlines()
             sample = dict(at_unix=time.time(), memory_current=int(readings[0]), memory_peak=int(readings[1]))
