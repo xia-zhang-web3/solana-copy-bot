@@ -168,14 +168,23 @@ class DeliveryChecks(unittest.TestCase):
             fixture = Fixture(root/'control', self.corpus(root), 'delay5',
                               delay_seconds=.6, session_seconds=.2).start()
             try:
+                clock = (fixture.directory/'PROBE_CLOCK.json').read_bytes()
                 failed = post(fixture, 100)
                 self.assertEqual(failed['status'], 502)
                 fact = failed['body']['broker_error']
                 self.assertEqual(fact['reason'], 'session_deadline_exhausted')
                 absolute = failed['headers']['X-Copybot-Session-Deadline-Unix-Ms']
-                later = post(fixture, 101)
-                self.assertEqual(later['body']['broker_error']['reason'], 'session_deadline_exhausted')
-                self.assertEqual(later['headers']['X-Copybot-Session-Deadline-Unix-Ms'], absolute)
+                later = post(fixture, 101, identity=2)
+                refusal = later['body']['broker_error']
+                self.assertEqual(later['status'], 403)
+                self.assertEqual(refusal['reason'], 'read_only_clock_or_lease_invalid')
+                self.assertEqual(refusal['gate_predicate'], 'clock_deadline')
+                self.assertEqual(refusal['control_file'], 'PROBE_CLOCK.json')
+                self.assertEqual((refusal['request_id'], refusal['slot'], refusal['reservation_id']),
+                                 (2, 101, None))
+                self.assertEqual(refusal['observed_deadline_unix_ms'], int(absolute))
+                self.assertGreaterEqual(refusal['observed_now_unix_ms'], int(absolute))
+                self.assertEqual((fixture.directory/'PROBE_CLOCK.json').read_bytes(), clock)
                 with sqlite3.connect(fixture.directory/'broker-ledger.sqlite3') as db:
                     self.assertEqual(db.execute('SELECT attempts,rpc_cu FROM head').fetchone(), (1, 40))
                 self.assertEqual(sum(fixture.counts.values()), 1)
