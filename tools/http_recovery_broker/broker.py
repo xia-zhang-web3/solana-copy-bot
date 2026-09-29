@@ -17,10 +17,11 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-from evidence import archive
+from evidence import archive, archive_failure
 from budget import Ledger, Refused
-from policy import Gate, MAX_REQUEST, read_secret, response_limit, upstream, validate_route
-from diagnostics import REASONS, exception_reason
+from policy import Gate, MAX_REQUEST, offline_target, response_limit, upstream, validate_route
+from diagnostics import broker_fact
+from transport import HTTPStatus, UpstreamFailure, perform_upstream, rpc_error_redacted, verified_context
 
 SOCKET_PATH = '/relay/http.sock'
 FRONT_PORT = 18765
@@ -61,62 +62,13 @@ def write_frame(sock, value, maximum=MAX_FRAME):
     sock.sendall(f'{len(data):016x}'.encode() + data)
 
 
-def perform_upstream(policy, route, rpc_method, method, path, body, headers):
-    # In test mode only, use a fake loopback upstream; never present in live binding.
-    if policy.get('offline_stub'):
-        if os.getenv('BROKER_OFFLINE_TEST') != '1':
-            raise Refused('test_upstream_forbidden')
-        target = urlsplit(policy[route + '_upstream'])
-        if target.scheme != 'http' or target.hostname != '127.0.0.1':
-            raise Refused('test_upstream_forbidden')
-        connection = http.client.HTTPConnection(target.hostname, target.port, timeout=5)
-    else:
-        target = upstream(policy, route)
-        connection = http.client.HTTPSConnection(target.hostname, target.port or 443, timeout=5)
-    if route == 'rpc':
-        target_path = target.path
-    else:
-        suffix = urlsplit(path).path[len('/swap/v1'):]
-        target_path = target.path.rstrip('/') + suffix
-    query = urlsplit(path).query
-    if query:
-        target_path += '?' + query
-    forwarded = {'Content-Type': headers.get('content-type', 'application/json'),
-                 'Accept': headers.get('accept', 'application/json'),
-                 'Connection': 'close'}
-    if route == 'quote':
-        if policy.get('quote_key_path'):
-            forwarded['x-api-key'] = read_secret(policy, 'quote')
-        elif policy.get('offline_stub'):
-            if headers.get('x-api-key'):
-                forwarded['x-api-key'] = headers['x-api-key']
-        else:
-            raise Refused('quote_key_unbound')
-    try:
-        connection.request(method, target_path, body=body if method == 'POST' else None,
-                           headers=forwarded)
-        response = connection.getresponse()
-        maximum = response_limit(route, rpc_method)
-        if response.length is not None and response.length > maximum:
-            raise ValueError('upstream_response_too_large')
-        raw = response.read(maximum+1)
-        if len(raw) > maximum:
-            raise ValueError('upstream_response_too_large')
-        response_headers = {}
-        for key in ('content-type', 'content-encoding'):
-            value = response.getheader(key)
-            if value:
-                response_headers[key] = value
-        return response.status, response_headers, raw
-    finally:
-        connection.close()
-
-
 class BackendHandler(socketserver.BaseRequestHandler):
     def handle(self):
+        rpc_method, reservation, stage = None, None, 'request'
         try:
             packet = read_frame(self.request)
             raw = base64.b64decode(packet['body'], validate=True)
+            stage = 'route'
             route, rpc_method = validate_route(packet['method'], packet['path'], raw)
             if len(raw) > MAX_REQUEST or packet['route'] != route:
                 raise Refused('request_invalid')
@@ -126,44 +78,59 @@ class BackendHandler(socketserver.BaseRequestHandler):
             else:
                 price = None
             if self.server.policy.get('offline_stub'):
-                target = urlsplit(self.server.policy.get(route + '_upstream', ''))
-                if (os.getenv('BROKER_OFFLINE_TEST') != '1' or target.scheme != 'http'
-                        or target.hostname != '127.0.0.1'):
-                    raise Refused('test_upstream_forbidden')
+                offline_target(self.server.policy, route)
             else:
                 upstream(self.server.policy, route)
             gate = Gate(self.server.control, self.server.policy)
+            stage = 'gate'
             gate.check()
             # The ledger commit is durable before a possible billable outbound attempt.
+            stage = 'reservation'
             ledger = Ledger(self.server.ledger_path, self.server.policy)
             try:
                 reservation = ledger.reserve(route, rpc_method, price)
             finally:
                 ledger.close()
+            stage = 'gate'
             gate.outbound_attempt()
             # A STOP arriving after reservation still prevents this attempt.
             gate.check()
         except Refused as error:
-            write_frame(self.request, {'kind': 'refused', 'reason': str(error)})
+            self.failure('refused', rpc_method, reservation, stage, error)
             return
-        except (ValueError, KeyError, TypeError, OSError, EOFError, sqlite3.Error):
-            write_frame(self.request, {'kind': 'refused', 'reason': 'invalid_or_unavailable'})
+        except (ValueError, KeyError, TypeError, OSError, EOFError, sqlite3.Error) as error:
+            self.failure('refused', rpc_method, reservation, stage, error)
             return
         is_submit = route == 'rpc' and rpc_method == 'sendTransaction'
+        status = None
         try:
+            stage = 'outbound'
             status, response_headers, response_body = perform_upstream(
                 self.server.policy, route, rpc_method, packet['method'], packet['path'], raw,
                 packet.get('headers', {}))
-            archive(self.server.control, reservation, rpc_method, raw, status, response_body)
+            if not 200 <= status <= 299:
+                self.failure('failed', rpc_method, reservation, 'http_response',
+                             HTTPStatus(), status, response_body)
+                return
+            redacted = rpc_error_redacted(response_body)
+            stage = 'archive'
+            archive(self.server.control, reservation, rpc_method, raw, status, redacted,
+                    response_body if redacted != response_body else None)
             write_frame(self.request, {'kind': 'response', 'status': status,
                                        'headers': response_headers,
-                                       'body': base64.b64encode(response_body).decode()},
+                                       'body': base64.b64encode(redacted).decode()},
                         frame_limit(route, rpc_method))
+        except UpstreamFailure as failure:
+            self.failure('failed', rpc_method, reservation, failure.stage, failure.error, failure.status)
         except (OSError, EOFError, TimeoutError, ValueError, http.client.HTTPException, Refused) as error:
             # After sendTransaction may have crossed the boundary, no synthetic
             # HTTP/JSON-RPC response may cause the accepted app to record NotSent.
-            write_frame(self.request, {'kind': 'uncertain' if is_submit else 'failed',
-                                       'reason': exception_reason(error)})
+            self.failure('failed', rpc_method, reservation, stage, error, status)
+
+    def failure(self, kind, method, reservation, stage, error, status=None, response=None):
+        fact = broker_fact(kind, method, reservation, stage, error, status)
+        archive_failure(self.server.control, fact, response)
+        write_frame(self.request, {'kind': kind, 'broker_error': fact})
 
 
 class BackendServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -201,6 +168,17 @@ class FrontHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
         self.close_connection = True
+    def _broker_error(self, status, fact, persist=False):
+        if persist:
+            archive_failure(self.server.control, fact)
+        data = json.dumps({'broker_error': fact}, separators=(',', ':')).encode()
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        self.wfile.write(data)
+        self.close_connection = True
     def _forward(self):
         raw_length = self.headers.get('Content-Length', '0')
         if not raw_length.isdecimal() or int(raw_length) > MAX_REQUEST:
@@ -217,7 +195,7 @@ class FrontHandler(BaseHTTPRequestHandler):
         try:
             route, rpc_method = validate_route(self.command, self.path, body)
         except Refused as error:
-            self._error(403, str(error))
+            self._broker_error(403, broker_fact('refused', None, None, 'route', error), persist=True)
             return
         is_submit = route == 'rpc' and rpc_method == 'sendTransaction'
         packet = {'route': route, 'method': self.command, 'path': self.path,
@@ -230,19 +208,20 @@ class FrontHandler(BaseHTTPRequestHandler):
                 peer.connect(self.server.socket_path)
                 write_frame(peer, packet)
                 result = read_frame(peer, frame_limit(route, rpc_method))
-        except (OSError, EOFError, ValueError):
-            result = {'kind': 'uncertain' if is_submit else 'failed'}
+        except (OSError, EOFError, ValueError) as error:
+            result = {'kind': 'uncertain' if is_submit else 'failed',
+                      'broker_error': broker_fact('failed', rpc_method, None, 'transport', error)}
+            archive_failure(self.server.control, result['broker_error'])
         if result['kind'] == 'uncertain' and is_submit:
             # No headers, no body, no close until after the app's 3 s timeout.
             time.sleep(HOLD_UNKNOWN_SECONDS)
             self.close_connection = True
             return
         if result['kind'] == 'refused':
-            self._error(429, result['reason'])
+            self._broker_error(429, result['broker_error'])
             return
         if result['kind'] != 'response':
-            reason = result.get('reason')
-            self._error(502, reason if isinstance(reason, str) and reason in REASONS else 'upstream_unavailable')
+            self._broker_error(502, result['broker_error'])
             return
         try:
             data = base64.b64decode(result['body'], validate=True)
@@ -263,8 +242,9 @@ class FrontHandler(BaseHTTPRequestHandler):
 
 class FrontServer(ThreadingHTTPServer):
     daemon_threads = True
-    def __init__(self, address, socket_path):
+    def __init__(self, address, socket_path, control=None):
         self.socket_path = str(socket_path)
+        self.control = Path(control) if control else Path(socket_path).parent
         super().__init__(address, FrontHandler)
 
 
@@ -274,9 +254,10 @@ def main():
     control = Path('/control')
     if role == 'backend':
         policy = json.loads(Path(sys.argv[2]).read_text())
+        verified_context()  # Validate effective trust before accepting any request/reservation.
         server = BackendServer(SOCKET_PATH, control, control/'broker-ledger.sqlite3', policy)
     elif role == 'front':
-        server = FrontServer(('127.0.0.1', FRONT_PORT), SOCKET_PATH)
+        server = FrontServer(('127.0.0.1', FRONT_PORT), SOCKET_PATH, control)
     else:
         raise SystemExit('role_denied')
     try:

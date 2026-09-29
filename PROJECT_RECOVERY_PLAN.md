@@ -1,24 +1,20 @@
 # Project Recovery Plan
 
-## Current decision: HTTP recovery prepared; stopped installation and owner read-only decision
+## Current decision: offline HTTP repair; artifact preparation pending
 
-Run15/probe01 remain consumed and stopped; their DB/authority/clocks/ledger are retained.
-The full-block replay refusal is addressed by bounded confirmed HTTP catchup with
-continued live intake, full chain/Info comparison and durable ACK before new sends.
-Recovered BUY cannot become a fresh candidate. Source SELL/UNKNOWN/restart money
-model, bad-anchor no-send, mid-catchup restart and live-refusal/Drop holds are checked.
-Measured foreign individual decode work is removed; full-block traffic remains.
-The genuine paired workload covers60 full blocks/82590 full-body TX plus12330
-individual updates per20-second period, not four hours of wall time.
-External DataLoss cause and live/TLS/container throughput remain UNKNOWN.
-Daemon build stays copybot-app/release at61db22bd; Desktop inspection and explicit-config preparation repairs are tooling-only.
-Installation/preflight, separate helper binding and rollback are tracked in [HTTP preparation](audit/2026-09-29/run15-http-recovery/PREPARATION_RU.md).
-New package run15-http-recovery-probe-02 remains under STOP/HTTP_STOP/STREAM_STOP;
-five planned containers never start during preparation, no signer or financial authority.
-Cumulative model$7.928686412, HTTP996/19020CU and stream85026403600 bytes are retained.
-Next owner decision: one read-only480s/4GiB/max3-upstream probe, HTTP≤1024attempts/
-40960CU, additional model≤$0.421504 within$50. No paid or financial run is authorized
-by this preparation. Automatic copying/profitability remain unproved.
+Probe02 is consumed and stopped: [live result](audit/2026-09-29/run15-http-recovery/LIVE_PROBE_RESULT_RU.md).
+Its exact live HTTP cause remains UNKNOWN. CA binding and lost broker diagnostics
+are confirmed preparation defects. No recovery, automatic copying or profitability proof.
+The corrective batch binds verified CA, pins actual app WorkingDir=/opt/copybot,
+archives typed failed/refused outcomes and checks broker errors before RPC identity.
+Local actual HTTPS and Rust adapter controls pass; independent source review and
+matching copybot-app/release CI artifact plus stopped installation are in progress.
+[Corrective scope and evidence](audit/2026-09-29/run15-http-recovery/CORRECTIVE_PREPARATION_RU.md).
+New probe03 has STOP/HTTP_STOP/STREAM_STOP, no clock/authority/state, five containers
+created and never started. Old Run15/probes, reservations and history remain intact.
+Carryover model $7.960362665; HTTP 997/19030 CU; stream 85366468402 bytes; invoice UNKNOWN.
+Next authorized action: complete offline review, exact artifact installation and preflight.
+A new paid probe requires a separate owner decision. No new spending or trading.
 
 ## Run14 incident baseline: no repeat or identical paid run
 

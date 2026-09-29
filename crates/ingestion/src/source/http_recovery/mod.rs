@@ -4,6 +4,7 @@ mod block;
 mod error;
 pub(crate) mod identity;
 mod meta;
+mod response;
 mod transaction;
 mod value;
 
@@ -16,7 +17,7 @@ pub fn normalize_confirmed_http_block(
     block::parse(slot, result)
 }
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue},
     Client, Url,
@@ -121,37 +122,7 @@ impl ConfirmedHttpRecovery {
             );
             raw.extend_from_slice(&chunk);
         }
-        let envelope: Value = serde_json::from_slice(&raw).with_context(|| {
-            format!("http_recovery_invalid_json http_status={}", status.as_u16())
-        })?;
-        ensure!(
-            envelope["jsonrpc"] == "2.0" && envelope["id"].as_u64() == Some(id),
-            "http_recovery_response_identity"
-        );
-        if let Some(error) = envelope.get("error").filter(|v| !v.is_null()) {
-            let code = error["code"]
-                .as_i64()
-                .context("http_recovery_invalid_rpc_error")?;
-            let message: String = error["message"]
-                .as_str()
-                .unwrap_or("missing message")
-                .chars()
-                .take(512)
-                .collect();
-            bail!(
-                "http_recovery_rpc_error http_status={} code={code} message={message}",
-                status.as_u16()
-            );
-        }
-        ensure!(
-            status.is_success(),
-            "http_recovery_http_status {}",
-            status.as_u16()
-        );
-        let result = envelope
-            .get("result")
-            .context("http_recovery_missing_result")?
-            .clone();
+        let result = response::interpret(status.as_u16(), id, method, &raw)?;
         Ok((result, raw))
     }
     pub(crate) async fn slots(&self, start: u64, end: u64) -> Result<Vec<u64>> {

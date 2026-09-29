@@ -22,7 +22,7 @@ class PreflightTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / 'package'
         for name in ['control', 'config', 'state', 'evidence', 'install/migrations', 'install/state',
-                     'install/bin/packages/copybot-app/current']:
+                     'install/bin/packages/copybot-app/current', 'ca']:
             (self.root / name).mkdir(parents=True, exist_ok=True)
         for name in ['STOP', 'HTTP_STOP', 'STREAM_STOP']:
             (self.root / 'control' / name).touch()
@@ -55,6 +55,11 @@ fetch_concurrency=4
         self.key = Path(self.tmp.name) / 'synthetic-api-key'
         self.key.write_text('synthetic-offline-only')
         self.key.chmod(0o600)
+        self.ca = self.root / 'ca/public-roots.pem'
+        self.ca.write_text('synthetic offline CA identity; actual HTTPS is exercised separately')
+        save(self.root / 'evidence/HTTP_BACKEND_TLS_BINDING.json', dict(image=pf.PY_IMAGE,
+             ca_sha256=pf.digest(self.ca), ssl_cert_file=pf.CA_FILE, verify_mode='CERT_REQUIRED',
+             check_hostname=True, ca_certificates=128))
         save(self.root / 'CARRYOVER.json', dict(cumulative_model_usd=7.928686412,
              http_model_usd=0.0099855, http_requests=996, rpc_cu=19020,
              cumulative_stream_bytes=85026403600, history_files_sha256={str(self.history):pf.digest(self.history)}))
@@ -86,9 +91,13 @@ fetch_concurrency=4
             mounts=[dict(Type='volume', Name=pf.RUN+'-uds', Source='/synthetic-volume', Destination='/relay', RW=True)]
             if role=='http-backend':
                 mounts.append(dict(Type='bind', Source=str(self.key), Destination='/run/provider/alchemy-api-key', RW=False))
+                mounts.append(dict(Type='bind', Source=str(self.ca), Destination=pf.CA_FILE, RW=False))
             self.metadata[cid] = dict(Id=cid, Name='/'+pf.RUN+'-'+role, Platform='linux', RestartCount=0,
                 Config=dict(Image=pf.APP_IMAGE if role=='observation-app' else pf.PY_IMAGE, User='501:20',
-                    Entrypoint=['/usr/bin/env'], Cmd=list(pf.APP_COMMAND),
+                    WorkingDir='/opt/copybot' if role=='observation-app' else '',
+                    Entrypoint=['/usr/bin/python3'] if role=='http-backend' else ['/usr/bin/env'],
+                    Cmd=list(pf.BACKEND_COMMAND if role=='http-backend' else pf.APP_COMMAND),
+                    Env=['SSL_CERT_FILE='+pf.CA_FILE] if role=='http-backend' else [],
                     Labels={pf.LABEL:pf.RUN,'copybot.role':role}),
                 State=dict(Status='created',Running=False,StartedAt='0001-01-01T00:00:00Z',OOMKilled=False),
                 HostConfig=dict(NetworkMode=network,PortBindings={},ReadonlyRootfs=True,
@@ -183,6 +192,30 @@ fetch_concurrency=4
         nested = self.root / 'install/state'
         nested.rmdir()
         with self.assertRaisesRegex(ValueError, 'probe_nested_state_mountpoint'):
+            self.check()
+
+    def test_actual_working_directory_and_effective_backend_ca_binding_are_required(self):
+        app = self.metadata[self.ids['observation-app']]['Config']
+        app['WorkingDir'] = '/'
+        with self.assertRaisesRegex(ValueError, 'probe_app_working_directory'):
+            self.check()
+        app['WorkingDir'] = '/opt/copybot'
+        backend = self.metadata[self.ids['http-backend']]['Config']
+        for environment in [[], ['SSL_CERT_FILE=/wrong.pem'],
+                            ['SSL_CERT_FILE='+pf.CA_FILE, 'SSL_CERT_FILE='+pf.CA_FILE]]:
+            backend['Env'] = environment
+            with self.assertRaisesRegex(ValueError, 'probe_backend_ca_environment'):
+                self.check()
+        backend['Env'] = ['SSL_CERT_FILE='+pf.CA_FILE]
+        proof = self.root / 'evidence/HTTP_BACKEND_TLS_BINDING.json'
+        value = pf.read(proof)
+        for change in [dict(check_hostname=False), dict(verify_mode='CERT_NONE'), dict(ca_certificates=0)]:
+            save(proof, dict(value, **change))
+            with self.assertRaisesRegex(ValueError, 'probe_backend_effective_ca_context'):
+                self.check()
+        save(proof, value)
+        self.ca.write_text('changed mounted CA')
+        with self.assertRaisesRegex(ValueError, 'probe_backend_effective_ca_context'):
             self.check()
 
 

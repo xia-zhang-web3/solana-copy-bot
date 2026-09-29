@@ -20,6 +20,15 @@ def response_limit(route, rpc_method):
     return MAX_GETBLOCK_RESPONSE if (route, rpc_method) == ('rpc', 'getBlock') else MAX_RESPONSE
 
 
+def offline_target(policy, route):
+    target = urlsplit(policy.get(route + '_upstream', ''))
+    if (os.getenv('BROKER_OFFLINE_TEST') != '1' or target.scheme not in {'http', 'https'}
+            or target.hostname not in {'127.0.0.1', 'localhost'} or target.username
+            or target.query or target.fragment):
+        raise Refused('test_upstream_forbidden')
+    return target
+
+
 def validate_route(http_method, path, body):
     parsed = urlsplit(path)
     if parsed.scheme or parsed.netloc or parsed.fragment:

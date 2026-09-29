@@ -9,13 +9,15 @@ import subprocess
 import sys
 import tomllib
 
-RUN = 'copybot-run15-http-recovery-probe-02'
+RUN = 'copybot-run15-http-recovery-probe-03'
 ROLES = {'observation-app', 'stream-front', 'stream-backend', 'http-front', 'http-backend'}
 LABEL = 'copybot.http-recovery-probe'
 PY_IMAGE = 'sha256:09ecaa87c6799c8d8ee0dfb779905d97e5f667ab97d866cc47ff9f949ffb7b3b'
 APP_IMAGE = 'docker.io/library/ubuntu@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254'
 APP_COMMAND = ['-i', 'SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt',
                '/opt/copybot/bin/copybot-app', '--config', '/run/probe-config/read-only.toml']
+CA_FILE = '/etc/ssl/certs/ca-certificates.crt'
+BACKEND_COMMAND = ['-B', '/code/http_broker/broker.py', 'backend', '/control/http-policy.json']
 FLAGS = ['enabled', 'canary_tiny_submit_enabled', 'canary_enabled', 'canary_entry_submit_enabled',
          'quote_canary_enabled', 'swap_instructions_dry_run_enabled', 'swap_transaction_dry_run_enabled',
          'entry_quote_shadow_diagnostic_enabled', 'exit_policy_shadow_quote_enabled',
@@ -102,7 +104,8 @@ def budgets(root, config):
             and Decimal(str(s['stream_model_usd_cap'])) == Decimal('0.4')
             and s['cumulative_budget_usd_cap'] == 50, 'probe_model_caps')
     require(p['profile'] == 'read_only_http_recovery_v1' and p['generation'] == 1
-            and p['max_rpc_attempts'] == 1024 and p['max_rpc_cu'] == 40960, 'probe_broker_caps')
+            and p['max_rpc_attempts'] == 1024 and p['max_rpc_cu'] == 40960
+            and not p.get('offline_stub'), 'probe_broker_caps')
     require(p['prior_http_nano_usd'] == int(Decimal(str(carry['http_model_usd'])) * 10**9)
             and p['prior_model_nano_usd'] == int(Decimal(str(carry['cumulative_model_usd'])) * 10**9)
             and p['stream_reserved_nano_usd'] == 400_000_000, 'probe_carryover_model')
@@ -157,6 +160,24 @@ def containers(root, inspect, policy):
         if role == 'observation-app':
             require(value['Config'].get('Entrypoint') == ['/usr/bin/env']
                     and value['Config'].get('Cmd') == APP_COMMAND, 'probe_app_config_command')
+            require(value['Config'].get('WorkingDir') == '/opt/copybot', 'probe_app_working_directory')
+        if role == 'http-backend':
+            config = value['Config']
+            require(config.get('Entrypoint') == ['/usr/bin/python3']
+                    and config.get('Cmd') == BACKEND_COMMAND, 'probe_backend_command')
+            require([item for item in config.get('Env', []) if item.startswith('SSL_CERT_FILE=')]
+                    == ['SSL_CERT_FILE=' + CA_FILE]
+                    and not any(item.startswith('BROKER_OFFLINE_TEST=') for item in config.get('Env', [])),
+                    'probe_backend_ca_environment')
+            ca = [mount for mount in value['Mounts'] if mount['Destination'] == CA_FILE]
+            require(len(ca) == 1 and ca[0]['Type'] == 'bind' and ca[0]['RW'] is False
+                    and host_mount_path(ca[0]['Source']) == (root / 'ca/public-roots.pem').resolve(),
+                    'probe_backend_ca_mount')
+            proof = read(root / 'evidence/HTTP_BACKEND_TLS_BINDING.json')
+            require(proof['image'] == PY_IMAGE and proof['ca_sha256'] == digest(root / 'ca/public-roots.pem')
+                    and proof['ssl_cert_file'] == CA_FILE and proof['verify_mode'] == 'CERT_REQUIRED'
+                    and proof['check_hostname'] is True and type(proof['ca_certificates']) is int
+                    and proof['ca_certificates'] > 0, 'probe_backend_effective_ca_context')
         require(value['Id'] == cid and value['Name'] == '/' + RUN + '-' + role
                 and labels.get(LABEL) == RUN and labels.get('copybot.role') == role, 'probe_container_ownership')
         require(state['Status'] == 'created' and not state['Running'] and not state.get('OOMKilled', False)

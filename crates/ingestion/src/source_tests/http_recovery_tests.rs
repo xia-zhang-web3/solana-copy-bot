@@ -1,4 +1,6 @@
 use super::*;
+#[path = "http_recovery_error_tests.rs"]
+mod diagnostic_tests;
 use copybot_core_types::association_delivery::InfoIdentity;
 use prost::Message;
 use serde_json::json;
@@ -298,7 +300,9 @@ fn saved_mixed_version_complete_blocks_preserve_classification() {
     projected["rewards"] = json!([]);
     projected["numRewardPartitions"] = Value::Null;
     for tx in projected["transactions"].as_array_mut().unwrap() {
-        if tx["meta"]["rewards"].is_null() { tx["meta"]["rewards"] = json!([]); }
+        if tx["meta"]["rewards"].is_null() {
+            tx["meta"]["rewards"] = json!([]);
+        }
     }
     let block = block::parse(slot, &projected).unwrap();
     assert_eq!(

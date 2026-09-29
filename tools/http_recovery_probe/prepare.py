@@ -1,12 +1,13 @@
 """Prepare a fresh stopped HTTP recovery observation package; never activate it."""
 import argparse
+from decimal import Decimal
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 
-RUN = 'copybot-run15-http-recovery-probe-02'
+RUN = 'copybot-run15-http-recovery-probe-03'
 
 
 def save(path, value):
@@ -31,8 +32,10 @@ def prepare(previous, source_run, package, baseline, repository):
     save(package / 'control/settings.json', settings)
     shutil.copy2(previous / 'ca/public-roots.pem', package / 'ca/public-roots.pem')
     shutil.copy2(previous / 'config/read-only.toml', package / 'config/read-only.toml')
-    with (package / 'config/read-only.toml').open('a') as stream:
-        stream.write('\n[ingestion.yellowstone_http_recovery]\nbroker_url="http://127.0.0.1:18765/rpc"\nbroker_token=""\nrange_slots=1024\nmax_response_bytes=8388608\ntimeout_ms=5000\nfetch_concurrency=4\n')
+    config = package / 'config/read-only.toml'
+    if '[ingestion.yellowstone_http_recovery]' not in config.read_text():
+        with config.open('a') as stream:
+            stream.write('\n[ingestion.yellowstone_http_recovery]\nbroker_url="http://127.0.0.1:18765/rpc"\nbroker_token=""\nrange_slots=1024\nmax_response_bytes=8388608\ntimeout_ms=5000\nfetch_concurrency=4\n')
     scope = json.loads((previous / 'SCOPE.json').read_text())
     scope.update(run_id=RUN, status='STOPPED_OWNER_DECISION_PENDING',
                  additional_rpc_cu=40960, http_rpc_requests=1024, rpc_cu_cap=40960,
@@ -43,8 +46,10 @@ def prepare(previous, source_run, package, baseline, repository):
     old_policy = json.loads((source_run / 'control/policy.json').read_text())
     policy = {key: value for key, value in old_policy.items() if key.startswith('rpc_')}
     policy.update(run_id=RUN, profile='read_only_http_recovery_v1', max_rpc_attempts=1024,
-                  max_rpc_cu=40960, prior_http_nano_usd=9_985_500,
-                  prior_model_nano_usd=7_928_686_412, stream_reserved_nano_usd=400_000_000,
+                  max_rpc_cu=40960,
+                  prior_http_nano_usd=int(Decimal(str(history['http_model_usd'])) * 10**9),
+                  prior_model_nano_usd=int(Decimal(str(history['cumulative_model_usd'])) * 10**9),
+                  stream_reserved_nano_usd=400_000_000,
                   generation=1)
     save(package / 'control/http-policy.json', policy)
     shutil.copytree(repository / 'tools/http_recovery_broker', package / 'scripts/http_broker')
