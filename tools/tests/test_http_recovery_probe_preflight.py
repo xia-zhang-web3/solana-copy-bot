@@ -60,6 +60,12 @@ fetch_concurrency=4
         save(self.root / 'evidence/HTTP_BACKEND_TLS_BINDING.json', dict(image=pf.PY_IMAGE,
              ca_sha256=pf.digest(self.ca), ssl_cert_file=pf.CA_FILE, verify_mode='CERT_REQUIRED',
              check_hostname=True, ca_certificates=128))
+        save(self.root / 'evidence/UDS_VOLUME_BINDING.json', dict(status='PASS_FRESH_OWNED_UDS',
+             run_id=pf.RUN, volume=pf.RUN+'-uds', image=pf.PY_IMAGE,
+             labels={pf.LABEL:pf.RUN, 'copybot.resource-role':'uds'},
+             ownership={'after':dict(uid=501, gid=20, mode='0o700')},
+             unix_bind=dict(unix_listener_bind='PASS', uid=501, gid=20, network='none', provider_calls=0),
+             provider_roles_created=0, provider_calls=0, signatures=0, submissions=0))
         save(self.root / 'CARRYOVER.json', dict(cumulative_model_usd=7.928686412,
              http_model_usd=0.0099855, http_requests=996, rpc_cu=19020,
              cumulative_stream_bytes=85026403600, history_files_sha256={str(self.history):pf.digest(self.history)}))
@@ -216,6 +222,22 @@ fetch_concurrency=4
         save(proof, value)
         self.ca.write_text('changed mounted CA')
         with self.assertRaisesRegex(ValueError, 'probe_backend_effective_ca_context'):
+            self.check()
+
+    def test_uds_initialization_and_actual_uid_bind_proof_are_required(self):
+        path = self.root / 'evidence/UDS_VOLUME_BINDING.json'
+        original = pf.read(path)
+        for mutate in [lambda v:v['ownership']['after'].update(uid=0),
+                       lambda v:v['ownership']['after'].update(mode='0o755'),
+                       lambda v:v['unix_bind'].update(unix_listener_bind='NOT_PROVEN'),
+                       lambda v:v.update(volume='other-project-uds')]:
+            value = json.loads(json.dumps(original))
+            mutate(value); save(path,value)
+            with self.assertRaisesRegex(ValueError, 'probe_uds_owner_or_bind_proof'):
+                self.check()
+        save(path, original)
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):
             self.check()
 
 

@@ -41,7 +41,7 @@ pub(super) fn rewards(v: &Value) -> Result<Vec<Reward>> {
         let reward_type = match &row["rewardType"] {
             Value::Null => RewardType::Unspecified,
             Value::String(kind) => match kind.as_str() {
-                "fee" => RewardType::Fee,
+                "fee" | "Fee" => RewardType::Fee,
                 "rent" => RewardType::Rent,
                 "staking" => RewardType::Staking,
                 "voting" => RewardType::Voting,

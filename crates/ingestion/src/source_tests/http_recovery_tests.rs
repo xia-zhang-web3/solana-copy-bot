@@ -1,6 +1,8 @@
 use super::*;
 #[path = "http_recovery_error_tests.rs"]
 mod diagnostic_tests;
+#[path = "http_reward_compatibility_tests.rs"]
+mod reward_compatibility_tests;
 use copybot_core_types::association_delivery::InfoIdentity;
 use prost::Message;
 use serde_json::json;

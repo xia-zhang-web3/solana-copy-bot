@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tomllib
 
-RUN = 'copybot-run15-http-recovery-probe-03'
+RUN = 'copybot-run15-http-recovery-probe-04'
 ROLES = {'observation-app', 'stream-front', 'stream-backend', 'http-front', 'http-backend'}
 LABEL = 'copybot.http-recovery-probe'
 PY_IMAGE = 'sha256:09ecaa87c6799c8d8ee0dfb779905d97e5f667ab97d866cc47ff9f949ffb7b3b'
@@ -151,6 +151,15 @@ def docker_inspect(cid):
 def containers(root, inspect, policy):
     ids = read(root / 'CONTAINERS.json')
     require(set(ids) == ROLES and len(set(ids.values())) == 5, 'probe_five_container_roles')
+    uds = read(root / 'evidence/UDS_VOLUME_BINDING.json')
+    require(uds['status'] == 'PASS_FRESH_OWNED_UDS' and uds['run_id'] == RUN
+            and uds['volume'] == RUN + '-uds' and uds['image'] == PY_IMAGE
+            and uds['labels'] == {LABEL: RUN, 'copybot.resource-role': 'uds'}
+            and uds['ownership']['after'] == dict(uid=501, gid=20, mode='0o700')
+            and uds['unix_bind'] == dict(unix_listener_bind='PASS', uid=501, gid=20,
+                                        network='none', provider_calls=0)
+            and uds['provider_roles_created'] == uds['provider_calls'] == uds['signatures'] == uds['submissions'] == 0,
+            'probe_uds_owner_or_bind_proof')
     for role, cid in ids.items():
         require(re.fullmatch('[0-9a-f]{64}', cid), 'probe_container_id')
         value = inspect(cid)
@@ -192,7 +201,7 @@ def containers(root, inspect, policy):
             target = mount['Destination'].lower()
             require(not any(word in target for word in ['signer', 'keypair', 'authority']), 'probe_financial_mount')
             if mount['Type'] == 'volume':
-                require(mount['Name'].startswith(RUN + '-') and target.startswith('/relay'), 'probe_volume_scope')
+                require(mount['Name'] == uds['volume'] and target.startswith('/relay'), 'probe_volume_scope')
             elif target == '/run/provider/alchemy-api-key':
                 require(role == 'http-backend' and mount['RW'] is False
                         and digest(host_mount_path(mount['Source'])) == policy['rpc_key_sha256'], 'probe_provider_mount')

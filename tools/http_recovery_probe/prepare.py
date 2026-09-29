@@ -6,8 +6,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from uds_volume import prepare_uds
 
-RUN = 'copybot-run15-http-recovery-probe-03'
+RUN = 'copybot-run15-http-recovery-probe-04'
 
 
 def save(path, value):
@@ -62,6 +65,8 @@ def prepare(previous, source_run, package, baseline, repository):
          'duration_seconds': 480, 'stream_byte_cap': 4 * 1024**3,
          'upstream_attempt_cap': 3, 'rpc_attempt_cap': 1024, 'rpc_cu_cap': 40960,
          'additional_model_usd_cap': 0.421504, 'new_paid_actions': 0})
+    prepare_uds(RUN, package / 'evidence')
+    shutil.copy2(repository / 'tools/http_recovery_probe/uds_volume.py', package / 'scripts/uds_volume.py')
     return package
 
 

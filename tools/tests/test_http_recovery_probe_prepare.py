@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 SOURCE = Path(__file__).resolve().parents[1] / 'http_recovery_probe/prepare.py'
 spec = importlib.util.spec_from_file_location('http_probe_prepare', SOURCE)
@@ -27,18 +28,21 @@ class Preparation(unittest.TestCase):
             (previous / 'SCOPE.json').write_text('{"permission":"OWNER_DECISION_PENDING"}')
             (source / 'control/policy.json').write_text('{"rpc_key_sha256":"synthetic","financial_secret":"must_not_copy"}')
             baseline = root / 'baseline.json'
-            carry = {'cumulative_model_usd': 7.960362665, 'http_model_usd': 0.00999075,
-                     'http_requests': 997, 'rpc_cu': 19030, 'cumulative_stream_bytes': 85366468402,
+            carry = {'cumulative_model_usd': 7.999928734, 'http_model_usd': 0.01008,
+                     'http_requests': 1002, 'rpc_cu': 19200, 'cumulative_stream_bytes': 85790347518,
                      'history_files_sha256': {}}
             baseline.write_text(json.dumps(carry))
             repository = SOURCE.parents[2]
-            prep.prepare(previous, source, target, baseline, repository)
+            with mock.patch.object(prep, 'prepare_uds', return_value={'status':'offline-controlled'}) as uds:
+                prep.prepare(previous, source, target, baseline, repository)
+                uds.assert_called_once_with(prep.RUN, target / 'evidence')
             policy = json.loads((target / 'control/http-policy.json').read_text())
-            self.assertEqual((policy['prior_model_nano_usd'], policy['prior_http_nano_usd']), (7960362665, 9990750))
+            self.assertEqual((policy['prior_model_nano_usd'], policy['prior_http_nano_usd']), (7999928734, 10080000))
             self.assertNotIn('financial_secret', policy)
             self.assertEqual(json.loads((target / 'CARRYOVER.json').read_text()), carry)
             self.assertEqual((target / 'config/read-only.toml').read_text(), config)
             self.assertFalse(any((target / 'state').iterdir()))
+            self.assertTrue((target / 'scripts/uds_volume.py').is_file())
             self.assertTrue(all((target / 'control' / name).is_file() for name in ['STOP', 'STREAM_STOP', 'HTTP_STOP']))
             with self.assertRaisesRegex(ValueError, 'new_unused_package_required'):
                 prep.prepare(previous, source, target, baseline, repository)
