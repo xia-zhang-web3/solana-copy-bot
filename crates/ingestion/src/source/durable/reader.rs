@@ -18,7 +18,7 @@ pub(super) enum End {
     Budget(&'static str),
 }
 pub(super) struct Captured {
-    pub update: SubscribeUpdate,
+    value: CapturedValue,
     received: Instant,
     charge: usize,
     telemetry: Arc<DurableIngressTelemetry>,
@@ -27,7 +27,29 @@ pub(super) struct Captured {
     _count: OwnedSemaphorePermit,
     _pending: Vec<Pending>,
 }
+enum CapturedValue {
+    EncodedBlock(Vec<u8>),
+    Exact(SubscribeUpdate),
+}
 impl Captured {
+    pub fn is_block(&self) -> bool {
+        match &self.value {
+            CapturedValue::EncodedBlock(_) => true,
+            CapturedValue::Exact(update) => matches!(
+                update.update_oneof.as_ref(),
+                Some(subscribe_update::UpdateOneof::Block(_))
+            ),
+        }
+    }
+    pub fn update(&mut self) -> Result<&SubscribeUpdate> {
+        if let CapturedValue::EncodedBlock(bytes) = &self.value {
+            self.value = CapturedValue::Exact(SubscribeUpdate::decode(bytes.as_slice())?);
+        }
+        let CapturedValue::Exact(update) = &self.value else {
+            unreachable!("decoded captured block")
+        };
+        Ok(update)
+    }
     pub fn dequeue(&mut self) {
         if self.queued {
             self.telemetry
@@ -149,8 +171,16 @@ impl Reader {
                         .collect(),
                     _ => Vec::new(),
                 };
+                let value = match update.update_oneof.as_ref() {
+                    Some(subscribe_update::UpdateOneof::Block(block))
+                        if !crate::source::yellowstone_block_association::needs_exact_float_storage(block) =>
+                    {
+                        CapturedValue::EncodedBlock(update.encode_to_vec())
+                    }
+                    _ => CapturedValue::Exact(update),
+                };
                 let captured = Captured {
-                    update,
+                    value,
                     received: Instant::now(),
                     charge,
                     telemetry: telemetry.clone(),

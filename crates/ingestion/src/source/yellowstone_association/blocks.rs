@@ -19,19 +19,13 @@ impl YellowstoneAssociation<'_> {
         if bytes > self.limits.input_bytes {
             return Err(Rejection::InputTooLarge);
         }
+        let encoded = block.encode_to_vec();
         if let Some(blocks) = self.blocks.get(&block.slot) {
             for retained in blocks
                 .iter()
                 .filter(|b| !limits::expired(now, b.offset, self.limits.block_ttl))
             {
-                if retained.value.encode_to_vec() == block.encode_to_vec()
-                    && retained
-                        .value
-                        .transactions
-                        .iter()
-                        .zip(&block.transactions)
-                        .all(|(a, b)| association::same_float_bits(a, b))
-                {
+                if retained.value.same(block, &encoded) {
                     return Ok((Admission::Block, Cause::Tick));
                 }
             }
@@ -63,7 +57,11 @@ impl YellowstoneAssociation<'_> {
         let blocks = self.blocks.entry(slot).or_default();
         let index = blocks.len();
         blocks.push(Block {
-            value: block.clone(),
+            value: if association::needs_exact_float_storage(block) {
+                StoredBlock::Exact(block.clone())
+            } else {
+                StoredBlock::Encoded(encoded)
+            },
             offset: now,
             encoded_bytes: bytes,
             metadata_bytes: metadata,

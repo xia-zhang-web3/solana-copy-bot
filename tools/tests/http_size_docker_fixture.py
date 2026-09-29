@@ -8,6 +8,7 @@ from pathlib import Path
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 
@@ -31,6 +32,7 @@ def run(args):
     control.mkdir()
     certificates(control)
     spec = importlib.util.spec_from_file_location('size_owned_controller', args.helper)
+    sys.path.insert(0, str(args.helper.resolve().parent))
     common = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(common)
     common.ROOT = root
@@ -73,9 +75,12 @@ def run(args):
             cmd += ['--publish', f'127.0.0.1:{port}:{port}']
         if role in {'front', 'backend'}:
             cmd += ['--env', 'MALLOC_ARENA_MAX=2']
-        cmd += [IMAGE, 'python3', '-B', str(CODE / 'tools/tests/http_size_docker_server.py'),
+        script = getattr(args, 'server_script', CODE / 'tools/tests/http_size_docker_server.py')
+        cmd += [IMAGE, 'python3', '-B', str(script),
                 '--role', role, '--directory', str(control), '--corpus', str(args.corpus.resolve()),
                 '--port', str(port)]
+        if script != CODE / 'tools/tests/http_size_docker_server.py':
+            cmd += ['--duration', str(args.duration)]
         cid = docker(*cmd).strip()
         containers[role] = cid
         docker('start', cid)
@@ -99,7 +104,7 @@ def run(args):
         save(root / 'HOST_READY.json', dict(front_url=f'http://127.0.0.1:{port}/rpc',
               clock=clock, helper_sha256=hashlib.sha256(args.helper.read_bytes()).hexdigest(),
               clock_sha256=hashlib.sha256(clock_bytes).hexdigest(), provider_calls=0))
-        deadline = time.monotonic()+145
+        deadline = time.monotonic()+getattr(args, 'duration', 145)
         while not stop.wait(.10) and not (root / 'STOP_HOST_TEST').exists():
             if time.monotonic() >= deadline:
                 raise TimeoutError('local_size_controller_deadline')
@@ -135,4 +140,7 @@ if __name__ == '__main__':
     parser.add_argument('--rust-pid', type=int, required=True)
     parser.add_argument('--front-memory', default='1g')
     parser.add_argument('--backend-memory', default='1g')
+    parser.add_argument('--server-script', type=Path,
+                        default=CODE / 'tools/tests/http_size_docker_server.py')
+    parser.add_argument('--duration', type=float, default=145)
     run(parser.parse_args())

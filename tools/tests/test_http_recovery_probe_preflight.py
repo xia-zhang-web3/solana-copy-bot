@@ -44,7 +44,7 @@ broker_url="http://127.0.0.1:18765/rpc"
 broker_token=""
 range_slots=1024
 max_response_bytes=16777216
-timeout_ms=15000
+timeout_ms=30000
 fetch_concurrency=4
 '''
         for name in ['pending', 'blocks', 'history', 'outputs', 'queue', 'inbox']:
@@ -149,6 +149,15 @@ fetch_concurrency=4
             path.write_text(text)
             with self.assertRaises(ValueError):self.check()
         path.write_text(self.config)
+
+    def test_http_timeout_requires_the_new_finite_bound(self):
+        path = self.root/'config/read-only.toml'
+        for timeout in [15000, 30001]:
+            path.write_text(self.config.replace('timeout_ms=30000', f'timeout_ms={timeout}'))
+            with self.assertRaisesRegex(ValueError, 'probe_http_bounds'):
+                self.check()
+        path.write_text(self.config)
+        self.check()
 
     def test_stale_artifact_binary_migration_and_history_digests_are_rejected(self):
         with self.assertRaisesRegex(ValueError,'probe_artifact_identity'):

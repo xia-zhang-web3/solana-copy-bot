@@ -181,3 +181,20 @@ pub(super) fn same_float_bits(
     };
     bits(a) == bits(b)
 }
+
+/// Prost elides default doubles, including negative zero. A block containing
+/// one cannot be stored as protobuf bytes without changing exact Info equality.
+pub(in crate::source) fn needs_exact_float_storage(block: &SubscribeUpdateBlock) -> bool {
+    block.transactions.iter().any(|info| {
+        info.meta.iter().any(|meta| {
+            meta.pre_token_balances
+                .iter()
+                .chain(&meta.post_token_balances)
+                .any(|row| {
+                    row.ui_token_amount
+                        .as_ref()
+                        .is_some_and(|amount| amount.ui_amount.to_bits() == (-0.0_f64).to_bits())
+                })
+        })
+    })
+}

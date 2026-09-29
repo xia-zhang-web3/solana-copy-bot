@@ -115,6 +115,10 @@ impl<'a> Bridge<'a> {
         let stage = std::time::Instant::now();
         let result = self.adapter.push(context, input);
         self.telemetry.processing.association(stage.elapsed());
+        let (cached_count, cached_bytes) = self.adapter.block_cache_usage();
+        self.telemetry
+            .processing
+            .block_cache(cached_count, cached_bytes);
         if let Some(scope) = &self.capture_scope {
             scope.replace_known(self.adapter.known_signatures_bytes());
         }

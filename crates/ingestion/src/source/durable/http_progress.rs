@@ -39,6 +39,7 @@ impl Progress {
             return;
         }
         self.last_report = Some(Instant::now());
+        let memory = &s.processing;
         tracing::info!(
             from_slot = self.from,
             live_anchor_slot = self.anchor,
@@ -50,6 +51,10 @@ impl Progress {
                 .last_received_block_slot
                 .saturating_sub(s.last_durably_stored_parent_slot),
             catchup_age_ms = self.began.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            input_queue_count = memory.input_queue_count,
+            input_queue_bytes = memory.input_queue_bytes,
+            block_cache_count = memory.block_cache_count,
+            block_cache_encoded_bytes = memory.block_cache_encoded_bytes,
             "confirmed HTTP recovery progress"
         );
     }

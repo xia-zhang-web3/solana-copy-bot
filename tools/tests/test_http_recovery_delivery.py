@@ -22,7 +22,7 @@ CONF = dict(commitment='confirmed', encoding='json', transactionDetails='full',
             maxSupportedTransactionVersion=1, rewards=True)
 
 
-def post(fixture, slot, identity=1, timeout=15):
+def post(fixture, slot, identity=1, timeout=30):
     start = time.monotonic()
     connection = http.client.HTTPConnection('127.0.0.1', fixture.front.server_port, timeout=timeout)
     try:
@@ -191,19 +191,19 @@ class DeliveryChecks(unittest.TestCase):
             finally:
                 fixture.close()
 
-    def test_actual_eight_second_upstream_total_expires_before_client_delivery_limit(self):
+    def test_actual_twenty_second_upstream_total_expires_before_client_delivery_limit(self):
         with tempfile.TemporaryDirectory(prefix='cbdeliver-') as name:
             root = Path(name)
-            fixture = Fixture(root/'control', self.corpus(root), 'slow-always', delay_seconds=8.2).start()
+            fixture = Fixture(root/'control', self.corpus(root), 'slow-always', delay_seconds=20.2).start()
             try:
                 failed = post(fixture, 100)
                 fact = failed['body']['broker_error']
                 self.assertEqual((failed['status'], fact['reservation_id'], fact['stage'], fact['reason'],
                                   fact['cause_type']),
                                  (502, 1, 'upstream_headers', 'deadline_exhausted', 'DeadlineExceededTimeout'))
-                self.assertGreaterEqual(failed['elapsed_ms'], 7900)
-                self.assertLess(failed['elapsed_ms'], 12000)
-                self.assertEqual(fact['deadline_ms'], 12000)
+                self.assertGreaterEqual(failed['elapsed_ms'], 19900)
+                self.assertLess(failed['elapsed_ms'], 25000)
+                self.assertEqual(fact['deadline_ms'], 25000)
                 self.assertEqual(json.loads((fixture.directory/'http-evidence/failure-000001.json').read_text()), fact)
                 with sqlite3.connect(fixture.directory/'broker-ledger.sqlite3') as db:
                     self.assertEqual(db.execute('SELECT attempts,rpc_cu FROM head').fetchone(), (1, 40))

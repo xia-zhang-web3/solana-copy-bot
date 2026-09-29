@@ -2,7 +2,7 @@
 import unittest
 
 import test_http_recovery_probe_preflight as preflight_fixture
-from config_bounds import bind_config, INPUT_BYTES, QUEUE_BYTES
+from config_bounds import bind_config, INPUT_BYTES, QUEUE_BYTES, CLIENT_TIMEOUT_MS
 
 
 class SizeConfig(unittest.TestCase):
@@ -18,9 +18,10 @@ class SizeConfig(unittest.TestCase):
         self.assertIn(f'input_bytes = {INPUT_BYTES}', result)
         self.assertIn(f'queue = {{ count = 4, bytes = {QUEUE_BYTES} }}', result)
         self.assertIn('max_response_bytes=16777216', result)
+        self.assertIn(f'timeout_ms={CLIENT_TIMEOUT_MS}', result)
         for unchanged in ['enabled=false', 'max_submit_attempts=1',
                           'blocks={count=384,bytes=805306368}', 'metadata_bytes=100663296',
-                          'timeout_ms=15000', 'fetch_concurrency=4', 'max_position_sol=0.10']:
+                          'fetch_concurrency=4', 'max_position_sol=0.10']:
             self.assertIn(unchanged, result)
 
     def test_parser_queue_and_actual_role_caps_cannot_drift(self):

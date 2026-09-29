@@ -45,6 +45,15 @@ pub(in crate::source) struct YellowstoneAssociation<'a> {
     action: Option<Action>,
 }
 impl<'a> YellowstoneAssociation<'a> {
+    pub(in crate::source) fn block_cache_usage(&self) -> (usize, usize) {
+        self.blocks
+            .values()
+            .flatten()
+            .filter(|b| !limits::expired(self.offset, b.offset, self.limits.block_ttl))
+            .fold((0usize, 0usize), |(count, bytes), b| {
+                (count + 1, bytes.saturating_add(b.encoded_bytes))
+            })
+    }
     pub(in crate::source) fn has_signature(&self, signature: &str) -> bool {
         self.signatures.contains_key(signature)
     }

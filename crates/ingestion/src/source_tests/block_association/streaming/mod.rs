@@ -5,6 +5,7 @@ use crate::source::yellowstone_message_time::{CreatedAtUnavailable, YellowstoneM
 use std::time::Duration;
 
 mod conflicts;
+mod compact_storage_tests;
 mod lifecycle;
 mod limits_tests;
 mod resource_tests;

@@ -15,10 +15,41 @@ pub(super) struct Record {
     pub late_reported: bool,
 }
 pub(super) struct Block {
-    pub value: SubscribeUpdateBlock,
+    pub value: StoredBlock,
     pub offset: Duration,
     pub encoded_bytes: usize,
     pub metadata_bytes: usize,
+}
+pub(super) enum StoredBlock {
+    Encoded(Vec<u8>),
+    Exact(SubscribeUpdateBlock),
+}
+impl StoredBlock {
+    pub fn with_value<T>(&self, f: impl FnOnce(&SubscribeUpdateBlock) -> T) -> T {
+        match self {
+            Self::Encoded(bytes) => {
+                let value = prost::Message::decode(bytes.as_slice())
+                    .expect("internally encoded containing block");
+                f(&value)
+            }
+            Self::Exact(value) => f(value),
+        }
+    }
+    pub fn same(&self, block: &SubscribeUpdateBlock, encoded: &[u8]) -> bool {
+        match self {
+            Self::Encoded(bytes) => {
+                bytes == encoded && !super::association::needs_exact_float_storage(block)
+            }
+            Self::Exact(value) => {
+                prost::Message::encode_to_vec(value) == encoded
+                    && value
+                        .transactions
+                        .iter()
+                        .zip(&block.transactions)
+                        .all(|(a, b)| super::association::same_float_bits(a, b))
+            }
+        }
+    }
 }
 pub(super) enum Cause {
     Transaction(ResultId),

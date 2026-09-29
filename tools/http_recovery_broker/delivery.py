@@ -8,8 +8,8 @@ import time
 from budget import Refused
 from control_reader import read_clock, safe_control_fact
 
-UPSTREAM_SECONDS = 8.0
-DELIVERY_SECONDS = 12.0
+UPSTREAM_SECONDS = 20.0
+DELIVERY_SECONDS = 25.0
 STAGES = {'request', 'gate', 'reservation', 'connect', 'upstream_headers',
           'upstream_body', 'archive', 'frame_encode', 'unix_send', 'unix_receive',
           'front_decode', 'front_headers', 'front_body', 'response_sanitize'}

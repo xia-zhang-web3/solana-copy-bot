@@ -44,7 +44,7 @@ class Preparation(unittest.TestCase):
             self.assertNotIn('financial_secret', policy)
             self.assertEqual(json.loads((target / 'CARRYOVER.json').read_text()), carry)
             self.assertEqual((target / 'config/read-only.toml').read_text(),
-                             config.replace('timeout_ms=5000', 'timeout_ms=15000')
+                             config.replace('timeout_ms=5000', 'timeout_ms=30000')
                              .replace('max_response_bytes=8388608', 'max_response_bytes=16777216')
                              .replace('input_bytes=8388608', 'input_bytes = 16777216')
                              .replace('queue={count=4,bytes=8388608}', 'queue = { count = 4, bytes = 67110912 }'))

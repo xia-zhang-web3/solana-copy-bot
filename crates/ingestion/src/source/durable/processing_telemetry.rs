@@ -57,6 +57,9 @@ pub struct IngressProcessingSnapshot {
     pub input_queue_bytes: u64,
     pub input_queue_count_max: u64,
     pub input_queue_bytes_max: u64,
+    /// Logical encoded bytes retained by the association block cache.
+    pub block_cache_count: u64,
+    pub block_cache_encoded_bytes: u64,
     /// Charged captured-envelope bytes, including per-envelope allocation
     /// headroom. This is not the relay's observed or billed stream byte count.
     pub input_received_bytes: u64,
@@ -161,9 +164,17 @@ pub(crate) struct IngressProcessingTelemetry {
     input_bytes: AtomicU64,
     input_count_max: AtomicU64,
     input_bytes_max: AtomicU64,
+    block_cache_count: AtomicU64,
+    block_cache_encoded_bytes: AtomicU64,
     input_received_bytes: AtomicU64,
 }
 impl IngressProcessingTelemetry {
+    pub(crate) fn block_cache(&self, count: usize, bytes: usize) {
+        self.block_cache_count
+            .store(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
+        self.block_cache_encoded_bytes
+            .store(u64::try_from(bytes).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
     pub(crate) fn filtered_foreign_transaction(&self) {
         self.filtered_foreign_transactions
             .fetch_add(1, Ordering::Relaxed);
@@ -243,6 +254,8 @@ impl IngressProcessingTelemetry {
             input_queue_bytes: get(&self.input_bytes),
             input_queue_count_max: get(&self.input_count_max),
             input_queue_bytes_max: get(&self.input_bytes_max),
+            block_cache_count: get(&self.block_cache_count),
+            block_cache_encoded_bytes: get(&self.block_cache_encoded_bytes),
             input_received_bytes: get(&self.input_received_bytes),
         }
     }

@@ -5,6 +5,8 @@ mod live;
 mod lease_docker_replay_tests;
 #[path = "../http_size_docker_replay_tests.rs"]
 mod http_size_docker_replay_tests;
+#[path = "../http_catchup_docker_replay_tests.rs"]
+mod http_catchup_docker_replay_tests;
 use super::{config, initialize_empty, persist, Servers};
 use crate::{source::http_recovery::ConfirmedHttpRecovery, DeliveryReceiver};
 use copybot_core_types::{association_delivery::*, association_parent::*, association_recovery::*};

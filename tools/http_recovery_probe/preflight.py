@@ -9,10 +9,10 @@ import subprocess
 import sys
 import tomllib
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from config_bounds import INPUT_BYTES, QUEUE_BYTES, RECOVERY_BLOCK_BYTES
+from config_bounds import INPUT_BYTES, QUEUE_BYTES, RECOVERY_BLOCK_BYTES, CLIENT_TIMEOUT_MS
 from runtime_resources import ROLE_LIMITS, HTTP_ALLOCATOR_ENV
 
-RUN = 'copybot-run15-http-recovery-probe-07'
+RUN = 'copybot-run15-http-recovery-probe-08'
 ROLES = {'observation-app', 'stream-front', 'stream-backend', 'http-front', 'http-backend'}
 LABEL = 'copybot.http-recovery-probe'
 PY_IMAGE = 'sha256:09ecaa87c6799c8d8ee0dfb779905d97e5f667ab97d866cc47ff9f949ffb7b3b'
@@ -85,7 +85,7 @@ def configuration(root):
     h = i['yellowstone_http_recovery']
     require(h['broker_url'] == 'http://127.0.0.1:18765/rpc' and h['broker_token'] == '', 'probe_broker_binding')
     require((h['range_slots'], h['max_response_bytes'], h['timeout_ms'], h['fetch_concurrency'])
-            == (1024, RECOVERY_BLOCK_BYTES, 15_000, 4), 'probe_http_bounds')
+            == (1024, RECOVERY_BLOCK_BYTES, CLIENT_TIMEOUT_MS, 4), 'probe_http_bounds')
     a = i['yellowstone_association']
     require(a.get('input_bytes') == INPUT_BYTES
             and a['queue']['count'] == 4 and a['queue']['bytes'] == QUEUE_BYTES,

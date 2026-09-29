@@ -202,17 +202,14 @@ pub(super) async fn run(
                 let Some(value) = reader.next().await else {
                     break None;
                 };
-                if matches!(
-                    value.update.update_oneof,
-                    Some(subscribe_update::UpdateOneof::Block(_))
-                ) {
+                if value.is_block() {
                     break Some(value);
                 }
                 before_anchor.push(value);
             };
             if let Some(mut anchor) = anchor {
                 let Some(subscribe_update::UpdateOneof::Block(block)) =
-                    anchor.update.update_oneof.as_ref()
+                    anchor.update()?.update_oneof.as_ref()
                 else {
                     unreachable!()
                 };
@@ -236,11 +233,11 @@ pub(super) async fn run(
                 // Confirmed full blocks already cover older processed messages.
                 // Re-admitting them would invent a fresh observation after HTTP.
                 for mut value in before_anchor {
-                    if matches!(value.update.update_oneof.as_ref(),
+                    if matches!(value.update()?.update_oneof.as_ref(),
                         Some(subscribe_update::UpdateOneof::Transaction(t)) if t.slot > anchor_slot)
                     {
                         value.dequeue();
-                        process(&mut bridge, ns(start), &value.update, &telemetry).await?;
+                        process(&mut bridge, ns(start), value.update()?, &telemetry).await?;
                     }
                 }
             } else {
@@ -266,14 +263,14 @@ pub(super) async fn run(
                 _ = tick.tick() => { bridge.push(ns(start), a::Input::Tick).await?; telemetry.maybe_report(); }
                 value = reader.next() => {
                     let Some(mut value) = value else { break; };
+                    let is_block = value.is_block();
                     value.dequeue();
-                    if let Err(error) = process(&mut bridge, ns(start), &value.update, &telemetry).await {
+                    if let Err(error) = process(&mut bridge, ns(start), value.update()?, &telemetry).await {
                         bridge.set_http_hold(true);
                         bridge.emit(ns(start), DeliveryEvent::Session(SessionGap::Rejected("AssociationRecoveryRefused".into()))).await?;
                         return Err(error).context("HTTP/live association refused");
                     }
-                    if first_fresh_parent && matches!(value.update.update_oneof,
-                        Some(subscribe_update::UpdateOneof::Block(_))) {
+                    if first_fresh_parent && is_block {
                         bridge.wait_checkpoint(timeout).await?;
                         reader.clear_verified();
                         first_fresh_parent = false;

@@ -6,13 +6,15 @@ impl YellowstoneAssociation<'_> {
         r: &Record,
         block: &Block,
     ) -> Result<association::AssociatedSwap, AssociationRefusal> {
-        association::associate_yellowstone_transaction(
-            &r.tx,
-            &block.value,
-            self.programs.interested,
-            self.programs.raydium,
-            self.programs.pumpswap,
-        )
+        block.value.with_value(|value| {
+            association::associate_yellowstone_transaction(
+                &r.tx,
+                value,
+                self.programs.interested,
+                self.programs.raydium,
+                self.programs.pumpswap,
+            )
+        })
     }
     pub(super) fn pending_resolution(
         &self,
