@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import time
 import uuid
+from size_contract import check_size, response_limit
 
 
 def persist(directory, name, data, timings=None):
@@ -41,7 +42,9 @@ def archive_failure(directory, fact, response=None):
     persist(directory, f'failure-{identity}.json', json.dumps(value, sort_keys=True).encode())
 
 
-def archive(directory, reservation, method, request, status, response, original=None, delivery=None):
+def archive(directory, reservation, method, request, status, response, original=None, delivery=None, profile=None):
+    if profile is not None:
+        check_size(len(response), response_limit('rpc', method, profile), 'archive')
     value = {'method': method, 'request': json.loads(request), 'request_sha256': hashlib.sha256(request).hexdigest(),
              'status': status, 'bytes': len(response),
              'response_sha256': hashlib.sha256(response).hexdigest()}

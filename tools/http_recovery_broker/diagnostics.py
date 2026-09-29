@@ -5,6 +5,7 @@ import socket
 import ssl
 import subprocess
 from control_reader import safe_control_fact
+from size_contract import safe_size_fact
 
 METHODS = {'getGenesisHash', 'getBalance', 'getAccountInfo',
            'getMinimumBalanceForRentExemption', 'getTokenAccountsByOwner'}
@@ -30,6 +31,7 @@ REASONS = {
     'read_only_recovery_method_required', 'unknown_rpc_method_or_price', 'unknown_quote_price',
     'unknown_route', 'http_or_rpc_cap_exhausted', 'request_invalid', 'quote_key_unbound',
     'deadline_exhausted', 'session_deadline_exhausted',
+    'frame_too_large',
 }
 BROKER_METHODS = {'getBlocks', 'getBlock'}
 BROKER_STAGES = {'request', 'route', 'gate', 'reservation', 'outbound',
@@ -70,6 +72,7 @@ def broker_fact(kind, method, reservation, stage, error, status=None, delivery=N
             if type(item) is int and 0 <= item <= 2**64-1:
                 value[key] = item
     value.update(safe_control_fact(getattr(error, 'control_fact', None)))
+    value.update(safe_size_fact(getattr(error, 'size_fact', None)))
     return value
 
 
@@ -88,8 +91,9 @@ def exception_reason(error):
     ):
         if isinstance(error, kind):
             return reason
-    if type(error) is ValueError and error.args == ('upstream_response_too_large',):
-        return 'upstream_response_too_large'
+    if type(error) is ValueError and error.args in {('upstream_response_too_large',), ('frame_too_large',),
+                                                  ('response_too_large',)}:
+        return error.args[0]
     return 'unclassified_failure'
 
 

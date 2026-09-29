@@ -5,35 +5,18 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from uds_volume import prepare_uds
+from config_bounds import bind_config
 
-RUN = 'copybot-run15-http-recovery-probe-06'
-CLIENT_TIMEOUT_MS = 15_000
+RUN = 'copybot-run15-http-recovery-probe-07'
 
 
 def save(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
     path.chmod(0o600)
-
-
-def bind_client_deadline(text):
-    """Update only this recovery section; the consumed configuration is untouched."""
-    header = '[ingestion.yellowstone_http_recovery]'
-    if header not in text:
-        return text + ('\n' + header + '\nbroker_url="http://127.0.0.1:18765/rpc"\n'
-                       'broker_token=""\nrange_slots=1024\nmax_response_bytes=8388608\n'
-                       f'timeout_ms={CLIENT_TIMEOUT_MS}\nfetch_concurrency=4\n')
-    before, recovery = text.split(header, 1)
-    section, separator, after = recovery.partition('\n[')
-    section, count = re.subn(r'(?m)^timeout_ms[ \t]*=[ \t]*\d+[ \t]*$',
-                            f'timeout_ms={CLIENT_TIMEOUT_MS}', section)
-    if count != 1:
-        raise ValueError('probe_recovery_timeout_required_once')
-    return before + header + section + separator + after
 
 
 def prepare(previous, source_run, package, baseline, repository):
@@ -54,7 +37,7 @@ def prepare(previous, source_run, package, baseline, repository):
     shutil.copy2(previous / 'ca/public-roots.pem', package / 'ca/public-roots.pem')
     shutil.copy2(previous / 'config/read-only.toml', package / 'config/read-only.toml')
     config = package / 'config/read-only.toml'
-    config.write_text(bind_client_deadline(config.read_text()))
+    config.write_text(bind_config(config.read_text()))
     scope = json.loads((previous / 'SCOPE.json').read_text())
     scope.update(run_id=RUN, status='STOPPED_OWNER_DECISION_PENDING',
                  additional_rpc_cu=40960, http_rpc_requests=1024, rpc_cu_cap=40960,
@@ -84,6 +67,8 @@ def prepare(previous, source_run, package, baseline, repository):
          'additional_model_usd_cap': 0.421504, 'new_paid_actions': 0})
     prepare_uds(RUN, package / 'evidence')
     shutil.copy2(repository / 'tools/http_recovery_probe/uds_volume.py', package / 'scripts/uds_volume.py')
+    shutil.copy2(repository / 'tools/http_recovery_probe/config_bounds.py', package / 'scripts/config_bounds.py')
+    shutil.copy2(repository / 'tools/http_recovery_probe/runtime_resources.py', package / 'scripts/runtime_resources.py')
     return package
 
 

@@ -7,6 +7,7 @@ from budget import Refused
 from diagnostics import broker_fact
 from evidence import archive_delivery
 from policy import response_limit
+from size_contract import check_size
 
 
 def phase(delivery, name):
@@ -17,9 +18,18 @@ def deliver_response(handler, result, route, rpc_method):
     try:
         with phase(handler.delivery, 'front_decode'):
             data = base64.b64decode(result['body'], validate=True)
-        if len(data) > response_limit(route, rpc_method):
-            raise ValueError('response_too_large')
-    except (ValueError, KeyError, TypeError, binascii.Error):
+        check_size(len(data), response_limit(route, rpc_method, handler.server.profile),
+                   'front_body', reason='response_too_large')
+    except ValueError as error:
+        if hasattr(error, 'size_fact'):
+            trace = result.get('broker_trace', {})
+            fact = broker_fact('failed', rpc_method, trace.get('reservation_id'), 'front_decode', error,
+                               delivery=handler.delivery)
+            handler._broker_error(502, fact, persist=True)
+            return
+        handler._error(502, 'upstream_unavailable')
+        return
+    except (KeyError, TypeError, binascii.Error):
         handler._error(502, 'upstream_unavailable')
         return
     if handler.delivery is None:

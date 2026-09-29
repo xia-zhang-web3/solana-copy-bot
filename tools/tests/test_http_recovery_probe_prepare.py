@@ -23,7 +23,10 @@ class Preparation(unittest.TestCase):
                 (previous / 'control' / name).write_text('offline fixture')
             (previous / 'control/settings.json').write_text('{"run_id":"consumed","max_connections":3}')
             (previous / 'ca/public-roots.pem').write_text('fixture identity')
-            config = '[other]\ntimeout_ms=42\n[ingestion.yellowstone_http_recovery]\nbroker_url="http://127.0.0.1:18765/rpc"\ntimeout_ms=5000\n'
+            config = ('[other]\ntimeout_ms=42\n[ingestion.yellowstone_association]\n'
+                      'input_bytes=8388608\nqueue={count=4,bytes=8388608}\n'
+                      '[ingestion.yellowstone_http_recovery]\nbroker_url="http://127.0.0.1:18765/rpc"\n'
+                      'max_response_bytes=8388608\ntimeout_ms=5000\n')
             (previous / 'config/read-only.toml').write_text(config)
             (previous / 'SCOPE.json').write_text('{"permission":"OWNER_DECISION_PENDING"}')
             (source / 'control/policy.json').write_text('{"rpc_key_sha256":"synthetic","financial_secret":"must_not_copy"}')
@@ -41,7 +44,10 @@ class Preparation(unittest.TestCase):
             self.assertNotIn('financial_secret', policy)
             self.assertEqual(json.loads((target / 'CARRYOVER.json').read_text()), carry)
             self.assertEqual((target / 'config/read-only.toml').read_text(),
-                             config.replace('timeout_ms=5000', 'timeout_ms=15000'))
+                             config.replace('timeout_ms=5000', 'timeout_ms=15000')
+                             .replace('max_response_bytes=8388608', 'max_response_bytes=16777216')
+                             .replace('input_bytes=8388608', 'input_bytes = 16777216')
+                             .replace('queue={count=4,bytes=8388608}', 'queue = { count = 4, bytes = 67110912 }'))
             self.assertEqual((previous / 'config/read-only.toml').read_text(), config)
             self.assertFalse(any((target / 'state').iterdir()))
             self.assertTrue((target / 'scripts/uds_volume.py').is_file())

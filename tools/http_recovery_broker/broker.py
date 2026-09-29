@@ -24,26 +24,19 @@ from delivery import Delivery
 from control_reader import request_facts
 from front_delivery import deliver_response
 from frames import read_frame, write_frame
+from size_contract import DEFAULT_FRAME_BYTES, LEGACY_BLOCK_FRAME_BYTES, RECOVERY_PROFILE, frame_limit
 from diagnostics import broker_fact
 from transport import HTTPStatus, UpstreamFailure, perform_upstream, rpc_error_redacted, verified_context
 
 SOCKET_PATH = '/relay/http.sock'
 FRONT_PORT = 18765
 HOLD_UNKNOWN_SECONDS = 30  # Accepted app submit timeout is 3 seconds.
-MAX_FRAME = 8_500_000
-# 8 MiB raw body becomes 11,184,812 base64 bytes. Keep bounded space for
-# the JSON envelope and the two forwarded upstream response headers.
-MAX_GETBLOCK_FRAME = 12_000_000
+MAX_FRAME = DEFAULT_FRAME_BYTES
+MAX_GETBLOCK_FRAME = LEGACY_BLOCK_FRAME_BYTES
 
 
 def phase(delivery, name):
     return delivery.phase(name) if delivery is not None else nullcontext()
-
-
-def frame_limit(route, rpc_method):
-    return MAX_GETBLOCK_FRAME if (route, rpc_method) == ('rpc', 'getBlock') else MAX_FRAME
-
-
 
 
 class BackendHandler(socketserver.BaseRequestHandler):
@@ -114,7 +107,8 @@ class BackendHandler(socketserver.BaseRequestHandler):
                 self.delivery.remaining()
             with phase(self.delivery, stage):
                 archive(self.server.control, reservation, rpc_method, raw, status, redacted,
-                        response_body if redacted != response_body else None, self.delivery)
+                        response_body if redacted != response_body else None, self.delivery,
+                        self.server.policy.get('profile'))
             if self.delivery is not None:
                 self.delivery.remaining()
             stage = 'unix_send'
@@ -124,7 +118,7 @@ class BackendHandler(socketserver.BaseRequestHandler):
             if self.delivery is not None:
                 packet['broker_trace'] = self.delivery.trace(rpc_method, reservation)
             write_frame(self.request, packet,
-                        frame_limit(route, rpc_method), self.delivery)
+                        frame_limit(route, rpc_method, self.server.policy.get('profile')), self.delivery)
             if self.delivery is not None:
                 archive_delivery(self.server.control, reservation, 'backend',
                                  self.delivery.trace(rpc_method, reservation), 'response')
@@ -238,7 +232,7 @@ class FrontHandler(BaseHTTPRequestHandler):
                 peer.connect(self.server.socket_path)
                 write_frame(peer, packet)
                 with phase(self.delivery, 'unix_receive'):
-                    result = read_frame(peer, frame_limit(route, rpc_method), self.delivery)
+                    result = read_frame(peer, frame_limit(route, rpc_method, self.server.profile), self.delivery)
                 if self.delivery is not None:
                     self.delivery.remaining()
         except (OSError, EOFError, ValueError, Refused) as error:
@@ -266,7 +260,8 @@ class FrontHandler(BaseHTTPRequestHandler):
 
 class FrontServer(ThreadingHTTPServer):
     daemon_threads = True
-    def __init__(self, address, socket_path, control=None):
+    def __init__(self, address, socket_path, control=None, profile=None):
+        self.profile = profile
         self.socket_path = str(socket_path)
         self.control = Path(control) if control else Path(socket_path).parent
         super().__init__(address, FrontHandler)
@@ -281,7 +276,11 @@ def main():
         verified_context()  # Validate effective trust before accepting any request/reservation.
         server = BackendServer(SOCKET_PATH, control, control/'broker-ledger.sqlite3', policy)
     elif role == 'front':
-        server = FrontServer(('127.0.0.1', FRONT_PORT), SOCKET_PATH, control)
+        policy = json.loads((control/'http-policy.json').read_text())
+        profile = policy.get('profile') if isinstance(policy, dict) else None
+        if not isinstance(profile, str):
+            raise SystemExit('profile_denied')
+        server = FrontServer(('127.0.0.1', FRONT_PORT), SOCKET_PATH, control, profile=profile)
     else:
         raise SystemExit('role_denied')
     try:

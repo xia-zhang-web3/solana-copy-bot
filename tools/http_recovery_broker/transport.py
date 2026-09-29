@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from budget import Refused
 from delivery import Delivery, UPSTREAM_SECONDS
 from policy import offline_target, read_secret, response_limit, upstream
+from size_contract import check_headers, check_size
 
 
 def verified_context():
@@ -105,13 +106,15 @@ def perform_upstream(policy, route, rpc_method, method, path, body, headers, del
             wire_socket = connection.sock
             response = connection.getresponse()
         stage, status = ('upstream_body' if delivery is not None else 'http_response'), response.status
-        maximum = response_limit(route, rpc_method)
-        if response.length is not None and response.length > maximum:
-            raise ValueError('upstream_response_too_large')
+        maximum = response_limit(route, rpc_method, policy.get('profile'))
+        response_headers = check_headers({key: response.getheader(key)
+             for key in ('content-type', 'content-encoding') if response.getheader(key)},
+             policy.get('profile'), route, rpc_method)
+        if response.length is not None:
+            check_size(response.length, maximum, 'upstream_declared', 'declared')
         if delivery is None:
             raw = response.read(maximum+1)
-            if len(raw) > maximum:
-                raise ValueError('upstream_response_too_large')
+            check_size(len(raw), maximum, 'upstream_body', 'lower_bound')
         else:
             parts, size, expected = [], 0, response.length
             with phase(stage):
@@ -122,17 +125,11 @@ def perform_upstream(policy, route, rpc_method, method, path, body, headers, del
                         break
                     parts.append(chunk)
                     size += len(chunk)
-                    if size > maximum:
-                        raise ValueError('upstream_response_too_large')
+                    check_size(size, maximum, 'upstream_body', 'lower_bound')
                 if expected is not None and size != expected:
                     raise http.client.IncompleteRead(b'', expected-size)
             remaining()
             raw = b''.join(parts)
-        response_headers = {}
-        for key in ('content-type', 'content-encoding'):
-            value = response.getheader(key)
-            if value:
-                response_headers[key] = value
         return response.status, response_headers, raw
     except (OSError, EOFError, TimeoutError, ValueError, http.client.HTTPException, Refused) as error:
         if isinstance(error, TimeoutError) and delivery is not None:

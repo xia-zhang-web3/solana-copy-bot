@@ -43,12 +43,16 @@ fetch_concurrency=8
 broker_url="http://127.0.0.1:18765/rpc"
 broker_token=""
 range_slots=1024
-max_response_bytes=8388608
+max_response_bytes=16777216
 timeout_ms=15000
 fetch_concurrency=4
 '''
         for name in ['pending', 'blocks', 'history', 'outputs', 'queue', 'inbox']:
-            self.config += f'[ingestion.yellowstone_association.{name}]\ncount=32\nbytes=1048576\n'
+            if name == 'queue':
+                self.config += f'[ingestion.yellowstone_association.{name}]\ncount=4\nbytes=67110912\n'
+            else:
+                self.config += f'[ingestion.yellowstone_association.{name}]\ncount=32\nbytes=1048576\n'
+        self.config += '[ingestion.yellowstone_association]\ninput_bytes=16777216\n'
         (self.root / 'config/read-only.toml').write_text(self.config)
         self.history = Path(self.tmp.name) / 'accepted-history.json'
         self.history.write_text('{"accepted":true,"spending_preserved":true}')
@@ -105,11 +109,14 @@ fetch_concurrency=4
                     WorkingDir='/opt/copybot' if role=='observation-app' else '',
                     Entrypoint=['/usr/bin/python3'] if role=='http-backend' else ['/usr/bin/env'],
                     Cmd=list(pf.BACKEND_COMMAND if role=='http-backend' else pf.APP_COMMAND),
-                    Env=['SSL_CERT_FILE='+pf.CA_FILE] if role=='http-backend' else [],
+                    Env=(['SSL_CERT_FILE='+pf.CA_FILE] if role=='http-backend' else [])
+                         + ([pf.HTTP_ALLOCATOR_ENV] if role in ['http-front','http-backend'] else []),
                     Labels={pf.LABEL:pf.RUN,'copybot.role':role}),
                 State=dict(Status='created',Running=False,StartedAt='0001-01-01T00:00:00Z',OOMKilled=False),
                 HostConfig=dict(NetworkMode=network,PortBindings={},ReadonlyRootfs=True,
-                    RestartPolicy={'Name':'no'},CapDrop=['ALL'],SecurityOpt=['no-new-privileges']),Mounts=mounts)
+                    RestartPolicy={'Name':'no'},CapDrop=['ALL'],SecurityOpt=['no-new-privileges'],
+                    Memory=pf.ROLE_LIMITS[role]['memory'],MemorySwap=pf.ROLE_LIMITS[role]['memory'],
+                    NanoCpus=pf.ROLE_LIMITS[role]['nano_cpus']),Mounts=mounts)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -226,7 +233,7 @@ fetch_concurrency=4
             backend['Env'] = environment
             with self.assertRaisesRegex(ValueError, 'probe_backend_ca_environment'):
                 self.check()
-        backend['Env'] = ['SSL_CERT_FILE='+pf.CA_FILE]
+        backend['Env'] = ['SSL_CERT_FILE='+pf.CA_FILE,pf.HTTP_ALLOCATOR_ENV]
         proof = self.root / 'evidence/HTTP_BACKEND_TLS_BINDING.json'
         value = pf.read(proof)
         for change in [dict(check_hostname=False), dict(verify_mode='CERT_NONE'), dict(ca_certificates=0)]:

@@ -8,8 +8,11 @@ import re
 import subprocess
 import sys
 import tomllib
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from config_bounds import INPUT_BYTES, QUEUE_BYTES, RECOVERY_BLOCK_BYTES
+from runtime_resources import ROLE_LIMITS, HTTP_ALLOCATOR_ENV
 
-RUN = 'copybot-run15-http-recovery-probe-06'
+RUN = 'copybot-run15-http-recovery-probe-07'
 ROLES = {'observation-app', 'stream-front', 'stream-backend', 'http-front', 'http-backend'}
 LABEL = 'copybot.http-recovery-probe'
 PY_IMAGE = 'sha256:09ecaa87c6799c8d8ee0dfb779905d97e5f667ab97d866cc47ff9f949ffb7b3b'
@@ -82,7 +85,11 @@ def configuration(root):
     h = i['yellowstone_http_recovery']
     require(h['broker_url'] == 'http://127.0.0.1:18765/rpc' and h['broker_token'] == '', 'probe_broker_binding')
     require((h['range_slots'], h['max_response_bytes'], h['timeout_ms'], h['fetch_concurrency'])
-            == (1024, 8_388_608, 15_000, 4), 'probe_http_bounds')
+            == (1024, RECOVERY_BLOCK_BYTES, 15_000, 4), 'probe_http_bounds')
+    a = i['yellowstone_association']
+    require(a.get('input_bytes') == INPUT_BYTES
+            and a['queue']['count'] == 4 and a['queue']['bytes'] == QUEUE_BYTES,
+            'probe_normalized_input_and_queue_bounds')
     require(h['fetch_concurrency'] <= i['fetch_concurrency'], 'probe_http_concurrency')
     for name in ['pending', 'blocks', 'history', 'outputs', 'queue', 'inbox']:
         b = i['yellowstone_association'][name]
@@ -192,6 +199,10 @@ def containers(root, inspect, policy):
             require(len(control) == 1 and control[0]['Type'] == 'bind' and control[0]['RW'] is True
                     and host_mount_path(control[0]['Source']) == (root / 'control').resolve(),
                     'probe_front_clock_and_delivery_archive_mount')
+        if role in ['http-front', 'http-backend']:
+            require([item for item in value['Config'].get('Env', [])
+                     if item.startswith('MALLOC_ARENA_MAX=')] == [HTTP_ALLOCATOR_ENV],
+                    'probe_measured_http_allocator')
         require(value['Id'] == cid and value['Name'] == '/' + RUN + '-' + role
                 and labels.get(LABEL) == RUN and labels.get('copybot.role') == role, 'probe_container_ownership')
         require(state['Status'] == 'created' and not state['Running'] and not state.get('OOMKilled', False)
@@ -199,6 +210,10 @@ def containers(root, inspect, policy):
         require(host['ReadonlyRootfs'] and host['RestartPolicy']['Name'] == 'no'
                 and 'ALL' in host['CapDrop'] and 'no-new-privileges' in host['SecurityOpt']
                 and value['Config']['User'] == '501:20', 'probe_container_lifecycle')
+        limits = ROLE_LIMITS[role]
+        require(host.get('Memory') == limits['memory']
+                and host.get('MemorySwap') == limits['memory']
+                and host.get('NanoCpus') == limits['nano_cpus'], 'probe_measured_resource_limits')
         network = ('container:' + ids['stream-front'] if role in ['observation-app', 'http-front']
                    else 'none' if role == 'stream-front' else 'bridge')
         require(host['NetworkMode'] == network and not host['PortBindings'], 'probe_container_network')

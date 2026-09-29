@@ -10,15 +10,12 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'helpers'))
 from budget import CU, Refused
 from control_reader import check_control
+from size_contract import response_limit, DEFAULT_BODY_BYTES, LEGACY_BLOCK_BYTES
 
 RPC_PATH = '/rpc'
 MAX_REQUEST = 1_048_576
-MAX_RESPONSE = 4_194_304
-MAX_GETBLOCK_RESPONSE = 8_388_608
-
-
-def response_limit(route, rpc_method):
-    return MAX_GETBLOCK_RESPONSE if (route, rpc_method) == ('rpc', 'getBlock') else MAX_RESPONSE
+MAX_RESPONSE = DEFAULT_BODY_BYTES
+MAX_GETBLOCK_RESPONSE = LEGACY_BLOCK_BYTES
 
 
 def offline_target(policy, route):
