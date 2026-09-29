@@ -1,4 +1,5 @@
 //! Closed error facts from the budget broker. Untrusted bodies are never logged.
+use super::delivery_error::BrokerFailure;
 use anyhow::{bail, ensure, Context, Result};
 use serde_json::Value;
 
@@ -13,6 +14,12 @@ const STAGES: &[&str] = &[
     "archive",
     "transport",
     "connect",
+    "upstream_headers",
+    "upstream_body",
+    "unix_send",
+    "front_headers",
+    "front_body",
+    "frame_encode",
 ];
 const CAUSES: &[&str] = &[
     "SSLCertVerificationError",
@@ -40,6 +47,7 @@ const CAUSES: &[&str] = &[
     "TypeError",
     "OperationalError",
     "IntegrityError",
+    "DeadlineExceededTimeout",
 ];
 const REASONS: &[&str] = &[
     "http_status",
@@ -99,6 +107,8 @@ const REASONS: &[&str] = &[
     "ledger_binding_changed",
     "ledger_lost_after_first_open",
     "ledger_marker_binding_changed",
+    "deadline_exhausted",
+    "session_deadline_exhausted",
 ];
 
 fn token<'a>(v: &'a Value, allowed: &[&str], fallback: &'a str) -> &'a str {
@@ -107,19 +117,19 @@ fn token<'a>(v: &'a Value, allowed: &[&str], fallback: &'a str) -> &'a str {
         .unwrap_or(fallback)
 }
 
-fn optional_number(v: &Value, min: i64, max: i64) -> Result<String> {
+fn optional_number(v: &Value, min: i64, max: i64) -> Result<Option<u64>> {
     if v.is_null() {
-        return Ok("unknown".to_owned());
+        return Ok(None);
     }
     let number = v.as_i64().context("http_recovery_invalid_broker_number")?;
     ensure!(
         (min..=max).contains(&number),
         "http_recovery_invalid_broker_number"
     );
-    Ok(number.to_string())
+    Ok(Some(number as u64))
 }
 
-fn broker_error(status: u16, method: &str, error: &Value) -> Result<Value> {
+fn broker_error(status: u16, id: u64, method: &str, error: &Value) -> Result<Value> {
     ensure!(
         error["schema"] == "http_recovery_broker_v1",
         "http_recovery_invalid_broker_schema"
@@ -136,7 +146,26 @@ fn broker_error(status: u16, method: &str, error: &Value) -> Result<Value> {
     let reservation = optional_number(&error["reservation_id"], 1, i64::MAX)?;
     let upstream_status = optional_number(&error["http_status"], 100, 599)?;
     let verify = optional_number(&error["verify_code"], 0, i64::from(i32::MAX))?;
-    bail!("http_recovery_broker_error method={method} kind={kind} stage={stage} reason={reason} cause_type={cause} broker_http_status={status} upstream_http_status={upstream_status} reservation_id={reservation} verify_code={verify}")
+    let request_id = optional_number(&error["request_id"], 1, i64::MAX)?;
+    ensure!(
+        request_id.is_none_or(|value| value == id),
+        "http_recovery_broker_request_identity"
+    );
+    let slot = optional_number(&error["slot"], 0, i64::MAX)?;
+    Err(BrokerFailure {
+        method: method.to_owned(),
+        kind: kind.to_owned(),
+        stage: stage.to_owned(),
+        reason: reason.to_owned(),
+        cause: cause.to_owned(),
+        broker_status: status,
+        reservation,
+        upstream_status,
+        verify,
+        request_id,
+        slot,
+    }
+    .into())
 }
 
 pub(super) fn interpret(status: u16, id: u64, method: &str, raw: &[u8]) -> Result<Value> {
@@ -144,7 +173,7 @@ pub(super) fn interpret(status: u16, id: u64, method: &str, raw: &[u8]) -> Resul
     // Local broker failures are HTTP responses, not JSON-RPC success envelopes.
     if let Ok(envelope) = &parsed {
         if let Some(error) = envelope.get("broker_error") {
-            return broker_error(status, method, error);
+            return broker_error(status, id, method, error);
         }
     }
     if !(200..300).contains(&status) {

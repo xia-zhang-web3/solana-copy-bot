@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tomllib
 
-RUN = 'copybot-run15-http-recovery-probe-04'
+RUN = 'copybot-run15-http-recovery-probe-05'
 ROLES = {'observation-app', 'stream-front', 'stream-backend', 'http-front', 'http-backend'}
 LABEL = 'copybot.http-recovery-probe'
 PY_IMAGE = 'sha256:09ecaa87c6799c8d8ee0dfb779905d97e5f667ab97d866cc47ff9f949ffb7b3b'
@@ -82,7 +82,7 @@ def configuration(root):
     h = i['yellowstone_http_recovery']
     require(h['broker_url'] == 'http://127.0.0.1:18765/rpc' and h['broker_token'] == '', 'probe_broker_binding')
     require((h['range_slots'], h['max_response_bytes'], h['timeout_ms'], h['fetch_concurrency'])
-            == (1024, 8_388_608, 5000, 4), 'probe_http_bounds')
+            == (1024, 8_388_608, 15_000, 4), 'probe_http_bounds')
     require(h['fetch_concurrency'] <= i['fetch_concurrency'], 'probe_http_concurrency')
     for name in ['pending', 'blocks', 'history', 'outputs', 'queue', 'inbox']:
         b = i['yellowstone_association'][name]
@@ -187,6 +187,11 @@ def containers(root, inspect, policy):
                     and proof['ssl_cert_file'] == CA_FILE and proof['verify_mode'] == 'CERT_REQUIRED'
                     and proof['check_hostname'] is True and type(proof['ca_certificates']) is int
                     and proof['ca_certificates'] > 0, 'probe_backend_effective_ca_context')
+        if role == 'http-front':
+            control = [mount for mount in value['Mounts'] if mount['Destination'] == '/control']
+            require(len(control) == 1 and control[0]['Type'] == 'bind' and control[0]['RW'] is True
+                    and host_mount_path(control[0]['Source']) == (root / 'control').resolve(),
+                    'probe_front_clock_and_delivery_archive_mount')
         require(value['Id'] == cid and value['Name'] == '/' + RUN + '-' + role
                 and labels.get(LABEL) == RUN and labels.get('copybot.role') == role, 'probe_container_ownership')
         require(state['Status'] == 'created' and not state['Running'] and not state.get('OOMKilled', False)

@@ -1,6 +1,8 @@
 //! Real local tonic + HTTP adapter and SQLite commits; no provider or finances.
 #[path = "saved_reward_replay/mod.rs"]
 mod saved_reward_replay;
+#[path = "http_delivery_replay/mod.rs"]
+mod http_delivery_replay;
 use super::durable_transport_fixture::Fixture;
 use crate::{replay_scope, DeliveryEnvelope, DeliveryReceiver};
 use copybot_config::{

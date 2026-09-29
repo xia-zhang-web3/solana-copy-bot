@@ -228,7 +228,7 @@ pub(super) async fn run(
                             )),
                         )
                         .await?;
-                    anyhow::bail!("confirmed_http_recovery_refused");
+                    return Err(error).context("confirmed_http_recovery_refused");
                 }
                 let anchor_slot = block.slot;
                 reader.clear_verified();

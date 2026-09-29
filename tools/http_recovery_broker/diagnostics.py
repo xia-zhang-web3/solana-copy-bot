@@ -28,18 +28,22 @@ REASONS = {
     'ledger_lost_after_first_open', 'ledger_binding_changed', 'ledger_marker_binding_changed',
     'read_only_recovery_method_required', 'unknown_rpc_method_or_price', 'unknown_quote_price',
     'unknown_route', 'http_or_rpc_cap_exhausted', 'request_invalid', 'quote_key_unbound',
+    'deadline_exhausted', 'session_deadline_exhausted',
 }
 BROKER_METHODS = {'getBlocks', 'getBlock'}
 BROKER_STAGES = {'request', 'route', 'gate', 'reservation', 'outbound',
-                 'connect', 'tls', 'http_response', 'archive', 'transport'}
+                 'connect', 'tls', 'http_response', 'archive', 'transport',
+                 'upstream_headers', 'upstream_body', 'unix_send', 'unix_receive',
+                 'frame_encode', 'front_headers', 'front_body', 'front_decode'}
 CAUSE_TYPES = {'Refused', 'ValueError', 'KeyError', 'TypeError', 'OSError',
                'EOFError', 'SSLCertVerificationError', 'SSLError', 'gaierror',
                'TimeoutError', 'ConnectionRefusedError', 'ConnectionResetError',
                'RemoteDisconnected', 'IncompleteRead', 'BadStatusLine',
-               'HTTPException', 'HTTPStatus', 'OperationalError', 'IntegrityError', 'Error'}
+               'HTTPException', 'HTTPStatus', 'OperationalError', 'IntegrityError', 'Error',
+               'DeadlineExceededTimeout', 'BrokenPipeError'}
 
 
-def broker_fact(kind, method, reservation, stage, error, status=None):
+def broker_fact(kind, method, reservation, stage, error, status=None, delivery=None):
     """Closed wire facts; raw exception text may contain provider credentials."""
     reason = exception_reason(error)
     verify = getattr(error, 'verify_code', None) if isinstance(error, ssl.SSLCertVerificationError) else None
@@ -49,7 +53,7 @@ def broker_fact(kind, method, reservation, stage, error, status=None):
     if type(error).__name__ == 'Refused' and len(error.args) == 1:
         candidate = error.args[0]
         reason = candidate if candidate in REASONS else 'invalid_or_unavailable'
-    return {'schema': 'http_recovery_broker_v1',
+    value = {'schema': 'http_recovery_broker_v1',
             'kind': kind if kind in {'failed', 'refused'} else 'failed',
             'method': method if method in BROKER_METHODS else None,
             'reservation_id': reservation if type(reservation) is int and reservation > 0 else None,
@@ -57,11 +61,16 @@ def broker_fact(kind, method, reservation, stage, error, status=None):
             'reason': reason, 'cause_type': type(error).__name__ if type(error).__name__ in CAUSE_TYPES else 'Error',
             'http_status': status if type(status) is int and 100 <= status <= 599 else None,
             'verify_code': verify}
+    if delivery is not None:
+        value.update(delivery.facts())
+    return value
 
 
 def exception_reason(error):
     if type(error).__name__ == 'HTTPStatus':
         return 'http_status'
+    if type(error).__name__ == 'DeadlineExceededTimeout':
+        return 'deadline_exhausted'
     # Ordering matters: TLS and DNS failures are also OSError instances.
     for kind, reason in (
         (ssl.SSLCertVerificationError, 'tls_certificate'), (ssl.SSLError, 'tls_protocol'),

@@ -44,7 +44,7 @@ broker_url="http://127.0.0.1:18765/rpc"
 broker_token=""
 range_slots=1024
 max_response_bytes=8388608
-timeout_ms=5000
+timeout_ms=15000
 fetch_concurrency=4
 '''
         for name in ['pending', 'blocks', 'history', 'outputs', 'queue', 'inbox']:
@@ -95,6 +95,8 @@ fetch_concurrency=4
             network = ('container:'+self.ids['stream-front'] if role in ['observation-app','http-front']
                        else 'none' if role=='stream-front' else 'bridge')
             mounts=[dict(Type='volume', Name=pf.RUN+'-uds', Source='/synthetic-volume', Destination='/relay', RW=True)]
+            if role=='http-front':
+                mounts.append(dict(Type='bind', Source=str(self.root/'control'), Destination='/control', RW=True))
             if role=='http-backend':
                 mounts.append(dict(Type='bind', Source=str(self.key), Destination='/run/provider/alchemy-api-key', RW=False))
                 mounts.append(dict(Type='bind', Source=str(self.ca), Destination=pf.CA_FILE, RW=False))
@@ -161,6 +163,18 @@ fetch_concurrency=4
         path=self.root/'control/http-policy.json';policy=pf.read(path)
         policy['prior_model_nano_usd']=0;save(path,policy)
         with self.assertRaisesRegex(ValueError,'probe_carryover_model'):self.check()
+
+    def test_http_front_requires_its_owned_clock_and_delivery_archive_mount(self):
+        cid=self.ids['http-front']
+        control=next(m for m in self.metadata[cid]['Mounts'] if m['Destination']=='/control')
+        for field,value in [('RW',False),('Source',str(self.root/'state'))]:
+            original=control[field];control[field]=value
+            with self.assertRaisesRegex(ValueError,'probe_front_clock_and_delivery_archive_mount'):
+                self.check()
+            control[field]=original
+        self.metadata[cid]['Mounts'].remove(control)
+        with self.assertRaisesRegex(ValueError,'probe_front_clock_and_delivery_archive_mount'):
+            self.check()
 
     def test_desktop_bind_translation_preserves_package_scope_and_provider_digest(self):
         cid = self.ids['http-backend']

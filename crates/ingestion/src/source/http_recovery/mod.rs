@@ -1,10 +1,13 @@
 //! Confirmed history from the bounded local budget broker. HTTP observations
 //! retain their response bytes; conversion does not claim a protobuf wire match.
 mod block;
+mod delivery;
+mod delivery_error;
 mod error;
 pub(crate) mod identity;
 mod meta;
 mod response;
+mod session_deadline;
 mod transaction;
 mod value;
 
@@ -24,10 +27,7 @@ use reqwest::{
 };
 use serde_json::{json, Value};
 use std::{
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::{atomic::AtomicU64, Arc},
     time::Duration,
 };
 use yellowstone_grpc_proto::prelude::SubscribeUpdateBlock;
@@ -39,6 +39,8 @@ pub(crate) struct ConfirmedHttpRecovery {
     range_slots: u64,
     max_response_bytes: usize,
     sequence: Arc<AtomicU64>,
+    timeout: Duration,
+    session_deadline: Arc<session_deadline::SessionDeadline>,
 }
 #[derive(Debug)]
 pub(crate) struct RecoveredBlock {
@@ -92,38 +94,9 @@ impl ConfirmedHttpRecovery {
             range_slots,
             max_response_bytes,
             sequence: Arc::new(AtomicU64::new(1)),
+            timeout,
+            session_deadline: Arc::new(session_deadline::SessionDeadline::default()),
         })
-    }
-    async fn request(&self, method: &str, params: Value) -> Result<(Value, Vec<u8>)> {
-        let id = self.sequence.fetch_add(1, Ordering::Relaxed);
-        let mut response = self
-            .client
-            .post(self.url.clone())
-            .json(&json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("http_recovery_send: {}", e.without_url()))?;
-        let status = response.status();
-        ensure!(
-            response
-                .content_length()
-                .is_none_or(|n| n <= self.max_response_bytes as u64),
-            "http_recovery_response_limit"
-        );
-        let mut raw = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|e| anyhow::anyhow!("http_recovery_read: {}", e.without_url()))?
-        {
-            ensure!(
-                chunk.len() <= self.max_response_bytes.saturating_sub(raw.len()),
-                "http_recovery_response_limit"
-            );
-            raw.extend_from_slice(&chunk);
-        }
-        let result = response::interpret(status.as_u16(), id, method, &raw)?;
-        Ok((result, raw))
     }
     pub(crate) async fn slots(&self, start: u64, end: u64) -> Result<Vec<u64>> {
         ensure!(

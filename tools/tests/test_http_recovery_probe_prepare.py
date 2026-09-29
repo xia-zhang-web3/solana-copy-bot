@@ -23,7 +23,7 @@ class Preparation(unittest.TestCase):
                 (previous / 'control' / name).write_text('offline fixture')
             (previous / 'control/settings.json').write_text('{"run_id":"consumed","max_connections":3}')
             (previous / 'ca/public-roots.pem').write_text('fixture identity')
-            config = '[ingestion.yellowstone_http_recovery]\nbroker_url="http://127.0.0.1:18765/rpc"\n'
+            config = '[other]\ntimeout_ms=42\n[ingestion.yellowstone_http_recovery]\nbroker_url="http://127.0.0.1:18765/rpc"\ntimeout_ms=5000\n'
             (previous / 'config/read-only.toml').write_text(config)
             (previous / 'SCOPE.json').write_text('{"permission":"OWNER_DECISION_PENDING"}')
             (source / 'control/policy.json').write_text('{"rpc_key_sha256":"synthetic","financial_secret":"must_not_copy"}')
@@ -40,7 +40,9 @@ class Preparation(unittest.TestCase):
             self.assertEqual((policy['prior_model_nano_usd'], policy['prior_http_nano_usd']), (7999928734, 10080000))
             self.assertNotIn('financial_secret', policy)
             self.assertEqual(json.loads((target / 'CARRYOVER.json').read_text()), carry)
-            self.assertEqual((target / 'config/read-only.toml').read_text(), config)
+            self.assertEqual((target / 'config/read-only.toml').read_text(),
+                             config.replace('timeout_ms=5000', 'timeout_ms=15000'))
+            self.assertEqual((previous / 'config/read-only.toml').read_text(), config)
             self.assertFalse(any((target / 'state').iterdir()))
             self.assertTrue((target / 'scripts/uds_volume.py').is_file())
             self.assertTrue(all((target / 'control' / name).is_file() for name in ['STOP', 'STREAM_STOP', 'HTTP_STOP']))

@@ -4,7 +4,7 @@ Front shares app's network-none namespace. Backend alone has bridge access.
 Only framed requests cross their private Unix socket. No request/response logging.
 """
 import base64
-import binascii
+from contextlib import nullcontext
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -17,9 +17,12 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-from evidence import archive, archive_failure
+from evidence import archive, archive_failure, archive_delivery
 from budget import Ledger, Refused
 from policy import Gate, MAX_REQUEST, offline_target, response_limit, upstream, validate_route
+from delivery import Delivery
+from front_delivery import deliver_response
+from frames import read_frame, write_frame
 from diagnostics import broker_fact
 from transport import HTTPStatus, UpstreamFailure, perform_upstream, rpc_error_redacted, verified_context
 
@@ -32,39 +35,20 @@ MAX_FRAME = 8_500_000
 MAX_GETBLOCK_FRAME = 12_000_000
 
 
+def phase(delivery, name):
+    return delivery.phase(name) if delivery is not None else nullcontext()
+
+
 def frame_limit(route, rpc_method):
     return MAX_GETBLOCK_FRAME if (route, rpc_method) == ('rpc', 'getBlock') else MAX_FRAME
 
 
-def read_frame(sock, maximum=MAX_FRAME):
-    head = bytearray()
-    while len(head) < 16:
-        part = sock.recv(16 - len(head))
-        if not part:
-            raise EOFError()
-        head.extend(part)
-    size = int(head.decode('ascii'), 16)
-    if size > maximum:
-        raise ValueError('frame_too_large')
-    data = bytearray()
-    while len(data) < size:
-        part = sock.recv(min(65536, size-len(data)))
-        if not part:
-            raise EOFError()
-        data.extend(part)
-    return json.loads(data)
-
-
-def write_frame(sock, value, maximum=MAX_FRAME):
-    data = json.dumps(value, separators=(',', ':')).encode()
-    if len(data) > maximum:
-        raise ValueError('frame_too_large')
-    sock.sendall(f'{len(data):016x}'.encode() + data)
 
 
 class BackendHandler(socketserver.BaseRequestHandler):
     def handle(self):
         rpc_method, reservation, stage = None, None, 'request'
+        self.delivery = None
         try:
             packet = read_frame(self.request)
             raw = base64.b64decode(packet['body'], validate=True)
@@ -84,17 +68,24 @@ class BackendHandler(socketserver.BaseRequestHandler):
             gate = Gate(self.server.control, self.server.policy)
             stage = 'gate'
             gate.check()
+            if (route == 'rpc' and rpc_method in {'getBlock', 'getBlocks'} and
+                    self.server.policy.get('profile') == 'read_only_http_recovery_v1'):
+                self.delivery = Delivery(self.server.control, raw)
             # The ledger commit is durable before a possible billable outbound attempt.
             stage = 'reservation'
-            ledger = Ledger(self.server.ledger_path, self.server.policy)
-            try:
-                reservation = ledger.reserve(route, rpc_method, price)
-            finally:
-                ledger.close()
+            with phase(self.delivery, stage):
+                ledger = Ledger(self.server.ledger_path, self.server.policy)
+                try:
+                    reservation = ledger.reserve(route, rpc_method, price)
+                finally:
+                    ledger.close()
             stage = 'gate'
-            gate.outbound_attempt()
-            # A STOP arriving after reservation still prevents this attempt.
-            gate.check()
+            with phase(self.delivery, stage):
+                gate.outbound_attempt()
+                # A STOP arriving after reservation still prevents this attempt.
+                gate.check()
+                if self.delivery is not None:
+                    self.delivery.remaining()
         except Refused as error:
             self.failure('refused', rpc_method, reservation, stage, error)
             return
@@ -107,19 +98,32 @@ class BackendHandler(socketserver.BaseRequestHandler):
             stage = 'outbound'
             status, response_headers, response_body = perform_upstream(
                 self.server.policy, route, rpc_method, packet['method'], packet['path'], raw,
-                packet.get('headers', {}))
+                packet.get('headers', {}), self.delivery)
             if not 200 <= status <= 299:
                 self.failure('failed', rpc_method, reservation, 'http_response',
                              HTTPStatus(), status, response_body)
                 return
-            redacted = rpc_error_redacted(response_body)
+            with phase(self.delivery, 'response_sanitize'):
+                redacted = rpc_error_redacted(response_body)
             stage = 'archive'
-            archive(self.server.control, reservation, rpc_method, raw, status, redacted,
-                    response_body if redacted != response_body else None)
-            write_frame(self.request, {'kind': 'response', 'status': status,
-                                       'headers': response_headers,
-                                       'body': base64.b64encode(redacted).decode()},
-                        frame_limit(route, rpc_method))
+            if self.delivery is not None:
+                self.delivery.remaining()
+            with phase(self.delivery, stage):
+                archive(self.server.control, reservation, rpc_method, raw, status, redacted,
+                        response_body if redacted != response_body else None, self.delivery)
+            if self.delivery is not None:
+                self.delivery.remaining()
+            stage = 'unix_send'
+            with phase(self.delivery, 'frame_encode'):
+                packet = {'kind': 'response', 'status': status, 'headers': response_headers,
+                          'body': base64.b64encode(redacted).decode()}
+            if self.delivery is not None:
+                packet['broker_trace'] = self.delivery.trace(rpc_method, reservation)
+            write_frame(self.request, packet,
+                        frame_limit(route, rpc_method), self.delivery)
+            if self.delivery is not None:
+                archive_delivery(self.server.control, reservation, 'backend',
+                                 self.delivery.trace(rpc_method, reservation), 'response')
         except UpstreamFailure as failure:
             self.failure('failed', rpc_method, reservation, failure.stage, failure.error, failure.status)
         except (OSError, EOFError, TimeoutError, ValueError, http.client.HTTPException, Refused) as error:
@@ -128,9 +132,13 @@ class BackendHandler(socketserver.BaseRequestHandler):
             self.failure('failed', rpc_method, reservation, stage, error, status)
 
     def failure(self, kind, method, reservation, stage, error, status=None, response=None):
-        fact = broker_fact(kind, method, reservation, stage, error, status)
+        fact = broker_fact(kind, method, reservation, stage, error, status, self.delivery)
         archive_failure(self.server.control, fact, response)
-        write_frame(self.request, {'kind': kind, 'broker_error': fact})
+        try:
+            self.request.settimeout(1)
+            write_frame(self.request, {'kind': kind, 'broker_error': fact})
+        except (OSError, EOFError):
+            pass  # The durable failure and original reservation remain visible.
 
 
 class BackendServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -168,16 +176,27 @@ class FrontHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
         self.close_connection = True
+    def _trace_headers(self, reservation=None):
+        if getattr(self, 'delivery', None) is not None:
+            self.send_header('X-Copybot-Session-Deadline-Unix-Ms',
+                             str(self.delivery.session_deadline_unix_ms))
+        if type(reservation) is int and reservation > 0:
+            self.send_header('X-Copybot-Reservation-Id', str(reservation))
+
     def _broker_error(self, status, fact, persist=False):
         if persist:
             archive_failure(self.server.control, fact)
         data = json.dumps({'broker_error': fact}, separators=(',', ':')).encode()
         self.send_response(status)
+        self._trace_headers(fact.get('reservation_id'))
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(data)))
         self.send_header('Connection', 'close')
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except OSError:
+            pass
         self.close_connection = True
     def _forward(self):
         raw_length = self.headers.get('Content-Length', '0')
@@ -192,8 +211,11 @@ class FrontHandler(BaseHTTPRequestHandler):
             self._error(400, 'host_denied')
             return
         body = self.rfile.read(int(raw_length))
+        self.delivery = None
         try:
             route, rpc_method = validate_route(self.command, self.path, body)
+            if route == 'rpc' and rpc_method in {'getBlock', 'getBlocks'}:
+                self.delivery = Delivery(self.server.control, body)
         except Refused as error:
             self._broker_error(403, broker_fact('refused', None, None, 'route', error), persist=True)
             return
@@ -204,13 +226,21 @@ class FrontHandler(BaseHTTPRequestHandler):
                               if k in self.headers}}
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
-                peer.settimeout(10)
+                peer.settimeout(self.delivery.remaining() if self.delivery is not None else 10)
                 peer.connect(self.server.socket_path)
                 write_frame(peer, packet)
-                result = read_frame(peer, frame_limit(route, rpc_method))
-        except (OSError, EOFError, ValueError) as error:
+                with phase(self.delivery, 'unix_receive'):
+                    result = read_frame(peer, frame_limit(route, rpc_method), self.delivery)
+                if self.delivery is not None:
+                    self.delivery.remaining()
+        except (OSError, EOFError, ValueError, Refused) as error:
+            if isinstance(error, TimeoutError) and self.delivery is not None:
+                try:
+                    self.delivery.remaining()
+                except (TimeoutError, Refused) as expired:
+                    error = expired
             result = {'kind': 'uncertain' if is_submit else 'failed',
-                      'broker_error': broker_fact('failed', rpc_method, None, 'transport', error)}
+                      'broker_error': broker_fact('failed', rpc_method, None, 'unix_receive', error, delivery=self.delivery)}
             archive_failure(self.server.control, result['broker_error'])
         if result['kind'] == 'uncertain' and is_submit:
             # No headers, no body, no close until after the app's 3 s timeout.
@@ -223,21 +253,7 @@ class FrontHandler(BaseHTTPRequestHandler):
         if result['kind'] != 'response':
             self._broker_error(502, result['broker_error'])
             return
-        try:
-            data = base64.b64decode(result['body'], validate=True)
-            if len(data) > response_limit(route, rpc_method):
-                raise ValueError('response_too_large')
-        except (ValueError, KeyError, TypeError, binascii.Error):
-            self._error(502, 'upstream_unavailable')
-            return
-        self.send_response(result['status'])
-        for key, value in result['headers'].items():
-            self.send_header(key, value)
-        self.send_header('Content-Length', str(len(data)))
-        self.send_header('Connection', 'close')
-        self.end_headers()
-        self.wfile.write(data)
-        self.close_connection = True
+        deliver_response(self, result, route, rpc_method)
 
 
 class FrontServer(ThreadingHTTPServer):
