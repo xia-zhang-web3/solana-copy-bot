@@ -729,3 +729,12 @@ mod b136_rpc;
 pub(crate) mod b136_r1_hooks;
 mod b136_r1_lifecycle_tests;
 mod b136_r1_tick_tests;
+
+#[path = "app_tests/index_recovery_fixture.rs"]
+mod index_recovery_fixture;
+#[path = "app_tests/index_recovery_transport.rs"]
+mod index_recovery_transport;
+#[path = "app_tests/index_recovery_tests.rs"]
+mod index_recovery_tests;
+#[path = "app_tests/index_recovery_binary_fixture.rs"]
+mod index_recovery_binary_fixture;

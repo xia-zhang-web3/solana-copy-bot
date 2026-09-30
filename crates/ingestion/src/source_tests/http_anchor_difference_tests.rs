@@ -90,18 +90,21 @@ fn anchor_diagnostic_visitor_header_and_transaction_field_mutations() {
         .executed_transaction_count +=
         1);
     check!("transactions.length", |b| b.transactions.clear());
-    check!("transactions[0].signature[0]", |b| b.transactions[0]
-        .signature[0] += 1);
-    check!("transactions[0].index", |b| b.transactions[0].index += 1);
+    check!("transactions[0].signature[0]", |b| {
+        b.transactions[0].signature[0] += 1;
+        b.transactions[0].transaction.as_mut().unwrap().signatures[0][0] += 1;
+    });
+    check!("transactions.delivery[0].index", |b| b.transactions[0]
+        .index += 1);
     check!("transactions[0].is_vote", |b| b.transactions[0].is_vote =
         !b.transactions[0].is_vote);
-    check!("transactions[0].transaction.presence", |b| b.transactions
-        [0]
-    .transaction =
+    check!("transactions.delivery[0].signature_binding", |b| b
+        .transactions[0]
+        .transaction =
         None);
     check!("transactions[0].meta.presence", |b| b.transactions[0]
         .meta = None);
-    check!("transactions[0].transaction.signatures[0][0]", |b| b
+    check!("transactions.delivery[0].signature_binding", |b| b
         .transactions[0]
         .transaction
         .as_mut()

@@ -128,6 +128,50 @@ pub(super) fn first(
         return Some(d);
     }
     field!(executed_transaction_count);
-    field!(transactions);
-    None
+    let grpc_order = super::index_identity::execution_order(grpc);
+    let http_order = super::index_identity::execution_order(http);
+    match (grpc_order, http_order) {
+        (Ok(grpc), Ok(http)) => {
+            if grpc.len() != http.len() {
+                return changed("transactions.length", json!(grpc.len()), json!(http.len()));
+            }
+            grpc.into_iter()
+                .zip(http)
+                .enumerate()
+                .find_map(|(index, (a, b))| {
+                    a.unwrap()
+                        .difference(b.unwrap(), &format!("transactions[{index}]"))
+                })
+        }
+        (grpc_error, http_error) => {
+            let path = grpc_error
+                .as_ref()
+                .err()
+                .or_else(|| http_error.as_ref().err())?
+                .path
+                .clone();
+            changed(
+                &path,
+                validation(grpc, grpc_error.err()),
+                validation(http, http_error.err()),
+            )
+        }
+    }
+}
+
+fn validation(
+    block: &SubscribeUpdateBlock,
+    error: Option<super::index_identity::Invalid>,
+) -> Value {
+    match error {
+        None => json!({"valid":true,"executed_count":block.executed_transaction_count,
+            "supplied_count":block.transactions.len()}),
+        Some(error) => {
+            let info = error.position.map(|p| &block.transactions[p]);
+            json!({"valid":false,"reason":error.reason,"original_position":error.position,
+                "executed_count":block.executed_transaction_count,"supplied_count":block.transactions.len(),
+                "index":info.map(|i|i.index),"info_signature":info.map(|i|&i.signature),
+                "transaction_first_signature":info.and_then(|i|i.transaction.as_ref()).and_then(|t|t.signatures.first())})
+        }
+    }
 }

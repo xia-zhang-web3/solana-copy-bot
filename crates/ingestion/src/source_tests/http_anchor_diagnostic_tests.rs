@@ -99,7 +99,7 @@ fn anchor_diagnostic_scalar_and_nested_float_preserve_exact_typed_sides() {
     let m = manifest(dir.path(), 2);
     assert_eq!(
         m["first_mismatch"]["path"],
-        "transactions[0].meta.pre_token_balances[0].ui_token_amount.ui_amount"
+        "transactions[2].meta.pre_token_balances[0].ui_token_amount.ui_amount"
     );
     assert_eq!(
         m["first_mismatch"]["grpc"],
@@ -180,13 +180,8 @@ fn anchor_diagnostic_unchanged_predicate_private_exclusive_and_three_pair_cap() 
     assert!(anchor_diagnostic::admit(Some(link.to_str().unwrap()), &grpc, &http, b"").is_err());
 }
 #[tokio::test]
-async fn anchor_diagnostic_unordered_gate_and_io_failure_never_ack_live_anchor() {
-    for mode in [
-        "anchor-order",
-        "valid",
-        "anchor-malformed",
-        "anchor-envelope",
-    ] {
+async fn anchor_diagnostic_io_and_parse_failure_never_ack_live_anchor() {
+    for mode in ["valid", "anchor-malformed", "anchor-envelope"] {
         let server = servers(mode, 48, Arc::new(AtomicBool::new(false))).await;
         let mut c = config(&server);
         let tmp = private();
@@ -239,42 +234,7 @@ async fn anchor_diagnostic_unordered_gate_and_io_failure_never_ack_live_anchor()
                 .caught_up_to_anchor
         );
         r.stop();
-        if mode == "anchor-order" {
-            let m = manifest(&evidence, 1);
-            assert_eq!(m["comparison"], "MISMATCH");
-            assert_eq!(
-                m["first_mismatch"],
-                json!({"path":"transactions[0].signature[0]","grpc":3,"http":1})
-            );
-            let dir = evidence.join("pair-01");
-            let saved = SubscribeUpdateBlock::decode(
-                fs::read(dir.join("grpc_typed.pb")).unwrap().as_slice(),
-            )
-            .unwrap();
-            assert_eq!(
-                saved
-                    .transactions
-                    .iter()
-                    .map(|tx| tx.index)
-                    .collect::<Vec<_>>(),
-                vec![2, 0, 1]
-            );
-            let saved = SubscribeUpdateBlock::decode(
-                fs::read(dir.join("http_normalized.pb")).unwrap().as_slice(),
-            )
-            .unwrap();
-            assert_eq!(
-                saved
-                    .transactions
-                    .iter()
-                    .map(|tx| tx.index)
-                    .collect::<Vec<_>>(),
-                vec![0, 1, 2]
-            );
-            let raw: Value =
-                serde_json::from_slice(&fs::read(dir.join("http_response.json")).unwrap()).unwrap();
-            assert_eq!(raw["result"], transaction_raw());
-        } else if mode == "anchor-malformed" {
+        if mode == "anchor-malformed" {
             let m = manifest(&evidence, 1);
             assert_eq!(m["comparison"], "NOT_EVALUATED");
             assert_eq!(m["complete"], false);
@@ -308,8 +268,8 @@ async fn anchor_diagnostic_unordered_gate_and_io_failure_never_ack_live_anchor()
 }
 
 #[tokio::test]
-async fn anchor_diagnostic_matching_pair_precedes_unchanged_durable_anchor_ack() {
-    let server = servers("valid", 48, Arc::new(AtomicBool::new(false))).await;
+async fn anchor_diagnostic_matching_unordered_pair_precedes_durable_anchor_ack() {
+    let server = servers("anchor-order", 48, Arc::new(AtomicBool::new(false))).await;
     let mut c = config(&server);
     let tmp = private();
     let evidence = tmp.path().join("anchor-pairs");
@@ -339,6 +299,10 @@ async fn anchor_diagnostic_matching_pair_precedes_unchanged_durable_anchor_ack()
                 assert_eq!(m["complete"],true);
                 assert!(m["first_mismatch"].is_null());
                 assert!(evidence.join("pair-01/http_attempt_1.json").exists());
+                for (file,order) in [("grpc_typed.pb",vec![2,0,1]),("http_normalized.pb",vec![0,1,2])] {
+                    let saved=SubscribeUpdateBlock::decode(fs::read(evidence.join("pair-01").join(file)).unwrap().as_slice()).unwrap();
+                    assert_eq!(saved.transactions.iter().map(|tx|tx.index).collect::<Vec<_>>(),order);
+                }
             }
             persist(&mut db,&r,&e,&scope);
             if anchor { break; }

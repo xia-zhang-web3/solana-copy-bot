@@ -187,7 +187,7 @@ impl Pair {
             "parent_blockhash":grpc.parent_blockhash,"transactions":grpc.transactions.len(),
             "grpc_provenance":"REENCODED_TYPED_PROTO_12_6",
             "http_provenance":"ORIGINAL_JSON_RPC_RESPONSE",
-            "comparison_scope":"UNCHANGED_RUNTIME_BLOCK_EQUIVALENT",
+            "comparison_scope":"VERIFIED_EXECUTION_INDEX_RUNTIME_BLOCK_EQUIVALENT",
             "transaction_order":"ORIGINAL_DELIVERY_VECTOR_ORDER",
             "float_sidecar":{"record_bytes":17,"key":"original_vector_position_u32_le,side_u8,row_u32_le",
                 "value":"ieee754_u64_le","authoritative":true,

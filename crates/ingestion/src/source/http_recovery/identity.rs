@@ -84,8 +84,14 @@ pub(crate) fn block_equivalent(a: &SubscribeUpdateBlock, b: &SubscribeUpdateBloc
         && rewards(a) == rewards(b)
         && a.executed_transaction_count == b.executed_transaction_count
         && a.transactions.len() == b.transactions.len()
-        && a.transactions
-            .iter()
-            .zip(&b.transactions)
-            .all(|(a, b)| info_equal(a, b))
+        && match (
+            super::index_identity::execution_order(a),
+            super::index_identity::execution_order(b),
+        ) {
+            (Ok(a), Ok(b)) => a
+                .into_iter()
+                .zip(b)
+                .all(|(a, b)| info_equal(a.unwrap(), b.unwrap())),
+            _ => false,
+        }
 }

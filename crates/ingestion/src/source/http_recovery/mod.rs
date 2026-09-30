@@ -9,6 +9,7 @@ mod delivery;
 mod delivery_error;
 mod error;
 pub(crate) mod identity;
+mod index_identity;
 mod meta;
 mod response;
 mod session_deadline;
@@ -154,3 +155,7 @@ mod tests;
 #[cfg(test)]
 #[path = "../../source_tests/http_anchor_evidence_io_tests.rs"]
 pub(crate) mod anchor_evidence_io_tests;
+
+#[cfg(test)]
+#[path = "../../source_tests/index_recovery_tests.rs"]
+mod index_recovery_tests;
