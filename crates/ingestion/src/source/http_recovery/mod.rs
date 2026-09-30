@@ -1,6 +1,10 @@
 //! Confirmed history from the bounded local budget broker. HTTP observations
 //! retain their response bytes; conversion does not claim a protobuf wire match.
 mod block;
+pub(crate) mod anchor_diagnostic;
+mod anchor_evidence;
+mod anchor_fetch;
+mod identity_difference;
 mod delivery;
 mod delivery_error;
 mod error;
@@ -47,6 +51,7 @@ pub(crate) struct RecoveredBlock {
     pub block: SubscribeUpdateBlock,
     /// Exact bounded JSON-RPC response, independent from the constructed proto.
     pub raw_response: Vec<u8>,
+    anchor_evidence: Option<anchor_evidence::Pair>,
 }
 impl ConfirmedHttpRecovery {
     pub(crate) fn new(
@@ -137,6 +142,7 @@ impl ConfirmedHttpRecovery {
         Ok(RecoveredBlock {
             block,
             raw_response,
+            anchor_evidence: None,
         })
     }
 }
@@ -144,3 +150,7 @@ impl ConfirmedHttpRecovery {
 #[cfg(test)]
 #[path = "../../source_tests/http_recovery_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../source_tests/http_anchor_evidence_io_tests.rs"]
+pub(crate) mod anchor_evidence_io_tests;

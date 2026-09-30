@@ -3,6 +3,8 @@
 mod saved_reward_replay;
 #[path = "http_delivery_replay/mod.rs"]
 mod http_delivery_replay;
+#[path = "http_anchor_diagnostic_tests.rs"]
+mod anchor_diagnostic_tests;
 use super::durable_transport_fixture::Fixture;
 use crate::{replay_scope, DeliveryEnvelope, DeliveryReceiver};
 use copybot_config::{
@@ -205,15 +207,22 @@ async fn servers(mode: &'static str, anchor: u64, delay: Arc<AtomicBool>) -> Ser
                     Value::Null
                 } else {
                     let mut v = raw(slot);
+                    if mode == "anchor-order" && slot == 48 {
+                        v = anchor_diagnostic_tests::transaction_raw();
+                    }
+                    if mode == "anchor-malformed" && slot == 48 { v["rewards"]=Value::Null; }
                     if mode == "conflict" && slot == 45 {
                         v["blockhash"] = json!(hash(99));
                     }
                     v
                 }
             };
-            let body =
+            let mut body =
                 serde_json::to_vec(&json!({"jsonrpc":"2.0","id":request["id"],"result":result}))
                     .unwrap();
+            if mode=="anchor-envelope" && request["method"]=="getBlock" && request["params"][0]==48 {
+                body=b"{invalid original JSON".to_vec();
+            }
             let head = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
@@ -228,8 +237,11 @@ async fn servers(mode: &'static str, anchor: u64, delay: Arc<AtomicBool>) -> Ser
         Some((l.accept().await.map(|(s, _)| s), l))
     });
     let g = tokio::spawn(async move {
+        let anchor_block = if mode == "anchor-order" {
+            anchor_diagnostic_tests::unordered_block()
+        } else { block(anchor) };
         let mut messages = vec![SubscribeUpdate {
-            update_oneof: Some(subscribe_update::UpdateOneof::Block(block(anchor))),
+            update_oneof: Some(subscribe_update::UpdateOneof::Block(anchor_block)),
             ..Default::default()
         }];
         if mode.starts_with("live-") {
@@ -289,6 +301,7 @@ fn config(s: &Servers) -> IngestionConfig {
         sqlite_busy_ms: 100,
     });
     c.yellowstone_http_recovery = Some(HttpRecoveryConfig {
+        anchor_evidence_dir: None,
         broker_url: s.http.clone(),
         broker_token: String::new(),
         range_slots: 2,

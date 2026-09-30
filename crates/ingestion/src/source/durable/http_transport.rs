@@ -5,7 +5,7 @@ use super::{
     super::transport_diagnostics::{self as diagnostics, ErrorDetails},
 };
 use crate::source::{
-    http_recovery::{identity, ConfirmedHttpRecovery},
+    http_recovery::{anchor_diagnostic, ConfirmedHttpRecovery},
     yellowstone_association as a, YellowstoneRuntimeConfig,
 };
 use anyhow::{ensure, Context, Result};
@@ -317,26 +317,26 @@ async fn catch_up(
         let blocks = stream::iter(
             slots
                 .into_iter()
-                .map(|slot| async move { http.block(slot).await }),
+                .map(|slot| async move {
+                    if slot==anchor.slot { http.anchor_block(slot,anchor,config.anchor_evidence_dir.as_deref()).await }
+                    else { http.block(slot).await }
+                }),
         )
         .buffered(config.fetch_concurrency);
         tokio::pin!(blocks);
         while let Some(recovered) = blocks.next().await {
-            let recovered = recovered?;
-            let block = &recovered.block;
+            let mut recovered = recovered?;
             let stage = Instant::now();
-            if block.slot == anchor.slot {
-                ensure!(
-                    identity::block_equivalent(block, anchor),
-                    "http_recovery_live_anchor_conflict"
-                );
+            if recovered.block.slot == anchor.slot {
+                anchor_diagnostic::admit_recovered(config.anchor_evidence_dir.as_deref(), anchor,
+                    &mut recovered)?;
                 bridge.http_block(ns(start), anchor).await?;
             } else {
-                bridge.http_block(ns(start), block).await?;
+                bridge.http_block(ns(start), &recovered.block).await?;
             }
             telemetry.processing.update_kind(true, stage.elapsed());
-            last = Some(block.slot);
-            progress.note(telemetry, block.slot, false);
+            last = Some(recovered.block.slot);
+            progress.note(telemetry, recovered.block.slot, false);
         }
         if upper == anchor.slot {
             break;

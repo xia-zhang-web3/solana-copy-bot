@@ -1,4 +1,8 @@
 use super::*;
+#[path = "http_anchor_difference_tests.rs"]
+mod anchor_difference_tests;
+#[path = "http_anchor_meta_difference_tests.rs"]
+mod anchor_meta_difference_tests;
 #[path = "http_recovery_error_tests.rs"]
 mod diagnostic_tests;
 #[path = "http_reward_compatibility_tests.rs"]

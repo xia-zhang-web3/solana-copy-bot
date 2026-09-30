@@ -49,6 +49,7 @@ async fn scenario(isolated_reader: bool) -> Result<()> {
     }
     app.ingestion.yellowstone_replay_wallets = vec![bs58::encode([19; 32]).into_string()];
     app.ingestion.yellowstone_http_recovery = isolated_reader.then(|| HttpRecoveryConfig {
+        anchor_evidence_dir: None,
         broker_url: "http://127.0.0.1:1".into(),
         broker_token: "local-only".into(),
         range_slots: 64,

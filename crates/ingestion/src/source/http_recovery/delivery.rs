@@ -1,5 +1,5 @@
 //! Read-only retry bounds are independent from the broker's immutable owner clock.
-use super::{delivery_error as errors, response, ConfirmedHttpRecovery};
+use super::{anchor_evidence::Pair, delivery_error as errors, response, ConfirmedHttpRecovery};
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -16,6 +16,14 @@ impl ConfirmedHttpRecovery {
         &self,
         method: &'static str,
         params: Value,
+    ) -> Result<(Value, Vec<u8>)> {
+        self.request_with_evidence(method, params, None).await
+    }
+    pub(super) async fn request_with_evidence(
+        &self,
+        method: &'static str,
+        params: Value,
+        mut evidence: Option<&mut Pair>,
     ) -> Result<(Value, Vec<u8>)> {
         ensure!(
             matches!(method, "getBlocks" | "getBlock"),
@@ -36,7 +44,16 @@ impl ConfirmedHttpRecovery {
             let id = self.sequence.fetch_add(1, Ordering::Relaxed);
             let started = Instant::now();
             match self
-                .attempt(method, &params, id, slot, attempt, started, timeout)
+                .attempt(
+                    method,
+                    &params,
+                    id,
+                    slot,
+                    attempt,
+                    started,
+                    timeout,
+                    evidence.as_deref_mut(),
+                )
                 .await
             {
                 Ok(value) => return Ok(value),
@@ -77,6 +94,7 @@ impl ConfirmedHttpRecovery {
         attempt: u8,
         started: Instant,
         timeout: Duration,
+        evidence: Option<&mut Pair>,
     ) -> Result<(Value, Vec<u8>)> {
         let mut response = self
             .client
@@ -123,6 +141,9 @@ impl ConfirmedHttpRecovery {
                 "http_recovery_response_limit"
             );
             raw.extend_from_slice(&chunk);
+        }
+        if let Some(pair) = evidence {
+            pair.http_attempt(attempt, &raw)?;
         }
         let result = match response::interpret(status.as_u16(), id, method, &raw) {
             Err(error) => {

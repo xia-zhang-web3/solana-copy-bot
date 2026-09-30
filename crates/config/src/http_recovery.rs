@@ -6,6 +6,9 @@ use std::fmt;
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpRecoveryConfig {
+    /// Optional private, pre-created directory for at most three complete live-anchor pairs.
+    #[serde(default)]
+    pub anchor_evidence_dir: Option<String>,
     pub broker_url: String,
     pub broker_token: String,
     /// Per getBlocks chunk, rather than a cap on the entire outage.
@@ -16,6 +19,12 @@ pub struct HttpRecoveryConfig {
 }
 impl HttpRecoveryConfig {
     pub fn validate(&self) -> Result<()> {
+        if let Some(path) = &self.anchor_evidence_dir {
+            ensure!(
+                std::path::Path::new(path).is_absolute(),
+                "http_recovery_anchor_evidence_absolute_path"
+            );
+        }
         let authority = self
             .broker_url
             .strip_prefix("http://")
@@ -51,6 +60,10 @@ impl fmt::Debug for HttpRecoveryConfig {
         f.debug_struct("HttpRecoveryConfig")
             .field("broker_url", &"<local broker>")
             .field("broker_token", &"<redacted>")
+            .field(
+                "anchor_evidence_enabled",
+                &self.anchor_evidence_dir.is_some(),
+            )
             .field("range_slots", &self.range_slots)
             .field("max_response_bytes", &self.max_response_bytes)
             .field("timeout_ms", &self.timeout_ms)
