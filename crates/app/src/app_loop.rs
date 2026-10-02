@@ -1,10 +1,10 @@
 use super::*;
 #[cfg(test)]
 use crate::app_tests::b70_hooks::stop as app_loop_stop;
-#[cfg(not(test))]
-use tokio::signal::ctrl_c as app_loop_stop;
 
 mod startup;
+#[cfg(not(test))]
+mod shutdown_signal;
 
 use startup::{initialize_app_loop_startup, AppLoopStartup};
 
@@ -45,6 +45,11 @@ pub(super) async fn run_app_loop(
     pause_new_trades_on_outage: bool,
     alert_dispatcher: Option<AlertDispatcher>,
 ) -> Result<()> {
+    #[cfg(test)]
+    let stop_signal = app_loop_stop();
+    #[cfg(not(test))]
+    let stop_signal = shutdown_signal::listen().context("failed to register app shutdown signal")?;
+    tokio::pin!(stop_signal);
     let system_event_store = copybot_storage_core::SqliteStore::open(Path::new(&sqlite_path))
         .context("failed to open app system-event storage core")?;
     system_event_store
@@ -435,7 +440,7 @@ pub(super) async fn run_app_loop(
                     shadow_wake.as_ref(),
                 ).await?;
             }
-            _ = app_loop_stop() => {
+            _ = &mut stop_signal => {
                 info!("shutdown signal received");
                 break;
             }

@@ -738,3 +738,6 @@ mod index_recovery_transport;
 mod index_recovery_tests;
 #[path = "app_tests/index_recovery_binary_fixture.rs"]
 mod index_recovery_binary_fixture;
+
+#[path = "app_tests/shutdown_signal_tests.rs"]
+mod shutdown_signal_tests;
