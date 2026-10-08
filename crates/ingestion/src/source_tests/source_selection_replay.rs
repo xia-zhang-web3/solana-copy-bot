@@ -109,15 +109,15 @@ fn replay_saved_rpc_corpus() {
 }
 
 fn fixture() -> Value {
-    super::capture_scope_fixture::fixtures()
-        .into_iter()
-        .find(|r| {
-            r["result"]["transaction"]["message"]["accountKeys"]
-                .as_array()
-                .is_some_and(|keys| keys.iter().any(|k| k == PUMP))
-                && classify(r, CPMM)["status"] == "decoded_swap"
-        })
-        .expect("accepted saved PumpSwap fixture")
+    // Keep adapter controls on the accepted direct PumpSwap BUY seed. Older
+    // capture fixtures are not a promise that an ambiguous swap decodes.
+    let result: Value = serde_json::from_str(include_str!(
+        "quote_sol/fixtures/wallet-11.json"
+    ))
+    .unwrap();
+    let record = json!({"sequence":11,"result":result});
+    assert_eq!(classify(&record, CPMM)["status"], "decoded_swap");
+    record
 }
 
 #[test]
@@ -219,12 +219,15 @@ fn synthetic_cpmm_interest_control_not_real_cpmm_execution_proof() {
     // attribution can change without a Pump program; no amount equivalence claim.
     let original = fixture();
     let mut f = original.clone();
-    for k in f["result"]["transaction"]["message"]["accountKeys"]
-        .as_array_mut()
-        .unwrap()
-    {
-        if k == PUMP {
-            *k = CPMM.into();
+    for path in [
+        "/transaction/message/accountKeys",
+        "/meta/loadedAddresses/writable",
+        "/meta/loadedAddresses/readonly",
+    ] {
+        for key in f["result"].pointer_mut(path).unwrap().as_array_mut().unwrap() {
+            if key == PUMP {
+                *key = CPMM.into();
+            }
         }
     }
     for log in f["result"]["meta"]["logMessages"].as_array_mut().unwrap() {
