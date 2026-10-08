@@ -15,16 +15,22 @@ on:
           - copybot-discovery-ops
           - copybot-live-ops
           - copybot-ops-dashboard
+      decoder_only:
+        description: Build only the offline macOS arm64 source decoder test harness
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: operator-artifacts-${{ github.ref }}-${{ inputs.package }}
+  group: operator-artifacts-${{ github.ref }}-${{ inputs.package }}-${{ inputs.decoder_only }}
   cancel-in-progress: true
 
 jobs:
   artifact:
+    if: ${{ !inputs.decoder_only }}
     name: ${{ inputs.package }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -287,4 +293,46 @@ jobs:
             artifacts/linux-x86_64/${{ inputs.package }}-${{ github.sha }}/
             artifacts/linux-x86_64/${{ inputs.package }}-${{ github.sha }}.tar.gz
             artifacts/linux-x86_64/${{ inputs.package }}-${{ github.sha }}.tar.gz.sha256
+          retention-days: 14
+
+  source-decoder:
+    if: ${{ inputs.decoder_only }}
+    name: source-decoder-macos-arm64
+    runs-on: macos-15
+    timeout-minutes: 12
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_TARGET_DIR: target/artifacts/copybot-ingestion-host
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache host decoder Cargo state
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target/artifacts/copybot-ingestion-host
+          key: source-decoder-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain*', '.cargo/**') }}
+          restore-keys: |
+            source-decoder-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Check decoder packaging boundaries
+        run: python3 -B tools/tests/test_source_decoder_artifact.py
+
+      - name: Build, check, and seal offline decoder
+        run: python3 tools/build_source_decoder_artifact.py --expect-sha '${{ github.sha }}'
+
+      - name: Upload host decoder artifact
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: source-decoder-${{ github.sha }}-macos-arm64
+          path: |
+            artifacts/macos-arm64/source-decoder-${{ github.sha }}/
+            artifacts/macos-arm64/source-decoder-${{ github.sha }}.tar.gz
+            artifacts/macos-arm64/source-decoder-${{ github.sha }}.tar.gz.sha256
           retention-days: 14

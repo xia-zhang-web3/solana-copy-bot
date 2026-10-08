@@ -99,6 +99,32 @@ pub(super) fn decode(ix: &Value) -> Option<(Vec<String>, Vec<u8>)> {
                 address("authority")?,
             ]
         }
+        (TOKEN, "transferChecked") => {
+            let amount = info.get("tokenAmount")?;
+            let ui_string = match amount.get("uiAmountString") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(value.as_str()?),
+            };
+            let ui = match amount.get("uiAmount") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(value.as_f64()?),
+            };
+            let (raw, decimals) = super::super::wire::amount(
+                amount.get("amount")?.as_str()?,
+                amount.get("decimals")?.as_u64()?,
+                ui_string,
+                ui,
+            )?;
+            data.push(12);
+            data.extend(raw.to_le_bytes());
+            data.push(decimals);
+            vec![
+                address("source")?,
+                address("mint")?,
+                address("destination")?,
+                address("authority")?,
+            ]
+        }
         _ => return None,
     };
     Some((accounts, data))

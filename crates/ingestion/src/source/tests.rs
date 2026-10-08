@@ -114,3 +114,6 @@ mod durable_replay_checkpoint_tests;
 mod reader_capture_scope_tests;
 #[path = "../source_tests/http_transport_recovery_tests.rs"]
 mod http_transport_recovery_tests;
+
+#[path = "../source_tests/quote_sol/mod.rs"]
+mod quote_sol_tests;

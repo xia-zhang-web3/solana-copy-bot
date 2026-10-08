@@ -14,6 +14,8 @@ mod lifecycle;
 mod pda;
 #[path = "native_attribution_proto.rs"]
 pub(super) mod proto;
+#[path = "native_attribution_quote_sol.rs"]
+mod quote_sol;
 #[path = "native_attribution_wire.rs"]
 pub(super) mod wire;
 #[path = "native_attribution_witness.rs"]
@@ -138,6 +140,45 @@ pub(super) fn attribute(v: &View, signer: &str, programs: &HashSet<String>) -> A
         .collect();
     if parents.is_empty() {
         return Attribution::NotApplicable;
+    }
+    // Select the checked quote-SOL grammar by mint/row evidence and its account
+    // layout or checked CPI. Invalid proofs within that grammar are terminal;
+    // token/token and older unchecked quote observations keep accepted inference.
+    if parents.iter().any(|(index, ix)| {
+        let Some(a) = &ix.accounts else {
+            return false;
+        };
+        let quote_sol = a.get(4).and_then(|i| v.key(*i)) == Some(SOL_MINT)
+            || [6, 8].iter().any(|role| {
+                a.get(*role).is_some_and(|index| {
+                    v.pre_tokens
+                        .iter()
+                        .chain(&v.post_tokens)
+                        .flatten()
+                        .any(|row| row.index == *index && row.mint == SOL_MINT)
+                })
+            });
+        let checked = v.inner.as_ref().is_some_and(|groups| {
+            groups.iter().any(|(parent, group)| {
+                parent == index
+                    && group.iter().any(|child| {
+                        child.program.as_deref() == Some(TOKEN)
+                            && child
+                                .data
+                                .as_deref()
+                                .is_some_and(|data| data.first() == Some(&12))
+                    })
+            })
+        });
+        quote_sol && (matches!(a.len(), 24 | 26) || checked)
+    }) {
+        if parents.len() != 1 {
+            return Attribution::Unknown;
+        }
+        let (index, parent) = parents[0];
+        return quote_sol::prove(v, signer, programs, index, parent)
+            .map(Attribution::Known)
+            .unwrap_or(Attribution::Unknown);
     }
     if v.persistent_delta(signer).is_some_and(|delta| delta != 0) {
         return Attribution::NotApplicable;

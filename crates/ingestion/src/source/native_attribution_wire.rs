@@ -22,6 +22,10 @@ pub(super) enum Op {
     Sync,
     Close,
     Transfer(u64),
+    TransferChecked {
+        raw: u64,
+        decimals: u8,
+    },
 }
 
 pub(super) fn u64_at(data: &[u8], offset: usize) -> Option<u64> {
@@ -73,6 +77,10 @@ pub(super) fn decode(program: &str, data: &[u8]) -> Option<Op> {
             [21, 7, 0] => Some(Op::AccountSize),
             [22] => Some(Op::ImmutableOwner),
             [3, ..] if data.len() == 9 => Some(Op::Transfer(u64_at(data, 1)?)),
+            [12, ..] if data.len() == 10 => Some(Op::TransferChecked {
+                raw: u64_at(data, 1)?,
+                decimals: data[9],
+            }),
             [18, ..] if data.len() == 33 => Some(Op::Init(bs58::encode(&data[1..]).into_string())),
             [17] => Some(Op::Sync),
             [9] => Some(Op::Close),
