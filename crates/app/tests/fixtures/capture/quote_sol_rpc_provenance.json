@@ -1,0 +1,135 @@
+{
+  "purpose": "Network-free capture pipeline fixture wiring; source bytes unmodified; saved timestamps are not fresh trading signals",
+  "encoding_test": "source::tests::quote_sol_tests::capture_fixtures_tests::encode_saved_quote_sol_capture_fixtures",
+  "adapter": "crates/ingestion/src/source_tests/quote_sol/rpc.rs",
+  "amount_source": "Executed classic SPL TransferChecked in the uniquely linked PumpSwap inner group; BUY includes three executed quote fee debits; SELL excludes pool-paid fees, WSOL starting balance and account closure returns",
+  "records": [
+    {
+      "wallet_number": 6,
+      "side_relative_to_sol": "SELL",
+      "rpc_source_path": "crates/ingestion/src/source_tests/quote_sol/fixtures/wallet-06.json",
+      "rpc_source_sha256": "d8c313746fa9c8e7b9c76886cbe82b4337d00f04ab773924b898bfd48d711aaf",
+      "protobuf_file": "quote_sol_wallet_06_sell.pb",
+      "protobuf_sha256": "7cd92b3ef6325dee1f195c1a69dc637f8fce9428026e40022888cb5926e069d3",
+      "protobuf_size_bytes": 7937,
+      "signer": "BkXHpvTpA8LRB9D76YRp3WPpwpNesY5YXAgiaZdMR6rD",
+      "signature": "HrHLo3FJC8U8HN9PSq4dzsrvqsBBqfFkFxbfKHUZ7P5VYtp8A4nQujz4p71rEuK13MxtgrGtPidc5URYQfEWEbh",
+      "slot": 454297846,
+      "envelope_created_at_from_saved_block_time": 1791396245,
+      "parent_instruction_index": 4,
+      "executed_transfer_checked_cpis": [
+        {
+          "cpi_index": 1,
+          "raw_amount": "1085477023",
+          "decimals": 6,
+          "source": "2y6Xn3GHQFRFKu2qqtXyaqRcwiT9uakqkSCdkURTrxSD",
+          "mint": "3P6WB3hifQ9Z38Ja5qNuaETkgstJUWmP6vf58aYupump",
+          "destination": "J1MYahdcyiMU8AJSmiLpmfNWMn2MpRFEVfvrXgi5An1p",
+          "authority": "BkXHpvTpA8LRB9D76YRp3WPpwpNesY5YXAgiaZdMR6rD"
+        },
+        {
+          "cpi_index": 2,
+          "raw_amount": "146964030",
+          "decimals": 9,
+          "source": "3Xv94YuFz7TyzQEqLYkkmz14ipwNyTVnyetHCvuYpZVU",
+          "mint": "So11111111111111111111111111111111111111112",
+          "destination": "9RyFWJxf6sf6faMazpPm4ecjcFhizzdcEGRMbvrHvKJG",
+          "authority": "xs4LNS8m91yC3RvwEVpzgJr8su5igsKmPh75BNFENkN"
+        },
+        {
+          "cpi_index": 3,
+          "raw_amount": "36852",
+          "decimals": 9,
+          "source": "3Xv94YuFz7TyzQEqLYkkmz14ipwNyTVnyetHCvuYpZVU",
+          "mint": "So11111111111111111111111111111111111111112",
+          "destination": "94qWNrtmfn42h3ZjUZwWvK1MEo9uVmmrBPd2hpNjYDjb",
+          "authority": "xs4LNS8m91yC3RvwEVpzgJr8su5igsKmPh75BNFENkN"
+        },
+        {
+          "cpi_index": 4,
+          "raw_amount": "73704",
+          "decimals": 9,
+          "source": "3Xv94YuFz7TyzQEqLYkkmz14ipwNyTVnyetHCvuYpZVU",
+          "mint": "So11111111111111111111111111111111111111112",
+          "destination": "DhZoaVRQwFUAKM2atUVGpnkzLik9E28bCSFrsGAq5xp5",
+          "authority": "xs4LNS8m91yC3RvwEVpzgJr8su5igsKmPh75BNFENkN"
+        },
+        {
+          "cpi_index": 5,
+          "raw_amount": "36852",
+          "decimals": 9,
+          "source": "3Xv94YuFz7TyzQEqLYkkmz14ipwNyTVnyetHCvuYpZVU",
+          "mint": "So11111111111111111111111111111111111111112",
+          "destination": "HjQjngTDqoHE6aaGhUqfz9aQ7WZcBRjy5xB8PScLSr8i",
+          "authority": "xs4LNS8m91yC3RvwEVpzgJr8su5igsKmPh75BNFENkN"
+        }
+      ],
+      "expected_amount_in_raw": "1085477023",
+      "expected_amount_out_raw": "146964030"
+    },
+    {
+      "wallet_number": 11,
+      "side_relative_to_sol": "BUY",
+      "rpc_source_path": "crates/ingestion/src/source_tests/quote_sol/fixtures/wallet-11.json",
+      "rpc_source_sha256": "9021592dbd169083bb6409861beea94b6b7af3a07110cac8198a2b2d55c55eee",
+      "protobuf_file": "quote_sol_wallet_11_buy.pb",
+      "protobuf_sha256": "eaa90f5bf1ec7656b509690d148c0191eea44fc18c460ff3aea4930787a98671",
+      "protobuf_size_bytes": 9113,
+      "signer": "ATtEeUyiFAjvw5dgcxxBDKht3EQVyyiTabJDSdFhp2e7",
+      "signature": "2pWUc4qNtx4WH2Kp4icg6FQ42dYKDQKBDpZqgnXaUQEEZo4C4hKRHHG63wAbFbwKoJzRjLQj9RTzAEKpy9adSmh7",
+      "slot": 454298676,
+      "envelope_created_at_from_saved_block_time": 1791396469,
+      "parent_instruction_index": 4,
+      "executed_transfer_checked_cpis": [
+        {
+          "cpi_index": 1,
+          "raw_amount": "115186657",
+          "decimals": 6,
+          "source": "LsPrEkSxjBWCrKr2yyqXrYfb3419huTdWkdQ6omxXTR",
+          "mint": "vRseBFqTy9QLmmo5qGiwo74AVpdqqMTnxPqWoWMpump",
+          "destination": "7FJn9XBVsufnUBy4sP65VkWLs4GSiFssErHAyR56PrfS",
+          "authority": "6LtBM9GxMtmff1VY6jEV5U3UrMCSGtSuquhfnwWTmTLi"
+        },
+        {
+          "cpi_index": 2,
+          "raw_amount": "21594605",
+          "decimals": 9,
+          "source": "CRDCNQXrUD3EgvU68cpUpJDxBB38YPoZSvZigWyQsgHd",
+          "mint": "So11111111111111111111111111111111111111112",
+          "destination": "8LrMg5RjmBJd2ukRtEGXDC6YK8xiuXQkP9YCwLkqirYY",
+          "authority": "ATtEeUyiFAjvw5dgcxxBDKht3EQVyyiTabJDSdFhp2e7"
+        },
+        {
+          "cpi_index": 3,
+          "raw_amount": "5388",
+          "decimals": 9,
+          "source": "CRDCNQXrUD3EgvU68cpUpJDxBB38YPoZSvZigWyQsgHd",
+          "mint": "So11111111111111111111111111111111111111112",
+          "destination": "X5QPJcpph4mBAJDzc4hRziFftSbcygV59kRb2Fu6Je1",
+          "authority": "ATtEeUyiFAjvw5dgcxxBDKht3EQVyyiTabJDSdFhp2e7"
+        },
+        {
+          "cpi_index": 4,
+          "raw_amount": "10776",
+          "decimals": 9,
+          "source": "CRDCNQXrUD3EgvU68cpUpJDxBB38YPoZSvZigWyQsgHd",
+          "mint": "So11111111111111111111111111111111111111112",
+          "destination": "GbhDpVWZ6zw1KZ16P68bActwWMPvf6MHEPFdHtRQnWGT",
+          "authority": "ATtEeUyiFAjvw5dgcxxBDKht3EQVyyiTabJDSdFhp2e7"
+        },
+        {
+          "cpi_index": 5,
+          "raw_amount": "5388",
+          "decimals": 9,
+          "source": "CRDCNQXrUD3EgvU68cpUpJDxBB38YPoZSvZigWyQsgHd",
+          "mint": "So11111111111111111111111111111111111111112",
+          "destination": "GYH1Gae1wJytMSvMvw8JVcv7nuAbxi8i9erNVbERnzXd",
+          "authority": "ATtEeUyiFAjvw5dgcxxBDKht3EQVyyiTabJDSdFhp2e7"
+        }
+      ],
+      "expected_amount_in_raw": "21616157",
+      "expected_amount_out_raw": "115186657"
+    }
+  ],
+  "timestamp_scope": "created_at is a synthetic transport timestamp derived from saved RPC blockTime; no claim about observed gRPC time or latency"
+}

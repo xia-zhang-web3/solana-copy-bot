@@ -18,8 +18,8 @@ async fn capture_scope_real_ingestion_survives_legacy_inflight_and_cooldown_disc
         [],
     )?;
     for wallet in [
-        "DcVa5kaNzq9puM5nyhBh7L25QPkKNZSQWCMdXpc3kKWE",
-        "5RuWbrJmyhnqnysnBZmdFr5o2zT8e6T1o1onEnx9aAXQ",
+        "BkXHpvTpA8LRB9D76YRp3WPpwpNesY5YXAgiaZdMR6rD",
+        "ATtEeUyiFAjvw5dgcxxBDKht3EQVyyiTabJDSdFhp2e7",
     ] {
         capture.execute("INSERT INTO capture_members VALUES(1,?)", [wallet])?;
     }
@@ -51,8 +51,8 @@ async fn capture_scope_real_ingestion_survives_legacy_inflight_and_cooldown_disc
     let mut signature_order = VecDeque::new();
     let mut telemetry = AppConsumerLoopTelemetry::default();
     let fixtures: [&[u8]; 2] = [
-        include_bytes!("../../tests/fixtures/capture/saved_sell.pb"),
-        include_bytes!("../../tests/fixtures/capture/saved_buy.pb"),
+        include_bytes!("../../tests/fixtures/capture/quote_sol_wallet_06_sell.pb"),
+        include_bytes!("../../tests/fixtures/capture/quote_sol_wallet_11_buy.pb"),
     ];
     for (index, bytes) in fixtures.into_iter().enumerate() {
         writer.set_capture_test_journal_inflight_rows(usize::from(index == 0));
@@ -61,15 +61,40 @@ async fn capture_scope_real_ingestion_survives_legacy_inflight_and_cooldown_disc
             .await?
             .context("saved supported swap decoded")?;
         if index == 0 {
-            assert_eq!(swap.slot, 446_979_602);
+            assert_eq!(swap.slot, 454_297_846);
             assert_eq!(swap.signature,
-                "5kbYV8S8FimiM5GhqBZpJXpJzuLZ5jDTLFDyd7jbsuEdY3pGAvFXxHMF6LT5urNhemNyVeeazxZF6YZnG1CbkwUU");
+                "HrHLo3FJC8U8HN9PSq4dzsrvqsBBqfFkFxbfKHUZ7P5VYtp8A4nQujz4p71rEuK13MxtgrGtPidc5URYQfEWEbh");
+            assert_eq!(swap.wallet, "BkXHpvTpA8LRB9D76YRp3WPpwpNesY5YXAgiaZdMR6rD");
+            assert_eq!(
+                swap.token_out,
+                "So11111111111111111111111111111111111111112"
+            );
+            assert_eq!(
+                swap.exact_amounts.as_ref().unwrap().amount_in_raw,
+                "1085477023"
+            );
+            assert_eq!(
+                swap.exact_amounts.as_ref().unwrap().amount_out_raw,
+                "146964030"
+            );
             assert!(
                 !writer.try_enqueue(&swap)?,
                 "original inflight refusal still applies"
             );
         } else {
+            assert_eq!(swap.slot, 454_298_676);
+            assert_eq!(swap.signature,
+                "2pWUc4qNtx4WH2Kp4icg6FQ42dYKDQKBDpZqgnXaUQEEZo4C4hKRHHG63wAbFbwKoJzRjLQj9RTzAEKpy9adSmh7");
+            assert_eq!(swap.wallet, "ATtEeUyiFAjvw5dgcxxBDKht3EQVyyiTabJDSdFhp2e7");
             assert_eq!(swap.token_in, "So11111111111111111111111111111111111111112");
+            assert_eq!(
+                swap.exact_amounts.as_ref().unwrap().amount_in_raw,
+                "21616157"
+            );
+            assert_eq!(
+                swap.exact_amounts.as_ref().unwrap().amount_out_raw,
+                "115186657"
+            );
             assert!(
                 budget.exhausted(),
                 "the BUY reaches the original active cooldown"
@@ -84,10 +109,12 @@ async fn capture_scope_real_ingestion_survives_legacy_inflight_and_cooldown_disc
             stage, "DURABLE",
             "capture commits before legacy writer admission"
         );
-        assert_eq!(
-            serde_json::from_str::<SwapEvent>(&saved)?.signature,
-            swap.signature
-        );
+        let captured: SwapEvent = serde_json::from_str(&saved)?;
+        assert_eq!(captured.signature, swap.signature);
+        assert_eq!(captured.wallet, swap.wallet);
+        assert_eq!(captured.token_in, swap.token_in);
+        assert_eq!(captured.token_out, swap.token_out);
+        assert_eq!(captured.exact_amounts, swap.exact_amounts);
         assert!(note_recent_swap_signature(
             &mut signatures,
             &mut signature_order,

@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 
 mod controls;
+mod capture_fixtures_tests;
 mod dispatch;
 mod rpc;
 
