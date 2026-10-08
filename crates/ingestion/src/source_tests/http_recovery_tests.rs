@@ -3,12 +3,12 @@ use super::*;
 mod anchor_difference_tests;
 #[path = "http_anchor_meta_difference_tests.rs"]
 mod anchor_meta_difference_tests;
+#[path = "http_delivery_tests.rs"]
+mod delivery_tests;
 #[path = "http_recovery_error_tests.rs"]
 mod diagnostic_tests;
 #[path = "http_reward_compatibility_tests.rs"]
 mod reward_compatibility_tests;
-#[path = "http_delivery_tests.rs"]
-mod delivery_tests;
 use copybot_core_types::association_delivery::InfoIdentity;
 use prost::Message;
 use serde_json::json;

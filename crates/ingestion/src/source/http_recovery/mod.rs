@@ -1,16 +1,19 @@
 //! Confirmed history from the bounded local budget broker. HTTP observations
 //! retain their response bytes; conversion does not claim a protobuf wire match.
-mod block;
 pub(crate) mod anchor_diagnostic;
 mod anchor_evidence;
 mod anchor_fetch;
-mod identity_difference;
+mod block;
+pub(crate) mod blocking_normalization;
 mod delivery;
 mod delivery_error;
+mod envelope;
 mod error;
 pub(crate) mod identity;
+mod identity_difference;
 mod index_identity;
 mod meta;
+pub(crate) mod ordered_pipeline;
 mod response;
 mod session_deadline;
 mod transaction;
@@ -46,6 +49,7 @@ pub(crate) struct ConfirmedHttpRecovery {
     sequence: Arc<AtomicU64>,
     timeout: Duration,
     session_deadline: Arc<session_deadline::SessionDeadline>,
+    pub(crate) normalization: blocking_normalization::BlockingNormalization,
 }
 #[derive(Debug)]
 pub(crate) struct RecoveredBlock {
@@ -53,6 +57,24 @@ pub(crate) struct RecoveredBlock {
     /// Exact bounded JSON-RPC response, independent from the constructed proto.
     pub raw_response: Vec<u8>,
     anchor_evidence: Option<anchor_evidence::Pair>,
+}
+pub(super) struct RawResponse {
+    id: u64,
+    status: u16,
+    bytes: Vec<u8>,
+}
+/// The ahead window retains exact bytes, never a JSON tree or normalized proto.
+pub(crate) struct RawRecoveredBlock {
+    slot: u64,
+    response: RawResponse,
+}
+impl RawRecoveredBlock {
+    pub(crate) fn from_response(slot: u64, status: u16, id: u64, bytes: Vec<u8>) -> Self {
+        Self {
+            slot,
+            response: RawResponse { id, status, bytes },
+        }
+    }
 }
 impl ConfirmedHttpRecovery {
     pub(crate) fn new(
@@ -102,6 +124,7 @@ impl ConfirmedHttpRecovery {
             sequence: Arc::new(AtomicU64::new(1)),
             timeout,
             session_deadline: Arc::new(session_deadline::SessionDeadline::default()),
+            normalization: blocking_normalization::BlockingNormalization::default(),
         })
     }
     pub(crate) async fn slots(&self, start: u64, end: u64) -> Result<Vec<u64>> {
@@ -129,20 +152,38 @@ impl ConfirmedHttpRecovery {
         Ok(slots)
     }
     pub(crate) async fn block(&self, slot: u64) -> Result<RecoveredBlock> {
-        let (result, raw_response) = self
-            .request(
+        self.normalize_raw_block(self.raw_block(slot).await?)
+    }
+    pub(crate) async fn raw_block(&self, slot: u64) -> Result<RawRecoveredBlock> {
+        let response = self
+            .raw_request_with_evidence(
                 "getBlock",
                 json!([slot, {
                     "commitment":"confirmed", "encoding":"json", "transactionDetails":"full",
                     "maxSupportedTransactionVersion":1, "rewards":true
                 }]),
+                None,
             )
             .await?;
+        Ok(RawRecoveredBlock::from_response(
+            slot,
+            response.status,
+            response.id,
+            response.bytes,
+        ))
+    }
+    pub(crate) fn normalize_raw_block(&self, raw: RawRecoveredBlock) -> Result<RecoveredBlock> {
+        // A completed response waiting behind application cannot renew or
+        // outlive the broker's immutable session ceiling.
+        self.session_deadline.remaining()?;
+        let RawRecoveredBlock { slot, response } = raw;
+        let result =
+            response::interpret(response.status, response.id, "getBlock", &response.bytes)?;
         // null means unavailable/not yet confirmed; it is never a skipped slot.
         let block = block::parse(slot, &result)?;
         Ok(RecoveredBlock {
             block,
-            raw_response,
+            raw_response: response.bytes,
             anchor_evidence: None,
         })
     }
@@ -159,3 +200,19 @@ pub(crate) mod anchor_evidence_io_tests;
 #[cfg(test)]
 #[path = "../../source_tests/index_recovery_tests.rs"]
 mod index_recovery_tests;
+
+#[cfg(test)]
+#[path = "../../source_tests/http_raw_envelope_tests.rs"]
+mod raw_envelope_tests;
+
+#[cfg(test)]
+#[path = "../../source_tests/http_raw_fetch_tests.rs"]
+mod raw_fetch_tests;
+
+#[cfg(test)]
+#[path = "../../source_tests/http_saved_raw_profile_tests.rs"]
+mod saved_raw_profile_tests;
+
+#[cfg(test)]
+#[path = "../../source_tests/http_base58_equivalence_tests.rs"]
+mod base58_equivalence_tests;

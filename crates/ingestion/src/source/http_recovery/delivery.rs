@@ -1,5 +1,8 @@
 //! Read-only retry bounds are independent from the broker's immutable owner clock.
-use super::{anchor_evidence::Pair, delivery_error as errors, response, ConfirmedHttpRecovery};
+use super::{
+    anchor_evidence::Pair, delivery_error as errors, envelope, response, ConfirmedHttpRecovery,
+    RawResponse,
+};
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use std::{
@@ -10,6 +13,16 @@ use std::{
 const ATTEMPTS: u8 = 3;
 fn backoff(attempt: u8) -> Duration {
     Duration::from_millis(250 * u64::from(attempt))
+}
+pub(super) fn bounded_response_buffer(limit: usize) -> Result<Vec<u8>> {
+    let mut raw = Vec::new();
+    raw.try_reserve_exact(limit)
+        .context("http_recovery_response_allocation")?;
+    ensure!(
+        raw.capacity() <= limit,
+        "http_recovery_response_capacity_limit"
+    );
+    Ok(raw)
 }
 impl ConfirmedHttpRecovery {
     pub(super) async fn request(
@@ -23,8 +36,20 @@ impl ConfirmedHttpRecovery {
         &self,
         method: &'static str,
         params: Value,
-        mut evidence: Option<&mut Pair>,
+        evidence: Option<&mut Pair>,
     ) -> Result<(Value, Vec<u8>)> {
+        let raw = self
+            .raw_request_with_evidence(method, params, evidence)
+            .await?;
+        let result = response::interpret(raw.status, raw.id, method, &raw.bytes)?;
+        Ok((result, raw.bytes))
+    }
+    pub(super) async fn raw_request_with_evidence(
+        &self,
+        method: &'static str,
+        params: Value,
+        mut evidence: Option<&mut Pair>,
+    ) -> Result<RawResponse> {
         ensure!(
             matches!(method, "getBlocks" | "getBlock"),
             "http_recovery_read_only_method_required"
@@ -95,7 +120,7 @@ impl ConfirmedHttpRecovery {
         started: Instant,
         timeout: Duration,
         evidence: Option<&mut Pair>,
-    ) -> Result<(Value, Vec<u8>)> {
+    ) -> Result<RawResponse> {
         let mut response = self
             .client
             .post(self.url.clone())
@@ -123,7 +148,9 @@ impl ConfirmedHttpRecovery {
                 .is_none_or(|n| n <= self.max_response_bytes as u64),
             "http_recovery_response_limit"
         );
-        let mut raw = Vec::new();
+        // The charged raw window bounds allocated capacity, not only body len.
+        // Reserving once prevents extend() from geometrically crossing the cap.
+        let mut raw = bounded_response_buffer(self.max_response_bytes)?;
         while let Some(chunk) = response.chunk().await.map_err(|e| {
             errors::ClientFailure::new(
                 e,
@@ -145,7 +172,7 @@ impl ConfirmedHttpRecovery {
         if let Some(pair) = evidence {
             pair.http_attempt(attempt, &raw)?;
         }
-        let result = match response::interpret(status.as_u16(), id, method, &raw) {
+        match envelope::validate(status.as_u16(), id, method, &raw) {
             Err(error) => {
                 if let Some(broker) = error.downcast_ref::<errors::BrokerFailure>() {
                     ensure!(
@@ -155,10 +182,14 @@ impl ConfirmedHttpRecovery {
                 }
                 return Err(error);
             }
-            Ok(result) => result,
-        };
+            Ok(()) => {}
+        }
         // A late success cannot extend the immutable clock after body delivery.
         self.session_deadline.remaining()?;
-        Ok((result, raw))
+        Ok(RawResponse {
+            id,
+            status: status.as_u16(),
+            bytes: raw,
+        })
     }
 }

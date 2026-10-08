@@ -224,3 +224,7 @@ impl Drop for Reader {
 #[cfg(test)]
 #[path = "../../source_tests/reader_lifetime_fixture.rs"]
 mod lifetime_fixture;
+
+#[cfg(test)]
+#[path = "../../source_tests/recovery_raw_memory_tests.rs"]
+mod raw_memory_tests;

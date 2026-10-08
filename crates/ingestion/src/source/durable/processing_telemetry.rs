@@ -49,6 +49,11 @@ pub struct IngressProcessingSnapshot {
     pub update: TimingSnapshot,
     pub block_update: TimingSnapshot,
     pub transaction_update: TimingSnapshot,
+    /// Ordered history transform wall time; the independent anchor stays on
+    /// its accepted path. This includes descheduling, not only OS on-CPU time.
+    pub http_normalization: TimingSnapshot,
+    /// Scheduling/join wait outside the owning transform's execution.
+    pub http_normalization_wait: TimingSnapshot,
     /// Time between reader enqueue and processor dequeue.
     pub input_age: TimingSnapshot,
     /// Delivery envelope construction through committed consumer acknowledgement.
@@ -158,6 +163,8 @@ pub(crate) struct IngressProcessingTelemetry {
     update: Timing,
     block_update: Timing,
     transaction_update: Timing,
+    http_normalization: Timing,
+    http_normalization_wait: Timing,
     input_age: Timing,
     durable_ack: Timing,
     input_count: AtomicU64,
@@ -210,6 +217,10 @@ impl IngressProcessingTelemetry {
     pub(crate) fn durable_ack(&self, elapsed: Duration) {
         self.durable_ack.note(elapsed);
     }
+    pub(crate) fn http_normalization(&self, execution: Duration, waiting: Duration) {
+        self.http_normalization.note(execution);
+        self.http_normalization_wait.note(waiting);
+    }
     pub(crate) fn input_enqueued(&self, bytes: usize) {
         let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
         let count = self
@@ -248,6 +259,8 @@ impl IngressProcessingTelemetry {
             update: self.update.snapshot(),
             block_update: self.block_update.snapshot(),
             transaction_update: self.transaction_update.snapshot(),
+            http_normalization: self.http_normalization.snapshot(),
+            http_normalization_wait: self.http_normalization_wait.snapshot(),
             input_age: self.input_age.snapshot(),
             durable_ack: self.durable_ack.snapshot(),
             input_queue_count: get(&self.input_count),

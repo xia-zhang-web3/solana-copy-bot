@@ -161,6 +161,11 @@ impl RecoveryGate {
     pub(in crate::source) fn from_slot(&self) -> Option<u64> {
         self.expected.as_ref().map(|h| h.from_slot)
     }
+    pub(in crate::source) fn observed_child_matches(&self, child: &BlockKey) -> bool {
+        self.seen
+            .get(&child.slot)
+            .is_some_and(|p| p.child == *child)
+    }
     pub(in crate::source) fn block(&mut self, block: &SubscribeUpdateBlock) -> Result<bool> {
         let p = super::parent::observation(block);
         ensure!(p.issue.is_none(), "replay_parent_malformed");

@@ -18,6 +18,8 @@ pub(super) struct BlockRecovery {
     block_bound: usize,
     known: std::collections::HashMap<String, AdmissionFacts>,
     last_checkpoint: Option<u64>,
+    first_checkpoint_sequence: Option<u64>,
+    last_checkpoint_child: Option<copybot_core_types::association_parent::BlockKey>,
 }
 impl Bridge<'_> {
     pub(in crate::source::durable) fn enable_recovery(
@@ -46,6 +48,8 @@ impl Bridge<'_> {
             block_bound: limits.blocks.count,
             known,
             last_checkpoint: None,
+            first_checkpoint_sequence: None,
+            last_checkpoint_child: None,
         });
         Ok(())
     }
@@ -66,6 +70,9 @@ impl Bridge<'_> {
         r.gate = RecoveryGate::new(saved, r.block_bound);
         r.held.clear();
         r.bytes = 0;
+        r.last_checkpoint = None;
+        r.first_checkpoint_sequence = None;
+        r.last_checkpoint_child = None;
         Ok(r.gate.from_slot())
     }
     pub(in crate::source::durable) fn recovery_enabled(&self) -> bool {
@@ -268,6 +275,7 @@ impl Bridge<'_> {
                 "replay_block_indices_or_signatures"
             );
         }
+        self.retire_acknowledged_complete_blocks()?;
         ensure!(
             self.recovery
                 .as_ref()
@@ -335,6 +343,7 @@ impl Bridge<'_> {
             .cursor
             .scope
             .clone();
+        let emitted_child = observation.child.clone();
         self.emit(
             at,
             DeliveryEvent::ParentCheckpoint(BlockCheckpoint {
@@ -346,7 +355,17 @@ impl Bridge<'_> {
             }),
         )
         .await?;
-        self.recovery.as_mut().expect("recovery").last_checkpoint = Some(block.slot);
+        let r = self.recovery.as_mut().expect("recovery");
+        r.last_checkpoint = Some(block.slot);
+        r.last_checkpoint_child = Some(emitted_child);
+        r.first_checkpoint_sequence.get_or_insert(self.sequence - 1);
         Ok(())
     }
 }
+
+#[path = "ack_retirement.rs"]
+mod ack_retirement;
+
+#[cfg(test)]
+#[path = "../../source_tests/http_ack_retirement_tests.rs"]
+mod ack_retirement_tests;

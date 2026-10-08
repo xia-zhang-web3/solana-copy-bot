@@ -76,6 +76,7 @@ async fn scenario(unknown: bool, http_mode: bool, bad_anchor: bool) -> Result<()
     };
     if let Some(http) = &recovery_http {
         app.ingestion.yellowstone_http_recovery = Some(copybot_config::HttpRecoveryConfig {
+        raw_window_blocks: None,
             anchor_evidence_dir: None,
             broker_url: http.url.clone(),
             broker_token: String::new(),

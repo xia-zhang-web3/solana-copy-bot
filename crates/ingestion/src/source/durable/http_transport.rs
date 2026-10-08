@@ -5,13 +5,12 @@ use super::{
     super::transport_diagnostics::{self as diagnostics, ErrorDetails},
 };
 use crate::source::{
-    http_recovery::{anchor_diagnostic, ConfirmedHttpRecovery},
+    http_recovery::{anchor_diagnostic, ordered_pipeline::OrderedPipeline, ConfirmedHttpRecovery},
     yellowstone_association as a, YellowstoneRuntimeConfig,
 };
 use anyhow::{ensure, Context, Result};
 use copybot_config::{AssociationDeliveryConfig, HttpRecoveryConfig};
 use copybot_core_types::association_delivery::{DeliveryEvent, SessionGap};
-use futures_util::{stream, StreamExt};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -304,6 +303,7 @@ async fn catch_up(
         anchor.slot >= from,
         "http_recovery_live_anchor_before_cursor"
     );
+    let (mut normalization, window) = http.normalization.begin(config.raw_window()).await?;
     let mut progress = http_progress::Progress::new(from, anchor.slot);
     let mut lower = from;
     let mut last = None;
@@ -311,32 +311,66 @@ async fn catch_up(
         let upper = lower
             .saturating_add(config.range_slots - 1)
             .min(anchor.slot);
-        let slots = http.slots(lower, upper).await?;
+        let list_permit = window.acquire().await?;
+        let mut slots = http.slots(lower, upper).await?;
+        drop(list_permit);
         // The list may omit skipped slots. The parent/hash gate, rather than
         // arithmetic adjacency, proves continuity of actual confirmed blocks.
-        let blocks = stream::iter(
-            slots
-                .into_iter()
-                .map(|slot| async move {
-                    if slot==anchor.slot { http.anchor_block(slot,anchor,config.anchor_evidence_dir.as_deref()).await }
-                    else { http.block(slot).await }
-                }),
-        )
-        .buffered(config.fetch_concurrency);
-        tokio::pin!(blocks);
-        while let Some(recovered) = blocks.next().await {
-            let mut recovered = recovered?;
+        let has_anchor = slots.last() == Some(&anchor.slot);
+        if has_anchor {
+            slots.pop();
+        }
+        let fetch = http.clone();
+        // Width bounds active HTTP; the explicit total window additionally
+        // bounds queued raw bytes and the block being applied. An absent window
+        // preserves the accepted width-sized window without a silent increase.
+        let mut blocks = OrderedPipeline::start_in_window(
+            slots,
+            config.fetch_concurrency,
+            window.clone(),
+            move |slot| {
+                let fetch = fetch.clone();
+                async move { fetch.raw_block(slot).await }
+            },
+        )?;
+        while let Some(fetched) = blocks.next().await? {
+            let transform = http.clone();
+            let (transformed, owner) = normalization
+                .run(fetched, move |raw| transform.normalize_raw_block(raw))
+                .await?;
+            normalization = owner;
+            let (transformed, permit) = transformed.into_parts();
+            telemetry
+                .processing
+                .http_normalization(transformed.execution, transformed.waiting);
+            let recovered = transformed.result?;
             let stage = Instant::now();
-            if recovered.block.slot == anchor.slot {
-                anchor_diagnostic::admit_recovered(config.anchor_evidence_dir.as_deref(), anchor,
-                    &mut recovered)?;
-                bridge.http_block(ns(start), anchor).await?;
-            } else {
-                bridge.http_block(ns(start), &recovered.block).await?;
-            }
+            bridge.http_block(ns(start), &recovered.block).await?;
             telemetry.processing.update_kind(true, stage.elapsed());
             last = Some(recovered.block.slot);
             progress.note(telemetry, recovered.block.slot, false);
+            drop(recovered);
+            drop(permit);
+        }
+        if has_anchor {
+            // The independently captured live anchor stays on its existing
+            // evidence path. It is never cloned into the raw producer task.
+            let anchor_permit = window.acquire().await?;
+            let mut recovered = http
+                .anchor_block(anchor.slot, anchor, config.anchor_evidence_dir.as_deref())
+                .await?;
+            let stage = Instant::now();
+            anchor_diagnostic::admit_recovered(
+                config.anchor_evidence_dir.as_deref(),
+                anchor,
+                &mut recovered,
+            )?;
+            bridge.http_block(ns(start), anchor).await?;
+            telemetry.processing.update_kind(true, stage.elapsed());
+            last = Some(anchor.slot);
+            progress.note(telemetry, anchor.slot, false);
+            drop(recovered);
+            drop(anchor_permit);
         }
         if upper == anchor.slot {
             break;
@@ -359,3 +393,7 @@ async fn catch_up(
     progress.note(telemetry, anchor.slot, true);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../source_tests/recovery_live_e2e/mod.rs"]
+mod recovery_live_e2e;

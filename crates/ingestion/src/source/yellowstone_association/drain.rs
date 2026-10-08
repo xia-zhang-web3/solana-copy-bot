@@ -79,6 +79,7 @@ impl YellowstoneAssociation<'_> {
                 self.signatures.clear();
                 self.blocks.clear();
                 self.session = next;
+                self.closed_block_watermark = None;
                 self.offset = Duration::ZERO;
                 self.ended = false;
             }

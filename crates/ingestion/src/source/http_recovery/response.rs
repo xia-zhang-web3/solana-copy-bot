@@ -190,7 +190,7 @@ pub(super) fn interpret(status: u16, id: u64, method: &str, raw: &[u8]) -> Resul
         }
         bail!("http_recovery_http_status {status}");
     }
-    let envelope =
+    let mut envelope =
         parsed.with_context(|| format!("http_recovery_invalid_json http_status={status}"))?;
     ensure!(
         envelope["jsonrpc"] == "2.0" && envelope["id"].as_u64() == Some(id),
@@ -205,7 +205,7 @@ pub(super) fn interpret(status: u16, id: u64, method: &str, raw: &[u8]) -> Resul
         bail!("http_recovery_rpc_error http_status={status} code={code}");
     }
     Ok(envelope
-        .get("result")
+        .get_mut("result")
         .context("http_recovery_missing_result")?
-        .clone())
+        .take())
 }

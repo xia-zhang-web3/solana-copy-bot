@@ -11,6 +11,7 @@ mod blocks;
 mod drain;
 mod evaluate;
 pub(in crate::source) mod limits;
+mod retirement;
 mod state;
 mod types;
 
@@ -43,6 +44,7 @@ pub(in crate::source) struct YellowstoneAssociation<'a> {
     signatures: HashMap<String, ResultId>,
     blocks: BTreeMap<u64, Vec<Block>>,
     action: Option<Action>,
+    closed_block_watermark: Option<u64>,
 }
 impl<'a> YellowstoneAssociation<'a> {
     pub(in crate::source) fn block_cache_usage(&self) -> (usize, usize) {
@@ -118,6 +120,7 @@ impl<'a> YellowstoneAssociation<'a> {
             signatures: HashMap::new(),
             blocks: BTreeMap::new(),
             action: None,
+            closed_block_watermark: None,
         })
     }
     pub(in crate::source) fn restrict_wallets(&mut self, wallets: &'a HashSet<String>) {

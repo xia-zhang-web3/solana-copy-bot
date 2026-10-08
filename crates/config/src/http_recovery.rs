@@ -15,9 +15,17 @@ pub struct HttpRecoveryConfig {
     pub range_slots: u64,
     pub max_response_bytes: usize,
     pub timeout_ms: u64,
+    /// Active HTTP requests. Still bounded by ingestion.fetch_concurrency.
     pub fetch_concurrency: usize,
+    /// Total requests + completed raw responses + current application. Absent
+    /// preserves the existing window equal to fetch_concurrency.
+    #[serde(default)]
+    pub raw_window_blocks: Option<usize>,
 }
 impl HttpRecoveryConfig {
+    pub fn raw_window(&self) -> usize {
+        self.raw_window_blocks.unwrap_or(self.fetch_concurrency)
+    }
     pub fn validate(&self) -> Result<()> {
         if let Some(path) = &self.anchor_evidence_dir {
             ensure!(
@@ -52,6 +60,10 @@ impl HttpRecoveryConfig {
                 && self.fetch_concurrency > 0,
             "http_recovery_explicit_response_timeout_bounds"
         );
+        ensure!(
+            self.raw_window() >= self.fetch_concurrency && self.raw_window() <= 32,
+            "http_recovery_raw_window_bounds"
+        );
         Ok(())
     }
 }
@@ -68,6 +80,7 @@ impl fmt::Debug for HttpRecoveryConfig {
             .field("max_response_bytes", &self.max_response_bytes)
             .field("timeout_ms", &self.timeout_ms)
             .field("fetch_concurrency", &self.fetch_concurrency)
+            .field("raw_window_blocks", &self.raw_window_blocks)
             .finish()
     }
 }

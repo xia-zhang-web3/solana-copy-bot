@@ -132,6 +132,14 @@ impl YellowstoneAssociation<'_> {
                 Cause::Tick,
             ));
         }
+        // Retained duplicates/conflicts took their original path above. A new
+        // supported source Info cannot invent a first admission in a closed slot.
+        if self
+            .closed_block_watermark
+            .is_some_and(|slot| tx.slot <= slot)
+        {
+            return Err(Rejection::ClosedBlockUnknownInfo);
+        }
         let metadata = 1024
             + [
                 &facts.signature,

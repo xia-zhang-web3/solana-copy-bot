@@ -41,8 +41,10 @@ pub(super) fn list<T>(v: &Value, f: impl Fn(&Value) -> Result<T>) -> Result<Vec<
 pub(super) fn base58(v: &Value, length: Option<usize>) -> Result<Vec<u8>> {
     let text = v.as_str().context("http_recovery_expected_base58")?;
     let decoded = bs58::decode(text).into_vec()?;
+    // Locked bs58 0.5.1 uses a bijective Bitcoin alphabet and preserves each
+    // leading '1' as a zero byte. Successful plain decode already round-trips.
     ensure!(
-        length.is_none_or(|n| decoded.len() == n) && bs58::encode(&decoded).into_string() == text,
+        length.is_none_or(|n| decoded.len() == n),
         "http_recovery_base58_identity"
     );
     Ok(decoded)

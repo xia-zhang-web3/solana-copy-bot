@@ -58,6 +58,8 @@ pub(in crate::source) enum Rejection {
     FactsDecodeError,
     HistoryCapacity,
     BlockCapacity,
+    BlockRetirementPending,
+    ClosedBlockUnknownInfo,
     MetadataCapacity,
     OutputCapacity,
     IdExhausted,

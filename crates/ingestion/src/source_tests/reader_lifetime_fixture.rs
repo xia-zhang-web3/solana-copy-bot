@@ -126,8 +126,21 @@ async fn nan_payload_full_block_roundtrips_through_compact_live_queue() {
     let mut captured = reader.next().await.unwrap();
     assert!(matches!(&captured.value, CapturedValue::EncodedBlock(_)));
     let Some(subscribe_update::UpdateOneof::Block(block)) =
-        captured.update().unwrap().update_oneof.as_ref() else { panic!("block required") };
-    assert_eq!(block.transactions[0].meta.as_ref().unwrap()
-        .pre_token_balances[0].ui_token_amount.as_ref().unwrap()
-        .ui_amount.to_bits(), bits);
+        captured.update().unwrap().update_oneof.as_ref()
+    else {
+        panic!("block required")
+    };
+    assert_eq!(
+        block.transactions[0]
+            .meta
+            .as_ref()
+            .unwrap()
+            .pre_token_balances[0]
+            .ui_token_amount
+            .as_ref()
+            .unwrap()
+            .ui_amount
+            .to_bits(),
+        bits
+    );
 }

@@ -4,11 +4,12 @@ use crate::source::yellowstone_association::*;
 use crate::source::yellowstone_message_time::{CreatedAtUnavailable, YellowstoneMessageTime};
 use std::time::Duration;
 
-mod conflicts;
 mod compact_storage_tests;
+mod conflicts;
 mod lifecycle;
 mod limits_tests;
 mod resource_tests;
+mod retirement_tests;
 mod scoped_admission_tests;
 
 pub(super) fn limits() -> Limits {

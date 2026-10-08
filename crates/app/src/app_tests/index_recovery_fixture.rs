@@ -229,6 +229,7 @@ pub(super) fn config(grpc: &str, http: &str, evidence: &Path) -> AppConfig {
         sqlite_busy_ms: 1000,
     });
     c.yellowstone_http_recovery = Some(HttpRecoveryConfig {
+        raw_window_blocks: None,
         broker_url: http.into(),
         broker_token: String::new(),
         range_slots: 64,
