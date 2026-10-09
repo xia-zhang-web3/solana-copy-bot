@@ -15,14 +15,14 @@ pub(crate) fn proto_has_supported_swap(
         .chain(&meta.loaded_readonly_addresses)
         .map(Vec::as_slice)
         .collect();
-    let supported = |program_index: u32, accounts: &[u8], data: &[u8]| {
+    let supported = |program_index: u32, accounts: &[u8], data: &[u8], direct| {
         let Some(program) = keys
             .get(program_index as usize)
             .filter(|key| key.len() == 32)
         else {
             return false;
         };
-        supported_data(data)
+        supported_data(data, direct)
             && pumpswap_program_ids.contains(&bs58::encode(program).into_string())
             && !accounts.is_empty()
             && accounts.iter().all(|index| {
@@ -33,11 +33,11 @@ pub(crate) fn proto_has_supported_swap(
     message
         .instructions
         .iter()
-        .any(|ix| supported(ix.program_id_index, &ix.accounts, &ix.data))
+        .any(|ix| supported(ix.program_id_index, &ix.accounts, &ix.data, true))
         || meta
             .inner_instructions
             .iter()
             .filter(|group| (group.index as usize) < message.instructions.len())
             .flat_map(|group| &group.instructions)
-            .any(|ix| supported(ix.program_id_index, &ix.accounts, &ix.data))
+            .any(|ix| supported(ix.program_id_index, &ix.accounts, &ix.data, false))
 }

@@ -12,6 +12,8 @@ pub(super) mod json;
 mod jupiter;
 #[path = "native_attribution_lifecycle.rs"]
 mod lifecycle;
+#[path = "native_attribution_legacy_buy.rs"]
+mod legacy_buy;
 #[path = "native_attribution_pda.rs"]
 mod pda;
 #[path = "native_attribution_proto.rs"]
@@ -132,6 +134,12 @@ pub(super) fn attribute(v: &View, signer: &str, programs: &HashSet<String>) -> A
         return Attribution::Unknown;
     };
     match ammv4::attribute(v, signer) {
+        Attribution::NotApplicable => {}
+        result => return result,
+    }
+    // Exact-output Buy has its own wire/fee grammar, in either SOL mint role.
+    // Route before persistent-WSOL inference; a damaged witness is terminal.
+    match legacy_buy::attribute(v, signer, programs) {
         Attribution::NotApplicable => {}
         result => return result,
     }

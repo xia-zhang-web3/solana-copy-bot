@@ -27,9 +27,10 @@ pub(crate) fn json_has_supported_swap(
     else {
         return false;
     };
-    let supported =
-        |instruction: &Value| supported_instruction(instruction, &keys, pumpswap_program_ids);
-    top.iter().any(supported)
+    let supported = |instruction: &Value, direct| {
+        supported_instruction(instruction, &keys, pumpswap_program_ids, direct)
+    };
+    top.iter().any(|ix| supported(ix, true))
         || meta
             .get("innerInstructions")
             .and_then(Value::as_array)
@@ -43,13 +44,14 @@ pub(crate) fn json_has_supported_swap(
             })
             .filter_map(|group| group.get("instructions")?.as_array())
             .flatten()
-            .any(supported)
+            .any(|ix| supported(ix, false))
 }
 
 fn supported_instruction(
     instruction: &Value,
     keys: &HashSet<&str>,
     pumpswap_program_ids: &HashSet<String>,
+    direct: bool,
 ) -> bool {
     // Ambiguous hybrid/compiled encodings are unsupported, even with a programId.
     if instruction.get("programIdIndex").is_some() || instruction.get("parsed").is_some() {
@@ -78,7 +80,7 @@ fn supported_instruction(
     };
     let mut bytes = [0_u8; 25];
     match bs58::decode(data).onto(&mut bytes[..]) {
-        Ok(len) => supported_data(&bytes[..len]),
+        Ok(len) => supported_data(&bytes[..len], direct),
         Err(_) => false,
     }
 }

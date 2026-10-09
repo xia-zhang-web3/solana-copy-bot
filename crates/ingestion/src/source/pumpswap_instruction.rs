@@ -21,11 +21,14 @@ pub(super) fn requires_pumpswap_instruction(
 }
 
 // Encodings used by the local PumpSwap direct builder. Other versions are unsupported.
-fn supported_data(data: &[u8]) -> bool {
+fn supported_data(data: &[u8], direct: bool) -> bool {
     (data.len() == 24 && data.starts_with(&[51, 230, 133, 164, 1, 127, 131, 173]))
         || (data.len() == 25
             && data.starts_with(&[198, 46, 21, 82, 180, 217, 232, 112])
             && data[24] <= 1)
+        || (direct
+            && data.starts_with(&[102, 6, 61, 18, 1, 218, 235, 234])
+            && (data.len() == 24 || (data.len() == 25 && data[24] <= 1)))
 }
 
 fn valid_pubkey(key: &str) -> bool {

@@ -1,0 +1,31 @@
+{
+  "source_run": "technical-source-copy-13",
+  "accepted_source": "c2bba052aecedae9117469604904e65b8dc3f050",
+  "cases": [
+    {
+      "case": "05-03",
+      "input_sha256": "3fce6f6878ebedb08edba94aaa305ae909f1359c2edc4d772c4c84d583adb124",
+      "fixture_sha256": "4a6d60dcaac3e4d23d03f02abb74ab9b3f49a944a6dd8a68ffdead39c24afe50"
+    },
+    {
+      "case": "09-03",
+      "input_sha256": "14e9f30b14c4ad0d0d654bd1cdc2325524ab9036d9290df94a8e3eb77c7f1246",
+      "fixture_sha256": "328ea4fa7899f2f7988655a262e10676b75710a9e70b1fe526ee3a789fe8c091"
+    },
+    {
+      "case": "09-05",
+      "input_sha256": "d86940c94dd64837be6963e7bc4f8aa610249f149aa8aabec895742e0052aa5e",
+      "fixture_sha256": "db6c2784e7a9882280c1186eeff12a83ae363f124eeeffcb746772a6dc3a5bfd"
+    },
+    {
+      "case": "12-03",
+      "input_sha256": "2665bb46c59ad92b1fee781ffeaa777752f959b5a2a24fdfb8eb1b2f55423689",
+      "fixture_sha256": "bac0bec069504cb15a3f8cd53bb57e363448646297c4b91fbd5746a1879be684"
+    },
+    {
+      "case": "12-04",
+      "input_sha256": "6c85c500d096aa9a30dc1a1d4689adaf8efff2dd847b06982df34acf477e0c57",
+      "fixture_sha256": "ef5bf343a580a08571b154c4cd5253ff8eab15f7ff264e8ba083a6895f84385f"
+    }
+  ]
+}

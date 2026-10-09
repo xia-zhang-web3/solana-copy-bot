@@ -7,6 +7,7 @@ mod controls;
 mod capture_fixtures_tests;
 mod dispatch;
 mod rpc;
+mod legacy_buy;
 
 const PUMP: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 const RAY: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";

@@ -34,6 +34,21 @@ pub(super) fn u64_at(data: &[u8], offset: usize) -> Option<u64> {
     ))
 }
 
+pub(super) const LEGACY_BUY: [u8; 8] = [102, 6, 61, 18, 1, 218, 235, 234];
+
+// Exact base output and maximum quote debit. Not the old exact-input tuple.
+pub(super) fn legacy_buy(data: &[u8]) -> Option<(u64, u64, Option<bool>)> {
+    if !data.starts_with(&LEGACY_BUY) || !(data.len() == 24 || (data.len() == 25 && data[24] <= 1))
+    {
+        return None;
+    }
+    Some((
+        u64_at(data, 8)?,
+        u64_at(data, 16)?,
+        data.get(24).map(|b| *b == 1),
+    ))
+}
+
 pub(super) fn swap(data: &[u8]) -> Option<(bool, u64, u64)> {
     let buy = if data.len() == 24 && data.starts_with(&[51, 230, 133, 164, 1, 127, 131, 173]) {
         true

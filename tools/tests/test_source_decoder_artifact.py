@@ -105,6 +105,19 @@ class DecoderArtifactTests(unittest.TestCase):
         for name in ("wallet-08-03.json", "BINDINGS.json"):
             self.assertEqual(rows[folder + name], builder.sha256(self.root / folder / name))
 
+    def test_legacy_buy_fixtures_are_bound_and_share_existing_filter(self):
+        folder = "crates/ingestion/src/source_tests/quote_sol/legacy_buy/fixtures/"
+        for name in ("wallet-05-03.json", "BINDINGS.json"):
+            path = self.root / folder / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{"executed_base_raw":"19607189"}\n')
+        self.repository()
+        rows = {row["path"]: row["sha256"] for row in builder.source_bindings(self.root)}
+        for name in ("wallet-05-03.json", "BINDINGS.json"):
+            self.assertEqual(rows[folder + name], builder.sha256(self.root / folder / name))
+        self.assertEqual(builder.CHECK_FILTERS.count("source::tests::quote_sol_tests::"), 1)
+        self.assertFalse(any("legacy_buy" in item for item in builder.CHECK_FILTERS))
+
     def test_zero_tests_or_failed_summary_rejected(self):
         counts = builder.check_result("test result: ok. 17 passed; 0 failed; 0 ignored;")
         self.assertEqual(counts["passed"], 17)

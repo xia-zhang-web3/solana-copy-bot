@@ -78,6 +78,7 @@ def source_bindings(root):
                 or name == "Cargo.lock" or name.startswith("rust-toolchain")
                 or name.startswith(".cargo/")
                 or name.startswith("crates/ingestion/src/source_tests/quote_sol/fixtures/")
+                or name.startswith("crates/ingestion/src/source_tests/quote_sol/legacy_buy/fixtures/")
                 or name.startswith("crates/ingestion/src/source_tests/ammv4/fixtures/")
                 or name.startswith("crates/ingestion/src/source_tests/target_ata/fixtures/")
                 or name in {"tools/build_source_decoder_artifact.py",

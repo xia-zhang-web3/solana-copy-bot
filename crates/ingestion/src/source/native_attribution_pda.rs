@@ -42,3 +42,24 @@ pub(super) fn event_authority(program: &str) -> Option<String> {
     }
     None
 }
+
+pub(super) fn creator_vault(program: &str, creator: &str) -> Option<String> {
+    let program = bs58::decode(program).into_vec().ok()?;
+    let creator = bs58::decode(creator).into_vec().ok()?;
+    if program.len() != 32 || creator.len() != 32 {
+        return None;
+    }
+    for bump in (1..=u8::MAX).rev() {
+        let mut h = Sha256::new();
+        h.update(b"creator_vault");
+        h.update(&creator);
+        h.update([bump]);
+        h.update(&program);
+        h.update(b"ProgramDerivedAddress");
+        let bytes: [u8; 32] = h.finalize().into();
+        if CompressedEdwardsY(bytes).decompress().is_none() {
+            return Some(bs58::encode(bytes).into_string());
+        }
+    }
+    None
+}
