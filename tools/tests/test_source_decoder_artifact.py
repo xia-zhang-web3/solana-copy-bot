@@ -81,6 +81,19 @@ class DecoderArtifactTests(unittest.TestCase):
         self.assertEqual([row["path"] for row in bindings], ["Cargo.lock", "Cargo.toml", "decoder.rs"])
         self.assertTrue(all(len(row["sha256"]) == 64 for row in bindings))
 
+    def test_ammv4_fixture_bindings_and_executable_check_filter(self):
+        fixture = "crates/ingestion/src/source_tests/ammv4/fixtures/wallet-06-01.json"
+        bindings = "crates/ingestion/src/source_tests/ammv4/fixtures/BINDINGS.json"
+        for name in (fixture, bindings):
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{"accepted_raw":"7848635"}\n')
+        self.repository()
+        rows = {row["path"]: row["sha256"] for row in builder.source_bindings(self.root)}
+        for name in (fixture, bindings):
+            self.assertEqual(rows[name], builder.sha256(self.root / name))
+        self.assertIn("source::tests::ammv4_tests::", builder.CHECK_FILTERS)
+
     def test_zero_tests_or_failed_summary_rejected(self):
         counts = builder.check_result("test result: ok. 17 passed; 0 failed; 0 ignored;")
         self.assertEqual(counts["passed"], 17)

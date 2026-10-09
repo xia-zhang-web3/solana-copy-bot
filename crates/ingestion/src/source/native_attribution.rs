@@ -2,6 +2,8 @@
 use std::collections::HashSet;
 
 use super::SOL_MINT;
+#[path = "native_attribution_ammv4.rs"]
+mod ammv4;
 #[path = "native_attribution_ata.rs"]
 mod ata;
 #[path = "native_attribution_json.rs"]
@@ -129,6 +131,10 @@ pub(super) fn attribute(v: &View, signer: &str, programs: &HashSet<String>) -> A
     let Some(top) = &v.top else {
         return Attribution::Unknown;
     };
+    match ammv4::attribute(v, signer) {
+        Attribution::NotApplicable => {}
+        result => return result,
+    }
     // Select by configured program and supported raw parent, never lifecycle presence.
     let parents: Vec<_> = top
         .iter()

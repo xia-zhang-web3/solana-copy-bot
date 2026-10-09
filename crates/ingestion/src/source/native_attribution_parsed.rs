@@ -19,6 +19,24 @@ pub(super) fn decode(ix: &Value) -> Option<(Vec<String>, Vec<u8>)> {
     }
     let mut data = Vec::new();
     let accounts = match (program, kind) {
+        (ATA, "create") => vec![
+            address("source")?,
+            address("account")?,
+            address("wallet")?,
+            address("mint")?,
+            address("systemProgram")?,
+            address("tokenProgram")?,
+            address("rentSysvar")?,
+        ],
+        (TOKEN, "initializeAccount") => {
+            data.push(1);
+            vec![
+                address("account")?,
+                address("mint")?,
+                address("owner")?,
+                address("rentSysvar")?,
+            ]
+        }
         (ATA, "createIdempotent") => {
             data.push(1);
             vec![

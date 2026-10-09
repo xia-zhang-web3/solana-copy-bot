@@ -1,0 +1,362 @@
+{
+  "wallet-01-01": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-01-input.json",
+    "input_sha256": "e8b6f8b3a0f4ea07d6e75cfe297026e4aec7f08100a5707c6e5d2d2cc5031273",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-01-output.json",
+    "output_sha256": "ff003d39d74ac2a20a3edd007a8e8a3f4980a664f468e115bdc89c4e6f8db8c1",
+    "original_input_sha256": "e8b6f8b3a0f4ea07d6e75cfe297026e4aec7f08100a5707c6e5d2d2cc5031273",
+    "fixture_sha256": "e8b6f8b3a0f4ea07d6e75cfe297026e4aec7f08100a5707c6e5d2d2cc5031273",
+    "lexical_token_sha256": "55934f51460fb22a80d81a433d603d4c9f2462f6963ab50a4c23d8d50deeca5d",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-01-03": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-03-input.json",
+    "input_sha256": "6e06da3ea89d9f1d8d3b23ff4a32ea202672bbfbed4031bb167a8ae6e96ef061",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-03-output.json",
+    "output_sha256": "fc6121f2b59614efcb6ea28aab05698567f264e2e3f7a290108e66e0c85db0de",
+    "original_input_sha256": "6e06da3ea89d9f1d8d3b23ff4a32ea202672bbfbed4031bb167a8ae6e96ef061",
+    "fixture_sha256": "6e06da3ea89d9f1d8d3b23ff4a32ea202672bbfbed4031bb167a8ae6e96ef061",
+    "lexical_token_sha256": "e10d68374eb0391906c251cf8a74cf1e8755953f5efa0b40039367cc315c0e9c",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-01-04": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-04-input.json",
+    "input_sha256": "6813f76b1f5e7547ef4be0042b621fce564a13ed242e5f345f560d6fe02e0286",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-04-output.json",
+    "output_sha256": "aa1d313c13ba1e477a5050e3b5be4d029f61d0d1c65adb440114c592211827b4",
+    "original_input_sha256": "6813f76b1f5e7547ef4be0042b621fce564a13ed242e5f345f560d6fe02e0286",
+    "fixture_sha256": "6813f76b1f5e7547ef4be0042b621fce564a13ed242e5f345f560d6fe02e0286",
+    "lexical_token_sha256": "c87bea757d6db62168ad565108f118cf75387b7dfc3d8817b9565d0bfab04d99",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-01-05": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-05-input.json",
+    "input_sha256": "1b918b8f1e7ed33cbb5afbdc18da89996b421d025d1020e5d3cfac313091ac39",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-05-output.json",
+    "output_sha256": "77228672a8818c1c647f1bc047f567a26b86cbe146a4f9a19839987b46361d54",
+    "original_input_sha256": "1b918b8f1e7ed33cbb5afbdc18da89996b421d025d1020e5d3cfac313091ac39",
+    "fixture_sha256": "1b918b8f1e7ed33cbb5afbdc18da89996b421d025d1020e5d3cfac313091ac39",
+    "lexical_token_sha256": "946cd8e190b3ae810c68efae108d69cd57016e74d5d7ecc166ecf813b0f0859e",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-01-06": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-06-input.json",
+    "input_sha256": "9ee7818822a5a5cbb8c810382df7fee55a1a49981c1e829cba76811d3c5af8b8",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-06-output.json",
+    "output_sha256": "0a728e50ae6c3f31eed03e86e4d5512919bb7b19906e08f435c0053ddff5aecd",
+    "original_input_sha256": "9ee7818822a5a5cbb8c810382df7fee55a1a49981c1e829cba76811d3c5af8b8",
+    "fixture_sha256": "9ee7818822a5a5cbb8c810382df7fee55a1a49981c1e829cba76811d3c5af8b8",
+    "lexical_token_sha256": "84bc94278d719bb9b230b2c6cde788aa5193d6d33a87ff3d7f9e0093b54ffd2a",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-01-07": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-07-input.json",
+    "input_sha256": "2bc1af19a64b5eda5ec712732595799cedb627284dfe16aadfb7482d4fba56d9",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-07-output.json",
+    "output_sha256": "2650c2d1df573dcd10ae6868e48c9c08a54f9bb6b526a22d32c30558f41ffee6",
+    "original_input_sha256": "2bc1af19a64b5eda5ec712732595799cedb627284dfe16aadfb7482d4fba56d9",
+    "fixture_sha256": "2bc1af19a64b5eda5ec712732595799cedb627284dfe16aadfb7482d4fba56d9",
+    "lexical_token_sha256": "d102ca04b1967a8b6a44ea11bfec1ca52a5a3f2d06c72e6dd8d7abcf700a8706",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-01-08": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-08-input.json",
+    "input_sha256": "31a1c2139982d9f2b9666eb055fe0893bf9ebf2017fa6d6f162810fc09440bfa",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-08-output.json",
+    "output_sha256": "aed187905bbf62a93d2cfee9614e5d1300f4567161ab37bcefcc54273bb7aea8",
+    "original_input_sha256": "31a1c2139982d9f2b9666eb055fe0893bf9ebf2017fa6d6f162810fc09440bfa",
+    "fixture_sha256": "31a1c2139982d9f2b9666eb055fe0893bf9ebf2017fa6d6f162810fc09440bfa",
+    "lexical_token_sha256": "47c832f16590515df2ca635dd3c7698eb212fcf4c143fdd536cc96c45ab0624c",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-01-09": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-09-input.json",
+    "input_sha256": "29e2a38c4f1ffa1c35202bfe447ac1a490212e451ba47154ba2f71f883a7b3ae",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-09-output.json",
+    "output_sha256": "c82695df3442cf7270b1ad59db4b6002943bae2310be4e7c003a45d3ccb9ee68",
+    "original_input_sha256": "29e2a38c4f1ffa1c35202bfe447ac1a490212e451ba47154ba2f71f883a7b3ae",
+    "fixture_sha256": "29e2a38c4f1ffa1c35202bfe447ac1a490212e451ba47154ba2f71f883a7b3ae",
+    "lexical_token_sha256": "46fbaf3f9913c28adeb78c8d0e14876413498a0544b8c17cbf3cf7d83f2b4149",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-01-10": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-10-input.json",
+    "input_sha256": "149343e7cd5daa5caacb64034f47137ef2a0d9c1b874ab9969d9d9ef1e9caf4a",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-01/decoder-10-output.json",
+    "output_sha256": "ae0bcfff53d5e94f58e79f8fa912307c3eb923984dc54157dbb9a33d49ca2396",
+    "original_input_sha256": "149343e7cd5daa5caacb64034f47137ef2a0d9c1b874ab9969d9d9ef1e9caf4a",
+    "fixture_sha256": "149343e7cd5daa5caacb64034f47137ef2a0d9c1b874ab9969d9d9ef1e9caf4a",
+    "lexical_token_sha256": "19106e242fdd2d30fd3dd5a10691a984b3eeccec8c99035798d07cc1b987c833",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-02-01": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-02/decoder-01-input.json",
+    "input_sha256": "bba4b9d32bdf567e24e093c414c3ee9d9d56efec1bd9743d1ac2421bd10aadb6",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-02/decoder-01-output.json",
+    "output_sha256": "94fe4dcd0cb0e5e39e8e79ee19718990659098e59dd63603c612b5d9a5670d85",
+    "original_input_sha256": "bba4b9d32bdf567e24e093c414c3ee9d9d56efec1bd9743d1ac2421bd10aadb6",
+    "fixture_sha256": "bba4b9d32bdf567e24e093c414c3ee9d9d56efec1bd9743d1ac2421bd10aadb6",
+    "lexical_token_sha256": "a56b386fd151d2b7d9da74e4ec608637006315eb56f1f7ca3ab91c304478a86f",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-03-01": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-01-input.json",
+    "input_sha256": "279563289fb16b36412ca8054138c2c7ac7fe6dd1d9f2b11f0f16f7ba01943de",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-01-output.json",
+    "output_sha256": "9093db0a9e3c08306d425925965522692c04b2618506449014235eac29895adb",
+    "original_input_sha256": "279563289fb16b36412ca8054138c2c7ac7fe6dd1d9f2b11f0f16f7ba01943de",
+    "fixture_sha256": "279563289fb16b36412ca8054138c2c7ac7fe6dd1d9f2b11f0f16f7ba01943de",
+    "lexical_token_sha256": "118f2abf2d6e1b2e4d65c8a9b16e44170b0ed0edc1d438aff5fbc6efadc4893f",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-03-03": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-03-input.json",
+    "input_sha256": "4a52b1f96b960105a4a782a59813e9224fa14d1c57405aec267ffa243f7004be",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-03-output.json",
+    "output_sha256": "8eb619466030747ac7199069b548a44ef7a62678b5a264e4436929d2d4b42802",
+    "original_input_sha256": "4a52b1f96b960105a4a782a59813e9224fa14d1c57405aec267ffa243f7004be",
+    "fixture_sha256": "4a52b1f96b960105a4a782a59813e9224fa14d1c57405aec267ffa243f7004be",
+    "lexical_token_sha256": "04ade5b7bcc8aa1a49dd3b0496d1162d84fc1efe2dabd9c9698b816586a901f6",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-03-04": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-04-input.json",
+    "input_sha256": "d41dec5450d7e25e111ec078d5c073a400e0ee0d129afdbf57bc3242292709f3",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-04-output.json",
+    "output_sha256": "dd777c7c7e972fdf7707094a0218e40179aba6c3dbe4e2a06560d01c1000b96d",
+    "original_input_sha256": "d41dec5450d7e25e111ec078d5c073a400e0ee0d129afdbf57bc3242292709f3",
+    "fixture_sha256": "d41dec5450d7e25e111ec078d5c073a400e0ee0d129afdbf57bc3242292709f3",
+    "lexical_token_sha256": "b943bff3b9c7e207187ebb7dca57a4eb1de049a4569acb006da8cd2f7c7eea24",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-03-05": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-05-input.json",
+    "input_sha256": "ee9dea844102a296d70608fa0f4c2326ad9bd628250e8d8238bd0bd545cee5df",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-05-output.json",
+    "output_sha256": "9dca6a0c1b9081942ba724e87070138e3af90563123b134b82cf282a91a400ff",
+    "original_input_sha256": "ee9dea844102a296d70608fa0f4c2326ad9bd628250e8d8238bd0bd545cee5df",
+    "fixture_sha256": "ee9dea844102a296d70608fa0f4c2326ad9bd628250e8d8238bd0bd545cee5df",
+    "lexical_token_sha256": "4f52ddfdaf611036e0377ed491e23eb7a20a38a18f93994488a0572d791adf8a",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-03-06": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-06-input.json",
+    "input_sha256": "6c594e174ba1e92f6deef0cb974bc8194ef1723874bb221ea68413323d7e9fbf",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-06-output.json",
+    "output_sha256": "3ba97761d11b242cbffbb89d12561188232d40ea648280066d5c727438344590",
+    "original_input_sha256": "6c594e174ba1e92f6deef0cb974bc8194ef1723874bb221ea68413323d7e9fbf",
+    "fixture_sha256": "6c594e174ba1e92f6deef0cb974bc8194ef1723874bb221ea68413323d7e9fbf",
+    "lexical_token_sha256": "5ed4388c0ff85b73fce40bc8106ac638ec312132a9cd0c146084775a41290fef",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-03-07": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-07-input.json",
+    "input_sha256": "9cae649d4825a7576bd56b9ff50d9557a43da7ca9d229c5873a90dd403546f83",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-07-output.json",
+    "output_sha256": "e7d0e1a8699bf7cc5c05000d8686598638917c9af8bb7514a2bd8301776ad1ea",
+    "original_input_sha256": "9cae649d4825a7576bd56b9ff50d9557a43da7ca9d229c5873a90dd403546f83",
+    "fixture_sha256": "9cae649d4825a7576bd56b9ff50d9557a43da7ca9d229c5873a90dd403546f83",
+    "lexical_token_sha256": "ae519affa277bf8cab0769bdfc7b539cfd93d5f0c992f7347e0bea59ac7ecca9",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-03-08": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-08-input.json",
+    "input_sha256": "85f8016c1cdae4c58907d79b0c971a7e76319e3ef791b5711dccfdcd2bffe2e5",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-08-output.json",
+    "output_sha256": "236479aa2679ff072f1695cf86b69671dfcaf8a9dae6359fd773b1b69d2fad5d",
+    "original_input_sha256": "85f8016c1cdae4c58907d79b0c971a7e76319e3ef791b5711dccfdcd2bffe2e5",
+    "fixture_sha256": "85f8016c1cdae4c58907d79b0c971a7e76319e3ef791b5711dccfdcd2bffe2e5",
+    "lexical_token_sha256": "a6d0a3128bd4b0687caae8ca4c5e7ef628ce81f9ffae37c783784987c9cfc295",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-03-09": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-09-input.json",
+    "input_sha256": "327b8befb16a2d3139afd28bdc8b1eb80304801f4ac8a15ede8123d474725802",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-09-output.json",
+    "output_sha256": "1e5f169723e82d1669e099e18c641fd040d5b8f1a48466791fe2dcc4440b92ff",
+    "original_input_sha256": "327b8befb16a2d3139afd28bdc8b1eb80304801f4ac8a15ede8123d474725802",
+    "fixture_sha256": "327b8befb16a2d3139afd28bdc8b1eb80304801f4ac8a15ede8123d474725802",
+    "lexical_token_sha256": "3ab530944bd7e90f0685e92ff8f07f74679c85bd6ae70ebd6ac40a5ec7db4d1e",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-03-10": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-10-input.json",
+    "input_sha256": "926385ea71a9b4e41872542ff740c951c7c18d6f55af5b9a3787602df8931230",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-03/decoder-10-output.json",
+    "output_sha256": "c7996b0ef1f2ef4892de5c9cb7bce810bd3a705cc068e4e2b9bebd7e010bc955",
+    "original_input_sha256": "926385ea71a9b4e41872542ff740c951c7c18d6f55af5b9a3787602df8931230",
+    "fixture_sha256": "926385ea71a9b4e41872542ff740c951c7c18d6f55af5b9a3787602df8931230",
+    "lexical_token_sha256": "8fd9274d409d198c27923a6da25383c95189f70ed00660bb4d3779ea05c213e5",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-04-01": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-04/decoder-01-input.json",
+    "input_sha256": "f2ea6a8f898370f5c7d7605673dc0e3c9a58cc6d200f0753aaf7ed2319109b28",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-04/decoder-01-output.json",
+    "output_sha256": "9ecfe0bebd214b83f08093c96f2c97a56164724023ed0192ae0a592a54731d1c",
+    "original_input_sha256": "f2ea6a8f898370f5c7d7605673dc0e3c9a58cc6d200f0753aaf7ed2319109b28",
+    "fixture_sha256": "f2ea6a8f898370f5c7d7605673dc0e3c9a58cc6d200f0753aaf7ed2319109b28",
+    "lexical_token_sha256": "54e2a77470ee65f1da04ab0a0d2025801f2ac0b701334d25430b69272a4a94c0",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-05-01": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-05/decoder-01-input.json",
+    "input_sha256": "3659419f33e9716bf5752fb9b26e9607ba3ffda4d787e0014c91230e3cb7cacd",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-05/decoder-01-output.json",
+    "output_sha256": "34da0741a12676c02d136979d4ea6a35e812f8f973c4e9b2407911371033a0c1",
+    "original_input_sha256": "3659419f33e9716bf5752fb9b26e9607ba3ffda4d787e0014c91230e3cb7cacd",
+    "fixture_sha256": "3659419f33e9716bf5752fb9b26e9607ba3ffda4d787e0014c91230e3cb7cacd",
+    "lexical_token_sha256": "072755734bf334d961dfeb0eea700114e6c8980b9302e403c58314ceffb5e527",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-06-01": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-06/decoder-01-input.json",
+    "input_sha256": "406a61352c9265396dbe171a396dd0f5642546175aab08ec0d23ef383d4e0a0a",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-06/decoder-01-output.json",
+    "output_sha256": "b4e4dcea30a505055f46e305a8368132e0abcb8ed13cee2618e9e26b1699c168",
+    "original_input_sha256": "406a61352c9265396dbe171a396dd0f5642546175aab08ec0d23ef383d4e0a0a",
+    "fixture_sha256": "406a61352c9265396dbe171a396dd0f5642546175aab08ec0d23ef383d4e0a0a",
+    "lexical_token_sha256": "8ba48c46fb78f418de35e5b783086c5583c92c5795b4002155384754a6482b17",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-07-01": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-07/decoder-01-input.json",
+    "input_sha256": "65e9a76deefdd014c4a0a71c756e1e1ae9a2cf6ece7c627ba055eb749c05b3cd",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-07/decoder-01-output.json",
+    "output_sha256": "21688ced274880a85cf3c57e8d7a9f90265637ba286a8739462ad386e70a70aa",
+    "original_input_sha256": "65e9a76deefdd014c4a0a71c756e1e1ae9a2cf6ece7c627ba055eb749c05b3cd",
+    "fixture_sha256": "65e9a76deefdd014c4a0a71c756e1e1ae9a2cf6ece7c627ba055eb749c05b3cd",
+    "lexical_token_sha256": "908d3ec995802ede61a943e451f095ac1cd24051d18c902dc9b52a66f9b4361a",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-08-01": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-01-input.json",
+    "input_sha256": "f21a8b7247f1f882db3d77079afe60b8685b1591e4ee6e00caa63d32ce61a716",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-01-output.json",
+    "output_sha256": "fec16aa21a9135ecf3253b906aadf41d6de3487dc07f822fc3b26f23faecfd30",
+    "original_input_sha256": "f21a8b7247f1f882db3d77079afe60b8685b1591e4ee6e00caa63d32ce61a716",
+    "fixture_sha256": "f21a8b7247f1f882db3d77079afe60b8685b1591e4ee6e00caa63d32ce61a716",
+    "lexical_token_sha256": "45020b0309304f6d3db7355a6b1d50fa2bcc13cfec18a2e9f36843f554510e4f",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-08-03": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-03-input.json",
+    "input_sha256": "a84fc3a4b0f085adc087d85159d60b62a9d7b700bdb9ea8f406719fe152e8ca2",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-03-output.json",
+    "output_sha256": "e79bca041f54b81b22ece6fd2944a55fe0c410ff2bc80ac015bccbd9b9c78e3a",
+    "original_input_sha256": "a84fc3a4b0f085adc087d85159d60b62a9d7b700bdb9ea8f406719fe152e8ca2",
+    "fixture_sha256": "a84fc3a4b0f085adc087d85159d60b62a9d7b700bdb9ea8f406719fe152e8ca2",
+    "lexical_token_sha256": "efb6aba0ac34bcfbc3d61942ef20b95c540a4b90fa59a771a55fdce3f5369b49",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-08-04": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-04-input.json",
+    "input_sha256": "0a0e375ee4930672801c4c382e2f58b3d64463ade2fbdea39ff89cc69b05f745",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-04-output.json",
+    "output_sha256": "c86020be1616eacd25d78af0afb789b6d4c4189ba475c04fd73c302e4c9ea4b6",
+    "original_input_sha256": "0a0e375ee4930672801c4c382e2f58b3d64463ade2fbdea39ff89cc69b05f745",
+    "fixture_sha256": "0a0e375ee4930672801c4c382e2f58b3d64463ade2fbdea39ff89cc69b05f745",
+    "lexical_token_sha256": "f78d06057800e3355d20fa85961c77a2ff32899da2499efb7cadc4ccc9d9bacb",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-08-05": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-05-input.json",
+    "input_sha256": "48eb5c2254646cc324d4c8f3ef5a541d6de49b99a2995adc7e0593995cc66578",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-05-output.json",
+    "output_sha256": "167f846a6aee7c2c85e0057c0bba6e832c55c58c28aa242830ebfec1c069432f",
+    "original_input_sha256": "48eb5c2254646cc324d4c8f3ef5a541d6de49b99a2995adc7e0593995cc66578",
+    "fixture_sha256": "48eb5c2254646cc324d4c8f3ef5a541d6de49b99a2995adc7e0593995cc66578",
+    "lexical_token_sha256": "15e1242d5d6a324f58f5120f4b1f61c9cce6f5204415aadad265bae7f610c6c3",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-08-06": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-06-input.json",
+    "input_sha256": "62a27f87183b6367091ddbe696140c48f84d519b8902984a16f493982fc671fe",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-06-output.json",
+    "output_sha256": "7ef279c945bf5727b0c31a83a41deb0d5aef17dfbeedb6246c3ec088e015f535",
+    "original_input_sha256": "62a27f87183b6367091ddbe696140c48f84d519b8902984a16f493982fc671fe",
+    "fixture_sha256": "62a27f87183b6367091ddbe696140c48f84d519b8902984a16f493982fc671fe",
+    "lexical_token_sha256": "abca1a0874380abf0b3bce941e9c82fa153f4c47cd383e73583b3d6e92507ed1",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-08-07": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-07-input.json",
+    "input_sha256": "55cc1521fef32fe863c09f36f3a68410f95fce82c9c64e36dc12101e85a08aa5",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-07-output.json",
+    "output_sha256": "61e98bee5a513713705b3428b9cee729ad4415200df940e2f34d6a32a52c20a3",
+    "original_input_sha256": "55cc1521fef32fe863c09f36f3a68410f95fce82c9c64e36dc12101e85a08aa5",
+    "fixture_sha256": "55cc1521fef32fe863c09f36f3a68410f95fce82c9c64e36dc12101e85a08aa5",
+    "lexical_token_sha256": "5da5bad303ca89017c7faf7dff4e002cc8f9dcc41bfcd73e37ab3006e1a8ba5b",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-08-08": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-08-input.json",
+    "input_sha256": "939d72c063553671a1ae3940521642fb539b520d44f336d0fb919b705aea866d",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-08-output.json",
+    "output_sha256": "ff212504242d5f7154b60c8751e6311ce44da7a3c21631adfced2838a7179aba",
+    "original_input_sha256": "939d72c063553671a1ae3940521642fb539b520d44f336d0fb919b705aea866d",
+    "fixture_sha256": "939d72c063553671a1ae3940521642fb539b520d44f336d0fb919b705aea866d",
+    "lexical_token_sha256": "e0b7512dd06b830529cecb244e4b47ddc39f88f5b98752a428668262ffbd25da",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-08-09": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-09-input.json",
+    "input_sha256": "ac78449d3f93d9a1c91c6d5b5afd046127f8a80fd002c775bb890ca9e2008b03",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-09-output.json",
+    "output_sha256": "f7cafc905fce831a3b363317373ffe5320c8c077b318960e622417b4c75ebc92",
+    "original_input_sha256": "ac78449d3f93d9a1c91c6d5b5afd046127f8a80fd002c775bb890ca9e2008b03",
+    "fixture_sha256": "ac78449d3f93d9a1c91c6d5b5afd046127f8a80fd002c775bb890ca9e2008b03",
+    "lexical_token_sha256": "2d242a1c32da26d4b607a6514b1795ae9acb6db67af87fd0d2ac00373f3fe7b9",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-08-10": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-10-input.json",
+    "input_sha256": "858fb0b63bab31e23cd15932071424fa3965e5df76b17a3d3b6ca932669f9dba",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-08/decoder-10-output.json",
+    "output_sha256": "0aaa8ec4861967cf222bf11cf2d11a7b61b3e6cdccef2cddb1786ad0c99d2670",
+    "original_input_sha256": "858fb0b63bab31e23cd15932071424fa3965e5df76b17a3d3b6ca932669f9dba",
+    "fixture_sha256": "858fb0b63bab31e23cd15932071424fa3965e5df76b17a3d3b6ca932669f9dba",
+    "lexical_token_sha256": "5b0af64820c196305eb58df449c159273db145681de80c0f5be9db4cebac47bd",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-09-01": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-09/decoder-01-input.json",
+    "input_sha256": "ccedac0bb5538f27ba87f42920a636135166abb67f06edc4f97d74a6beb5591b",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-09/decoder-01-output.json",
+    "output_sha256": "7d3dca6fea0b399c27d0f6999fa4c129296c4f74af20d0253e79200d8625f2e9",
+    "original_input_sha256": "ccedac0bb5538f27ba87f42920a636135166abb67f06edc4f97d74a6beb5591b",
+    "fixture_sha256": "ccedac0bb5538f27ba87f42920a636135166abb67f06edc4f97d74a6beb5591b",
+    "lexical_token_sha256": "779dc63e78a7f5b11908443ab408cd81f0500b90771134486412e68faaaca626",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-10-01": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-10/decoder-01-input.json",
+    "input_sha256": "534f31c38d07e286fe16bcc6104da9c570872787064f0465032c968c4d594b6b",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-10/decoder-01-output.json",
+    "output_sha256": "39323609e603f5273d3d0f5749300ac8ef5d9a92354a3785457f3cefd5f6a6c9",
+    "original_input_sha256": "534f31c38d07e286fe16bcc6104da9c570872787064f0465032c968c4d594b6b",
+    "fixture_sha256": "534f31c38d07e286fe16bcc6104da9c570872787064f0465032c968c4d594b6b",
+    "lexical_token_sha256": "9a8764a2eb8439038a62845bff4159abc058f7cc94e6e212657a6ae34c225565",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-11-01": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-11/decoder-01-input.json",
+    "input_sha256": "19329fd09cec287bb5e4a0d57dd7ddcc8255e6e830c5c8491ec390ce22a3b68e",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-11/decoder-01-output.json",
+    "output_sha256": "b082969f4f58000f171bd4b467b81e880fda9b8bd3e201dbc779abae68038a71",
+    "original_input_sha256": "19329fd09cec287bb5e4a0d57dd7ddcc8255e6e830c5c8491ec390ce22a3b68e",
+    "fixture_sha256": "19329fd09cec287bb5e4a0d57dd7ddcc8255e6e830c5c8491ec390ce22a3b68e",
+    "lexical_token_sha256": "028cda51d9fd84e70339a269870cae3e43531ab061614dfac2f81836eb75fda2",
+    "fixture_encoding": "original_bytes"
+  },
+  "wallet-12-01": {
+    "original_input": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-12/decoder-01-input.json",
+    "input_sha256": "522dd80db2978e6718466d0995ddbb17a7b724e3aae0c28109de60e6e1f9eea9",
+    "original_output": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-11/evidence/compatibility/wallet-12/decoder-01-output.json",
+    "output_sha256": "85904cbb9f48688ebc215a21948cda061611e115b747b665ece511ba5972b27e",
+    "original_input_sha256": "522dd80db2978e6718466d0995ddbb17a7b724e3aae0c28109de60e6e1f9eea9",
+    "fixture_sha256": "e03c034ff6355cef844040333887f2eeeb4163ed94009b4015ff75217950f8b0",
+    "lexical_token_sha256": "caf8157f259d9788dd44c42a0fb638e9b5d6e4a1228cf027a93cccae22bf5d04",
+    "fixture_encoding": "whitespace_only_compacted"
+  }
+}

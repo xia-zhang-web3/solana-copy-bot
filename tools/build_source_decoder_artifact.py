@@ -25,6 +25,7 @@ BUILD_BUDGET_SECONDS = 480
 CHECK_FILTERS = (
     "source::tests::quote_sol_tests::",
     "source::tests::source_selection_replay::",
+    "source::tests::ammv4_tests::",
 )
 
 
@@ -77,7 +78,9 @@ def source_bindings(root):
                 or name == "Cargo.lock" or name.startswith("rust-toolchain")
                 or name.startswith(".cargo/")
                 or name.startswith("crates/ingestion/src/source_tests/quote_sol/fixtures/")
+                or name.startswith("crates/ingestion/src/source_tests/ammv4/fixtures/")
                 or name in {"tools/build_source_decoder_artifact.py",
+                            "tools/tests/test_source_decoder_artifact.py",
                             ".github/workflows/operator-artifacts.yml"}):
             selected.append({"path": name, "sha256": sha256(root / name)})
     require(any(row["path"] == "Cargo.lock" for row in selected), "lockfile_binding_missing")

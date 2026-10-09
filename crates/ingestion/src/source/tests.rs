@@ -117,3 +117,6 @@ mod http_transport_recovery_tests;
 
 #[path = "../source_tests/quote_sol/mod.rs"]
 mod quote_sol_tests;
+
+#[path = "../source_tests/ammv4/mod.rs"]
+mod ammv4_tests;
