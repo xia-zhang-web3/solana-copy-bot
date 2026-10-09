@@ -225,11 +225,28 @@ fn assert_refused(r: &Value) {
 }
 
 #[test]
-fn all_twelve_saved_seeds_preserve_seven_refusals_and_persistent_wsol_positive() {
+fn saved_seeds_preserve_remaining_refusals_and_persistent_wsol_positive() {
     for wallet in 1..=12 {
         let r = fixture(wallet);
         if [6, 8, 10, 11, 12].contains(&wallet) {
             assert_exact(&r, wallet);
+        } else if (1..=5).contains(&wallet) {
+            // Historical direct AMMv4 BUY with the now-proved existing target ATA.
+            // Executed SPL CPI u64 legs: SOL200000 -> USDC23190, not native cash.
+            let expected = json!({"amount_in_raw":"200000","amount_out_raw":"23190",
+                "amount_in_decimals":9,"amount_out_decimals":6});
+            let actual = decode(&r);
+            assert_eq!(actual["exact_amounts"], expected);
+            assert_eq!(actual["token_in"], SOL);
+            assert_eq!(
+                actual["token_out"],
+                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            );
+            for parsed in [false, true] {
+                let actual = json_native(&r, parsed);
+                assert_eq!(actual["exact_amounts"], expected);
+                assert_eq!(actual["token_in"], SOL);
+            }
         } else {
             assert!(
                 decode(&r)["exact_amounts"].is_null(),
