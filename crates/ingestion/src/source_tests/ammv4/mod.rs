@@ -6,6 +6,8 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 mod causal;
 mod parity;
+#[path = "../target_ata/mod.rs"]
+mod target_ata;
 const RAY: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
 const PUMP: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 const TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";

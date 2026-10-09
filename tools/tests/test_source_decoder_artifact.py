@@ -94,6 +94,17 @@ class DecoderArtifactTests(unittest.TestCase):
             self.assertEqual(rows[name], builder.sha256(self.root / name))
         self.assertIn("source::tests::ammv4_tests::", builder.CHECK_FILTERS)
 
+    def test_target_ata_inputs_and_bindings_are_manifest_bound(self):
+        folder = "crates/ingestion/src/source_tests/target_ata/fixtures/"
+        for name in ("wallet-08-03.json", "BINDINGS.json"):
+            path = self.root / folder / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{"executed_sol_raw":"5259299"}\n')
+        self.repository()
+        rows = {row["path"]: row["sha256"] for row in builder.source_bindings(self.root)}
+        for name in ("wallet-08-03.json", "BINDINGS.json"):
+            self.assertEqual(rows[folder + name], builder.sha256(self.root / folder / name))
+
     def test_zero_tests_or_failed_summary_rejected(self):
         counts = builder.check_result("test result: ok. 17 passed; 0 failed; 0 ignored;")
         self.assertEqual(counts["passed"], 17)

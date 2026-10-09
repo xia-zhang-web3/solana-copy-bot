@@ -9,6 +9,7 @@ pub(super) fn prove(
     parent: usize,
     trader: usize,
     quote: usize,
+    target: usize,
     buy: bool,
     sol: u64,
     trading: &[usize],
@@ -41,6 +42,15 @@ pub(super) fn prove(
         match ix.program.as_deref()? {
             COMPUTE if a.is_empty() && ix.data.is_some() => {}
             ATA => {
+                if a.get(1) == Some(&target) {
+                    // Only a proved existing target ATA may be a harmless noop.
+                    // Never accept account creation or transfer CPI as this witness.
+                    if !buy || i >= parent {
+                        return None;
+                    }
+                    existing_target_ata(v, i, ix, trader, target)?;
+                    continue;
+                }
                 if !matches!(a.len(), 6 | 7)
                     || !matches!(ix.data.as_deref()?, [] | [0] | [1])
                     || a[0] != trader
@@ -175,6 +185,40 @@ pub(super) fn prove(
         {
             return None;
         }
+    }
+    Some(())
+}
+
+fn existing_target_ata(
+    v: &View,
+    top: usize,
+    ix: &Instruction,
+    trader: usize,
+    target: usize,
+) -> Option<()> {
+    let a = ix.accounts.as_ref()?;
+    if !matches!(a.len(), 6 | 7)
+        || ix.data.as_deref()? != [1]
+        || a[0] != trader
+        || a[1] != target
+        || a[2] != trader
+        || v.key(a[4])? != SYSTEM
+        || v.key(a[5])? != TOKEN
+        || (a.len() == 7 && v.key(a[6])? != RENT)
+    {
+        return None;
+    }
+    let mint = v.key(a[3])?;
+    let (pre, _) = v.pair(target, v.key(trader)?, mint)?;
+    if mint == SOL_MINT
+        || pre.decimals > 18
+        || pda::associated(v.key(trader)?, mint)?.as_str() != v.key(target)?
+        || v.inner
+            .as_ref()?
+            .iter()
+            .any(|(i, group)| *i == top && !group.is_empty())
+    {
+        return None;
     }
     Some(())
 }

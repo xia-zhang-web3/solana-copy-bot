@@ -1,0 +1,171 @@
+[
+  {
+    "label": "wallet-08-03",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-08/decoder-03-input.json",
+      "sha256": "0a4f21ed1644bf898129104bc1221b1fccca637edfae8d6a4beee53d2d6d2c6e"
+    },
+    "fixture_sha256": "0a4f21ed1644bf898129104bc1221b1fccca637edfae8d6a4beee53d2d6d2c6e",
+    "sol_raw": 5259299,
+    "target_raw": 234624064,
+    "candidate": "wallet-08",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454889064
+  },
+  {
+    "label": "wallet-08-04",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-08/decoder-04-input.json",
+      "sha256": "8c12b26180bf0085aeb38d4065c992be87ac19765a03472fa5272da31b646afc"
+    },
+    "fixture_sha256": "8c12b26180bf0085aeb38d4065c992be87ac19765a03472fa5272da31b646afc",
+    "sol_raw": 139348582,
+    "target_raw": 6400859948,
+    "candidate": "wallet-08",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454887490
+  },
+  {
+    "label": "wallet-08-06",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-08/decoder-06-input.json",
+      "sha256": "103a9a6c0e97d5253c8d73b581317498c932ca2b7b9e118160b78b54dff1efa4"
+    },
+    "fixture_sha256": "103a9a6c0e97d5253c8d73b581317498c932ca2b7b9e118160b78b54dff1efa4",
+    "sol_raw": 7272801,
+    "target_raw": 334730418,
+    "candidate": "wallet-08",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454883540
+  },
+  {
+    "label": "wallet-08-07",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-08/decoder-07-input.json",
+      "sha256": "d59a1973600179933ca9325af8dc403cfa97dc352ba4260f733b8eb22d98cc80"
+    },
+    "fixture_sha256": "d59a1973600179933ca9325af8dc403cfa97dc352ba4260f733b8eb22d98cc80",
+    "sol_raw": 4518554,
+    "target_raw": 190849592,
+    "candidate": "wallet-08",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454881946
+  },
+  {
+    "label": "wallet-08-08",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-08/decoder-08-input.json",
+      "sha256": "0f6ef9ddc4eaba9e4fb4cbf695524ee8e9cd192f47724d6f4cac902f7f987b8d"
+    },
+    "fixture_sha256": "0f6ef9ddc4eaba9e4fb4cbf695524ee8e9cd192f47724d6f4cac902f7f987b8d",
+    "sol_raw": 123875642,
+    "target_raw": 5221660252,
+    "candidate": "wallet-08",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454879998
+  },
+  {
+    "label": "wallet-08-10",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-08/decoder-10-input.json",
+      "sha256": "dae121af2f073d97665ec82c19d5141e2bd241347659c6124d513f56f5b1e295"
+    },
+    "fixture_sha256": "dae121af2f073d97665ec82c19d5141e2bd241347659c6124d513f56f5b1e295",
+    "sol_raw": 7182135,
+    "target_raw": 300859725,
+    "candidate": "wallet-08",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454876708
+  },
+  {
+    "label": "wallet-11-03",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-11/decoder-03-input.json",
+      "sha256": "6b77c82cd52138ed2c310aefaf4e9d9309f69bbd095d5715c43dec0e7d956973"
+    },
+    "fixture_sha256": "6b77c82cd52138ed2c310aefaf4e9d9309f69bbd095d5715c43dec0e7d956973",
+    "sol_raw": 5910660,
+    "target_raw": 264002047,
+    "candidate": "wallet-11",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454890051
+  },
+  {
+    "label": "wallet-11-04",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-11/decoder-04-input.json",
+      "sha256": "625977725847481faa655d99732b2ae2ab1f1ee7f07da714f576983b7b3e7592"
+    },
+    "fixture_sha256": "625977725847481faa655d99732b2ae2ab1f1ee7f07da714f576983b7b3e7592",
+    "sol_raw": 52827650,
+    "target_raw": 2424829199,
+    "candidate": "wallet-11",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454887864
+  },
+  {
+    "label": "wallet-11-05",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-11/decoder-05-input.json",
+      "sha256": "f8632adb39709394933a65c683adbd008a52e772b6ec898e2c80598434b74c4f"
+    },
+    "fixture_sha256": "f8632adb39709394933a65c683adbd008a52e772b6ec898e2c80598434b74c4f",
+    "sol_raw": 8350107,
+    "target_raw": 383635146,
+    "candidate": "wallet-11",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454885407
+  },
+  {
+    "label": "wallet-11-07",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-11/decoder-07-input.json",
+      "sha256": "67d484a93515d86ac8a02c204d93732eb9849402fe16e57f98d2908dc01c9f75"
+    },
+    "fixture_sha256": "67d484a93515d86ac8a02c204d93732eb9849402fe16e57f98d2908dc01c9f75",
+    "sol_raw": 5012576,
+    "target_raw": 211627523,
+    "candidate": "wallet-11",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454881773
+  },
+  {
+    "label": "wallet-11-08",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-11/decoder-08-input.json",
+      "sha256": "17f2d98ae5cc8736584591731183ac8a5d4c5a56c37889fddfd6f008d54ef974"
+    },
+    "fixture_sha256": "17f2d98ae5cc8736584591731183ac8a5d4c5a56c37889fddfd6f008d54ef974",
+    "sol_raw": 5328585,
+    "target_raw": 224861594,
+    "candidate": "wallet-11",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454880557
+  },
+  {
+    "label": "wallet-11-09",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-11/decoder-09-input.json",
+      "sha256": "b21f4dd7bd727c1b7e9d8688b2d7716e3a0a4df722c387273936374a1c2e57d5"
+    },
+    "fixture_sha256": "b21f4dd7bd727c1b7e9d8688b2d7716e3a0a4df722c387273936374a1c2e57d5",
+    "sol_raw": 5743173,
+    "target_raw": 241318321,
+    "candidate": "wallet-11",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454878244
+  },
+  {
+    "label": "wallet-11-10",
+    "input": {
+      "path": "/Users/tigranambarcumyan/.codex/private/native-handoff-local-experiment-01/technical-source-copy-12/evidence/compatibility/wallet-11/decoder-10-input.json",
+      "sha256": "37958ec08e2be524085b856f75507bf38d125290752d6437af82215a5903a4a7"
+    },
+    "fixture_sha256": "37958ec08e2be524085b856f75507bf38d125290752d6437af82215a5903a4a7",
+    "sol_raw": 6895205,
+    "target_raw": 288826214,
+    "candidate": "wallet-11",
+    "mint": "HyDKNdnhZNVYQMruBevbNsUWruA9STmAQrS4srXApump",
+    "slot": 454877140
+  }
+]

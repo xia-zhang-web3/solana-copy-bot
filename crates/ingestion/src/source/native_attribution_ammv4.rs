@@ -187,6 +187,7 @@ fn prove(v: &View, signer: &str, index: usize, parent: &Instruction) -> Option<A
         index,
         trader,
         quote,
+        target_account,
         buy,
         sol,
         &[coin, pc, source, destination],
