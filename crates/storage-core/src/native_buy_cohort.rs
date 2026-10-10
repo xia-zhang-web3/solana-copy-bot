@@ -5,7 +5,7 @@ use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 pub(crate) const MIGRATION: &str = "0088_native_buy_technical_cohort.sql";
-const MAX_EPOCHS: i64 = 256;
+pub(super) const MAX_EPOCHS: i64 = 256;
 
 pub(crate) fn available(c: &Connection) -> Result<bool> {
     Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=?1)",
@@ -141,23 +141,6 @@ pub(crate) struct Epoch {
     pub genesis: String,
     pub policy: String,
 }
-pub(crate) fn latest_epoch(c: &Connection, session: &str) -> Result<Option<Epoch>> {
-    let row: Option<(i64,String,i64,String,String,String)> = c.query_row(
-        "SELECT epoch_id,session,processed_slot,sampled_at,genesis_hash,policy_identity FROM native_buy_fence_epochs WHERE session=?1 ORDER BY epoch_id DESC LIMIT 1",
-        [session], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
-    row.map(|(id,session,slot,sampled,genesis,policy)| Ok(Epoch {
-        id,session,slot,sampled_at:parse(&sampled).context("technical_cohort_fence_clock")?,genesis,policy
-    })).transpose()
-}
-pub(crate) fn epoch(c: &Connection, id: i64) -> Result<Option<Epoch>> {
-    let row: Option<(i64,String,i64,String,String,String)> = c.query_row(
-        "SELECT epoch_id,session,processed_slot,sampled_at,genesis_hash,policy_identity FROM native_buy_fence_epochs WHERE epoch_id=?1",
-        [id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
-    row.map(|(id,session,slot,sampled,genesis,policy)| Ok(Epoch {
-        id,session,slot,sampled_at:parse(&sampled).context("technical_cohort_fence_clock")?,genesis,policy
-    })).transpose()
-}
-
 #[derive(Debug)]
 pub(crate) struct DecisionBinding {
     pub run_id: String,

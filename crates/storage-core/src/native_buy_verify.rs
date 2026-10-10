@@ -1,4 +1,4 @@
-use super::{cohort, NativeBuyCandidate, NativeBuyPending, CLASSIC_SPL_MINT_POLICY};
+use super::{cohort, epoch_selection, NativeBuyCandidate, NativeBuyPending, CLASSIC_SPL_MINT_POLICY};
 use crate::association_inbox;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -115,7 +115,7 @@ fn valid_cohort(
     max_age_seconds: Option<u64>, need_finality: bool,
 ) -> Result<bool> {
     let Some(authority) = cohort::load(c)? else { return Ok(false); };
-    let Some(epoch) = cohort::epoch(c, b.epoch_id)? else { return Ok(false); };
+    let Some(epoch) = epoch_selection::pinned(c, &d.session, b.epoch_id, now, &authority)? else { return Ok(false); };
     if authority.run_id != b.run_id || authority.mint_policy != CLASSIC_SPL_MINT_POLICY
         || authority.max_buy_count != 1 || !authority.wallet_ids.contains(&d.wallet)
         || authority.policy_identity != b.policy_identity

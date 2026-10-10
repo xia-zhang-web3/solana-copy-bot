@@ -1,4 +1,4 @@
-use super::{cohort, NativeBuyFence};
+use super::{cohort, epoch_selection, NativeBuyFence};
 use crate::association_inbox::AssociationInbox;
 use anyhow::{ensure, Result};
 use chrono::{DateTime, Utc};
@@ -111,7 +111,7 @@ fn cohort_admission(
         "SELECT EXISTS(SELECT 1 FROM native_buy_cohort_decisions WHERE run_id=?1)",
         [&authority.run_id], |r|r.get(0))?;
     if consumed { return Ok(()); }
-    let Some(epoch) = cohort::latest_epoch(c, &d.session)? else { return Ok(()); };
+    let Some(epoch) = epoch_selection::select(c, &d.session, f.slot, observed, authority)? else { return Ok(()); };
     if epoch.session != d.session || epoch.slot <= 0 || f.slot <= epoch.slot as u64
         || epoch.sampled_at < authority.activated_at || epoch.sampled_at > observed
         || observed.signed_duration_since(epoch.sampled_at) > chrono::Duration::seconds(120)

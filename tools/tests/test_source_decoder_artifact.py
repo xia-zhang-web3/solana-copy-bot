@@ -118,6 +118,10 @@ class DecoderArtifactTests(unittest.TestCase):
         self.assertEqual(builder.CHECK_FILTERS.count("source::tests::quote_sol_tests::"), 1)
         self.assertFalse(any("legacy_buy" in item for item in builder.CHECK_FILTERS))
 
+    def test_float_roundtrip_checks_are_packaged_once(self):
+        self.assertEqual(builder.CHECK_FILTERS.count(
+            "source::http_recovery::tests::float_roundtrip_tests::"), 1)
+
     def test_zero_tests_or_failed_summary_rejected(self):
         counts = builder.check_result("test result: ok. 17 passed; 0 failed; 0 ignored;")
         self.assertEqual(counts["passed"], 17)

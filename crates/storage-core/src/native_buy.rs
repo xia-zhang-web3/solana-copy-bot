@@ -10,6 +10,8 @@ mod verify;
 mod promote;
 #[path = "native_buy_cohort.rs"]
 pub(crate) mod cohort;
+#[path = "native_buy_epoch_selection.rs"]
+mod epoch_selection;
 pub(crate) use promote::activation_current;
 
 pub const STATUS: &str = "native_buy_fenced_v1";

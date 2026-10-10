@@ -9,6 +9,8 @@ mod delivery_tests;
 mod diagnostic_tests;
 #[path = "http_reward_compatibility_tests.rs"]
 mod reward_compatibility_tests;
+#[path = "http_float_roundtrip_tests.rs"]
+mod float_roundtrip_tests;
 use copybot_core_types::association_delivery::InfoIdentity;
 use prost::Message;
 use serde_json::json;
@@ -368,6 +370,7 @@ async fn actual_http_adapter_keeps_rpc_refusal_and_does_not_retry_it() {
     let reason = client.block(10).await.unwrap_err().to_string();
     assert!(reason.contains("http_status=200"));
     assert!(reason.contains("code=-32004"));
-    assert!(reason.contains("Block not available"));
+    // Untrusted provider messages are intentionally excluded from diagnostics.
+    assert!(!reason.contains("Block not available"));
     assert_eq!(task.await.unwrap().len(), 1);
 }

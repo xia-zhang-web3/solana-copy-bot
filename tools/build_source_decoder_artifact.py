@@ -26,6 +26,7 @@ CHECK_FILTERS = (
     "source::tests::quote_sol_tests::",
     "source::tests::source_selection_replay::",
     "source::tests::ammv4_tests::",
+    "source::http_recovery::tests::float_roundtrip_tests::",
 )
 
 
