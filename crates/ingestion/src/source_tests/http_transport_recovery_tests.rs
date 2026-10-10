@@ -1,6 +1,8 @@
 //! Real local tonic + HTTP adapter and SQLite commits; no provider or finances.
 #[path = "http_anchor_diagnostic_tests.rs"]
 mod anchor_diagnostic_tests;
+#[path = "http_anchor_saturation_tests.rs"]
+mod anchor_saturation_tests;
 #[path = "http_delivery_replay/mod.rs"]
 mod http_delivery_replay;
 #[path = "saved_reward_replay/mod.rs"]
@@ -213,7 +215,7 @@ async fn servers(mode: &'static str, anchor: u64, delay: Arc<AtomicBool>) -> Ser
                     if mode == "anchor-malformed" && slot == 48 {
                         v["rewards"] = Value::Null;
                     }
-                    if mode == "conflict" && slot == 45 {
+                    if (mode == "conflict" && slot == 45) || (mode == "anchor-mismatch" && slot == 48) {
                         v["blockhash"] = json!(hash(99));
                     }
                     v

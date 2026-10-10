@@ -138,7 +138,7 @@ fn anchor_diagnostic_scalar_and_nested_float_preserve_exact_typed_sides() {
     );
 }
 #[test]
-fn anchor_diagnostic_unchanged_predicate_private_exclusive_and_three_pair_cap() {
+fn anchor_diagnostic_unchanged_predicate_private_exclusive_and_three_pair_storage_bound() {
     let dir = private();
     let grpc = block(48);
     let mut http = grpc.clone();
@@ -156,14 +156,13 @@ fn anchor_diagnostic_unchanged_predicate_private_exclusive_and_three_pair_cap() 
         assert_eq!(manifest(dir.path(), number)["comparison"], "MATCH");
     }
     let before = fs::read(dir.path().join("pair-01/manifest.json")).unwrap();
-    let e = anchor_diagnostic::admit(
+    anchor_diagnostic::admit(
         Some(dir.path().to_str().unwrap()),
         &grpc,
         &http,
         b"replacement",
     )
-    .unwrap_err();
-    assert!(e.to_string().contains("three_pair_cap"));
+    .unwrap();
     assert_eq!(
         before,
         fs::read(dir.path().join("pair-01/manifest.json")).unwrap()

@@ -1,8 +1,7 @@
 //! Only the live anchor retains pre-decoder evidence. Other history stays unchanged.
-use super::{anchor_evidence::Pair, block, ConfirmedHttpRecovery, RecoveredBlock};
+use super::{anchor_capture::Capture, block, ConfirmedHttpRecovery, RecoveredBlock};
 use anyhow::Result;
 use serde_json::json;
-use std::path::Path;
 use yellowstone_grpc_proto::prelude::SubscribeUpdateBlock;
 
 impl ConfirmedHttpRecovery {
@@ -12,10 +11,12 @@ impl ConfirmedHttpRecovery {
         grpc: &SubscribeUpdateBlock,
         directory: Option<&str>,
     ) -> Result<RecoveredBlock> {
-        let Some(directory) = directory else {
-            return self.block(slot).await;
+        let capture = Capture::begin(directory)?;
+        let Capture::Full(mut pair) = capture else {
+            let mut recovered = self.block(slot).await?;
+            recovered.anchor_evidence = capture;
+            return Ok(recovered);
         };
-        let mut pair = Pair::create(Path::new(directory))?;
         pair.grpc(grpc)?;
         let response = self
             .request_with_evidence(
@@ -46,7 +47,7 @@ impl ConfirmedHttpRecovery {
         Ok(RecoveredBlock {
             block,
             raw_response,
-            anchor_evidence: Some(pair),
+            anchor_evidence: Capture::Full(pair),
         })
     }
 }

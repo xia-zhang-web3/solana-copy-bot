@@ -1,9 +1,10 @@
-//! Test-only efd durable route via real relays; exact source clock, no external I/O.
+//! Test-only 1e648-based durable route; real local transports, no external I/O.
 mod corpus;
 mod grpc;
 mod http;
 mod native;
 mod rpc;
+mod saturation;
 use crate::DeliveryReceiver;
 use anyhow::{ensure, Context, Result};
 use copybot_config::{AssociationDeliveryConfig, HttpRecoveryConfig, IngestionConfig};
@@ -60,10 +61,23 @@ fn sql_counts(path: &std::path::Path) -> Result<Value> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "explicit isolated local relay fixture only, no provider"]
 async fn real_relay_reader_decoder_native_fresh_and_recovered_buy() -> Result<()> {
+    run(false).await
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "explicit isolated fourth-capture continuation, no provider"]
+async fn saturated_capture_fourth_recovery_then_fresh_buy() -> Result<()> {
+    run(true).await
+}
+async fn run(saturated: bool) -> Result<()> {
     let out = PathBuf::from(std::env::var("INGRESS_E2E_OUT")?);
     std::fs::create_dir_all(&out)?;
     std::fs::create_dir_all(out.join("anchor-pairs"))?;
     let corpus = Arc::new(corpus::Corpus::load()?);
+    let mut saturation = if saturated {
+        Some(saturation::Proof::preload(&out, &corpus)?)
+    } else {
+        None
+    };
     let started = Instant::now();
     let offered = Arc::new(Mutex::new(vec![]));
     let subscriptions = Arc::new(AtomicU64::new(0));
@@ -168,6 +182,7 @@ async fn real_relay_reader_decoder_native_fresh_and_recovered_buy() -> Result<()
                 fences.push(json!({"session":e.delivery.session,"slot":slot,"sampled_unix_ns":observed.timestamp_nanos_opt().unwrap(),"boundary":"independent finite producer clock, never ACK"}));
             }
             if let DeliveryEvent::Admission(a) = &e.delivery.event {
+                if let Some(proof) = &mut saturation { proof.admission(a)?; }
                 let exact = a.facts.exact_amounts.as_ref().context("saved shape exact swap amounts")?;
                 events.push(json!({"kind":"Admission","signature":a.facts.signature,"slot":a.facts.slot,"message_time":a.message_time,"exact_amounts":exact,"received_unix_ns":observed.timestamp_nanos_opt().unwrap(),"continuity_hold":hold.load(Ordering::Acquire)}));
                 ensure!(a.facts.wallet == corpus.wallet && exact.amount_in_raw == "21616157" && exact.amount_out_raw == "115186657", "common production decoder facts");
@@ -181,6 +196,9 @@ async fn real_relay_reader_decoder_native_fresh_and_recovered_buy() -> Result<()
                 ensure!(committed.block.observation.child == p.observation.child, "parent/hash durable identity");
                 r.acknowledge_checkpoint(committed)?;
                 r.acknowledge_parent(p.observation.child.slot);
+                if let Some(proof) = &mut saturation {
+                    proof.committed_ack(p.observation.child.slot, &p.observation.child.hash, observed);
+                }
                 let s = r.ingress_snapshot();
                 acks.push(json!({"slot":p.observation.child.slot,"parent_slot":p.observation.parent.slot,"hash":p.observation.child.hash,"ack_unix_ns":observed.timestamp_nanos_opt().unwrap(),"producer_to_checkpoint_ms":(observed-corpus.created(p.observation.child.slot)).num_milliseconds(),"phase":if s.reconnects == 0 {"before_recovery"} else if s.processing.http_recovery.caught_up_to_anchor {"after_recovery"} else {"during_recovery"},"producer_latest_slot":corpus.latest()}));
             }
@@ -209,7 +227,7 @@ async fn real_relay_reader_decoder_native_fresh_and_recovered_buy() -> Result<()
     std::fs::write(
         out.join("DIAGNOSTIC.json"),
         serde_json::to_vec_pretty(&json!({
-            "accepted_source_sha":"efd835be93af2cd3d8aef9ac6140b932af881f01",
+            "base_source_sha":"1e6481d5bc798940ae4ec93b76c96e93f9c8cb06","candidate_overlay_required":true,
             "elapsed_seconds":started.elapsed().as_secs_f64(),"common_start_unix_ns":corpus.started.timestamp_nanos_opt().unwrap(),
             "producer_step_ns":corpus::STEP_NS,"finite_latest_slot":corpus::LAST,
             "synthetic_wire_padding_target_bytes":4_160_000,"fixture_queue_declared_max_bytes":(corpus::LAST-corpus::FIRST+1)*4_160_000,
@@ -219,9 +237,11 @@ async fn real_relay_reader_decoder_native_fresh_and_recovered_buy() -> Result<()
             "subscriptions":subscriptions.load(Ordering::Acquire),"bounded_route_result":format!("{result:?}"),
             "producer_signatures":"synthetic identities only; no cryptographic signatures created",
             "old_and_recovered_decision_expected":0,"orders_receipts_expected":0,
-            "external_provider_calls":0,"financial_calls":0,"historical_internal_reproduced":false
+            "external_provider_calls":0,"financial_calls":0,"historical_internal_reproduced":false,
+            "capture_saturation":saturation.as_ref().map(saturation::Proof::state)
         }))?,
     )?;
+    if let Some(proof) = &saturation { proof.unchanged(&out)?; }
     result.context("bounded actual transport route")??;
     ensure!(
         subscriptions.load(Ordering::Acquire) == 2,
@@ -271,10 +291,11 @@ async fn real_relay_reader_decoder_native_fresh_and_recovered_buy() -> Result<()
             <= 8,
         "independent producer/durable progress"
     );
+    if let Some(proof) = &saturation { proof.finish(&out, &path, &corpus, &quotes)?; }
     std::fs::write(
         out.join("RESULT.json"),
         serde_json::to_vec_pretty(&json!({
-            "status":"PASS_OFFLINE_TRANSPORT_NATIVE_MOCK_ONLY","accepted_source_sha":"efd835be93af2cd3d8aef9ac6140b932af881f01",
+            "status":"PASS_OFFLINE_TRANSPORT_NATIVE_MOCK_ONLY","base_source_sha":"1e6481d5bc798940ae4ec93b76c96e93f9c8cb06","candidate_overlay_required":true,
             "installed_app_unchanged":true,"producer_latest_slot":corpus.latest(),"durable_slot":snapshot.last_durably_stored_parent_slot,
             "fresh_quote":quotes,"old_buy":"fence/stale refusal; zero native decision","recovered_buy":"RecoveredBlock refusal; zero native decision",
             "http_requests":calls.lock().unwrap().len(),"http_response_bytes":http_bytes,"archive_threshold":5_057_282_048u64,

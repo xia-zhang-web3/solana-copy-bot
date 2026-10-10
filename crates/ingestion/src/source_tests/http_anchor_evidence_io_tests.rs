@@ -8,7 +8,7 @@ use yellowstone_grpc_proto::prelude::SubscribeUpdateBlock;
 fn anchor_diagnostic_partial_write_failure_preserves_existing_file_without_complete_manifest() {
     let root = tempfile::tempdir().unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
-    let mut pair = Pair::create(root.path()).unwrap();
+    let mut pair = Pair::create(root.path()).unwrap().unwrap();
     let dir = root.path().join("pair-01");
     fs::write(
         dir.join("http_response.json"),
@@ -41,7 +41,9 @@ pub(crate) fn compare(
     let Some(directory) = directory else {
         return Ok(identity::block_equivalent(http, grpc));
     };
-    let mut pair = Pair::create(Path::new(directory))?;
+    let Some(mut pair) = Pair::create(Path::new(directory))? else {
+        return Ok(anchor_diagnostic::compare_saturated(grpc, http));
+    };
     pair.grpc(grpc)?;
     pair.http_raw(raw_http)?;
     pair.http_normalized(http)?;

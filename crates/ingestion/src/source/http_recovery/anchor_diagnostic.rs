@@ -1,5 +1,7 @@
 //! Optional pre-gate evidence; comparison and ACK policy stay in their existing owners.
-use super::{anchor_evidence::Pair, identity, identity_difference, RecoveredBlock};
+use super::{
+    anchor_capture::Capture, anchor_evidence::Pair, identity, identity_difference, RecoveredBlock,
+};
 use anyhow::{ensure, Result};
 use serde_json::{json, Value};
 use yellowstone_grpc_proto::prelude::SubscribeUpdateBlock;
@@ -32,6 +34,7 @@ pub(super) fn compare_preserved(
     pair.complete(grpc, matches, value)?;
     tracing::info!(slot=grpc.slot,comparison=if matches {"MATCH"} else {"MISMATCH"},
         first_field_path=first_path,evidence_pair=%pair.name,evidence_saved=true,
+        capture_state="FULL",ack_proven=false,
         "confirmed HTTP live anchor compared");
     Ok(matches)
 }
@@ -41,12 +44,31 @@ pub(crate) fn admit_recovered(
     grpc: &SubscribeUpdateBlock,
     recovered: &mut RecoveredBlock,
 ) -> Result<()> {
-    let matches = if let Some(pair) = recovered.anchor_evidence.take() {
-        compare_preserved(pair, grpc, &recovered.block)?
-    } else {
-        ensure!(directory.is_none(), "anchor_evidence_missing");
-        identity::block_equivalent(&recovered.block, grpc)
+    let matches = match std::mem::replace(&mut recovered.anchor_evidence, Capture::Disabled) {
+        Capture::Full(pair) => compare_preserved(pair, grpc, &recovered.block)?,
+        Capture::Saturated => {
+            ensure!(directory.is_some(), "anchor_evidence_unexpected_saturation");
+            compare_saturated(grpc, &recovered.block)
+        }
+        Capture::Disabled => {
+            ensure!(directory.is_none(), "anchor_evidence_missing");
+            identity::block_equivalent(&recovered.block, grpc)
+        }
     };
     ensure!(matches, "http_recovery_live_anchor_conflict");
     Ok(())
+}
+
+/// Fixed-size identity digests keep subsequent comparison telemetry bounded.
+/// The existing durable checkpoint owner is the only source of ACK proof.
+pub(super) fn compare_saturated(grpc: &SubscribeUpdateBlock, http: &SubscribeUpdateBlock) -> bool {
+    use sha2::{Digest, Sha256};
+    let matches = identity::block_equivalent(http, grpc);
+    tracing::info!(slot=grpc.slot,parent_slot=grpc.parent_slot,
+        blockhash_sha256=%format!("{:x}",Sha256::digest(grpc.blockhash.as_bytes())),
+        parent_blockhash_sha256=%format!("{:x}",Sha256::digest(grpc.parent_blockhash.as_bytes())),
+        comparison=if matches {"MATCH"} else {"MISMATCH"},
+        capture_state="SATURATED",evidence_saved=false,ack_proven=false,
+        "confirmed HTTP live anchor compared");
+    matches
 }

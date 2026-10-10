@@ -1,4 +1,4 @@
-//! Private, exclusive snapshots. Three pair attempts match the probe connection cap.
+//! Private, exclusive snapshots. Three completed full pairs bound diagnostic storage.
 use anyhow::{ensure, Context, Result};
 use prost::Message;
 use serde_json::{json, Map, Value};
@@ -50,7 +50,7 @@ impl Output {
     }
 }
 impl Pair {
-    pub fn create(root: &Path) -> Result<Self> {
+    pub fn create(root: &Path) -> Result<Option<Self>> {
         let metadata = fs::symlink_metadata(root).context("anchor_evidence_root_missing")?;
         ensure!(
             metadata.is_dir() && !metadata.file_type().is_symlink(),
@@ -77,17 +77,19 @@ impl Pair {
                     File::open(root)?
                         .sync_all()
                         .context("anchor_evidence_root_sync")?;
-                    return Ok(Self {
+                    return Ok(Some(Self {
                         dir,
                         name,
                         files: Map::new(),
-                    });
+                    }));
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    super::anchor_capture::completed(&dir, &metadata)?;
+                }
                 Err(_) => anyhow::bail!("anchor_evidence_pair_create"),
             }
         }
-        anyhow::bail!("anchor_evidence_three_pair_cap")
+        Ok(None)
     }
     fn bytes(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
         let mut output = Output::new(&self.dir.join(name))?;
