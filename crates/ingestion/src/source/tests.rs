@@ -120,3 +120,6 @@ mod quote_sol_tests;
 
 #[path = "../source_tests/ammv4/mod.rs"]
 mod ammv4_tests;
+
+#[path = "../source_tests/ingress_route/mod.rs"]
+mod ingress_route;

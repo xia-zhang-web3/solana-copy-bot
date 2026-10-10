@@ -133,6 +133,7 @@ pub(super) async fn run(
                     .connect_timeout(Duration::from_millis(c.connect_timeout_ms))
                     .timeout(Duration::from_millis(c.subscribe_timeout_ms))
                     .max_decoding_message_size(limits.input_bytes)
+                    .http2_adaptive_window(true)
                     .connect()
                     .await?,
             )
