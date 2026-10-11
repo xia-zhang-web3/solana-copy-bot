@@ -2,6 +2,7 @@
 use anyhow::{ensure, Result};
 use serde::Deserialize;
 
+pub const OWNER_ROUNDTRIP_EXIT_V1: &str = "owner_execution_roundtrip_exit_v1";
 pub const OWNER_EXIT_V1: &str = "owner_exit_v1";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32,7 +33,21 @@ pub struct OwnerExitConfig {
 
 pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
     let Some(p) = &e.owner_exit else { return Ok(()); };
-    ensure!(p.policy == OWNER_EXIT_V1, "owner_exit_policy");
+    ensure!(matches!(p.policy.as_str(),OWNER_EXIT_V1 | OWNER_ROUNDTRIP_EXIT_V1), "owner_exit_policy");
+    if p.policy == OWNER_ROUNDTRIP_EXIT_V1 {
+        let b=e.owner_technical_buy.as_ref().ok_or_else(||anyhow::anyhow!("owner_roundtrip_exit_parent"))?;
+        ensure!(b.policy == crate::OWNER_EXECUTION_ROUNDTRIP_V1
+            && p.intent_id == format!("execution-only:{}",b.intent_id)
+            && p.buy_order_id == format!("exec-canary:owner-buy:{}",b.intent_id)
+            && p.run_id == b.run_id && p.wallet_pubkey == b.wallet_pubkey && p.signer_pubkey == b.signer_pubkey
+            && p.genesis_hash == b.genesis_hash && p.mint == b.mint && p.route == b.route
+            && p.activated_at == b.activated_at && p.expires_at == b.expires_at
+            && p.max_priority_fee_lamports <= b.max_priority_fee_lamports.min(22_000)
+            && p.min_reserve_lamports >= b.min_reserve_lamports
+            && p.max_slippage_bps <= b.max_slippage_bps
+            && p.max_daily_loss_lamports <= b.max_daily_loss_lamports,
+            "owner_roundtrip_exit_parent");
+    }
     for id in [&p.run_id, &p.intent_id] {
         ensure!((1..=128).contains(&id.len())
             && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b)),
@@ -43,7 +58,8 @@ pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
         && p.signer_pubkey == e.execution_signer_pubkey,
         "owner_exit_wallet_signer");
     ensure!(p.mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-        && p.amount_raw == 1_167_085 && p.decimals == 6,
+        && p.decimals == 6 && (if p.policy == OWNER_EXIT_V1 {p.amount_raw == 1_167_085}
+            else {p.amount_raw > 0 && p.intent_id.starts_with("execution-only:")}),
         "owner_exit_exact_position_amount");
     ensure!(p.route == "jupiter_swap_instructions" && p.route == e.canary_route,
         "owner_exit_route");

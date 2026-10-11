@@ -398,3 +398,18 @@ Minimum report checks:
 
 Next engineering step must be chosen from report data, not from a one-off manual
 query.
+
+## Controlled execution-only canary
+
+Use the default-off `owner_execution_roundtrip_v1` policy on the existing owner
+BUY configuration for an explicitly authorized one-use SOL/USDC test. The daemon
+confirms the BUY, binds its exact received quantity to the owner EXIT, and confirms
+the SELL through the same signer, tiny limits, receipt and settlement path.
+Discovery, source wallet history and source SELL are excluded. This proves only
+execution. Broader `execution.enabled` remains false.
+
+A stopped package supplies one owner command after independent preparation and
+artifact acceptance. Do not repeat a consumed command or rearm an unknown send.
+Fresh wallet, outstanding obligations, reserves and limits must pass before BUY.
+Success requires both on-chain receipts, reconciled actual fees and amounts, zero
+remaining test position and no unknown submissions; preparation PASS is separate.

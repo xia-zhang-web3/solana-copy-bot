@@ -29,6 +29,10 @@ pub(crate) fn verify(request: &ExecutionSubmitRequest,
         && (request.wallet_id.is_empty() || request.wallet_pubkey == request.wallet_id)
         && request.token == USDC && request.slippage_tolerance_bps <= 50,
         "owner_exit_wire_request");
+    let amount = if request.signal_id.starts_with("owner-exit:execution-only:") {
+        request.metadata.quote_in_amount_raw.as_deref().context("owner_exit_wire_amount")?.parse::<u64>()?
+    } else { AMOUNT };
+    ensure!(amount > 0,"owner_exit_wire_amount");
     let wallet = parse_pubkey(&request.wallet_pubkey, "owner_exit_wire_wallet")?;
     let usdc = parse_pubkey(USDC, "owner_exit_wire_mint")?;
     let source = associated_token_address(&wallet, &usdc, &token_program_id());
@@ -39,8 +43,8 @@ pub(crate) fn verify(request: &ExecutionSubmitRequest,
         .context("owner_exit_wire_output")?.parse::<u64>()?;
     ensure!(output > 0 && quote["inputMint"] == USDC
         && quote["outputMint"] == crate::execution_quote_canary_helpers::SOL_MINT
-        && quote["inAmount"] == AMOUNT.to_string()
-        && request.metadata.quote_in_amount_raw.as_deref() == Some("1167085")
+        && quote["inAmount"] == amount.to_string()
+        && request.metadata.quote_in_amount_raw.as_deref() == Some(amount.to_string().as_str())
         && request.metadata.quote_out_amount_raw.as_deref()
             == Some(output.to_string().as_str())
         && quote["swapMode"] == "ExactIn"
@@ -54,7 +58,7 @@ pub(crate) fn verify(request: &ExecutionSubmitRequest,
     let swap = &route[0]["swapInfo"];
     ensure!(swap["inputMint"] == USDC
         && swap["outputMint"] == crate::execution_quote_canary_helpers::SOL_MINT
-        && swap["inAmount"] == AMOUNT.to_string()
+        && swap["inAmount"] == amount.to_string()
         && swap["outAmount"] == output.to_string()
         && swap["label"] == "Raydium", "owner_exit_wire_route_step");
     let amm = parse_pubkey(swap["ammKey"].as_str()
@@ -71,7 +75,7 @@ pub(crate) fn verify(request: &ExecutionSubmitRequest,
         if instruction.program.pubkey != jupiter { continue; }
         ensure!(route_index.replace(instruction.index).is_none(),
             "owner_exit_wire_multiple_routes");
-        verify_route(instruction, wallet, source, destination, amm, output,
+        verify_route(instruction, wallet, source, destination, amm, amount, output,
             request.slippage_tolerance_bps)?;
     }
     let route_index = route_index.context("owner_exit_wire_route_missing")?;
@@ -80,7 +84,7 @@ pub(crate) fn verify(request: &ExecutionSubmitRequest,
 }
 
 fn verify_route(i: &DecodedInstruction, wallet: PubkeyBytes, source: PubkeyBytes,
-    destination: PubkeyBytes, amm: PubkeyBytes, output: u64, slippage: u64) -> Result<()> {
+    destination: PubkeyBytes, amm: PubkeyBytes, amount:u64, output: u64, slippage: u64) -> Result<()> {
     let jupiter = parse_pubkey(JUPITER, "owner_exit_wire_jupiter")?;
     ensure!(!i.program.is_writable && !i.program.is_signer,
         "owner_exit_wire_program_role");
@@ -113,7 +117,7 @@ fn verify_route(i: &DecodedInstruction, wallet: PubkeyBytes, source: PubkeyBytes
         ensure!(!account.is_signer && account.is_writable == writable,
             "owner_exit_wire_dex_account_role");
     }
-    ensure!(cursor.take(3)? == [100,0,1] && cursor.u64()? == AMOUNT
+    ensure!(cursor.take(3)? == [100,0,1] && cursor.u64()? == amount
         && cursor.u64()? == output
         && cursor.take(2)? == (slippage as u16).to_le_bytes()
         && cursor.byte()? == 0 && cursor.offset == cursor.bytes.len(),

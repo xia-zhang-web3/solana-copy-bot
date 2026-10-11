@@ -60,6 +60,7 @@ pub(crate) fn ensure_buy_binding(conn: &Connection, i: &OwnerExitIntent) -> Resu
         &i.genesis_hash,
         &i.mint,
         &i.position_id,
+        i.amount_raw,i.decimals,i.intent_id.starts_with("execution-only:"),
     )
 }
 
@@ -127,7 +128,7 @@ pub(crate) fn validate_position(
             && exact.is_some_and(|q| q.raw() == raw && q.decimals() == decimals),
         "owner_exit_exact_position_changed"
     );
-    ensure_buy_binding_parts(conn, &buy, &sig, &wallet, &genesis, &mint, &position)
+    ensure_buy_binding_parts(conn, &buy, &sig, &wallet, &genesis, &mint, &position,raw,decimals,id.starts_with("execution-only:"))
 }
 
 fn ensure_buy_binding_parts(
@@ -138,6 +139,7 @@ fn ensure_buy_binding_parts(
     genesis: &str,
     mint: &str,
     position: &str,
+    raw: u64,decimals: u8,roundtrip:bool,
 ) -> Result<()> {
     let bound: bool = conn.query_row(
         "SELECT EXISTS(
@@ -152,17 +154,17 @@ fn ensure_buy_binding_parts(
         WHERE o.order_id=?1 AND o.signal_id='owner-buy:'||b.intent_id
           AND o.status='execution_canary_confirmed' AND o.attempt=1
           AND o.tx_signature=?2 AND d.tx_signature=?2 AND p.tx_signature=?2 AND f.tx_signature=?2
-          AND p.confirmation_status='finalized' AND p.side='buy' AND f.side='buy'
+          AND (p.confirmation_status='finalized' OR (?9 AND p.confirmation_status='confirmed')) AND p.side='buy' AND f.side='buy'
           AND p.wallet_pubkey=?3 AND f.wallet_pubkey=?3 AND d.wallet=?3
           AND b.wallet=?3 AND b.signer=?3 AND b.genesis_hash=?4
           AND p.token=?5 AND f.token=?5 AND d.token=?5 AND b.mint=?5
           AND v.token=?5 AND x.token=?5 AND x.position_id=?6
           AND x.state='open' AND x.accounting_bucket='execution_canary'
-          AND v.qty_raw='1167085' AND v.qty_decimals=6
-          AND x.qty_raw='1167085' AND x.qty_decimals=6
-          AND f.token_delta_raw='1167085' AND f.token_decimals=6
+          AND v.qty_raw=?7 AND v.qty_decimals=?8
+          AND x.qty_raw=?7 AND x.qty_decimals=?8
+          AND f.token_delta_raw=?7 AND f.token_decimals=?8
           AND f.token_coverage!='unresolved')",
-        params![buy_order, receipt_sig, wallet, genesis, mint, position],
+        params![buy_order, receipt_sig, wallet, genesis, mint, position,raw.to_string(),decimals,roundtrip],
         |r| r.get(0),
     )?;
     ensure!(bound, "owner_exit_buy_position_binding_changed");

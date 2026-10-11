@@ -58,6 +58,16 @@ pub(crate) async fn tick_with_adapter<A: ExecutionSubmitAdapter>(
         summary.skipped_reason = Some(reason);
         return Ok(summary);
     }
+    if copybot_config::owner_execution_roundtrip(config) {
+        let reserve = store.reserve_owner_technical_buy_order(&intent.intent_id, || {
+            crate::execution_canary_safety::risk_clock::decision_time(now)
+                .ok_or_else(|| anyhow::anyhow!("owner_buy_clock"))
+        })?;
+        if reserve.outcome == ExecutionCanaryRecordOutcome::Existing {
+            summary.existing = 1;return Ok(summary);
+        }
+        summary.reserved = 1;
+    }
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
@@ -73,6 +83,11 @@ pub(crate) async fn tick_with_adapter<A: ExecutionSubmitAdapter>(
     ).await {
         Ok(value) => value,
         Err(error) => {
+            if copybot_config::owner_execution_roundtrip(config) {
+                store.mark_execution_canary_failed(&owner_technical_buy_order_id(&intent.intent_id),now,
+                    copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,&error.to_string())?;
+                summary.failed=1;
+            }
             summary.skipped_reason = Some("owner_buy_chain_or_mint_refused");
             summary.last_error = Some(error.to_string());
             return Ok(summary);
@@ -83,6 +98,11 @@ pub(crate) async fn tick_with_adapter<A: ExecutionSubmitAdapter>(
     ).await {
         Ok(value) => value,
         Err(error) => {
+            if copybot_config::owner_execution_roundtrip(config) {
+                store.mark_execution_canary_failed(&owner_technical_buy_order_id(&intent.intent_id),now,
+                    copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,&error.to_string())?;
+                summary.failed=1;
+            }
             summary.skipped_reason = Some("owner_buy_quote_refused");
             summary.last_error = Some(error.to_string());
             return Ok(summary);
@@ -123,7 +143,8 @@ pub(crate) async fn execute<A: ExecutionSubmitAdapter>(
             .ok_or_else(|| anyhow::anyhow!("owner_buy_clock"))
     })?;
     summary.last_order_id = Some(reserve.order.order_id.clone());
-    if reserve.outcome == ExecutionCanaryRecordOutcome::Existing {
+    if reserve.outcome == ExecutionCanaryRecordOutcome::Existing
+        && !(copybot_config::owner_execution_roundtrip(config) && summary.reserved == 1) {
         summary.existing = 1;
         return Ok(());
     }

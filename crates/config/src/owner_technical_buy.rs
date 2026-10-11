@@ -2,6 +2,11 @@
 use anyhow::{ensure, Result};
 use serde::Deserialize;
 
+pub const OWNER_EXECUTION_ROUNDTRIP_V1: &str = "owner_execution_roundtrip_v1";
+pub fn owner_execution_roundtrip(e: &crate::ExecutionConfig) -> bool {
+    e.owner_technical_buy.as_ref().is_some_and(|p| p.policy == OWNER_EXECUTION_ROUNDTRIP_V1)
+}
+
 pub const OWNER_TECHNICAL_BUY_V1: &str = "owner_technical_buy_v1";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -30,7 +35,16 @@ pub struct OwnerTechnicalBuyConfig {
 
 pub fn validate_owner_technical_buy(e: &crate::ExecutionConfig) -> Result<()> {
     let Some(p) = &e.owner_technical_buy else { return Ok(()); };
-    ensure!(p.policy == OWNER_TECHNICAL_BUY_V1, "owner_buy_policy");
+    ensure!(matches!(p.policy.as_str(),OWNER_TECHNICAL_BUY_V1 | OWNER_EXECUTION_ROUNDTRIP_V1), "owner_buy_policy");
+    if owner_execution_roundtrip(e) {
+        ensure!(p.mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+            && p.intent_id.len() <= 110 && p.max_slippage_bps <= 50
+            && p.amount_lamports == 10_000_000 && p.max_priority_fee_lamports <= 50_000
+            && p.max_daily_loss_lamports <= 20_000_000 && p.min_reserve_lamports >= 160_200_031
+            && e.quote_canary_sell_slippage_bps >= p.max_slippage_bps
+            && e.owner_exit.is_none() && e.max_submit_attempts == 1,
+            "owner_roundtrip_pair_or_limits");
+    }
     for id in [&p.run_id, &p.intent_id] {
         ensure!((1..=128).contains(&id.len())
             && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b)),

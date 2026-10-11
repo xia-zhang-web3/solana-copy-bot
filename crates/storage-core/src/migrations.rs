@@ -269,7 +269,8 @@ impl SqliteDiscoveryStore {
         let rebuild = crate::fill_cash_migration::required(&self.conn, files)?
             || crate::order_identity_migration::required(&self.conn, files)?
             || crate::owner_technical_buy_migration::required(&self.conn, files)?
-            || crate::owner_exit_migration::required(&self.conn, files)?;
+            || crate::owner_exit_migration::required(&self.conn, files)?
+            || crate::owner_exit_amount_migration::required(&self.conn, files)?;
         crate::fill_cash_migration::with_constraints(&mut self.conn, rebuild, |conn| {
             let tx = conn
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -301,6 +302,8 @@ impl SqliteDiscoveryStore {
                     crate::owner_technical_buy_migration::apply(&tx, &sql)
                 } else if version == crate::owner_exit_migration::VERSION {
                     crate::owner_exit_migration::apply(&tx, &sql)
+                } else if version == crate::owner_exit_amount_migration::VERSION {
+                    crate::owner_exit_amount_migration::apply(&tx, &sql)
                 } else {
                     tx.execute_batch(&sql).map_err(anyhow::Error::from)
                 })

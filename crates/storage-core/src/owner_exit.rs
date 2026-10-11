@@ -67,6 +67,17 @@ impl SqliteDiscoveryStore {
                 ensure!(old == *intent, "owner_exit_intent_conflict");
                 return Ok(OwnerExitIntentRecordOutcome::Existing);
             }
+            if let Some(id)=intent.intent_id.strip_prefix("execution-only:") {
+                let parent=self.load_owner_technical_buy_intent(id)?.context("owner_roundtrip_exit_parent_missing")?;
+                ensure!(intent.buy_order_id == crate::owner_technical_buy_order_id(id)
+                    && intent.run_id == parent.run_id && intent.wallet == parent.wallet && intent.signer == parent.signer
+                    && intent.genesis_hash == parent.genesis_hash && intent.mint == parent.mint && intent.route == parent.route
+                    && intent.activated_at == parent.activated_at && intent.expires_at == parent.expires_at
+                    && intent.max_priority_fee_lamports <= parent.max_priority_fee_lamports.min(22_000)
+                    && intent.min_reserve_lamports >= parent.min_reserve_lamports
+                    && intent.max_slippage_bps <= parent.max_slippage_bps
+                    && intent.max_daily_loss_lamports <= parent.max_daily_loss_lamports,"owner_roundtrip_exit_parent_changed");
+            }
             ensure_buy_binding(conn, intent)?;
             conn.execute("INSERT INTO owner_exit_intents(intent_id,run_id,buy_order_id,buy_receipt_signature,
                 position_id,wallet,signer,genesis_hash,mint,amount_raw,decimals,route,activated_at,expires_at,
@@ -201,6 +212,7 @@ impl SqliteDiscoveryStore {
     /// dispatch or receipt is never rearmed here. One local failed attempt may
     /// be retried with a new quote under the original unexpired authority.
     pub fn rearm_owner_exit_undispatched(&self, id: &str) -> Result<bool> {
+        if id.starts_with("execution-only:") {return Ok(false)}
         let order_id = owner_exit_order_id(id);
         self.with_immediate_transaction_retry("rearm undispatched owner EXIT", |conn| {
             let intent = self.load_owner_exit_intent(id)?.context("owner_exit_intent_missing")?;
@@ -250,6 +262,7 @@ impl SqliteDiscoveryStore {
     }
 
     pub fn owner_exit_failed_retry_available(&self, id: &str) -> Result<bool> {
+        if id.starts_with("execution-only:") {return Ok(false)}
         let used: bool = self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM owner_exit_pre_dispatch_rearms WHERE intent_id=?1)",
             [id], |row| row.get(0))?;
@@ -371,14 +384,15 @@ fn validate(i: &OwnerExitIntent) -> Result<()> {
         );
     }
     ensure!(
-        i.buy_order_id == OWNER_EXIT_BUY_ORDER
-            && i.position_id == format!("exec-canary-pos:{}", OWNER_EXIT_BUY_ORDER)
+        (i.buy_order_id == OWNER_EXIT_BUY_ORDER || (i.intent_id.starts_with("execution-only:")
+                && i.buy_order_id.starts_with("exec-canary:owner-buy:")))
+            && i.position_id == format!("exec-canary-pos:{}", i.buy_order_id)
             && !i.buy_receipt_signature.is_empty()
             && i.wallet == i.signer
             && !i.wallet.is_empty()
             && !i.genesis_hash.is_empty()
             && i.mint == OWNER_EXIT_MINT
-            && i.amount_raw == OWNER_EXIT_RAW
+            && (i.amount_raw == OWNER_EXIT_RAW || (i.intent_id.starts_with("execution-only:") && i.amount_raw > 0))
             && i.decimals == OWNER_EXIT_DECIMALS
             && !i.route.is_empty()
             && i.activated_at < i.expires_at

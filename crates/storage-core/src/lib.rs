@@ -8,6 +8,7 @@ mod association_sell_types;
 pub mod order_identity_migration;
 pub mod owner_technical_buy_migration;
 pub mod owner_exit_migration;
+pub mod owner_exit_amount_migration;
 mod owner_technical_buy;
 mod owner_exit;
 mod owner_exit_binding;

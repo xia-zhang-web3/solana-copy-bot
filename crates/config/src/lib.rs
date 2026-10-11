@@ -28,8 +28,8 @@ pub use owned_sell_preparation::{
 pub use native_fresh_buy::{native_first_buy_activation, NativeFreshBuyConfig, PROCESSED_SLOT_FENCE_AVAILABILITY_V1};
 pub use technical_cohort::{validate_technical_cohort, TechnicalCohortConfig,
     TECHNICAL_COHORT_V1, CLASSIC_SPL_MINT_V1};
-pub use owner_technical_buy::{validate_owner_technical_buy, OwnerTechnicalBuyConfig, OWNER_TECHNICAL_BUY_V1};
-pub use owner_exit::{validate_owner_exit, OwnerExitConfig, OWNER_EXIT_V1};
+pub use owner_technical_buy::{validate_owner_technical_buy, owner_execution_roundtrip, OwnerTechnicalBuyConfig, OWNER_TECHNICAL_BUY_V1, OWNER_EXECUTION_ROUNDTRIP_V1};
+pub use owner_exit::{validate_owner_exit, OwnerExitConfig, OWNER_EXIT_V1, OWNER_ROUNDTRIP_EXIT_V1};
 pub use tiny_experiment::{TinyExperimentConfig, TinyPolicyMode};
 
 pub use self::discovery_v2_identity::{

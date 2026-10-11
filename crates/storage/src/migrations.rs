@@ -357,7 +357,8 @@ impl SqliteStore {
         let rebuild = fill_cash_migration::required(&self.conn, files)?
             || copybot_storage_core::order_identity_migration::required(&self.conn, files)?
             || copybot_storage_core::owner_technical_buy_migration::required(&self.conn, files)?
-            || copybot_storage_core::owner_exit_migration::required(&self.conn, files)?;
+            || copybot_storage_core::owner_exit_migration::required(&self.conn, files)?
+            || copybot_storage_core::owner_exit_amount_migration::required(&self.conn, files)?;
         fill_cash_migration::with_constraints(&mut self.conn, rebuild, |conn| {
             let tx = conn
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -393,6 +394,8 @@ impl SqliteStore {
                     copybot_storage_core::owner_technical_buy_migration::apply(&tx, &sql)
                 } else if version == copybot_storage_core::owner_exit_migration::VERSION {
                     copybot_storage_core::owner_exit_migration::apply(&tx, &sql)
+                } else if version == copybot_storage_core::owner_exit_amount_migration::VERSION {
+                    copybot_storage_core::owner_exit_amount_migration::apply(&tx, &sql)
                 } else {
                     tx.execute_batch(&sql).map_err(anyhow::Error::from)
                 })

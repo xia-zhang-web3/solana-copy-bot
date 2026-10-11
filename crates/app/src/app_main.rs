@@ -87,6 +87,27 @@ pub(crate) async fn run() -> Result<()> {
             Ok(store)
         },
     )?;
+    // Explicit owner execution needs the normal storage/risk startup, but has
+    // no ingestion, Discovery, shadow service, or source freshness surface.
+    if copybot_config::owner_execution_roundtrip(&config.execution) {
+        store = run_observed_startup_step(
+            "startup_sqlite_wal_autocheckpoint_restore",
+            startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),
+            Some(&startup_reporter),
+            move || {
+                restore_implicit_startup_sqlite_wal_autocheckpoint(
+                    store,
+                    startup_wal_autocheckpoint_restore_pages,
+                )
+            },
+        )?;
+        return crate::execution_only_loop::run(
+            store,
+            config.execution.clone(),
+            config.system.heartbeat_seconds,
+        )
+        .await;
+    }
     let alert_dispatcher = run_inline_startup_step(
         &startup_reporter,
         "startup_alert_dispatcher_init",
