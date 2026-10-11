@@ -237,13 +237,13 @@ async fn cohort_source_sell_case(sustained: bool, actual_transport: bool) -> Res
         funding_calls,
         "SELL must not reuse the initial BUY balance snapshot"
     );
-    assert_eq!(
-        calls
-            .iter()
-            .find(|c| c["method"] == "quote")
-            .context("strict SELL quote")?["params"]["amount"],
-        "2500"
-    );
+    let quote = &calls.iter().find(|c| c["method"] == "quote")
+        .context("strict SELL quote")?["params"];
+    assert_eq!(quote["amount"], "2500");
+    assert_eq!(quote["instructionVersion"], "V1");
+    assert_eq!(quote["onlyDirectRoutes"], "true");
+    assert_eq!(quote["dexes"], "Raydium");
+    assert_eq!(quote["slippageBps"], "50");
     for method in [
         "getBlock",
         "getTokenAccountsByOwner",

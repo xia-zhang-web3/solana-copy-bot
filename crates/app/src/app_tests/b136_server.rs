@@ -18,6 +18,21 @@ pub(super) struct NativeCohort {
 impl NativeCohort {
     fn response(&self, r: &Value) -> Option<Value> {
         let method = r["method"].as_str()?;
+        if method == "quote" && r["params"]["instructionVersion"] == "V1"
+            && r["params"]["onlyDirectRoutes"] == "true"
+            && r["params"]["dexes"] == "Raydium"
+        {
+            // This is a synthetic settlement peer; real Raydium wire/receipt
+            // binding is covered by native_cohort_route_tests, not its Memo bundle.
+            return Some(json!({"inputMint":r["params"]["inputMint"],
+                "outputMint":r["params"]["outputMint"],"inAmount":r["params"]["amount"],
+                "outAmount":"1000000","otherAmountThreshold":"995000",
+                "swapMode":"ExactIn","slippageBps":50,"instructionVersion":"V1",
+                "platformFee":null,"routePlan":[{"percent":100,"swapInfo":{
+                    "label":"Raydium","ammKey":bs58::encode([61;32]).into_string(),
+                    "inputMint":r["params"]["inputMint"],"outputMint":r["params"]["outputMint"],
+                    "inAmount":r["params"]["amount"],"outAmount":"1000000"}}]}));
+        }
         let result = match method {
             "getTransaction" if r["params"][0] == self.buy_signature => self.buy_rpc.clone(),
             "getTransaction"
