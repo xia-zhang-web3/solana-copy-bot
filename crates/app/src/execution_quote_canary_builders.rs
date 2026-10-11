@@ -70,7 +70,10 @@ impl ExecutionQuoteCanaryRunner {
             decision_reason: None,
             error: None,
         };
-        attach_priority_fee(&mut event, priority_fee_sample);
+        let configured_priority = if native_source.is_some() && priority_fee_sample.is_none() {
+            super::native_buy::configured_cohort_priority(&self.config, signal)?
+        } else { None };
+        attach_priority_fee(&mut event, priority_fee_sample.or(configured_priority.as_ref()));
         let token_decimals = native_source.as_ref().map(|source| source.amount_out_decimals)
             .or_else(|| observed.as_ref().and_then(observed_token_decimals));
         Ok((event, token_decimals))

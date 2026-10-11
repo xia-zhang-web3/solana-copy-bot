@@ -1,0 +1,100 @@
+{
+  "source_exact_amounts": {
+    "amount_in_raw": "1197815",
+    "amount_in_decimals": 9,
+    "amount_out_raw": "1522911869",
+    "amount_out_decimals": 6
+  },
+  "source_mint": "GCo9zWFUpt9RGobjyaMzEvY4h2w23PQC6mbdejqXpump",
+  "quotes": {
+    "early": {
+      "inputMint": "So11111111111111111111111111111111111111112",
+      "inAmount": "10000000",
+      "outputMint": "GCo9zWFUpt9RGobjyaMzEvY4h2w23PQC6mbdejqXpump",
+      "outAmount": "12687452678",
+      "otherAmountThreshold": "12624015415",
+      "swapMode": "ExactIn",
+      "slippageBps": 50,
+      "platformFee": null,
+      "priceImpactPct": "1",
+      "routePlan": [
+        {
+          "swapInfo": {
+            "ammKey": "5JJR9hjiz8qrh7z6LCZNpz9iVMid25D7TPGUtPGPwirc",
+            "label": "Pump.fun Amm",
+            "inputMint": "So11111111111111111111111111111111111111112",
+            "outputMint": "GCo9zWFUpt9RGobjyaMzEvY4h2w23PQC6mbdejqXpump",
+            "inAmount": "10000000",
+            "outAmount": "12687452678",
+            "updateContextSlot": "455568348"
+          },
+          "percent": null,
+          "bps": 10000
+        }
+      ]
+    },
+    "late": {
+      "inputMint": "So11111111111111111111111111111111111111112",
+      "inAmount": "10000000",
+      "outputMint": "GCo9zWFUpt9RGobjyaMzEvY4h2w23PQC6mbdejqXpump",
+      "outAmount": "12614708140",
+      "otherAmountThreshold": "12551634600",
+      "swapMode": "ExactIn",
+      "slippageBps": 50,
+      "platformFee": null,
+      "priceImpactPct": "1",
+      "routePlan": [
+        {
+          "swapInfo": {
+            "ammKey": "5JJR9hjiz8qrh7z6LCZNpz9iVMid25D7TPGUtPGPwirc",
+            "label": "Pump.fun Amm",
+            "inputMint": "So11111111111111111111111111111111111111112",
+            "outputMint": "GCo9zWFUpt9RGobjyaMzEvY4h2w23PQC6mbdejqXpump",
+            "inAmount": "10000000",
+            "outAmount": "12614708140",
+            "updateContextSlot": "455568480"
+          },
+          "percent": null,
+          "bps": 10000
+        }
+      ]
+    }
+  },
+  "provenance": {
+    "source_run": "copybot-technical-source-copy-20261011-25",
+    "timestamps": "Fresh synthetic local admissions; saved amount/quote operands only, never live proof",
+    "source_facts_sha256": "29d8cc4513764739d2e3b461f296359d2efbdf7638039edaeaff8f55e4b2e7dc",
+    "early": {
+      "source": "technical-source-copy-25/control/http-evidence/response-016459.json",
+      "sha256": "a4aa079713642b877e229f00b9c3b9541e9caf5c37e9727b0bad9ed82a82fce9",
+      "projection_keys": [
+        "inputMint",
+        "inAmount",
+        "outputMint",
+        "outAmount",
+        "otherAmountThreshold",
+        "swapMode",
+        "slippageBps",
+        "platformFee",
+        "priceImpactPct",
+        "routePlan"
+      ]
+    },
+    "late": {
+      "source": "technical-source-copy-25/control/http-evidence/response-016464.json",
+      "sha256": "01a1d26b7e523eaa629e135c3a4d834474d92424b7b3ce1bd3a12e18f2042834",
+      "projection_keys": [
+        "inputMint",
+        "inAmount",
+        "outputMint",
+        "outAmount",
+        "otherAmountThreshold",
+        "swapMode",
+        "slippageBps",
+        "platformFee",
+        "priceImpactPct",
+        "routePlan"
+      ]
+    }
+  }
+}

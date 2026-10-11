@@ -33,3 +33,6 @@ mod native_buy_runner_tests;
 mod native_buy_cohort_tests;
 #[path = "cohort_fence_retry_tests.rs"]
 mod cohort_fence_retry_tests;
+
+#[path = "native_cohort_fee_tests.rs"]
+mod native_cohort_fee_tests;
