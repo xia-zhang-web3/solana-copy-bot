@@ -87,6 +87,18 @@ impl Fixture {
     }
     pub async fn ingress(&self, c: &AppConfig) -> Result<()> {
         let (mut consumer, tx) = f::start(&self.db, c, "b135-actual").await?;
+        self.replay_started(&mut consumer, tx).await?;
+        // Reopen through the actual consumer/recovery boundary too.
+        let (mut reopened, tx) = f::start(&self.db, c, "b135-recovery").await?;
+        tx.send(copybot_ingestion::ReplayInput::End(1)).await?;
+        f::drain(&mut reopened, &self.db).await?;
+        Ok(())
+    }
+    pub async fn replay_started(
+        &self,
+        consumer: &mut crate::association_consumer::AssociationConsumer,
+        tx: tokio::sync::mpsc::Sender<copybot_ingestion::ReplayInput>,
+    ) -> Result<()> {
         let names = p::frames(&self.meta);
         let producer = tokio::spawn(async move {
             for (n, name) in names.iter().enumerate() {
@@ -99,12 +111,8 @@ impl Fixture {
             tx.send(copybot_ingestion::ReplayInput::End(9)).await?;
             Ok::<_, anyhow::Error>(())
         });
-        f::drain(&mut consumer, &self.db).await?;
+        f::drain(consumer, &self.db).await?;
         producer.await??;
-        // Reopen through the actual consumer/recovery boundary too.
-        let (mut reopened, tx) = f::start(&self.db, c, "b135-recovery").await?;
-        tx.send(copybot_ingestion::ReplayInput::End(1)).await?;
-        f::drain(&mut reopened, &self.db).await?;
         Ok(())
     }
     pub fn handoffs(&self) -> Result<i64> {
