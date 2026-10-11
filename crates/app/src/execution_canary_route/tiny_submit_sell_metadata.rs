@@ -53,6 +53,15 @@ pub(crate) async fn guarded_owned_position_sell_metadata(
             selected_raw,
         )
     };
+    if source.is_some_and(|s| crate::execution_quote_http::cohort::applies(config,
+        &s.signal.signal_id, &s.signal.wallet_id, &s.signal.side)) {
+        let result = crate::execution_quote_http::cohort::fetch(&http, config,
+            token, SOL_MINT, &amount_raw, quote_canary_slippage_limit_bps(config, SIDE_SELL)).await;
+        source_guard::recheck(source, store)?;
+        selection.recheck(store)?;
+        return finish(apply_owned_sell_quote_metadata(metadata, result?, &position,
+            QUOTE_SOURCE_GENERIC_METIS)?);
+    }
     let prefer_pump_fun = metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_PUMP_FUN_PAID);
     let mut pump_fun_preferred_error = None;
 

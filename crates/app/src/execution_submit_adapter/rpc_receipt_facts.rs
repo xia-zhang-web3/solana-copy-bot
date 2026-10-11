@@ -181,3 +181,7 @@ fn only_foreign_token_rows(result: &Value, wallet: &str, mint: &str) -> bool {
 #[cfg(test)]
 #[path = "../app_tests/run15_receipt_projection_tests.rs"]
 mod run15_receipt_projection_tests;
+
+#[cfg(test)]
+#[path = "../app_tests/native_cohort_route_receipt.rs"]
+pub(crate) mod route_fixture;

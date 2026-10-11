@@ -280,7 +280,7 @@ pub(super) fn bundle_without_price() -> Result<Value> {
     value["computeBudgetInstructions"].as_array_mut().unwrap().remove(1);
     Ok(value)
 }
-fn receipt(payload: &str, signature: &str, wallet: &str) -> Result<Value> {
+pub(super) fn receipt(payload: &str, signature: &str, wallet: &str) -> Result<Value> {
     let message = crate::execution_transaction_wire::decode_message(payload, |_| Ok(()))?;
     let keys = &message.binding.accounts;
     let payer = key().verifying_key().to_bytes();

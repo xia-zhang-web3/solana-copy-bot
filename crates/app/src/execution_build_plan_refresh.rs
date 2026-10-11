@@ -61,6 +61,15 @@ pub(crate) async fn refresh_tiny_buy_build_plan_metadata_inner(
     if let Some(quote) = external_quote {
         return Ok(apply_fresh_quote(metadata, quote, max_slippage_bps, QUOTE_SOURCE_GENERIC_METIS));
     }
+    if crate::execution_quote_http::cohort::applies(config,
+        &signal.signal_id, &signal.wallet_id, &signal.side) {
+        return Ok(match crate::execution_quote_http::cohort::fetch(
+            http, config, SOL_MINT, &signal.token, &amount_raw, max_slippage_bps).await {
+            Ok(quote) => apply_fresh_quote(metadata, quote, max_slippage_bps,
+                QUOTE_SOURCE_GENERIC_METIS),
+            Err(_) => fresh_quote_error_metadata(metadata, QUOTE_SOURCE_GENERIC_METIS),
+        });
+    }
     if metadata.quote_source.as_deref() == Some(QUOTE_SOURCE_PUMP_FUN_PAID) {
         match fetch_pump_fun_quote_sample(http, config, SIDE_BUY, &signal.token, &amount_raw).await
         {

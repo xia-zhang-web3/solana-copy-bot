@@ -27,7 +27,6 @@ use copybot_storage_core::{
 };
 use std::future::Future;
 use std::pin::Pin;
-
 mod confirmation;
 mod confirmation_boundary;
 #[cfg(test)]
@@ -54,7 +53,6 @@ mod submit_plan;
 pub(crate) mod tiny_runner;
 mod transport;
 mod transport_record;
-
 pub(crate) use self::confirmation::{
     build_confirmation_request_from_order, ExecutionConfirmationProof,
     ExecutionConfirmationRequest, ExecutionConfirmationTrackerOutcome,
@@ -108,9 +106,7 @@ pub(crate) use self::transport::{ExecutionSubmitTransport, NoSendExecutionSubmit
 pub(crate) use self::transport_record::record_submit_transport_outcome;
 #[cfg(test)]
 pub(crate) use self::transport_record::ExecutionSubmitTransportRecordOutcome;
-
 const EXECUTION_SUBMIT_ROUTE_RPC_DRY_RUN: &str = "rpc_dry_run";
-
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ExecutionBuildPlanMetadata {
     #[serde(skip)]
@@ -598,3 +594,6 @@ pub(crate) fn soft_swap_instructions_failure_proof(error: &anyhow::Error) -> Opt
     }
     None
 }
+
+#[cfg(test)]
+pub(crate) use self::rpc_receipt_facts::route_fixture::parse as test_route_receipt_facts;

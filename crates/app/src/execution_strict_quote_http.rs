@@ -36,7 +36,13 @@ pub(super) async fn fetch_with_body(
     };
     let outcome = async {
         recheck()?;
-        let request = build_quote_request(
+        let cohort = crate::execution_quote_http::cohort::applies(config,
+            &binding.intent_id, &binding.source_wallet, &binding.side);
+        let slippage = crate::execution_quote_canary_helpers::quote_canary_slippage_limit_bps(config, "sell");
+        let mut request = if cohort {
+            crate::execution_quote_http::build_owner_direct_quote_request(http, config,
+                &binding.mint, &binding.output_mint, &binding.raw.to_string(), slippage)?
+        } else { build_quote_request(
             http,
             &config.quote_canary_base_url,
             &config.quote_canary_api_key,
@@ -44,8 +50,9 @@ pub(super) async fn fetch_with_body(
             &binding.mint,
             &binding.output_mint,
             &binding.raw.to_string(),
-            crate::execution_quote_canary_helpers::quote_canary_slippage_limit_bps(config, "sell"),
-        )?;
+            slippage,
+        )? };
+        *request.timeout_mut() = Some(std::time::Duration::from_millis(config.quote_canary_timeout_ms.min(10_000)));
         clock = Some(QuoteAttemptClock::start());
         let mut response = http.execute(request).await;
         response_ts = response.is_ok().then(Utc::now);
@@ -84,6 +91,10 @@ pub(super) async fn fetch_with_body(
                 && value["swapMode"].as_str() == Some("ExactIn"),
             "strict quote response mint/side conflict"
         );
+        if cohort {
+            crate::execution_quote_http::cohort::validate(&value, &binding.mint,
+                &binding.output_mint, &binding.raw.to_string(), slippage)?;
+        }
         let mut q = quote_sample_from_json(value)?;
         ensure!(
             q.in_amount == binding.raw.to_string()

@@ -44,6 +44,13 @@ pub(super) async fn fetch_guarded_quotes<E, F: Fn() -> Result<(), E>>(
     check: F,
 ) -> Result<Quotes, E> {
     check()?;
+    if crate::execution_quote_http::cohort::applies(config,
+        event.signal_id.as_deref().unwrap_or(""), &event.wallet_id, &event.side) {
+        let result = crate::execution_quote_http::cohort::fetch(
+            http, config, input_mint, output_mint, amount, limit_bps).await;
+        check()?;
+        return Ok((result, None));
+    }
     let generic = async {
         check()?;
         let result =

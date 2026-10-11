@@ -1,3 +1,5 @@
+#[path = "execution_cohort_quote.rs"]
+pub(crate) mod cohort;
 use crate::execution_quote_canary_helpers::{
     numeric_field, quote_url, string_field, truncate_for_log, QuoteSample,
 };
@@ -224,7 +226,7 @@ pub(crate) fn build_owner_quote_request(
         amount_raw, slippage_bps)
 }
 
-fn build_owner_direct_quote_request(
+pub(crate) fn build_owner_direct_quote_request(
     http: &reqwest::Client, config: &ExecutionConfig, input_mint: &str,
     output_mint: &str, amount_raw: &str, slippage_bps: u64,
 ) -> Result<reqwest::Request> {

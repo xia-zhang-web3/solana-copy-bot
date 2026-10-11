@@ -36,3 +36,6 @@ mod cohort_fence_retry_tests;
 
 #[path = "native_cohort_fee_tests.rs"]
 mod native_cohort_fee_tests;
+
+#[path = "native_cohort_route_tests.rs"]
+mod native_cohort_route_tests;
