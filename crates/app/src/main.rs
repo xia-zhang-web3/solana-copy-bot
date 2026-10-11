@@ -80,6 +80,7 @@ mod execution_owner_exit;
 mod execution_owner_exit_wire;
 mod execution_owner_buy;
 mod execution_owner_roundtrip;
+mod execution_owner_source_gate;
 mod execution_only_loop;
 mod execution_owner_buy_rpc;
 mod execution_owner_buy_quote;

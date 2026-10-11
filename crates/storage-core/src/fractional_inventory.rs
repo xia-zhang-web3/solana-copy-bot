@@ -6,6 +6,9 @@ mod rows;
 mod schema;
 #[path = "fractional_inventory_source.rs"]
 mod source;
+#[path = "fractional_inventory_jupiter.rs"]
+mod jupiter;
+pub use jupiter::{prove_jupiter_source_sell, JupiterSourceSellProof, JUPITER};
 use super::QuoteBinding;
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};

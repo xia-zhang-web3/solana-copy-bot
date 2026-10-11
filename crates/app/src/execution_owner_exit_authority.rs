@@ -8,10 +8,10 @@ use copybot_storage_core::{OwnerExitIntent, SqliteStore};
 pub(crate) fn configured(config: &ExecutionConfig) -> Result<Option<OwnerExitIntent>> {
     let Some(p) = config.owner_exit.as_ref() else { return Ok(None); };
     copybot_config::validate_owner_exit(config)?;
-    Ok(Some(from_config(p)?))
+    Ok(Some(from_config(p, config)?))
 }
 
-fn from_config(p: &OwnerExitConfig) -> Result<OwnerExitIntent> {
+fn from_config(p: &OwnerExitConfig, config: &ExecutionConfig) -> Result<OwnerExitIntent> {
     for (key, label) in [(&p.wallet_pubkey, "owner_exit_wallet"),
         (&p.signer_pubkey, "owner_exit_signer"),
         (&p.genesis_hash, "owner_exit_genesis"), (&p.mint, "owner_exit_mint")] {
@@ -20,7 +20,7 @@ fn from_config(p: &OwnerExitConfig) -> Result<OwnerExitIntent> {
     let activated_at = DateTime::parse_from_rfc3339(&p.activated_at)?.with_timezone(&Utc);
     let expires_at = DateTime::parse_from_rfc3339(&p.expires_at)?.with_timezone(&Utc);
     ensure!(activated_at < expires_at, "owner_exit_window");
-    let payload = serde_json::to_vec(&serde_json::json!({
+    let mut payload = serde_json::json!({
         "policy": p.policy, "run_id": p.run_id, "intent_id": p.intent_id,
         "buy_order_id": p.buy_order_id, "buy_receipt_signature": p.buy_receipt_signature,
         "position_id": p.position_id, "wallet": p.wallet_pubkey,
@@ -31,7 +31,10 @@ fn from_config(p: &OwnerExitConfig) -> Result<OwnerExitIntent> {
         "min_reserve_lamports": p.min_reserve_lamports,
         "max_slippage_bps": p.max_slippage_bps,
         "max_daily_loss_lamports": p.max_daily_loss_lamports,
-    }))?;
+    });
+    if let Some(gate) = config.owner_technical_buy.as_ref().and_then(|p|p.source_copy_exit_gate.as_ref()) {
+        payload["source_copy_exit_gate"] = serde_json::to_value(gate)?;
+    }
     Ok(OwnerExitIntent {
         intent_id: p.intent_id.clone(), run_id: p.run_id.clone(),
         buy_order_id: p.buy_order_id.clone(),
@@ -40,7 +43,7 @@ fn from_config(p: &OwnerExitConfig) -> Result<OwnerExitIntent> {
         signer: p.signer_pubkey.clone(), genesis_hash: p.genesis_hash.clone(),
         mint: p.mint.clone(), amount_raw: p.amount_raw, decimals: p.decimals,
         route: p.route.clone(), activated_at, expires_at,
-        authority_sha256: crate::execution_owned_sell_rpc::digest(payload),
+        authority_sha256: crate::execution_owned_sell_rpc::digest(serde_json::to_vec(&payload)?),
         max_priority_fee_lamports: p.max_priority_fee_lamports,
         min_reserve_lamports: p.min_reserve_lamports,
         max_slippage_bps: u32::try_from(p.max_slippage_bps)?,
@@ -61,6 +64,7 @@ pub(crate) fn current(
         "owner_exit_expired");
     ensure!(!std::path::Path::new(&config.canary_kill_switch_path).exists(),
         "owner_exit_kill_switch");
+    ensure!(crate::execution_owner_source_gate::ready(config,store,now)?, "source_copy_gate_hold");
     let position = store.load_execution_canary_open_position(&expected.mint)?
         .context("owner_exit_position_missing")?;
     ensure!(position.position_id == expected.position_id

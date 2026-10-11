@@ -51,6 +51,11 @@ mod owner_buy_tests;
 mod execution_only_loop_tests;
 mod owner_roundtrip_fixture;
 mod owner_roundtrip_tests;
+mod owner_source_gate_fixture;
+mod owner_source_gate_tests;
+mod owner_source_gate_config_tests;
+mod controlled_copy_pipeline_fixture;
+mod controlled_copy_pipeline_tests;
 mod owner_exit_tests;
 mod owner_exit_test_fixture;
 mod owner_exit_assembler_tests;
@@ -744,3 +749,5 @@ mod index_recovery_binary_fixture;
 
 #[path = "app_tests/shutdown_signal_tests.rs"]
 mod shutdown_signal_tests;
+#[path = "app_tests/controlled_source_receipt_tests.rs"]
+mod controlled_source_receipt_tests;

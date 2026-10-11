@@ -26,6 +26,9 @@ pub(in crate::source) fn infer(
         depth,
     };
     let v = View {
+        versioned: Some(message.versioned),
+        required_signatures: message.header.as_ref().map(|h|h.num_required_signatures),
+        fee: Some(meta.fee),
         successful: meta.err.is_none(),
         owned_sol: rows(&meta.pre_token_balances, Some(signer))
             .zip(rows(&meta.post_token_balances, Some(signer))),

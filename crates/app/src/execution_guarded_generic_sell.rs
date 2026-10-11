@@ -136,7 +136,7 @@ fn assemble_unsigned(
                 "owner_exit_zero_priority_mismatch"
             );
         }
-        crate::execution_owner_exit_wire::verify(binding.request(), &payload)?;
+        crate::execution_owner_source_gate::verify_exit_wire(config,binding.request(), &payload)?;
     }
     crate::execution_signing_envelope::build_serialized_transaction_execution_envelope(
         binding.request(),

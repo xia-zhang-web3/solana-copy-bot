@@ -22,7 +22,7 @@ async fn execution_only_scheduler_stops_without_ingress_or_discovery() -> Result
         activated_at: Utc::now().to_rfc3339(), expires_at: Utc::now().to_rfc3339(),
         max_priority_fee_lamports: 50_000, min_reserve_lamports: 160_200_031,
         max_slippage_bps: 50, max_daily_loss_lamports: 20_000_000,
-        max_open_positions: 1, max_buy_count: 1,
+        max_open_positions: 1, max_buy_count: 1, source_copy_exit_gate: None,
     });
     let runner = crate::execution_canary::ExecutionCanaryRunner::new(config);
     let stop = async {

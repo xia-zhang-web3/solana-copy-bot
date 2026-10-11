@@ -27,6 +27,7 @@ pub(crate) fn exit_config(c: &ExecutionConfig,s: &SqliteStore) -> Result<Option<
         let Some(order)=s.load_execution_canary_order(&buy)? else {return Ok(None)};
         if order.status != copybot_storage_core::EXECUTION_STATUS_CANARY_CONFIRMED
             || !s.execution_canary_fill_exists(&buy)? {return Ok(None)}
+        if !crate::execution_owner_source_gate::ready(c,s,Utc::now())? {return Ok(None)}
         let facts=s.load_execution_canary_receipt_facts(&buy)?.context("owner_roundtrip_receipt_missing")?;
         let raw=facts.token_delta.context("owner_roundtrip_quantity_missing")?;
         ensure!(facts.wallet_pubkey == p.wallet_pubkey && facts.token == p.mint && facts.side == "buy"

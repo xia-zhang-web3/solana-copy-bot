@@ -77,8 +77,8 @@ pub(crate) fn build_envelope<A: ExecutionSubmitAdapter + ?Sized>(
                 )?)
             } else { None };
             let exit_wire = if request.signal_id.starts_with("owner-exit:") {
-                Some(crate::execution_owner_exit_wire::verify(
-                    request, &payload.serialized_transaction_base64,
+                Some(crate::execution_owner_source_gate::verify_exit_wire(
+                    adapter.native_floor_config()?, request, &payload.serialized_transaction_base64,
                 )?)
             } else { None };
             let mut envelope = if let Some(signed) =

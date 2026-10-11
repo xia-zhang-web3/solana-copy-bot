@@ -9,6 +9,11 @@ pub(super) fn verify(t: &Value, keys: &[String], b: &QuoteBinding, n: u64) -> Re
     let instructions = t["transaction"]["message"]["instructions"]
         .as_array()
         .context("fraction_source_instructions")?;
+    if instructions.iter().any(|i| i["programIdIndex"].as_u64()
+        .and_then(|n| keys.get(n as usize)).is_some_and(|p| p == super::JUPITER)) {
+        ensure!(b.output_mint == "So11111111111111111111111111111111111111112", "jupiter_source_output_mint");
+        return Ok(super::prove_jupiter_source_sell(t,&b.source_wallet,&b.mint,b.decimals,n)?.source_account);
+    }
     if instructions.iter().any(|i| {
         i["programIdIndex"]
             .as_u64()

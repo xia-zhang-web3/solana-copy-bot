@@ -11,7 +11,7 @@ pub(crate) fn configured(config: &ExecutionConfig) -> Result<Option<OwnerTechnic
     Ok(Some(from_config(p)?))
 }
 
-fn from_config(p: &OwnerTechnicalBuyConfig) -> Result<OwnerTechnicalBuyIntent> {
+pub(crate) fn from_config(p: &OwnerTechnicalBuyConfig) -> Result<OwnerTechnicalBuyIntent> {
     for (key, label) in [(&p.wallet_pubkey, "owner_buy_wallet"),
         (&p.signer_pubkey, "owner_buy_signer"),
         (&p.genesis_hash, "owner_buy_genesis"), (&p.mint, "owner_buy_mint")] {
@@ -20,7 +20,7 @@ fn from_config(p: &OwnerTechnicalBuyConfig) -> Result<OwnerTechnicalBuyIntent> {
     let activated_at = DateTime::parse_from_rfc3339(&p.activated_at)?.with_timezone(&Utc);
     let expires_at = DateTime::parse_from_rfc3339(&p.expires_at)?.with_timezone(&Utc);
     ensure!(activated_at < expires_at, "owner_buy_window");
-    let payload = serde_json::to_vec(&serde_json::json!({
+    let mut payload = serde_json::json!({
         "policy": p.policy, "run_id": p.run_id, "intent_id": p.intent_id,
         "wallet": p.wallet_pubkey, "signer": p.signer_pubkey,
         "genesis_hash": p.genesis_hash, "mint": p.mint,
@@ -32,8 +32,11 @@ fn from_config(p: &OwnerTechnicalBuyConfig) -> Result<OwnerTechnicalBuyIntent> {
         "max_daily_loss_lamports": p.max_daily_loss_lamports,
         "max_open_positions": p.max_open_positions,
         "max_buy_count": p.max_buy_count,
-    }))?;
-    let authority_sha256 = crate::execution_owned_sell_rpc::digest(payload);
+    });
+    if let Some(gate) = &p.source_copy_exit_gate {
+        payload["source_copy_exit_gate"] = serde_json::to_value(gate)?;
+    }
+    let authority_sha256 = crate::execution_owned_sell_rpc::digest(serde_json::to_vec(&payload)?);
     Ok(OwnerTechnicalBuyIntent {
         intent_id: p.intent_id.clone(),
         run_id: p.run_id.clone(),

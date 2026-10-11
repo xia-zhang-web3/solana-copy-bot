@@ -31,10 +31,13 @@ pub struct OwnerTechnicalBuyConfig {
     pub max_daily_loss_lamports: u64,
     pub max_open_positions: u32,
     pub max_buy_count: u32,
+    #[serde(default)]
+    pub source_copy_exit_gate: Option<crate::OwnerSourceCopyGateConfig>,
 }
 
 pub fn validate_owner_technical_buy(e: &crate::ExecutionConfig) -> Result<()> {
     let Some(p) = &e.owner_technical_buy else { return Ok(()); };
+    crate::validate_owner_source_copy_gate(p)?;
     ensure!(matches!(p.policy.as_str(),OWNER_TECHNICAL_BUY_V1 | OWNER_EXECUTION_ROUNDTRIP_V1), "owner_buy_policy");
     if owner_execution_roundtrip(e) {
         ensure!(p.mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"

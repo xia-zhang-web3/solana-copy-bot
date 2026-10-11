@@ -10,6 +10,8 @@ mod ata;
 pub(super) mod json;
 #[path = "native_attribution_jupiter.rs"]
 mod jupiter;
+#[path = "native_attribution_jupiter_sell.rs"]
+mod jupiter_sell;
 #[path = "native_attribution_lifecycle.rs"]
 mod lifecycle;
 #[path = "native_attribution_legacy_buy.rs"]
@@ -45,6 +47,9 @@ pub(super) struct Trade {
 }
 
 pub(super) struct View {
+    pub versioned: Option<bool>,
+    pub required_signatures: Option<u32>,
+    pub fee: Option<u64>,
     pub keys: Vec<Option<String>>,
     pub first_signer: Option<String>,
     pub successful: bool,

@@ -141,7 +141,7 @@ pub(super) fn config(wallet: &str, url: &str, kill: &str) -> ExecutionConfig {
         expires_at: (now + Duration::minutes(20)).to_rfc3339(),
         max_priority_fee_lamports: 50_000, min_reserve_lamports: 50_000_000,
         max_slippage_bps: 500, max_daily_loss_lamports: 20_000_000,
-        max_open_positions: 1, max_buy_count: 1,
+        max_open_positions: 1, max_buy_count: 1, source_copy_exit_gate: None,
     });
     c
 }

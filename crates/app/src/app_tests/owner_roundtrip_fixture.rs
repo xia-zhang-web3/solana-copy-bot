@@ -26,6 +26,7 @@ pub(super) struct State {
     pub simulated: Option<String>,
     pub sent: Option<String>,
     pub side: &'static str,
+    pub source_profile: bool,
 }
 impl Drop for Case {
     fn drop(&mut self) {
@@ -199,6 +200,11 @@ fn response(r: &Value, payer: [u8; 32], kill: &str, s: &mut State) -> Result<Val
             let mut data=STANDARD.decode(b["swapInstruction"]["data"].as_str().unwrap())?;
             let input=if s.mode=="sell_wrong_input" {RECEIVED-1} else {RECEIVED};
             data[16..24].copy_from_slice(&input.to_le_bytes());b["swapInstruction"]["data"]=json!(STANDARD.encode(data));
+            if s.source_profile && s.mode != "sell_optional_destination" {
+                b["swapInstruction"]["accounts"][4] = json!({
+                    "pubkey":crate::execution_owner_buy_wire::JUPITER,"isSigner":false,"isWritable":false});
+            }
+            if s.mode=="sell_classic_variant" {return super::owner_source_gate_fixture::classic_exit_bundle(b);}
             return Ok(b);
         }
         ensure!(

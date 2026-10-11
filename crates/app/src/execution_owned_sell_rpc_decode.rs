@@ -278,6 +278,15 @@ pub(crate) fn sell(v: &Value, s: &AdmissionFacts) -> Result<u64> {
     );
     let keys = basic(v, &f.signature, &f.wallet, f.slot)?;
     let raw = e.amount_in_raw.parse::<u64>()?;
+    if v["transaction"]["message"]["instructions"].as_array().is_some_and(|ixs|ixs.iter().any(|i|
+        i["programId"].as_str() == Some(copybot_storage_core::ordered_sell_quote::fractional::inventory::JUPITER)
+        || i["programIdIndex"].as_u64().and_then(|n|keys.get(n as usize))
+            == Some(&copybot_storage_core::ordered_sell_quote::fractional::inventory::JUPITER))) {
+        let proof=copybot_storage_core::ordered_sell_quote::fractional::inventory::prove_jupiter_source_sell(
+            v,&f.wallet,&f.token_in,e.amount_in_decimals,raw)?;
+        ensure!(proof.sol_raw.to_string()==e.amount_out_raw,"owned_sell_source_decoded_amount");
+        return Ok(f.slot);
+    }
     if raydium::supported(v, &keys)? {
         let swap = raydium::prove(v, &keys, &f.wallet, &f.token_in, e.amount_in_decimals, true)?;
         ensure!(swap.input == raw && swap.output.to_string() == e.amount_out_raw

@@ -100,6 +100,8 @@ mod run15_version_tests;
 mod jupiter_raydium_fixture;
 #[path = "../source_tests/jupiter_raydium_attribution_tests.rs"]
 mod jupiter_raydium_attribution_tests;
+#[path = "../source_tests/controlled_jupiter_sell_tests.rs"]
+mod controlled_jupiter_sell_tests;
 
 #[path = "../source_tests/durable_transport_diagnostics_tests.rs"]
 mod durable_transport_diagnostics_tests;

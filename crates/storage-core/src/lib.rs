@@ -10,6 +10,7 @@ pub mod owner_technical_buy_migration;
 pub mod owner_exit_migration;
 pub mod owner_exit_amount_migration;
 mod owner_technical_buy;
+pub use native_buy::source_copy_gate as owner_source_copy_gate;
 mod owner_exit;
 mod owner_exit_binding;
 mod owner_exit_fee;

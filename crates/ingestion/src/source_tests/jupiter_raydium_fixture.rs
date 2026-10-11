@@ -134,7 +134,7 @@ pub(super) fn buy(fresh: bool, event: bool, tag: u8, input: u64) -> SubscribeUpd
         let mut data = vec![
             228, 69, 165, 46, 81, 203, 154, 29, 64, 198, 205, 232, 38, 8, 113, 226,
         ];
-        data.extend(bytes(&keys[11]));
+        data.extend(bytes(AMM));
         data.extend(bytes(SOL));
         data.extend(input.to_le_bytes());
         data.extend(bytes(MINT));

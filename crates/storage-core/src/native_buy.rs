@@ -6,6 +6,8 @@ use chrono::{DateTime, Utc};
 pub(crate) mod capture;
 #[path = "native_buy_verify.rs"]
 mod verify;
+#[path = "owner_source_copy_gate.rs"]
+pub mod source_copy_gate;
 #[path = "native_buy_promote.rs"]
 mod promote;
 #[path = "native_buy_cohort.rs"]

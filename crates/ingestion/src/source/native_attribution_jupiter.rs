@@ -102,7 +102,7 @@ fn prove(v: &View, signer: &str, index: usize, parent: &Instruction) -> Option<T
     }
     let mint = v.key(a[5])?;
     if mint == SOL_MINT {
-        return None;
+        return super::jupiter_sell::prove(v, signer);
     }
     let r = &a[9..];
     if v.key(r[0])? != AMM || v.key(r[1])? != TOKEN {
@@ -197,7 +197,7 @@ fn prove(v: &View, signer: &str, index: usize, parent: &Instruction) -> Option<T
     {
         return None;
     }
-    if cpis.len() == 4 && !event(v, &cpis[3], a[7], r[2], mint, sol, target)? {
+    if cpis.len() == 4 && !event(v, &cpis[3], a[7], r[0], mint, sol, target)? {
         return None;
     }
     for rows in [v.pre_tokens.as_ref()?, v.post_tokens.as_ref()?] {
@@ -274,7 +274,7 @@ fn event(
     v: &View,
     ix: &Instruction,
     authority: usize,
-    pool: usize,
+    amm_program: usize,
     mint: &str,
     input: u64,
     output: u64,
@@ -289,7 +289,7 @@ fn event(
                 == [
                     228, 69, 165, 46, 81, 203, 154, 29, 64, 198, 205, 232, 38, 8, 113, 226,
                 ]
-            && bs58::encode(&d[16..48]).into_string() == v.key(pool)?
+            && bs58::encode(&d[16..48]).into_string() == v.key(amm_program)?
             && bs58::encode(&d[48..80]).into_string() == SOL_MINT
             && wire::u64_at(d, 80)? == input
             && bs58::encode(&d[88..120]).into_string() == mint

@@ -28,7 +28,7 @@ pub(super) async fn prepare(
     crate::execution_owner_exit_authority::fresh_quote(request, now)?;
     let (message, priority) = crate::execution_priority_fee_wire::decode_priority_fee_message(
         &signed.signed_transaction_base64)?;
-    crate::execution_owner_exit_wire::verify(request, &signed.signed_transaction_base64)?;
+    crate::execution_owner_source_gate::verify_exit_wire(config,request, &signed.signed_transaction_base64)?;
     let client = NativeFundingRpcClient::new()?;
     let (total_fee, fee_slot) = client.collect_fee_only(
         transport.rpc_endpoint(), Duration::from_millis(gate.submit_timeout_ms),

@@ -30,6 +30,14 @@ pub(in crate::source) fn infer(
         )
     };
     let view = View {
+        versioned: match &result["version"] {
+            Value::String(s) if s == "legacy" => Some(false),
+            Value::Number(n) if n.as_u64() == Some(0) => Some(true),
+            _ => None,
+        },
+        required_signatures: result.pointer("/transaction/message/accountKeys").and_then(Value::as_array)
+            .map(|a|a.iter().filter(|k|k["signer"].as_bool()==Some(true)).count() as u32),
+        fee: meta["fee"].as_u64(),
         successful: meta.get("err") == Some(&Value::Null),
         owned_sol: rows(meta.get("preTokenBalances"), Some(signer))
             .zip(rows(meta.get("postTokenBalances"), Some(signer))),
@@ -65,7 +73,10 @@ pub(in crate::source) fn infer(
         post_tokens: rows(meta.get("postTokenBalances"), None),
         keys,
     };
-    attribute(&view, signer, programs)
+    if view.top.as_ref().is_some_and(|a|a.iter().any(|i|i.program.as_deref()==Some(super::jupiter_sell::JUPITER)
+        && i.accounts.as_ref().and_then(|a|a.get(5)).and_then(|i|view.key(*i))==Some(super::super::SOL_MINT))) {
+        super::jupiter_sell::attribute(&view,signer)
+    } else {attribute(&view, signer, programs)}
 }
 
 fn balances(value: Option<&Value>) -> Option<Vec<u64>> {
