@@ -4,6 +4,11 @@ use serde::Deserialize;
 
 pub const OWNER_ROUNDTRIP_EXIT_V1: &str = "owner_execution_roundtrip_exit_v1";
 pub const OWNER_EXIT_V1: &str = "owner_exit_v1";
+pub const OWNER_SOURCE_RECOVERY_EXIT_V1: &str = "owner_source_recovery_exit_v1";
+
+pub fn owner_source_recovery_exit(e: &crate::ExecutionConfig) -> bool {
+    e.owner_exit.as_ref().is_some_and(|p| p.policy == OWNER_SOURCE_RECOVERY_EXIT_V1)
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,8 +38,9 @@ pub struct OwnerExitConfig {
 
 pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
     let Some(p) = &e.owner_exit else { return Ok(()); };
-    ensure!(matches!(p.policy.as_str(),OWNER_EXIT_V1 | OWNER_ROUNDTRIP_EXIT_V1), "owner_exit_policy");
-    if p.policy == OWNER_ROUNDTRIP_EXIT_V1 {
+    ensure!(matches!(p.policy.as_str(),OWNER_EXIT_V1 | OWNER_ROUNDTRIP_EXIT_V1
+        | OWNER_SOURCE_RECOVERY_EXIT_V1), "owner_exit_policy");
+    if p.policy != OWNER_EXIT_V1 {
         let b=e.owner_technical_buy.as_ref().ok_or_else(||anyhow::anyhow!("owner_roundtrip_exit_parent"))?;
         ensure!(b.policy == crate::OWNER_EXECUTION_ROUNDTRIP_V1
             && p.intent_id == format!("execution-only:{}",b.intent_id)
@@ -47,6 +53,15 @@ pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
             && p.max_slippage_bps <= b.max_slippage_bps
             && p.max_daily_loss_lamports <= b.max_daily_loss_lamports,
             "owner_roundtrip_exit_parent");
+        if owner_source_recovery_exit(e) {
+            crate::validate_owner_source_copy_gate(b)?;
+            ensure!(!b.activate && !e.enabled && !e.canary_entry_submit_enabled
+                && e.native_fresh_buy.is_none() && e.technical_cohort.is_none()
+                && e.max_submit_attempts == 1 && p.min_reserve_lamports == b.min_reserve_lamports
+                && b.source_copy_exit_gate.as_ref().is_some_and(|g|
+                    g.bot_policy_identity != "0".repeat(64)),
+                "owner_source_recovery_sell_only");
+        }
     }
     for id in [&p.run_id, &p.intent_id] {
         ensure!((1..=128).contains(&id.len())

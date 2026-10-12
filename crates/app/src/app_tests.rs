@@ -54,6 +54,8 @@ mod owner_roundtrip_tests;
 mod owner_source_gate_fixture;
 mod owner_source_gate_tests;
 mod owner_source_gate_config_tests;
+mod owner_source_recovery_fixture;
+mod owner_source_recovery_tests;
 mod controlled_copy_pipeline_fixture;
 mod controlled_copy_pipeline_tests;
 mod owner_exit_tests;

@@ -4,6 +4,26 @@ use anyhow::{ensure, Context, Result};
 use copybot_core_types::TokenQuantity;
 use rusqlite::{params, Connection, OptionalExtension};
 
+impl crate::SqliteStore {
+    /// Recovery adds no lot or basis: the original exact fill and open position
+    /// must agree with the confirmed BUY wallet debit before every new dispatch.
+    pub fn validate_owner_source_recovery_buy_cost(&self, i: &OwnerExitIntent) -> Result<()> {
+        ensure_buy_binding(&self.conn, i)?;
+        let bound: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM fills v
+             JOIN positions x ON x.position_id=v.position_id
+             JOIN execution_canary_receipt_facts f ON f.order_id=v.order_id
+             WHERE v.order_id=?1 AND v.position_id=?2
+               AND v.accounting_basis='legacy_unclassified'
+               AND v.notional_lamports>0
+               AND v.notional_lamports=-CAST(f.wallet_native_delta AS INTEGER)
+               AND x.cost_lamports=v.notional_lamports)",
+            params![i.buy_order_id, i.position_id], |r| r.get(0))?;
+        ensure!(bound, "source_recovery_buy_cost_changed");
+        Ok(())
+    }
+}
+
 pub(crate) fn token_side(conn: &Connection, order_id: &str) -> Result<(String, String)> {
     let row: Option<(String, String, String, String)> = conn
         .query_row(

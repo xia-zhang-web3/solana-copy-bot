@@ -4,6 +4,8 @@ use anyhow::{ensure, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::{ExecutionConfig, OwnerExitConfig};
 use copybot_storage_core::{OwnerExitIntent, SqliteStore};
+#[path = "execution_owner_source_recovery.rs"]
+mod recovery;
 
 pub(crate) fn configured(config: &ExecutionConfig) -> Result<Option<OwnerExitIntent>> {
     let Some(p) = config.owner_exit.as_ref() else { return Ok(None); };
@@ -64,7 +66,11 @@ pub(crate) fn current(
         "owner_exit_expired");
     ensure!(!std::path::Path::new(&config.canary_kill_switch_path).exists(),
         "owner_exit_kill_switch");
-    ensure!(crate::execution_owner_source_gate::ready(config,store,now)?, "source_copy_gate_hold");
+    if copybot_config::owner_source_recovery_exit(config) {
+        recovery::current(config, store, expected, now)?;
+    } else {
+        ensure!(crate::execution_owner_source_gate::ready(config,store,now)?, "source_copy_gate_hold");
+    }
     let position = store.load_execution_canary_open_position(&expected.mint)?
         .context("owner_exit_position_missing")?;
     ensure!(position.position_id == expected.position_id

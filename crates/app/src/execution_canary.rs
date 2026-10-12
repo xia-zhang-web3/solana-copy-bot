@@ -196,6 +196,10 @@ impl ExecutionCanaryRunner {
             wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
             ..ExecutionCanaryTickSummary::default()
         };
+        if copybot_config::owner_source_recovery_exit(&self.config) {
+            let owner = crate::execution_owner_exit::tick(&self.config, store, now).await?;
+            apply_state_machine_summary(&mut summary, owner);return Ok(summary);
+        }
         if copybot_config::owner_execution_roundtrip(&self.config) {
             let owner=crate::execution_owner_roundtrip::tick(&self.config,store,now).await?;
             apply_state_machine_summary(&mut summary,owner);return Ok(summary);

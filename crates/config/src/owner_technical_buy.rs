@@ -45,8 +45,10 @@ pub fn validate_owner_technical_buy(e: &crate::ExecutionConfig) -> Result<()> {
             && p.amount_lamports == 10_000_000 && p.max_priority_fee_lamports <= 50_000
             && p.max_daily_loss_lamports <= 20_000_000 && p.min_reserve_lamports >= 160_200_031
             && e.quote_canary_sell_slippage_bps >= p.max_slippage_bps
-            && e.owner_exit.is_none() && e.max_submit_attempts == 1,
+            && (e.owner_exit.is_none() || (crate::owner_source_recovery_exit(e) && !p.activate))
+            && e.max_submit_attempts == 1,
             "owner_roundtrip_pair_or_limits");
+        if crate::owner_source_recovery_exit(e) { crate::validate_owner_exit(e)?; }
     }
     for id in [&p.run_id, &p.intent_id] {
         ensure!((1..=128).contains(&id.len())
