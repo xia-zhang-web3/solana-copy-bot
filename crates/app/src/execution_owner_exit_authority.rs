@@ -66,7 +66,9 @@ pub(crate) fn current(
         "owner_exit_expired");
     ensure!(!std::path::Path::new(&config.canary_kill_switch_path).exists(),
         "owner_exit_kill_switch");
-    if copybot_config::owner_source_recovery_exit(config) {
+    if copybot_config::owner_native_recovery_exit(config) {
+        store.validate_owner_native_recovery_exit(expected,now)?;
+    } else if copybot_config::owner_source_recovery_exit(config) {
         recovery::current(config, store, expected, now)?;
     } else {
         ensure!(crate::execution_owner_source_gate::ready(config,store,now)?, "source_copy_gate_hold");

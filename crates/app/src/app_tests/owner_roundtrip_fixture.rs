@@ -27,6 +27,7 @@ pub(super) struct State {
     pub sent: Option<String>,
     pub side: &'static str,
     pub source_profile: bool,
+    pub received_raw: Option<u64>,
 }
 impl Drop for Case {
     fn drop(&mut self) {
@@ -34,9 +35,10 @@ impl Drop for Case {
     }
 }
 impl Case {
-    pub async fn new() -> Result<Self> {
+    pub async fn new() -> Result<Self> { Self::with_seed([11;32]).await }
+    pub async fn with_seed(seed:[u8;32]) -> Result<Self> {
         let root = super::temporary_output_fixture::OutputRoot::new("owner-protected")?;
-        let key = SigningKey::from_bytes(&[11; 32]);
+        let key = SigningKey::from_bytes(&seed);
         let payer = key.verifying_key().to_bytes();
         let wallet = bs58::encode(payer).into_string();
         let signer = root.path().join("synthetic-key.json");
@@ -180,11 +182,12 @@ fn response(r: &Value, payer: [u8; 32], kill: &str, s: &mut State) -> Result<Val
             "unknown"
         });
     s.calls.push(method.into());
+    let received=s.received_raw.unwrap_or(RECEIVED);
     if method == "quote" {
         if r["params"]["inputMint"] == wire::USDC {
             if s.mode == "sell_quote_failure" {return Ok(json!({"error":"mock_sell_unavailable"}));}
             let mut q=super::owner_exit_test_fixture::quote();
-            q["inAmount"]=json!(RECEIVED.to_string());q["routePlan"][0]["swapInfo"]["inAmount"]=json!(RECEIVED.to_string());
+            q["inAmount"]=json!(received.to_string());q["routePlan"][0]["swapInfo"]["inAmount"]=json!(received.to_string());
             return Ok(q);
         }
         if s.mode == "buy_quote_failure" {return Ok(json!({"error":"mock_buy_unavailable"}));}
@@ -196,9 +199,9 @@ fn response(r: &Value, payer: [u8; 32], kill: &str, s: &mut State) -> Result<Val
     }
     if method == "instructions" {
         if r["quoteResponse"]["inputMint"] == wire::USDC {
-            let mut b=super::owner_exit_test_fixture::bundle()?;
+            let mut b=super::owner_exit_test_fixture::bundle_for(payer)?;
             let mut data=STANDARD.decode(b["swapInstruction"]["data"].as_str().unwrap())?;
-            let input=if s.mode=="sell_wrong_input" {RECEIVED-1} else {RECEIVED};
+            let input=if s.mode=="sell_wrong_input" {received-1} else {received};
             data[16..24].copy_from_slice(&input.to_le_bytes());b["swapInstruction"]["data"]=json!(STANDARD.encode(data));
             if s.source_profile && s.mode != "sell_optional_destination" {
                 b["swapInstruction"]["accounts"][4] = json!({
@@ -225,7 +228,7 @@ fn response(r: &Value, payer: [u8; 32], kill: &str, s: &mut State) -> Result<Val
                 json!({"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","executable":false,"data":[STANDARD.encode(bytes),"base64"]})
             } else if address == bs58::encode(ata).into_string() && s.sent.is_some() {
                 let mut bytes=[0u8;165];bytes[..32].copy_from_slice(&mint);bytes[32..64].copy_from_slice(&payer);
-                bytes[64..72].copy_from_slice(&RECEIVED.to_le_bytes());
+                bytes[64..72].copy_from_slice(&received.to_le_bytes());
                 json!({"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","executable":false,"data":[STANDARD.encode(bytes),"base64"]})
             } else {Value::Null};json!({"context":{"slot":120},"value":value})
         }
@@ -265,7 +268,7 @@ fn response(r: &Value, payer: [u8; 32], kill: &str, s: &mut State) -> Result<Val
         "getTransaction" if s.side == "sell" => {
             let mut value=super::owner_exit_test_fixture::receipt(s.sent.as_deref().unwrap(),r["params"][0].as_str().unwrap(),&wallet)?;
             value["meta"]["fee"]=json!(19000);value["meta"]["postBalances"][0]=json!(1_011_981_000_u64);
-            value["meta"]["preTokenBalances"][0]["uiTokenAmount"]["amount"]=json!(RECEIVED.to_string());
+            value["meta"]["preTokenBalances"][0]["uiTokenAmount"]["amount"]=json!(received.to_string());
             if s.mode == "partial_sell" {value["meta"]["postTokenBalances"][0]["uiTokenAmount"]["amount"]=json!("7");}
             value
         }

@@ -5,6 +5,11 @@ use serde::Deserialize;
 pub const OWNER_ROUNDTRIP_EXIT_V1: &str = "owner_execution_roundtrip_exit_v1";
 pub const OWNER_EXIT_V1: &str = "owner_exit_v1";
 pub const OWNER_SOURCE_RECOVERY_EXIT_V1: &str = "owner_source_recovery_exit_v1";
+pub const OWNER_NATIVE_RECOVERY_EXIT_V1: &str = "owner_native_recovery_exit_v1";
+
+pub fn owner_native_recovery_exit(e: &crate::ExecutionConfig) -> bool {
+    e.owner_exit.as_ref().is_some_and(|p| p.policy == OWNER_NATIVE_RECOVERY_EXIT_V1)
+}
 
 pub fn owner_source_recovery_exit(e: &crate::ExecutionConfig) -> bool {
     e.owner_exit.as_ref().is_some_and(|p| p.policy == OWNER_SOURCE_RECOVERY_EXIT_V1)
@@ -39,8 +44,21 @@ pub struct OwnerExitConfig {
 pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
     let Some(p) = &e.owner_exit else { return Ok(()); };
     ensure!(matches!(p.policy.as_str(),OWNER_EXIT_V1 | OWNER_ROUNDTRIP_EXIT_V1
-        | OWNER_SOURCE_RECOVERY_EXIT_V1), "owner_exit_policy");
-    if p.policy != OWNER_EXIT_V1 {
+        | OWNER_SOURCE_RECOVERY_EXIT_V1 | OWNER_NATIVE_RECOVERY_EXIT_V1), "owner_exit_policy");
+    ensure!(owner_native_recovery_exit(e) || (!p.intent_id.starts_with("native-recovery:")
+        && !p.buy_order_id.starts_with("exec-canary:native-buy-v1:")), "owner_exit_native_policy_required");
+    if owner_native_recovery_exit(e) {
+        let source = p.buy_order_id.strip_prefix("exec-canary:native-buy-v1:")
+            .ok_or_else(|| anyhow::anyhow!("owner_native_recovery_buy_identity"))?;
+        ensure!(!source.is_empty() && p.intent_id == format!("native-recovery:{source}")
+            && p.position_id == format!("exec-canary-pos:{}",p.buy_order_id)
+            && e.owner_technical_buy.is_none() && e.native_fresh_buy.is_none()
+            && e.technical_cohort.is_none() && e.owned_sell_preparation.is_none()
+            && !e.enabled && !e.canary_entry_submit_enabled && !e.tiny_experiment.activate
+            && e.max_submit_attempts == 1 && p.max_priority_fee_lamports <= 22_000
+            && e.canary_max_open_positions == 1,
+            "owner_native_recovery_sell_only");
+    } else if p.policy != OWNER_EXIT_V1 {
         let b=e.owner_technical_buy.as_ref().ok_or_else(||anyhow::anyhow!("owner_roundtrip_exit_parent"))?;
         ensure!(b.policy == crate::OWNER_EXECUTION_ROUNDTRIP_V1
             && p.intent_id == format!("execution-only:{}",b.intent_id)
@@ -74,7 +92,8 @@ pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
         "owner_exit_wallet_signer");
     ensure!(p.mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
         && p.decimals == 6 && (if p.policy == OWNER_EXIT_V1 {p.amount_raw == 1_167_085}
-            else {p.amount_raw > 0 && p.intent_id.starts_with("execution-only:")}),
+            else {p.amount_raw > 0 && (p.intent_id.starts_with("execution-only:")
+                || (owner_native_recovery_exit(e) && p.intent_id.starts_with("native-recovery:")))}),
         "owner_exit_exact_position_amount");
     ensure!(p.route == "jupiter_swap_instructions" && p.route == e.canary_route,
         "owner_exit_route");

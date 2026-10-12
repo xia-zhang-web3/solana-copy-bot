@@ -31,8 +31,8 @@ pub use technical_cohort::{validate_technical_cohort, TechnicalCohortConfig,
     TECHNICAL_COHORT_V1, CLASSIC_SPL_MINT_V1};
 pub use owner_technical_buy::{validate_owner_technical_buy, owner_execution_roundtrip, OwnerTechnicalBuyConfig, OWNER_TECHNICAL_BUY_V1, OWNER_EXECUTION_ROUNDTRIP_V1};
 pub use owner_source_copy_gate::{validate_owner_source_copy_gate, OwnerSourceCopyGateConfig, CONFIRMED_NATIVE_BOT_BUY_V1};
-pub use owner_exit::{validate_owner_exit, owner_source_recovery_exit, OwnerExitConfig,
-    OWNER_EXIT_V1, OWNER_ROUNDTRIP_EXIT_V1, OWNER_SOURCE_RECOVERY_EXIT_V1};
+pub use owner_exit::{validate_owner_exit, owner_source_recovery_exit, owner_native_recovery_exit, OwnerExitConfig,
+    OWNER_EXIT_V1, OWNER_ROUNDTRIP_EXIT_V1, OWNER_SOURCE_RECOVERY_EXIT_V1, OWNER_NATIVE_RECOVERY_EXIT_V1};
 pub use tiny_experiment::{TinyExperimentConfig, TinyPolicyMode};
 
 pub use self::discovery_v2_identity::{

@@ -15,7 +15,8 @@ use copybot_storage_core::{
 
 fn one_shot(config: &ExecutionConfig) -> bool {
     config.owner_exit.as_ref().is_some_and(|p| matches!(p.policy.as_str(),
-        copybot_config::OWNER_ROUNDTRIP_EXIT_V1 | copybot_config::OWNER_SOURCE_RECOVERY_EXIT_V1))
+        copybot_config::OWNER_ROUNDTRIP_EXIT_V1 | copybot_config::OWNER_SOURCE_RECOVERY_EXIT_V1
+        | copybot_config::OWNER_NATIVE_RECOVERY_EXIT_V1))
 }
 
 pub(crate) async fn tick(config: &ExecutionConfig, store: &SqliteStore,

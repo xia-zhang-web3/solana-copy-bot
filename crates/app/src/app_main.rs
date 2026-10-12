@@ -89,7 +89,8 @@ pub(crate) async fn run() -> Result<()> {
     )?;
     // Explicit owner execution needs the normal storage/risk startup, but has
     // no ingestion, Discovery, shadow service, or source freshness surface.
-    if copybot_config::owner_execution_roundtrip(&config.execution) {
+    if copybot_config::owner_execution_roundtrip(&config.execution)
+        || copybot_config::owner_native_recovery_exit(&config.execution) {
         store = run_observed_startup_step(
             "startup_sqlite_wal_autocheckpoint_restore",
             startup_step_policy(STARTUP_SQLITE_AUX_STEP_TIMEOUT),

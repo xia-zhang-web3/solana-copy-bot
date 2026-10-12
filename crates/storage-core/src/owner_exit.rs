@@ -78,6 +78,9 @@ impl SqliteDiscoveryStore {
                     && intent.max_slippage_bps <= parent.max_slippage_bps
                     && intent.max_daily_loss_lamports <= parent.max_daily_loss_lamports,"owner_roundtrip_exit_parent_changed");
             }
+            if intent.intent_id.starts_with("native-recovery:") {
+                crate::native_buy::recovery_exit::validate_parent(conn,intent)?;
+            }
             ensure_buy_binding(conn, intent)?;
             conn.execute("INSERT INTO owner_exit_intents(intent_id,run_id,buy_order_id,buy_receipt_signature,
                 position_id,wallet,signer,genesis_hash,mint,amount_raw,decimals,route,activated_at,expires_at,
@@ -212,7 +215,7 @@ impl SqliteDiscoveryStore {
     /// dispatch or receipt is never rearmed here. One local failed attempt may
     /// be retried with a new quote under the original unexpired authority.
     pub fn rearm_owner_exit_undispatched(&self, id: &str) -> Result<bool> {
-        if id.starts_with("execution-only:") {return Ok(false)}
+        if id.starts_with("execution-only:") || id.starts_with("native-recovery:") {return Ok(false)}
         let order_id = owner_exit_order_id(id);
         self.with_immediate_transaction_retry("rearm undispatched owner EXIT", |conn| {
             let intent = self.load_owner_exit_intent(id)?.context("owner_exit_intent_missing")?;
@@ -262,7 +265,7 @@ impl SqliteDiscoveryStore {
     }
 
     pub fn owner_exit_failed_retry_available(&self, id: &str) -> Result<bool> {
-        if id.starts_with("execution-only:") {return Ok(false)}
+        if id.starts_with("execution-only:") || id.starts_with("native-recovery:") {return Ok(false)}
         let used: bool = self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM owner_exit_pre_dispatch_rearms WHERE intent_id=?1)",
             [id], |row| row.get(0))?;
@@ -326,6 +329,9 @@ impl SqliteDiscoveryStore {
             }
             let now = clock()?;
             active(&intent, now)?;
+            if intent.intent_id.starts_with("native-recovery:") {
+                crate::native_buy::recovery_exit::validate_parent(conn,&intent)?;
+            }
             ensure_buy_binding(conn, &intent)?;
             let current = self
                 .load_execution_canary_order(&expected.order_id)?
@@ -385,14 +391,18 @@ fn validate(i: &OwnerExitIntent) -> Result<()> {
     }
     ensure!(
         (i.buy_order_id == OWNER_EXIT_BUY_ORDER || (i.intent_id.starts_with("execution-only:")
-                && i.buy_order_id.starts_with("exec-canary:owner-buy:")))
+                && i.buy_order_id.starts_with("exec-canary:owner-buy:"))
+                || (i.intent_id.starts_with("native-recovery:")
+                    && i.buy_order_id == format!("exec-canary:native-buy-v1:{}",
+                        i.intent_id.strip_prefix("native-recovery:").unwrap())))
             && i.position_id == format!("exec-canary-pos:{}", i.buy_order_id)
             && !i.buy_receipt_signature.is_empty()
             && i.wallet == i.signer
             && !i.wallet.is_empty()
             && !i.genesis_hash.is_empty()
             && i.mint == OWNER_EXIT_MINT
-            && (i.amount_raw == OWNER_EXIT_RAW || (i.intent_id.starts_with("execution-only:") && i.amount_raw > 0))
+            && (i.amount_raw == OWNER_EXIT_RAW || ((i.intent_id.starts_with("execution-only:")
+                || i.intent_id.starts_with("native-recovery:")) && i.amount_raw > 0))
             && i.decimals == OWNER_EXIT_DECIMALS
             && !i.route.is_empty()
             && i.activated_at < i.expires_at

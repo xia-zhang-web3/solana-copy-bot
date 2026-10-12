@@ -72,6 +72,10 @@ pub(crate) fn validate_sell_receipt(conn: &Connection, order_id: &str, token: &s
 }
 
 pub(crate) fn ensure_buy_binding(conn: &Connection, i: &OwnerExitIntent) -> Result<()> {
+    if i.intent_id.starts_with("native-recovery:") {
+        return crate::native_buy::recovery_exit::ensure_binding(conn,&i.buy_order_id,
+            &i.buy_receipt_signature,&i.wallet,&i.genesis_hash,&i.mint,&i.position_id,i.amount_raw,i.decimals);
+    }
     ensure_buy_binding_parts(
         conn,
         &i.buy_order_id,
@@ -148,7 +152,11 @@ pub(crate) fn validate_position(
             && exact.is_some_and(|q| q.raw() == raw && q.decimals() == decimals),
         "owner_exit_exact_position_changed"
     );
-    ensure_buy_binding_parts(conn, &buy, &sig, &wallet, &genesis, &mint, &position,raw,decimals,id.starts_with("execution-only:"))
+    if id.starts_with("native-recovery:") {
+        crate::native_buy::recovery_exit::ensure_binding(conn,&buy,&sig,&wallet,&genesis,&mint,&position,raw,decimals)
+    } else {
+        ensure_buy_binding_parts(conn, &buy, &sig, &wallet, &genesis, &mint, &position,raw,decimals,id.starts_with("execution-only:"))
+    }
 }
 
 fn ensure_buy_binding_parts(

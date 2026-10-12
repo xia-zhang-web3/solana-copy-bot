@@ -12,6 +12,8 @@ pub mod source_copy_gate;
 mod promote;
 #[path = "native_buy_cohort.rs"]
 pub(crate) mod cohort;
+#[path = "owner_exit_native_binding.rs"]
+pub(crate) mod recovery_exit;
 #[path = "native_buy_epoch_selection.rs"]
 mod epoch_selection;
 pub(crate) use promote::activation_current;

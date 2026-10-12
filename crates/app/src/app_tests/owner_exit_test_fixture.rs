@@ -259,8 +259,9 @@ fn response(r: &Value, s: &mut State) -> Result<Value> {
     };
     Ok(json!({"jsonrpc":"2.0","id":r["id"],"result":result}))
 }
-pub(super) fn bundle() -> Result<Value> {
-    let all = instructions(key().verifying_key().to_bytes())?;
+pub(super) fn bundle() -> Result<Value> { bundle_for(key().verifying_key().to_bytes()) }
+pub(super) fn bundle_for(wallet:PubkeyBytes) -> Result<Value> {
+    let all = instructions(wallet)?;
     let encode = |ix: &SolanaInstruction| {
         json!({"programId":bs58::encode(ix.program_id).into_string(),
         "accounts":ix.accounts.iter().map(|a|json!({"pubkey":bs58::encode(a.pubkey).into_string(),
@@ -283,7 +284,7 @@ pub(super) fn bundle_without_price() -> Result<Value> {
 pub(super) fn receipt(payload: &str, signature: &str, wallet: &str) -> Result<Value> {
     let message = crate::execution_transaction_wire::decode_message(payload, |_| Ok(()))?;
     let keys = &message.binding.accounts;
-    let payer = key().verifying_key().to_bytes();
+    let payer = parse_pubkey(wallet,"fixture_receipt_wallet")?;
     let mint = parse_pubkey(USDC, "fixture_usdc")?;
     let source = associated_token_address(&payer, &mint, &token_program_id());
     let wsol = associated_token_address(&payer, &wsol_mint(), &token_program_id());

@@ -753,3 +753,6 @@ mod index_recovery_binary_fixture;
 mod shutdown_signal_tests;
 #[path = "app_tests/controlled_source_receipt_tests.rs"]
 mod controlled_source_receipt_tests;
+
+mod owner_native_recovery_fixture;
+mod owner_native_recovery_tests;

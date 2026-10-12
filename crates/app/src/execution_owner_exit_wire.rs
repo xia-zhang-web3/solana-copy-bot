@@ -29,7 +29,8 @@ pub(crate) fn verify(request: &ExecutionSubmitRequest,
         && (request.wallet_id.is_empty() || request.wallet_pubkey == request.wallet_id)
         && request.token == USDC && request.slippage_tolerance_bps <= 50,
         "owner_exit_wire_request");
-    let amount = if request.signal_id.starts_with("owner-exit:execution-only:") {
+    let amount = if request.signal_id.starts_with("owner-exit:execution-only:")
+        || request.signal_id.starts_with("owner-exit:native-recovery:") {
         request.metadata.quote_in_amount_raw.as_deref().context("owner_exit_wire_amount")?.parse::<u64>()?
     } else { AMOUNT };
     ensure!(amount > 0,"owner_exit_wire_amount");
