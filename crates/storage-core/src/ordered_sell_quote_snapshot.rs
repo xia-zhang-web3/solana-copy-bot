@@ -117,17 +117,13 @@ fn read_base_with_preparation(
         &p.current.parent_paths,
         anchors,
     ))?;
-    // Short snapshots retain their historical identity. A long, fully checked
-    // parent path remains bound without copying its entire graph into every
-    // quote/fractional decision. The persisted graph is never pruned here.
-    let snapshot_version = if snapshot_wire.len() <= 120_000 {
-        snapshot_wire
-    } else {
-        format!(
-            "strict_quote_snapshot_v2:sha256:{:x}",
-            Sha256::digest(snapshot_wire.as_bytes())
-        )
-    };
+    // Fractional bindings retain this identity twice. Always use the existing
+    // compact identity of the fully validated tuple, not its escaped graph text.
+    // The persisted graph and every revalidation input remain unchanged.
+    let snapshot_version = format!(
+        "strict_quote_snapshot_v2:sha256:{:x}",
+        Sha256::digest(snapshot_wire.as_bytes())
+    );
     Ok(Ok((
         QuoteBinding {
             version: 1,
