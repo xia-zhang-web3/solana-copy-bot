@@ -27,7 +27,7 @@ fn balance(wallet: &str, mint: &str, raw: &str) -> Value {
         "uiTokenAmount":{"amount":raw,"decimals":3}})
 }
 
-pub(super) fn evidence(prefix_inflow: bool) -> Result<Evidence> {
+pub(in crate::app_tests) fn evidence(prefix_inflow: bool) -> Result<Evidence> {
     let meta: Value = serde_json::from_slice(&std::fs::read(inputs().join("chain.json"))?)?;
     let mut target: Value =
         serde_json::from_slice(&std::fs::read(inputs().join("sell-rpc.json"))?)?;

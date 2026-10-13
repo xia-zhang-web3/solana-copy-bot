@@ -16,6 +16,7 @@ pub(crate) fn validate_execution_runtime_contract(
             "execution.enabled=true is not supported by copybot-app after execution runtime quarantine; keep execution.enabled=false"
         ));
     }
+    crate::execution_protected_token_baseline::configured(config)?;
     validate_execution_canary_contract(config)?;
     Ok(())
 }

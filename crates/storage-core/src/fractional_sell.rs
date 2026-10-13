@@ -19,6 +19,8 @@ pub struct Binding {
     pub generation: String,
     pub decision_id: String,
     pub producer_identity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected_execution_baseline: Option<inventory::ProtectedExecutionBaseline>,
 }
 fn present(c: &Connection) -> Result<bool> {
     Ok(c.query_row(
@@ -55,6 +57,7 @@ pub(super) fn apply(
     }
     let d: Binding =
         serde_json::from_str(decision.as_deref().context("fraction_decision_missing")?)?;
+    if let Some(b) = &d.protected_execution_baseline { b.validate()?; }
     let intent = crate::ordered_source_sell::rows::load(c, &base.intent_id)?
         .context("fraction_native_intent")?;
     let a = &intent.first.sell.admission.facts;
@@ -166,6 +169,12 @@ impl SqliteDiscoveryStore {
         l: InboxLimits,
         now: DateTime<Utc>,
     ) -> Result<QuoteClaim> {
+        self.complete_fractional_sell_with_baseline(claim, evidence, l, now, None)
+    }
+    pub fn complete_fractional_sell_with_baseline(
+        &self, claim: &QuoteClaim, evidence: &inventory::Evidence, l: InboxLimits,
+        now: DateTime<Utc>, baseline: Option<&inventory::ProtectedExecutionBaseline>,
+    ) -> Result<QuoteClaim> {
         let evidence_wire = inventory::encode_evidence(evidence)?;
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         collection(&tx, claim, l, now)?;
@@ -192,14 +201,12 @@ impl SqliteDiscoveryStore {
                 && a.token_out == claim.binding.output_mint,
             "fraction_native_source_identity"
         );
-        let proof = inventory::verify(
-            evidence,
-            &claim.binding,
-            &a.signature,
-            a.slot,
-            exact.amount_in_raw.parse()?,
-            &facts.wallet_pubkey,
-        )?;
+        let proof = match baseline {
+            Some(b) => inventory::verify_with_baseline(evidence, &claim.binding,
+                &a.signature, a.slot, exact.amount_in_raw.parse()?, &facts.wallet_pubkey, Some(b))?,
+            None => inventory::verify(evidence, &claim.binding, &a.signature,
+                a.slot, exact.amount_in_raw.parse()?, &facts.wallet_pubkey)?,
+        };
         use copybot_core_types::association_delivery::Terminal;
         let terminal = prep
             .current
@@ -253,6 +260,7 @@ impl SqliteDiscoveryStore {
             generation: claim.binding.snapshot_version.clone(),
             decision_id: id,
             producer_identity,
+            protected_execution_baseline: baseline.cloned(),
         };
         let bytes: i64 = tx.query_row(
             "SELECT coalesce(sum(length(CAST(evidence AS BLOB))),0) FROM fractional_sell_decisions",

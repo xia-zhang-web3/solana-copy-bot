@@ -751,3 +751,7 @@ mod index_recovery_binary_fixture;
 mod shutdown_signal_tests;
 #[path = "app_tests/controlled_source_receipt_tests.rs"]
 mod controlled_source_receipt_tests;
+
+mod protected_usdc_fixture;
+mod protected_usdc_prepare;
+mod protected_usdc_tests;

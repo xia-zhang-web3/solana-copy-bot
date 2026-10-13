@@ -190,7 +190,10 @@ pub(crate) async fn prepare_owned(
         binding.body() == &response.body,
         "instruction_bundle_request_binding"
     );
+    let request = binding.request().clone();
     let transaction = assemble_unsigned(config, plan, &binding.bind(&response.value)?)?;
+    crate::execution_protected_token_baseline::wire(config,&request,
+        &transaction.serialized_transaction_base64,snapshot.quote.raw)?;
     let rpc=crate::execution_owned_sell_rpc::exchange(http,config,&crate::execution_owned_sell_rpc::endpoint(config)?,serde_json::json!({"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","method":"simulateTransaction","params":[transaction.serialized_transaction_base64,{"encoding":"base64","sigVerify":false,"replaceRecentBlockhash":!copybot_config::owned_sell_dispatch(config),"commitment":"finalized"}]}),check).await?;
     crate::execution_transaction_rpc_simulation::parse_rpc_simulation_response(
         rpc.value(),

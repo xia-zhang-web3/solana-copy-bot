@@ -43,6 +43,23 @@ pub fn encode_evidence(evidence: &Evidence) -> Result<String> {
 pub const CONTRACT: &str = "whole_wallet_parent_program_fraction_v1";
 pub const TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub const TOKEN22: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+pub const PROTECTED_USDC_POLICY: &str = "receipt_owned_lot_preserve_usdc_100_v1";
+pub const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProtectedExecutionBaseline {
+    pub policy: String,
+    pub amount_raw: u64,
+    pub token_account: String,
+}
+impl ProtectedExecutionBaseline {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.policy == PROTECTED_USDC_POLICY && self.amount_raw == 100
+            && copybot_core_types::association_parent::valid_hash(&self.token_account),
+            "fraction_protected_baseline_invalid");
+        Ok(())
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Page {
@@ -93,6 +110,12 @@ pub(super) fn verify(
     slot: u64,
     raw: u64,
     wallet: &str,
+) -> Result<Inventory> {
+    verify_with_baseline(e, b, signature, slot, raw, wallet, None)
+}
+pub(super) fn verify_with_baseline(
+    e: &Evidence, b: &QuoteBinding, signature: &str, slot: u64, raw: u64,
+    wallet: &str, baseline: Option<&ProtectedExecutionBaseline>,
 ) -> Result<Inventory> {
     ensure!(
         e.version == 1 && e.slot == slot && slot > 0,
@@ -230,9 +253,17 @@ pub(super) fn verify(
         .as_array()
         .context("fraction_wallet_inventory")?;
     ensure!(values.len() == 1, "fraction_wallet_model_unsupported");
-    let (_, mint, held, decimals) = rows::account(&values[0], wallet, None)?;
+    let (account, mint, held, decimals) = rows::account(&values[0], wallet, None)?;
+    let protected_raw = if let Some(baseline) = baseline {
+        baseline.validate()?;
+        ensure!(b.mint == USDC && b.decimals == 6 && account == baseline.token_account
+            && values[0]["account"]["owner"] == TOKEN,
+            "fraction_protected_baseline_identity");
+        baseline.amount_raw
+    } else { 0 };
+    let expected = b.raw.checked_add(protected_raw).context("fraction_wallet_amount_overflow")?;
     ensure!(
-        mint == b.mint && held == b.raw && decimals == b.decimals,
+        mint == b.mint && held == expected && decimals == b.decimals,
         "fraction_wallet_owned_conflict"
     );
     Ok(Inventory {

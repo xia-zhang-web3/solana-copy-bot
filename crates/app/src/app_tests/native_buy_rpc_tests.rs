@@ -16,6 +16,7 @@ fn config() -> ExecutionConfig {
         policy: RPC_FINALIZED_OWNED_SELL_V1.into(),
         tiny_dispatch: true,
         fractional_inventory: Some("whole_wallet_parent_program_fraction_v1".into()),
+        protected_bot_usdc_baseline: None,
         rpc_url: "http://127.0.0.1:1".into(),
         genesis_hash: "11111111111111111111111111111111".into(),
         identity: "native-buy-rpc-test".into(),

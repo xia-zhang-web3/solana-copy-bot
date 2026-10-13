@@ -24,7 +24,8 @@ mod schema;
 mod tiny_experiment;
 pub use owned_sell_preparation::{
     owned_sell_dispatch, owned_sell_flags, validate_owned_sell_preparation,
-    OwnedSellPreparationConfig, RPC_FINALIZED_OWNED_SELL_V1,
+    OwnedSellPreparationConfig, ProtectedBotUsdcBaselineConfig, PROTECTED_BOT_USDC_100_V1,
+    RPC_FINALIZED_OWNED_SELL_V1,
 };
 pub use native_fresh_buy::{native_first_buy_activation, NativeFreshBuyConfig, PROCESSED_SLOT_FENCE_AVAILABILITY_V1};
 pub use technical_cohort::{validate_technical_cohort, TechnicalCohortConfig,

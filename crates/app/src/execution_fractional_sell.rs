@@ -49,11 +49,14 @@ pub(crate) async fn bind_transport(
         "fraction_mode_required"
     );
     let producer_identity = super::identity(c)?;
+    let baseline = crate::execution_protected_token_baseline::configured(c)?;
     if let Some(d) = &claim.binding.fractional {
         ensure!(
             d.producer_identity == producer_identity,
             "fraction_producer_changed"
         );
+        ensure!(d.protected_execution_baseline == baseline,
+            "fraction_protected_baseline_changed");
         store.recheck_strict_sell_quote(&claim, limits, Utc::now())?;
         return Ok(claim);
     }
@@ -152,7 +155,7 @@ pub(crate) async fn bind_transport(
         }
     }
     let execution_accounts = read("getTokenAccountsByOwner", json!([c.canary_wallet_pubkey,{"mint":claim.binding.mint},{"encoding":"jsonParsed","commitment":"finalized"}])).await?;
-    store.complete_fractional_sell(
+    store.complete_fractional_sell_with_baseline(
         &claim,
         &Evidence {
             version: 1,
@@ -164,6 +167,7 @@ pub(crate) async fn bind_transport(
         },
         limits,
         Utc::now(),
+        baseline.as_ref(),
     )
 }
 pub(crate) async fn collect(

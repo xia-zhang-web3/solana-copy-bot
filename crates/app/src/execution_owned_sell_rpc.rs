@@ -94,6 +94,12 @@ pub(crate) fn identity(c: &ExecutionConfig) -> Result<String> {
         ))?),
         None => base,
     };
+    let base = match &p.protected_bot_usdc_baseline {
+        Some(baseline) => digest(serde_json::to_vec(&(
+            &base, "protected_bot_usdc_baseline_v1", baseline,
+        ))?),
+        None => base,
+    };
     if copybot_config::owned_sell_dispatch(c) {
         return Ok(digest(serde_json::to_vec(&(
             base,

@@ -1,7 +1,15 @@
 //! Explicit owned SELL authority; unsigned preparation remains the default.
 use anyhow::{ensure, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 pub const RPC_FINALIZED_OWNED_SELL_V1: &str = "rpc_finalized_cross_slot_owned_sell_v1";
+pub const PROTECTED_BOT_USDC_100_V1: &str = "receipt_owned_lot_preserve_usdc_100_v1";
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProtectedBotUsdcBaselineConfig {
+    pub policy: String,
+    pub amount_raw: u64,
+    pub token_account: String,
+}
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OwnedSellPreparationConfig {
@@ -11,6 +19,8 @@ pub struct OwnedSellPreparationConfig {
     /// Explicit opt-in; never changes the old full-owned SELL contract.
     #[serde(default)]
     pub fractional_inventory: Option<String>,
+    #[serde(default)]
+    pub protected_bot_usdc_baseline: Option<ProtectedBotUsdcBaselineConfig>,
     pub rpc_url: String,
     pub genesis_hash: String,
     pub identity: String,
@@ -22,6 +32,16 @@ pub fn validate_owned_sell_preparation(
     let Some(p) = &e.owned_sell_preparation else {
         return Ok(());
     };
+    if let Some(b) = &p.protected_bot_usdc_baseline {
+        ensure!(b.policy == PROTECTED_BOT_USDC_100_V1 && b.amount_raw == 100
+            && (32..=44).contains(&b.token_account.len())
+            && b.token_account.bytes().all(|c| c.is_ascii_alphanumeric())
+            && p.tiny_dispatch && p.fractional_inventory.as_deref()
+                == Some("whole_wallet_parent_program_fraction_v1")
+            && e.technical_cohort.is_some() && e.native_fresh_buy.is_some()
+            && e.owner_technical_buy.is_none() && e.owner_exit.is_none(),
+            "protected_bot_usdc_baseline_scope");
+    }
     ensure!(
         p.fractional_inventory
             .as_deref()

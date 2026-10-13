@@ -135,6 +135,7 @@ pub(super) fn config(wallet: &str) -> ExecutionConfig {
         policy: RPC_FINALIZED_OWNED_SELL_V1.into(),
         tiny_dispatch: true,
         fractional_inventory: Some("whole_wallet_parent_program_fraction_v1".into()),
+        protected_bot_usdc_baseline: None,
         rpc_url: c.submit_adapter_http_url.clone(),
         genesis_hash: GENESIS.into(),
         identity: "native-buy-test".into(),

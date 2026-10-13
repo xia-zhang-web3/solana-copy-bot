@@ -34,6 +34,7 @@ pub(crate) async fn run(
             },
         )?;
     guard::blockhash(c, store, &r, &p.payload, p.handoff.snapshot.sell.facts.slot).await?;
+    crate::execution_protected_token_baseline::current(c,store,&r,&p.payload).await?;
     // No further await before the existing key loader and signing boundary.
     guard::config(c, &p)?;
     ensure!(

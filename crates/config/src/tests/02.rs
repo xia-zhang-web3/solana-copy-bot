@@ -121,6 +121,7 @@ fn native_first_buy_activation_requires_all_explicit_authorities() {
     e.owned_sell_preparation = Some(OwnedSellPreparationConfig {
         policy: RPC_FINALIZED_OWNED_SELL_V1.into(), tiny_dispatch: true,
         fractional_inventory: Some("whole_wallet_parent_program_fraction_v1".into()),
+        protected_bot_usdc_baseline: None,
         rpc_url: "http://127.0.0.1:1".into(), genesis_hash: "fixture".into(),
         identity: "fixture".into(),
     });

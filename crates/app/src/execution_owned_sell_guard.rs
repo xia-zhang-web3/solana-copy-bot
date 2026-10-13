@@ -205,6 +205,8 @@ pub(crate) async fn budget(
         &r.wallet_pubkey,
     )?;
     let d = crate::execution_tiny_submit_state::dispatch::identity(r, intent)?;
+    crate::execution_protected_token_baseline::current(c,store,r,
+        &intent.signed_transaction_base64).await?;
     Ok((
         copybot_storage_core::TinyBudgetClaim {
             experiment_id: p.handoff.experiment_id,

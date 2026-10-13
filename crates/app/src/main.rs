@@ -78,6 +78,8 @@ mod execution_owner_exit_authority;
 mod execution_owner_exit_quote;
 mod execution_owner_exit;
 mod execution_owner_exit_wire;
+mod execution_usdc_sell_wire;
+mod execution_protected_token_baseline;
 mod execution_owner_buy;
 mod execution_owner_roundtrip;
 mod execution_owner_source_gate;

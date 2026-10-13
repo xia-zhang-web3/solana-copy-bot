@@ -14,7 +14,7 @@ mod fractional_financial_tests;
 #[path = "fractional_fixture.rs"]
 mod fractional_fixture;
 #[path = "fractional_synthetic_fixture.rs"]
-mod fractional_synthetic_fixture;
+pub(super) mod fractional_synthetic_fixture;
 #[path = "fractional_tests.rs"]
 mod fractional_tests;
 #[path = "fractional_transport_fixture.rs"]

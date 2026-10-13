@@ -128,6 +128,7 @@ pub(super) fn config(wallet: &str, url: &str, kill: &str) -> ExecutionConfig {
     c.owned_sell_preparation = Some(OwnedSellPreparationConfig {
         policy: RPC_FINALIZED_OWNED_SELL_V1.into(), tiny_dispatch: true,
         fractional_inventory: Some("whole_wallet_parent_program_fraction_v1".into()),
+        protected_bot_usdc_baseline: None,
         rpc_url: url.into(), genesis_hash: GENESIS.into(),
         identity: "owner-test-run".into(),
     });
