@@ -37,7 +37,7 @@ fn from_config(p: &OwnerExitConfig, config: &ExecutionConfig) -> Result<OwnerExi
     if let Some(gate) = config.owner_technical_buy.as_ref().and_then(|p|p.source_copy_exit_gate.as_ref()) {
         payload["source_copy_exit_gate"] = serde_json::to_value(gate)?;
     }
-    Ok(OwnerExitIntent {
+    let mut intent = OwnerExitIntent {
         intent_id: p.intent_id.clone(), run_id: p.run_id.clone(),
         buy_order_id: p.buy_order_id.clone(),
         buy_receipt_signature: p.buy_receipt_signature.clone(),
@@ -50,7 +50,11 @@ fn from_config(p: &OwnerExitConfig, config: &ExecutionConfig) -> Result<OwnerExi
         min_reserve_lamports: p.min_reserve_lamports,
         max_slippage_bps: u32::try_from(p.max_slippage_bps)?,
         max_daily_loss_lamports: p.max_daily_loss_lamports,
-    })
+    };
+    if let Some(original) = crate::execution_owner_native_recovery::original(config)? {
+        intent.authority_sha256 = copybot_storage_core::owner_native_recovery_authority_sha256(&intent, &original)?;
+    }
+    Ok(intent)
 }
 
 pub(crate) fn current(

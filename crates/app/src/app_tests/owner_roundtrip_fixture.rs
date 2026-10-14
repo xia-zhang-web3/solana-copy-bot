@@ -28,6 +28,9 @@ pub(super) struct State {
     pub side: &'static str,
     pub source_profile: bool,
     pub received_raw: Option<u64>,
+    pub protected_baseline_raw: u64,
+    pub wallet_held_raw: Option<u64>,
+    pub protected_balance_slot: Option<u64>,
 }
 impl Drop for Case {
     fn drop(&mut self) {
@@ -201,7 +204,7 @@ fn response(r: &Value, payer: [u8; 32], kill: &str, s: &mut State) -> Result<Val
         if r["quoteResponse"]["inputMint"] == wire::USDC {
             let mut b=super::owner_exit_test_fixture::bundle_for(payer)?;
             let mut data=STANDARD.decode(b["swapInstruction"]["data"].as_str().unwrap())?;
-            let input=if s.mode=="sell_wrong_input" {received-1} else {received};
+            let input=if s.mode=="sell_wrong_input" {received-1} else if s.mode=="sell_oversell_one" {received+1} else {received};
             data[16..24].copy_from_slice(&input.to_le_bytes());b["swapInstruction"]["data"]=json!(STANDARD.encode(data));
             if s.source_profile && s.mode != "sell_optional_destination" {
                 b["swapInstruction"]["accounts"][4] = json!({
@@ -228,9 +231,12 @@ fn response(r: &Value, payer: [u8; 32], kill: &str, s: &mut State) -> Result<Val
                 json!({"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","executable":false,"data":[STANDARD.encode(bytes),"base64"]})
             } else if address == bs58::encode(ata).into_string() && s.sent.is_some() {
                 let mut bytes=[0u8;165];bytes[..32].copy_from_slice(&mint);bytes[32..64].copy_from_slice(&payer);
-                bytes[64..72].copy_from_slice(&received.to_le_bytes());
+                let mut held=s.wallet_held_raw.unwrap_or(received+s.protected_baseline_raw);
+                if (s.mode=="short_after_simulation" && s.simulated.is_some())
+                    || (s.mode=="short_before_send" && s.calls.iter().filter(|m|m.as_str()=="getAccountInfo").count()>=7) {held-=1;}
+                bytes[64..72].copy_from_slice(&held.to_le_bytes());
                 json!({"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","executable":false,"data":[STANDARD.encode(bytes),"base64"]})
-            } else {Value::Null};json!({"context":{"slot":120},"value":value})
+            } else {Value::Null};json!({"context":{"slot":s.protected_balance_slot.unwrap_or(120)},"value":value})
         }
         "getMultipleAccounts" => {
             if s.mode == "kill_on_anchor" {
@@ -268,7 +274,8 @@ fn response(r: &Value, payer: [u8; 32], kill: &str, s: &mut State) -> Result<Val
         "getTransaction" if s.side == "sell" => {
             let mut value=super::owner_exit_test_fixture::receipt(s.sent.as_deref().unwrap(),r["params"][0].as_str().unwrap(),&wallet)?;
             value["meta"]["fee"]=json!(19000);value["meta"]["postBalances"][0]=json!(1_011_981_000_u64);
-            value["meta"]["preTokenBalances"][0]["uiTokenAmount"]["amount"]=json!(received.to_string());
+            value["meta"]["preTokenBalances"][0]["uiTokenAmount"]["amount"]=json!((received+s.protected_baseline_raw).to_string());
+            value["meta"]["postTokenBalances"][0]["uiTokenAmount"]["amount"]=json!(s.protected_baseline_raw.to_string());
             if s.mode == "partial_sell" {value["meta"]["postTokenBalances"][0]["uiTokenAmount"]["amount"]=json!("7");}
             value
         }

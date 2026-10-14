@@ -20,6 +20,8 @@ pub fn owner_source_recovery_exit(e: &crate::ExecutionConfig) -> bool {
 pub struct OwnerExitConfig {
     pub policy: String,
     #[serde(default)]
+    pub native_recovery: Option<crate::OwnerNativeRecoveryConfig>,
+    #[serde(default)]
     pub activate: bool,
     pub run_id: String,
     pub intent_id: String,
@@ -47,6 +49,8 @@ pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
         | OWNER_SOURCE_RECOVERY_EXIT_V1 | OWNER_NATIVE_RECOVERY_EXIT_V1), "owner_exit_policy");
     ensure!(owner_native_recovery_exit(e) || (!p.intent_id.starts_with("native-recovery:")
         && !p.buy_order_id.starts_with("exec-canary:native-buy-v1:")), "owner_exit_native_policy_required");
+    ensure!(owner_native_recovery_exit(e) || p.native_recovery.is_none(), "owner_native_recovery_policy_required");
+    if let Some(recovery) = &p.native_recovery { crate::owner_native_recovery::validate(recovery)?; }
     if owner_native_recovery_exit(e) {
         let source = p.buy_order_id.strip_prefix("exec-canary:native-buy-v1:")
             .ok_or_else(|| anyhow::anyhow!("owner_native_recovery_buy_identity"))?;

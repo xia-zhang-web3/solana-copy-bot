@@ -12,6 +12,7 @@ pub(super) fn recovery(c: &GateCase) -> Result<ExecutionConfig> {
     b.activate = false;
     e.canary_entry_submit_enabled = false;
     e.owner_exit = Some(OwnerExitConfig {
+        native_recovery: None,
         policy: OWNER_SOURCE_RECOVERY_EXIT_V1.into(), activate: true,
         run_id: b.run_id.clone(), intent_id: format!("execution-only:{}", b.intent_id),
         buy_order_id: c.source.order_id(), buy_receipt_signature: buy.tx_signature,

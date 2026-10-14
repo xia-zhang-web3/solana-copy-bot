@@ -12,22 +12,32 @@ pub(crate) fn validate_parent(c: &Connection, i: &OwnerExitIntent) -> Result<()>
     let floor: (String,String,u64)=c.query_row(
         "SELECT wallet,floor_lamports,allowance FROM execution_tiny_native_policy WHERE experiment_id=?1",
         [&a.run_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+    let fresh = i.activated_at != a.activated_at || i.expires_at != a.deadline;
     ensure!(
         i.run_id == a.run_id
-            && i.activated_at == a.activated_at
-            && i.expires_at == a.deadline
             && experiment.id == a.run_id
             && experiment.wallet == i.wallet
             && experiment.deadline == a.deadline
             && experiment.buy_order_id.as_deref() == Some(&i.buy_order_id)
             && experiment.token.as_deref() == Some(&i.mint)
             && experiment.position_id.as_deref() == Some(&i.position_id)
-            && experiment.state == "active"
+            && (experiment.state == "active" || (fresh && experiment.state == "stopped"
+                && experiment.stop_reason.as_deref() == Some("tiny_budget_deadline")))
             && floor.0 == i.wallet
             && floor.2 == crate::TINY_NATIVE_ALLOWANCE
             && i.min_reserve_lamports >= floor.1.parse::<u64>()?,
         "native_recovery_original_budget_changed"
     );
+    if i.activated_at == a.activated_at && i.expires_at == a.deadline {
+        // Existing645 recovery remains confined to its original window.
+    } else {
+        let original = crate::OwnerNativeRecoveryOriginal {
+            activated_at: a.activated_at, expires_at: a.deadline,
+            policy_identity: a.policy_identity.clone(),
+        };
+        ensure!(i.authority_sha256 == crate::owner_native_recovery_authority_sha256(i, &original)?,
+            "native_recovery_original_authority_changed");
+    }
     ensure_binding(
         c,
         &i.buy_order_id,

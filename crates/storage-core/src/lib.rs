@@ -14,6 +14,8 @@ pub use native_buy::source_copy_gate as owner_source_copy_gate;
 mod owner_exit;
 mod owner_exit_binding;
 mod owner_exit_fee;
+mod owner_native_recovery_authority;
+pub use owner_native_recovery_authority::{owner_native_recovery_authority_sha256, OwnerNativeRecoveryOriginal};
 mod owner_technical_buy_protected;
 pub use owner_technical_buy::{
     owner_technical_buy_client_order_id, owner_technical_buy_identity_id,

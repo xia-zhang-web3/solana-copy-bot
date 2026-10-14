@@ -48,6 +48,7 @@ impl NativeCase {
         let source = buy.strip_prefix("exec-canary:native-buy-v1:").unwrap();
         let exit = format!("native-recovery:{source}");
         config.owner_exit = Some(OwnerExitConfig {
+            native_recovery: None,
             policy: OWNER_NATIVE_RECOVERY_EXIT_V1.into(),
             activate: true,
             run_id: run,

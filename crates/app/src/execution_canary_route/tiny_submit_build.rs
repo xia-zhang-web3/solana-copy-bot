@@ -162,6 +162,7 @@ pub(crate) async fn build_simulated_signed_envelope<A: ExecutionSubmitAdapter>(
             .ok_or_else(|| anyhow::anyhow!("owner_exit_clock"))?;
         crate::execution_owner_exit_authority::current(config, store, &intent, signing_now)?;
         crate::execution_owner_exit_authority::fresh_quote(request, signing_now)?;
+        crate::execution_owner_native_recovery::before_sign(config, store, &intent, now).await?;
     }
     let signing = record_execution_signing_envelope(store, adapter, request, &plan, now)?;
     if let Some(refusal) = signing.source_refusal.as_ref() {

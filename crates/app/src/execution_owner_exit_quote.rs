@@ -14,7 +14,7 @@ const CLASSIC_SPL: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub(crate) async fn verify_balance(
     http: &reqwest::Client, config: &ExecutionConfig, intent: &OwnerExitIntent,
     check: &impl Fn() -> Result<()>,
-) -> Result<()> {
+) -> Result<u64> {
     let url = reqwest::Url::parse(&config.submit_adapter_http_url)?;
     ensure!(url.scheme() == "https" || (url.scheme() == "http"
         && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))),
@@ -57,7 +57,7 @@ pub(crate) async fn verify_balance(
     ensure!(data.len() == 165 && data[..32] == mint && data[32..64] == wallet,
         "owner_exit_ata_owner_or_mint");
     let amount = u64::from_le_bytes(data[64..72].try_into()?);
-    ensure!(amount == intent.amount_raw, "owner_exit_wallet_amount_changed");
+    crate::execution_owner_native_recovery::wallet_amount(config, intent, amount)?;
     // The route closes the wallet's WSOL ATA. An existing account could
     // contribute a WSOL balance or rent refund unrelated to this SELL.
     let wsol = crate::execution_pumpswap_accounts::wsol_mint();
@@ -75,7 +75,7 @@ pub(crate) async fn verify_balance(
     check()?;
     ensure!(crate::execution_owner_buy_rpc::classic_mint_decimals(&mint_account)?
         == intent.decimals, "owner_exit_decimals_changed");
-    Ok(())
+    Ok(account["context"]["slot"].as_u64().expect("validated owner balance slot"))
 }
 
 pub(crate) async fn fetch(

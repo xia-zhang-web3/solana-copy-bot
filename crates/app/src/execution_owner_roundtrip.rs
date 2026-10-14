@@ -38,6 +38,7 @@ pub(crate) fn exit_config(c: &ExecutionConfig,s: &SqliteStore) -> Result<Option<
             && position.qty_exact.is_some_and(|q|i128::from(q.raw()) == raw.raw && q.decimals() == raw.decimals),
             "owner_roundtrip_position_changed");
         let cfg=OwnerExitConfig {
+            native_recovery: None,
             policy:OWNER_ROUNDTRIP_EXIT_V1.into(),activate:true,run_id:p.run_id.clone(),intent_id:id,
             buy_order_id:buy,buy_receipt_signature:facts.tx_signature,position_id:position.position_id,
             wallet_pubkey:p.wallet_pubkey.clone(),signer_pubkey:p.signer_pubkey.clone(),genesis_hash:p.genesis_hash.clone(),
@@ -55,6 +56,7 @@ pub(crate) fn exit_config(c: &ExecutionConfig,s: &SqliteStore) -> Result<Option<
     let mut derived=c.clone();derived.owner_technical_buy.as_mut().unwrap().activate=false;
     derived.canary_entry_submit_enabled=false;
     derived.owner_exit=Some(OwnerExitConfig {
+            native_recovery: None,
         policy:OWNER_ROUNDTRIP_EXIT_V1.into(),activate:p.activate,run_id:intent.run_id,intent_id:intent.intent_id,
         buy_order_id:intent.buy_order_id,buy_receipt_signature:intent.buy_receipt_signature,position_id:intent.position_id,
         wallet_pubkey:intent.wallet,signer_pubkey:intent.signer,genesis_hash:intent.genesis_hash,mint:intent.mint,

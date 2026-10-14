@@ -75,6 +75,7 @@ mod execution_native_buy_rpc;
 mod execution_technical_cohort;
 mod execution_owner_buy_authority;
 mod execution_owner_exit_authority;
+mod execution_owner_native_recovery;
 mod execution_owner_exit_quote;
 mod execution_owner_exit;
 mod execution_owner_exit_wire;

@@ -157,7 +157,7 @@ async fn owner_exit_before_send(
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never()).build()?;
-        crate::execution_owner_exit_quote::verify_balance(&http, config, &exit, &check).await?;
+        crate::execution_owner_native_recovery::verify_balance(&http, config, store, &exit, &check).await?;
         let body: serde_json::Value = http.post(transport.rpc_endpoint())
             .json(&serde_json::json!({"jsonrpc":"2.0","id":"owner-exit-native",
                 "method":"getBalance","params":[exit.wallet,{"commitment":"confirmed"}]}))

@@ -17,6 +17,9 @@ pub(crate) fn validate_execution_runtime_contract(
         ));
     }
     validate_execution_canary_contract(config)?;
+    if config.owner_exit.as_ref().is_some_and(|p| p.native_recovery.is_some()) {
+        crate::execution_owner_exit_authority::configured(config)?;
+    }
     Ok(())
 }
 

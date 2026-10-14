@@ -270,6 +270,7 @@ impl Case {
         config.tiny_experiment.activate = false;
         let now = Utc::now();
         config.owner_exit = Some(OwnerExitConfig {
+            native_recovery: None,
             policy: OWNER_EXIT_V1.into(),
             activate: true,
             run_id: "synthetic-owner-exit-run".into(),
