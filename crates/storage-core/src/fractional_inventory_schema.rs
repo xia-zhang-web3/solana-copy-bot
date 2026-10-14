@@ -55,7 +55,7 @@ fn instruction(ix: &Value, keys: usize, inner: bool) -> Result<()> {
     );
     Ok(())
 }
-pub(super) fn check(t: &Value, key_count: usize) -> Result<()> {
+pub(super) fn check(t: &Value, key_count: usize, inner: &[Value]) -> Result<()> {
     let tx = &t["transaction"];
     let msg = &tx["message"];
     let meta = &t["meta"];
@@ -120,10 +120,7 @@ pub(super) fn check(t: &Value, key_count: usize) -> Result<()> {
     {
         instruction(ix, key_count, false)?;
     }
-    for group in meta["innerInstructions"]
-        .as_array()
-        .context("fraction_cpi_missing")?
-    {
+    for group in inner {
         for ix in group["instructions"]
             .as_array()
             .context("fraction_cpi_missing")?

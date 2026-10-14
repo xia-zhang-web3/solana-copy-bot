@@ -39,3 +39,9 @@ mod native_cohort_fee_tests;
 
 #[path = "native_cohort_route_tests.rs"]
 mod native_cohort_route_tests;
+
+use super::temporary_output_fixture;
+#[path = "copy39_saved_sell_fixture.rs"]
+mod copy39_saved_sell_fixture;
+#[path = "copy39_saved_sell_tests.rs"]
+mod copy39_saved_sell_tests;

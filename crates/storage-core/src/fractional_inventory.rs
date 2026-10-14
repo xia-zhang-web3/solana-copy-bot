@@ -287,3 +287,7 @@ mod corpus_tests;
 #[cfg(test)]
 #[path = "fractional_inventory_metadata_tests.rs"]
 mod metadata_tests;
+
+#[cfg(test)]
+#[path = "fractional_inventory_copy39_tests.rs"]
+mod copy39_tests;

@@ -60,11 +60,15 @@ pub(super) fn balances(t: &Value, b: &QuoteBinding) -> Result<(Vec<String>, Amou
         t["version"] == "legacy" || t["version"] == 0,
         "fraction_transaction_version"
     );
-    metadata_balances(t, b)
+    metadata_balances(t, b, false)
 }
 /// Prefix effects come from complete exact owned token metadata, never swap decoding.
 /// v1 remains forbidden as a target signal; its finalized inventory effects are read.
-fn metadata_balances(t: &Value, b: &QuoteBinding) -> Result<(Vec<String>, Amounts, Amounts)> {
+fn metadata_balances(
+    t: &Value,
+    b: &QuoteBinding,
+    prefix: bool,
+) -> Result<(Vec<String>, Amounts, Amounts)> {
     ensure!(
         t["version"] == "legacy" || t["version"] == 0 || t["version"] == 1,
         "fraction_prefix_transaction_version"
@@ -114,10 +118,14 @@ fn metadata_balances(t: &Value, b: &QuoteBinding) -> Result<(Vec<String>, Amount
         meta.get("err").is_some() && meta["fee"].as_u64().is_some(),
         "fraction_status_fee"
     );
-    // Complete raw shape is required even for a metadata-only prefix effect.
-    let inner = meta["innerInstructions"]
-        .as_array()
-        .context("fraction_cpi_missing")?;
+    // A finalized failed prefix may have no CPI recording (e.g. load failure).
+    // It still needs complete owned metadata and unchanged owned balances below.
+    // Missing fields, successful prefixes and target signals remain fail-closed.
+    let inner: &[Value] = match meta.get("innerInstructions") {
+        Some(Value::Array(inner)) => inner,
+        Some(Value::Null) if prefix && !meta["err"].is_null() => &[],
+        _ => anyhow::bail!("fraction_cpi_missing"),
+    };
     ensure!(
         msg["instructions"].is_array(),
         "fraction_instructions_missing"
@@ -139,7 +147,7 @@ fn metadata_balances(t: &Value, b: &QuoteBinding) -> Result<(Vec<String>, Amount
             "fraction_native_balances"
         );
     }
-    super::schema::check(t, keys.len())?;
+    super::schema::check(t, keys.len(), inner)?;
     let mut values = vec![];
     for field in ["preTokenBalances", "postTokenBalances"] {
         let mut out = BTreeMap::new();
@@ -175,7 +183,7 @@ fn metadata_balances(t: &Value, b: &QuoteBinding) -> Result<(Vec<String>, Amount
     Ok((keys, values.remove(0), values.remove(0)))
 }
 pub(super) fn advance(t: &Value, b: &QuoteBinding, inventory: &mut Amounts) -> Result<()> {
-    let (keys, pre, post) = metadata_balances(t, b)?;
+    let (keys, pre, post) = metadata_balances(t, b, true)?;
     // A writable known account without token metadata is not evidence of neutrality.
     for (index, address) in keys.iter().enumerate() {
         if inventory.contains_key(address) && writable(t, index)? {
