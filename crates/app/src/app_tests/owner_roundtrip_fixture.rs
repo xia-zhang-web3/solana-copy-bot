@@ -176,7 +176,7 @@ fn bundle(payer: [u8; 32], mode: &str) -> Result<Value> {
         "fetchedAt":{"secs_since_epoch":1,"nanos_since_epoch":0}}}),
     )
 }
-fn response(r: &Value, payer: [u8; 32], kill: &str, s: &mut State) -> Result<Value> {
+pub(super) fn response(r: &Value, payer: [u8; 32], kill: &str, s: &mut State) -> Result<Value> {
     let method = r["method"]
         .as_str()
         .unwrap_or(if r.get("quoteResponse").is_some() {

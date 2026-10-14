@@ -758,3 +758,6 @@ mod owner_native_recovery_fixture;
 mod owner_native_recovery_tests;
 mod owner_native_recovery_window_fixture;
 mod owner_native_recovery_window_tests;
+
+mod owner_native_recovery_early_fixture;
+mod owner_native_recovery_early_tests;

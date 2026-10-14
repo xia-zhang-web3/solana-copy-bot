@@ -53,6 +53,8 @@ fn from_config(p: &OwnerExitConfig, config: &ExecutionConfig) -> Result<OwnerExi
     };
     if let Some(original) = crate::execution_owner_native_recovery::original(config)? {
         intent.authority_sha256 = copybot_storage_core::owner_native_recovery_authority_sha256(&intent, &original)?;
+    } else if copybot_config::owner_native_recovery_exit(config) {
+        intent.authority_sha256 = intent.native_recovery_legacy_authority_sha256()?;
     }
     Ok(intent)
 }
@@ -71,6 +73,12 @@ pub(crate) fn current(
     ensure!(!std::path::Path::new(&config.canary_kill_switch_path).exists(),
         "owner_exit_kill_switch");
     if copybot_config::owner_native_recovery_exit(config) {
+        if let Some(original) = crate::execution_owner_native_recovery::original(config)? {
+            store.validate_owner_native_recovery_original(expected, &original)?;
+            ensure!(store.execution_canary_receipt_submit_block_reason(
+                &copybot_storage_core::owner_exit_order_id(&expected.intent_id),
+                &expected.mint, "sell")?.is_none(), "owner_exit_receipt_blocked");
+        }
         store.validate_owner_native_recovery_exit(expected,now)?;
     } else if copybot_config::owner_source_recovery_exit(config) {
         recovery::current(config, store, expected, now)?;

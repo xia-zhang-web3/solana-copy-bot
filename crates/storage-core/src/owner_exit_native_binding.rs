@@ -28,14 +28,22 @@ pub(crate) fn validate_parent(c: &Connection, i: &OwnerExitIntent) -> Result<()>
             && i.min_reserve_lamports >= floor.1.parse::<u64>()?,
         "native_recovery_original_budget_changed"
     );
-    if i.activated_at == a.activated_at && i.expires_at == a.deadline {
-        // Existing645 recovery remains confined to its original window.
+    let original = crate::OwnerNativeRecoveryOriginal {
+        activated_at: a.activated_at, expires_at: a.deadline,
+        policy_identity: a.policy_identity.clone(),
+    };
+    let protected = i.authority_sha256 == crate::owner_native_recovery_authority_sha256(i, &original)?;
+    if !fresh {
+        ensure!(protected || i.authority_sha256 == i.native_recovery_legacy_authority_sha256()?,
+            "native_recovery_original_authority_changed");
+        if protected {
+            let unknown: bool = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM execution_canary_unresolved_dispatch WHERE order_id!=?1)",
+                [crate::owner_exit_order_id(&i.intent_id)], |r| r.get(0))?;
+            ensure!(!unknown, "native_recovery_unknown_dispatch");
+        }
     } else {
-        let original = crate::OwnerNativeRecoveryOriginal {
-            activated_at: a.activated_at, expires_at: a.deadline,
-            policy_identity: a.policy_identity.clone(),
-        };
-        ensure!(i.authority_sha256 == crate::owner_native_recovery_authority_sha256(i, &original)?,
+        ensure!(protected,
             "native_recovery_original_authority_changed");
     }
     ensure_binding(
@@ -52,6 +60,22 @@ pub(crate) fn validate_parent(c: &Connection, i: &OwnerExitIntent) -> Result<()>
 }
 
 impl SqliteStore {
+    /// Typed baseline recovery must reference the exact durable native parent,
+    /// including when EXIT uses the existing original window rather than a new lease.
+    pub fn validate_owner_native_recovery_original(
+        &self,
+        i: &OwnerExitIntent,
+        original: &crate::OwnerNativeRecoveryOriginal,
+    ) -> Result<()> {
+        let parent = cohort::load(&self.conn)?.context("native_recovery_cohort_missing")?;
+        ensure!(original.activated_at == parent.activated_at
+            && original.expires_at == parent.deadline
+            && original.policy_identity == parent.policy_identity
+            && i.authority_sha256 == crate::owner_native_recovery_authority_sha256(i, original)?,
+            "native_recovery_original_authority_changed");
+        Ok(())
+    }
+
     pub fn validate_owner_native_recovery_exit(
         &self,
         i: &OwnerExitIntent,
