@@ -11,6 +11,7 @@ use source::{fetch_recent_raw_swaps_for_wallets, IngestionSource, RawSwapObserva
 use std::collections::HashSet;
 
 pub use source::durable::{
+    ContinuityPrecheck, ContinuitySnapshot, ContinuityTransition, PreviousRelation, TransitionKind,
     replay_scope,
     DeliveryEnvelope, DeliveryReceiver, DurableIngressSnapshot, HttpRecoverySnapshot, IngressProcessingSnapshot, TimingSnapshot, ReplayInput, TransportClass,
     TransportStage,

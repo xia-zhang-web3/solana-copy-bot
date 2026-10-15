@@ -94,7 +94,7 @@ impl Bridge<'_> {
             durable,
             self.adapter.known_signatures_bytes(),
             r.cursor.http_hold.clone(),
-        );
+        ).observed(self.telemetry.continuity.reader(self.name.clone(), self.session.generation));
         self.capture_scope = Some(scope.clone());
         Ok(scope)
     }

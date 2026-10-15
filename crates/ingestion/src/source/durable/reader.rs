@@ -128,7 +128,8 @@ impl Reader {
                         telemetry.received_transaction(t.slot)
                     }
                     Some(subscribe_update::UpdateOneof::Block(b)) => {
-                        telemetry.received_block(b.slot)
+                        telemetry.received_block(b.slot);
+                        scope.frontier(b.slot);
                     }
                     _ => continue,
                 }
@@ -214,7 +215,7 @@ impl Reader {
 impl Drop for Reader {
     fn drop(&mut self) {
         // Abort is scheduled; financial continuity must close synchronously.
-        self.scope.interrupted();
+        self.scope.reader_dropped();
         if let Some(task) = self.task.take() {
             task.abort();
         }
@@ -228,3 +229,7 @@ mod lifetime_fixture;
 #[cfg(test)]
 #[path = "../../source_tests/recovery_raw_memory_tests.rs"]
 mod raw_memory_tests;
+
+#[cfg(test)]
+#[path = "../../source_tests/ingress42_correlation_tests.rs"]
+mod ingress42_correlation_tests;

@@ -3,6 +3,8 @@ use super::*;
 use crate::app_tests::b70_hooks::stop as app_loop_stop;
 
 mod startup;
+#[path = "ingress_execution_precheck.rs"]
+mod ingress_execution_precheck;
 #[cfg(not(test))]
 mod shutdown_signal;
 
@@ -304,17 +306,8 @@ pub(super) async fn run_app_loop(
                 handle_risk_refresh_tick(&store, &ingestion, &mut shadow_risk_guard)?;
             }
             _ = execution_canary_interval.tick(), if execution_canary_runner.is_enabled() => {
-                match execution_canary_runner.process_tick(&store, Utc::now()).await {
-                    Ok(summary) if summary.has_status_change() => {
-                        crate::telemetry::record_execution_canary_tick(&summary);
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        warn!(error = %error, "execution canary dry-run tick failed");
-                    }
-                }
-                #[cfg(test)]
-                crate::app_tests::b70_hooks::execution_tick(association_consumer.as_ref());
+                ingress_execution_precheck::tick(&execution_canary_runner, &store,
+                    &execution_config, association_consumer.as_ref()).await;
             }
             _ = runtime_follow_reload_interval.tick() => {
                 let reload_now = Utc::now();

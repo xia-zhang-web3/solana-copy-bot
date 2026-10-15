@@ -51,6 +51,9 @@ impl AssociationConsumer {
     pub(crate) fn http_continuity_hold(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         self.receiver.http_continuity_hold()
     }
+    pub(crate) fn continuity_precheck(&self) -> copybot_ingestion::ContinuityPrecheck {
+        self.receiver.continuity_precheck()
+    }
     pub(crate) fn diagnostic_snapshots(
         &self,
     ) -> (

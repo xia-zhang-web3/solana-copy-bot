@@ -6,6 +6,8 @@ pub use recovery::replay_scope;
 pub use replay::ReplayInput;
 mod processing_telemetry;
 mod telemetry;
+mod continuity_telemetry;
+pub use continuity_telemetry::{ContinuityPrecheck, ContinuitySnapshot, ContinuityTransition, PreviousRelation, TransitionKind};
 pub use processing_telemetry::{HttpRecoverySnapshot, IngressProcessingSnapshot, TimingSnapshot};
 pub use telemetry::{DurableIngressSnapshot, TransportClass, TransportStage};
 mod bridge;
@@ -138,10 +140,13 @@ impl DeliveryReceiver {
         &self,
         checkpoint: copybot_core_types::association_recovery::DurableCheckpoint,
     ) -> Result<()> {
-        self.recovery
+        let observed = continuity_telemetry::ContinuityTelemetry::checkpoint(&checkpoint);
+        let result = self.recovery
             .as_ref()
             .context("replay recovery disabled")?
-            .acknowledge(checkpoint)
+            .acknowledge(checkpoint);
+        if result.is_ok() { self.telemetry.continuity.acknowledged(observed); }
+        result
     }
     /// Shared fail-closed recovery barrier; independent from telemetry.
     pub fn http_continuity_hold(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
@@ -159,6 +164,18 @@ impl DeliveryReceiver {
     }
     pub fn ingress_snapshot(&self) -> DurableIngressSnapshot {
         self.telemetry.snapshot()
+    }
+    pub fn continuity_snapshot(&self) -> ContinuitySnapshot {
+        self.telemetry.continuity.snapshot()
+    }
+    pub fn continuity_precheck(&self) -> ContinuityPrecheck {
+        let began_ns = continuity_telemetry::monotonic_ns();
+        let hold = self.http_continuity_hold();
+        let hold_before = hold.as_ref().map(|h| h.load(std::sync::atomic::Ordering::Acquire));
+        let snapshot = self.continuity_snapshot();
+        let hold_after = hold.as_ref().map(|h| h.load(std::sync::atomic::Ordering::Acquire));
+        ContinuityPrecheck { began_ns, ended_ns: continuity_telemetry::monotonic_ns(),
+            hold_before, hold_after, snapshot }
     }
     pub fn wallet_scope(&self) -> Option<&HashSet<String>> {
         self.wallet_scope.as_ref()

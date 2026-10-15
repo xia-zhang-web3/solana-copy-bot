@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use yellowstone_grpc_proto::prelude::SubscribeUpdateTransactionInfo;
+use super::continuity_telemetry::{monotonic_ns, ReaderObservation, TransitionKind, TransitionStart};
 pub(in crate::source) struct CaptureScope {
     wallets: HashSet<Vec<u8>>,
     durable: HashSet<Vec<u8>>,
@@ -11,6 +12,7 @@ pub(in crate::source) struct CaptureScope {
     pending: Mutex<HashMap<Vec<u8>, usize>>,
     hold: Option<Arc<std::sync::atomic::AtomicBool>>,
     interrupted: std::sync::atomic::AtomicBool,
+    observation: Option<ReaderObservation>,
 }
 impl CaptureScope {
     pub fn new(
@@ -29,16 +31,44 @@ impl CaptureScope {
             pending: Mutex::new(HashMap::new()),
             hold,
             interrupted: std::sync::atomic::AtomicBool::new(false),
+            observation: None,
         })
     }
+    pub fn observed(mut self: Arc<Self>, observation: ReaderObservation) -> Arc<Self> {
+        Arc::get_mut(&mut self).expect("new capture scope").observation = Some(observation);
+        self
+    }
+    fn transition(&self) -> Option<TransitionStart> {
+        let began = monotonic_ns();
+        self.observation.as_ref().map(|o| o.begin(began,
+            self.hold.as_ref().map(|f| f.load(std::sync::atomic::Ordering::Acquire)),
+            self.interrupted.load(std::sync::atomic::Ordering::SeqCst)))
+    }
+    fn recorded(&self, kind: TransitionKind, start: Option<TransitionStart>) {
+        if let (Some(observation), Some(start)) = (&self.observation, start) {
+            let hold = self.hold.as_ref().map(|f| f.load(std::sync::atomic::Ordering::Acquire));
+            let interrupted = self.interrupted.load(std::sync::atomic::Ordering::SeqCst);
+            observation.finish(kind, start, monotonic_ns(), hold, interrupted);
+        }
+    }
+    pub fn frontier(&self, slot: u64) {
+        if let Some(observation) = &self.observation { observation.frontier(slot); }
+    }
     pub fn interrupted(&self) {
+        self.interrupted_as(TransitionKind::TaskGuardDrop);
+    }
+    pub fn reader_dropped(&self) { self.interrupted_as(TransitionKind::ReaderDrop); }
+    fn interrupted_as(&self, kind: TransitionKind) {
+        let observation = self.transition();
         self.interrupted
             .store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(flag) = &self.hold {
             flag.store(true, std::sync::atomic::Ordering::Release);
         }
+        self.recorded(kind, observation);
     }
     pub fn clear_verified(&self) {
+        let observation = self.transition();
         use std::sync::atomic::Ordering::SeqCst;
         if let Some(flag) = &self.hold {
             if !self.interrupted.load(SeqCst) {
@@ -48,6 +78,7 @@ impl CaptureScope {
                 }
             }
         }
+        self.recorded(TransitionKind::VerifiedClear, observation);
     }
     pub fn wallet(&self, info: &SubscribeUpdateTransactionInfo) -> bool {
         info.transaction
