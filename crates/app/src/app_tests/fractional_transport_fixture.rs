@@ -1,9 +1,10 @@
 use super::{fractional_fixture::Fixture, fractional_tests as f};
 use crate::execution_owned_sell_rpc::{
     body,
-    fractional::transport::{self, Check, Pending, Transport},
+    fractional::{readiness, transport::{self, Check, Pending, Transport}},
 };
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use copybot_storage_core::{
     ordered_sell_quote::{fractional::inventory::Evidence, QuoteClaim},
     SqliteStore,
@@ -11,8 +12,27 @@ use copybot_storage_core::{
 use serde_json::{json, Value};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, Mutex,
 };
+
+/// The expired-body case advances only this test clock; no real sleeps or lease changes.
+#[derive(Clone)]
+pub(super) struct BodyClock {
+    now: Arc<Mutex<DateTime<Utc>>>,
+    expired_at: DateTime<Utc>,
+}
+impl BodyClock {
+    pub fn new(start: DateTime<Utc>, expired_at: DateTime<Utc>) -> Self {
+        Self { now: Arc::new(Mutex::new(start)), expired_at }
+    }
+    fn expire(&self) { *self.now.lock().unwrap() = self.expired_at; }
+}
+impl readiness::Clock for BodyClock {
+    fn now(&self) -> DateTime<Utc> { *self.now.lock().unwrap() }
+    fn sleep(&mut self, _: std::time::Duration) -> readiness::Sleep<'_> {
+        panic!("expired body must refuse before any readiness retry")
+    }
+}
 
 pub(super) struct Mock {
     pub evidence: Evidence,
@@ -22,6 +42,7 @@ pub(super) struct Mock {
     pub calls: Arc<AtomicUsize>,
     pub body_chunks: Arc<AtomicUsize>,
     pub hold: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+    pub body_clock: Option<BodyClock>,
 }
 impl Mock {
     pub fn new(f: &Fixture, fault: &'static str) -> Result<Self> {
@@ -35,6 +56,7 @@ impl Mock {
             calls: Arc::new(AtomicUsize::new(0)),
             body_chunks: Arc::new(AtomicUsize::new(0)),
             hold: None,
+            body_clock: None,
         })
     }
 }
@@ -103,6 +125,7 @@ impl Transport for Mock {
                 fault: self.fault,
                 db: self.db.clone(),
                 observed: self.body_chunks.clone(),
+                body_clock: self.body_clock.clone(),
             };
             drop(raw);
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
@@ -135,9 +158,8 @@ impl Transport for Mock {
                                         [],
                                     )? > 0, "fixture parent dependency missing");
                                 }
-                                "expired" => {
-                                    tokio::time::sleep(std::time::Duration::from_millis(1100)).await
-                                }
+                                "expired_in_body" => s.body_clock.as_ref()
+                                    .expect("explicit expired-body clock").expire(),
                                 "stopped" => anyhow::bail!("mock_body_cancelled"),
                                 _ => {}
                             }
@@ -158,6 +180,7 @@ struct Steps {
     fault: &'static str,
     db: String,
     observed: Arc<AtomicUsize>,
+    body_clock: Option<BodyClock>,
 }
 pub(super) fn chunks(raw: &[u8]) -> std::vec::IntoIter<Vec<u8>> {
     raw.chunks(8192)
@@ -168,8 +191,14 @@ pub(super) fn chunks(raw: &[u8]) -> std::vec::IntoIter<Vec<u8>> {
 pub(super) fn next(parts: &mut std::vec::IntoIter<Vec<u8>>) -> body::Chunk<'_, Vec<u8>> {
     Box::pin(std::future::ready(Ok(parts.next())))
 }
-pub(super) async fn bind(f: &mut Fixture, claim: QuoteClaim, mock: Mock) -> Result<QuoteClaim> {
+pub(super) async fn bind(f: &mut Fixture, claim: QuoteClaim, mut mock: Mock) -> Result<QuoteClaim> {
     let c = f::config(f)?;
+    if let Some(clock) = mock.body_clock.clone() {
+        return crate::execution_owned_sell_rpc::fractional::bind_transport_with_clock(
+            &mut f.db.store, &c, claim, super::association_parent_fixture::limits(),
+            &mut mock, clock,
+        ).await;
+    }
     crate::execution_owned_sell_rpc::fractional::bind_transport(
         &mut f.db.store,
         &c,

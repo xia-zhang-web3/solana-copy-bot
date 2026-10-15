@@ -163,12 +163,13 @@ async fn fractional_transport_refusals_consumed_without_rearm() -> Result<()> {
         "invalid",
         "stopped",
         "stale",
-        "expired",
+        "short_lease",
+        "expired_in_body",
         "aggregate",
     ] {
         let mut f = Fixture::new().await?;
         let mut claim = f.claim()?;
-        if fault == "expired" {
+        if fault == "short_lease" {
             claim.lease_until = Utc::now() + chrono::Duration::seconds(1);
             f.db.sql.execute(
                 "UPDATE ordered_sell_quote_results SET lease_until=?1",
@@ -176,6 +177,13 @@ async fn fractional_transport_refusals_consumed_without_rearm() -> Result<()> {
             )?;
         }
         let mut mock = t::Mock::new(&f, fault)?;
+        if fault == "expired_in_body" {
+            // Entry has the original valid30s lease. The second full-body chunk
+            // deterministically crosses its deadline through the accepted clock seam.
+            mock.body_clock = Some(t::BodyClock::new(
+                claim.lease_until - chrono::Duration::seconds(30), claim.lease_until,
+            ));
+        }
         if fault == "aggregate" {
             mock.budget.charge(&vec![b' '; (32 << 20) - (1 << 20)])?;
         }
@@ -185,7 +193,7 @@ async fn fractional_transport_refusals_consumed_without_rearm() -> Result<()> {
             .await
             .unwrap_err()
             .to_string();
-        if matches!(fault, "stale" | "expired" | "stopped") {
+        if matches!(fault, "stale" | "expired_in_body" | "stopped") {
             assert!(
                 body_chunks.load(std::sync::atomic::Ordering::SeqCst) >= 2,
                 "refused before body: {fault}"
@@ -194,8 +202,16 @@ async fn fractional_transport_refusals_consumed_without_rearm() -> Result<()> {
         if fault == "stale" {
             assert!(err.contains("fraction_decision_changed"), "{err}");
         }
-        if fault == "expired" {
-            assert!(err.contains("deadline"), "{err}");
+        if fault == "short_lease" {
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(body_chunks.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+        if fault == "expired_in_body" {
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+            assert_eq!(body_chunks.load(std::sync::atomic::Ordering::SeqCst), 2);
+        }
+        if matches!(fault, "short_lease" | "expired_in_body") {
+            assert_eq!(err, "fraction_collection_deadline");
         }
         if fault == "stopped" {
             assert!(err.contains("cancelled"), "{err}");
