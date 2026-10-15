@@ -1,3 +1,5 @@
+#[path = "b135_held_delivery_fixture.rs"]
+mod held_delivery;
 use super::{
     b135_fixture::Fixture, b135_server::Server, b93_fixture as receipt, strict_quote_fixture as q,
 };
@@ -9,11 +11,12 @@ async fn b135_held_quote_partial_receipt_refreshes_exact_remaining_4000() -> Res
     let server = Server::new().await?;
     let c = f.config(&server.url)?;
     f.ingress(&c).await?;
-    // Initial ingress already proves full replay and recovery. Prepare this real
-    // consumer before the held quote so its deadline measures concurrent delivery,
-    // rather than two additional SQLite startup/recovery passes on the CI host.
+    // Full replay/recovery is already proved. Preload captures and ACK the first
+    // two admissions before holding the quote; the critical delivery is SELL.
     let setup = std::time::Instant::now();
-    let (mut consumer, tx) = super::association_fixture::start(&f.db, &c, "b135-held-quote").await?;
+    let (mut consumer, tx) =
+        super::association_fixture::start(&f.db, &c, held_delivery::SESSION).await?;
+    let mut delivery = held_delivery::Replay::prepare(&f, &mut consumer, tx).await?;
     let setup_ms = setup.elapsed().as_millis();
     let first = q::first(&f.db, &f.meta)?;
     let r = f.runner(&c)?;
@@ -21,10 +24,28 @@ async fn b135_held_quote_partial_receipt_refreshes_exact_remaining_4000() -> Res
     q::tick(&r, &f.db).await?;
     tokio::time::timeout(Duration::from_secs(3), reached).await??;
     let replay = std::time::Instant::now();
-    tokio::time::timeout(Duration::from_secs(2), f.replay_started(&mut consumer, tx)).await??;
-    assert!(f.db.store.load_strict_sell_quote(&q::id(&f.meta),super::association_parent_fixture::limits(),chrono::Utc::now())?.is_none());
-    assert!(!release.is_closed(), "held quote peer must still await release");
-    println!("B135_HELD_REPLAY setup_ms={setup_ms} replay_ms={} quote_pending=true", replay.elapsed().as_millis());
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        delivery.acknowledge_sell(&f, &mut consumer),
+    )
+    .await??;
+    assert!(f
+        .db
+        .store
+        .load_strict_sell_quote(
+            &q::id(&f.meta),
+            super::association_parent_fixture::limits(),
+            chrono::Utc::now()
+        )?
+        .is_none());
+    assert!(
+        !release.is_closed(),
+        "held quote peer must still await release"
+    );
+    println!(
+        "B135_HELD_DELIVERY setup_ms={setup_ms} sell_ack_ms={} quote_pending=true end_gated=true",
+        replay.elapsed().as_millis()
+    );
     let facts = receipt::receipt(&f.db, &f.meta, "b135-partial", 3000)?;
     // Explicit prior partial execution fixture, with matching durable budget operands.
     f.db.sql.execute("INSERT INTO execution_canary_dispatch(order_id,signal_id,client_order_id,route,attempt,wallet,token,side,tx_signature,message_sha256,transaction_sha256,claimed_at) SELECT order_id,signal_id,client_order_id,route,attempt,?1,?2,'sell',tx_signature,?3,?4,submit_ts FROM orders WHERE order_id=?5",rusqlite::params![facts.wallet_pubkey,facts.token,"c".repeat(64),"d".repeat(64),facts.order_id])?;
@@ -38,6 +59,18 @@ async fn b135_held_quote_partial_receipt_refreshes_exact_remaining_4000() -> Res
         stale.outcome,
         copybot_storage_core::ordered_sell_quote::QuoteOutcome::Stale
     );
+    // The old aggregate boundary still times out deterministically: all frames
+    // may commit, but EOF cannot arrive until this explicit test gate is released.
+    assert!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            super::association_fixture::drain(&mut consumer, &f.db),
+        )
+        .await
+        .is_err(),
+        "EOF-gated full drain must not masquerade as delivery ACK"
+    );
+    delivery.finish(&f, &mut consumer).await?;
     f.drive(&r).await?;
     let snapshot: String =
         f.db.sql
