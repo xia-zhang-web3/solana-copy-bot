@@ -22,6 +22,12 @@ pub struct Binding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protected_execution_baseline: Option<inventory::ProtectedExecutionBaseline>,
 }
+/// A read-only acquisition refusal; only Proven may continue to quote.
+#[derive(Debug)]
+pub enum CollectionStep {
+    Proven(QuoteClaim),
+    MissingTargetParentAccount,
+}
 fn present(c: &Connection) -> Result<bool> {
     Ok(c.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='fractional_sell_decisions')",
@@ -57,7 +63,9 @@ pub(super) fn apply(
     }
     let d: Binding =
         serde_json::from_str(decision.as_deref().context("fraction_decision_missing")?)?;
-    if let Some(b) = &d.protected_execution_baseline { b.validate()?; }
+    if let Some(b) = &d.protected_execution_baseline {
+        b.validate()?;
+    }
     let intent = crate::ordered_source_sell::rows::load(c, &base.intent_id)?
         .context("fraction_native_intent")?;
     let a = &intent.first.sell.admission.facts;
@@ -172,9 +180,30 @@ impl SqliteDiscoveryStore {
         self.complete_fractional_sell_with_baseline(claim, evidence, l, now, None)
     }
     pub fn complete_fractional_sell_with_baseline(
-        &self, claim: &QuoteClaim, evidence: &inventory::Evidence, l: InboxLimits,
-        now: DateTime<Utc>, baseline: Option<&inventory::ProtectedExecutionBaseline>,
+        &self,
+        claim: &QuoteClaim,
+        evidence: &inventory::Evidence,
+        l: InboxLimits,
+        now: DateTime<Utc>,
+        baseline: Option<&inventory::ProtectedExecutionBaseline>,
     ) -> Result<QuoteClaim> {
+        match self.try_complete_fractional_sell_with_baseline(claim, evidence, l, now, baseline)? {
+            CollectionStep::Proven(claim) => Ok(claim),
+            CollectionStep::MissingTargetParentAccount => {
+                anyhow::bail!("fraction_target_pre_conflict")
+            }
+        }
+    }
+    /// Retryable acquisition state is returned only after every applicable proof fence.
+    /// No producer, claim, lease or decision is created or renewed here.
+    pub fn try_complete_fractional_sell_with_baseline(
+        &self,
+        claim: &QuoteClaim,
+        evidence: &inventory::Evidence,
+        l: InboxLimits,
+        now: DateTime<Utc>,
+        baseline: Option<&inventory::ProtectedExecutionBaseline>,
+    ) -> Result<CollectionStep> {
         let evidence_wire = inventory::encode_evidence(evidence)?;
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         collection(&tx, claim, l, now)?;
@@ -201,12 +230,16 @@ impl SqliteDiscoveryStore {
                 && a.token_out == claim.binding.output_mint,
             "fraction_native_source_identity"
         );
-        let proof = match baseline {
-            Some(b) => inventory::verify_with_baseline(evidence, &claim.binding,
-                &a.signature, a.slot, exact.amount_in_raw.parse()?, &facts.wallet_pubkey, Some(b))?,
-            None => inventory::verify(evidence, &claim.binding, &a.signature,
-                a.slot, exact.amount_in_raw.parse()?, &facts.wallet_pubkey)?,
-        };
+        let readiness = inventory::inspect_with_baseline(
+            evidence,
+            &claim.binding,
+            &a.signature,
+            a.slot,
+            exact.amount_in_raw.parse()?,
+            &facts.wallet_pubkey,
+            baseline,
+        )?;
+        let bank_proof = readiness.bank();
         use copybot_core_types::association_delivery::Terminal;
         let terminal = prep
             .current
@@ -219,9 +252,9 @@ impl SqliteDiscoveryStore {
             anyhow::bail!("fraction_native_bank_unknown")
         };
         ensure!(
-            bank.slot == proof.slot
-                && bank.blockhash == proof.bank_hash
-                && bank.transaction_index as usize == proof.target_index,
+            bank.slot == bank_proof.slot
+                && bank.blockhash == bank_proof.bank_hash
+                && bank.transaction_index as usize == bank_proof.target_index,
             "fraction_native_bank_conflict"
         );
         ensure!(
@@ -229,12 +262,19 @@ impl SqliteDiscoveryStore {
                 .parent_paths
                 .iter()
                 .flat_map(|p| &p.edges)
-                .any(|e| e.child.slot == proof.slot
-                    && e.child.hash == proof.bank_hash
-                    && e.parent.slot == proof.parent
-                    && e.parent.hash == proof.parent_hash),
+                .any(|e| e.child.slot == bank_proof.slot
+                    && e.child.hash == bank_proof.bank_hash
+                    && e.parent.slot == bank_proof.parent
+                    && e.parent.hash == bank_proof.parent_hash),
             "fraction_native_parent_conflict"
         );
+        let proof = match readiness {
+            inventory::readiness::Readiness::Proven(proof) => proof,
+            inventory::readiness::Readiness::MissingTargetParentAccount(_) => {
+                // Transaction drops without writes. This is never a quote/send permission.
+                return Ok(CollectionStep::MissingTargetParentAccount);
+            }
+        };
         let selected = inventory::allocate(
             &[claim.binding.raw],
             proof.numerator,
@@ -286,7 +326,7 @@ impl SqliteDiscoveryStore {
         let mut out = claim.clone();
         out.binding = binding;
         self.recheck_strict_sell_quote(&out, l, now)?;
-        Ok(out)
+        Ok(CollectionStep::Proven(out))
     }
 }
 fn collection(

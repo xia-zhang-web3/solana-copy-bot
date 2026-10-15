@@ -45,3 +45,9 @@ use super::temporary_output_fixture;
 mod copy39_saved_sell_fixture;
 #[path = "copy39_saved_sell_tests.rs"]
 mod copy39_saved_sell_tests;
+#[path = "copy40_readiness_fixture.rs"]
+mod copy40_readiness_fixture;
+#[path = "copy40_readiness_cases.rs"]
+mod copy40_readiness_cases;
+#[path = "copy40_readiness_tests.rs"]
+mod copy40_readiness_tests;

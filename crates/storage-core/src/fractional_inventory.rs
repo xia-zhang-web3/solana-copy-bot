@@ -1,16 +1,18 @@
 //! Bounded native verifier of the accepted two-program parent/full-prefix contract.
 //! Inputs are raw provider evidence, never a caller's N/D or PROVEN flag.
+#[path = "fractional_inventory_jupiter.rs"]
+mod jupiter;
+#[path = "fractional_inventory_readiness.rs"]
+pub(crate) mod readiness;
 #[path = "fractional_inventory_rows.rs"]
 mod rows;
 #[path = "fractional_inventory_schema.rs"]
 mod schema;
 #[path = "fractional_inventory_source.rs"]
 mod source;
-#[path = "fractional_inventory_jupiter.rs"]
-mod jupiter;
-pub use jupiter::{prove_jupiter_source_sell, JupiterSourceSellProof, JUPITER};
 use super::QuoteBinding;
 use anyhow::{ensure, Context, Result};
+pub use jupiter::{prove_jupiter_source_sell, JupiterSourceSellProof, JUPITER};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,9 +56,12 @@ pub struct ProtectedExecutionBaseline {
 }
 impl ProtectedExecutionBaseline {
     pub fn validate(&self) -> Result<()> {
-        ensure!(self.policy == PROTECTED_USDC_POLICY && self.amount_raw == 100
-            && copybot_core_types::association_parent::valid_hash(&self.token_account),
-            "fraction_protected_baseline_invalid");
+        ensure!(
+            self.policy == PROTECTED_USDC_POLICY
+                && self.amount_raw == 100
+                && copybot_core_types::association_parent::valid_hash(&self.token_account),
+            "fraction_protected_baseline_invalid"
+        );
         Ok(())
     }
 }
@@ -114,9 +119,25 @@ pub(super) fn verify(
     verify_with_baseline(e, b, signature, slot, raw, wallet, None)
 }
 pub(super) fn verify_with_baseline(
-    e: &Evidence, b: &QuoteBinding, signature: &str, slot: u64, raw: u64,
-    wallet: &str, baseline: Option<&ProtectedExecutionBaseline>,
+    e: &Evidence,
+    b: &QuoteBinding,
+    signature: &str,
+    slot: u64,
+    raw: u64,
+    wallet: &str,
+    baseline: Option<&ProtectedExecutionBaseline>,
 ) -> Result<Inventory> {
+    inspect_with_baseline(e, b, signature, slot, raw, wallet, baseline)?.require_proven()
+}
+pub(super) fn inspect_with_baseline(
+    e: &Evidence,
+    b: &QuoteBinding,
+    signature: &str,
+    slot: u64,
+    raw: u64,
+    wallet: &str,
+    baseline: Option<&ProtectedExecutionBaseline>,
+) -> Result<readiness::Readiness> {
     ensure!(
         e.version == 1 && e.slot == slot && slot > 0,
         "fraction_slot_binding"
@@ -204,6 +225,22 @@ pub(super) fn verify_with_baseline(
     let (keys, pre, post) = rows::balances(target, b)?;
     ensure!(target["meta"]["err"].is_null(), "fraction_target_failed");
     let source_account = rows::source(target, &keys, b, raw)?;
+    // Narrow readiness case: the selected account is absent from both complete
+    // program pages and the validated prefix. A present wrong-mint/zero/nonzero
+    // account or ambiguous prefix is an integrity refusal, never a wait signal.
+    let absent_parent_target = !seen.contains(&source_account)
+        && !txs[..index].iter().any(|t| {
+            [
+                &t["transaction"]["message"]["accountKeys"],
+                &t["meta"]["loadedAddresses"]["writable"],
+                &t["meta"]["loadedAddresses"]["readonly"],
+            ]
+            .iter()
+            .any(|v| {
+                v.as_array()
+                    .is_some_and(|keys| keys.iter().any(|k| k.as_str() == Some(&source_account)))
+            })
+        });
     for field in ["preTokenBalances", "postTokenBalances"] {
         for v in target["meta"][field].as_array().unwrap() {
             let address = &keys[v["accountIndex"].as_u64().unwrap() as usize];
@@ -215,11 +252,16 @@ pub(super) fn verify_with_baseline(
             }
         }
     }
+    let mut missing_target = false;
     for (address, amount) in &pre {
-        ensure!(
-            accounts.get(address).copied().unwrap_or(0) == *amount,
-            "fraction_target_pre_conflict"
-        );
+        if address == &source_account && *amount > 0 && absent_parent_target {
+            missing_target = true;
+        } else {
+            ensure!(
+                accounts.get(address).copied().unwrap_or(0) == *amount,
+                "fraction_target_pre_conflict"
+            );
+        }
     }
     let before = pre
         .get(&source_account)
@@ -239,7 +281,7 @@ pub(super) fn verify_with_baseline(
             .context("fraction_sum_overflow")
     })?;
     ensure!(
-        denominator >= u128::from(raw) && raw > 0,
+        (missing_target || denominator >= u128::from(raw)) && raw > 0,
         "fraction_denominator"
     );
     // Supported custody model: one execution token account, exact receipt-owned H.
@@ -256,17 +298,37 @@ pub(super) fn verify_with_baseline(
     let (account, mint, held, decimals) = rows::account(&values[0], wallet, None)?;
     let protected_raw = if let Some(baseline) = baseline {
         baseline.validate()?;
-        ensure!(b.mint == USDC && b.decimals == 6 && account == baseline.token_account
-            && values[0]["account"]["owner"] == TOKEN,
-            "fraction_protected_baseline_identity");
+        ensure!(
+            b.mint == USDC
+                && b.decimals == 6
+                && account == baseline.token_account
+                && values[0]["account"]["owner"] == TOKEN,
+            "fraction_protected_baseline_identity"
+        );
         baseline.amount_raw
-    } else { 0 };
-    let expected = b.raw.checked_add(protected_raw).context("fraction_wallet_amount_overflow")?;
+    } else {
+        0
+    };
+    let expected = b
+        .raw
+        .checked_add(protected_raw)
+        .context("fraction_wallet_amount_overflow")?;
     ensure!(
         mint == b.mint && held == expected && decimals == b.decimals,
         "fraction_wallet_owned_conflict"
     );
-    Ok(Inventory {
+    if missing_target {
+        return Ok(readiness::Readiness::MissingTargetParentAccount(
+            readiness::Bank {
+                slot,
+                parent,
+                bank_hash: hash,
+                parent_hash,
+                target_index: index,
+            },
+        ));
+    }
+    Ok(readiness::Readiness::Proven(Inventory {
         contract: CONTRACT.into(),
         signature: signature.into(),
         wallet: b.source_wallet.clone(),
@@ -278,7 +340,7 @@ pub(super) fn verify_with_baseline(
         target_index: index,
         numerator: raw,
         denominator: denominator.to_string(),
-    })
+    }))
 }
 
 #[cfg(test)]
