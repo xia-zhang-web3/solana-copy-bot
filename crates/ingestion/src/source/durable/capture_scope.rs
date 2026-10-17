@@ -1,10 +1,12 @@
 //! Cheap scoped intake, retaining changed-signature evidence before admission.
+use super::continuity_telemetry::{
+    diagnostic_time, ReaderObservation, TransitionKind, TransitionStart,
+};
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 use yellowstone_grpc_proto::prelude::SubscribeUpdateTransactionInfo;
-use super::continuity_telemetry::{monotonic_ns, ReaderObservation, TransitionKind, TransitionStart};
 pub(in crate::source) struct CaptureScope {
     wallets: HashSet<Vec<u8>>,
     durable: HashSet<Vec<u8>>,
@@ -35,29 +37,49 @@ impl CaptureScope {
         })
     }
     pub fn observed(mut self: Arc<Self>, observation: ReaderObservation) -> Arc<Self> {
-        Arc::get_mut(&mut self).expect("new capture scope").observation = Some(observation);
+        Arc::get_mut(&mut self)
+            .expect("new capture scope")
+            .observation = Some(observation);
         self
     }
     fn transition(&self) -> Option<TransitionStart> {
-        let began = monotonic_ns();
-        self.observation.as_ref().map(|o| o.begin(began,
-            self.hold.as_ref().map(|f| f.load(std::sync::atomic::Ordering::Acquire)),
-            self.interrupted.load(std::sync::atomic::Ordering::SeqCst)))
+        let began = diagnostic_time();
+        self.observation.as_ref().map(|o| {
+            o.begin_observed(
+                began,
+                self.hold
+                    .as_ref()
+                    .map(|f| f.load(std::sync::atomic::Ordering::Acquire)),
+                self.interrupted.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        })
     }
     fn recorded(&self, kind: TransitionKind, start: Option<TransitionStart>) {
         if let (Some(observation), Some(start)) = (&self.observation, start) {
-            let hold = self.hold.as_ref().map(|f| f.load(std::sync::atomic::Ordering::Acquire));
+            let hold = self
+                .hold
+                .as_ref()
+                .map(|f| f.load(std::sync::atomic::Ordering::Acquire));
             let interrupted = self.interrupted.load(std::sync::atomic::Ordering::SeqCst);
-            observation.finish(kind, start, monotonic_ns(), hold, interrupted);
+            observation.finish_observed(kind, start, diagnostic_time(), hold, interrupted);
         }
     }
+    pub(super) fn diagnostic_identity(
+        &self,
+    ) -> Option<super::continuity_telemetry::ReaderIdentity> {
+        self.observation.as_ref().map(|o| o.identity())
+    }
     pub fn frontier(&self, slot: u64) {
-        if let Some(observation) = &self.observation { observation.frontier(slot); }
+        if let Some(observation) = &self.observation {
+            observation.frontier(slot);
+        }
     }
     pub fn interrupted(&self) {
         self.interrupted_as(TransitionKind::TaskGuardDrop);
     }
-    pub fn reader_dropped(&self) { self.interrupted_as(TransitionKind::ReaderDrop); }
+    pub fn reader_dropped(&self) {
+        self.interrupted_as(TransitionKind::ReaderDrop);
+    }
     fn interrupted_as(&self, kind: TransitionKind) {
         let observation = self.transition();
         self.interrupted

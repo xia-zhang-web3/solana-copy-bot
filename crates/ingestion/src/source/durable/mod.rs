@@ -1,14 +1,25 @@
 //! Opt-in runtime bridge. One receive/association task, bounded charged channel,
 //! no SQLite, signature eviction claims, legacy output or task-per-event spawning.
+pub(in crate::source) mod diagnostic_clock;
 pub(in crate::source) mod recovery;
 mod replay;
 pub use recovery::replay_scope;
 pub use replay::ReplayInput;
-mod processing_telemetry;
-mod telemetry;
 mod continuity_telemetry;
-pub use continuity_telemetry::{ContinuityPrecheck, ContinuitySnapshot, ContinuityTransition, PreviousRelation, TransitionKind};
+#[cfg(test)]
+#[path = "../../source_tests/reader_measurement_export.rs"]
+pub(in crate::source) mod measurement_export;
+#[cfg(test)]
+pub(in crate::source) use continuity_telemetry::monotonic_ns as diagnostic_monotonic_ns;
+mod processing_telemetry;
+mod reader_diagnostics;
+mod reader_error_witness;
+mod telemetry;
+pub use continuity_telemetry::{
+    ContinuityPrecheck, ContinuitySnapshot, ContinuityTransition, PreviousRelation, TransitionKind,
+};
 pub use processing_telemetry::{HttpRecoverySnapshot, IngressProcessingSnapshot, TimingSnapshot};
+pub use reader_diagnostics::{ReaderDiagnosticEvent, ReaderDiagnosticSnapshot};
 pub use telemetry::{DurableIngressSnapshot, TransportClass, TransportStage};
 mod bridge;
 pub(in crate::source) mod capture_scope;
@@ -50,6 +61,7 @@ impl DeliveryReceiver {
         bot_signer: Option<String>,
     ) -> Result<Self> {
         copybot_config::validate_delivery_source(config)?;
+        diagnostic_clock::initialize();
         if let Some(bot) = bot_signer.as_ref() {
             anyhow::ensure!(
                 wallet_scope
@@ -90,6 +102,7 @@ impl DeliveryReceiver {
         restored: Option<copybot_core_types::association_recovery::DurableCheckpoint>,
     ) -> Result<Self> {
         copybot_config::validate_delivery_source(config)?;
+        diagnostic_clock::initialize();
         let scope = replay_scope(config, &wallet_scope)?;
         if let Some(bot) = bot_signer.as_ref() {
             anyhow::ensure!(
@@ -141,11 +154,14 @@ impl DeliveryReceiver {
         checkpoint: copybot_core_types::association_recovery::DurableCheckpoint,
     ) -> Result<()> {
         let observed = continuity_telemetry::ContinuityTelemetry::checkpoint(&checkpoint);
-        let result = self.recovery
+        let result = self
+            .recovery
             .as_ref()
             .context("replay recovery disabled")?
             .acknowledge(checkpoint);
-        if result.is_ok() { self.telemetry.continuity.acknowledged(observed); }
+        if result.is_ok() {
+            self.telemetry.continuity.acknowledged(observed);
+        }
         result
     }
     /// Shared fail-closed recovery barrier; independent from telemetry.
@@ -165,17 +181,32 @@ impl DeliveryReceiver {
     pub fn ingress_snapshot(&self) -> DurableIngressSnapshot {
         self.telemetry.snapshot()
     }
+    pub fn reader_diagnostic_snapshot(&self) -> ReaderDiagnosticSnapshot {
+        self.telemetry.reader_diagnostics.snapshot()
+    }
     pub fn continuity_snapshot(&self) -> ContinuitySnapshot {
         self.telemetry.continuity.snapshot()
     }
     pub fn continuity_precheck(&self) -> ContinuityPrecheck {
-        let began_ns = continuity_telemetry::monotonic_ns();
+        let (began_ns, began_clock) = continuity_telemetry::diagnostic_time();
         let hold = self.http_continuity_hold();
-        let hold_before = hold.as_ref().map(|h| h.load(std::sync::atomic::Ordering::Acquire));
+        let hold_before = hold
+            .as_ref()
+            .map(|h| h.load(std::sync::atomic::Ordering::Acquire));
         let snapshot = self.continuity_snapshot();
-        let hold_after = hold.as_ref().map(|h| h.load(std::sync::atomic::Ordering::Acquire));
-        ContinuityPrecheck { began_ns, ended_ns: continuity_telemetry::monotonic_ns(),
-            hold_before, hold_after, snapshot }
+        let hold_after = hold
+            .as_ref()
+            .map(|h| h.load(std::sync::atomic::Ordering::Acquire));
+        let (ended_ns, ended_clock) = continuity_telemetry::diagnostic_time();
+        ContinuityPrecheck {
+            began_ns,
+            ended_ns,
+            began_clock,
+            ended_clock,
+            hold_before,
+            hold_after,
+            snapshot,
+        }
     }
     pub fn wallet_scope(&self) -> Option<&HashSet<String>> {
         self.wallet_scope.as_ref()
@@ -214,3 +245,7 @@ impl Drop for DeliveryReceiver {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../source_tests/clock_qualification_tests.rs"]
+mod clock_qualification_tests;

@@ -130,6 +130,7 @@ pub struct DurableIngressSnapshot {
 
 #[derive(Default)]
 pub(crate) struct DurableIngressTelemetry {
+    pub(crate) reader_diagnostics: std::sync::Arc<super::reader_diagnostics::ReaderDiagnostics>,
     pub(crate) continuity: std::sync::Arc<super::continuity_telemetry::ContinuityTelemetry>,
     pub(crate) processing: super::processing_telemetry::IngressProcessingTelemetry,
     received_transactions: AtomicU64,

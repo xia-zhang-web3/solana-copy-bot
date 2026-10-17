@@ -24,7 +24,6 @@ mod reader;
 #[cfg(test)]
 pub(in crate::source) use reader::Reader as TestReader;
 use reader::{Captured, End, Reader};
-
 fn ns(start: Instant) -> u64 {
     start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
 }
@@ -187,7 +186,7 @@ pub(super) async fn run(
             }
         };
         backoff = c.reconnect_initial_ms;
-        let mut reader = Reader::start(
+        let mut reader = Reader::start_diagnosed(
             incoming,
             sink,
             limits.blocks.count,
@@ -195,6 +194,7 @@ pub(super) async fn run(
             limits.input_bytes,
             telemetry.clone(),
             bridge.begin_capture()?,
+            secrets.iter().map(|value| (*value).to_owned()).collect(),
         )?;
         if let Some(from) = from {
             let mut before_anchor: Vec<Captured> = Vec::new();

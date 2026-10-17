@@ -1,5 +1,8 @@
 //! One bounded reader task per connection; processing never owns tonic polling.
 use super::DurableIngressTelemetry;
+use crate::source::durable::reader_diagnostics;
+#[path = "reader_terminal.rs"]
+mod terminal_observer;
 use crate::source::durable::capture_scope::{CaptureScope, Pending};
 use anyhow::{ensure, Result};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
@@ -70,6 +73,7 @@ pub(in crate::source) struct Reader {
     rx: mpsc::Receiver<Captured>,
     task: Option<JoinHandle<End>>,
     scope: Arc<CaptureScope>,
+    diagnostics: Arc<reader_diagnostics::ReaderDiagnostics>,
 }
 struct Interrupted(Arc<CaptureScope>);
 impl Drop for Interrupted {
@@ -77,8 +81,52 @@ impl Drop for Interrupted {
         self.0.interrupted();
     }
 }
+#[cfg(test)]
+#[path = "../../source_tests/reader_measurement_input.rs"]
+mod measurement_input;
 impl Reader {
+    #[cfg(test)]
+    pub(in crate::source) fn measurement_input_snapshot() -> serde_json::Value {
+        measurement_input::snapshot()
+    }
+    #[cfg(test)]
+    pub(in crate::source) fn measurement_input_count() -> u64 {
+        measurement_input::attempted()
+    }
+    #[cfg(test)]
+    pub(in crate::source) fn measurement_input_errors() -> u64 {
+        measurement_input::errors()
+    }
+
     pub(super) fn start<S, K>(
+        stream: S,
+        sink: K,
+        count: usize,
+        bytes: usize,
+        input: usize,
+        telemetry: Arc<DurableIngressTelemetry>,
+        scope: Arc<CaptureScope>,
+    ) -> Result<Self>
+    where
+        S: Stream<Item = std::result::Result<SubscribeUpdate, tonic::Status>>
+            + Unpin
+            + Send
+            + 'static,
+        K: Sink<SubscribeRequest> + Unpin + Send + 'static,
+        K::Error: std::error::Error + Send + Sync + 'static,
+    {
+        Self::start_diagnosed(
+            stream,
+            sink,
+            count,
+            bytes,
+            input,
+            telemetry,
+            scope,
+            Vec::new(),
+        )
+    }
+    pub(super) fn start_diagnosed<S, K>(
         mut stream: S,
         mut sink: K,
         count: usize,
@@ -86,6 +134,7 @@ impl Reader {
         input: usize,
         telemetry: Arc<DurableIngressTelemetry>,
         scope: Arc<CaptureScope>,
+        secrets: Vec<String>,
     ) -> Result<Self>
     where
         S: Stream<Item = std::result::Result<SubscribeUpdate, tonic::Status>>
@@ -104,13 +153,22 @@ impl Reader {
         let counts = Arc::new(Semaphore::new(count));
         let task_scope = scope.clone();
         let reader_scope = scope.clone();
+        let diagnostics = telemetry.reader_diagnostics.clone();
+        let mut observer = terminal_observer::TerminalObserver::new(
+            diagnostics.clone(),
+            scope.diagnostic_identity(),
+            secrets,
+        );
         let task = tokio::spawn(async move {
             let _interrupted = Interrupted(task_scope);
+            let end = async {
             while let Some(value) = stream.next().await {
                 let update = match value {
                     Ok(v) => v,
                     Err(e) => return End::Status(e),
                 };
+                #[cfg(test)]
+                let typed_available=crate::source::durable::continuity_telemetry::diagnostic_time();
                 match update.update_oneof.as_ref() {
                     Some(subscribe_update::UpdateOneof::Ping(_)) => {
                         if let Err(e) = sink
@@ -176,7 +234,10 @@ impl Reader {
                     Some(subscribe_update::UpdateOneof::Block(block))
                         if !crate::source::yellowstone_block_association::needs_exact_float_storage(block) =>
                     {
-                        CapturedValue::EncodedBlock(update.encode_to_vec())
+                        let encoded=update.encode_to_vec();
+                        #[cfg(test)]
+                        measurement_input::observe(&encoded,block.slot,typed_available);
+                        CapturedValue::EncodedBlock(encoded)
                     }
                     _ => CapturedValue::Exact(update),
                 };
@@ -195,11 +256,15 @@ impl Reader {
                 }
             }
             End::Eof
+            }.await;
+            observer.finish(&end);
+            end
         });
         Ok(Self {
             rx,
             task: Some(task),
             scope: reader_scope,
+            diagnostics,
         })
     }
     pub(super) fn clear_verified(&self) {
@@ -209,7 +274,19 @@ impl Reader {
         self.rx.recv().await
     }
     pub(super) async fn end(&mut self) -> Result<End> {
-        Ok(self.task.take().expect("reader task").await?)
+        let result = self.task.take().expect("reader task").await;
+        if let Err(error) = &result {
+            self.diagnostics.record(reader_diagnostics::event(
+                self.scope.diagnostic_identity(),
+                if error.is_cancelled() {
+                    "join_cancelled"
+                } else {
+                    "join_panicked"
+                },
+                "UNAVAILABLE_NO_END_RETURNED",
+            ));
+        }
+        Ok(result?)
     }
 }
 impl Drop for Reader {
@@ -217,6 +294,13 @@ impl Drop for Reader {
         // Abort is scheduled; financial continuity must close synchronously.
         self.scope.reader_dropped();
         if let Some(task) = self.task.take() {
+            let mut event = reader_diagnostics::event(
+                self.scope.diagnostic_identity(),
+                "owner_abort_requested",
+                "NOT_TERMINAL",
+            );
+            event.task_finished_at_abort_request = Some(task.is_finished());
+            self.diagnostics.record(event);
             task.abort();
         }
     }
@@ -233,3 +317,7 @@ mod raw_memory_tests;
 #[cfg(test)]
 #[path = "../../source_tests/ingress42_correlation_tests.rs"]
 mod ingress42_correlation_tests;
+
+#[cfg(test)]
+#[path = "../../source_tests/reader_diagnostic_tests.rs"]
+mod reader_diagnostic_tests;
