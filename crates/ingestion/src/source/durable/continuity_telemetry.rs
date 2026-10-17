@@ -217,14 +217,6 @@ impl ReaderObservation {
             observed_ns,
         });
     }
-    #[cfg(test)]
-    pub(in crate::source) fn begin(&self, began: u64, hold: Option<bool>, interrupted: bool) -> TransitionStart {
-        self.begin_observed((began, ClockStamp::default()), hold, interrupted)
-    }
-    #[cfg(test)]
-    pub(in crate::source) fn finish(&self, kind: TransitionKind, start: TransitionStart, ended: u64, hold: Option<bool>, interrupted: bool) {
-        self.finish_observed(kind, start, (ended, ClockStamp::default()), hold, interrupted)
-    }
     pub(in crate::source) fn begin_observed(
         &self,
         began: (u64, ClockStamp),
@@ -297,3 +289,7 @@ impl ReaderObservation {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../source_tests/continuity_test_impl.rs"]
+mod test_impl;

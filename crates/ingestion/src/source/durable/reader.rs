@@ -84,19 +84,10 @@ impl Drop for Interrupted {
 #[cfg(test)]
 #[path = "../../source_tests/reader_measurement_input.rs"]
 mod measurement_input;
+#[cfg(test)]
+#[path = "../../source_tests/reader_measurement_impl.rs"]
+mod measurement_impl;
 impl Reader {
-    #[cfg(test)]
-    pub(in crate::source) fn measurement_input_snapshot() -> serde_json::Value {
-        measurement_input::snapshot()
-    }
-    #[cfg(test)]
-    pub(in crate::source) fn measurement_input_count() -> u64 {
-        measurement_input::attempted()
-    }
-    #[cfg(test)]
-    pub(in crate::source) fn measurement_input_errors() -> u64 {
-        measurement_input::errors()
-    }
 
     pub(super) fn start<S, K>(
         stream: S,
