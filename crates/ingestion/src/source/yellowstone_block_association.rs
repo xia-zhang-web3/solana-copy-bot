@@ -53,6 +53,7 @@ pub(super) enum AssociationRefusal {
     InvalidSignatureLength(usize),
     ZeroSlot,
     SlotMismatch,
+    BankMismatch,
     InvalidBlockhash,
     TooManyTransactions(usize),
     InfoCardinalityExceeded(InfoSide),
@@ -100,6 +101,12 @@ pub(super) fn associate_yellowstone_transaction(
     }
     if expected.slot != block.slot {
         return Err(Refusal::SlotMismatch);
+    }
+    // Bank ids are node/connection-local. This API is used within one adapter
+    // Session; durable/recovered identity remains slot + blockhash. Zero is the
+    // proto3 default for legacy messages that did not carry the additive field.
+    if !same_observation_bank(expected.bank_id, block.bank_id) {
+        return Err(Refusal::BankMismatch);
     }
     if !valid_blockhash(&block.blockhash) {
         return Err(Refusal::InvalidBlockhash);
@@ -149,6 +156,10 @@ pub(super) fn associate_yellowstone_transaction(
     })
 }
 
+pub(in crate::source) fn same_observation_bank(a: u64, b: u64) -> bool {
+    a == 0 || b == 0 || a == b
+}
+
 pub(super) fn valid_blockhash(hash: &str) -> bool {
     if !(32..=44).contains(&hash.len()) {
         return false;
@@ -159,7 +170,7 @@ pub(super) fn valid_blockhash(hash: &str) -> bool {
 }
 
 // Prost omits both +0.0 and -0.0 when encoding a default double. Compare the
-// bits of every double in pinned proto12 as well, including NaN payloads.
+// bits of every double in pinned proto14 as well, including NaN payloads.
 pub(super) fn same_float_bits(
     a: &SubscribeUpdateTransactionInfo,
     b: &SubscribeUpdateTransactionInfo,

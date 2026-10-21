@@ -45,6 +45,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "380962b3d93b99642e50b9febf72c071e97e8b32d86eae9cf4ef582bb960ae6e"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "argon2"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -283,7 +292,7 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
- "yellowstone-grpc-proto",
+ "yellowstone-grpc-proto 14.0.1",
 ]
 
 [[package]]
@@ -359,8 +368,8 @@ dependencies = [
  "tokio-tungstenite",
  "tonic",
  "tracing",
- "yellowstone-grpc-client",
- "yellowstone-grpc-proto",
+ "yellowstone-grpc-client 15.0.0",
+ "yellowstone-grpc-proto 14.0.1",
 ]
 
 [[package]]
@@ -394,8 +403,8 @@ dependencies = [
  "tokio",
  "tonic",
  "url",
- "yellowstone-grpc-client",
- "yellowstone-grpc-proto",
+ "yellowstone-grpc-client 12.0.0",
+ "yellowstone-grpc-proto 12.6.0",
 ]
 
 [[package]]
@@ -3286,7 +3295,28 @@ dependencies = [
  "thiserror",
  "tonic",
  "tonic-health",
- "yellowstone-grpc-proto",
+ "yellowstone-grpc-proto 12.6.0",
+]
+
+[[package]]
+name = "yellowstone-grpc-client"
+version = "15.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14d2f909d0f39eff9f03fca11c60115660defcf85c3eee5511ebb13c0ebc91d4"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "futures",
+ "hyper",
+ "hyper-util",
+ "log",
+ "pin-project",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tonic-health",
+ "tower",
+ "yellowstone-grpc-proto 14.0.1",
 ]
 
 [[package]]
@@ -3294,6 +3324,24 @@ name = "yellowstone-grpc-proto"
 version = "12.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bdceeb3f02e4b31ab481eb9fd714854d757e76d2eb7b4f9c00136ed19edf183f"
+dependencies = [
+ "anyhow",
+ "prost",
+ "prost-types",
+ "protoc-bin-vendored",
+ "siphasher",
+ "solana-pubkey",
+ "thiserror",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
+name = "yellowstone-grpc-proto"
+version = "14.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f913b2244559b96aa636abf53188a7df450e14a3f8cb5b3e5d3202822759ff4"
 dependencies = [
  "anyhow",
  "prost",

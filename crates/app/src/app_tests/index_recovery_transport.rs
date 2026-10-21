@@ -18,6 +18,22 @@ use yellowstone_grpc_proto::prelude::*;
 struct Live(Vec<SubscribeUpdateBlock>);
 #[tonic::async_trait]
 impl geyser_server::Geyser for Live {
+    // The fixture does not expose the new optional gossip RPC.
+    type SubscribeGossipStream = std::pin::Pin<
+        Box<
+            dyn futures_util::Stream<
+                    Item = std::result::Result<SubscribeUpdateGossip, tonic::Status>,
+                > + Send,
+        >,
+    >;
+    async fn subscribe_gossip(
+        &self,
+        _: tonic::Request<SubscribeGossipRequest>,
+    ) -> std::result::Result<tonic::Response<Self::SubscribeGossipStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "fixture gossip is not subscribed",
+        ))
+    }
     type SubscribeStream =
         Pin<Box<dyn futures_util::Stream<Item = Result<SubscribeUpdate, tonic::Status>> + Send>>;
     type SubscribeDeshredStream = Pin<

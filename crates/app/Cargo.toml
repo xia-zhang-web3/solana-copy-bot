@@ -28,7 +28,7 @@ toml.workspace = true
 # Offline full-path replay reuses the already pinned ingestion wire types.
 [dev-dependencies]
 prost = "=0.14.3"
-yellowstone-grpc-proto = "=12.6.0"
+yellowstone-grpc-proto = "=14.0.1"
 
 # Loopback tonic transport/replay proof; both crates already pinned in ingestion.
 tonic = "=0.14.4"

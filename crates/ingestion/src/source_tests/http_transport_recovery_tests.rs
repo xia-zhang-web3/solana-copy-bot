@@ -5,6 +5,8 @@ mod anchor_diagnostic_tests;
 mod anchor_saturation_tests;
 #[path = "http_delivery_replay/mod.rs"]
 mod http_delivery_replay;
+#[path = "live_parent_gap/mod.rs"]
+mod live_parent_gap;
 #[path = "saved_reward_replay/mod.rs"]
 mod saved_reward_replay;
 use super::durable_transport_fixture::Fixture;
@@ -75,6 +77,22 @@ fn checkpoint(scope: &ReplayScope, slot: u64) -> BlockCheckpoint {
 struct Live(Fixture);
 #[tonic::async_trait]
 impl geyser_server::Geyser for Live {
+    // The fixture does not expose the new optional gossip RPC.
+    type SubscribeGossipStream = std::pin::Pin<
+        Box<
+            dyn futures_util::Stream<
+                    Item = std::result::Result<SubscribeUpdateGossip, tonic::Status>,
+                > + Send,
+        >,
+    >;
+    async fn subscribe_gossip(
+        &self,
+        _: tonic::Request<SubscribeGossipRequest>,
+    ) -> std::result::Result<tonic::Response<Self::SubscribeGossipStream>, tonic::Status> {
+        Err(tonic::Status::unimplemented(
+            "fixture gossip is not subscribed",
+        ))
+    }
     type SubscribeStream = <Fixture as geyser_server::Geyser>::SubscribeStream;
     type SubscribeDeshredStream = <Fixture as geyser_server::Geyser>::SubscribeDeshredStream;
     async fn subscribe(
@@ -215,7 +233,9 @@ async fn servers(mode: &'static str, anchor: u64, delay: Arc<AtomicBool>) -> Ser
                     if mode == "anchor-malformed" && slot == 48 {
                         v["rewards"] = Value::Null;
                     }
-                    if (mode == "conflict" && slot == 45) || (mode == "anchor-mismatch" && slot == 48) {
+                    if (mode == "conflict" && slot == 45)
+                        || (mode == "anchor-mismatch" && slot == 48)
+                    {
                         v["blockhash"] = json!(hash(99));
                     }
                     v
@@ -263,6 +283,7 @@ async fn servers(mode: &'static str, anchor: u64, delay: Arc<AtomicBool>) -> Ser
                     subscribe_update::UpdateOneof::Block(block(50))
                 } else {
                     subscribe_update::UpdateOneof::Transaction(SubscribeUpdateTransaction {
+                        bank_id: 0,
                         transaction: None,
                         slot: 45,
                     })

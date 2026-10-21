@@ -22,8 +22,8 @@ tokio.workspace = true
 tokio-tungstenite = { version = "0.27.0", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
 tonic = "=0.14.4"
 tracing.workspace = true
-yellowstone-grpc-client = "=12.0.0"
-yellowstone-grpc-proto = "=12.6.0"
+yellowstone-grpc-client = "=15.0.0"
+yellowstone-grpc-proto = "=14.0.1"
 
 [dev-dependencies]
 rusqlite.workspace = true

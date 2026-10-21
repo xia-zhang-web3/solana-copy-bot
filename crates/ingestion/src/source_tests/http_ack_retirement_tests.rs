@@ -212,6 +212,7 @@ async fn closed_unknown_supported_source_refusal_closes_bridge_hold() -> Result<
         }
     }
     let transaction = SubscribeUpdateTransaction {
+        bank_id: 0,
         slot: admission.facts.slot,
         transaction: Some(info),
     };

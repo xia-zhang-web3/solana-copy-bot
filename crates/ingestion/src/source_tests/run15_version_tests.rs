@@ -307,6 +307,7 @@ async fn saved_raydium_mixed_block_replays_and_exports_full_frames() -> Result<(
                 inputs.len() as u64 + 1,
                 rpc::envelope(
                     subscribe_update::UpdateOneof::Transaction(SubscribeUpdateTransaction {
+                        bank_id: 0,
                         slot: block.slot,
                         transaction: Some(info.clone()),
                     }),
@@ -316,6 +317,7 @@ async fn saved_raydium_mixed_block_replays_and_exports_full_frames() -> Result<(
         }
     }
     let sell_tx = SubscribeUpdateTransaction {
+        bank_id: 0,
         slot: block.slot,
         transaction: Some(sell),
     };
@@ -339,6 +341,7 @@ async fn saved_raydium_mixed_block_replays_and_exports_full_frames() -> Result<(
             202 + n as u64,
             rpc::envelope(
                 subscribe_update::UpdateOneof::Transaction(SubscribeUpdateTransaction {
+                    bank_id: 0,
                     slot: block.slot,
                     transaction: Some(info.clone()),
                 }),

@@ -40,5 +40,6 @@ pub(super) fn build_yellowstone_subscribe_request(
         accounts_data_slice: Vec::new(),
         ping: None,
         from_slot: None,
+        block_footer: HashMap::new(),
     }
 }

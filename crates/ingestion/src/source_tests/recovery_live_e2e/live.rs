@@ -28,6 +28,7 @@ pub(super) fn incoming(
                 let mut signature = vec![249; 64];
                 signature[..8].copy_from_slice(&index.to_le_bytes());
                 subscribe_update::UpdateOneof::Transaction(SubscribeUpdateTransaction {
+                    bank_id: 0,
                     slot: anchor.slot + index,
                     transaction: Some(SubscribeUpdateTransactionInfo {
                         signature: signature.clone(),

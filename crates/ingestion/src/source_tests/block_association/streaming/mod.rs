@@ -4,6 +4,7 @@ use crate::source::yellowstone_association::*;
 use crate::source::yellowstone_message_time::{CreatedAtUnavailable, YellowstoneMessageTime};
 use std::time::Duration;
 
+mod bank_identity_tests;
 mod compact_storage_tests;
 mod conflicts;
 mod lifecycle;

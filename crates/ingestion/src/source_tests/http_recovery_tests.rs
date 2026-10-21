@@ -1,4 +1,6 @@
 use super::*;
+#[path = "alpenglow_reward_tests.rs"]
+mod alpenglow_reward_tests;
 #[path = "http_anchor_difference_tests.rs"]
 mod anchor_difference_tests;
 #[path = "http_anchor_meta_difference_tests.rs"]
@@ -7,10 +9,10 @@ mod anchor_meta_difference_tests;
 mod delivery_tests;
 #[path = "http_recovery_error_tests.rs"]
 mod diagnostic_tests;
-#[path = "http_reward_compatibility_tests.rs"]
-mod reward_compatibility_tests;
 #[path = "http_float_roundtrip_tests.rs"]
 mod float_roundtrip_tests;
+#[path = "http_reward_compatibility_tests.rs"]
+mod reward_compatibility_tests;
 use copybot_core_types::association_delivery::InfoIdentity;
 use prost::Message;
 use serde_json::json;
@@ -338,6 +340,7 @@ fn saved_mixed_version_complete_blocks_preserve_classification() {
     let mut decoded = 0;
     for info in &block.transactions {
         let tx = yellowstone_grpc_proto::prelude::SubscribeUpdateTransaction {
+            bank_id: 0,
             slot,
             transaction: Some(info.clone()),
         };

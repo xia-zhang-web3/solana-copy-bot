@@ -25,6 +25,7 @@ allowed_app_dependency_specs() {
   # checks in the live daemon; keep these dependencies scoped to transaction
   # assembly, not reporting or operator tooling. Dev-only wire and loopback
   # transport specs reuse ingestion's locked crates for causal reconnect tests.
+  # Proto14.0.1 aligns Alpenglow bank/VAT wire fixtures with ingestion; dev-only.
   cat <<'EOF'
 dependencies.base64->base64::"0.22.1"
 dependencies.bs58->bs58::"0.5.1"
@@ -32,7 +33,7 @@ dependencies.curve25519-dalek->curve25519-dalek::"4.1.3"
 dependencies.ed25519-dalek->ed25519-dalek::"2.1.1"
 dependencies.sha2->sha2::"0.10.9"
 dev-dependencies.prost->prost::"=0.14.3"
-dev-dependencies.yellowstone-grpc-proto->yellowstone-grpc-proto::"=12.6.0"
+dev-dependencies.yellowstone-grpc-proto->yellowstone-grpc-proto::"=14.0.1"
 dev-dependencies.tonic->tonic::"=0.14.4"
 dev-dependencies.futures-util->futures-util::"0.3.31"
 EOF

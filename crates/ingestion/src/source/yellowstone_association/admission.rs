@@ -92,6 +92,7 @@ impl YellowstoneAssociation<'_> {
             if self.retained(r, context.offset) {
                 let expected = r.tx.transaction.as_ref().expect("admitted Info");
                 let same = r.tx.slot == tx.slot
+                    && association::same_observation_bank(r.tx.bank_id, tx.bank_id)
                     && super::super::http_recovery::identity::info_equal(expected, info);
                 return Ok((
                     Admission::Duplicate(id),

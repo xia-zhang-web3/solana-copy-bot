@@ -88,7 +88,7 @@ impl TransportClass {
             yellowstone_grpc_client::GeyserGrpcClientError::TonicStatus(status) => {
                 Self::status(status)
             }
-            yellowstone_grpc_client::GeyserGrpcClientError::SubscribeSendError(_) => Self::Other,
+            yellowstone_grpc_client::GeyserGrpcClientError::TransportError(_) => Self::Other,
         }
     }
 }

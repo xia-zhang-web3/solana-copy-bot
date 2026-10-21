@@ -19,6 +19,8 @@ use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::prelude::*;
 #[path = "http_progress.rs"]
 mod http_progress;
+#[path = "live_gap.rs"]
+mod live_gap;
 #[path = "reader.rs"]
 mod reader;
 #[cfg(test)]
@@ -265,7 +267,8 @@ pub(super) async fn run(
                     let Some(mut value) = value else { break; };
                     let is_block = value.is_block();
                     value.dequeue();
-                    if let Err(error) = process(&mut bridge, ns(start), value.update()?, &telemetry).await {
+                    if let Err(error) = live_gap::process(&http, config, &mut reader,
+                        &mut bridge, start, value.update()?, &telemetry).await {
                         bridge.set_http_hold(true);
                         bridge.emit(ns(start), DeliveryEvent::Session(SessionGap::Rejected("AssociationRecoveryRefused".into()))).await?;
                         return Err(error).context("HTTP/live association refused");

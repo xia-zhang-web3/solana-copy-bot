@@ -9,7 +9,7 @@ use std::{
 use yellowstone_grpc_proto::prelude::SubscribeUpdateTransactionInfo;
 pub(in crate::source) struct CaptureScope {
     wallets: HashSet<Vec<u8>>,
-    durable: HashSet<Vec<u8>>,
+    durable: Mutex<HashSet<Vec<u8>>>,
     known: Mutex<HashSet<Vec<u8>>>,
     pending: Mutex<HashMap<Vec<u8>, usize>>,
     hold: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -28,7 +28,7 @@ impl CaptureScope {
                 .iter()
                 .filter_map(|s| bs58::decode(s).into_vec().ok())
                 .collect(),
-            durable: durable.collect(),
+            durable: Mutex::new(durable.collect()),
             known: Mutex::new(known),
             pending: Mutex::new(HashMap::new()),
             hold,
@@ -128,7 +128,11 @@ impl CaptureScope {
                 });
         malformed
             || self.wallet(info)
-            || self.durable.contains(&info.signature)
+            || self
+                .durable
+                .lock()
+                .expect("capture durable mutex")
+                .contains(&info.signature)
             || self
                 .known
                 .lock()
@@ -142,6 +146,9 @@ impl CaptureScope {
     }
     pub fn replace_known(&self, known: HashSet<Vec<u8>>) {
         *self.known.lock().expect("capture known mutex") = known;
+    }
+    pub fn replace_durable(&self, durable: impl Iterator<Item = Vec<u8>>) {
+        *self.durable.lock().expect("capture durable mutex") = durable.collect();
     }
     pub fn track(self: &Arc<Self>, signature: &[u8]) -> Pending {
         let signature = signature.to_vec();

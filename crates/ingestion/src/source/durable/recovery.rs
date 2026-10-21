@@ -135,6 +135,24 @@ pub(in crate::source) struct RecoveryGate {
     seen: HashMap<u64, ParentObservation>,
     bound: usize,
 }
+/// A forward missing-parent observation, never an integrity or overlap refusal.
+/// Transport may recover it only after the previous child has a durable ACK.
+#[derive(Clone, Debug)]
+pub(in crate::source) struct LiveParentGap {
+    pub previous: BlockKey,
+    pub parent: BlockKey,
+    pub child: BlockKey,
+}
+impl std::fmt::Display for LiveParentGap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "replay_parent_gap: {} -> {} requires {}",
+            self.previous.slot, self.child.slot, self.parent.slot
+        )
+    }
+}
+impl std::error::Error for LiveParentGap {}
 pub(super) fn definitive_history_code(code: tonic::Code) -> bool {
     matches!(
         code,
@@ -219,7 +237,17 @@ impl RecoveryGate {
                 );
                 return Ok(ready);
             }
-            ensure!(p.parent == *last, "replay_parent_gap");
+            if p.parent != *last {
+                if self.anchor_seen && p.parent.slot > last.slot {
+                    return Err(LiveParentGap {
+                        previous: last.clone(),
+                        parent: p.parent,
+                        child: p.child,
+                    }
+                    .into());
+                }
+                anyhow::bail!("replay_parent_gap");
+            }
         }
         if self.seen.len() >= self.bound {
             if let Some(oldest) = self.seen.keys().copied().min() {

@@ -1,7 +1,28 @@
-from architecture_guard_fixtures.harness import GuardCase
+from architecture_guard_fixtures.harness import GuardCase, TOOLS
 
 
 class Dependencies(GuardCase):
+    def test_app_alpenglow_wire_spec_is_exact_and_dev_only(self):
+        self.package('yellowstone-grpc-proto')
+        manifest = self.root / 'crates/yellowstone-grpc-proto/Cargo.toml'
+        template = manifest.read_text().replace('copybot-yellowstone-grpc-proto',
+                                               'yellowstone-grpc-proto')
+        self.append('Cargo.toml', '[patch.crates-io]\nyellowstone-grpc-proto={path="crates/yellowstone-grpc-proto"}\n')
+        self.env['CARGO_HOME'] = str(self.root / '.git/empty-cargo-home')
+        for section, version, expected in (
+            ('dev-dependencies', '14.0.1', 0),
+            ('dev-dependencies', '14.0.2', 1),
+            ('dependencies', '14.0.1', 1),
+        ):
+            with self.subTest(section=section, version=version):
+                manifest.write_text(template.replace('0.1.0', version))
+                self.package('app', f'[{section}]\nyellowstone-grpc-proto="={version}"\n')
+                self.lock()
+                result = self.run_guard(TOOLS, '--changed', self.env)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                if expected:
+                    self.assertIn('direct dependency spec', result.stderr)
+
     def test_app_specs_alias_table_target_build_dev(self):
         variants = (
             '[dependencies]\ncopybot-storage-core={path="../storage-core"}\n',

@@ -97,6 +97,7 @@ pub(super) fn mixed(
     let tx = |info: &SubscribeUpdateTransactionInfo| {
         envelope(subscribe_update::UpdateOneof::Transaction(
             SubscribeUpdateTransaction {
+                bank_id: 0,
                 slot: b.slot,
                 transaction: Some(info.clone()),
             },

@@ -63,6 +63,7 @@ pub(super) fn update(f: &Value) -> SubscribeUpdate {
         }),
         update_oneof: Some(subscribe_update::UpdateOneof::Transaction(
             SubscribeUpdateTransaction {
+                bank_id: 0,
                 slot: result["slot"].as_u64().unwrap(),
                 transaction: Some(SubscribeUpdateTransactionInfo {
                     signature: bytes(&f["signature"]),

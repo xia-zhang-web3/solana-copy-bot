@@ -78,6 +78,46 @@ impl Bridge<'_> {
     pub(in crate::source::durable) fn recovery_enabled(&self) -> bool {
         self.recovery.is_some()
     }
+    pub(in crate::source::durable) async fn restart_live_gap(
+        &mut self,
+        at: u64,
+        gap: &super::super::recovery::LiveParentGap,
+        timeout: std::time::Duration,
+    ) -> Result<u64> {
+        self.set_http_hold(true);
+        ensure!(
+            self.recovery.as_ref().is_some_and(|r| r.gate.ready()),
+            "live_gap_requires_established_chain"
+        );
+        // Never turn a received or merely emitted block into a replay cursor.
+        // A delayed ACK may complete within the existing acknowledgement bound.
+        self.wait_checkpoint(timeout).await?;
+        let saved = self
+            .recovery
+            .as_ref()
+            .expect("recovery")
+            .cursor
+            .snapshot()?
+            .context("live_gap_requires_durable_checkpoint")?;
+        ensure!(
+            saved.block.observation.child == gap.previous,
+            "live_gap_durable_checkpoint_mismatch"
+        );
+        if let Some(scope) = &self.capture_scope {
+            // Refresh before reset's first await clears adapter-known keys.
+            // The still-running Reader must retain changed signer/Info for
+            // this exact bounded durable overlap throughout the reset.
+            scope.replace_durable(
+                saved
+                    .overlap
+                    .iter()
+                    .filter_map(|a| bs58::decode(&a.facts.signature).into_vec().ok()),
+            );
+        }
+        self.reset(at).await?;
+        self.begin_replay()?
+            .context("live_gap_requires_replay_cursor")
+    }
     pub(in crate::source::durable) fn begin_capture(
         &mut self,
     ) -> Result<std::sync::Arc<super::super::capture_scope::CaptureScope>> {
@@ -94,7 +134,12 @@ impl Bridge<'_> {
             durable,
             self.adapter.known_signatures_bytes(),
             r.cursor.http_hold.clone(),
-        ).observed(self.telemetry.continuity.reader(self.name.clone(), self.session.generation));
+        )
+        .observed(
+            self.telemetry
+                .continuity
+                .reader(self.name.clone(), self.session.generation),
+        );
         self.capture_scope = Some(scope.clone());
         Ok(scope)
     }
@@ -304,6 +349,7 @@ impl Bridge<'_> {
                 let tx = SubscribeUpdateTransaction {
                     transaction: Some(info.clone()),
                     slot: block.slot,
+                    bank_id: block.bank_id,
                 };
                 self.hold_selected(&tx, time)?;
             }
@@ -325,6 +371,7 @@ impl Bridge<'_> {
             let tx = SubscribeUpdateTransaction {
                 transaction: Some(info.clone()),
                 slot: block.slot,
+                bank_id: block.bank_id,
             };
             self.push(at, a::Input::Transaction(&tx, time)).await?;
             let signature = bs58::encode(&info.signature).into_string();

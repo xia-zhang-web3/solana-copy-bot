@@ -216,6 +216,7 @@ pub(super) fn update(r: &Value) -> Result<SubscribeUpdateTransaction> {
         ..Default::default()
     };
     Ok(SubscribeUpdateTransaction {
+        bank_id: 0,
         slot: number(r, "slot")?,
         transaction: Some(SubscribeUpdateTransactionInfo {
             signature,

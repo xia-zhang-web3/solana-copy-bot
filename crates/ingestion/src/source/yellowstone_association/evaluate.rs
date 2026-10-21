@@ -63,7 +63,7 @@ impl YellowstoneAssociation<'_> {
                     }
                     selected = Some(resolution);
                 }
-                Err(AssociationRefusal::NotFoundInMessage) => {}
+                Err(AssociationRefusal::NotFoundInMessage | AssociationRefusal::BankMismatch) => {}
                 Err(reason) => return Some(Resolution::Unresolved(Reason::Association(reason))),
             }
         }
@@ -103,7 +103,9 @@ impl YellowstoneAssociation<'_> {
                             block_time: value.block_time,
                         })
                     }
-                    Err(AssociationRefusal::NotFoundInMessage) => None,
+                    Err(
+                        AssociationRefusal::NotFoundInMessage | AssociationRefusal::BankMismatch,
+                    ) => None,
                     Err(reason) => Some(LateEvidence::Association(reason)),
                 }
             }

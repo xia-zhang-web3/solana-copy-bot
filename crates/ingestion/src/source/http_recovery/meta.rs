@@ -46,6 +46,7 @@ pub(super) fn rewards(v: &Value) -> Result<Vec<Reward>> {
                 "staking" => RewardType::Staking,
                 "voting" => RewardType::Voting,
                 "deactivatedStake" => RewardType::DeactivatedStake,
+                "VATDebit" => RewardType::VatDebit,
                 _ => anyhow::bail!("http_recovery_unknown_reward_type"),
             },
             _ => anyhow::bail!("http_recovery_invalid_reward_type"),
