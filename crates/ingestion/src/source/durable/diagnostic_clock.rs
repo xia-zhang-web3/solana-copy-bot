@@ -30,6 +30,10 @@ struct Origin {
 }
 static ORIGIN: OnceLock<Origin> = OnceLock::new();
 pub(super) fn observe(sample: impl FnOnce() -> u64) -> (u64, ClockStamp) {
+    #[cfg(test)]
+    if super::clock_qualification_tests::local_clock::enabled() {
+        return super::clock_qualification_tests::local_clock::observe(sample);
+    }
     // Metadata must have been initialized before spawning intake. Never filesystem I/O here.
     let origin = ORIGIN.get();
     let identity = origin.map(|o| o.identity.clone()).unwrap_or_default();

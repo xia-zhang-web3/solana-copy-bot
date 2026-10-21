@@ -45,23 +45,17 @@ impl CaptureScope {
     fn transition(&self) -> Option<TransitionStart> {
         let began = diagnostic_time();
         self.observation.as_ref().map(|o| {
-            o.begin_observed(
+            o.begin_tracked(
                 began,
-                self.hold
-                    .as_ref()
-                    .map(|f| f.load(std::sync::atomic::Ordering::Acquire)),
+                self.hold.as_ref(),
                 self.interrupted.load(std::sync::atomic::Ordering::SeqCst),
             )
         })
     }
     fn recorded(&self, kind: TransitionKind, start: Option<TransitionStart>) {
         if let (Some(observation), Some(start)) = (&self.observation, start) {
-            let hold = self
-                .hold
-                .as_ref()
-                .map(|f| f.load(std::sync::atomic::Ordering::Acquire));
             let interrupted = self.interrupted.load(std::sync::atomic::Ordering::SeqCst);
-            observation.finish_observed(kind, start, diagnostic_time(), hold, interrupted);
+            observation.finish_tracked(kind, start, self.hold.as_ref(), interrupted);
         }
     }
     pub(super) fn diagnostic_identity(
@@ -81,22 +75,41 @@ impl CaptureScope {
         self.interrupted_as(TransitionKind::ReaderDrop);
     }
     fn interrupted_as(&self, kind: TransitionKind) {
+        // Cover the earlier interruption flag as well as the following hold
+        // assertion. Observation must not certify the pre-store pause window.
+        let _phase = self.observation.as_ref().map(|o| o.interruption_phase());
         let observation = self.transition();
         self.interrupted
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(test)]
+        super::clock_qualification_tests::ack_hook::after_interrupted();
         if let Some(flag) = &self.hold {
-            flag.store(true, std::sync::atomic::Ordering::Release);
+            self.write_hold(flag, true, std::sync::atomic::Ordering::Release);
         }
         self.recorded(kind, observation);
+    }
+    fn write_hold(
+        &self,
+        flag: &std::sync::atomic::AtomicBool,
+        value: bool,
+        order: std::sync::atomic::Ordering,
+    ) {
+        if let Some(observation) = &self.observation {
+            observation.write_hold(flag, value, order);
+        } else {
+            flag.store(value, order);
+        }
     }
     pub fn clear_verified(&self) {
         let observation = self.transition();
         use std::sync::atomic::Ordering::SeqCst;
         if let Some(flag) = &self.hold {
             if !self.interrupted.load(SeqCst) {
-                flag.store(false, SeqCst);
+                self.write_hold(flag, false, SeqCst);
+                #[cfg(test)]
+                super::clock_qualification_tests::ack_hook::after_clear_false();
                 if self.interrupted.load(SeqCst) {
-                    flag.store(true, SeqCst);
+                    self.write_hold(flag, true, SeqCst);
                 }
             }
         }

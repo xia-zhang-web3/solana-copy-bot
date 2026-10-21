@@ -1,5 +1,9 @@
 //! Constant-space observations; none of these values authorize continuity.
 use super::diagnostic_clock::ClockStamp;
+use super::hold_observation::{HoldStamp, HoldTracker};
+#[path = "ack_observation.rs"]
+mod ack_observation;
+pub(in crate::source) use ack_observation::AckObservation;
 use copybot_core_types::association_recovery::DurableCheckpoint;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -50,6 +54,7 @@ pub struct FrontierWitness {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ContinuityContext {
     pub active_reader: Option<ReaderIdentity>,
+    pub association_session: Option<String>,
     pub reader_clock: Option<ClockStamp>,
     pub checkpoint_clock: Option<ClockStamp>,
     pub frontier_clock: Option<ClockStamp>,
@@ -126,9 +131,13 @@ struct State {
     previous: Option<(u64, u64)>,
     count: u64,
     overwritten: u64,
+    ack: ack_observation::AckState,
 }
 #[derive(Default)]
-pub(crate) struct ContinuityTelemetry(Mutex<State>);
+pub(crate) struct ContinuityTelemetry {
+    state: Mutex<State>,
+    holds: Arc<HoldTracker>,
+}
 #[derive(Clone)]
 pub(in crate::source) struct ReaderObservation {
     telemetry: Arc<ContinuityTelemetry>,
@@ -140,6 +149,7 @@ pub(in crate::source) struct TransitionStart {
     context: ContinuityContext,
     hold: Option<bool>,
     interrupted: bool,
+    hold_stamp: Option<HoldStamp>,
 }
 impl ContinuityTelemetry {
     pub(in crate::source) fn reader(
@@ -147,7 +157,8 @@ impl ContinuityTelemetry {
         session: String,
         generation: u64,
     ) -> ReaderObservation {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let _phase = self.holds.phase();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.next_reader = state.next_reader.saturating_add(1);
         let identity = ReaderIdentity {
             reader_id: state.next_reader,
@@ -155,6 +166,7 @@ impl ContinuityTelemetry {
             generation,
         };
         state.context.active_reader = Some(identity.clone());
+        state.context.association_session = Some(identity.session.clone());
         let (observed_ns, reader_clock) = diagnostic_time();
         state.context.reader_clock = Some(reader_clock.clone());
         let result = ReaderObservation {
@@ -175,7 +187,7 @@ impl ContinuityTelemetry {
         }
     }
     pub(crate) fn acknowledged(&self, mut checkpoint: CheckpointWitness) {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         checkpoint.reader_id = state
             .context
             .active_reader
@@ -188,7 +200,7 @@ impl ContinuityTelemetry {
         state.context.checkpoint = Some(checkpoint);
     }
     pub(crate) fn snapshot(&self) -> ContinuitySnapshot {
-        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let (sampled_ns, sampled_clock) = diagnostic_time();
         ContinuitySnapshot {
             origin_unix_ms: origin().1,
@@ -208,7 +220,11 @@ impl ReaderObservation {
         self.identity.clone()
     }
     pub(in crate::source) fn frontier(&self, slot: u64) {
-        let mut state = self.telemetry.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .telemetry
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (observed_ns, clock) = diagnostic_time();
         state.context.frontier_clock = Some(clock);
         state.context.live_frontier = Some(FrontierWitness {
@@ -225,7 +241,7 @@ impl ReaderObservation {
     ) -> TransitionStart {
         let context = self
             .telemetry
-            .0
+            .state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .context
@@ -236,7 +252,47 @@ impl ReaderObservation {
             context,
             hold,
             interrupted,
+            hold_stamp: None,
         }
+    }
+    pub(in crate::source) fn begin_tracked(
+        &self,
+        began: (u64, ClockStamp),
+        flag: Option<&Arc<std::sync::atomic::AtomicBool>>,
+        interrupted: bool,
+    ) -> TransitionStart {
+        let hold = self.telemetry.holds.sample(flag);
+        let mut start = self.begin_observed(began, hold.hold, interrupted);
+        start.hold_stamp = Some(hold);
+        start
+    }
+    pub(in crate::source) fn write_hold(
+        &self,
+        flag: &std::sync::atomic::AtomicBool,
+        value: bool,
+        order: std::sync::atomic::Ordering,
+    ) {
+        self.telemetry.holds.write(flag, value, order);
+    }
+    pub(in crate::source) fn interruption_phase(&self) -> super::hold_observation::Mutation<'_> {
+        self.telemetry.holds.phase()
+    }
+    pub(in crate::source) fn finish_tracked(
+        &self,
+        kind: TransitionKind,
+        start: TransitionStart,
+        flag: Option<&Arc<std::sync::atomic::AtomicBool>>,
+        interrupted: bool,
+    ) {
+        let stamp = self.telemetry.holds.sample(flag);
+        self.finish_with_stamp(
+            kind,
+            start,
+            diagnostic_time(),
+            stamp.hold,
+            interrupted,
+            Some(stamp),
+        );
     }
     pub(in crate::source) fn finish_observed(
         &self,
@@ -246,8 +302,23 @@ impl ReaderObservation {
         hold: Option<bool>,
         interrupted: bool,
     ) {
+        self.finish_with_stamp(kind, start, ended, hold, interrupted, None);
+    }
+    fn finish_with_stamp(
+        &self,
+        kind: TransitionKind,
+        start: TransitionStart,
+        ended: (u64, ClockStamp),
+        hold: Option<bool>,
+        interrupted: bool,
+        hold_stamp: Option<HoldStamp>,
+    ) {
         let (ended_ns, ended_clock) = ended;
-        let mut state = self.telemetry.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self
+            .telemetry
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         state.count = state.count.saturating_add(1);
         let previous_relation = match state.previous {
             None => PreviousRelation::First,
@@ -274,6 +345,11 @@ impl ReaderObservation {
             record_sequence: state.count,
             previous_relation,
         };
+        if kind == TransitionKind::VerifiedClear {
+            if let (Some(before), Some(after)) = (start.hold_stamp, hold_stamp) {
+                ack_observation::clear(&mut state, &event, before, after);
+            }
+        }
         state.previous = Some((event.began_ns, event.ended_ns));
         let target = match kind {
             TransitionKind::TaskGuardDrop => &mut state.last_task_guard_drop,

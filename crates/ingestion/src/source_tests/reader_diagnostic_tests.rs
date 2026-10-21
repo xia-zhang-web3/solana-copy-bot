@@ -412,3 +412,7 @@ async fn reader_diag_actual_file_export_closure_and_cap_preserve_reader_end() {
         &serde_json::json!({"persisted":lines,"normal_snapshot":snapshot,"cap_failure_snapshot":refusal,"trading":false}),
     );
 }
+
+// ACK integration remains external to production module registration.
+#[path = "ack_observation/mod.rs"]
+mod ack_observation_tests;

@@ -6,6 +6,7 @@ mod replay;
 pub use recovery::replay_scope;
 pub use replay::ReplayInput;
 mod continuity_telemetry;
+mod hold_observation;
 #[cfg(test)]
 #[path = "../../source_tests/reader_measurement_export.rs"]
 pub(in crate::source) mod measurement_export;
@@ -122,9 +123,10 @@ impl DeliveryReceiver {
             .map(|_| Arc::new(std::sync::atomic::AtomicBool::new(restored.is_some())));
         let mut cursor = recovery::RecoveryCursor::new(scope, restored, limits.pending.clone())?;
         cursor.http_hold = hold;
-        let task_cursor = cursor.clone();
         let (tx, rx) = queue::channel(limits.queue.count, limits.queue.bytes);
         let telemetry = Arc::new(DurableIngressTelemetry::default());
+        cursor.observation = Some(telemetry.continuity.hold_tracker());
+        let task_cursor = cursor.clone();
         let report = Arc::clone(&telemetry);
         let task_bot = bot_signer.clone();
         let task = tokio::spawn(async move {
@@ -154,13 +156,38 @@ impl DeliveryReceiver {
         checkpoint: copybot_core_types::association_recovery::DurableCheckpoint,
     ) -> Result<()> {
         let observed = continuity_telemetry::ContinuityTelemetry::checkpoint(&checkpoint);
+        let hold = self.http_continuity_hold();
+        let start = self
+            .telemetry
+            .continuity
+            .begin_ack(&checkpoint, hold.as_ref());
+        let tracker = self.telemetry.continuity.hold_tracker();
+        if !self
+            .recovery
+            .as_ref()
+            .and_then(|cursor| cursor.observation.as_ref())
+            .is_some_and(|owned| Arc::ptr_eq(owned, &tracker))
+        {
+            self.telemetry
+                .continuity
+                .invalidate_ack("missing_or_foreign_hold_tracker");
+        }
+        let phase = tracker.phase();
         let result = self
             .recovery
             .as_ref()
-            .context("replay recovery disabled")?
-            .acknowledge(checkpoint);
+            .context("replay recovery disabled")
+            .and_then(|cursor| cursor.acknowledge(checkpoint));
         if result.is_ok() {
+            #[cfg(test)]
+            clock_qualification_tests::ack_hook::after_cursor_ack();
             self.telemetry.continuity.acknowledged(observed);
+        }
+        drop(phase);
+        if result.is_ok() {
+            self.telemetry.continuity.finish_ack(start, hold.as_ref());
+        } else {
+            self.telemetry.continuity.failed_ack();
         }
         result
     }

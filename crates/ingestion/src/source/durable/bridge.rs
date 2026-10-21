@@ -255,6 +255,9 @@ impl<'a> Bridge<'a> {
             .await?;
         self.session = next;
         self.name = format!("{}:{}", self.base_name, next.generation);
+        self.telemetry
+            .continuity
+            .association_session(self.name.clone());
         self.emit(
             ns,
             DeliveryEvent::Session(SessionGap::StartedContinuityUnknown),

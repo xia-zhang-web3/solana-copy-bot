@@ -36,6 +36,7 @@ pub(super) struct RecoveryCursor {
     head: Arc<Mutex<Option<DurableCheckpoint>>>,
     limits: copybot_config::DeliveryBudget,
     pub(super) http_hold: Option<Arc<AtomicBool>>,
+    pub(super) observation: Option<Arc<super::hold_observation::HoldTracker>>,
 }
 impl RecoveryCursor {
     pub(super) fn new(
@@ -52,11 +53,16 @@ impl RecoveryCursor {
             head: Arc::new(Mutex::new(head)),
             limits,
             http_hold: None,
+            observation: None,
         })
     }
     pub(super) fn set_http_hold(&self, hold: bool) {
         if let Some(flag) = &self.http_hold {
-            flag.store(hold, Ordering::Release);
+            if let Some(tracker) = &self.observation {
+                tracker.write(flag, hold, Ordering::Release);
+            } else {
+                flag.store(hold, Ordering::Release);
+            }
         }
     }
     pub(super) fn snapshot(&self) -> Result<Option<DurableCheckpoint>> {

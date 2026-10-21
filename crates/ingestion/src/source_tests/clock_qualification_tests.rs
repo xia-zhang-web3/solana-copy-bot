@@ -87,3 +87,11 @@ fn clock_diagnostic_sampler_keeps_elapsed_and_missing_identity_unqualified() {
     assert!(stamp.identity.run_id.is_none());
     assert!(stamp.resolution_ns.is_none());
 }
+
+// New ACK fixtures are registered from this existing external test root.
+#[path = "ack_observation/ack_hook.rs"]
+pub(in crate::source) mod ack_hook;
+#[path = "ack_observation/local_clock.rs"]
+pub(in crate::source) mod local_clock;
+#[path = "ack_observation/tracker_impl.rs"]
+mod tracker_impl;
