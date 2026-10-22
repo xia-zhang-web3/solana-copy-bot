@@ -69,7 +69,7 @@ async fn receipt_lot_custody_native_event_receipts_sqlite_and_quote() -> Result<
             .claim_owned_sell_dispatch(&prepared, &dispatch, &budget, || Ok(chrono::Utc::now()))?,
         copybot_storage_core::ExecutionDispatchClaim::Existing
     );
-    let receipt = old::receipt(
+    let sparse_receipt = old::receipt(
         &request.wallet_pubkey,
         &dispatch.tx_signature,
         "sell",
@@ -77,6 +77,56 @@ async fn receipt_lot_custody_native_event_receipts_sqlite_and_quote() -> Result<
         100_000_000 - old::H,
         151,
     );
+    // A balance-only mock cannot establish the newly required immutable WSOL message.
+    let pending = old::confirm(
+        &c.bot.db.store,
+        &dispatch.order_id,
+        &request.wallet_pubkey,
+        sparse_receipt,
+    )
+    .await?;
+    assert_eq!(
+        pending.reason.as_deref(),
+        Some("owned_wsol_receipt_instructions")
+    );
+    assert_eq!(pending.pending, 1);
+    assert!(!c
+        .bot
+        .db
+        .store
+        .execution_canary_fill_exists(&dispatch.order_id)?);
+    let proof = c
+        .bot
+        .db
+        .store
+        .load_execution_canary_receipt_proof(&dispatch.order_id)?
+        .unwrap();
+    assert_eq!(proof.reason, "owned_wsol_receipt_instructions");
+    assert_eq!(
+        c.bot
+            .db
+            .store
+            .load_execution_canary_open_position(old::USDC)?
+            .unwrap()
+            .qty_exact
+            .unwrap()
+            .raw(),
+        old::H
+    );
+    if let Ok(root) = std::env::var("RECEIPT_LOT_CUSTODY_FIXTURE_DIR") {
+        std::fs::write(
+            std::path::Path::new(&root).join("sparse-receipt-refusal.json"),
+            serde_json::to_vec_pretty(
+                &json!({"kind":"LOCAL_EXPECTED_REFUSAL","reason":proof.reason,"pending":pending.pending,"order":dispatch.order_id,"fill":false,"lot_still_open_raw":old::H,"message":"balance-only prior fixture; no instructions/blockhash"}),
+            )?,
+        )?;
+    }
+    // Interpret the actual daemon-prepared message; only the LOCAL chain/AMM is modeled.
+    let wallet =
+        crate::execution_pumpswap_accounts::parse_pubkey(&request.wallet_pubkey, "LOCALreceipt")?;
+    let mut bank = super::wsol_lifecycle_oracle::Bank::new(wallet)?;
+    let mut receipt = bank.execute(&prepared.payload)?;
+    receipt["result"]["transaction"]["signatures"] = json!([dispatch.tx_signature]);
     assert_eq!(
         old::confirm(
             &c.bot.db.store,
