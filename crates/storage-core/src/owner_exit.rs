@@ -79,6 +79,9 @@ impl SqliteDiscoveryStore {
                     && intent.max_daily_loss_lamports <= parent.max_daily_loss_lamports,"owner_roundtrip_exit_parent_changed");
             }
             ensure_buy_binding(conn, intent)?;
+            if crate::owner_source_recovery::recovery(&intent.intent_id) {
+                crate::owner_source_recovery::validate(conn,intent)?;
+            }
             conn.execute("INSERT INTO owner_exit_intents(intent_id,run_id,buy_order_id,buy_receipt_signature,
                 position_id,wallet,signer,genesis_hash,mint,amount_raw,decimals,route,activated_at,expires_at,
                 authority_sha256,max_priority_fee_lamports,min_reserve_lamports,max_slippage_bps,max_daily_loss_lamports)
@@ -181,6 +184,9 @@ impl SqliteDiscoveryStore {
             let intent=self.load_owner_exit_intent(id)?.context("owner_exit_intent_missing")?;
             active(&intent,now)?;
             ensure_buy_binding(conn,&intent)?;
+            if crate::owner_source_recovery::recovery(id) {
+                crate::owner_source_recovery::validate(conn,&intent)?;
+            }
             let source:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM execution_order_sources
                 WHERE identity_id=?1 AND owner_exit_intent_id=?2)",params![identity,id],|r|r.get(0))?;
             ensure!(source,"owner_exit_origin_missing");
@@ -212,7 +218,7 @@ impl SqliteDiscoveryStore {
     /// dispatch or receipt is never rearmed here. One local failed attempt may
     /// be retried with a new quote under the original unexpired authority.
     pub fn rearm_owner_exit_undispatched(&self, id: &str) -> Result<bool> {
-        if id.starts_with("execution-only:") {return Ok(false)}
+        if crate::owner_source_recovery::single_attempt(id) {return Ok(false)}
         let order_id = owner_exit_order_id(id);
         self.with_immediate_transaction_retry("rearm undispatched owner EXIT", |conn| {
             let intent = self.load_owner_exit_intent(id)?.context("owner_exit_intent_missing")?;
@@ -262,7 +268,7 @@ impl SqliteDiscoveryStore {
     }
 
     pub fn owner_exit_failed_retry_available(&self, id: &str) -> Result<bool> {
-        if id.starts_with("execution-only:") {return Ok(false)}
+        if crate::owner_source_recovery::single_attempt(id) {return Ok(false)}
         let used: bool = self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM owner_exit_pre_dispatch_rearms WHERE intent_id=?1)",
             [id], |row| row.get(0))?;
@@ -327,6 +333,10 @@ impl SqliteDiscoveryStore {
             let now = clock()?;
             active(&intent, now)?;
             ensure_buy_binding(conn, &intent)?;
+            if crate::owner_source_recovery::recovery(id) {
+                ensure!(budget.total_fee <= crate::owner_source_recovery::validate(conn,&intent)?,
+                    "source_recovery_native_cap");
+            }
             let current = self
                 .load_execution_canary_order(&expected.order_id)?
                 .context("owner_exit_order_missing")?;
@@ -384,7 +394,7 @@ fn validate(i: &OwnerExitIntent, controlled: bool) -> Result<()> {
         );
     }
     ensure!(
-        (i.buy_order_id == OWNER_EXIT_BUY_ORDER || (i.intent_id.starts_with("execution-only:")
+        (i.buy_order_id == OWNER_EXIT_BUY_ORDER || (crate::owner_source_recovery::single_attempt(&i.intent_id)
                 && i.buy_order_id.starts_with("exec-canary:owner-buy:")))
             && i.position_id == format!("exec-canary-pos:{}", i.buy_order_id)
             && !i.buy_receipt_signature.is_empty()
@@ -392,7 +402,7 @@ fn validate(i: &OwnerExitIntent, controlled: bool) -> Result<()> {
             && !i.wallet.is_empty()
             && !i.genesis_hash.is_empty()
             && i.mint == OWNER_EXIT_MINT
-            && (i.amount_raw == OWNER_EXIT_RAW || (i.intent_id.starts_with("execution-only:") && i.amount_raw > 0))
+            && (i.amount_raw == OWNER_EXIT_RAW || (crate::owner_source_recovery::single_attempt(&i.intent_id) && i.amount_raw > 0))
             && i.decimals == OWNER_EXIT_DECIMALS
             && !i.route.is_empty()
             && i.activated_at < i.expires_at

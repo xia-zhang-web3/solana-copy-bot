@@ -20,6 +20,10 @@ fn from_config(p: &OwnerExitConfig, config: &ExecutionConfig) -> Result<OwnerExi
     let activated_at = DateTime::parse_from_rfc3339(&p.activated_at)?.with_timezone(&Utc);
     let expires_at = DateTime::parse_from_rfc3339(&p.expires_at)?.with_timezone(&Utc);
     ensure!(activated_at < expires_at, "owner_exit_window");
+    if p.policy == copybot_config::OWNER_SOURCE_RECOVERY_EXIT_V1 {
+        ensure!(expires_at.signed_duration_since(activated_at) <= chrono::Duration::seconds(300),
+            "source_recovery_window_cap");
+    }
     let mut payload = serde_json::json!({
         "policy": p.policy, "run_id": p.run_id, "intent_id": p.intent_id,
         "buy_order_id": p.buy_order_id, "buy_receipt_signature": p.buy_receipt_signature,
@@ -64,7 +68,17 @@ pub(crate) fn current(
         "owner_exit_expired");
     ensure!(!std::path::Path::new(&config.canary_kill_switch_path).exists(),
         "owner_exit_kill_switch");
-    ensure!(crate::execution_owner_source_gate::ready(config,store,now)?, "source_copy_gate_hold");
+    if config.owner_exit.as_ref().is_some_and(|p|p.policy == copybot_config::OWNER_SOURCE_RECOVERY_EXIT_V1) {
+        let parent=crate::execution_owner_buy_authority::parent_identity(config)?;
+        ensure!(store.load_owner_technical_buy_intent(&parent.intent_id)?.as_ref() == Some(&parent),
+            "source_recovery_parent_changed");
+        let scope=crate::execution_controlled_receipt_lot::scope(config)?.context("source_recovery_scope")?;
+        ensure!(store.controlled_receipt_lot_scope()?.as_ref()
+            == Some(&(expected.wallet.clone(),expected.run_id.clone(),scope)),"source_recovery_scope_changed");
+        store.owner_source_recovery_native_remaining(expected)?;
+    } else {
+        ensure!(crate::execution_owner_source_gate::ready(config,store,now)?, "source_copy_gate_hold");
+    }
     let position = store.load_execution_canary_open_position(&expected.mint)?
         .context("owner_exit_position_missing")?;
     ensure!(position.position_id == expected.position_id

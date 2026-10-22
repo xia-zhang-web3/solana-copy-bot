@@ -13,7 +13,12 @@ pub(crate) fn verify(
             && (request.wallet_id.is_empty() || request.wallet_pubkey == request.wallet_id),
         "owner_exit_wire_request"
     );
-    let amount = if request.signal_id.starts_with("owner-exit:execution-only:") {
+    let recovery=request.signal_id.starts_with("owner-exit:source-recovery:");
+    if recovery {
+        ensure!(request.metadata.controlled_exit_wire.as_ref().is_some_and(|p|p.matches(request)),
+            "source_recovery_wire_authority");
+    }
+    let amount = if request.signal_id.starts_with("owner-exit:execution-only:") || recovery {
         request
             .metadata
             .quote_in_amount_raw

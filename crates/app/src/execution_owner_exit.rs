@@ -28,6 +28,7 @@ pub(crate) async fn tick_with_adapter<A: ExecutionSubmitAdapter>(
     if !policy.activate { return Ok(summary); }
     let intent = crate::execution_owner_exit_authority::configured(config)?
         .expect("active owner exit");
+    let single_attempt=policy.policy != copybot_config::OWNER_EXIT_V1;
     store.register_owner_exit_intent(&intent)?;
     // Classify the copied, confirmed BUY from its preserved receipt and native
     // observations before any SELL quote or dispatch. This only adds evidence;
@@ -42,7 +43,7 @@ pub(crate) async fn tick_with_adapter<A: ExecutionSubmitAdapter>(
         "owner_exit_buy_cash_unresolved");
     }
     if let Some(order) = store.load_execution_canary_order(&owner_exit_order_id(&intent.intent_id))? {
-        if policy.policy == copybot_config::OWNER_ROUNDTRIP_EXIT_V1 {
+        if single_attempt {
             summary.existing = 1;summary.last_order_id = Some(order.order_id);return Ok(summary);
         }
         let before_dispatch = matches!(order.status.as_str(),
@@ -64,7 +65,7 @@ pub(crate) async fn tick_with_adapter<A: ExecutionSubmitAdapter>(
         return Ok(summary);
     }
     summary.candidates = 1;
-    if policy.policy == copybot_config::OWNER_ROUNDTRIP_EXIT_V1 {
+    if single_attempt {
         let reserve=store.reserve_owner_exit_order(&intent.intent_id,|| {
             crate::execution_canary_safety::risk_clock::decision_time(now)
                 .ok_or_else(|| anyhow::anyhow!("owner_exit_clock"))
@@ -82,7 +83,7 @@ pub(crate) async fn tick_with_adapter<A: ExecutionSubmitAdapter>(
     );
     if let Err(error) = crate::execution_owner_exit_quote::verify_balance(
         &http, config, &intent, &check).await {
-        if policy.policy == copybot_config::OWNER_ROUNDTRIP_EXIT_V1 {
+        if single_attempt {
             store.mark_execution_canary_failed(&owner_exit_order_id(&intent.intent_id),now,
                 copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,&error.to_string())?;summary.failed=1;
         }
@@ -93,7 +94,7 @@ pub(crate) async fn tick_with_adapter<A: ExecutionSubmitAdapter>(
     let metadata = match crate::execution_owner_exit_quote::fetch(&http, config, &intent).await {
         Ok(value) => value,
         Err(error) => {
-            if policy.policy == copybot_config::OWNER_ROUNDTRIP_EXIT_V1 {
+            if single_attempt {
                 store.mark_execution_canary_failed(&owner_exit_order_id(&intent.intent_id),now,
                     copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,&error.to_string())?;summary.failed=1;
             }
@@ -119,7 +120,7 @@ pub(crate) async fn execute<A: ExecutionSubmitAdapter>(
     })?;
     summary.last_order_id = Some(reserve.order.order_id.clone());
     if reserve.outcome == ExecutionCanaryRecordOutcome::Existing
-        && !(config.owner_exit.as_ref().is_some_and(|p| p.policy == copybot_config::OWNER_ROUNDTRIP_EXIT_V1)
+        && !(config.owner_exit.as_ref().is_some_and(|p| p.policy != copybot_config::OWNER_EXIT_V1)
             && summary.reserved == 1) {
         if !store.rearm_owner_exit_undispatched(&intent.intent_id)? {
             summary.existing = 1;

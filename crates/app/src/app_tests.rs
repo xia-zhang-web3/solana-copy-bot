@@ -770,3 +770,7 @@ mod wsol_lifecycle_identity_fixture;
 mod wsol_lifecycle_source_fixture;
 
 mod wsol_lifecycle_failed_fixture;
+
+mod source_recovery_fixture;
+mod source_recovery_submit_fixture;
+mod source_recovery_tests;

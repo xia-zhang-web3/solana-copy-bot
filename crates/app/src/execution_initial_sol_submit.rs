@@ -187,6 +187,10 @@ async fn owner_exit_before_send(
             .ok_or_else(|| anyhow!("owner_exit_native_overflow"))?
             .checked_add(rent)
             .ok_or_else(|| anyhow!("owner_exit_native_overflow"))?;
+        if config.owner_exit.as_ref().is_some_and(|p|p.policy == copybot_config::OWNER_SOURCE_RECOVERY_EXIT_V1) {
+            ensure!(needed <= store.owner_source_recovery_native_remaining(&exit)?,
+                "source_recovery_native_cap");
+        }
         ensure!(balance >= needed, "owner_exit_native_floor_insufficient");
         check()?;
         Ok::<(), anyhow::Error>(())

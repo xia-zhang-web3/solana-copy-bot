@@ -32,6 +32,7 @@ pub use owned_sell_preparation::{
 };
 pub use owner_exit::{
     validate_owner_exit, OwnerExitConfig, OWNER_EXIT_V1, OWNER_ROUNDTRIP_EXIT_V1,
+    OWNER_SOURCE_RECOVERY_EXIT_V1,
 };
 pub use owner_source_copy_gate::{
     validate_owner_source_copy_gate, OwnerSourceCopyGateConfig, CONFIRMED_NATIVE_BOT_BUY_V1,

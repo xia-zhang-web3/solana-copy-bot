@@ -4,6 +4,7 @@ use serde::Deserialize;
 
 pub const OWNER_ROUNDTRIP_EXIT_V1: &str = "owner_execution_roundtrip_exit_v1";
 pub const OWNER_EXIT_V1: &str = "owner_exit_v1";
+pub const OWNER_SOURCE_RECOVERY_EXIT_V1: &str = "owner_source_receipt_recovery_exit_v1";
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,7 +35,23 @@ pub struct OwnerExitConfig {
 pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
     crate::validate_controlled_receipt_lot(e)?;
     let Some(p) = &e.owner_exit else { return Ok(()); };
-    ensure!(matches!(p.policy.as_str(),OWNER_EXIT_V1 | OWNER_ROUNDTRIP_EXIT_V1), "owner_exit_policy");
+    ensure!(matches!(p.policy.as_str(),OWNER_EXIT_V1 | OWNER_ROUNDTRIP_EXIT_V1 | OWNER_SOURCE_RECOVERY_EXIT_V1), "owner_exit_policy");
+    if p.policy == OWNER_SOURCE_RECOVERY_EXIT_V1 {
+        let b=e.owner_technical_buy.as_ref().ok_or_else(||anyhow::anyhow!("source_recovery_parent"))?;
+        let s=e.controlled_receipt_lot.as_ref().ok_or_else(||anyhow::anyhow!("source_recovery_scope"))?;
+        ensure!(!b.activate && b.policy == crate::OWNER_EXECUTION_ROUNDTRIP_V1
+            && p.intent_id == format!("source-recovery:{}",b.intent_id)
+            && p.buy_order_id == format!("exec-canary:owner-buy:{}",b.intent_id)
+            && p.run_id == b.run_id && p.run_id == s.source_run_id
+            && p.wallet_pubkey == b.wallet_pubkey && p.wallet_pubkey == s.source_wallet
+            && p.signer_pubkey == b.signer_pubkey && p.genesis_hash == b.genesis_hash
+            && p.mint == b.mint && p.route == b.route
+            && p.min_reserve_lamports == 0
+            && p.max_priority_fee_lamports <= b.max_priority_fee_lamports.min(22_000)
+            && p.max_slippage_bps <= b.max_slippage_bps.min(50)
+            && p.max_daily_loss_lamports <= b.max_daily_loss_lamports.min(20_000_000),
+            "source_recovery_parent");
+    }
     if p.policy == OWNER_ROUNDTRIP_EXIT_V1 {
         let b=e.owner_technical_buy.as_ref().ok_or_else(||anyhow::anyhow!("owner_roundtrip_exit_parent"))?;
         ensure!(b.policy == crate::OWNER_EXECUTION_ROUNDTRIP_V1
@@ -60,7 +77,8 @@ pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
         "owner_exit_wallet_signer");
     ensure!(p.mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
         && p.decimals == 6 && (if p.policy == OWNER_EXIT_V1 {p.amount_raw == 1_167_085}
-            else {p.amount_raw > 0 && p.intent_id.starts_with("execution-only:")}),
+            else {p.amount_raw > 0 && (p.intent_id.starts_with("execution-only:")
+                || p.policy == OWNER_SOURCE_RECOVERY_EXIT_V1 && p.intent_id.starts_with("source-recovery:"))}),
         "owner_exit_exact_position_amount");
     ensure!(p.route == "jupiter_swap_instructions" && p.route == e.canary_route,
         "owner_exit_route");

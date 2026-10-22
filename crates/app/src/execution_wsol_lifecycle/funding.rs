@@ -63,7 +63,8 @@ pub(crate) fn check_initial(
         .and_then(|n| n.checked_add(plan.known_wallet_payer_lamports))
         .context("owned_wsol_funding_overflow")?;
     ensure!(
-        required <= u128::from(copybot_storage_core::TINY_NATIVE_ALLOWANCE),
+        required <= u128::from(r.metadata.controlled_exit_wire.as_ref()
+            .map_or(copybot_storage_core::TINY_NATIVE_ALLOWANCE,|p|p.native_remaining())),
         "receipt_lot_native_spend_cap"
     );
     let payer = facts
