@@ -105,6 +105,24 @@ async fn b127_actual_daemon_restart_and_failed_buy_never_rearm() -> Result<()> {
     f.config.tiny_experiment.policy_mode = copybot_config::TinyPolicyMode::ProtectedNativeCapital;
     f.config.quote_canary_slippage_bps = 500; // Match the fixed quote fixture request.
     f.backend.funding.lock().unwrap().balance = B;
+    // CI can spend >1s constructing the two migrated fixture stores. The real
+    // payer observation must not be compared with that frozen setup clock.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let client = crate::execution_native_rpc::NativeFundingRpcClient::new()?;
+    let wallet = crate::execution_pumpswap_accounts::parse_pubkey(
+        &f.config.canary_wallet_pubkey, "test-wallet")?;
+    let observed = client.collect_payer(&f.config.submit_adapter_http_url,
+        std::time::Duration::from_millis(f.config.submit_timeout_ms), wallet).await?;
+    let (balance, slot, observed_at) = observed.bound(wallet)?;
+    let stale_clock = f.now + chrono::Duration::seconds(1);
+    assert!(observed_at > stale_clock, "delayed setup must expose the old clock");
+    let old = f.store.prepare_tiny_native_policy("local-variant-a",
+        &f.config.canary_wallet_pubkey, balance, 50_000_000, slot, observed_at,
+        || Ok(stale_clock)).unwrap_err();
+    assert!(format!("{old:#}").contains("tiny_capital_observation_time"), "{old:#}");
+    assert_eq!(f.conn()?.query_row("SELECT COUNT(*) FROM execution_tiny_native_policy",
+        [], |r| r.get::<_,u64>(0))?, 0, "refused observation must not pin an anchor");
+    f.now = chrono::Utc::now(); // Start scenario time only after setup and its probe.
     f.seed("b127-a", 0)?;
     let out = f.tick(0).await?;
     assert_eq!(f.sends().len(), 1, "{out:?} order={:?}", f.order("b127-a")?);
