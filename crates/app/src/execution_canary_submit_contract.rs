@@ -213,11 +213,11 @@ pub(crate) async fn record_execution_tiny_submit_plan_guarded<A: ExecutionSubmit
             ) {
                 return record_submit_plan_failure(store, request, now, error.to_string());
             }
-            if let Err(error) = crate::execution_native_floor_policy::verify_submit_payload(
+            if let Err(error) = crate::execution_native_floor_policy::verify_submit_payload_scoped(
                 request,
                 &intent.signed_transaction_base64,
                 gate.pretrade_min_sol_reserve,
-                &gate.execution_wallet_pubkey,
+                &gate.execution_wallet_pubkey, gate.buy_safety_config.as_ref(),
             ) {
                 return record_submit_plan_failure(store, request, now, error.to_string());
             }

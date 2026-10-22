@@ -80,7 +80,7 @@ fn modeled(info: &mut SubscribeUpdateTransactionInfo, old: &str) {
         }
     }
 }
-fn modeled_frame(name: &str, old: &str) -> Result<Vec<u8>> {
+pub(super) fn modeled_frame(name: &str, old: &str) -> Result<Vec<u8>> {
     let raw = std::fs::read(super::b135_fixture::inputs().join(format!("{name}.pb")))?;
     let mut u = SubscribeUpdate::decode(raw.as_slice())?;
     match u.update_oneof.as_mut().unwrap() {
@@ -118,19 +118,48 @@ fn rewrite_json(v: &mut Value, old: &str) {
     }
 }
 pub(super) fn inventory(c: &ExecutionConfig, held: u64) -> Value {
-    let ata = c
-        .owned_sell_preparation
-        .as_ref()
-        .unwrap()
-        .protected_bot_usdc_baseline
-        .as_ref()
-        .unwrap()
-        .token_account
-        .clone();
+    let ata = if c.controlled_receipt_lot.is_some() {
+        crate::execution_controlled_receipt_lot::canonical(c).unwrap()
+    } else {
+        c.owned_sell_preparation
+            .as_ref()
+            .unwrap()
+            .protected_bot_usdc_baseline
+            .as_ref()
+            .unwrap()
+            .token_account
+            .clone()
+    };
     json!({"context":{"slot":151},"value":[{"pubkey":ata,"account":{"owner":copybot_storage_core::ordered_sell_quote::fractional::inventory::TOKEN,"data":{"parsed":{"type":"account","info":{"owner":c.canary_wallet_pubkey,"mint":USDC,"tokenAmount":{"amount":held.to_string(),"decimals":6}}}}}}]})
 }
 impl Case {
     pub async fn new() -> Result<Self> {
+        Self::build(true, None, false, None).await
+    }
+    pub(super) async fn controlled_before_sell(
+        scope: copybot_storage_core::controlled_receipt_lot::Scope,
+    ) -> Result<Self> {
+        Self::build(false, Some(scope), false, None).await
+    }
+    pub(super) async fn controlled_wsol_before_sell(
+        scope: copybot_storage_core::controlled_receipt_lot::Scope,
+    ) -> Result<Self> {
+        Self::build(false, Some(scope), true, None).await
+    }
+    pub(super) async fn actual_source(
+        scope: controlled_receipt_lot::Scope,
+        c: ExecutionConfig,
+        wire: String,
+        receipt: Value,
+    ) -> Result<Self> {
+        Self::build(false, Some(scope), true, Some((c, wire, receipt))).await
+    }
+    async fn build(
+        with_sell: bool,
+        controlled: Option<copybot_storage_core::controlled_receipt_lot::Scope>,
+        wsol: bool,
+        actual: Option<(ExecutionConfig, String, Value)>,
+    ) -> Result<Self> {
         let output = super::temporary_output_fixture::OutputRoot::new("protected-usdc")?;
         // URI remains alive through both store/sql connections; no production DB or key.
         let path = format!(
@@ -150,9 +179,19 @@ impl Case {
         let mut meta: Value = serde_json::from_slice(&std::fs::read(
             super::b135_fixture::inputs().join("chain.json"),
         )?)?;
+        if wsol {
+            super::wsol_lifecycle_events::protocols(&mut meta);
+        }
         let old = meta["our"]["token_out"].as_str().unwrap().to_owned();
         let wallet = meta["our"]["signer"].as_str().unwrap().to_owned();
-        let mut c = super::protected_usdc_prepare::config(&wallet)?;
+        let (override_config, source_artifact) = match actual {
+            Some((c, w, r)) => (Some(c), Some((w, r))),
+            None => (None, None),
+        };
+        let mut c = match override_config {
+            Some(c) => c,
+            None => super::protected_usdc_prepare::config(&wallet)?,
+        };
         let payer = crate::execution_pumpswap_accounts::parse_pubkey(&wallet, "mock-wallet")?;
         let mint = crate::execution_pumpswap_accounts::parse_pubkey(USDC, "mock-mint")?;
         let ata = crate::execution_pumpswap_accounts::associated_token_address(
@@ -168,6 +207,20 @@ impl Case {
             amount_raw: 100,
             token_account: bs58::encode(ata).into_string(),
         });
+        let controlled_mode = controlled.is_some();
+        if let Some(scope) = controlled {
+            db.store
+                .register_controlled_receipt_lot_scope(&scope, &wallet)?;
+            c.controlled_receipt_lot = Some(serde_json::from_value({
+                let mut v = serde_json::to_value(&scope)?;
+                v["wsol_lifecycle"] = serde_json::json!(copybot_config::TRANSACTION_OWNED_WSOL_V1);
+                v
+            })?);
+            c.pretrade_min_sol_reserve = 0.0;
+            let p = c.owned_sell_preparation.as_mut().unwrap();
+            p.fractional_inventory = Some(copybot_config::CONTROLLED_RECEIPT_LOT_V1.into());
+            p.protected_bot_usdc_baseline = None;
+        }
         // Mock only admission source transaction operands; native association/parser executes.
         rewrite_json(&mut meta, &old);
         let mut ac = af::config(&meta);
@@ -195,9 +248,23 @@ impl Case {
             .collect();
         let producer = tokio::spawn(async move {
             for (n, name) in names.iter().enumerate() {
+                let mut payload = modeled_frame(name, &old)?;
+                if let Some((wire, receipt)) = &source_artifact {
+                    payload = super::wsol_lifecycle_events::replace(payload, wire, receipt)?;
+                }
+                if controlled_mode && *name == "source" {
+                    tx.send(copybot_ingestion::ReplayInput::Update {
+                        offset_ns: n as u64 + 1,
+                        payload: super::receipt_lot_custody_fixture::foreign_frame(
+                            payload.clone(),
+                        )?,
+                    })
+                    .await?;
+                }
+
                 tx.send(copybot_ingestion::ReplayInput::Update {
                     offset_ns: n as u64 + 1,
-                    payload: modeled_frame(name, &old)?,
+                    payload,
                 })
                 .await?;
             }
@@ -222,6 +289,9 @@ impl Case {
         producer.await??;
         let source = meta["source"]["signature"].as_str().unwrap();
         let now = Utc::now();
+        if wsol {
+            super::wsol_lifecycle_fixture::snapshot("native-buy-admission", &db.sql)?;
+        }
         assert!(db.store.native_buy_record_finalized(
             source,
             100,
@@ -251,12 +321,44 @@ impl Case {
             "protected-usdc",
             &wallet,
             1000000000,
-            160200031,
+            if c.controlled_receipt_lot.is_some() {
+                0
+            } else {
+                160200031
+            },
             120,
             now,
             &binding,
             || Ok(now),
         )?;
+        let wsol_receipt = if wsol {
+            Some(super::wsol_lifecycle_fixture::native_buy(&db, &c, &order).await?)
+        } else {
+            None
+        };
+        let sig = meta["our"]["signature"].as_str().unwrap();
+        let wsol_receipt = if let Some((wire, receipt)) = wsol_receipt {
+            Some((wire, receipt))
+        } else if controlled_mode {
+            Some(super::wsol_lifecycle_fixture::external_mock(
+                &order, &wallet, "buy", H, sig, 120,
+            )?)
+        } else {
+            None
+        };
+        let exact_binding = wsol_receipt
+            .as_ref()
+            .map(|(wire, _)| crate::execution_transaction_wire::decode_message(wire, |_| Ok(())))
+            .transpose()?
+            .map(|m| m.binding);
+        let message_sha = exact_binding
+            .as_ref()
+            .map(|b| b.message_sha256.clone())
+            .unwrap_or_else(|| "a".repeat(64));
+        let transaction_sha = exact_binding
+            .as_ref()
+            .map(|b| b.transaction_sha256.clone())
+            .unwrap_or_else(|| "b".repeat(64));
         let buy = order.order_id;
         db.store.mark_execution_canary_built(&buy, now)?;
         db.store.mark_execution_canary_simulated(
@@ -268,11 +370,19 @@ impl Case {
         // External submit/confirmation are explicit mocks. Production receipt parser and fill writer below.
         let sig = meta["our"]["signature"].as_str().unwrap();
         db.store.mark_execution_canary_submitted(&buy, now, sig)?;
-        db.sql.execute("INSERT INTO execution_canary_dispatch(order_id,signal_id,client_order_id,route,attempt,wallet,token,side,tx_signature,message_sha256,transaction_sha256,claimed_at,transport_note) SELECT order_id,signal_id,client_order_id,route,attempt,?1,?2,'buy',tx_signature,?3,?4,submit_ts,'unknown' FROM orders WHERE order_id=?5",rusqlite::params![wallet,USDC,"a".repeat(64),"b".repeat(64),buy])?;
-        db.sql.execute("INSERT INTO execution_tiny_reservations(order_id,experiment_id,tx_signature,wallet,side,message_sha256,transaction_sha256,buy_lamports,fee_bound,priority_fee,fee_slot,reserved_at) SELECT order_id,'protected-usdc',tx_signature,?1,'buy',?2,?3,10000000,100000,10000,'120',submit_ts FROM orders WHERE order_id=?4",rusqlite::params![wallet,"a".repeat(64),"b".repeat(64),buy])?;
-        let receipt = receipt(&wallet, sig, "buy", 100, 100 + H, 120);
+        db.sql.execute("INSERT INTO execution_canary_dispatch(order_id,signal_id,client_order_id,route,attempt,wallet,token,side,tx_signature,message_sha256,transaction_sha256,claimed_at,transport_note) SELECT order_id,signal_id,client_order_id,route,attempt,?1,?2,'buy',tx_signature,?3,?4,submit_ts,'unknown' FROM orders WHERE order_id=?5",rusqlite::params![wallet,USDC,message_sha,transaction_sha,buy])?;
+        db.sql.execute("INSERT INTO execution_tiny_reservations(order_id,experiment_id,tx_signature,wallet,side,message_sha256,transaction_sha256,buy_lamports,fee_bound,priority_fee,fee_slot,reserved_at) SELECT order_id,'protected-usdc',tx_signature,?1,'buy',?2,?3,10000000,100000,10000,'120',submit_ts FROM orders WHERE order_id=?4",rusqlite::params![wallet,message_sha,transaction_sha,buy])?;
+        let mut receipt = if let Some((_, receipt)) = wsol_receipt {
+            receipt
+        } else {
+            receipt(&wallet, sig, "buy", 100, 100 + H, 120)
+        };
+        receipt["result"]["transaction"]["signatures"] = json!([sig]);
         let result = confirm(&db.store, &buy, &wallet, receipt).await?;
-        assert_eq!(result.buy_opened, 1);
+        assert_eq!(
+            result.buy_opened, 1,
+            "actual modeled receipt refused: {result:?}"
+        );
         let facts = db
             .store
             .load_execution_canary_receipt_facts(&buy)?
@@ -292,24 +402,26 @@ impl Case {
             "UPDATE execution_tiny_experiment SET buy_order_id=?1,token=?2,position_id=?3",
             rusqlite::params![buy, USDC, pos.position_id],
         )?;
-        // SOURCE SELL is delivered only after the real BUY receipt has opened H.
-        let (mut sell_consumer, sell_tx) =
-            af::start(&db, &ac, "protected-usdc-source-sell").await?;
-        let old = "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8";
-        let producer = tokio::spawn(async move {
-            for (n, name) in ["sell", "block-150"].iter().enumerate() {
-                sell_tx
-                    .send(copybot_ingestion::ReplayInput::Update {
-                        offset_ns: n as u64 + 1,
-                        payload: modeled_frame(name, old)?,
-                    })
-                    .await?;
-            }
-            sell_tx.send(copybot_ingestion::ReplayInput::End(9)).await?;
-            Ok::<_, anyhow::Error>(())
-        });
-        af::drain(&mut sell_consumer, &db).await?;
-        producer.await??;
+        if with_sell {
+            // SOURCE SELL is delivered only after the real BUY receipt has opened H.
+            let (mut sell_consumer, sell_tx) =
+                af::start(&db, &ac, "protected-usdc-source-sell").await?;
+            let old = "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8";
+            let producer = tokio::spawn(async move {
+                for (n, name) in ["sell", "block-150"].iter().enumerate() {
+                    sell_tx
+                        .send(copybot_ingestion::ReplayInput::Update {
+                            offset_ns: n as u64 + 1,
+                            payload: modeled_frame(name, old)?,
+                        })
+                        .await?;
+                }
+                sell_tx.send(copybot_ingestion::ReplayInput::End(9)).await?;
+                Ok::<_, anyhow::Error>(())
+            });
+            af::drain(&mut sell_consumer, &db).await?;
+            producer.await??;
+        }
         let mut e = super::fractional::fractional_synthetic_fixture::evidence(false)?;
         rewrite_json(
             &mut e.block,

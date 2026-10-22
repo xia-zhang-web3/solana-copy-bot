@@ -3,6 +3,8 @@
 use anyhow::{ensure, Context, Result};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+#[path = "fractional_inventory_jupiter_seeded.rs"]
+mod seeded;
 #[path = "fractional_inventory_jupiter_wire.rs"]
 mod wire;
 use wire::{decode, exact, instruction, keys, pair, rows, ATA, SYSTEM, TOKEN};
@@ -20,6 +22,7 @@ pub struct JupiterSourceSellProof {
     pub sol_raw: u64,
     pub setup_index: usize,
     pub route_index: usize,
+    pub seeded: bool,
 }
 /// Shared by genuine ingress attribution, finalized source receipt verification,
 /// and the full parent/program/prefix fractional proof. It grants no authority.
@@ -45,6 +48,9 @@ pub fn prove_jupiter_source_sell(
         outer.len() <= 8 && outer.iter().all(|i| i.depth.is_none_or(|d| d == 1)),
         "jupiter_source_outer"
     );
+    let is_seeded = outer
+        .iter()
+        .any(|i| i.program == SYSTEM && i.data.get(..4) == Some(&3u32.to_le_bytes()));
     let routes = outer
         .iter()
         .enumerate()
@@ -64,7 +70,7 @@ pub fn prove_jupiter_source_sell(
             && a.len() == 18
             && a[0] == TOKEN
             && a[1] == wallet
-            && a[4] == JUPITER
+            && (a[4] == JUPITER || (is_seeded && a[4] == a[3]))
             && a[5] == SOL
             && a[6] == JUPITER
             && a[7] == EVENT
@@ -197,52 +203,58 @@ pub fn prove_jupiter_source_sell(
             "jupiter_source_event"
         );
     }
-    let setups = outer
-        .iter()
-        .enumerate()
-        .filter(|(_, i)| i.program == ATA)
-        .collect::<Vec<_>>();
-    ensure!(setups.len() == 1, "jupiter_source_setup_count");
-    let setup = setups[0].0;
-    ensure!(
-        setup < index
-            && exact(
-                setups[0].1,
-                ATA,
-                &[wallet, &a[3], wallet, SOL, SYSTEM, TOKEN],
-                &[1],
-                1
-            ),
-        "jupiter_source_setup_identity"
-    );
-    let creation = inner.get(&setup).context("jupiter_source_creation")?;
-    ensure!(
-        creation.len() == 4
-            && exact(&creation[0], TOKEN, &[SOL], &[21, 7, 0], 2)
-            && exact(&creation[2], TOKEN, &[&a[3]], &[22], 2),
-        "jupiter_source_creation"
-    );
-    let create = &creation[1];
-    let cd = &create.data;
-    ensure!(
-        cd.len() == 52
-            && cd[..4] == [0; 4]
-            && u64::from_le_bytes(cd[4..12].try_into()?) > 0
-            && u64::from_le_bytes(cd[12..20].try_into()?) == 165
-            && cd[20..52] == decode(TOKEN)?
-            && exact(create, SYSTEM, &[wallet, &a[3]], cd, 2),
-        "jupiter_source_creation"
-    );
-    let mut init = vec![18];
-    init.extend(decode(wallet)?);
-    ensure!(
-        exact(&creation[3], TOKEN, &[&a[3], SOL], &init, 2),
-        "jupiter_source_temp_owner"
-    );
+    let (setup, init) = if is_seeded {
+        let (s, i) = seeded::setup(&outer, &inner, index, wallet, &a[3])?;
+        (s, Some(i))
+    } else {
+        let setups = outer
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.program == ATA)
+            .collect::<Vec<_>>();
+        ensure!(setups.len() == 1, "jupiter_source_setup_count");
+        let setup = setups[0].0;
+        ensure!(
+            setup < index
+                && exact(
+                    setups[0].1,
+                    ATA,
+                    &[wallet, &a[3], wallet, SOL, SYSTEM, TOKEN],
+                    &[1],
+                    1
+                ),
+            "jupiter_source_setup_identity"
+        );
+        let creation = inner.get(&setup).context("jupiter_source_creation")?;
+        ensure!(
+            creation.len() == 4
+                && exact(&creation[0], TOKEN, &[SOL], &[21, 7, 0], 2)
+                && exact(&creation[2], TOKEN, &[&a[3]], &[22], 2),
+            "jupiter_source_creation"
+        );
+        let create = &creation[1];
+        let cd = &create.data;
+        ensure!(
+            cd.len() == 52
+                && cd[..4] == [0; 4]
+                && u64::from_le_bytes(cd[4..12].try_into()?) > 0
+                && u64::from_le_bytes(cd[12..20].try_into()?) == 165
+                && cd[20..52] == decode(TOKEN)?
+                && exact(create, SYSTEM, &[wallet, &a[3]], cd, 2),
+            "jupiter_source_creation"
+        );
+        let mut init = vec![18];
+        init.extend(decode(wallet)?);
+        ensure!(
+            exact(&creation[3], TOKEN, &[&a[3], SOL], &init, 2),
+            "jupiter_source_temp_owner"
+        );
+        (setup, None)
+    };
     let mut closes = 0;
     let mut self_transfers = 0;
     for (i, ix) in outer.iter().enumerate() {
-        if i == setup || i == index {
+        if i == setup || Some(i) == init || i == index {
             continue;
         }
         if ix.program == COMPUTE {
@@ -261,7 +273,7 @@ pub fn prove_jupiter_source_sell(
             && ix.data[..4] == [2, 0, 0, 0]
         {
             ensure!(
-                i > index && u64::from_le_bytes(ix.data[4..].try_into()?) > 0,
+                i > index && (is_seeded || u64::from_le_bytes(ix.data[4..].try_into()?) > 0),
                 "jupiter_source_self_transfer"
             );
             self_transfers += 1;
@@ -316,5 +328,6 @@ pub fn prove_jupiter_source_sell(
         sol_raw: output,
         setup_index: setup,
         route_index: index,
+        seeded: is_seeded,
     })
 }

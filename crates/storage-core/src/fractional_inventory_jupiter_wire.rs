@@ -164,6 +164,22 @@ fn parsed(v: &Value, program: &str) -> Result<(Vec<String>, Vec<u8>)> {
             d.extend(decode(&address("owner")?)?);
             vec![address("source")?, address("newAccount")?]
         }
+        (SYSTEM, Some("createAccountWithSeed")) => {
+            let base = address("base")?;
+            let seed = i
+                .get("seed")
+                .and_then(Value::as_str)
+                .filter(|s| s.len() <= 32)
+                .context("jupiter_source_seed")?;
+            d.extend(3u32.to_le_bytes());
+            d.extend(decode(&base)?);
+            d.extend((seed.len() as u64).to_le_bytes());
+            d.extend(seed.as_bytes());
+            d.extend(number("lamports")?.to_le_bytes());
+            d.extend(number("space")?.to_le_bytes());
+            d.extend(decode(&address("owner")?)?);
+            vec![address("source")?, address("newAccount")?, base]
+        }
         (SYSTEM, Some("transfer")) => {
             d.extend(2u32.to_le_bytes());
             d.extend(number("lamports")?.to_le_bytes());

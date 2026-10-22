@@ -56,6 +56,15 @@ pub(crate) fn wire(
     payload: &str,
     selected_raw: u64,
 ) -> Result<()> {
+    if c.controlled_receipt_lot.is_some() {
+        copybot_config::validate_controlled_receipt_lot(c)?;
+        ensure!(
+            crate::execution_wsol_lifecycle::scoped(r),
+            "owned_wsol_private_authority_missing"
+        );
+        crate::execution_usdc_sell_wire::verify(r, payload, selected_raw, false)?;
+        return Ok(());
+    }
     if configured(c)?.is_none() {
         return Ok(());
     }
@@ -138,6 +147,12 @@ pub(crate) async fn before_financial_boundary(
     payload: &str,
     mut transport: impl rpc::fractional::transport::Transport,
 ) -> Result<()> {
+    if c.controlled_receipt_lot.is_some() {
+        return crate::execution_controlled_receipt_lot::before_boundary(
+            c, store, r, payload, transport,
+        )
+        .await;
+    }
     if configured(c)?.is_none() {
         return Ok(());
     }
@@ -182,7 +197,7 @@ pub(crate) async fn current(
     r: &ExecutionSubmitRequest,
     payload: &str,
 ) -> Result<()> {
-    if configured(c)?.is_none() {
+    if c.controlled_receipt_lot.is_none() && configured(c)?.is_none() {
         return Ok(());
     }
     let http = reqwest::Client::builder()

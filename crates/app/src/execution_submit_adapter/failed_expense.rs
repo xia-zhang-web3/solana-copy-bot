@@ -69,7 +69,10 @@ async fn recover(
         fetched = rpc_failed_expense::fetch(http, url, &task.tx_signature, timeout_ms).await;
         fetched.as_ref().map_err(|e| anyhow::anyhow!(e.to_string()))
     }
-    .and_then(|value| rpc_failed_expense::parse(&task, value));
+    .and_then(|value| {
+        crate::execution_wsol_lifecycle::verify_failed_receipt(store, &task, value)?;
+        rpc_failed_expense::parse(&task, value)
+    });
     let facts = match result {
         Ok(facts) => facts,
         Err(error) => {

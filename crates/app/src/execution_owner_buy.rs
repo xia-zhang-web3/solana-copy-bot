@@ -36,6 +36,7 @@ pub(crate) async fn tick_with_adapter<A: ExecutionSubmitAdapter>(
         .expect("active owner policy");
     // A registered intent is immutable. A process restart can only observe the
     // canonical order or receipt obligation, never acquire a new send slot.
+    crate::execution_controlled_receipt_lot::register(config, store)?;
     store.register_owner_technical_buy_intent(&intent)?;
     if let Some(order) = store.load_execution_canary_order(&owner_technical_buy_order_id(&intent.intent_id))? {
         summary.existing = 1;

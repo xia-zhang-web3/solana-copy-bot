@@ -49,9 +49,14 @@ pub(super) async fn open_and_start(
         .as_ref()
         .map(|wallets| copybot_ingestion::replay_scope(c, wallets))
         .transpose()?;
+    let controlled = execution.map(crate::execution_controlled_receipt_lot::scope).transpose()?.flatten();
+    let controlled_wallet = execution.map(|e| e.canary_wallet_pubkey.clone());
     let setup_scope = replay_scope.clone();
     let (inbox, checkpoint) = tokio::task::spawn_blocking(move || {
         let mut inbox = AssociationInbox::open_ordered_sell_consumer(path, limits)?;
+        if let Some(scope) = controlled.as_ref() {
+            inbox.register_controlled_receipt_lot_scope(scope, controlled_wallet.as_deref().context("receipt_lot_wallet")?)?;
+        }
         if let Some(authority) = authority.as_ref() {
             inbox.register_technical_cohort_authority(authority)?;
         }

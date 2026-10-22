@@ -46,51 +46,51 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 mod association_consumer_tests;
-pub(crate) mod owner_buy_fixture;
-mod owner_buy_tests;
-mod execution_only_loop_tests;
-mod owner_roundtrip_fixture;
-mod owner_roundtrip_tests;
-mod owner_source_gate_fixture;
-mod owner_source_gate_tests;
-mod owner_source_gate_config_tests;
+mod association_fixture;
+mod association_frozen_tests;
+mod association_transport_tests;
 mod controlled_copy_pipeline_fixture;
 mod controlled_copy_pipeline_tests;
-mod owner_exit_tests;
-mod owner_exit_test_fixture;
-mod owner_exit_assembler_tests;
-pub(crate) mod owner_buy_wire_fixture;
-pub(crate) mod run15_buy_wire_fixture;
-pub(crate) mod run15_rpc_proof_fixture;
-pub(crate) mod run15_receipt_projection;
-mod run15_rpc_proof_tests;
-mod run15_full_path_frames;
-mod run15_full_path_fixture;
-mod run15_full_path_server;
-mod run15_full_path_tests;
-mod run15_reconnect_tonic_fixture;
-mod run15_reconnect_money_tests;
+mod execution_only_loop_tests;
 mod http_throughput_fixture;
 mod http_throughput_tests;
-mod run15_http_rpc_fixture;
-mod owner_buy_wire_tests;
-pub(crate) mod owner_buy_protected_fixture;
-mod owner_buy_protected_tests;
 #[path = "app_tests/native_buy_funding_fixture.rs"]
 pub(crate) mod native_buy_funding_fixture;
 #[path = "app_tests/native_buy_mock_helpers.rs"]
 pub(crate) mod native_buy_mock_helpers;
 #[path = "app_tests/native_buy_quote_helpers.rs"]
 pub(crate) mod native_buy_quote_helpers;
-#[path = "app_tests/native_buy_submit_helpers.rs"]
-pub(crate) mod native_buy_submit_helpers;
 #[path = "app_tests/native_buy_reviewer_consumer_candidate_tests.rs"]
 mod native_buy_reviewer_consumer_candidate_tests;
 #[path = "app_tests/native_buy_reviewer_quote_candidate_tests.rs"]
 mod native_buy_reviewer_quote_candidate_tests;
-mod association_fixture;
-mod association_frozen_tests;
-mod association_transport_tests;
+#[path = "app_tests/native_buy_submit_helpers.rs"]
+pub(crate) mod native_buy_submit_helpers;
+pub(crate) mod owner_buy_fixture;
+pub(crate) mod owner_buy_protected_fixture;
+mod owner_buy_protected_tests;
+mod owner_buy_tests;
+pub(crate) mod owner_buy_wire_fixture;
+mod owner_buy_wire_tests;
+mod owner_exit_assembler_tests;
+mod owner_exit_test_fixture;
+mod owner_exit_tests;
+mod owner_roundtrip_fixture;
+mod owner_roundtrip_tests;
+mod owner_source_gate_config_tests;
+mod owner_source_gate_fixture;
+mod owner_source_gate_tests;
+pub(crate) mod run15_buy_wire_fixture;
+mod run15_full_path_fixture;
+mod run15_full_path_frames;
+mod run15_full_path_server;
+mod run15_full_path_tests;
+mod run15_http_rpc_fixture;
+pub(crate) mod run15_receipt_projection;
+mod run15_reconnect_money_tests;
+mod run15_reconnect_tonic_fixture;
+pub(crate) mod run15_rpc_proof_fixture;
+mod run15_rpc_proof_tests;
 include!("app_tests/00.rs");
 include!("app_tests/01.rs");
 include!("app_tests/02.rs");
@@ -738,20 +738,35 @@ pub(crate) mod b136_r1_hooks;
 mod b136_r1_lifecycle_tests;
 mod b136_r1_tick_tests;
 
-#[path = "app_tests/index_recovery_fixture.rs"]
-mod index_recovery_fixture;
-#[path = "app_tests/index_recovery_transport.rs"]
-mod index_recovery_transport;
-#[path = "app_tests/index_recovery_tests.rs"]
-mod index_recovery_tests;
 #[path = "app_tests/index_recovery_binary_fixture.rs"]
 mod index_recovery_binary_fixture;
+#[path = "app_tests/index_recovery_fixture.rs"]
+mod index_recovery_fixture;
+#[path = "app_tests/index_recovery_tests.rs"]
+mod index_recovery_tests;
+#[path = "app_tests/index_recovery_transport.rs"]
+mod index_recovery_transport;
 
-#[path = "app_tests/shutdown_signal_tests.rs"]
-mod shutdown_signal_tests;
 #[path = "app_tests/controlled_source_receipt_tests.rs"]
 mod controlled_source_receipt_tests;
+#[path = "app_tests/shutdown_signal_tests.rs"]
+mod shutdown_signal_tests;
 
 mod protected_usdc_fixture;
 mod protected_usdc_prepare;
 mod protected_usdc_tests;
+mod receipt_lot_custody_fixture;
+mod receipt_lot_custody_migration_tests;
+mod receipt_lot_custody_native_tests;
+mod receipt_lot_custody_tests;
+mod receipt_lot_custody_timing_tests;
+
+mod wsol_lifecycle_fixture;
+mod wsol_lifecycle_oracle;
+mod wsol_lifecycle_tests;
+
+mod wsol_lifecycle_events;
+mod wsol_lifecycle_identity_fixture;
+mod wsol_lifecycle_source_fixture;
+
+mod wsol_lifecycle_failed_fixture;

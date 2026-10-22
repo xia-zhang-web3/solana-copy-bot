@@ -132,6 +132,12 @@ fn plan<'a>(
                 changed.extend([*account, *destination]);
             }
             FundingOperation::Unresolved { .. } => opaque_before = true,
+            FundingOperation::CreateAccountWithSeed { payer, account, .. } => {
+                changed.extend([*payer, *account]);
+            }
+            FundingOperation::InitializeAccount3 { account, .. } => {
+                changed.insert(*account);
+            }
             FundingOperation::ComputeBudget => {}
         }
     }

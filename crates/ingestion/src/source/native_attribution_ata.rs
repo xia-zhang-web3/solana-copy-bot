@@ -206,3 +206,43 @@ fn matches_ix(ix: &Instruction, depth: u32, program: &str, accounts: &[usize], o
             .as_ref()
             == Some(op)
 }
+
+/// Reused target-only witness for a seeded Jupiter WSOL source. No relaxed ATA path.
+pub(super) fn target_proof(
+    v: &View,
+    index: usize,
+    ix: &Instruction,
+    trader: usize,
+    target: usize,
+    mint: usize,
+) -> Option<Option<usize>> {
+    if !identity(v, ix, trader, target, mint) {
+        return None;
+    }
+    if *v.pre.as_ref()?.get(target)? == 0 {
+        if v.pre_tokens.as_ref()?.iter().any(|r| r.index == target) {
+            return None;
+        }
+        let rent = creation(v, index, trader, target, mint)?;
+        let post = v.row(v.post_tokens.as_ref()?, target)?;
+        if post.owner != v.key(trader)?
+            || post.mint != v.key(mint)?
+            || post.program != TOKEN
+            || *v.post.as_ref()?.get(target)? != rent
+        {
+            return None;
+        }
+        Some(Some(index))
+    } else {
+        if v.pre.as_ref()?.get(target)? != v.post.as_ref()?.get(target)?
+            || v.inner
+                .as_ref()?
+                .iter()
+                .any(|(i, g)| *i == index && !g.is_empty())
+        {
+            return None;
+        }
+        v.pair(target, v.key(trader)?, v.key(mint)?)?;
+        Some(None)
+    }
+}

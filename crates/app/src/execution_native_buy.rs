@@ -97,6 +97,9 @@ impl ExecutionCanaryRunner {
                 );
                 Ok(())
             };
+            if let Some(scope)=crate::execution_controlled_receipt_lot::scope(&self.config)? {
+                if store.controlled_buy_candidate(&scope,&source.signature,source.slot,&source.wallet,&source.mint).is_err(){summary.last_error=Some("receipt_lot_source_buy_pending_or_mismatch".into());continue;}
+            }
             if execution_native_buy_rpc::finalized_source(
                 rpc.as_mut(),
                 &self.config,

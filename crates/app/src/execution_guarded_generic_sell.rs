@@ -46,7 +46,12 @@ pub(crate) async fn prepare(
     // Only the existing provider soft errors above may reach /swap. Every refusal
     // after binding/assembly is terminal, including oversize and client simulation.
     let bundle = binding.bind(&response.value)?;
-    let mut transaction = assemble(config, plan, &bundle)?;
+    let rent = if config.controlled_receipt_lot.is_some() {
+        Some(crate::execution_wsol_lifecycle::rent(http, config, &mut || Ok(())).await?)
+    } else {
+        None
+    };
+    let mut transaction = assemble_unsigned_with_rent(config, plan, &bundle, rent)?;
     let simulation =
         crate::execution_transaction_rpc_simulation::verify_serialized_transaction_rpc_simulation(
             http,
@@ -63,6 +68,13 @@ pub(crate) async fn prepare(
         ),
         "instruction_bundle_simulation_required"
     );
+    crate::execution_wsol_lifecycle::collect_funding(
+        http,
+        config,
+        plan,
+        &transaction.serialized_transaction_base64,
+    )
+    .await?;
     transaction.summary = simulation.with_summary(&transaction.summary);
     Ok(GenericBuyOutcome::Built(transaction))
 }
@@ -83,6 +95,14 @@ fn assemble_unsigned(
     plan: &ExecutionTransactionPlan,
     bundle: &BoundInstructionBundle,
 ) -> Result<SwapTransactionDryRunResult> {
+    assemble_unsigned_with_rent(config, plan, bundle, None)
+}
+pub(crate) fn assemble_unsigned_with_rent(
+    config: &ExecutionConfig,
+    plan: &ExecutionTransactionPlan,
+    bundle: &BoundInstructionBundle,
+    rent: Option<u64>,
+) -> Result<SwapTransactionDryRunResult> {
     let (binding, instructions) = bundle.verified_parts(plan)?;
     ensure!(
         !config.execution_signer_pubkey.is_empty()
@@ -100,27 +120,50 @@ fn assemble_unsigned(
         if plan.side == "sell"
             && crate::execution_priority_fee::metadata_fee(&binding.request().metadata)?
                 == crate::execution_priority_fee::PriorityFee::TotalPriorityFeeLamports(0)
-            && !executable.iter().any(|ix| ix.program_id == budget && ix.data.first() == Some(&3))
+            && !executable
+                .iter()
+                .any(|ix| ix.program_id == budget && ix.data.first() == Some(&3))
         {
-            executable.insert(0, crate::execution_solana_tx::SolanaInstruction {
-                program_id: budget,
-                accounts: Vec::new(),
-                data: [vec![3], 0_u64.to_le_bytes().to_vec()].concat(),
-            });
+            executable.insert(
+                0,
+                crate::execution_solana_tx::SolanaInstruction {
+                    program_id: budget,
+                    accounts: Vec::new(),
+                    data: [vec![3], 0_u64.to_le_bytes().to_vec()].concat(),
+                },
+            );
         }
         let reserve = crate::execution_native_floor_policy::required_for_plan(config, plan)?
             .ok_or_else(|| anyhow::anyhow!("owner_exit_floor_missing"))?;
         crate::execution_native_floor::prepare_final_native_floor(
-            pubkey(&plan.wallet_pubkey)?, instructions.blockhash(),
-            &executable, reserve,
-        )?.payload().to_owned()
+            pubkey(&plan.wallet_pubkey)?,
+            instructions.blockhash(),
+            &executable,
+            reserve,
+        )?
+        .payload()
+        .to_owned()
     } else {
         let bytes = crate::execution_solana_tx::serialize_unsigned_legacy_transaction(
-            pubkey(&plan.wallet_pubkey)?, instructions.blockhash(),
+            pubkey(&plan.wallet_pubkey)?,
+            instructions.blockhash(),
             instructions.instructions(),
         )?;
-        ensure!(bytes.len() <= 1232, "instruction_bundle_legacy_packet_too_large");
+        ensure!(
+            bytes.len() <= 1232,
+            "instruction_bundle_legacy_packet_too_large"
+        );
         STANDARD.encode(bytes)
+    };
+    let payload = if config.controlled_receipt_lot.is_some() {
+        crate::execution_wsol_lifecycle::normalize(
+            config,
+            plan,
+            &payload,
+            rent.ok_or_else(|| anyhow::anyhow!("owned_wsol_rent_required"))?,
+        )?
+    } else {
+        payload
     };
     crate::execution_priority_fee_proof::prove(
         binding.request(),
@@ -136,7 +179,7 @@ fn assemble_unsigned(
                 "owner_exit_zero_priority_mismatch"
             );
         }
-        crate::execution_owner_source_gate::verify_exit_wire(config,binding.request(), &payload)?;
+        crate::execution_owner_source_gate::verify_exit_wire(config, binding.request(), &payload)?;
     }
     crate::execution_signing_envelope::build_serialized_transaction_execution_envelope(
         binding.request(),
@@ -191,14 +234,32 @@ pub(crate) async fn prepare_owned(
         "instruction_bundle_request_binding"
     );
     let request = binding.request().clone();
-    let transaction = assemble_unsigned(config, plan, &binding.bind(&response.value)?)?;
-    crate::execution_protected_token_baseline::wire(config,&request,
-        &transaction.serialized_transaction_base64,snapshot.quote.raw)?;
+    let rent = if config.controlled_receipt_lot.is_some() {
+        Some(crate::execution_wsol_lifecycle::rent(http, config, check).await?)
+    } else {
+        None
+    };
+    check()?;
+    let transaction =
+        assemble_unsigned_with_rent(config, plan, &binding.bind(&response.value)?, rent)?;
+    crate::execution_protected_token_baseline::wire(
+        config,
+        &request,
+        &transaction.serialized_transaction_base64,
+        snapshot.quote.raw,
+    )?;
     let rpc=crate::execution_owned_sell_rpc::exchange(http,config,&crate::execution_owned_sell_rpc::endpoint(config)?,serde_json::json!({"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","method":"simulateTransaction","params":[transaction.serialized_transaction_base64,{"encoding":"base64","sigVerify":false,"replaceRecentBlockhash":!copybot_config::owned_sell_dispatch(config),"commitment":"finalized"}]}),check).await?;
     crate::execution_transaction_rpc_simulation::parse_rpc_simulation_response(
         rpc.value(),
         &transaction.source,
     )?;
+    crate::execution_wsol_lifecycle::collect_funding(
+        http,
+        config,
+        plan,
+        &transaction.serialized_transaction_base64,
+    )
+    .await?;
     check()?;
     Ok(transaction)
 }

@@ -71,7 +71,11 @@ pub(super) fn prove(v: &View, signer: &str) -> Option<Trade> {
     roles[6] = *a.get(2)?;
     roles[7] = *a.get(13)?;
     roles[8] = *a.get(14)?;
-    if ata::prove(v, proved.route_index, &roles, false, proved.sol_raw)? != proved.setup_index {
+    if proved.seeded {
+        super::lifecycle::prove(v, proved.route_index, &roles, false, proved.sol_raw)?;
+    } else if ata::prove(v, proved.route_index, &roles, false, proved.sol_raw)?
+        != proved.setup_index
+    {
         return None;
     }
     Some(Trade {

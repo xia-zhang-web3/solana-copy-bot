@@ -23,6 +23,7 @@ pub struct TechnicalCohortConfig {
 }
 
 pub fn validate_technical_cohort(e: &crate::ExecutionConfig) -> Result<()> {
+    crate::validate_controlled_receipt_lot(e)?;
     let Some(p) = &e.technical_cohort else { return Ok(()); };
     ensure!(p.policy == TECHNICAL_COHORT_V1, "technical_cohort_policy");
     ensure!(p.mint_policy == CLASSIC_SPL_MINT_V1,
@@ -45,8 +46,8 @@ pub fn validate_technical_cohort(e: &crate::ExecutionConfig) -> Result<()> {
     ensure!(e.native_fresh_buy.as_ref().is_some_and(|native|
             native.policy == crate::PROCESSED_SLOT_FENCE_AVAILABILITY_V1)
         && e.owned_sell_preparation.as_ref().is_some_and(|sell|
-            sell.tiny_dispatch && sell.fractional_inventory.as_deref()
-                == Some("whole_wallet_parent_program_fraction_v1")),
+            sell.tiny_dispatch && (sell.fractional_inventory.as_deref()
+                == Some("whole_wallet_parent_program_fraction_v1") || e.controlled_receipt_lot.is_some() && sell.fractional_inventory.as_deref()==Some(crate::CONTROLLED_RECEIPT_LOT_V1))),
         "technical_cohort_native_source_sell_required");
     ensure!(e.canary_max_signal_age_seconds == 120
         && e.canary_max_open_positions == 1
@@ -54,7 +55,7 @@ pub fn validate_technical_cohort(e: &crate::ExecutionConfig) -> Result<()> {
         && e.quote_canary_buy_size_sol == 0.01
         && e.canary_max_daily_loss_sol <= 0.02
         && e.pretrade_max_priority_fee_lamports <= 50_000
-        && e.pretrade_min_sol_reserve >= 0.160_200_031
+        && (e.pretrade_min_sol_reserve >= 0.160_200_031 || e.controlled_receipt_lot.is_some() && e.pretrade_min_sol_reserve == 0.0)
         && e.quote_canary_slippage_bps <= 50
         && e.quote_canary_buy_slippage_bps <= 50
         && e.quote_canary_sell_slippage_bps <= 50

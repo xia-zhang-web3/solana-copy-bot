@@ -146,6 +146,8 @@ pub(crate) fn metadata_from_quote_event(
         None
     };
     ExecutionBuildPlanMetadata {
+        controlled_exit_wire: None,
+        transaction_owned_wsol: None,
         rpc_owned_sell: None,
         rpc_owned_live: None,
         owned_sell_amount: None,

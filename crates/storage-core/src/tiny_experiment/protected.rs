@@ -58,8 +58,11 @@ pub(super) fn load_policy(conn: &Connection, e: &TinyExperiment) -> Result<Prote
         p.wallet == e.wallet && p.version == 1 && p.allowance == TINY_NATIVE_ALLOWANCE,
         "tiny_capital_policy_binding"
     );
+    let expected = if crate::controlled_receipt_lot::receipt_native_floor(conn,&e.id,&e.wallet)? {
+        ensure!(p.original_reserve==0,"receipt_lot_native_reserve_changed"); 0
+    } else { floor(p.initial_lamports,p.original_reserve)? };
     ensure!(
-        p.floor_lamports == floor(p.initial_lamports, p.original_reserve)?
+        p.floor_lamports == expected
             && p.observed_at <= e.activated_at,
         "tiny_capital_policy_corrupt"
     );
@@ -170,7 +173,9 @@ impl SqliteDiscoveryStore {
             }
             ensure!(observed_at <= now && now.signed_duration_since(observed_at) <= Duration::seconds(30),
                 "tiny_capital_observation_time");
-            let floor = floor(balance, reserve)?;
+            let floor = if crate::controlled_receipt_lot::receipt_native_floor(conn,id,wallet)? {
+                ensure!(reserve==0 && balance>0,"receipt_lot_native_available"); 0
+            } else {floor(balance,reserve)?};
             let deadline = if let (Some(binding), Some(authority)) =
                 (binding, crate::native_buy::cohort::load(conn)?)
             {

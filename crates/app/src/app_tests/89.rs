@@ -552,6 +552,8 @@ fn generic_migrated_pumpswap_request(
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            controlled_exit_wire: None,
+            transaction_owned_wsol: None,
             rpc_owned_sell: None,
             rpc_owned_live: None,
             owned_sell_amount: None,
@@ -603,6 +605,8 @@ fn generic_migrated_pumpswap_sell_request(
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            controlled_exit_wire: None,
+            transaction_owned_wsol: None,
             rpc_owned_sell: None,
             rpc_owned_live: None,
             owned_sell_amount: None,
@@ -652,6 +656,8 @@ fn pump_fun_paid_migrated_pumpswap_sell_request(
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            controlled_exit_wire: None,
+            transaction_owned_wsol: None,
             rpc_owned_sell: None,
             rpc_owned_live: None,
             owned_sell_amount: None,

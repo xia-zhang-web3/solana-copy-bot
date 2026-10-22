@@ -168,6 +168,8 @@ fn swap_blueprint_request(
         wallet_pubkey: "DryRunWallet11111111111111111111111111111111".to_string(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            controlled_exit_wire: None,
+            transaction_owned_wsol: None,
             rpc_owned_sell: None,
             rpc_owned_live: None,
             owned_sell_amount: None,

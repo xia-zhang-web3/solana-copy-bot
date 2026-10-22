@@ -53,14 +53,14 @@ pub(crate) fn required_for_plan(
             "tiny_capital_mode_conflict"
         );
     }
-    let owner_exit = plan.signal_id.starts_with("owner-exit:")
-        && plan.side.eq_ignore_ascii_case("sell");
-    if !config.canary_tiny_submit_enabled
-        || (!plan.side.eq_ignore_ascii_case("buy") && !owner_exit) {
+    let owner_exit =
+        plan.signal_id.starts_with("owner-exit:") && plan.side.eq_ignore_ascii_case("sell");
+    if !config.canary_tiny_submit_enabled || (!plan.side.eq_ignore_ascii_case("buy") && !owner_exit)
+    {
         return Ok(None);
     }
     let reserve = if owner_exit {
-        reserve_lamports(config.pretrade_min_sol_reserve)?
+        crate::execution_controlled_receipt_lot::reserve(config)?
     } else if protected::enabled(config) {
         plan.metadata
             .protected_capital
@@ -72,7 +72,7 @@ pub(crate) fn required_for_plan(
             plan.metadata.protected_capital.is_none(),
             "tiny_capital_mode_conflict"
         );
-        reserve_lamports(config.pretrade_min_sol_reserve)?
+        crate::execution_controlled_receipt_lot::reserve(config)?
     };
     ensure!(
         !config.execution_signer_pubkey.is_empty()
@@ -95,7 +95,9 @@ pub(crate) fn verify_signing_payload(
         "native_floor_plan_identity_mismatch"
     );
     if crate::execution_technical_cohort::active(config)
-        && request.signal_id.starts_with("native-buy-v1:") && request.side == "buy" {
+        && request.signal_id.starts_with("native-buy-v1:")
+        && request.side == "buy"
+    {
         crate::execution_owner_buy_wire::verify_cohort(request, payload)?;
     }
     let Some(reserve) = required_for_plan(config, plan)? else {
@@ -128,7 +130,8 @@ pub(crate) fn verify_submit_payload(
 ) -> Result<()> {
     if !request.side.eq_ignore_ascii_case("buy")
         && !(request.signal_id.starts_with("owner-exit:")
-            && request.side.eq_ignore_ascii_case("sell")) {
+            && request.side.eq_ignore_ascii_case("sell"))
+    {
         return Ok(());
     }
     let reserve = match request.metadata.protected_capital.as_deref() {
@@ -145,4 +148,33 @@ pub(crate) fn verify_submit_payload(
     let wallet = parse_pubkey(current_wallet, "native_floor_wallet")?;
     verify_final_native_floor(payload, wallet, reserve)?;
     Ok(())
+}
+
+/// The explicit controlled scope retains the byte-bound instruction but no
+/// historical wallet-capital floor. All generic callers keep the old policy.
+pub(crate) fn verify_submit_payload_scoped(
+    request: &ExecutionSubmitRequest,
+    payload: &str,
+    reserve: f64,
+    wallet: &str,
+    config: Option<&ExecutionConfig>,
+) -> Result<()> {
+    if let Some(c) = config.filter(|c| c.controlled_receipt_lot.is_some()) {
+        copybot_config::validate_controlled_receipt_lot(c)?;
+        ensure!(
+            reserve == 0.0 && wallet == c.canary_wallet_pubkey,
+            "receipt_lot_native_identity"
+        );
+        ensure!(
+            crate::execution_wsol_lifecycle::scoped(request),
+            "owned_wsol_private_authority_missing"
+        );
+        let _ = crate::execution_wsol_lifecycle::canonical_view_scoped(request, payload)?;
+        if request.signal_id.starts_with("owner-exit:") && request.side == "sell" {
+            let key = parse_pubkey(wallet, "receipt_lot_wallet")?;
+            verify_final_native_floor(payload, key, 0)?;
+            return Ok(());
+        }
+    }
+    verify_submit_payload(request, payload, reserve, wallet)
 }

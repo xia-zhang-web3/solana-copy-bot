@@ -111,6 +111,8 @@ fn invalidates(op: &Op, ata: &PubkeyBytes, mint: &PubkeyBytes) -> bool {
             destination,
             ..
         } => touches(account) || touches(destination),
+        Op::CreateAccountWithSeed { payer, account, .. } => touches(payer) || touches(account),
+        Op::InitializeAccount3 { account, mint, .. } => touches(account) || touches(mint),
         Op::ComputeBudget => false,
     }
 }

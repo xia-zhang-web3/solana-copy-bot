@@ -379,3 +379,7 @@ pub use tiny_experiment::{
     TINY_BUY_LAMPORTS, TINY_EXIT_RESERVE, TINY_HORIZON_SECONDS, TINY_NATIVE_ALLOWANCE,
     TINY_PRIORITY_FEE, TINY_TOTAL_FEE, TINY_TRANSACTION_FEE,
 };
+
+pub mod controlled_receipt_lot;
+
+mod receipt_lot_migration;

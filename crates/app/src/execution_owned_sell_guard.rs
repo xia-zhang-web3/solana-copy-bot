@@ -198,11 +198,11 @@ pub(crate) async fn budget(
         intent,
         c.pretrade_max_priority_fee_lamports.min(22_000),
     )?;
-    crate::execution_native_floor_policy::verify_submit_payload(
+    crate::execution_native_floor_policy::verify_submit_payload_scoped(
         r,
         &intent.signed_transaction_base64,
         c.pretrade_min_sol_reserve,
-        &r.wallet_pubkey,
+        &r.wallet_pubkey, Some(c),
     )?;
     let d = crate::execution_tiny_submit_state::dispatch::identity(r, intent)?;
     crate::execution_protected_token_baseline::current(c,store,r,

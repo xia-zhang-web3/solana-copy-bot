@@ -107,6 +107,7 @@ fn cohort_admission(
     let f = &a.facts;
     if observed < authority.activated_at || observed >= authority.deadline
         || !authority.wallet_ids.contains(&f.wallet) { return Ok(()); }
+    if !crate::controlled_receipt_lot::event_allowed(c, f, true)? { return Ok(()); }
     let consumed: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM native_buy_cohort_decisions WHERE run_id=?1)",
         [&authority.run_id], |r|r.get(0))?;

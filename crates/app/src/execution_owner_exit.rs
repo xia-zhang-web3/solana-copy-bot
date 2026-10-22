@@ -129,7 +129,7 @@ pub(crate) async fn execute<A: ExecutionSubmitAdapter>(
     } else {
         summary.reserved = 1;
     }
-    let request = ExecutionSubmitRequest {
+    let mut request = ExecutionSubmitRequest {
         order_id: reserve.order.order_id.clone(),
         signal_id: owner_exit_identity_id(&intent.intent_id),
         client_order_id: reserve.order.client_order_id,
@@ -139,6 +139,7 @@ pub(crate) async fn execute<A: ExecutionSubmitAdapter>(
         slippage_tolerance_bps: u64::from(intent.max_slippage_bps),
         wallet_pubkey: intent.wallet.clone(), entry_route_plan_json: None, metadata,
     };
+    crate::execution_controlled_receipt_lot::stamp_exit(config,store,intent,&mut request,now)?;
     crate::execution_owner_exit_authority::current(config, store, intent,
         crate::execution_canary_safety::risk_clock::decision_time(now)
             .ok_or_else(|| anyhow::anyhow!("owner_exit_clock"))?)?;

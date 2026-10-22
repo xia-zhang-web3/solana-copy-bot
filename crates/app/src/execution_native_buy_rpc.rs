@@ -101,6 +101,7 @@ pub(crate) async fn finalized_source<T: Transport + ?Sized>(
     mint: &str,
     check: &mut (impl FnMut() -> Result<()> + Send),
 ) -> Result<()> {
+    crate::execution_controlled_receipt_lot::source_buy(c,signature,slot,wallet,mint)?;
     let _permit = ACQUISITION.try_acquire().context("native_buy_acquisition_busy")?;
     ensure!(enabled(c) && slot > 0 && !signature.is_empty(), "native_buy_source_identity");
     genesis(rpc, c, check).await?;

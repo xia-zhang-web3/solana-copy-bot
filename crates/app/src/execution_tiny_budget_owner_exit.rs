@@ -58,9 +58,9 @@ pub(super) async fn prepare(
     crate::execution_owner_exit_authority::fresh_quote(request, now)?;
     crate::execution_priority_fee_proof::validate_submit(store, request, envelope,
         signed, gate.pretrade_max_priority_fee_lamports)?;
-    crate::execution_native_floor_policy::verify_submit_payload(request,
+    crate::execution_native_floor_policy::verify_submit_payload_scoped(request,
         &signed.signed_transaction_base64, gate.pretrade_min_sol_reserve,
-        &gate.execution_wallet_pubkey)?;
+        &gate.execution_wallet_pubkey, gate.buy_safety_config.as_ref())?;
     let identity = super::super::dispatch::identity(request, signed)?;
     Ok((TinyBudgetClaim {
         experiment_id: owner.run_id.clone(), wallet: owner.wallet.clone(),

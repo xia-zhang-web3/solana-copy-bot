@@ -6,7 +6,7 @@ use anyhow::{bail, ensure, Result};
 
 pub(super) fn verify(
     instructions: &[DecodedInstruction], route: usize, wallet: PubkeyBytes,
-    source: PubkeyBytes, destination: PubkeyBytes, mint: PubkeyBytes, input: u64,
+    source: PubkeyBytes, destination: PubkeyBytes, mint: PubkeyBytes, input: u64, receipt_scope: bool,
 ) -> Result<()> {
     let mut created = [false; 2];
     let mut funded = false;
@@ -47,7 +47,7 @@ pub(super) fn verify(
                 funded = true;
             } else {
                 // Exact reserve is proved independently by the native-floor policy.
-                ensure!(i.index + 1 == instructions.len() && !floor && amount > 0
+                ensure!(i.index + 1 == instructions.len() && !floor && (amount > 0 || receipt_scope)
                     && a[1] == A::signer_writable(wallet), "owner_buy_wire_final_floor");
                 floor = true;
             }

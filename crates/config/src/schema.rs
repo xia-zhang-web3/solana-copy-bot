@@ -54,6 +54,7 @@ impl Default for SystemConfig {
 #[derive(Clone, Deserialize)]
 #[serde(default)]
 pub struct ExecutionConfig {
+    pub controlled_receipt_lot: Option<crate::ControlledReceiptLotConfig>,
     pub native_fresh_buy: Option<crate::NativeFreshBuyConfig>,
     pub technical_cohort: Option<crate::TechnicalCohortConfig>,
     pub owner_technical_buy: Option<crate::OwnerTechnicalBuyConfig>,
@@ -119,6 +120,7 @@ pub struct ExecutionConfig {
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
+            controlled_receipt_lot: None,
             native_fresh_buy: None,
             technical_cohort: None,
             owner_technical_buy: None,

@@ -47,16 +47,28 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary(
 ) -> Result<ExecutionConfirmationBoundaryOutcome> {
     #[cfg(test)]
     return record_execution_rpc_confirmation_boundary_inner(
-        store, http, rpc_url, order_id, wallet_pubkey, now, timeout_ms, None,
+        store,
+        http,
+        rpc_url,
+        order_id,
+        wallet_pubkey,
+        now,
+        timeout_ms,
+        None,
     )
     .await;
     #[cfg(not(test))]
     record_execution_rpc_confirmation_boundary_inner(
-        store, http, rpc_url, order_id, wallet_pubkey, now, timeout_ms,
+        store,
+        http,
+        rpc_url,
+        order_id,
+        wallet_pubkey,
+        now,
+        timeout_ms,
     )
     .await
 }
-
 
 pub(crate) async fn record_execution_rpc_confirmation_boundary_inner(
     store: &SqliteStore,
@@ -117,7 +129,8 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary_inner(
                 fetch_rpc_signature_confirmation(http, rpc_url, &request, now, timeout_ms).await
             };
             #[cfg(not(test))]
-            let status = fetch_rpc_signature_confirmation(http, rpc_url, &request, now, timeout_ms).await;
+            let status =
+                fetch_rpc_signature_confirmation(http, rpc_url, &request, now, timeout_ms).await;
             match status {
                 Ok(ExecutionConfirmationTrackerOutcome::Pending { reason, .. }) => {
                     return Ok(ExecutionConfirmationBoundaryOutcome {
@@ -179,38 +192,29 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary_inner(
     let receipt = if let Some(mock) = mock {
         mock.count(|counts| counts.receipt += 1);
         tokio::task::yield_now().await;
-        super::rpc_receipt_facts::facts_from_transaction_json(order_id, &proof, &mock.receipt)
+        crate::execution_wsol_lifecycle::verify_receipt(store, order_id, &proof, &mock.receipt)
+            .and_then(|_| {
+                super::rpc_receipt_facts::facts_from_transaction_json(
+                    order_id,
+                    &proof,
+                    &mock.receipt,
+                )
+            })
     } else {
-        fetch_confirmed_receipt_facts(http, rpc_url, order_id, &proof, timeout_ms).await
+        fetch_confirmed_receipt_facts(http, rpc_url, order_id, &proof, timeout_ms, store).await
     };
     #[cfg(not(test))]
-    let receipt = fetch_confirmed_receipt_facts(http, rpc_url, order_id, &proof, timeout_ms).await;
-    let bundle =
-        match receipt {
-            Ok(facts) => facts,
-            Err(error) if error.is::<ReceiptTransactionFailed>() => {
-                let failure = error.downcast_ref::<ReceiptTransactionFailed>().unwrap();
-                if store
-                    .load_execution_canary_receipt_facts(order_id)?
-                    .is_some()
-                {
-                    store.detect_failed_expense(
-                        order_id,
-                        wallet_pubkey,
-                        "receipt_meta",
-                        "confirmed",
-                        Some(failure.slot),
-                        &failure.receipt["result"]["meta"]["err"],
-                        now,
-                    )?;
-                    proof.reason = "receipt_facts_execution_conflict".into();
-                    store.mark_execution_canary_confirmed_unreconciled(order_id, &proof, now)?;
-                    return Ok(pending_accounting(&proof));
-                }
-                return super::failed_expense::detected(
-                    store,
-                    http,
-                    rpc_url,
+    let receipt =
+        fetch_confirmed_receipt_facts(http, rpc_url, order_id, &proof, timeout_ms, store).await;
+    let bundle = match receipt {
+        Ok(facts) => facts,
+        Err(error) if error.is::<ReceiptTransactionFailed>() => {
+            let failure = error.downcast_ref::<ReceiptTransactionFailed>().unwrap();
+            if store
+                .load_execution_canary_receipt_facts(order_id)?
+                .is_some()
+            {
+                store.detect_failed_expense(
                     order_id,
                     wallet_pubkey,
                     "receipt_meta",
@@ -218,17 +222,33 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary_inner(
                     Some(failure.slot),
                     &failure.receipt["result"]["meta"]["err"],
                     now,
-                    timeout_ms,
-                    Some(&failure.receipt),
-                )
-                .await;
-            }
-            Err(error) => {
-                proof.reason = error.to_string();
+                )?;
+                proof.reason = "receipt_facts_execution_conflict".into();
                 store.mark_execution_canary_confirmed_unreconciled(order_id, &proof, now)?;
                 return Ok(pending_accounting(&proof));
             }
-        };
+            return super::failed_expense::detected(
+                store,
+                http,
+                rpc_url,
+                order_id,
+                wallet_pubkey,
+                "receipt_meta",
+                "confirmed",
+                Some(failure.slot),
+                &failure.receipt["result"]["meta"]["err"],
+                now,
+                timeout_ms,
+                Some(&failure.receipt),
+            )
+            .await;
+        }
+        Err(error) => {
+            proof.reason = error.to_string();
+            store.mark_execution_canary_confirmed_unreconciled(order_id, &proof, now)?;
+            return Ok(pending_accounting(&proof));
+        }
+    };
     let facts = &bundle.facts;
     if store.success_conflicts_with_failed_expense(&facts.tx_signature)? {
         proof.reason = "receipt_failed_expense_conflict".into();

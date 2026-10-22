@@ -85,6 +85,33 @@ fn classify(i: &DecodedInstruction, wallet: PubkeyBytes) -> Result<FundingOperat
             "native_funding_malformed_system_discriminator"
         );
         let opcode = u32::from_le_bytes(i.data[..4].try_into()?);
+        if opcode == 3 {
+            program_roles(i)?;
+            ensure!(
+                i.data.len() >= 92
+                    && i.accounts.len() == 3
+                    && i.accounts[2] == i.accounts[0]
+                    && i.accounts[0].is_signer
+                    && i.accounts[0].is_writable
+                    && i.accounts[1].is_writable
+                    && !i.accounts[1].is_signer,
+                "native_funding_create_seed_roles"
+            );
+            let n = usize::try_from(u64::from_le_bytes(i.data[36..44].try_into()?))?;
+            ensure!(
+                n <= 32 && i.data.len() == 92 + n,
+                "native_funding_create_seed_layout"
+            );
+            return Ok(FundingOperation::CreateAccountWithSeed {
+                payer: i.accounts[0].pubkey,
+                account: i.accounts[1].pubkey,
+                base: i.data[4..36].try_into()?,
+                seed: std::str::from_utf8(&i.data[44..44 + n])?.into(),
+                lamports: u64::from_le_bytes(i.data[44 + n..52 + n].try_into()?),
+                space: u64::from_le_bytes(i.data[52 + n..60 + n].try_into()?),
+                owner: i.data[60 + n..92 + n].try_into()?,
+            });
+        }
         if opcode != 2 {
             return Ok(unsupported(UnsupportedFundingInstruction::SystemOpcode));
         }
@@ -146,6 +173,22 @@ fn classify(i: &DecodedInstruction, wallet: PubkeyBytes) -> Result<FundingOperat
     }
     if program == token_program_id() {
         match i.data.first() {
+            Some(18) => {
+                program_roles(i)?;
+                ensure!(
+                    i.data.len() == 33
+                        && i.accounts.len() == 2
+                        && i.accounts[0].is_writable
+                        && !i.accounts[0].is_signer
+                        && !i.accounts[1].is_signer,
+                    "native_funding_initialize3_roles"
+                );
+                return Ok(FundingOperation::InitializeAccount3 {
+                    account: i.accounts[0].pubkey,
+                    mint: i.accounts[1].pubkey,
+                    owner: i.data[1..].try_into()?,
+                });
+            }
             Some(17) => {
                 program_roles(i)?;
                 ensure!(

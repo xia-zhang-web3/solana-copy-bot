@@ -61,8 +61,8 @@ impl SqliteDiscoveryStore {
         &self,
         intent: &OwnerExitIntent,
     ) -> Result<OwnerExitIntentRecordOutcome> {
-        validate(intent)?;
         self.with_immediate_transaction_retry("register owner EXIT", |conn| {
+            validate(intent, crate::controlled_receipt_lot::source_scoped(conn,&intent.run_id,&intent.wallet)?)?;
             if let Some(old) = self.load_owner_exit_intent(&intent.intent_id)? {
                 ensure!(old == *intent, "owner_exit_intent_conflict");
                 return Ok(OwnerExitIntentRecordOutcome::Existing);
@@ -372,7 +372,7 @@ fn active(i: &OwnerExitIntent, now: DateTime<Utc>) -> Result<()> {
     );
     Ok(())
 }
-fn validate(i: &OwnerExitIntent) -> Result<()> {
+fn validate(i: &OwnerExitIntent, controlled: bool) -> Result<()> {
     for value in [&i.intent_id, &i.run_id] {
         ensure!(
             !value.is_empty()
@@ -397,7 +397,7 @@ fn validate(i: &OwnerExitIntent) -> Result<()> {
             && !i.route.is_empty()
             && i.activated_at < i.expires_at
             && i.max_priority_fee_lamports <= crate::tiny_experiment::TINY_PRIORITY_FEE
-            && i.min_reserve_lamports > 0
+            && (i.min_reserve_lamports > 0 || controlled)
             && i.max_slippage_bps <= 10_000,
         "owner_exit_intent_identity_or_limits"
     );

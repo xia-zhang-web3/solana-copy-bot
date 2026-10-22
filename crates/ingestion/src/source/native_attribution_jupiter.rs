@@ -248,7 +248,17 @@ fn prove(v: &View, signer: &str, index: usize, parent: &Instruction) -> Option<T
     roles[8] = target_vault;
     roles[11] = a[0];
     roles[12] = a[0];
-    let (setup, target_setup) = ata::prove_jupiter(v, index, &roles, sol)?;
+    let seeded = v.top.as_ref()?.iter().any(|i| {
+        i.program.as_deref() == Some(SYSTEM)
+            && i.data
+                .as_ref()
+                .is_some_and(|d| d.get(..4) == Some(&3u32.to_le_bytes()))
+    });
+    let (setup, target_setup) = if seeded {
+        super::lifecycle::prove_jupiter(v, index, &roles, sol)?
+    } else {
+        ata::prove_jupiter(v, index, &roles, sol)?
+    };
     for (n, group) in groups {
         if *n == setup || *n == index || Some(*n) == target_setup {
             continue;

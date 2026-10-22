@@ -55,8 +55,17 @@ pub(crate) async fn record_execution_tiny_submit_confirm_path<A: ExecutionSubmit
     confirmation_timeout_ms: u64,
 ) -> Result<ExecutionTinySubmitConfirmPathOutcome> {
     record_execution_tiny_submit_confirm_path_guarded(
-        store, adapter, request, envelope, gate, transport, confirmation_http,
-        confirmation_rpc_url, now, confirmation_timeout_ms, None,
+        store,
+        adapter,
+        request,
+        envelope,
+        gate,
+        transport,
+        confirmation_http,
+        confirmation_rpc_url,
+        now,
+        confirmation_timeout_ms,
+        None,
     )
     .await
 }
@@ -78,7 +87,7 @@ pub(crate) async fn record_execution_tiny_submit_confirm_path_guarded<A: Executi
         crate::execution_canary_submit_contract::record_execution_tiny_submit_plan_guarded(
             store, adapter, request, envelope, gate, transport, now, native,
         )
-            .await?;
+        .await?;
     let mut outcome = outcome_from_submit(&submit);
     if submit.submitted == 0 {
         return Ok(outcome);
@@ -141,11 +150,18 @@ pub(crate) async fn reconcile_execution_tiny_submit_confirmation(
     confirmation_timeout_ms: u64,
 ) -> Result<ExecutionTinySubmitConfirmPathOutcome> {
     reconcile_execution_tiny_submit_confirmation_inner(
-        store, config, order_id, confirmation_http, confirmation_rpc_url,
-        now, confirmation_timeout_ms, #[cfg(test)] None,
-    ).await
+        store,
+        config,
+        order_id,
+        confirmation_http,
+        confirmation_rpc_url,
+        now,
+        confirmation_timeout_ms,
+        #[cfg(test)]
+        None,
+    )
+    .await
 }
-
 
 pub(crate) async fn reconcile_execution_tiny_submit_confirmation_inner(
     store: &SqliteStore,
@@ -203,13 +219,27 @@ pub(crate) async fn reconcile_execution_tiny_submit_confirmation_inner(
     #[cfg(test)]
     let confirmation = if let Some(mock) = mock {
         super::confirmation_boundary::record_execution_rpc_confirmation_boundary_mock(
-            store, confirmation_http, confirmation_rpc_url, order_id,
-            &config.canary_wallet_pubkey, now, confirmation_timeout_ms, mock,
-        ).await?
+            store,
+            confirmation_http,
+            confirmation_rpc_url,
+            order_id,
+            &config.canary_wallet_pubkey,
+            now,
+            confirmation_timeout_ms,
+            mock,
+        )
+        .await?
     } else {
-        record_execution_rpc_confirmation_boundary(store, confirmation_http,
-            confirmation_rpc_url, order_id, &config.canary_wallet_pubkey,
-            now, confirmation_timeout_ms).await?
+        record_execution_rpc_confirmation_boundary(
+            store,
+            confirmation_http,
+            confirmation_rpc_url,
+            order_id,
+            &config.canary_wallet_pubkey,
+            now,
+            confirmation_timeout_ms,
+        )
+        .await?
     };
     #[cfg(not(test))]
     let confirmation = record_execution_rpc_confirmation_boundary(
@@ -276,6 +306,8 @@ fn build_plan_metadata_from_storage(
     metadata: ExecutionCanaryBuildPlanMetadata,
 ) -> super::ExecutionBuildPlanMetadata {
     super::ExecutionBuildPlanMetadata {
+        controlled_exit_wire: None,
+        transaction_owned_wsol: None,
         rpc_owned_sell: None,
         rpc_owned_live: None,
         owned_sell_amount: None,

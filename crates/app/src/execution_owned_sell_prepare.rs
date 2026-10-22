@@ -54,7 +54,9 @@ pub(crate) async fn run(
         q.response_sha256.as_deref() == Some(&rpc::digest(&body)),
         "owned_sell_quote_body_binding"
     );
-    let s = store.owned_sell_snapshot(b, l).context("owned_sell_initial_snapshot")?;
+    let s = store
+        .owned_sell_snapshot(b, l)
+        .context("owned_sell_initial_snapshot")?;
     ensure!(
         store.matches_persisted_current_strict_quote(&q, Utc::now())?,
         "owned_sell_quote_stale"
@@ -125,16 +127,18 @@ pub(crate) async fn run(
         .context("owned_sell_rpc_collect_deadline")?
         .context("owned_sell_rpc_collect")?;
     check()?;
-    let h = store.reserve_owned_sell_handoff(
-        &s,
-        &q,
-        l,
-        &rpc::identity(c)?,
-        &authority.binding(c, &s)?,
-        e,
-        &c.canary_wallet_pubkey,
-        Utc::now,
-    ).context("owned_sell_reserve")?;
+    let h = store
+        .reserve_owned_sell_handoff(
+            &s,
+            &q,
+            l,
+            &rpc::identity(c)?,
+            &authority.binding(c, &s)?,
+            e,
+            &c.canary_wallet_pubkey,
+            Utc::now,
+        )
+        .context("owned_sell_reserve")?;
     // Reserve has already checked the full graph atomically and read it back.
     // Parent-only commits after that point must not strand the durable hold.
     let experiment = if copybot_config::owned_sell_dispatch(c) {
@@ -149,12 +153,13 @@ pub(crate) async fn run(
         .min(22_000)
         .min(copybot_storage_core::TINY_PRIORITY_FEE);
     ensure!(cap > 0, "owned_sell_priority_cap_required");
-    let request=ExecutionSubmitRequest{
+    let mut request=ExecutionSubmitRequest{
         order_id:h.order_id.clone(),signal_id:h.intent_id.clone(),client_order_id:h.owner.clone(),attempt:1,
         route:c.canary_route.clone(),wallet_id:b.source_wallet.clone(),token:b.mint.clone(),side:"sell".into(),
         buy_size_sol:0.0,slippage_tolerance_bps:crate::execution_quote_canary_helpers::quote_canary_slippage_limit_bps(c,"sell"),wallet_pubkey:c.canary_wallet_pubkey.clone(),entry_route_plan_json:None,
         metadata:ExecutionBuildPlanMetadata{quote_event_id:Some(h.intent_id.clone()),quote_source:Some(b.provider.clone()),quote_request_ts:q.http_started,http_request_started_ts:q.http_started,quote_response_available_ts:q.quote_response_available_ts,quote_status:Some("ok".into()),quote_in_amount_raw:q.response_in_raw.clone(),quote_out_amount_raw:q.response_out_raw.clone(),quote_response_json:Some(body),route_plan_json:Some(value["routePlan"].to_string()),priority_fee_status:Some("ok".into()),priority_fee_source:Some("configured_cap".into()),priority_fee_lamports:Some(cap),priority_fee_json:Some(json!({"version":1,"source":"configured_cap","unit":"total_priority_fee_lamports","value":cap}).to_string()),..Default::default()},
     };
+    crate::execution_wsol_lifecycle::authorize_owned(c, &s, &mut request)?;
     let plan =
         JupiterMetisDryRunExecutionAdapter::new(c.clone()).build_transaction_plan(&request)?;
     ensure!(
@@ -236,21 +241,21 @@ pub(crate) async fn run(
         c.pretrade_min_sol_reserve,
         &c.execution_signer_pubkey,
     )?;
-    store.complete_owned_sell_handoff(
-        &h,
-        l,
-        &prepared.serialized_transaction_base64,
-        &message.binding.message_sha256,
-        total,
-        priority.total,
-        Utc::now,
-    ).context("owned_sell_complete")?;
+    store
+        .complete_owned_sell_handoff(
+            &h,
+            l,
+            &prepared.serialized_transaction_base64,
+            &message.binding.message_sha256,
+            total,
+            priority.total,
+            Utc::now,
+        )
+        .context("owned_sell_complete")?;
     if copybot_config::owned_sell_dispatch(c) {
         let after_complete = store.sqlite_data_version()?;
-        live.1.store(
-            after_complete,
-            std::sync::atomic::Ordering::SeqCst,
-        );
+        live.1
+            .store(after_complete, std::sync::atomic::Ordering::SeqCst);
         submit::run(
             store,
             c,
@@ -267,7 +272,8 @@ pub(crate) async fn run(
             &authority,
             live,
         )
-        .await.context("owned_sell_submit")?;
+        .await
+        .context("owned_sell_submit")?;
     }
     Ok(())
 }

@@ -55,7 +55,12 @@ pub(crate) async fn prepare(
     // Only provider errors above may take the existing soft fallback. Structural,
     // binding, fee, floor and simulation refusals below are terminal.
     let bundle = binding.bind(&response.value)?;
-    let mut transaction = assemble(config, plan, &bundle, reserve)?;
+    let rent = if config.controlled_receipt_lot.is_some() {
+        Some(crate::execution_wsol_lifecycle::rent(http, config, &mut || Ok(())).await?)
+    } else {
+        None
+    };
+    let mut transaction = assemble_with_rent(config, plan, &bundle, reserve, rent)?;
     let simulation =
         crate::execution_transaction_rpc_simulation::verify_serialized_transaction_rpc_simulation(
             http,
@@ -72,6 +77,13 @@ pub(crate) async fn prepare(
         ),
         "instruction_bundle_simulation_required"
     );
+    crate::execution_wsol_lifecycle::collect_funding(
+        http,
+        config,
+        plan,
+        &transaction.serialized_transaction_base64,
+    )
+    .await?;
     transaction.summary = simulation.with_summary(&transaction.summary);
     Ok(GenericBuyOutcome::Built(transaction))
 }
@@ -81,6 +93,15 @@ pub(crate) fn assemble(
     plan: &ExecutionTransactionPlan,
     bundle: &BoundInstructionBundle,
     reserve: u64,
+) -> Result<SwapTransactionDryRunResult> {
+    assemble_with_rent(config, plan, bundle, reserve, None)
+}
+pub(crate) fn assemble_with_rent(
+    config: &ExecutionConfig,
+    plan: &ExecutionTransactionPlan,
+    bundle: &BoundInstructionBundle,
+    reserve: u64,
+    rent: Option<u64>,
 ) -> Result<SwapTransactionDryRunResult> {
     ensure!(
         crate::execution_native_floor_policy::required_for_plan(config, plan)? == Some(reserve),
@@ -98,13 +119,18 @@ pub(crate) fn assemble(
         && plan.side == "buy"
         && crate::execution_priority_fee::metadata_fee(&binding.request().metadata)?
             == crate::execution_priority_fee::PriorityFee::TotalPriorityFeeLamports(0)
-        && !executable.iter().any(|ix| ix.program_id == budget && ix.data.first() == Some(&3))
+        && !executable
+            .iter()
+            .any(|ix| ix.program_id == budget && ix.data.first() == Some(&3))
     {
-        executable.insert(0, crate::execution_solana_tx::SolanaInstruction {
-            program_id: budget,
-            accounts: Vec::new(),
-            data: [vec![3], 0_u64.to_le_bytes().to_vec()].concat(),
-        });
+        executable.insert(
+            0,
+            crate::execution_solana_tx::SolanaInstruction {
+                program_id: budget,
+                accounts: Vec::new(),
+                data: [vec![3], 0_u64.to_le_bytes().to_vec()].concat(),
+            },
+        );
     }
     let prepared = crate::execution_native_floor::prepare_final_native_floor(
         pubkey(&plan.wallet_pubkey)?,
@@ -112,18 +138,25 @@ pub(crate) fn assemble(
         &executable,
         reserve,
     )?;
-    let payload = prepared.payload();
+    let normalized = if config.controlled_receipt_lot.is_some() {
+        crate::execution_wsol_lifecycle::normalize(
+            config,
+            plan,
+            prepared.payload(),
+            rent.ok_or_else(|| anyhow::anyhow!("owned_wsol_rent_required"))?,
+        )?
+    } else {
+        prepared.payload().into()
+    };
+    let payload = normalized.as_str();
     crate::execution_priority_fee_proof::prove(
         binding.request(),
         payload,
         config.pretrade_max_priority_fee_lamports,
     )?;
-    crate::execution_native_floor_policy::verify_signing_payload(
-        config,
-        binding.request(),
-        plan,
-        payload,
-    )?;
+    let mut request = binding.request().clone();
+    request.metadata.protected_capital = plan.metadata.protected_capital.clone();
+    crate::execution_native_floor_policy::verify_signing_payload(config, &request, plan, payload)?;
     Ok(SwapTransactionDryRunResult {
         summary: format!(
             "metis_instruction_bundle_legacy instructions={} final_native_floor=true",

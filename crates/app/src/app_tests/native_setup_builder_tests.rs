@@ -130,6 +130,10 @@ async fn native_setup_actual_direct_buy_sell_extension_and_initial_account_matri
                             order.push("unresolved");
                         }
                         FundingOperation::SystemTransfer { .. } => order.push("transfer"),
+                        FundingOperation::CreateAccountWithSeed { .. }
+                        | FundingOperation::InitializeAccount3 { .. } => {
+                            panic!("not in unchanged PumpSwap fixture")
+                        }
                         FundingOperation::ComputeBudget => order.push("cu"),
                     }
                 }

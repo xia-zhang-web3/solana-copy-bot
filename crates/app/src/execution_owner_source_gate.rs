@@ -30,8 +30,10 @@ pub(crate) fn verify_exit_wire(
         ensure!(
             route.data.get(12) == Some(&105)
                 && route.accounts.len() == 18
-                && route.accounts[4]
-                    == crate::execution_solana_tx::SolanaAccountMeta::readonly(jup),
+                && (route.accounts[4]
+                    == crate::execution_solana_tx::SolanaAccountMeta::readonly(jup)
+                    || (c.controlled_receipt_lot.is_some()
+                        && route.accounts[4] == route.accounts[3])),
             "source_copy_sell_profile_unsupported"
         );
     }
@@ -47,7 +49,7 @@ pub(crate) fn ready(c: &ExecutionConfig, s: &SqliteStore, now: DateTime<Utc>) ->
     }
     // Even removal of the optional gate changes the immutable parent authority.
     // activate is deliberately absent from that identity, allowing STOP recovery.
-    let parent = crate::execution_owner_buy_authority::from_config(p)?;
+    let parent = crate::execution_owner_buy_authority::parent_identity(c)?;
     ensure!(
         s.load_owner_technical_buy_intent(&p.intent_id)?.as_ref() == Some(&parent),
         "source_copy_gate_parent_changed"

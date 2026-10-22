@@ -103,6 +103,9 @@ pub(crate) fn stage_on_connection(
             OrderedSellReason::MissingPreparation,
         ));
     };
+    if !crate::controlled_receipt_lot::event_allowed(c, &p.first.sell.admission.facts, false)? {
+        return Ok(OrderedSellStage::Blocked(OrderedSellReason::ControlledReceiptEventMismatch));
+    }
     let id = canonical(signature);
     let old = rows::load(c, &id)?;
     if old.as_ref().is_some_and(|i| i.first != p.first) {

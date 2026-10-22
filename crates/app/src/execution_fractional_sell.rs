@@ -3,6 +3,8 @@
 use super::endpoint;
 #[path = "execution_fractional_acquire.rs"]
 mod acquire;
+#[path="execution_controlled_receipt_collect.rs"]
+mod controlled;
 #[path = "execution_fractional_readiness.rs"]
 pub(crate) mod readiness;
 #[path = "execution_fractional_transport.rs"]
@@ -23,7 +25,7 @@ use std::future::Future;
 pub(crate) fn enabled(c: &ExecutionConfig) -> bool {
     c.owned_sell_preparation
         .as_ref()
-        .is_some_and(|p| p.fractional_inventory.as_deref() == Some(CONTRACT))
+        .is_some_and(|p| matches!(p.fractional_inventory.as_deref(),Some(CONTRACT | copybot_config::CONTROLLED_RECEIPT_LOT_V1)))
 }
 /// Shared actual native entry for production and in-process mocked transport tests.
 /// A claim is pinned and consumed before first read; errors cannot silently refresh it.
@@ -61,6 +63,9 @@ pub(crate) async fn bind_transport_with_clock(
         enabled(c) && copybot_config::owned_sell_flags(c),
         "fraction_mode_required"
     );
+    if c.controlled_receipt_lot.is_some() {
+        return controlled::bind(store,c,claim,limits,rpc,&mut clock).await;
+    }
     let producer_identity = super::identity(c)?;
     let baseline = crate::execution_protected_token_baseline::configured(c)?;
     if let Some(d) = &claim.binding.fractional {

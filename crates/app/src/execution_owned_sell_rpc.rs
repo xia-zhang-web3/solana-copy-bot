@@ -94,6 +94,10 @@ pub(crate) fn identity(c: &ExecutionConfig) -> Result<String> {
         ))?),
         None => base,
     };
+    let base = match &c.controlled_receipt_lot {
+        Some(scope) => digest(serde_json::to_vec(&(&base, "controlled_receipt_lot_custody_v1", scope))?),
+        None => base,
+    };
     let base = match &p.protected_bot_usdc_baseline {
         Some(baseline) => digest(serde_json::to_vec(&(
             &base, "protected_bot_usdc_baseline_v1", baseline,

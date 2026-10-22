@@ -22,6 +22,7 @@ pub struct OrderedSourceSellIntent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OrderedSellReason {
     UnsupportedPolicy,
+    ControlledReceiptEventMismatch,
     MissingPreparation,
     MissingIntent,
     PreparationChanged,

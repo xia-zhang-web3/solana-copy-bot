@@ -26,12 +26,16 @@ pub(crate) struct OwnerBuyWireProof {
     message_sha256: String,
 }
 impl OwnerBuyWireProof {
-    pub(crate) fn decoded_amount_lamports(&self) -> u64 { self.amount }
+    pub(crate) fn decoded_amount_lamports(&self) -> u64 {
+        self.amount
+    }
     pub(crate) fn verify_same_payload(&self, payload: &str) -> Result<()> {
         ensure!(payload.len() <= 1644, "owner_buy_wire_size");
         let decoded = decode_message(payload, |_| Ok(()))?;
-        ensure!(decoded.binding.message_sha256 == self.message_sha256,
-            "owner_buy_wire_changed_after_signing");
+        ensure!(
+            decoded.binding.message_sha256 == self.message_sha256,
+            "owner_buy_wire_changed_after_signing"
+        );
         Ok(())
     }
 }
@@ -40,85 +44,201 @@ pub(crate) fn required(request: &ExecutionSubmitRequest) -> bool {
 }
 
 pub(crate) fn verify(request: &ExecutionSubmitRequest, payload: &str) -> Result<OwnerBuyWireProof> {
+    let view = crate::execution_wsol_lifecycle::canonical_view(request, payload)?;
+    let mut proof = verify_canonical(request, &view)?;
+    proof.message_sha256 = decode_message(payload, |_| Ok(()))?.binding.message_sha256;
+    Ok(proof)
+}
+pub(crate) fn verify_canonical(
+    request: &ExecutionSubmitRequest,
+    payload: &str,
+) -> Result<OwnerBuyWireProof> {
     ensure!(payload.len() <= 1644, "owner_buy_wire_size");
-    ensure!(request.signal_id.starts_with("owner-buy:") && request.side == "buy"
-        && request.wallet_pubkey == request.wallet_id && request.token == USDC
-        && request.buy_size_sol == 0.01 && request.slippage_tolerance_bps <= 50,
-        "owner_buy_wire_request");
+    ensure!(
+        request.signal_id.starts_with("owner-buy:")
+            && request.side == "buy"
+            && request.wallet_pubkey == request.wallet_id
+            && request.token == USDC
+            && request.buy_size_sol == 0.01
+            && request.slippage_tolerance_bps <= 50,
+        "owner_buy_wire_request"
+    );
     verify_bound(request, payload, USDC, AMOUNT)
 }
 
 /// Technical copies must use the same closed Raydium receipt profile as their exit proof.
 /// This is a byte/ABI gate; a provider quote label alone does not select the route.
-pub(crate) fn verify_cohort(request: &ExecutionSubmitRequest, payload: &str) -> Result<OwnerBuyWireProof> {
-    ensure!(request.signal_id.starts_with("native-buy-v1:") && request.side == "buy"
-        && request.slippage_tolerance_bps <= 50, "cohort_buy_wire_request");
-    let amount = request.metadata.quote_in_amount_raw.as_deref()
-        .context("cohort_buy_wire_amount")?.parse::<u64>()?;
-    ensure!((1..=copybot_storage_core::TINY_BUY_LAMPORTS).contains(&amount),
-        "cohort_buy_wire_amount");
+pub(crate) fn verify_cohort(
+    request: &ExecutionSubmitRequest,
+    payload: &str,
+) -> Result<OwnerBuyWireProof> {
+    let view = crate::execution_wsol_lifecycle::canonical_view(request, payload)?;
+    let mut proof = verify_cohort_canonical(request, &view)?;
+    proof.message_sha256 = decode_message(payload, |_| Ok(()))?.binding.message_sha256;
+    Ok(proof)
+}
+pub(crate) fn verify_cohort_canonical(
+    request: &ExecutionSubmitRequest,
+    payload: &str,
+) -> Result<OwnerBuyWireProof> {
+    ensure!(
+        request.signal_id.starts_with("native-buy-v1:")
+            && request.side == "buy"
+            && request.slippage_tolerance_bps <= 50,
+        "cohort_buy_wire_request"
+    );
+    let amount = request
+        .metadata
+        .quote_in_amount_raw
+        .as_deref()
+        .context("cohort_buy_wire_amount")?
+        .parse::<u64>()?;
+    ensure!(
+        (1..=copybot_storage_core::TINY_BUY_LAMPORTS).contains(&amount),
+        "cohort_buy_wire_amount"
+    );
     verify_bound(request, payload, &request.token, amount)
 }
 
-fn verify_bound(request: &ExecutionSubmitRequest, payload: &str, token: &str, amount: u64) -> Result<OwnerBuyWireProof> {
+fn verify_bound(
+    request: &ExecutionSubmitRequest,
+    payload: &str,
+    token: &str,
+    amount: u64,
+) -> Result<OwnerBuyWireProof> {
     ensure!(payload.len() <= 1644, "owner_buy_wire_size");
     let wallet = parse_pubkey(&request.wallet_pubkey, "owner_buy_wire_wallet")?;
     let mint = parse_pubkey(token, "owner_buy_wire_mint")?;
     let source = associated_token_address(&wallet, &wsol_mint(), &token_program_id());
     let destination = associated_token_address(&wallet, &mint, &token_program_id());
-    let quote: Value = serde_json::from_str(request.metadata.quote_response_json.as_deref()
-        .context("owner_buy_wire_quote")?)?;
-    let output = quote["outAmount"].as_str().context("owner_buy_wire_quote_output")?
+    let quote: Value = serde_json::from_str(
+        request
+            .metadata
+            .quote_response_json
+            .as_deref()
+            .context("owner_buy_wire_quote")?,
+    )?;
+    let output = quote["outAmount"]
+        .as_str()
+        .context("owner_buy_wire_quote_output")?
         .parse::<u64>()?;
-    ensure!(output > 0 && quote["inputMint"] == crate::execution_quote_canary_helpers::SOL_MINT
-        && quote["outputMint"] == token && quote["inAmount"] == amount.to_string()
-        && request.metadata.quote_in_amount_raw.as_deref() == Some(amount.to_string().as_str())
-        && request.metadata.quote_out_amount_raw.as_deref() == Some(output.to_string().as_str())
-        && quote["swapMode"] == "ExactIn"
-        && quote["slippageBps"].as_u64() == Some(request.slippage_tolerance_bps)
-        && quote.get("instructionVersion").is_none_or(|v| v == "V1")
-        && quote.get("platformFee").is_none_or(|v| v.is_null() || v["feeBps"] == 0),
-        "owner_buy_wire_quote_binding");
-    let route = quote["routePlan"].as_array().context("owner_buy_wire_quote_route")?;
-    ensure!(route.len() == 1 && (route[0]["percent"] == 100 || route[0]["bps"] == 10_000),
-        "owner_buy_wire_quote_route");
+    ensure!(
+        output > 0
+            && quote["inputMint"] == crate::execution_quote_canary_helpers::SOL_MINT
+            && quote["outputMint"] == token
+            && quote["inAmount"] == amount.to_string()
+            && request.metadata.quote_in_amount_raw.as_deref() == Some(amount.to_string().as_str())
+            && request.metadata.quote_out_amount_raw.as_deref()
+                == Some(output.to_string().as_str())
+            && quote["swapMode"] == "ExactIn"
+            && quote["slippageBps"].as_u64() == Some(request.slippage_tolerance_bps)
+            && quote.get("instructionVersion").is_none_or(|v| v == "V1")
+            && quote
+                .get("platformFee")
+                .is_none_or(|v| v.is_null() || v["feeBps"] == 0),
+        "owner_buy_wire_quote_binding"
+    );
+    let route = quote["routePlan"]
+        .as_array()
+        .context("owner_buy_wire_quote_route")?;
+    ensure!(
+        route.len() == 1 && (route[0]["percent"] == 100 || route[0]["bps"] == 10_000),
+        "owner_buy_wire_quote_route"
+    );
     let swap = &route[0]["swapInfo"];
-    ensure!(swap["inputMint"] == quote["inputMint"] && swap["outputMint"] == quote["outputMint"]
-        && swap["inAmount"] == quote["inAmount"] && swap["outAmount"] == quote["outAmount"],
-        "owner_buy_wire_quote_step");
+    ensure!(
+        swap["inputMint"] == quote["inputMint"]
+            && swap["outputMint"] == quote["outputMint"]
+            && swap["inAmount"] == quote["inAmount"]
+            && swap["outAmount"] == quote["outAmount"],
+        "owner_buy_wire_quote_step"
+    );
     ensure!(swap["label"] == "Raydium", "owner_buy_wire_unsupported_dex");
-    let amm = parse_pubkey(swap["ammKey"].as_str().context("owner_buy_wire_quote_amm")?,
-        "owner_buy_wire_amm")?;
+    let amm = parse_pubkey(
+        swap["ammKey"]
+            .as_str()
+            .context("owner_buy_wire_quote_amm")?,
+        "owner_buy_wire_amm",
+    )?;
     let jupiter = parse_pubkey(JUPITER, "owner_buy_wire_program")?;
     let (message, _) = crate::execution_priority_fee_wire::decode_priority_fee_message(payload)?;
-    ensure!(message.binding.message_bytes[0] & 0x80 == 0
-        && message.binding.signature_count == 1 && message.binding.required_signatures == 1
-        && message.binding.accounts.first() == Some(&SolanaAccountMeta::signer_writable(wallet)),
-        "owner_buy_wire_payer");
+    ensure!(
+        message.binding.message_bytes[0] & 0x80 == 0
+            && message.binding.signature_count == 1
+            && message.binding.required_signatures == 1
+            && message.binding.accounts.first()
+                == Some(&SolanaAccountMeta::signer_writable(wallet)),
+        "owner_buy_wire_payer"
+    );
     let mut route_index = None;
     for instruction in &message.instructions {
-        if instruction.program.pubkey != jupiter { continue; }
-        ensure!(route_index.replace(instruction.index).is_none(), "owner_buy_wire_multiple_routes");
-        verify_route(instruction, wallet, source, destination, mint, jupiter,
-            amm, amount, output, request.slippage_tolerance_bps)?;
+        if instruction.program.pubkey != jupiter {
+            continue;
+        }
+        ensure!(
+            route_index.replace(instruction.index).is_none(),
+            "owner_buy_wire_multiple_routes"
+        );
+        verify_route(
+            instruction,
+            wallet,
+            source,
+            destination,
+            mint,
+            jupiter,
+            amm,
+            amount,
+            output,
+            request.slippage_tolerance_bps,
+        )?;
     }
     let route_index = route_index.context("owner_buy_wire_route_missing")?;
-    setup::verify(&message.instructions, route_index, wallet, source, destination, mint, amount)?;
-    Ok(OwnerBuyWireProof { amount, message_sha256: message.binding.message_sha256 })
+    setup::verify(
+        &message.instructions,
+        route_index,
+        wallet,
+        source,
+        destination,
+        mint,
+        amount,
+        request
+            .metadata
+            .protected_capital
+            .as_deref()
+            .is_some_and(|p| p.receipt_scoped()),
+    )?;
+    Ok(OwnerBuyWireProof {
+        amount,
+        message_sha256: message.binding.message_sha256,
+    })
 }
 
 fn verify_route(
-    instruction: &DecodedInstruction, wallet: PubkeyBytes, source: PubkeyBytes,
-    destination: PubkeyBytes, mint: PubkeyBytes, jupiter: PubkeyBytes,
-    amm: PubkeyBytes, input: u64, output: u64, slippage: u64,
+    instruction: &DecodedInstruction,
+    wallet: PubkeyBytes,
+    source: PubkeyBytes,
+    destination: PubkeyBytes,
+    mint: PubkeyBytes,
+    jupiter: PubkeyBytes,
+    amm: PubkeyBytes,
+    input: u64,
+    output: u64,
+    slippage: u64,
 ) -> Result<()> {
-    ensure!(!instruction.program.is_writable && !instruction.program.is_signer,
-        "owner_buy_wire_program_role");
+    ensure!(
+        !instruction.program.is_writable && !instruction.program.is_signer,
+        "owner_buy_wire_program_role"
+    );
     // Both supported Swap variants are fieldless. Select the exact account ABI
     // from the Borsh enum byte, never from a quote label or an account-count guess.
-    let mut cursor = Cursor { bytes: &instruction.data, offset: 0 };
-    ensure!(cursor.take(8)? == ROUTE && cursor.take(4)? == 1_u32.to_le_bytes(),
-        "owner_buy_wire_route_layout");
+    let mut cursor = Cursor {
+        bytes: &instruction.data,
+        offset: 0,
+    };
+    ensure!(
+        cursor.take(8)? == ROUTE && cursor.take(4)? == 1_u32.to_le_bytes(),
+        "owner_buy_wire_route_layout"
+    );
     let tag = cursor.byte()?;
     let count = match tag {
         7 => 27,
@@ -126,50 +246,84 @@ fn verify_route(
         _ => bail!("owner_buy_wire_swap_variant"),
     };
     let a = &instruction.accounts;
-    ensure!(a.len() == count && a[0] == SolanaAccountMeta::readonly(token_program_id())
-        && a[1] == SolanaAccountMeta::signer_writable(wallet)
-        && a[2] == SolanaAccountMeta::writable(source)
-        && a[3] == SolanaAccountMeta::writable(destination)
-        && (a[4] == SolanaAccountMeta::readonly(jupiter)
-            || a[4] == SolanaAccountMeta::writable(destination))
-        && a[5] == SolanaAccountMeta::readonly(mint)
-        && a[6] == SolanaAccountMeta::readonly(jupiter)
-        && a[7] == SolanaAccountMeta::readonly(pda(&[b"__event_authority"], &jupiter))
-        && a[8] == SolanaAccountMeta::readonly(jupiter), "owner_buy_wire_route_accounts");
+    ensure!(
+        a.len() == count
+            && a[0] == SolanaAccountMeta::readonly(token_program_id())
+            && a[1] == SolanaAccountMeta::signer_writable(wallet)
+            && a[2] == SolanaAccountMeta::writable(source)
+            && a[3] == SolanaAccountMeta::writable(destination)
+            && (a[4] == SolanaAccountMeta::readonly(jupiter)
+                || a[4] == SolanaAccountMeta::writable(destination))
+            && a[5] == SolanaAccountMeta::readonly(mint)
+            && a[6] == SolanaAccountMeta::readonly(jupiter)
+            && a[7] == SolanaAccountMeta::readonly(pda(&[b"__event_authority"], &jupiter))
+            && a[8] == SolanaAccountMeta::readonly(jupiter),
+        "owner_buy_wire_route_accounts"
+    );
     // Classic Raydium has 18 remaining accounts; RaydiumV2 has program + 8 CPI accounts.
     // The AMM program owns pool semantics; bind its identity, quoted pool and user ends.
     let r = &a[9..];
-    let (source_index, destination_index, owner_index) = if tag == 7 { (15,16,17) } else { (6,7,8) };
-    ensure!(r[0] == SolanaAccountMeta::readonly(parse_pubkey(RAYDIUM, "owner_buy_wire_dex")?)
-        && r[1] == SolanaAccountMeta::readonly(token_program_id())
-        && r[2] == SolanaAccountMeta::writable(amm)
-        && r[source_index] == SolanaAccountMeta::writable(source)
-        && r[destination_index] == SolanaAccountMeta::writable(destination)
-        && r[owner_index] == SolanaAccountMeta::signer_writable(wallet),
-        "owner_buy_wire_dex_accounts");
+    let (source_index, destination_index, owner_index) =
+        if tag == 7 { (15, 16, 17) } else { (6, 7, 8) };
+    ensure!(
+        r[0] == SolanaAccountMeta::readonly(parse_pubkey(RAYDIUM, "owner_buy_wire_dex")?)
+            && r[1] == SolanaAccountMeta::readonly(token_program_id())
+            && r[2] == SolanaAccountMeta::writable(amm)
+            && r[source_index] == SolanaAccountMeta::writable(source)
+            && r[destination_index] == SolanaAccountMeta::writable(destination)
+            && r[owner_index] == SolanaAccountMeta::signer_writable(wallet),
+        "owner_buy_wire_dex_accounts"
+    );
     for (index, account) in r[3..source_index].iter().enumerate() {
-        let writable = if tag == 7 { ![3, 7, 14].contains(&(index + 3)) } else { index != 0 };
-        ensure!(!account.is_signer && account.is_writable == writable,
-            "owner_buy_wire_dex_account_role");
+        let writable = if tag == 7 {
+            ![3, 7, 14].contains(&(index + 3))
+        } else {
+            index != 0
+        };
+        ensure!(
+            !account.is_signer && account.is_writable == writable,
+            "owner_buy_wire_dex_account_role"
+        );
     }
     // Parse from the start, including the Vec length and every supported enum field.
     // No suffix extraction: an unknown enum, truncated field or trailing byte rejects.
-    ensure!(cursor.take(3)? == [100, 0, 1], "owner_buy_wire_route_topology");
+    ensure!(
+        cursor.take(3)? == [100, 0, 1],
+        "owner_buy_wire_route_topology"
+    );
     ensure!(cursor.u64()? == input, "owner_buy_wire_exact_input");
     ensure!(cursor.u64()? == output, "owner_buy_wire_exact_output");
-    ensure!(cursor.take(2)? == (slippage as u16).to_le_bytes() && cursor.byte()? == 0,
-        "owner_buy_wire_slippage_or_fee");
-    ensure!(cursor.offset == cursor.bytes.len(), "owner_buy_wire_trailing_bytes");
+    ensure!(
+        cursor.take(2)? == (slippage as u16).to_le_bytes() && cursor.byte()? == 0,
+        "owner_buy_wire_slippage_or_fee"
+    );
+    ensure!(
+        cursor.offset == cursor.bytes.len(),
+        "owner_buy_wire_trailing_bytes"
+    );
     Ok(())
 }
-struct Cursor<'a> { bytes: &'a [u8], offset: usize }
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
 impl<'a> Cursor<'a> {
     fn take(&mut self, size: usize) -> Result<&'a [u8]> {
-        let end = self.offset.checked_add(size).context("owner_buy_wire_length")?;
-        let value = self.bytes.get(self.offset..end).context("owner_buy_wire_truncated")?;
+        let end = self
+            .offset
+            .checked_add(size)
+            .context("owner_buy_wire_length")?;
+        let value = self
+            .bytes
+            .get(self.offset..end)
+            .context("owner_buy_wire_truncated")?;
         self.offset = end;
         Ok(value)
     }
-    fn byte(&mut self) -> Result<u8> { Ok(self.take(1)?[0]) }
-    fn u64(&mut self) -> Result<u64> { Ok(u64::from_le_bytes(self.take(8)?.try_into()?)) }
+    fn byte(&mut self) -> Result<u8> {
+        Ok(self.take(1)?[0])
+    }
+    fn u64(&mut self) -> Result<u64> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into()?))
+    }
 }

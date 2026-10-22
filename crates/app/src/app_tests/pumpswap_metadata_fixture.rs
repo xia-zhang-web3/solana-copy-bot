@@ -17,6 +17,8 @@ pub(super) fn generic_pump_fun_amm_request(
         wallet_pubkey: config.canary_wallet_pubkey.clone(),
         entry_route_plan_json: None,
         metadata: crate::execution_submit_adapter::ExecutionBuildPlanMetadata {
+            controlled_exit_wire: None,
+            transaction_owned_wsol: None,
             rpc_owned_sell: None,
             rpc_owned_live: None,
             owned_sell_amount: None,

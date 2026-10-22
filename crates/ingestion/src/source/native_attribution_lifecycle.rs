@@ -5,16 +5,43 @@ use super::{
 use sha2::{Digest, Sha256};
 
 pub(super) fn prove(v: &View, parent: usize, a: &[usize], buy: bool, sol: u64) -> Option<()> {
+    profile(v, parent, a, buy, sol, false).map(|_| ())
+}
+pub(super) fn prove_jupiter(
+    v: &View,
+    parent: usize,
+    a: &[usize],
+    sol: u64,
+) -> Option<(usize, Option<usize>)> {
+    profile(v, parent, a, true, sol, true)
+}
+fn profile(
+    v: &View,
+    parent: usize,
+    a: &[usize],
+    buy: bool,
+    sol: u64,
+    target_ata: bool,
+) -> Option<(usize, Option<usize>)> {
     let top = v.top.as_ref()?;
     let temp = a[5];
     let trader = a[1];
     let relevant = [a[5], a[6], a[7], a[8]];
     let mut lifecycle = Vec::new();
+    let mut target_creation = None;
+    let mut target_setup = None;
     for (index, ix) in top.iter().enumerate() {
         if index == parent {
             continue;
         }
         let keys = ix.accounts.as_ref()?;
+        if target_ata && keys.contains(&a[6]) && ix.program.as_deref() == Some(super::ATA) {
+            if target_setup.replace(index).is_some() || index >= parent {
+                return None;
+            }
+            target_creation = super::ata::target_proof(v, index, ix, trader, a[6], a[4])?;
+            continue;
+        }
         if keys.iter().any(|i| relevant.contains(i)) {
             // No other use of either trading leg outside the selected parent.
             if keys.iter().any(|i| relevant.contains(i) && *i != temp) {
@@ -82,7 +109,23 @@ pub(super) fn prove(v: &View, parent: usize, a: &[usize], buy: bool, sol: u64) -
             return None;
         }
     }
-    Some(())
+    if target_ata
+        && (v.pre.as_ref()?.get(temp) != Some(&0)
+            || v.post.as_ref()?.get(temp) != Some(&0)
+            || v.pre_tokens
+                .as_ref()?
+                .iter()
+                .chain(v.post_tokens.as_ref()?)
+                .any(|r| r.index == temp)
+            || top.iter().any(|i| i.depth.is_some_and(|d| d != 1))
+            || v.inner
+                .as_ref()?
+                .iter()
+                .any(|(i, g)| *i == create_index && !g.is_empty()))
+    {
+        return None;
+    }
+    Some((create_index, target_creation))
 }
 
 fn operation(ix: &Instruction) -> Option<Op> {

@@ -29,6 +29,7 @@ pub fn validate_owned_sell_preparation(
     e: &crate::ExecutionConfig,
     i: &crate::IngestionConfig,
 ) -> Result<()> {
+    crate::validate_controlled_receipt_lot(e)?;
     let Some(p) = &e.owned_sell_preparation else {
         return Ok(());
     };
@@ -45,7 +46,7 @@ pub fn validate_owned_sell_preparation(
     ensure!(
         p.fractional_inventory
             .as_deref()
-            .is_none_or(|v| v == "whole_wallet_parent_program_fraction_v1"),
+            .is_none_or(|v| v == "whole_wallet_parent_program_fraction_v1" || e.controlled_receipt_lot.is_some() && v == crate::CONTROLLED_RECEIPT_LOT_V1),
         "owned_sell_fractional_contract"
     );
     ensure!(

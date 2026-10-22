@@ -133,6 +133,7 @@ impl NativeAccountObservations {
                             | "account"
                             | "newAccount"
                             | "base"
+                            | "seed"
                             | "owner"
                             | "authority"
                             | "newAuthority"

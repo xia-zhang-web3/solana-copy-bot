@@ -31,6 +31,17 @@ pub(crate) fn verify(
     amount: u64,
     require_floor: bool,
 ) -> Result<UsdcSellWireProof> {
+    let view = crate::execution_wsol_lifecycle::canonical_view(request, payload)?;
+    let mut proof = verify_canonical(request, &view, amount, require_floor)?;
+    proof.message_sha256 = decode_message(payload, |_| Ok(()))?.binding.message_sha256;
+    Ok(proof)
+}
+pub(crate) fn verify_canonical(
+    request: &ExecutionSubmitRequest,
+    payload: &str,
+    amount: u64,
+    require_floor: bool,
+) -> Result<UsdcSellWireProof> {
     ensure!(
         payload.len() <= 1644
             && request.side == "sell"
@@ -127,6 +138,11 @@ pub(crate) fn verify(
         source,
         destination,
         require_floor,
+        request
+            .metadata
+            .controlled_exit_wire
+            .as_deref()
+            .is_some_and(|p| p.matches(request)),
     )?;
     Ok(UsdcSellWireProof {
         message_sha256: message.binding.message_sha256,
@@ -218,6 +234,7 @@ fn verify_setup(
     source: PubkeyBytes,
     destination: PubkeyBytes,
     require_floor: bool,
+    receipt_scope: bool,
 ) -> Result<()> {
     let mut created = false;
     let mut closed = false;
@@ -269,7 +286,7 @@ fn verify_setup(
                     && i.index + 1 == instructions.len()
                     && i.data.len() == 12
                     && i.data[..4] == 2_u32.to_le_bytes()
-                    && u64::from_le_bytes(i.data[4..].try_into()?) > 0
+                    && (u64::from_le_bytes(i.data[4..].try_into()?) > 0 || receipt_scope)
                     && a == &[A::signer_writable(wallet), A::signer_writable(wallet)],
                 "owner_exit_wire_final_floor"
             );

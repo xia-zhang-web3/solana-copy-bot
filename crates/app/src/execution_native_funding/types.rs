@@ -28,6 +28,20 @@ pub(crate) enum FundingOperation {
         lamports: u64,
         relation: TransferRelation,
     },
+    CreateAccountWithSeed {
+        payer: PubkeyBytes,
+        account: PubkeyBytes,
+        base: PubkeyBytes,
+        seed: String,
+        lamports: u64,
+        space: u64,
+        owner: PubkeyBytes,
+    },
+    InitializeAccount3 {
+        account: PubkeyBytes,
+        mint: PubkeyBytes,
+        owner: PubkeyBytes,
+    },
     AssociatedTokenCreateIdempotent {
         payer: PubkeyBytes,
         associated_account: PubkeyBytes,

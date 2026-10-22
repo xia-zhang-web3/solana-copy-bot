@@ -5,34 +5,44 @@ use std::path::{Path, PathBuf};
 
 mod association_delivery;
 mod http_recovery;
-pub use http_recovery::HttpRecoveryConfig;
 pub use association_delivery::{
     validate_association_delivery, validate_delivery_source, AssociationDeliveryConfig,
     DeliveryBudget,
 };
+pub use http_recovery::HttpRecoveryConfig;
 mod discovery_v2_identity;
 mod env_parsing;
 mod loader;
 mod native_fresh_buy;
-mod technical_cohort;
-mod owner_technical_buy;
-mod owner_source_copy_gate;
-mod owner_exit;
 mod owned_sell_preparation;
+mod owner_exit;
+mod owner_source_copy_gate;
+mod owner_technical_buy;
 mod risk_validation;
 mod schema;
+mod technical_cohort;
 mod tiny_experiment;
+pub use native_fresh_buy::{
+    native_first_buy_activation, NativeFreshBuyConfig, PROCESSED_SLOT_FENCE_AVAILABILITY_V1,
+};
 pub use owned_sell_preparation::{
     owned_sell_dispatch, owned_sell_flags, validate_owned_sell_preparation,
     OwnedSellPreparationConfig, ProtectedBotUsdcBaselineConfig, PROTECTED_BOT_USDC_100_V1,
     RPC_FINALIZED_OWNED_SELL_V1,
 };
-pub use native_fresh_buy::{native_first_buy_activation, NativeFreshBuyConfig, PROCESSED_SLOT_FENCE_AVAILABILITY_V1};
-pub use technical_cohort::{validate_technical_cohort, TechnicalCohortConfig,
-    TECHNICAL_COHORT_V1, CLASSIC_SPL_MINT_V1};
-pub use owner_technical_buy::{validate_owner_technical_buy, owner_execution_roundtrip, OwnerTechnicalBuyConfig, OWNER_TECHNICAL_BUY_V1, OWNER_EXECUTION_ROUNDTRIP_V1};
-pub use owner_source_copy_gate::{validate_owner_source_copy_gate, OwnerSourceCopyGateConfig, CONFIRMED_NATIVE_BOT_BUY_V1};
-pub use owner_exit::{validate_owner_exit, OwnerExitConfig, OWNER_EXIT_V1, OWNER_ROUNDTRIP_EXIT_V1};
+pub use owner_exit::{
+    validate_owner_exit, OwnerExitConfig, OWNER_EXIT_V1, OWNER_ROUNDTRIP_EXIT_V1,
+};
+pub use owner_source_copy_gate::{
+    validate_owner_source_copy_gate, OwnerSourceCopyGateConfig, CONFIRMED_NATIVE_BOT_BUY_V1,
+};
+pub use owner_technical_buy::{
+    owner_execution_roundtrip, validate_owner_technical_buy, OwnerTechnicalBuyConfig,
+    OWNER_EXECUTION_ROUNDTRIP_V1, OWNER_TECHNICAL_BUY_V1,
+};
+pub use technical_cohort::{
+    validate_technical_cohort, TechnicalCohortConfig, CLASSIC_SPL_MINT_V1, TECHNICAL_COHORT_V1,
+};
 pub use tiny_experiment::{TinyExperimentConfig, TinyPolicyMode};
 
 pub use self::discovery_v2_identity::{
@@ -61,3 +71,9 @@ pub use self::schema::{
 
 #[cfg(test)]
 mod tests;
+
+mod controlled_receipt_lot;
+pub use controlled_receipt_lot::{
+    validate_controlled_receipt_lot, ControlledReceiptLotConfig, CONTROLLED_RECEIPT_LOT_V1,
+    TRANSACTION_OWNED_WSOL_V1,
+};

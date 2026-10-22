@@ -59,8 +59,8 @@ impl SqliteDiscoveryStore {
         &self,
         intent: &OwnerTechnicalBuyIntent,
     ) -> Result<OwnerTechnicalBuyIntentRecordOutcome> {
-        validate(intent)?;
         self.with_immediate_transaction_retry("register owner technical BUY intent", |conn| {
+            validate(intent, crate::controlled_receipt_lot::source_scoped(conn,&intent.run_id,&intent.wallet)?)?;
             if let Some(existing) = self.load_owner_technical_buy_intent(&intent.intent_id)? {
                 ensure!(existing == *intent, "owner_buy_intent_conflict");
                 return Ok(OwnerTechnicalBuyIntentRecordOutcome::Existing);
@@ -312,7 +312,7 @@ fn active(i: &OwnerTechnicalBuyIntent, now: DateTime<Utc>) -> Result<()> {
     );
     Ok(())
 }
-fn validate(i: &OwnerTechnicalBuyIntent) -> Result<()> {
+fn validate(i: &OwnerTechnicalBuyIntent, controlled: bool) -> Result<()> {
     for (name, value) in [("intent_id", &i.intent_id), ("run_id", &i.run_id)] {
         ensure!(
             !value.is_empty()
@@ -336,7 +336,7 @@ fn validate(i: &OwnerTechnicalBuyIntent) -> Result<()> {
         i.amount_lamports > 0
             && i.amount_lamports <= crate::tiny_experiment::TINY_BUY_LAMPORTS
             && i.max_priority_fee_lamports <= crate::tiny_experiment::TINY_PRIORITY_FEE
-            && i.min_reserve_lamports > 0
+            && (i.min_reserve_lamports > 0 || controlled)
             && i.max_slippage_bps <= 10_000
             && i.max_open_positions == 1
             && i.max_buy_count == 1,

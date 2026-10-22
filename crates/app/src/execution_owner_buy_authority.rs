@@ -6,9 +6,19 @@ use copybot_config::{ExecutionConfig, OwnerTechnicalBuyConfig};
 use copybot_storage_core::{OwnerTechnicalBuyIntent, SqliteStore};
 
 pub(crate) fn configured(config: &ExecutionConfig) -> Result<Option<OwnerTechnicalBuyIntent>> {
-    let Some(p) = config.owner_technical_buy.as_ref() else { return Ok(None); };
+    let Some(_) = config.owner_technical_buy.as_ref() else { return Ok(None); };
     copybot_config::validate_owner_technical_buy(config)?;
-    Ok(Some(from_config(p)?))
+    Ok(Some(parent_identity(config)?))
+}
+/// Read-only parent identity also applies to its derived EXIT configuration.
+/// Revalidating a new BUY activation here would reject that ordinary transition.
+pub(crate) fn parent_identity(config:&ExecutionConfig)->Result<OwnerTechnicalBuyIntent> {
+    let p=config.owner_technical_buy.as_ref().context("owner_buy_parent_missing")?;
+    let mut intent=from_config(p)?;
+    if let Some(scope)=crate::execution_controlled_receipt_lot::scope(config)? {
+        intent.authority_sha256=crate::execution_owned_sell_rpc::digest(serde_json::to_vec(&(intent.authority_sha256,scope))?);
+    }
+    Ok(intent)
 }
 
 pub(crate) fn from_config(p: &OwnerTechnicalBuyConfig) -> Result<OwnerTechnicalBuyIntent> {

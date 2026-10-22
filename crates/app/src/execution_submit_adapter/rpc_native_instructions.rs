@@ -51,9 +51,15 @@ fn instruction(v: &Value, outer: u32, inner: Option<u32>) -> Ix {
         (Some(SYSTEM), Some("createAccount")) => {
             &["source", "newAccount", "lamports", "space", "owner"]
         }
-        (Some(SYSTEM), Some("createAccountWithSeed")) => {
-            &["source", "newAccount", "base", "lamports", "space", "owner"]
-        }
+        (Some(SYSTEM), Some("createAccountWithSeed")) => &[
+            "source",
+            "newAccount",
+            "base",
+            "seed",
+            "lamports",
+            "space",
+            "owner",
+        ],
         (Some(SYSTEM), Some("transfer")) => &["source", "destination", "lamports"],
         (Some(SYSTEM), Some("transferWithSeed")) => &[
             "source",

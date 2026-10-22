@@ -125,11 +125,11 @@ pub(crate) async fn before_send_guarded(
             intent,
             gate.pretrade_max_priority_fee_lamports,
         )?;
-        crate::execution_native_floor_policy::verify_submit_payload(
+        crate::execution_native_floor_policy::verify_submit_payload_scoped(
             request,
             &intent.signed_transaction_base64,
             gate.pretrade_min_sol_reserve,
-            &gate.execution_wallet_pubkey,
+            &gate.execution_wallet_pubkey, gate.buy_safety_config.as_ref(),
         )
     });
     match result {
@@ -197,9 +197,9 @@ async fn owner_exit_before_send(
     let result = result.and_then(|_| {
         crate::execution_priority_fee_proof::validate_submit(store, request, envelope,
             intent, gate.pretrade_max_priority_fee_lamports)?;
-        crate::execution_native_floor_policy::verify_submit_payload(request,
+        crate::execution_native_floor_policy::verify_submit_payload_scoped(request,
             &intent.signed_transaction_base64, gate.pretrade_min_sol_reserve,
-            &gate.execution_wallet_pubkey)
+            &gate.execution_wallet_pubkey, gate.buy_safety_config.as_ref())
     });
     match result { Ok(()) => None,
         Err(error) => Some(safe_failure(store, request, tick_at, error)) }

@@ -95,7 +95,54 @@ pub(super) fn prepare(f: &Case, claim: &QuoteClaim) -> Result<(Prepared, Executi
         &c.canary_wallet_pubkey,
         Utc::now,
     )?;
-    let unsigned = payload(c, H)?;
+    let mut isolated_authority = None;
+    let unsigned = if c.controlled_receipt_lot.is_some() {
+        let mut r = ExecutionSubmitRequest {
+            order_id: h.order_id.clone(),
+            signal_id: h.intent_id.clone(),
+            client_order_id: h.owner.clone(),
+            attempt: 1,
+            route: c.canary_route.clone(),
+            wallet_id: b.source_wallet.clone(),
+            token: USDC.into(),
+            side: "sell".into(),
+            buy_size_sol: 0.0,
+            slippage_tolerance_bps: 50,
+            wallet_pubkey: c.canary_wallet_pubkey.clone(),
+            entry_route_plan_json: None,
+            metadata: ExecutionBuildPlanMetadata {
+                quote_event_id: Some(h.intent_id.clone()),
+                quote_source: Some(b.provider.clone()),
+                quote_request_ts: Some(now),
+                http_request_started_ts: Some(now),
+                quote_response_available_ts: Some(now),
+                quote_status: Some("ok".into()),
+                quote_in_amount_raw: Some(H.to_string()),
+                quote_out_amount_raw: Some(super::owner_exit_test_fixture::OUT.to_string()),
+                quote_response_json: Some(body.to_string()),
+                route_plan_json: Some(body["routePlan"].to_string()),
+                priority_fee_status: Some("ok".into()),
+                priority_fee_source: Some("configured_cap".into()),
+                priority_fee_lamports: Some(0),
+                priority_fee_json: Some(super::priority_fee_fixture::total_json(0)),
+                ..Default::default()
+            },
+        };
+        crate::execution_wsol_lifecycle::authorize_owned(c, &snapshot, &mut r)?;
+        let wallet =
+            crate::execution_pumpswap_accounts::parse_pubkey(&r.wallet_pubkey, "LOCALwsol")?;
+        let mut ix = super::owner_exit_test_fixture::instructions(wallet)?;
+        ix.iter_mut()
+            .find(|i| i.data.starts_with(&[229, 23, 203, 151, 122, 227, 173, 42]))
+            .unwrap()
+            .data[16..24]
+            .copy_from_slice(&H.to_le_bytes());
+        let wire = super::wsol_lifecycle_fixture::build(c, &r, &ix)?;
+        isolated_authority = r.metadata.transaction_owned_wsol;
+        wire
+    } else {
+        payload(c, H)?
+    };
     let (message, fee) =
         crate::execution_priority_fee_wire::decode_priority_fee_message(&unsigned)?;
     f.db.store.complete_owned_sell_handoff(
@@ -147,6 +194,8 @@ pub(super) fn prepare(f: &Case, claim: &QuoteClaim) -> Result<(Prepared, Executi
             priority_fee_status: Some("ok".into()),
             priority_fee_source: Some("configured_cap".into()),
             priority_fee_lamports: Some(0),
+            priority_fee_json: Some(super::priority_fee_fixture::total_json(0)),
+            transaction_owned_wsol: isolated_authority,
             rpc_owned_sell: Some(Box::new(p.clone())),
             rpc_owned_live: Some(crate::execution_owned_sell_prepare::submit::guard::Live(
                 std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),

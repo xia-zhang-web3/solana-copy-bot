@@ -12,6 +12,8 @@ use std::{sync::OnceLock, time::Duration};
 
 #[path = "execution_owner_buy_protected.rs"]
 mod owner;
+#[path = "execution_receipt_native_spend.rs"]
+mod receipt_spend;
 
 #[derive(Debug, Clone, PartialEq)]
 enum OriginBinding {
@@ -38,6 +40,11 @@ pub(crate) fn enabled(config: &ExecutionConfig) -> bool {
 impl ContextProof {
     fn validate_config(&self, config: &ExecutionConfig, now: DateTime<Utc>) -> Result<()> {
         ensure!(
+            self.receipt_scoped() == config.controlled_receipt_lot.is_some(),
+            "receipt_lot_native_scope_changed"
+        );
+        copybot_config::validate_controlled_receipt_lot(config)?;
+        ensure!(
             enabled(config) && config.canary_tiny_submit_enabled,
             "tiny_capital_mode_conflict"
         );
@@ -62,8 +69,15 @@ impl ContextProof {
         self.binding.verify(plan)?;
         self.floor(&plan.wallet_pubkey, config.pretrade_min_sol_reserve)
     }
+    pub(crate) fn receipt_scoped(&self) -> bool {
+        self.policy.original_reserve == 0 && self.policy.floor_lamports == 0
+    }
     pub(crate) fn floor(&self, wallet: &str, reserve_sol: f64) -> Result<u64> {
         ensure!(wallet == self.policy.wallet, "tiny_capital_identity");
+        if self.receipt_scoped() {
+            ensure!(reserve_sol == 0.0, "receipt_lot_reserve_changed");
+            return Ok(0);
+        }
         Ok(self
             .policy
             .floor_lamports
@@ -113,6 +127,21 @@ pub(crate) fn current(
     let proof = proof.context("tiny_capital_context_missing")?;
     let now = clock(tick)?;
     proof.validate_config(config, now)?;
+    if let Some(scope) = crate::execution_controlled_receipt_lot::scope(config)? {
+        ensure!(
+            store.controlled_receipt_lot_scope()?.as_ref()
+                == Some(&(
+                    request.wallet_pubkey.clone(),
+                    config
+                        .tiny_experiment
+                        .id
+                        .clone()
+                        .context("receipt_lot_run")?,
+                    scope
+                )),
+            "receipt_lot_native_scope_changed"
+        );
+    }
     proof.verify_request(request)?;
     if let OriginBinding::Owner(intent) = &proof.signal {
         crate::execution_owner_buy_authority::current(config, store, intent, now)?;
@@ -155,6 +184,7 @@ pub(crate) async fn prepare_request_guarded(
         );
         return Ok(());
     }
+    crate::execution_wsol_lifecycle::authorize_buy(config, request)?;
     if request.signal_id.starts_with("owner-buy:") {
         return owner::prepare(store, config, request, tick).await;
     }
@@ -227,17 +257,29 @@ pub(crate) async fn prepare_request_guarded(
             "tiny_capital_order_changed"
         );
         let (balance, slot, time) = observation?.bound(wallet)?;
-        let reserve = super::reserve_lamports(config.pretrade_min_sol_reserve)?;
+        crate::execution_controlled_receipt_lot::register(config, store)?;
+        let reserve = crate::execution_controlled_receipt_lot::reserve(config)?;
         if config.native_fresh_buy.is_some() {
             let native = native.context("native_buy_activation_guard_required")?;
             let binding = native.activation_binding(store, config, request, Utc::now())?;
             store.prepare_tiny_native_policy_for_native_buy(
-                id, &request.wallet_pubkey, balance, reserve, slot, time,
-                &binding, || clock(tick),
+                id,
+                &request.wallet_pubkey,
+                balance,
+                reserve,
+                slot,
+                time,
+                &binding,
+                || clock(tick),
             )?
         } else {
             store.prepare_tiny_native_policy(
-                id, &request.wallet_pubkey, balance, reserve, slot, time,
+                id,
+                &request.wallet_pubkey,
+                balance,
+                reserve,
+                slot,
+                time,
                 || clock(tick),
             )?
         }
@@ -255,15 +297,16 @@ pub(crate) async fn prepare_request_guarded(
     Ok(())
 }
 
-fn signal_binding(
-    store: &SqliteStore,
-    request: &ExecutionSubmitRequest,
-) -> Result<OriginBinding> {
-    if let Some(intent) = crate::execution_owner_buy_authority::request(store, request, &[
-        copybot_storage_core::EXECUTION_STATUS_CANARY_CANDIDATE,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_BUILT,
-        copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED,
-    ])? {
+fn signal_binding(store: &SqliteStore, request: &ExecutionSubmitRequest) -> Result<OriginBinding> {
+    if let Some(intent) = crate::execution_owner_buy_authority::request(
+        store,
+        request,
+        &[
+            copybot_storage_core::EXECUTION_STATUS_CANARY_CANDIDATE,
+            copybot_storage_core::EXECUTION_STATUS_CANARY_BUILT,
+            copybot_storage_core::EXECUTION_STATUS_CANARY_SIMULATED,
+        ],
+    )? {
         return Ok(OriginBinding::Owner(intent));
     }
     let order = store

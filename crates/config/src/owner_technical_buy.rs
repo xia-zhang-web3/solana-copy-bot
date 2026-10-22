@@ -36,6 +36,7 @@ pub struct OwnerTechnicalBuyConfig {
 }
 
 pub fn validate_owner_technical_buy(e: &crate::ExecutionConfig) -> Result<()> {
+    crate::validate_controlled_receipt_lot(e)?;
     let Some(p) = &e.owner_technical_buy else { return Ok(()); };
     crate::validate_owner_source_copy_gate(p)?;
     ensure!(matches!(p.policy.as_str(),OWNER_TECHNICAL_BUY_V1 | OWNER_EXECUTION_ROUNDTRIP_V1), "owner_buy_policy");
@@ -43,7 +44,7 @@ pub fn validate_owner_technical_buy(e: &crate::ExecutionConfig) -> Result<()> {
         ensure!(p.mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
             && p.intent_id.len() <= 110 && p.max_slippage_bps <= 50
             && p.amount_lamports == 10_000_000 && p.max_priority_fee_lamports <= 50_000
-            && p.max_daily_loss_lamports <= 20_000_000 && p.min_reserve_lamports >= 160_200_031
+            && p.max_daily_loss_lamports <= 20_000_000 && (p.min_reserve_lamports >= 160_200_031 || e.controlled_receipt_lot.is_some() && p.min_reserve_lamports == 0)
             && e.quote_canary_sell_slippage_bps >= p.max_slippage_bps
             && e.owner_exit.is_none() && e.max_submit_attempts == 1,
             "owner_roundtrip_pair_or_limits");
@@ -70,7 +71,7 @@ pub fn validate_owner_technical_buy(e: &crate::ExecutionConfig) -> Result<()> {
     ensure!(p.max_priority_fee_lamports > 0
         && p.max_priority_fee_lamports <= e.pretrade_max_priority_fee_lamports,
         "owner_buy_priority_cap");
-    ensure!(p.min_reserve_lamports > 0
+    ensure!((p.min_reserve_lamports > 0 || e.controlled_receipt_lot.is_some())
         && (e.pretrade_min_sol_reserve * 1_000_000_000.0).ceil() >= p.min_reserve_lamports as f64,
         "owner_buy_reserve_floor");
     ensure!(p.max_slippage_bps > 0

@@ -1,6 +1,8 @@
 //! One immutable proof decision per native intent; no rearm after an unknown producer read.
 #[path = "fractional_inventory.rs"]
 pub mod inventory;
+#[path="controlled_receipt_sell.rs"]
+pub mod controlled;
 use super::{rows, snapshot, QuoteBinding, QuoteClaim};
 use crate::{association_inbox::InboxLimits, rpc_owned_sell_snapshot, SqliteDiscoveryStore};
 use anyhow::{ensure, Context, Result};
@@ -21,6 +23,8 @@ pub struct Binding {
     pub producer_identity: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protected_execution_baseline: Option<inventory::ProtectedExecutionBaseline>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub controlled_receipt: Option<controlled::ReceiptProof>,
 }
 /// A read-only acquisition refusal; only Proven may continue to quote.
 #[derive(Debug)]
@@ -80,6 +84,10 @@ pub(super) fn apply(
             && d.inventory.mint == base.mint,
         "fraction_persisted_binding"
     );
+    if crate::controlled_receipt_lot::load(c)?.is_some() {
+        ensure!(d.controlled_receipt.is_some(),"receipt_lot_persisted_proof_missing");
+    }
+    if d.controlled_receipt.is_some() { controlled::recheck(c,&base,&d)?; }
     let selected = inventory::allocate(
         &[base.raw],
         d.inventory.numerator,
@@ -301,6 +309,7 @@ impl SqliteDiscoveryStore {
             decision_id: id,
             producer_identity,
             protected_execution_baseline: baseline.cloned(),
+            controlled_receipt: None,
         };
         let bytes: i64 = tx.query_row(
             "SELECT coalesce(sum(length(CAST(evidence AS BLOB))),0) FROM fractional_sell_decisions",

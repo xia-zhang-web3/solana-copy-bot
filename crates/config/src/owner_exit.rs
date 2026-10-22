@@ -32,6 +32,7 @@ pub struct OwnerExitConfig {
 }
 
 pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
+    crate::validate_controlled_receipt_lot(e)?;
     let Some(p) = &e.owner_exit else { return Ok(()); };
     ensure!(matches!(p.policy.as_str(),OWNER_EXIT_V1 | OWNER_ROUNDTRIP_EXIT_V1), "owner_exit_policy");
     if p.policy == OWNER_ROUNDTRIP_EXIT_V1 {
@@ -66,7 +67,7 @@ pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
     ensure!(p.max_priority_fee_lamports > 0
         && p.max_priority_fee_lamports <= e.pretrade_max_priority_fee_lamports,
         "owner_exit_priority_cap");
-    ensure!(p.min_reserve_lamports >= 160_200_031
+    ensure!((p.min_reserve_lamports >= 160_200_031 || e.controlled_receipt_lot.is_some() && p.min_reserve_lamports == 0)
         && (e.pretrade_min_sol_reserve * 1_000_000_000.0).ceil()
             >= p.min_reserve_lamports as f64,
         "owner_exit_reserve_floor");

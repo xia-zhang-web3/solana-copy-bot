@@ -119,6 +119,7 @@ pub fn validate_delivery_source(c: &IngestionConfig) -> Result<()> {
     }
 }
 pub fn validate_association_delivery(c: &AppConfig) -> Result<()> {
+    crate::validate_controlled_receipt_lot(&c.execution)?;
     validate_delivery_source(&c.ingestion)?;
     if !c.ingestion.yellowstone_replay_wallets.is_empty() {
         let wallets = &c.ingestion.yellowstone_replay_wallets;

@@ -26,6 +26,7 @@ pub(super) async fn fetch_confirmed_receipt_facts(
     order_id: &str,
     proof: &ExecutionCanaryReceiptProof,
     timeout_ms: u64,
+    store: &copybot_storage_core::SqliteStore,
 ) -> Result<copybot_storage_core::ReceiptObservationBundle> {
     ensure!(!rpc_url.trim().is_empty(), "receipt_rpc_url_missing");
     let response = http.post(rpc_url)
@@ -41,6 +42,7 @@ pub(super) async fn fetch_confirmed_receipt_facts(
             "receipt_rpc_json_invalid"
         })
     })?;
+    crate::execution_wsol_lifecycle::verify_receipt(store, order_id, proof, &value)?;
     facts_from_transaction_json(order_id, proof, &value)
 }
 

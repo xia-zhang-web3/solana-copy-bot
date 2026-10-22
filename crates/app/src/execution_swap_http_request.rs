@@ -48,7 +48,22 @@ pub(crate) fn swap_request_body(
         "dynamicComputeUnitLimit": true,
     });
     if plan.signal_id.starts_with("owner-buy:")
-        || plan.signal_id.starts_with("owner-exit:") {
+        || plan.signal_id.starts_with("owner-exit:")
+        || plan
+            .metadata
+            .protected_capital
+            .as_deref()
+            .is_some_and(|p| p.receipt_scoped())
+        || plan.metadata.transaction_owned_wsol.is_some()
+        || plan.metadata.rpc_owned_sell.as_ref().is_some_and(|p| {
+            p.handoff
+                .snapshot
+                .quote
+                .fractional
+                .as_ref()
+                .is_some_and(|f| f.controlled_receipt.is_some())
+        })
+    {
         body["dynamicSlippage"] = Value::Bool(false);
         body["useSharedAccounts"] = Value::Bool(false);
     }

@@ -11,6 +11,8 @@ fn label(operation: &FundingOperation) -> &'static str {
         FundingOperation::SyncNative { .. } => "sync",
         FundingOperation::CloseTokenAccount { .. } => "close",
         FundingOperation::Unresolved { .. } => "unresolved",
+        FundingOperation::CreateAccountWithSeed { .. } => "create_seed",
+        FundingOperation::InitializeAccount3 { .. } => "initialize3",
     }
 }
 
@@ -145,6 +147,10 @@ fn native_funding_actual_direct_buy_sell_preserve_order_extension_and_unresolved
                             .accounts
                             .iter()
                             .any(|a| a.pubkey == WALLET && a.is_signer && a.is_writable));
+                    }
+                    FundingOperation::CreateAccountWithSeed { .. }
+                    | FundingOperation::InitializeAccount3 { .. } => {
+                        panic!("not in unchanged PumpSwap fixture")
                     }
                     FundingOperation::ComputeBudget => {}
                 }

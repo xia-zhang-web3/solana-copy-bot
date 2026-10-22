@@ -36,7 +36,8 @@ pub(super) async fn prepare(
         requested == intent.amount_lamports,
         "owner_buy_protected_amount"
     );
-    let reserve = super::super::reserve_lamports(config.pretrade_min_sol_reserve)?;
+    crate::execution_controlled_receipt_lot::register(config,store)?;
+    let reserve = crate::execution_controlled_receipt_lot::reserve(config)?;
     ensure!(
         reserve >= intent.min_reserve_lamports,
         "owner_buy_protected_reserve"

@@ -73,7 +73,10 @@ pub(crate) fn check_with_policy(
     facts: &ClassicAtaFundingFacts,
     protected: Option<&crate::execution_native_floor_policy::protected::ContextProof>,
 ) -> Result<InitialSolRequirement> {
-    ensure!(reserve > 0, "initial_sol_invalid_reserve");
+    ensure!(
+        reserve > 0 || protected.is_some_and(|p| p.receipt_scoped()),
+        "initial_sol_invalid_reserve"
+    );
     if let Some(proof) = protected {
         proof.verify_floor(payload, wallet, reserve)?;
     }
@@ -123,6 +126,23 @@ pub(crate) fn check_with_policy(
                     .checked_add(u128::from(*lamports))
                     .ok_or_else(|| anyhow!("initial_sol_overflow"))?;
             }
+            FundingOperation::CreateAccountWithSeed {
+                payer, lamports, ..
+            } => {
+                ensure!(
+                    protected.is_some_and(|p| p.receipt_scoped()) && *payer == wallet,
+                    "initial_sol_unsupported_setup"
+                );
+                outgoing_transfers = outgoing_transfers
+                    .checked_add(u128::from(*lamports))
+                    .ok_or_else(|| anyhow!("initial_sol_overflow"))?;
+            }
+            FundingOperation::InitializeAccount3 { .. } => {
+                ensure!(
+                    protected.is_some_and(|p| p.receipt_scoped()),
+                    "initial_sol_unsupported_setup"
+                );
+            }
             // Unknown explicit system/token setup is not a proven zero. Other opaque
             // CPI remains outside this budget; Jupiter calls are refused below.
             FundingOperation::Unresolved { reason }
@@ -154,6 +174,9 @@ pub(crate) fn check_with_policy(
         "initial_sol_insufficient:observed={observed}:required={required}:shortfall={}",
         required - u128::from(observed)
     );
+    if let Some(proof) = protected.filter(|p| p.receipt_scoped()) {
+        proof.receipt_spend(payload, required, facts)?;
+    }
     // Exact resolved outer programs, after existing identity/binding and budget checks.
     // The alternative proves an absolute final native floor only. Remaining CPI
     // coverage stays Unknown; no accepted decoded Jupiter funding profile exists.
