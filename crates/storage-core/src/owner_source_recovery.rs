@@ -3,12 +3,19 @@ use crate::{OwnerExitIntent, SqliteStore};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection};
 
-pub(crate) fn recovery(id: &str) -> bool { id.starts_with("source-recovery:") }
+pub fn source_recovery_exit_id(id: &str) -> bool { id.starts_with("source-recovery:")||crate::owner_exit_child::is_child(id) }
+pub(crate) fn recovery(id: &str) -> bool { source_recovery_exit_id(id) }
 pub(crate) fn single_attempt(id: &str) -> bool {
     recovery(id) || id.starts_with("execution-only:")
 }
 pub(crate) fn validate(c: &Connection, i: &OwnerExitIntent) -> Result<u64> {
-    let id=i.intent_id.strip_prefix("source-recovery:").context("source_recovery_origin")?;
+    if crate::owner_exit_child::is_child(&i.intent_id){
+        crate::owner_exit_child::validate(c,i)?;
+        validate_parent(c,i,&crate::owner_exit_child::parent_id(&i.intent_id)?)
+    }else{validate_parent(c,i,&i.intent_id)}
+}
+pub(crate) fn validate_parent(c:&Connection,i:&OwnerExitIntent,parent_id:&str)->Result<u64>{
+    let id=parent_id.strip_prefix("source-recovery:").context("source_recovery_origin")?;
     let (wallet,run,scope)=crate::controlled_receipt_lot::load(c)?.context("source_recovery_scope")?;
     ensure!(wallet == i.wallet && run == i.run_id && scope.source_wallet == wallet
         && scope.source_buy_intent_id == id && scope.source_run_id == run,

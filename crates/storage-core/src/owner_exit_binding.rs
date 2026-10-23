@@ -9,7 +9,7 @@ pub(crate) fn token_side(conn: &Connection, order_id: &str) -> Result<(String, S
         .query_row(
             "SELECT i.mint,i.wallet,o.tx_signature,i.intent_id FROM orders o
          JOIN execution_order_sources s ON s.identity_id=o.signal_id
-         JOIN owner_exit_intents i ON i.intent_id=s.owner_exit_intent_id
+         JOIN owner_exit_effective_intents i ON i.intent_id=COALESCE(s.owner_exit_child_id,s.owner_exit_intent_id)
          WHERE o.order_id=?1 AND o.signal_id='owner-exit:'||i.intent_id",
             [order_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
@@ -27,7 +27,7 @@ pub(crate) fn validate_sell_receipt(conn: &Connection, order_id: &str, token: &s
     let bound: bool = conn.query_row(
         "SELECT EXISTS(
         SELECT 1 FROM orders o JOIN execution_order_sources s ON s.identity_id=o.signal_id
-        JOIN owner_exit_intents i ON i.intent_id=s.owner_exit_intent_id
+        JOIN owner_exit_effective_intents i ON i.intent_id=COALESCE(s.owner_exit_child_id,s.owner_exit_intent_id)
         JOIN execution_canary_dispatch d ON d.order_id=o.order_id
         JOIN execution_canary_receipt_proofs p ON p.order_id=o.order_id
         JOIN execution_canary_receipt_facts f ON f.order_id=o.order_id
@@ -100,8 +100,8 @@ pub(crate) fn validate_position(
         .query_row(
             "SELECT i.intent_id,i.buy_order_id,i.buy_receipt_signature,i.wallet,
             i.genesis_hash,i.mint,i.amount_raw,i.decimals,i.position_id
-         FROM execution_order_sources s JOIN owner_exit_intents i
-            ON i.intent_id=s.owner_exit_intent_id
+         FROM execution_order_sources s JOIN owner_exit_effective_intents i
+            ON i.intent_id=COALESCE(s.owner_exit_child_id,s.owner_exit_intent_id)
          WHERE s.identity_id=?1 AND s.identity_id='owner-exit:'||i.intent_id",
             [&signal],
             |r| {

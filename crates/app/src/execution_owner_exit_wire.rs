@@ -13,7 +13,8 @@ pub(crate) fn verify(
             && (request.wallet_id.is_empty() || request.wallet_pubkey == request.wallet_id),
         "owner_exit_wire_request"
     );
-    let recovery=request.signal_id.starts_with("owner-exit:source-recovery:");
+    let recovery=request.signal_id.strip_prefix("owner-exit:")
+        .is_some_and(copybot_storage_core::source_recovery_exit_id);
     if recovery {
         ensure!(request.metadata.controlled_exit_wire.as_ref().is_some_and(|p|p.matches(request)),
             "source_recovery_wire_authority");

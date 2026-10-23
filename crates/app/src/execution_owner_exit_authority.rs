@@ -39,6 +39,9 @@ fn from_config(p: &OwnerExitConfig, config: &ExecutionConfig) -> Result<OwnerExi
     if let Some(gate) = config.owner_technical_buy.as_ref().and_then(|p|p.source_copy_exit_gate.as_ref()) {
         payload["source_copy_exit_gate"] = serde_json::to_value(gate)?;
     }
+    if let Some(parent)=&p.source_recovery_parent_intent_id {
+        payload["source_recovery_parent_intent_id"]=serde_json::to_value(parent)?;
+    }
     Ok(OwnerExitIntent {
         intent_id: p.intent_id.clone(), run_id: p.run_id.clone(),
         buy_order_id: p.buy_order_id.clone(),

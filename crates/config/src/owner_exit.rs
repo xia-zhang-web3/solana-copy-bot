@@ -9,6 +9,8 @@ pub const OWNER_SOURCE_RECOVERY_EXIT_V1: &str = "owner_source_receipt_recovery_e
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OwnerExitConfig {
+    #[serde(default)]
+    pub source_recovery_parent_intent_id: Option<String>,
     pub policy: String,
     #[serde(default)]
     pub activate: bool,
@@ -39,8 +41,12 @@ pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
     if p.policy == OWNER_SOURCE_RECOVERY_EXIT_V1 {
         let b=e.owner_technical_buy.as_ref().ok_or_else(||anyhow::anyhow!("source_recovery_parent"))?;
         let s=e.controlled_receipt_lot.as_ref().ok_or_else(||anyhow::anyhow!("source_recovery_scope"))?;
-        ensure!(!b.activate && b.policy == crate::OWNER_EXECUTION_ROUNDTRIP_V1
-            && p.intent_id == format!("source-recovery:{}",b.intent_id)
+        let parent_id=format!("source-recovery:{}",b.intent_id);
+        let identity=match &p.source_recovery_parent_intent_id {
+            None=>p.intent_id==parent_id,
+            Some(parent)=>*parent==parent_id&&p.intent_id==format!("source-child:{}",b.intent_id),
+        };
+        ensure!(!b.activate && b.policy == crate::OWNER_EXECUTION_ROUNDTRIP_V1 && identity
             && p.buy_order_id == format!("exec-canary:owner-buy:{}",b.intent_id)
             && p.run_id == b.run_id && p.run_id == s.source_run_id
             && p.wallet_pubkey == b.wallet_pubkey && p.wallet_pubkey == s.source_wallet
@@ -52,6 +58,8 @@ pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
             && p.max_daily_loss_lamports <= b.max_daily_loss_lamports.min(20_000_000),
             "source_recovery_parent");
     }
+    ensure!(p.source_recovery_parent_intent_id.is_none()||p.policy==OWNER_SOURCE_RECOVERY_EXIT_V1,
+        "owner_child_source_policy_required");
     if p.policy == OWNER_ROUNDTRIP_EXIT_V1 {
         let b=e.owner_technical_buy.as_ref().ok_or_else(||anyhow::anyhow!("owner_roundtrip_exit_parent"))?;
         ensure!(b.policy == crate::OWNER_EXECUTION_ROUNDTRIP_V1
@@ -78,7 +86,8 @@ pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
     ensure!(p.mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
         && p.decimals == 6 && (if p.policy == OWNER_EXIT_V1 {p.amount_raw == 1_167_085}
             else {p.amount_raw > 0 && (p.intent_id.starts_with("execution-only:")
-                || p.policy == OWNER_SOURCE_RECOVERY_EXIT_V1 && p.intent_id.starts_with("source-recovery:"))}),
+                || p.policy == OWNER_SOURCE_RECOVERY_EXIT_V1
+                    && (p.intent_id.starts_with("source-recovery:")||p.source_recovery_parent_intent_id.is_some()))}),
         "owner_exit_exact_position_amount");
     ensure!(p.route == "jupiter_swap_instructions" && p.route == e.canary_route,
         "owner_exit_route");

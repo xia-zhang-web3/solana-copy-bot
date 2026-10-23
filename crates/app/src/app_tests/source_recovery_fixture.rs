@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt,AsyncWriteExt};
 
 pub(super) struct State {
     pub wallet:String,pub genesis:String,pub held:u64,pub native:u64,pub rent:u64,pub fee:u64,
-    pub unknown:bool,pub calls:Vec<Value>,pub raw_http:Vec<Value>,pub receipt:Value,
+    pub slot:u64,pub unknown:bool,pub calls:Vec<Value>,pub raw_http:Vec<Value>,pub receipt:Value,
     pub quote_snapshot:Option<PathBuf>,
 }
 pub(super) struct Server {pub url:String,pub state:Arc<Mutex<State>>,task:tokio::task::JoinHandle<Result<()>>}
@@ -22,7 +22,7 @@ impl Server {
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let url=format!("http://{}",listener.local_addr()?);
         let state=Arc::new(Mutex::new(State{wallet:wallet.into(),genesis:buy::GENESIS.into(),held,native:10_000_000,
-            rent:2_039_280,fee:5000,unknown:false,calls:vec![],raw_http:vec![],receipt:Value::Null,quote_snapshot:None}));
+            rent:2_039_280,fee:5000,slot:460119951,unknown:false,calls:vec![],raw_http:vec![],receipt:Value::Null,quote_snapshot:None}));
         let shared=state.clone();
         let task=tokio::spawn(async move {loop{
             let(mut socket,_)=listener.accept().await?;let mut bytes=Vec::new();
@@ -75,7 +75,7 @@ fn response(r:&Value,s:&mut State)->Result<Value>{
     s.calls.push(r.clone());let m=r["method"].as_str().context("LOCAL method")?;
     if m=="quote"{
         let raw=r["params"]["amount"].as_str().context("LOCAL exact quote amount")?;
-        let mut q=exit::quote();q["inAmount"]=json!(raw);q["routePlan"][0]["swapInfo"]["inAmount"]=json!(raw);
+        let mut q=exit::quote();q["contextSlot"]=json!(s.slot);q["inAmount"]=json!(raw);q["routePlan"][0]["swapInfo"]["inAmount"]=json!(raw);
         return Ok(q)
     }
     let result=match m{
@@ -88,12 +88,12 @@ fn response(r:&Value,s:&mut State)->Result<Value>{
                 data[32..64].copy_from_slice(&crate::execution_pumpswap_accounts::parse_pubkey(&s.wallet,"LOCAL wallet")?);
                 data[64..72].copy_from_slice(&s.held.to_le_bytes());
             }
-            json!({"context":{"slot":460119951},"value":{"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","executable":false,"data":[STANDARD.encode(data),"base64"]}})
+            json!({"context":{"slot":s.slot},"value":{"owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA","executable":false,"data":[STANDARD.encode(data),"base64"]}})
         },
-        "getBalance"=>json!({"context":{"slot":460119951},"value":s.native}),
-        "getMultipleAccounts"=>json!({"context":{"slot":460119951},"value":r["params"][0].as_array().unwrap().iter().map(|key|if key.as_str()==Some(&s.wallet){json!({"lamports":s.native,"owner":"11111111111111111111111111111111","executable":false,"data":["","base64"]})}else{Value::Null}).collect::<Vec<_>>()}),
+        "getBalance"=>json!({"context":{"slot":s.slot},"value":s.native}),
+        "getMultipleAccounts"=>json!({"context":{"slot":s.slot},"value":r["params"][0].as_array().unwrap().iter().map(|key|if key.as_str()==Some(&s.wallet){json!({"lamports":s.native,"owner":"11111111111111111111111111111111","executable":false,"data":["","base64"]})}else{Value::Null}).collect::<Vec<_>>()}),
         "getMinimumBalanceForRentExemption"=>json!(s.rent),
-        "getFeeForMessage"=>json!({"context":{"slot":460119951},"value":s.fee}),
+        "getFeeForMessage"=>json!({"context":{"slot":s.slot},"value":s.fee}),
         "sendTransaction"=>{let raw=STANDARD.decode(r["params"][0].as_str().unwrap())?;json!(if s.unknown{"wrong signature".into()}else{bs58::encode(&raw[1..65]).into_string()})},
         "getSignatureStatuses"=>if s.unknown{json!({"value":[null]})}else{json!({"value":[{"err":null,"slot":s.receipt["result"]["slot"],"confirmationStatus":"finalized"}]})},
         "getTransaction"=>s.receipt["result"].clone(),
@@ -109,7 +109,7 @@ pub(super) fn recovery(c:&mut ExecutionConfig,s:&SqliteStore)->Result<OwnerExitI
     let now=Utc::now();
     c.canary_entry_submit_enabled=false;c.native_fresh_buy=None;c.tiny_experiment.activate=false;
     c.max_confirm_seconds=1;
-    c.owner_exit=Some(OwnerExitConfig{policy:OWNER_SOURCE_RECOVERY_EXIT_V1.into(),activate:true,
+    c.owner_exit=Some(OwnerExitConfig{ source_recovery_parent_intent_id: None,policy:OWNER_SOURCE_RECOVERY_EXIT_V1.into(),activate:true,
         run_id:parent.run_id.clone(),intent_id:format!("source-recovery:{}",parent.intent_id),
         buy_order_id:buy_id.clone(),buy_receipt_signature:facts.tx_signature,
         position_id:format!("exec-canary-pos:{buy_id}"),wallet_pubkey:parent.wallet_pubkey.clone(),

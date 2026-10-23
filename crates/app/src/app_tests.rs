@@ -771,6 +771,8 @@ mod wsol_lifecycle_source_fixture;
 
 mod wsol_lifecycle_failed_fixture;
 
+mod source_child_fixture;
+mod source_child_tests;
 mod source_recovery_fixture;
 mod source_recovery_submit_fixture;
 mod source_recovery_tests;

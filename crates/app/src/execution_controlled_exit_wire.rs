@@ -41,7 +41,10 @@ pub(crate) fn stamp(
             && scope.source_run_id == i.run_id
             && (i.intent_id == format!("execution-only:{}", scope.source_buy_intent_id)
                 || c.owner_exit.as_ref().is_some_and(|p|p.policy == copybot_config::OWNER_SOURCE_RECOVERY_EXIT_V1)
-                    && i.intent_id == format!("source-recovery:{}",scope.source_buy_intent_id))
+                    && (i.intent_id == format!("source-recovery:{}",scope.source_buy_intent_id)
+                        || c.owner_exit.as_ref().is_some_and(|p|p.source_recovery_parent_intent_id.as_deref()
+                            ==Some(format!("source-recovery:{}",scope.source_buy_intent_id).as_str()))
+                        && i.intent_id==format!("source-child:{}",scope.source_buy_intent_id)))
             && s.controlled_receipt_lot_scope()?.as_ref()
                 == Some(&(i.wallet.clone(), i.run_id.clone(), scope.clone())),
         "receipt_lot_exit_wire_scope"
@@ -69,7 +72,7 @@ pub(crate) fn stamp(
         "receipt_lot_exit_wire_receipt"
     );
     r.metadata.controlled_exit_wire = Some(Box::new(ExitWire {
-        native_remaining: if i.intent_id.starts_with("source-recovery:") {
+        native_remaining: if copybot_storage_core::source_recovery_exit_id(&i.intent_id) {
             s.owner_source_recovery_native_remaining(i)?
         } else {copybot_storage_core::TINY_NATIVE_ALLOWANCE},
         scope,

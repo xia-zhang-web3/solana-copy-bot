@@ -165,7 +165,7 @@ fn owner_source_upgrade_preserves_old_orders_and_custom_ddl() -> Result<()> {
         [],
         |r| r.get(0),
     )?;
-    assert_eq!(s.run_migrations(&migrations())?, 7); // 0085..=0091.
+    assert_eq!(s.run_migrations(&migrations())?, 8); // 0085..=0092.
     assert_eq!(s.run_migrations(&migrations())?, 0);
     assert_eq!(
         c.query_row(
@@ -235,7 +235,7 @@ fn owner_source_failed_upgrade_rolls_back_and_restores_foreign_keys() -> Result<
         .reserve_execution_canary_order("missing-source", "metis", intent().activated_at)
         .is_err());
     std::fs::write(&migration, original)?;
-    assert_eq!(s.run_migrations(&all)?, 7); // 0085..=0091.
+    assert_eq!(s.run_migrations(&all)?, 8); // 0085..=0092.
     Ok(())
 }
 

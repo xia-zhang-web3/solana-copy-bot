@@ -12,9 +12,13 @@ pub mod owner_exit_amount_migration;
 mod owner_technical_buy;
 pub use native_buy::source_copy_gate as owner_source_copy_gate;
 mod owner_exit;
+mod owner_exit_load;
+mod owner_exit_child;
+mod owner_exit_child_migration;
 mod owner_exit_binding;
 mod owner_exit_fee;
 mod owner_source_recovery;
+pub use owner_source_recovery::source_recovery_exit_id;
 mod owner_technical_buy_protected;
 pub use owner_technical_buy::{
     owner_technical_buy_client_order_id, owner_technical_buy_identity_id,

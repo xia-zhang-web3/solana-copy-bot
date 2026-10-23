@@ -269,7 +269,7 @@ impl Case {
         config.tiny_experiment.id = Some("synthetic-owner-exit-run".into());
         config.tiny_experiment.activate = false;
         let now = Utc::now();
-        config.owner_exit = Some(OwnerExitConfig {
+        config.owner_exit = Some(OwnerExitConfig { source_recovery_parent_intent_id: None,
             policy: OWNER_EXIT_V1.into(),
             activate: true,
             run_id: "synthetic-owner-exit-run".into(),

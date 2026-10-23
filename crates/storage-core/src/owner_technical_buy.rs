@@ -158,25 +158,41 @@ impl SqliteDiscoveryStore {
     }
 
     pub fn execution_order_origin(&self, order_id: &str) -> Result<Option<ExecutionOrderOrigin>> {
-        let row:Option<(String,Option<String>,Option<String>,Option<String>,Option<String>)> = self.conn.query_row(
-            "SELECT o.signal_id,s.copy_signal_id,s.owned_sell_intent_id,s.owner_buy_intent_id,s.owner_exit_intent_id
+        let row:Option<(String,Option<String>,Option<String>,Option<String>,Option<String>,Option<String>)> = self.conn.query_row(
+            "SELECT o.signal_id,s.copy_signal_id,s.owned_sell_intent_id,s.owner_buy_intent_id,s.owner_exit_intent_id,s.owner_exit_child_id
              FROM orders o JOIN execution_order_sources s ON s.identity_id=o.signal_id WHERE o.order_id=?1",
-            [order_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
-        row.map(|(identity, copy, sell, buy, exit)| match (copy, sell, buy, exit) {
-            (Some(id), None, None, None) if identity == id => {
-                Ok(ExecutionOrderOrigin::Copy { signal_id: id })
-            }
-            (None, Some(id), None, None) if identity == id => {
-                Ok(ExecutionOrderOrigin::OwnedSell { intent_id: id })
-            }
-            (None, None, Some(id), None) if identity == owner_technical_buy_identity_id(&id) => {
-                Ok(ExecutionOrderOrigin::OwnerTechnicalBuy { intent_id: id })
-            }
-            (None, None, None, Some(id)) if identity == crate::owner_exit_identity_id(&id) => {
-                Ok(ExecutionOrderOrigin::OwnerExit { intent_id: id })
-            }
-            _ => anyhow::bail!("execution_order_origin_conflict"),
-        })
+            [order_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional()?;
+        row.map(
+            |(identity, copy, sell, buy, exit, child)| match (copy, sell, buy, exit, child) {
+                (Some(id), None, None, None, None) if identity == id => {
+                    Ok(ExecutionOrderOrigin::Copy { signal_id: id })
+                }
+                (None, Some(id), None, None, None) if identity == id => {
+                    Ok(ExecutionOrderOrigin::OwnedSell { intent_id: id })
+                }
+                (None, None, Some(id), None, None)
+                    if identity == owner_technical_buy_identity_id(&id) =>
+                {
+                    Ok(ExecutionOrderOrigin::OwnerTechnicalBuy { intent_id: id })
+                }
+                (None, None, None, Some(id), None)
+                    if identity == crate::owner_exit_identity_id(&id) =>
+                {
+                    Ok(ExecutionOrderOrigin::OwnerExit { intent_id: id })
+                }
+                (None, None, None, None, Some(id))
+                    if identity == crate::owner_exit_identity_id(&id)
+                        && crate::owner_exit_child::is_child(&id) =>
+                {
+                    ensure!(
+                        self.load_owner_exit_intent(&id)?.is_some(),
+                        "owner_child_origin_missing"
+                    );
+                    Ok(ExecutionOrderOrigin::OwnerExit { intent_id: id })
+                }
+                _ => anyhow::bail!("execution_order_origin_conflict"),
+            },
+        )
         .transpose()
     }
 
