@@ -10,6 +10,11 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use yellowstone_grpc_proto::prelude::{CommitmentLevel, TransactionStatusMeta, UiTokenAmount};
 
+#[path = "../source_tests/anchor_tail_pair.rs"]
+pub(super) mod anchor_tail_pair;
+#[path = "../source_tests/anchor_tail_consumers.rs"]
+mod anchor_tail_consumers;
+
 fn token_balance(owner: &str, mint: &str, amount: &str) -> Value {
     let raw_amount = amount
         .parse::<u64>()
@@ -125,3 +130,6 @@ mod ammv4_tests;
 
 #[path = "../source_tests/ingress_route/mod.rs"]
 mod ingress_route;
+
+#[path = "../source_tests/anchor_tail_tests.rs"]
+mod anchor_tail_tests;

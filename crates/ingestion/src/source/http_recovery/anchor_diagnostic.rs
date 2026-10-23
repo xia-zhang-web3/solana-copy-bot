@@ -12,12 +12,10 @@ pub(super) fn compare_preserved(
     http: &SubscribeUpdateBlock,
 ) -> Result<bool> {
     // No comparison occurs before both independently complete sides are durable.
-    let matches = identity::block_equivalent(http, grpc);
-    let difference = if matches {
-        None
-    } else {
-        identity_difference::first(grpc, http)
-    };
+    let comparison = identity::block_comparison(http, grpc);
+    let matches = comparison.admitted();
+    // Preserve the strict raw difference even for classified anchor compatibility.
+    let difference = identity_difference::first(grpc, http);
     let first_path = difference
         .as_ref()
         .map(|d| d.path.as_str())
@@ -31,9 +29,9 @@ pub(super) fn compare_preserved(
     } else {
         json!({"path":"runtime_predicate_unresolved","grpc":null,"http":null})
     });
-    pair.complete(grpc, matches, value)?;
+    pair.complete(grpc, matches, comparison.label(), value)?;
     tracing::info!(slot=grpc.slot,comparison=if matches {"MATCH"} else {"MISMATCH"},
-        first_field_path=first_path,evidence_pair=%pair.name,evidence_saved=true,
+        comparison_kind=comparison.label(),first_field_path=first_path,evidence_pair=%pair.name,evidence_saved=true,
         capture_state="FULL",ack_proven=false,
         "confirmed HTTP live anchor compared");
     Ok(matches)
@@ -63,12 +61,13 @@ pub(crate) fn admit_recovered(
 /// The existing durable checkpoint owner is the only source of ACK proof.
 pub(super) fn compare_saturated(grpc: &SubscribeUpdateBlock, http: &SubscribeUpdateBlock) -> bool {
     use sha2::{Digest, Sha256};
-    let matches = identity::block_equivalent(http, grpc);
+    let comparison = identity::block_comparison(http, grpc);
+    let matches = comparison.admitted();
     tracing::info!(slot=grpc.slot,parent_slot=grpc.parent_slot,
         blockhash_sha256=%format!("{:x}",Sha256::digest(grpc.blockhash.as_bytes())),
         parent_blockhash_sha256=%format!("{:x}",Sha256::digest(grpc.parent_blockhash.as_bytes())),
         comparison=if matches {"MATCH"} else {"MISMATCH"},
-        capture_state="SATURATED",evidence_saved=false,ack_proven=false,
+        comparison_kind=comparison.label(),capture_state="SATURATED",evidence_saved=false,ack_proven=false,
         "confirmed HTTP live anchor compared");
     matches
 }

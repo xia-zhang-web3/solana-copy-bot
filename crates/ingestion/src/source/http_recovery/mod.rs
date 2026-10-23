@@ -18,6 +18,7 @@ pub(crate) mod ordered_pipeline;
 mod response;
 mod session_deadline;
 mod transaction;
+mod terminal_tail;
 mod value;
 
 /// Normalize a confirmed full JSON block without inventing a wall-clock time.

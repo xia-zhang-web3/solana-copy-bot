@@ -150,12 +150,14 @@ impl Pair {
         &self,
         grpc: &SubscribeUpdateBlock,
         matches: bool,
+        comparison_kind: &str,
         difference: Value,
     ) -> Result<()> {
         self.publish(
             grpc,
             true,
             if matches { "MATCH" } else { "MISMATCH" },
+            comparison_kind,
             difference,
             Value::Null,
         )
@@ -172,6 +174,7 @@ impl Pair {
             grpc,
             false,
             "NOT_EVALUATED",
+            "NOT_EVALUATED",
             Value::Null,
             json!({"stage":stage,"reason":reason}),
         )
@@ -181,10 +184,12 @@ impl Pair {
         grpc: &SubscribeUpdateBlock,
         complete: bool,
         comparison: &str,
+        comparison_kind: &str,
         difference: Value,
         refusal: Value,
     ) -> Result<()> {
         let manifest = json!({"schema_version":1,"complete":complete,"comparison":comparison,
+            "comparison_kind":comparison_kind,
             "slot":grpc.slot,"blockhash":grpc.blockhash,"parent_slot":grpc.parent_slot,
             "parent_blockhash":grpc.parent_blockhash,"transactions":grpc.transactions.len(),
             "grpc_provenance":"REENCODED_TYPED_PROTO_12_6",
