@@ -71,3 +71,42 @@ pub(super) fn compare_saturated(grpc: &SubscribeUpdateBlock, http: &SubscribeUpd
         "confirmed HTTP live anchor compared");
     matches
 }
+
+/// Representation selection is distinct from generic Info/block equality.
+pub(super) fn complete_http(
+    directory: Option<&str>,
+    grpc: &SubscribeUpdateBlock,
+    recovered: &mut RecoveredBlock,
+) -> Result<()> {
+    let difference = identity_difference::first(grpc, &recovered.block).map(|v| v.json());
+    ensure!(
+        difference.is_some(),
+        "http_complete_anchor_raw_difference_required"
+    );
+    let saved = match std::mem::replace(&mut recovered.anchor_evidence, Capture::Disabled) {
+        Capture::Full(pair) => {
+            pair.selected_http(grpc, difference.unwrap())?;
+            true
+        }
+        Capture::Saturated => {
+            ensure!(directory.is_some(), "anchor_evidence_unexpected_saturation");
+            false
+        }
+        Capture::Disabled => {
+            ensure!(directory.is_none(), "anchor_evidence_missing");
+            false
+        }
+    };
+    tracing::info!(
+        slot = grpc.slot,
+        parent_slot = grpc.parent_slot,
+        comparison = "HTTP_SELECTED",
+        comparison_kind = "TRUSTED_COMPLETE_HTTP",
+        selected_input = "HTTP",
+        hidden_payload_equality_claimed = false,
+        evidence_saved = saved,
+        ack_proven = false,
+        "confirmed HTTP live anchor compared"
+    );
+    Ok(())
+}

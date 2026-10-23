@@ -162,6 +162,16 @@ impl Pair {
             Value::Null,
         )
     }
+    pub fn selected_http(&self, grpc: &SubscribeUpdateBlock, difference: Value) -> Result<()> {
+        self.publish(
+            grpc,
+            true,
+            "HTTP_SELECTED",
+            "TRUSTED_COMPLETE_HTTP",
+            difference,
+            Value::Null,
+        )
+    }
     pub fn refused(
         &self,
         grpc: &SubscribeUpdateBlock,
@@ -194,7 +204,9 @@ impl Pair {
             "parent_blockhash":grpc.parent_blockhash,"transactions":grpc.transactions.len(),
             "grpc_provenance":"REENCODED_TYPED_PROTO_12_6",
             "http_provenance":"ORIGINAL_JSON_RPC_RESPONSE",
-            "comparison_scope":"VERIFIED_EXECUTION_INDEX_RUNTIME_BLOCK_EQUIVALENT",
+            "comparison_scope":if comparison=="HTTP_SELECTED" {"TRUSTED_HTTP_COMPLETE_REPRESENTATION"}else{"VERIFIED_EXECUTION_INDEX_RUNTIME_BLOCK_EQUIVALENT"},
+            "selected_input":if comparison=="HTTP_SELECTED" {"HTTP"}else if comparison=="MATCH" {"GRPC"}else{"NONE"},
+            "hidden_payload_equality_claimed":false,
             "transaction_order":"ORIGINAL_DELIVERY_VECTOR_ORDER",
             "float_sidecar":{"record_bytes":17,"key":"original_vector_position_u32_le,side_u8,row_u32_le",
                 "value":"ieee754_u64_le","authoritative":true,

@@ -75,6 +75,9 @@ impl Bridge<'_> {
         r.last_checkpoint_child = None;
         Ok(r.gate.from_slot())
     }
+    pub(in crate::source::durable) fn anchor_context(&self) -> String {
+        self.name.clone()
+    }
     pub(in crate::source::durable) fn recovery_enabled(&self) -> bool {
         self.recovery.is_some()
     }

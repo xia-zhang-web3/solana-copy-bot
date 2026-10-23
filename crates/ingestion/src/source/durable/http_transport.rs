@@ -5,7 +5,7 @@ use super::{
     super::transport_diagnostics::{self as diagnostics, ErrorDetails},
 };
 use crate::source::{
-    http_recovery::{anchor_diagnostic, ordered_pipeline::OrderedPipeline, ConfirmedHttpRecovery},
+    http_recovery::{ordered_pipeline::OrderedPipeline, ConfirmedHttpRecovery},
     yellowstone_association as a, YellowstoneRuntimeConfig,
 };
 use anyhow::{ensure, Context, Result};
@@ -360,20 +360,21 @@ async fn catch_up(
             // The independently captured live anchor stays on its existing
             // evidence path. It is never cloned into the raw producer task.
             let anchor_permit = window.acquire().await?;
-            let mut recovered = http
-                .anchor_block(anchor.slot, anchor, config.anchor_evidence_dir.as_deref())
+            let selected = http
+                .current_anchor(
+                    anchor.slot,
+                    anchor,
+                    config.anchor_evidence_dir.as_deref(),
+                    bridge.anchor_context(),
+                )
                 .await?;
+            let selected = selected.for_context(&bridge.anchor_context())?;
             let stage = Instant::now();
-            anchor_diagnostic::admit_recovered(
-                config.anchor_evidence_dir.as_deref(),
-                anchor,
-                &mut recovered,
-            )?;
-            bridge.http_block(ns(start), anchor).await?;
+            bridge.http_block(ns(start), selected.block()).await?;
             telemetry.processing.update_kind(true, stage.elapsed());
             last = Some(anchor.slot);
             progress.note(telemetry, anchor.slot, false);
-            drop(recovered);
+            drop(selected);
             drop(anchor_permit);
         }
         if upper == anchor.slot {

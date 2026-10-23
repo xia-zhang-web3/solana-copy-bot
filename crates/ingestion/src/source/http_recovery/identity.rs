@@ -64,6 +64,20 @@ fn anchor_info_compatible(
             _ => false,
         }
 }
+pub(super) fn same_execution(
+    a: &SubscribeUpdateTransactionInfo,
+    b: &SubscribeUpdateTransactionInfo,
+) -> bool {
+    a.signature == b.signature
+        && a.index == b.index
+        && a.is_vote == b.is_vote
+        && a.transaction == b.transaction
+        && match (&a.meta, &b.meta) {
+            (Some(a), Some(b)) => meta_fields_equal(a, b),
+            _ => false,
+        }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AnchorComparison {
     Exact,
@@ -108,15 +122,12 @@ pub(crate) fn info_equivalent(a: &InfoIdentity, b: &InfoIdentity) -> bool {
         _ => false,
     }
 }
-pub(crate) fn block_comparison(
-    a: &SubscribeUpdateBlock,
-    b: &SubscribeUpdateBlock,
-) -> AnchorComparison {
+pub(super) fn headers_equal(a: &SubscribeUpdateBlock, b: &SubscribeUpdateBlock) -> bool {
     // HTTP cannot report gRPC accounts/entries or their stream coverage counts.
     // Compare full transaction and parent/block evidence, never pretend those
     // coverage fields were fetched. The original gRPC/RPC inputs stay retained.
     let rewards = |block: &SubscribeUpdateBlock| block.rewards.clone().unwrap_or_default();
-    let headers_equal = a.slot == b.slot
+    a.slot == b.slot
         && a.parent_slot == b.parent_slot
         && a.blockhash == b.blockhash
         && a.parent_blockhash == b.parent_blockhash
@@ -124,7 +135,13 @@ pub(crate) fn block_comparison(
         && a.block_height == b.block_height
         && rewards(a) == rewards(b)
         && a.executed_transaction_count == b.executed_transaction_count
-        && a.transactions.len() == b.transactions.len();
+        && a.transactions.len() == b.transactions.len()
+}
+pub(crate) fn block_comparison(
+    a: &SubscribeUpdateBlock,
+    b: &SubscribeUpdateBlock,
+) -> AnchorComparison {
+    let headers_equal = headers_equal(a, b);
     if !headers_equal {
         return AnchorComparison::Mismatch;
     }

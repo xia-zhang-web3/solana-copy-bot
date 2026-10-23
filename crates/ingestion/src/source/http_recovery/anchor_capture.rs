@@ -65,10 +65,20 @@ pub(super) fn completed(dir: &Path, owner: &Metadata) -> Result<()> {
     ensure!(
         value["schema_version"] == 1
             && value["complete"] == true
-            && matches!(value["comparison"].as_str(), Some("MATCH" | "MISMATCH"))
+            && matches!(
+                value["comparison"].as_str(),
+                Some("MATCH" | "MISMATCH" | "HTTP_SELECTED")
+            )
             && value["ack_proven"] == false
             && value["refusal"].is_null()
-            && value["comparison_scope"] == "VERIFIED_EXECUTION_INDEX_RUNTIME_BLOCK_EQUIVALENT",
+            && if value["comparison"] == "HTTP_SELECTED" {
+                value["comparison_scope"] == "TRUSTED_HTTP_COMPLETE_REPRESENTATION"
+                    && value["comparison_kind"] == "TRUSTED_COMPLETE_HTTP"
+                    && value["selected_input"] == "HTTP"
+                    && value["hidden_payload_equality_claimed"] == false
+            } else {
+                value["comparison_scope"] == "VERIFIED_EXECUTION_INDEX_RUNTIME_BLOCK_EQUIVALENT"
+            },
         "anchor_evidence_retained_incomplete"
     );
     let files = value["files"]

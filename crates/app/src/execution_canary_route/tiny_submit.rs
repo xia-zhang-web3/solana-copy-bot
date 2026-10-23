@@ -354,8 +354,7 @@ pub(super) fn apply_safety(
     summary.daily_loss_sol = safety.daily_loss_sol;
     summary.entry_cost = safety.entry_cost;
     if config.canary_tiny_submit_enabled
-        && crate::execution_native_floor_policy::reserve_lamports(config.pretrade_min_sol_reserve)
-            .is_err()
+        && crate::execution_controlled_receipt_lot::reserve(config).is_err()
     {
         summary.safety_blocked = 1;
         summary.skipped_reason = Some("native_floor_invalid_policy");

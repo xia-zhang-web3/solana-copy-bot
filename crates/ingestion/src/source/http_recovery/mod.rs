@@ -6,6 +6,8 @@ mod anchor_evidence;
 mod anchor_fetch;
 mod block;
 pub(crate) mod blocking_normalization;
+pub(crate) mod complete_anchor;
+pub(crate) mod current_anchor;
 mod delivery;
 mod delivery_error;
 mod envelope;
@@ -17,8 +19,8 @@ mod meta;
 pub(crate) mod ordered_pipeline;
 mod response;
 mod session_deadline;
-mod transaction;
 mod terminal_tail;
+mod transaction;
 mod value;
 
 /// Normalize a confirmed full JSON block without inventing a wall-clock time.

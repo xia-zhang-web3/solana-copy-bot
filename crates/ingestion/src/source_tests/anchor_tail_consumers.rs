@@ -13,7 +13,7 @@ use yellowstone_grpc_proto::prelude::{SubscribeUpdateTransaction, SubscribeUpdat
 
 // Explicit saved COPY08 bot.TEMPLATE program policy; both subscription lists were
 // empty, so the unchanged source constructor selects this Raydium/Pump union.
-fn policy() -> (HashSet<String>, HashSet<String>, HashSet<String>) {
+pub(super) fn policy() -> (HashSet<String>, HashSet<String>, HashSet<String>) {
     let rays = HashSet::from([
         "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8".to_owned(),
         "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C".to_owned(),
@@ -28,7 +28,7 @@ fn sorted(set: HashSet<String>) -> Vec<String> {
     out
 }
 
-fn projection(info: &SubscribeUpdateTransactionInfo, slot: u64) -> Value {
+pub(super) fn projection(info: &SubscribeUpdateTransactionInfo, slot: u64) -> Value {
     let (interest, rays, pumps) = policy();
     let meta = info.meta.as_ref().unwrap();
     let message = info.transaction.as_ref().unwrap().message.as_ref().unwrap();

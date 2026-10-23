@@ -11,6 +11,12 @@ mod live_parent_gap;
 mod saved_reward_replay;
 #[path = "anchor_tail_replay.rs"]
 mod anchor_tail_replay;
+#[path = "anchor_complete_replay.rs"]
+mod anchor_complete_replay;
+#[path = "anchor_complete_fetch_tests.rs"]
+mod anchor_complete_fetch_tests;
+#[path = "anchor_complete_durable_tests.rs"]
+mod anchor_complete_durable_tests;
 use super::durable_transport_fixture::Fixture;
 use crate::{replay_scope, DeliveryEnvelope, DeliveryReceiver};
 use copybot_config::{

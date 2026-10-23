@@ -1,0 +1,61 @@
+{
+  "enabled": false,
+  "canary_enabled": true,
+  "canary_dry_run": true,
+  "canary_tiny_submit_enabled": true,
+  "canary_entry_submit_enabled": true,
+  "canary_wallet_pubkey": "BwVw8ncEpWU7TwMTgysvwjQ85eEhKAMVbd7WU1iTE9Mk",
+  "execution_signer_pubkey": "BwVw8ncEpWU7TwMTgysvwjQ85eEhKAMVbd7WU1iTE9Mk",
+  "canary_route": "jupiter_swap_instructions",
+  "swap_transaction_dry_run_enabled": true,
+  "swap_instructions_dry_run_enabled": true,
+  "pretrade_min_sol_reserve": 0.0,
+  "pretrade_max_priority_fee_lamports": 50000,
+  "canary_buy_size_sol": 0.01,
+  "quote_canary_buy_size_sol": 0.01,
+  "canary_max_open_positions": 1,
+  "canary_max_daily_loss_sol": 0.02,
+  "quote_canary_buy_slippage_bps": 50,
+  "quote_canary_sell_slippage_bps": 50,
+  "max_submit_attempts": 1,
+  "controlled_receipt_lot": {
+    "policy": "controlled_receipt_lot_custody_v1",
+    "source_run_id": "copybot-sodae-controlled-copy-20261023-09-source",
+    "bot_run_id": "copybot-sodae-controlled-copy-20261023-09-bot",
+    "source_wallet": "Mrad9bhi15p5z3KmCFG9md2n4Rbd7j4SkwZb8pyZxHf",
+    "bot_wallet": "BwVw8ncEpWU7TwMTgysvwjQ85eEhKAMVbd7WU1iTE9Mk",
+    "source_buy_intent_id": "copybot-sodae-controlled-copy-20261023-09-source-sol-usdc-01",
+    "source_state_db_path": "/source-state/live_runtime.db",
+    "wsol_lifecycle": "transaction_owned_wsol_create_with_seed_v1"
+  },
+  "technical_cohort": {
+    "policy": "technical_cohort_v1",
+    "activate": true,
+    "run_id": "copybot-sodae-controlled-copy-20261023-09-bot",
+    "wallet_ids": [
+      "Mrad9bhi15p5z3KmCFG9md2n4Rbd7j4SkwZb8pyZxHf"
+    ],
+    "mint_policy": "classic_spl_mint_v1",
+    "route": "jupiter_swap_instructions",
+    "activated_at": "2026-10-23T11:30:47.731368Z",
+    "deadline": "2026-10-23T11:35:30.731368Z",
+    "max_wait_seconds": 283,
+    "max_buy_count": 1,
+    "max_source_sell_count": 1
+  },
+  "tiny_experiment": {
+    "id": "copybot-sodae-controlled-copy-20261023-09-bot",
+    "activate": true,
+    "policy_mode": "protected_native_capital"
+  },
+  "owned_sell_preparation": {
+    "policy": "rpc_finalized_cross_slot_owned_sell_v1",
+    "genesis_hash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+    "identity": "copybot-sodae-controlled-copy-20261023-09-bot",
+    "tiny_dispatch": true,
+    "fractional_inventory": "controlled_receipt_lot_custody_v1",
+    "rpc_url": "http://127.0.0.1:1/LOCAL-NOT-USED"
+  },
+  "submit_adapter_http_url": "http://127.0.0.1:1/LOCAL-NOT-USED",
+  "execution_signer_keypair_path": "/LOCAL-NOT-READ/no-signer"
+}
