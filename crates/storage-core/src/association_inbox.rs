@@ -38,6 +38,7 @@ pub struct AssociationInbox {
     pub(crate) conn: Connection,
     pub(crate) limits: InboxLimits,
     pub(crate) mode: ConsumerMode,
+    pub(crate) ordered_sell_wake: bool,
 }
 impl AssociationInbox {
     /// Requires the separately migrated main DB. Never creates or repairs schema.
@@ -61,7 +62,12 @@ impl AssociationInbox {
         crate::association_sell_preparation::schema::required(&conn)?;
         crate::association_sell_preparation::parent_graph::schema::required(&conn)?;
         ordered::required(&conn, mode)?;
-        let mut result = Self { conn, limits, mode };
+        let mut result = Self {
+            conn,
+            limits,
+            mode,
+            ordered_sell_wake: false,
+        };
         result.recover()?;
         Ok(result)
     }
@@ -73,6 +79,11 @@ impl AssociationInbox {
     }
     pub fn usage(&self) -> Result<(usize, usize)> {
         usage(&self.conn, self.mode)
+    }
+    /// Coalesced scheduling hint after a new automatic intent commits and passes
+    /// exact readback. Existing intents grant no new hint or execution authority.
+    pub fn take_ordered_sell_wake(&mut self) -> bool {
+        std::mem::take(&mut self.ordered_sell_wake)
     }
     fn recover(&mut self) -> Result<()> {
         let tx = self
@@ -93,6 +104,7 @@ impl AssociationInbox {
         proof.verify(&self.conn)?;
         let pending:i64=self.conn.query_row("SELECT count(*) FROM association_inbox_identities WHERE terminal IS NULL AND recovery!=1",[],|r|r.get(0))?;
         ensure!(pending == 0, "inbox recovery readback failed");
+        self.ordered_sell_wake |= proof.new_ordered_sell();
         Ok(())
     }
 }

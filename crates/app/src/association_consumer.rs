@@ -24,12 +24,24 @@ use shadow_wake::ShadowWake;
 #[path = "association_consumer_replay.rs"]
 mod replay;
 
-type Pending = JoinHandle<(AssociationInbox, Option<DeliveryEnvelope>, Result<(bool, Option<copybot_core_types::association_recovery::DurableCheckpoint>)>)>;
+pub(crate) struct Persisted {
+    work: bool,
+    checkpoint: Option<copybot_core_types::association_recovery::DurableCheckpoint>,
+    execution_wake: bool,
+}
+impl Persisted {
+    fn read(inbox: &mut AssociationInbox, checkpoint: Option<copybot_core_types::association_recovery::DurableCheckpoint>) -> Result<Self> {
+        Ok(Self { work: inbox.has_sell_preparation_work()?, checkpoint,
+            execution_wake: inbox.take_ordered_sell_wake() })
+    }
+}
+type Pending = JoinHandle<(AssociationInbox, Option<DeliveryEnvelope>, Result<Persisted>)>;
 pub(crate) struct AssociationConsumer {
     receiver: DeliveryReceiver,
     inbox: Option<AssociationInbox>,
     recovery_pending: bool,
     pub(crate) shadow_wake: ShadowWake,
+    pub(crate) execution_wake: std::sync::Arc<tokio::sync::Notify>,
     pub(crate) pending: Option<Pending>,
     // Own the dequeued envelope before any external fence await. A cancelled
     // app-loop poll resumes this exact session without ACK or replacement.
@@ -98,6 +110,7 @@ impl AssociationConsumer {
             inbox: Some(inbox),
             recovery_pending,
             shadow_wake: ShadowWake::new(limits),
+            execution_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
             pending: None,
             intake: None,
             native_buy: None,
@@ -221,7 +234,7 @@ impl AssociationConsumer {
                 self.pending = Some(tokio::task::spawn_blocking(move || {
                     let result = (|| {
                         inbox.record_native_buy_fence_epoch(&epoch)?;
-                        Ok((inbox.has_sell_preparation_work()?, None))
+                        Persisted::read(&mut inbox, None)
                     })();
                     (inbox, None, result)
                 }));
@@ -288,7 +301,7 @@ impl AssociationConsumer {
                         Some(DeliveryEvent::ParentCheckpoint(_))) {
                         inbox.replay_checkpoint(replay_scope.as_ref().context("checkpoint scope missing")?)?
                     } else {None};
-                    Ok((inbox.has_sell_preparation_work()?,checkpoint))
+                    Persisted::read(&mut inbox, checkpoint)
                 })();
                 (inbox, envelope, result)
             }));
@@ -313,7 +326,7 @@ impl AssociationConsumer {
         }
         // A stale blocking result must not consume a newer close notification.
         // Notify retains its permit across this ACK and select cancellation.
-        let (work,checkpoint)=result?;
+        let Persisted { work, checkpoint, execution_wake } = result?;
         if let Some(head)=checkpoint {self.receiver.acknowledge_checkpoint(head)?;}
         if let Some(parent)=envelope.as_ref().and_then(|e|e.delivery.event.parent_observation()) {
             self.receiver.acknowledge_parent(parent.child.slot);
@@ -321,6 +334,9 @@ impl AssociationConsumer {
         if let Some(envelope) = envelope.as_ref() {
             self.receiver.acknowledge_delivery(envelope.elapsed());
         }
+        // The hint is emitted only after the writer's commit/readback and ACK.
+        // It schedules a fresh guarded tick; it is never execution authority.
+        if execution_wake { self.execution_wake.notify_one(); }
         self.recovery_pending = work;
         self.inbox = Some(inbox);
         let elapsed_ms = self.pending_started_at.take()

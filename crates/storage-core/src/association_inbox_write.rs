@@ -116,6 +116,7 @@ impl AssociationInbox {
                 "inbox committed state readback mismatch"
             );
         }
+        self.ordered_sell_wake |= proof.new_ordered_sell();
         Ok(())
     }
 }

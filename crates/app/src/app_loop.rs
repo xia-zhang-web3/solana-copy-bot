@@ -4,7 +4,7 @@ use crate::app_tests::b70_hooks::stop as app_loop_stop;
 
 mod startup;
 #[path = "ingress_execution_precheck.rs"]
-mod ingress_execution_precheck;
+pub(crate) mod ingress_execution_precheck;
 #[cfg(not(test))]
 mod shutdown_signal;
 
@@ -123,10 +123,8 @@ pub(super) async fn run_app_loop(
     let execution_canary_runner = ExecutionCanaryRunner::new(execution_config.clone())
         .for_ingestion(&ingestion_config, &sqlite_path)?;
     execution_canary_runner.log_startup_status();
-    let mut execution_canary_interval = time::interval(Duration::from_secs(
-        execution_canary_runner.interval_seconds(),
-    ));
-    execution_canary_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut execution_scheduler = ingress_execution_precheck::Scheduler::new(
+        &execution_canary_runner, None);
 
     match recover_shadow_restart_gap(
         &store,
@@ -183,6 +181,7 @@ pub(super) async fn run_app_loop(
     .await?;
     let execution_canary_runner = execution_canary_runner.with_ingress_hold(
         association_consumer.as_ref().and_then(|c| c.http_continuity_hold()));
+    execution_scheduler.bind(association_consumer.as_ref());
     let association_mode = association_consumer.is_some();
     let shadow_wake = association_consumer.as_ref().map(|c| c.shadow_wake.clone());
     #[cfg(test)]
@@ -305,7 +304,7 @@ pub(super) async fn run_app_loop(
             _ = risk_refresh_interval.tick() => {
                 handle_risk_refresh_tick(&store, &ingestion, &mut shadow_risk_guard)?;
             }
-            _ = execution_canary_interval.tick(), if execution_canary_runner.is_enabled() => {
+            _ = execution_scheduler.ready(), if execution_canary_runner.is_enabled() => {
                 ingress_execution_precheck::tick(&execution_canary_runner, &store,
                     &execution_config, association_consumer.as_ref()).await;
             }

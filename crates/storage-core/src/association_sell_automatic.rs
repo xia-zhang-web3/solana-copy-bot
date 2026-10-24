@@ -23,6 +23,7 @@ pub(super) fn after_refresh(
         }
     }
     let result = ordered_source_sell::stage_on_connection(c, signature, limits)?;
+    let inserted = matches!(&result, OrderedSellStage::Inserted(_));
     if let OrderedSellStage::Inserted(intent) | OrderedSellStage::Existing(intent) = result {
         // Positive history is immutable, but its exact blobs/ownership must be
         // included with the event/preparation/cursor in pre/postcommit readback.
@@ -43,6 +44,9 @@ pub(super) fn after_refresh(
                 signature, ordered_source_sell::PROVIDER_ORDER_STRICT_V1, intent.intent_id
             ]))?),
         )?;
+        if inserted {
+            proof.mark_new_ordered_sell();
+        }
     }
     // Unknown/Blocked completes this attempt. Only durable continuation, a new
     // relevant provider dependency or bootstrap can schedule another attempt.

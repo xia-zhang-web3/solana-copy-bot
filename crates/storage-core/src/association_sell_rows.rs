@@ -10,13 +10,21 @@ const DEP_PROOF:&str="SELECT json_array(sell_signature,anchor_signature,first_id
 pub(crate) struct Readback {
     expected: BTreeMap<(String, Vec<String>), Option<String>>,
     mode: crate::association_inbox::ConsumerMode,
+    new_ordered_sell: bool,
 }
 impl Readback {
     pub(crate) fn new(mode: crate::association_inbox::ConsumerMode) -> Self {
         Self {
             expected: BTreeMap::new(),
             mode,
+            new_ordered_sell: false,
         }
+    }
+    pub(crate) fn mark_new_ordered_sell(&mut self) {
+        self.new_ordered_sell = true;
+    }
+    pub(crate) fn new_ordered_sell(&self) -> bool {
+        self.new_ordered_sell
     }
     pub(crate) fn automatic(&self) -> bool {
         self.mode == crate::association_inbox::ConsumerMode::ProviderOrderStrictV1

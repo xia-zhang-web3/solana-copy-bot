@@ -58,7 +58,9 @@ impl AssociationInbox {
         crate::association_inbox::check_budget(&tx, self.limits, self.mode)?;
         proof.verify(&tx)?;
         tx.commit()?;
-        proof.verify(&self.conn)
+        proof.verify(&self.conn)?;
+        self.ordered_sell_wake |= proof.new_ordered_sell();
+        Ok(())
     }
     pub fn has_sell_preparation_work(&self) -> Result<bool> {
         Ok(work::pending(&self.conn)?

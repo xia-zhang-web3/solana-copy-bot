@@ -220,3 +220,6 @@ async fn copy_cycle_controlled_usdc_daemon_buy_gate_sell_closes_lots_once() -> R
     }
     Ok(())
 }
+
+#[path = "copy12_sell_wake_tests.rs"]
+mod copy12_sell_wake_tests;
