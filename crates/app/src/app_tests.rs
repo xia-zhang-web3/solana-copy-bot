@@ -53,6 +53,7 @@ mod controlled_copy_pipeline_fixture;
 mod controlled_copy_pipeline_tests;
 mod copy_cycle_fixture;
 mod copy_cycle_peer_fixture;
+mod copy_cycle_peer_tests;
 mod copy_cycle_tests;
 mod execution_only_loop_tests;
 mod http_throughput_fixture;

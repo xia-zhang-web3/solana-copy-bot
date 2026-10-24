@@ -28,6 +28,7 @@ pub(super) struct Peer {
     pub url: String,
     pub state: Arc<Mutex<State>>,
     task: tokio::task::JoinHandle<Result<()>>,
+    failure: Arc<Mutex<Option<String>>>,
 }
 impl Drop for Peer {
     fn drop(&mut self) {
@@ -50,22 +51,49 @@ impl Peer {
             history,
         }));
         let shared = state.clone();
+        let failure = Arc::new(Mutex::new(None));
+        let finished = failure.clone();
         let task = tokio::spawn(async move {
+            let result = async {
             loop {
                 let (mut socket, _) = listener.accept().await?;
-                let request = read(&mut socket).await?;
-                let response = respond(&request, &mut shared.lock().unwrap())?;
+                let Some(request) = read(&mut socket).await.context("LOCAL request read")? else {
+                    continue; // A dropped recovery future may leave no complete request.
+                };
+                let response = respond(&request, &mut shared.lock().unwrap())
+                    .with_context(|| format!("LOCAL response method={}", request["method"]))?;
                 let body = serde_json::to_vec(&response)?;
+                let written: std::io::Result<()> = async {
                 socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await?;
-                socket.write_all(&body).await?;
+                socket.write_all(&body).await
+                }.await;
+                if let Err(error) = written {
+                    if disconnected(error.kind()) { continue; }
+                    return Err(error).context("LOCAL response write");
+                }
             }
+            }.await;
+            if let Err(error) = &result {
+                *finished.lock().unwrap() = Some(format!("{error:#}"));
+            }
+            result
         });
-        Ok(Self { url, state, task })
+        Ok(Self {
+            url,
+            state,
+            task,
+            failure,
+        })
     }
     pub fn healthy(&self) -> Result<()> {
         ensure!(
             !self.task.is_finished(),
-            "LOCAL copy cycle provider terminated"
+            "LOCAL copy cycle provider terminated: {}",
+            self.failure
+                .lock()
+                .unwrap()
+                .as_deref()
+                .unwrap_or("task panicked or aborted")
         );
         Ok(())
     }
@@ -79,12 +107,32 @@ impl Peer {
         found.context("LOCAL receipt absent")
     }
 }
-async fn read(socket: &mut tokio::net::TcpStream) -> Result<Value> {
+fn disconnected(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+    )
+}
+async fn read_chunk(
+    socket: &mut tokio::net::TcpStream,
+    bytes: &mut [u8],
+) -> std::io::Result<usize> {
+    match socket.read(bytes).await {
+        Err(error) if disconnected(error.kind()) => Ok(0),
+        other => other,
+    }
+}
+async fn read(socket: &mut tokio::net::TcpStream) -> Result<Option<Value>> {
     let mut bytes = vec![];
     let (end, len) = loop {
         let mut chunk = [0; 4096];
-        let n = socket.read(&mut chunk).await?;
-        ensure!(n > 0 && bytes.len() < 1 << 20, "LOCAL request bound");
+        let n = read_chunk(socket, &mut chunk).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        ensure!(bytes.len() < 1 << 20, "LOCAL request bound");
         bytes.extend_from_slice(&chunk[..n]);
         if let Some(at) = bytes.windows(4).position(|b| b == b"\r\n\r\n") {
             let header = String::from_utf8_lossy(&bytes[..at]);
@@ -94,7 +142,7 @@ async fn read(socket: &mut tokio::net::TcpStream) -> Result<Value> {
                     header.split_whitespace().nth(1).unwrap()
                 ))?;
                 let params: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
-                return Ok(json!({"method":"quote","params":params}));
+                return Ok(Some(json!({"method":"quote","params":params})));
             }
             let len = header
                 .lines()
@@ -109,11 +157,13 @@ async fn read(socket: &mut tokio::net::TcpStream) -> Result<Value> {
     };
     while bytes.len() < end + len {
         let mut chunk = [0; 4096];
-        let n = socket.read(&mut chunk).await?;
-        ensure!(n > 0, "LOCAL short request");
+        let n = read_chunk(socket, &mut chunk).await?;
+        if n == 0 {
+            return Ok(None);
+        }
         bytes.extend_from_slice(&chunk[..n]);
     }
-    Ok(serde_json::from_slice(&bytes[end..end + len])?)
+    Ok(Some(serde_json::from_slice(&bytes[end..end + len])?))
 }
 fn account(s: &State, key: &str) -> Result<Value> {
     let raw = parse_pubkey(key, "LOCAL account")?;
