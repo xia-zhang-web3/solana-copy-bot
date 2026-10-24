@@ -52,6 +52,10 @@ pub(crate) fn validate_sell_receipt(conn: &Connection, order_id: &str, token: &s
 }
 
 pub(crate) fn ensure_buy_binding(conn: &Connection, i: &OwnerExitIntent) -> Result<()> {
+    if crate::bot_receipt_exit_id(&i.intent_id) {
+        crate::owner_bot_receipt_exit::validate(conn, i)?;
+        return Ok(());
+    }
     ensure_buy_binding_parts(
         conn,
         &i.buy_order_id,
@@ -128,6 +132,10 @@ pub(crate) fn validate_position(
             && exact.is_some_and(|q| q.raw() == raw && q.decimals() == decimals),
         "owner_exit_exact_position_changed"
     );
+    if crate::bot_receipt_exit_id(&id) {
+        let intent = crate::owner_exit_load::load(conn, &id)?.context("bot_receipt_exit_intent_missing")?;
+        return ensure_buy_binding(conn, &intent);
+    }
     ensure_buy_binding_parts(conn, &buy, &sig, &wallet, &genesis, &mint, &position,raw,decimals,id.starts_with("execution-only:"))
 }
 

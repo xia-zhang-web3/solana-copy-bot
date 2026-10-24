@@ -19,6 +19,10 @@ mod owner_exit_binding;
 mod owner_exit_fee;
 mod owner_source_recovery;
 pub use owner_source_recovery::source_recovery_exit_id;
+mod owner_bot_receipt_exit;
+pub use owner_bot_receipt_exit::{bot_receipt_exit_id, OwnerBotReceiptExitProof};
+mod prior_bot_receipt_exit;
+pub use prior_bot_receipt_exit::PriorBotReceiptExitBinding;
 mod owner_technical_buy_protected;
 pub use owner_technical_buy::{
     owner_technical_buy_client_order_id, owner_technical_buy_identity_id,

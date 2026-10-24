@@ -20,7 +20,12 @@ fn from_config(p: &OwnerExitConfig, config: &ExecutionConfig) -> Result<OwnerExi
     let activated_at = DateTime::parse_from_rfc3339(&p.activated_at)?.with_timezone(&Utc);
     let expires_at = DateTime::parse_from_rfc3339(&p.expires_at)?.with_timezone(&Utc);
     ensure!(activated_at < expires_at, "owner_exit_window");
-    if p.policy == copybot_config::OWNER_SOURCE_RECOVERY_EXIT_V1 {
+    if p.policy == copybot_config::OWNER_BOT_RECEIPT_EXIT_V1 {
+        let old = config.technical_cohort.as_ref().context("bot_receipt_exit_cohort")?;
+        let deadline = DateTime::parse_from_rfc3339(&old.deadline)?.with_timezone(&Utc);
+        ensure!(activated_at >= deadline, "bot_receipt_exit_separate_window");
+    }
+    if matches!(p.policy.as_str(), copybot_config::OWNER_SOURCE_RECOVERY_EXIT_V1 | copybot_config::OWNER_BOT_RECEIPT_EXIT_V1) {
         ensure!(expires_at.signed_duration_since(activated_at) <= chrono::Duration::seconds(300),
             "source_recovery_window_cap");
     }
@@ -71,7 +76,13 @@ pub(crate) fn current(
         "owner_exit_expired");
     ensure!(!std::path::Path::new(&config.canary_kill_switch_path).exists(),
         "owner_exit_kill_switch");
-    if config.owner_exit.as_ref().is_some_and(|p|p.policy == copybot_config::OWNER_SOURCE_RECOVERY_EXIT_V1) {
+    if config.owner_exit.as_ref().is_some_and(|p|p.policy == copybot_config::OWNER_BOT_RECEIPT_EXIT_V1) {
+        let scope=crate::execution_controlled_receipt_lot::scope(config)?.context("bot_receipt_exit_scope")?;
+        ensure!(store.controlled_receipt_lot_scope()?.as_ref()
+            == Some(&(expected.wallet.clone(), expected.run_id.clone(), scope)),
+            "bot_receipt_exit_scope_changed");
+        store.owner_bot_receipt_exit_proof(expected)?;
+    } else if config.owner_exit.as_ref().is_some_and(|p|p.policy == copybot_config::OWNER_SOURCE_RECOVERY_EXIT_V1) {
         let parent=crate::execution_owner_buy_authority::parent_identity(config)?;
         ensure!(store.load_owner_technical_buy_intent(&parent.intent_id)?.as_ref() == Some(&parent),
             "source_recovery_parent_changed");

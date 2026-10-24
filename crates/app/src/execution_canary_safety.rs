@@ -6,6 +6,8 @@ use std::path::Path;
 
 #[path = "execution_canary_risk_clock.rs"]
 pub(crate) mod risk_clock;
+#[path = "execution_prior_bot_receipt_exit.rs"]
+pub(crate) mod prior_bot_receipt_exit;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct ExecutionCanarySafetySnapshot {
@@ -47,6 +49,13 @@ fn safety_with_decision_time(
     if !config.canary_entry_submit_enabled {
         return Ok(ExecutionCanarySafetySnapshot {
             blocked_reason: Some("entry_submit_disabled"),
+            ..ExecutionCanarySafetySnapshot::default()
+        });
+    }
+
+    if !prior_bot_receipt_exit::ready(config)? {
+        return Ok(ExecutionCanarySafetySnapshot {
+            blocked_reason: Some("prior_bot_receipt_exit_pending"),
             ..ExecutionCanarySafetySnapshot::default()
         });
     }

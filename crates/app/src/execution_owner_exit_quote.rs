@@ -14,6 +14,7 @@ const CLASSIC_SPL: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 pub(crate) async fn verify_balance(
     http: &reqwest::Client,
     config: &ExecutionConfig,
+    store: &copybot_storage_core::SqliteStore,
     intent: &OwnerExitIntent,
     check: &impl Fn() -> Result<()>,
 ) -> Result<()> {
@@ -68,10 +69,18 @@ pub(crate) async fn verify_balance(
         &crate::execution_pumpswap_accounts::token_program_id(),
     );
     let address = bs58::encode(ata).into_string();
+    let bot = if copybot_storage_core::bot_receipt_exit_id(&intent.intent_id) {
+        Some(store.owner_bot_receipt_exit_proof(intent)?)
+    } else { None };
+    let mut options = json!({"encoding":"base64","commitment":"confirmed"});
+    if let Some(proof) = &bot {
+        ensure!(proof.token_account == address, "bot_receipt_exit_canonical_account");
+        options["minContextSlot"] = json!(proof.buy_slot);
+    }
     let account = read(
         "owner-exit-ata",
         "getAccountInfo",
-        json!([address,{"encoding":"base64","commitment":"confirmed"}]),
+        json!([address,options]),
     )
     .await?;
     check()?;
@@ -92,7 +101,13 @@ pub(crate) async fn verify_balance(
         "owner_exit_ata_owner_or_mint"
     );
     let amount = u64::from_le_bytes(data[64..72].try_into()?);
-    verify_lot_available(config, intent, amount)?;
+    if let Some(proof) = bot {
+        ensure!(account["context"]["slot"].as_u64().is_some_and(|s| s >= proof.buy_slot)
+            && amount == proof.expected_wallet_total_raw,
+            "bot_receipt_exit_wallet_inventory_changed");
+    } else {
+        verify_lot_available(config, intent, amount)?;
+    }
     // The route closes the wallet's WSOL ATA. An existing account could
     // contribute a WSOL balance or rent refund unrelated to this SELL.
     if config.controlled_receipt_lot.is_none() {

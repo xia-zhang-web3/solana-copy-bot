@@ -32,6 +32,7 @@ pub(crate) fn policy_identity(c: &ExecutionConfig) -> Result<String> {
         c.quote_canary_buy_size_sol.to_bits(),
         c.canary_kill_switch_path.as_str(),
     ))?);
+    let base = crate::execution_canary_safety::prior_bot_receipt_exit::bind_identity(c, base)?;
     if let Some(p) = c.technical_cohort.as_ref().filter(|p| p.activate) {
         return Ok(crate::execution_owned_sell_rpc::digest(serde_json::to_vec(&(
             base, p.policy.as_str(), p.run_id.as_str(), &p.wallet_ids,

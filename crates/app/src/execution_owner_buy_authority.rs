@@ -18,6 +18,9 @@ pub(crate) fn parent_identity(config:&ExecutionConfig)->Result<OwnerTechnicalBuy
     if let Some(scope)=crate::execution_controlled_receipt_lot::scope(config)? {
         intent.authority_sha256=crate::execution_owned_sell_rpc::digest(serde_json::to_vec(&(intent.authority_sha256,scope))?);
     }
+    intent.authority_sha256 = crate::execution_canary_safety::prior_bot_receipt_exit::bind_identity(
+        config, intent.authority_sha256,
+    )?;
     Ok(intent)
 }
 

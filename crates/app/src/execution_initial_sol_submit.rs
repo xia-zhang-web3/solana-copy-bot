@@ -157,7 +157,7 @@ async fn owner_exit_before_send(
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never()).build()?;
-        crate::execution_owner_exit_quote::verify_balance(&http, config, &exit, &check).await?;
+        crate::execution_owner_exit_quote::verify_balance(&http, config, store, &exit, &check).await?;
         let body: serde_json::Value = http.post(transport.rpc_endpoint())
             .json(&serde_json::json!({"jsonrpc":"2.0","id":"owner-exit-native",
                 "method":"getBalance","params":[exit.wallet,{"commitment":"confirmed"}]}))
@@ -190,6 +190,10 @@ async fn owner_exit_before_send(
         if config.owner_exit.as_ref().is_some_and(|p|p.policy == copybot_config::OWNER_SOURCE_RECOVERY_EXIT_V1) {
             ensure!(needed <= store.owner_source_recovery_native_remaining(&exit)?,
                 "source_recovery_native_cap");
+        }
+        if copybot_storage_core::bot_receipt_exit_id(&exit.intent_id) {
+            ensure!(needed <= store.owner_bot_receipt_exit_proof(&exit)?.native_remaining,
+                "bot_receipt_exit_native_cap");
         }
         ensure!(balance >= needed, "owner_exit_native_floor_insufficient");
         check()?;

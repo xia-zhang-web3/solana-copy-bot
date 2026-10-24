@@ -25,6 +25,8 @@ pub struct TechnicalCohortConfig {
 pub fn validate_technical_cohort(e: &crate::ExecutionConfig) -> Result<()> {
     crate::validate_controlled_receipt_lot(e)?;
     let Some(p) = &e.technical_cohort else { return Ok(()); };
+    let receipt_exit = e.owner_exit.as_ref().is_some_and(|exit|
+        exit.policy == crate::OWNER_BOT_RECEIPT_EXIT_V1);
     ensure!(p.policy == TECHNICAL_COHORT_V1, "technical_cohort_policy");
     ensure!(p.mint_policy == CLASSIC_SPL_MINT_V1,
         "technical_cohort_mint_policy");
@@ -43,8 +45,9 @@ pub fn validate_technical_cohort(e: &crate::ExecutionConfig) -> Result<()> {
     ensure!((121..=14_400).contains(&p.max_wait_seconds)
         && p.max_buy_count == 1 && p.max_source_sell_count == 1,
         "technical_cohort_window_or_count");
-    ensure!(e.native_fresh_buy.as_ref().is_some_and(|native|
+    ensure!((e.native_fresh_buy.as_ref().is_some_and(|native|
             native.policy == crate::PROCESSED_SLOT_FENCE_AVAILABILITY_V1)
+            || receipt_exit && !p.activate && e.native_fresh_buy.is_none())
         && e.owned_sell_preparation.as_ref().is_some_and(|sell|
             sell.tiny_dispatch && (sell.fractional_inventory.as_deref()
                 == Some("whole_wallet_parent_program_fraction_v1") || e.controlled_receipt_lot.is_some() && sell.fractional_inventory.as_deref()==Some(crate::CONTROLLED_RECEIPT_LOT_V1))),
@@ -62,7 +65,7 @@ pub fn validate_technical_cohort(e: &crate::ExecutionConfig) -> Result<()> {
         && e.max_submit_attempts == 1,
         "technical_cohort_financial_caps");
     ensure!(!e.enabled && e.canary_entry_submit_enabled == p.activate
-        && e.owner_technical_buy.is_none() && e.owner_exit.is_none(),
+        && e.owner_technical_buy.is_none() && (e.owner_exit.is_none() || receipt_exit && !p.activate),
         "technical_cohort_exclusive");
     if p.activate {
         ensure!(!p.activated_at.is_empty() && !p.deadline.is_empty()

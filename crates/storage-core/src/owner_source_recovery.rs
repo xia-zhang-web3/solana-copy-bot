@@ -6,7 +6,7 @@ use rusqlite::{params, Connection};
 pub fn source_recovery_exit_id(id: &str) -> bool { id.starts_with("source-recovery:")||crate::owner_exit_child::is_child(id) }
 pub(crate) fn recovery(id: &str) -> bool { source_recovery_exit_id(id) }
 pub(crate) fn single_attempt(id: &str) -> bool {
-    recovery(id) || id.starts_with("execution-only:")
+    recovery(id) || id.starts_with("execution-only:") || crate::bot_receipt_exit_id(id)
 }
 pub(crate) fn validate(c: &Connection, i: &OwnerExitIntent) -> Result<u64> {
     if crate::owner_exit_child::is_child(&i.intent_id){

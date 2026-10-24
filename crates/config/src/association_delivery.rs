@@ -158,6 +158,7 @@ pub fn validate_association_delivery(c: &AppConfig) -> Result<()> {
     crate::validate_owned_sell_preparation(&c.execution, &c.ingestion)?;
     crate::validate_owner_technical_buy(&c.execution)?;
     crate::validate_owner_exit(&c.execution)?;
+    crate::validate_prior_bot_receipt_exit(&c.execution)?;
     crate::validate_technical_cohort(&c.execution)?;
     if let Some(native) = &c.execution.native_fresh_buy {
         ensure!(

@@ -66,6 +66,9 @@ impl SqliteDiscoveryStore {
             validate(intent, crate::controlled_receipt_lot::source_scoped(conn,&intent.run_id,&intent.wallet)?)?;
             if let Some(old) = self.load_owner_exit_intent(&intent.intent_id)? {
                 ensure!(old == *intent, "owner_exit_intent_conflict");
+                if crate::bot_receipt_exit_id(&intent.intent_id) {
+                    crate::owner_bot_receipt_exit::historical(conn, intent)?;
+                }
                 return Ok(OwnerExitIntentRecordOutcome::Existing);
             }
             if let Some(id)=intent.intent_id.strip_prefix("execution-only:") {
@@ -265,6 +268,10 @@ impl SqliteDiscoveryStore {
                 ensure!(budget.total_fee <= crate::owner_source_recovery::validate(conn,&intent)?,
                     "source_recovery_native_cap");
             }
+            if crate::bot_receipt_exit_id(id) {
+                ensure!(budget.total_fee <= crate::owner_bot_receipt_exit::validate(conn, &intent)?.native_remaining,
+                    "bot_receipt_exit_native_cap");
+            }
             let current = self
                 .load_execution_canary_order(&expected.order_id)?
                 .context("owner_exit_order_missing")?;
@@ -320,7 +327,9 @@ pub(crate) fn validate(i: &OwnerExitIntent, controlled: bool) -> Result<()> {
     }
     ensure!(
         (i.buy_order_id == OWNER_EXIT_BUY_ORDER || (crate::owner_source_recovery::single_attempt(&i.intent_id)
-                && i.buy_order_id.starts_with("exec-canary:owner-buy:")))
+                && i.buy_order_id.starts_with("exec-canary:owner-buy:"))
+            || (crate::bot_receipt_exit_id(&i.intent_id)
+                && i.buy_order_id.starts_with("exec-canary:native-buy-v1:")))
             && i.position_id == format!("exec-canary-pos:{}", i.buy_order_id)
             && !i.buy_receipt_signature.is_empty()
             && i.wallet == i.signer
@@ -332,7 +341,7 @@ pub(crate) fn validate(i: &OwnerExitIntent, controlled: bool) -> Result<()> {
             && !i.route.is_empty()
             && i.activated_at < i.expires_at
             && i.max_priority_fee_lamports <= crate::tiny_experiment::TINY_PRIORITY_FEE
-            && (i.min_reserve_lamports > 0 || controlled)
+            && (i.min_reserve_lamports > 0 || controlled || crate::bot_receipt_exit_id(&i.intent_id))
             && i.max_slippage_bps <= 10_000,
         "owner_exit_intent_identity_or_limits"
     );

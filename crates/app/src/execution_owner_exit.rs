@@ -82,7 +82,7 @@ pub(crate) async fn tick_with_adapter<A: ExecutionSubmitAdapter>(
             .ok_or_else(|| anyhow::anyhow!("owner_exit_clock"))?,
     );
     if let Err(error) = crate::execution_owner_exit_quote::verify_balance(
-        &http, config, &intent, &check).await {
+        &http, config, store, &intent, &check).await {
         if single_attempt {
             store.mark_execution_canary_failed(&owner_exit_order_id(&intent.intent_id),now,
                 copybot_storage_core::EXECUTION_ERROR_BUILD_FAILED,&error.to_string())?;summary.failed=1;

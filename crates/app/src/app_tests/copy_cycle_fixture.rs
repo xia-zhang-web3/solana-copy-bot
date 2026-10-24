@@ -17,6 +17,13 @@ use std::{
 use yellowstone_grpc_proto::prelude::SubscribeUpdateTransaction;
 
 pub(super) const BOT_RAW: u64 = frames::RECEIVED - 17;
+#[derive(Default)]
+pub(super) struct CycleOptions {
+    pub phase: Option<&'static str>,
+    pub source_window: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+    pub prior_exit: Option<copybot_config::PriorBotReceiptExitConfig>,
+    pub source_intent: Option<String>,
+}
 pub(super) struct Cycle {
     pub case: GateCase,
     pub app: AppConfig,
@@ -42,94 +49,122 @@ fn endpoint(c: &mut copybot_config::ExecutionConfig, url: &str) {
     }
 }
 impl Cycle {
-    pub async fn new() -> Result<Self> {
-        let mut case = GateCase::new().await?;
-        let mut app = frames::config(&case)?;
-        let history: History = Arc::new(Mutex::new(BTreeMap::new()));
-        let source_wallet = crate::execution_pumpswap_accounts::parse_pubkey(
-            &case.source.config.canary_wallet_pubkey,
-            "LOCAL source",
-        )?;
-        let bot_key = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
-        let source = Peer::new(source_wallet, frames::RECEIVED, 120, history.clone()).await?;
-        let bot = Peer::new(bot_key.verifying_key().to_bytes(), BOT_RAW, 121, history).await?;
-        let bot_key_path = case.source.root.path().join("LOCAL-bot-key.json");
-        std::fs::write(
-            &bot_key_path,
-            serde_json::to_vec(&bot_key.to_keypair_bytes().as_slice())?,
-        )?;
-        endpoint(&mut app.execution, &bot.url);
-        app.execution.execution_signer_keypair_path = bot_key_path.to_string_lossy().into();
-        app.execution.tiny_experiment.policy_mode =
-            copybot_config::TinyPolicyMode::ProtectedNativeCapital;
-        let p = case.source.config.owner_technical_buy.as_ref().unwrap();
-        let controlled = ControlledReceiptLotConfig {
-            policy: copybot_config::CONTROLLED_RECEIPT_LOT_V1.into(),
-            source_run_id: p.run_id.clone(),
-            bot_run_id: app.execution.tiny_experiment.id.clone().unwrap(),
-            source_wallet: case.source.config.canary_wallet_pubkey.clone(),
-            bot_wallet: app.execution.canary_wallet_pubkey.clone(),
-            source_buy_intent_id: p.intent_id.clone(),
-            source_state_db_path: case
-                .source
-                .root
-                .path()
-                .join("state.db")
-                .to_string_lossy()
-                .into(),
-            wsol_lifecycle: copybot_config::TRANSACTION_OWNED_WSOL_V1.into(),
-        };
-        app.execution.controlled_receipt_lot = Some(controlled.clone());
-        let sell = app.execution.owned_sell_preparation.as_mut().unwrap();
-        sell.fractional_inventory = Some(copybot_config::CONTROLLED_RECEIPT_LOT_V1.into());
-        sell.protected_bot_usdc_baseline = None;
-        endpoint(&mut case.source.config, &source.url);
-        case.source.config.controlled_receipt_lot = Some(controlled);
-        case.source.config.owned_sell_preparation = None;
-        let p = case.source.config.owner_technical_buy.as_mut().unwrap();
-        p.min_reserve_lamports = 0;
-        p.source_copy_exit_gate
-            .as_mut()
-            .unwrap()
-            .bot_policy_identity =
-            crate::execution_native_buy_rpc::policy_identity(&app.execution)?;
-        copybot_config::validate_controlled_receipt_lot(&app.execution)?;
-        copybot_config::validate_controlled_receipt_lot(&case.source.config)?;
-        copybot_config::validate_association_delivery(&app)?;
-        crate::execution_controlled_receipt_lot::register(&case.source.config, &case.source.store)?;
-        crate::execution_controlled_receipt_lot::register(&app.execution, &case.bot)?;
-        // Scope follows actual daemon wallets. No fixture constructor fabricates a BOT trade.
-        let authority = crate::execution_technical_cohort::authority(&app.execution)?.unwrap();
-        let scope =
-            crate::execution_technical_cohort::admission_wallets(&authority, &app.execution)?;
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
-        let mut ingestion = IngestionService::with_replay_scoped(
-            &app,
-            receiver,
-            "LOCAL-controlled-copy-cycle".into(),
-            Some(scope),
-        )?;
-        let consumer = AssociationConsumer::start_with_execution(
-            &mut ingestion,
-            &app.ingestion,
-            &app.execution,
-            &case.path.to_string_lossy(),
-        )
-        .await?
-        .context("actual controlled copy consumer")?;
-        let mut cycle = Self {
-            case,
-            app,
-            source,
-            bot,
-            consumer,
-            sender,
-            sequence: 0,
-        };
-        cycle.poll().await?;
-        cycle.consumer.next_fence_at = Some(tokio::time::Instant::now());
-        cycle.poll().await?;
-        Ok(cycle)
+    pub fn new() -> impl std::future::Future<Output = Result<Self>> {
+        Self::with_options(CycleOptions::default())
+    }
+    pub fn with_options(
+        options: CycleOptions,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self>>>> {
+        Box::pin(async move {
+            let mut case = Box::pin(GateCase::new()).await?;
+            let config = &mut case.source.config;
+            let owner = config.owner_technical_buy.as_mut().unwrap();
+            if let Some(phase) = options.phase {
+                owner.run_id = format!("LOCAL-{phase}-source-run");
+                owner.intent_id = format!("LOCAL-{phase}-source-buy");
+                owner.source_copy_exit_gate.as_mut().unwrap().bot_run_id =
+                    format!("LOCAL-{phase}-bot-run");
+                config.tiny_experiment.id = Some(owner.run_id.clone());
+                config.owned_sell_preparation.as_mut().unwrap().identity = owner.run_id.clone();
+            }
+            if let Some((activated, expires)) = options.source_window {
+                owner.activated_at = activated.to_rfc3339();
+                owner.expires_at = expires.to_rfc3339();
+            }
+            if let Some(intent) = options.source_intent {
+                owner.intent_id = intent;
+            }
+            config.prior_bot_receipt_exit = options.prior_exit;
+            let mut app = frames::config(&case)?;
+            let history: History = Arc::new(Mutex::new(BTreeMap::new()));
+            let source_wallet = crate::execution_pumpswap_accounts::parse_pubkey(
+                &case.source.config.canary_wallet_pubkey,
+                "LOCAL source",
+            )?;
+            let bot_key = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
+            let source = Peer::new(source_wallet, frames::RECEIVED, 120, history.clone()).await?;
+            let bot = Peer::new(bot_key.verifying_key().to_bytes(), BOT_RAW, 121, history).await?;
+            let bot_key_path = case.source.root.path().join("LOCAL-bot-key.json");
+            std::fs::write(
+                &bot_key_path,
+                serde_json::to_vec(&bot_key.to_keypair_bytes().as_slice())?,
+            )?;
+            endpoint(&mut app.execution, &bot.url);
+            app.execution.execution_signer_keypair_path = bot_key_path.to_string_lossy().into();
+            app.execution.tiny_experiment.policy_mode =
+                copybot_config::TinyPolicyMode::ProtectedNativeCapital;
+            let p = case.source.config.owner_technical_buy.as_ref().unwrap();
+            let controlled = ControlledReceiptLotConfig {
+                policy: copybot_config::CONTROLLED_RECEIPT_LOT_V1.into(),
+                source_run_id: p.run_id.clone(),
+                bot_run_id: app.execution.tiny_experiment.id.clone().unwrap(),
+                source_wallet: case.source.config.canary_wallet_pubkey.clone(),
+                bot_wallet: app.execution.canary_wallet_pubkey.clone(),
+                source_buy_intent_id: p.intent_id.clone(),
+                source_state_db_path: case
+                    .source
+                    .root
+                    .path()
+                    .join("state.db")
+                    .to_string_lossy()
+                    .into(),
+                wsol_lifecycle: copybot_config::TRANSACTION_OWNED_WSOL_V1.into(),
+            };
+            app.execution.controlled_receipt_lot = Some(controlled.clone());
+            let sell = app.execution.owned_sell_preparation.as_mut().unwrap();
+            sell.fractional_inventory = Some(copybot_config::CONTROLLED_RECEIPT_LOT_V1.into());
+            sell.protected_bot_usdc_baseline = None;
+            endpoint(&mut case.source.config, &source.url);
+            case.source.config.controlled_receipt_lot = Some(controlled);
+            case.source.config.owned_sell_preparation = None;
+            let p = case.source.config.owner_technical_buy.as_mut().unwrap();
+            p.min_reserve_lamports = 0;
+            p.source_copy_exit_gate
+                .as_mut()
+                .unwrap()
+                .bot_policy_identity =
+                crate::execution_native_buy_rpc::policy_identity(&app.execution)?;
+            copybot_config::validate_controlled_receipt_lot(&app.execution)?;
+            copybot_config::validate_controlled_receipt_lot(&case.source.config)?;
+            copybot_config::validate_association_delivery(&app)?;
+            crate::execution_controlled_receipt_lot::register(
+                &case.source.config,
+                &case.source.store,
+            )?;
+            crate::execution_controlled_receipt_lot::register(&app.execution, &case.bot)?;
+            // Scope follows actual daemon wallets. No fixture constructor fabricates a BOT trade.
+            let authority = crate::execution_technical_cohort::authority(&app.execution)?.unwrap();
+            let scope =
+                crate::execution_technical_cohort::admission_wallets(&authority, &app.execution)?;
+            let (sender, receiver) = tokio::sync::mpsc::channel(8);
+            let mut ingestion = IngestionService::with_replay_scoped(
+                &app,
+                receiver,
+                "LOCAL-controlled-copy-cycle".into(),
+                Some(scope),
+            )?;
+            let consumer = AssociationConsumer::start_with_execution(
+                &mut ingestion,
+                &app.ingestion,
+                &app.execution,
+                &case.path.to_string_lossy(),
+            )
+            .await?
+            .context("actual controlled copy consumer")?;
+            let mut cycle = Self {
+                case,
+                app,
+                source,
+                bot,
+                consumer,
+                sender,
+                sequence: 0,
+            };
+            Box::pin(cycle.poll()).await?;
+            cycle.consumer.next_fence_at = Some(tokio::time::Instant::now());
+            Box::pin(cycle.poll()).await?;
+            Ok(cycle)
+        })
     }
     pub async fn poll(&mut self) -> Result<()> {
         let mut rpc =

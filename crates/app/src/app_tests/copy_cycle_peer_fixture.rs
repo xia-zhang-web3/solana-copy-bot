@@ -19,6 +19,8 @@ pub(super) struct State {
     pub requests: Vec<Value>,
     pub sends: Vec<String>,
     pub unknown_sell: bool,
+    pub confirmation_status: &'static str,
+    pub genesis: String,
     buy_raw: u64,
     buy_slot: u64,
     sell_slot: u64,
@@ -45,6 +47,8 @@ impl Peer {
             requests: vec![],
             sends: vec![],
             unknown_sell: false,
+            confirmation_status: "confirmed",
+            genesis: super::owner_buy_fixture::GENESIS.into(),
             buy_raw: raw,
             buy_slot: slot,
             sell_slot: slot + 2,
@@ -259,7 +263,7 @@ fn respond(r: &Value, s: &mut State) -> Result<Value> {
     }
     let slot = s.sell_slot;
     let result = match method {
-        "getGenesisHash" => json!(super::owner_buy_fixture::GENESIS),
+        "getGenesisHash" => json!(s.genesis),
         "getSlot" => json!(119),
         "getBalance" => {
             json!({"context":{"slot":slot},"value":s.bank.accounts[&s.bank.wallet].lamports})
@@ -302,7 +306,7 @@ fn respond(r: &Value, s: &mut State) -> Result<Value> {
             if s.unknown_sell && s.sends.len() == 2 {
                 json!({"context":{"slot":slot},"value":[null]})
             } else {
-                json!({"context":{"slot":slot},"value":[{"err":null,"slot":if s.sends.len()==1{s.buy_slot}else{s.sell_slot},"confirmationStatus":"confirmed"}]})
+                json!({"context":{"slot":slot},"value":[{"err":null,"slot":if s.sends.len()==1{s.buy_slot}else{s.sell_slot},"confirmationStatus":s.confirmation_status}]})
             }
         }
         "getTransaction" => {

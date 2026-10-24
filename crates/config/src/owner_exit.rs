@@ -37,7 +37,10 @@ pub struct OwnerExitConfig {
 pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
     crate::validate_controlled_receipt_lot(e)?;
     let Some(p) = &e.owner_exit else { return Ok(()); };
-    ensure!(matches!(p.policy.as_str(),OWNER_EXIT_V1 | OWNER_ROUNDTRIP_EXIT_V1 | OWNER_SOURCE_RECOVERY_EXIT_V1), "owner_exit_policy");
+    ensure!(matches!(p.policy.as_str(),OWNER_EXIT_V1 | OWNER_ROUNDTRIP_EXIT_V1 | OWNER_SOURCE_RECOVERY_EXIT_V1 | crate::OWNER_BOT_RECEIPT_EXIT_V1), "owner_exit_policy");
+    if p.policy == crate::OWNER_BOT_RECEIPT_EXIT_V1 {
+        crate::bot_receipt_exit::validate(e, p)?;
+    }
     if p.policy == OWNER_SOURCE_RECOVERY_EXIT_V1 {
         let b=e.owner_technical_buy.as_ref().ok_or_else(||anyhow::anyhow!("source_recovery_parent"))?;
         let s=e.controlled_receipt_lot.as_ref().ok_or_else(||anyhow::anyhow!("source_recovery_scope"))?;
@@ -86,6 +89,7 @@ pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
     ensure!(p.mint == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
         && p.decimals == 6 && (if p.policy == OWNER_EXIT_V1 {p.amount_raw == 1_167_085}
             else {p.amount_raw > 0 && (p.intent_id.starts_with("execution-only:")
+                || p.policy == crate::OWNER_BOT_RECEIPT_EXIT_V1
                 || p.policy == OWNER_SOURCE_RECOVERY_EXIT_V1
                     && (p.intent_id.starts_with("source-recovery:")||p.source_recovery_parent_intent_id.is_some()))}),
         "owner_exit_exact_position_amount");

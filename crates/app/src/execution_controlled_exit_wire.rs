@@ -1,4 +1,4 @@
-//! Private SOURCE exit byte scope; it is never deserialized or financial authority.
+//! Private receipt exit byte scope; it is never deserialized or financial authority.
 use crate::execution_submit_adapter::ExecutionSubmitRequest;
 use anyhow::{ensure, Context, Result};
 use copybot_config::ExecutionConfig;
@@ -15,8 +15,13 @@ impl ExitWire {
     pub(crate) fn native_remaining(&self) -> u64 { self.native_remaining }
     pub(crate) fn matches(&self, r: &ExecutionSubmitRequest) -> bool {
         self.scope.policy == copybot_config::CONTROLLED_RECEIPT_LOT_V1
-            && self.intent.wallet == self.scope.source_wallet
-            && self.intent.run_id == self.scope.source_run_id
+            && (if copybot_storage_core::bot_receipt_exit_id(&self.intent.intent_id) {
+                self.intent.wallet == self.scope.bot_wallet
+                    && self.intent.run_id == self.scope.bot_run_id
+            } else {
+                self.intent.wallet == self.scope.source_wallet
+                    && self.intent.run_id == self.scope.source_run_id
+            })
             && r.wallet_pubkey == self.intent.wallet
             && r.side == "sell"
             && r.token == self.intent.mint
@@ -36,7 +41,11 @@ pub(crate) fn stamp(
     let Some(scope) = super::scope(c)? else {
         return Ok(());
     };
-    ensure!(
+    let bot = copybot_storage_core::bot_receipt_exit_id(&i.intent_id);
+    let bound = if bot {
+        scope.bot_wallet == i.wallet && scope.bot_run_id == i.run_id
+            && c.owner_exit.as_ref().is_some_and(|p|p.policy == copybot_config::OWNER_BOT_RECEIPT_EXIT_V1)
+    } else {
         scope.source_wallet == i.wallet
             && scope.source_run_id == i.run_id
             && (i.intent_id == format!("execution-only:{}", scope.source_buy_intent_id)
@@ -45,7 +54,8 @@ pub(crate) fn stamp(
                         || c.owner_exit.as_ref().is_some_and(|p|p.source_recovery_parent_intent_id.as_deref()
                             ==Some(format!("source-recovery:{}",scope.source_buy_intent_id).as_str()))
                         && i.intent_id==format!("source-child:{}",scope.source_buy_intent_id)))
-            && s.controlled_receipt_lot_scope()?.as_ref()
+    };
+    ensure!(bound && s.controlled_receipt_lot_scope()?.as_ref()
                 == Some(&(i.wallet.clone(), i.run_id.clone(), scope.clone())),
         "receipt_lot_exit_wire_scope"
     );
@@ -72,7 +82,9 @@ pub(crate) fn stamp(
         "receipt_lot_exit_wire_receipt"
     );
     r.metadata.controlled_exit_wire = Some(Box::new(ExitWire {
-        native_remaining: if copybot_storage_core::source_recovery_exit_id(&i.intent_id) {
+        native_remaining: if bot {
+            s.owner_bot_receipt_exit_proof(i)?.native_remaining
+        } else if copybot_storage_core::source_recovery_exit_id(&i.intent_id) {
             s.owner_source_recovery_native_remaining(i)?
         } else {copybot_storage_core::TINY_NATIVE_ALLOWANCE},
         scope,
