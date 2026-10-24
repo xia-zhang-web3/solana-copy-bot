@@ -23,7 +23,7 @@ pub(super) fn bundle(ix: &[I]) -> Result<Value> {
     )
 }
 /// The modeled provider chooses the already-supported compact Raydium-v2 leg.
-fn compact_buy(ix: &[I]) -> Vec<I> {
+pub(super) fn compact_buy(ix: &[I]) -> Vec<I> {
     let mut ix = ix.to_vec();
     if let Some(r) = ix.iter_mut().find(|i| {
         i.data.starts_with(&[229, 23, 203, 151, 122, 227, 173, 42]) && i.data.get(12) == Some(&7)

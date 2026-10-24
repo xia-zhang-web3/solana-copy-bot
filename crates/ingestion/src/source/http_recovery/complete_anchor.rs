@@ -107,6 +107,23 @@ fn complete_trace(info: &SubscribeUpdateTransactionInfo) -> bool {
     }
     !meta.log_messages.is_empty() && stack.is_empty()
 }
+
+fn known_logs_agree(http: &[String], live: &[String]) -> bool {
+    // A bare truncation marker replaces one nonempty contiguous range. Every
+    // available record on both sides must agree; absent records are supplied
+    // by the current trusted HTTP response, never claimed equal to hidden live
+    // data. Execution identity and the complete HTTP trace are checked separately.
+    let Some(gap) = live.iter().position(|v| v == TRUNCATED) else {
+        return false;
+    };
+    !live
+        .iter()
+        .enumerate()
+        .any(|(i, v)| i != gap && v.starts_with(TRUNCATED))
+        && http.len() >= live.len()
+        && http.starts_with(&live[..gap])
+        && http.ends_with(&live[gap + 1..])
+}
 /// Fresh HTTP is trusted for missing payload only after complete execution identity
 /// and every available live log record agree. This does not assert hidden equality.
 pub(crate) fn eligible(http: &SubscribeUpdateBlock, live: &SubscribeUpdateBlock) -> bool {
@@ -145,13 +162,7 @@ pub(crate) fn eligible(http: &SubscribeUpdateBlock, live: &SubscribeUpdateBlock)
         };
         if hm.err.is_some()
             || gm.log_messages_none
-            || gm.log_messages.last().map(String::as_str) != Some(TRUNCATED)
-            || gm.log_messages[..gm.log_messages.len() - 1]
-                .iter()
-                .any(|v| v.starts_with(TRUNCATED))
-            || !hm
-                .log_messages
-                .starts_with(&gm.log_messages[..gm.log_messages.len() - 1])
+            || !known_logs_agree(&hm.log_messages, &gm.log_messages)
             || !complete_trace(h)
         {
             return false;

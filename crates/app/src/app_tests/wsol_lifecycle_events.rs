@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use prost::Message as _;
 use serde_json::Value;
 use yellowstone_grpc_proto::prelude::*;
-fn info(wire: &str, r: &Value, index: u64) -> Result<SubscribeUpdateTransactionInfo> {
+pub(super) fn info(wire: &str, r: &Value, index: u64) -> Result<SubscribeUpdateTransactionInfo> {
     let m = crate::execution_transaction_wire::decode_message(wire, |_| Ok(()))?;
     let t = &r["result"];
     let meta = &t["meta"];

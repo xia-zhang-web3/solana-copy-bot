@@ -135,3 +135,6 @@ mod ingress_route;
 mod anchor_tail_tests;
 #[path = "../source_tests/anchor_complete_tests.rs"]
 mod anchor_complete_tests;
+
+#[path = "../source_tests/copy11_completion_tests.rs"]
+mod copy11_completion_tests;
