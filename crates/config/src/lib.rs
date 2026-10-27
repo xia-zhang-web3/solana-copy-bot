@@ -22,6 +22,8 @@ pub use bot_receipt_exit::OWNER_BOT_RECEIPT_EXIT_V1;
 pub use prior_bot_receipt_exit::{validate_prior_bot_receipt_exit, PriorBotReceiptExitConfig, PRIOR_BOT_RECEIPT_EXIT_V1};
 mod owner_source_copy_gate;
 mod owner_technical_buy;
+mod execution_only_mode;
+pub use execution_only_mode::{execution_only_mode, ExecutionOnlyMode};
 mod risk_validation;
 mod schema;
 mod technical_cohort;

@@ -37,3 +37,6 @@ async fn execution_only_scheduler_stops_without_ingress_or_discovery() -> Result
     }
     Ok(())
 }
+
+#[path = "receipt_exit_only_tests.rs"]
+mod receipt_exit_only_tests;

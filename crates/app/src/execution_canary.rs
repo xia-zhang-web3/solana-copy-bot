@@ -15,6 +15,8 @@ use std::path::Path;
 use tracing::info;
 #[path = "execution_native_buy.rs"]
 mod native_buy;
+#[path = "execution_receipt_exit_tick.rs"]
+mod receipt_exit_tick;
 
 const CANARY_COPY_SIGNAL_STATUS: &str = "shadow_recorded";
 const CLOSE_QUOTE_RETRY_LOOKBACK_SECONDS: i64 = 24 * 60 * 60;
@@ -196,6 +198,10 @@ impl ExecutionCanaryRunner {
             wallet_pubkey: self.config.canary_wallet_pubkey.clone(),
             ..ExecutionCanaryTickSummary::default()
         };
+        if copybot_config::execution_only_mode(&self.config)?
+            == Some(copybot_config::ExecutionOnlyMode::BotReceiptExit) {
+            return self.owner_exit_tick(store, now, summary).await;
+        }
         if copybot_config::owner_execution_roundtrip(&self.config)
             && !self.config.owner_exit.as_ref().is_some_and(
                 |p|p.policy == copybot_config::OWNER_SOURCE_RECOVERY_EXIT_V1) {
@@ -209,16 +215,7 @@ impl ExecutionCanaryRunner {
             return Ok(summary);
         }
         if self.config.owner_exit.is_some() {
-            #[cfg(test)]
-            if let Some(adapter) = self.owner_exit_adapter.as_ref() {
-                let owner = crate::execution_owner_exit::tick_with_adapter(
-                    &self.config, store, now, adapter.as_ref()).await?;
-                apply_state_machine_summary(&mut summary, owner);
-                return Ok(summary);
-            }
-            let owner = crate::execution_owner_exit::tick(&self.config, store, now).await?;
-            apply_state_machine_summary(&mut summary, owner);
-            return Ok(summary);
+            return self.owner_exit_tick(store, now, summary).await;
         }
         if self.strict_quotes {
             self.reconcile_owned_sell(&mut summary)?;

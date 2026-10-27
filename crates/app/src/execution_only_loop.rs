@@ -13,7 +13,7 @@ pub(crate) async fn run(
     config: ExecutionConfig,
     heartbeat_seconds: u64,
 ) -> Result<()> {
-    ensure!(copybot_config::owner_execution_roundtrip(&config),
+    ensure!(copybot_config::execution_only_mode(&config)?.is_some(),
         "execution_only_owner_policy_required");
     let runner = ExecutionCanaryRunner::new(config);
     run_until(store, runner, heartbeat_seconds, tokio::signal::ctrl_c()).await
