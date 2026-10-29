@@ -52,6 +52,21 @@ pub fn confirmed_priority_fee(
             |r| r.get(0),
         )
         .optional()?
+    } else if facts.side == "sell" && facts.order_id.starts_with("exec-canary:rpc-owned-sell:") {
+        conn.query_row(
+            "SELECT r.priority_fee FROM execution_tiny_reservations r
+             JOIN execution_canary_dispatch d ON d.order_id=r.order_id
+             JOIN rpc_owned_sell_dispatches x ON x.order_id=r.order_id
+             JOIN rpc_owned_sell_handoffs h ON h.intent_id=x.intent_id
+             WHERE r.order_id=?1 AND r.tx_signature=?2 AND r.wallet=?3 AND r.side='sell'
+               AND d.tx_signature=r.tx_signature AND d.wallet=r.wallet AND d.side=r.side
+               AND r.message_sha256=d.message_sha256 AND r.transaction_sha256=d.transaction_sha256
+               AND h.wallet=r.wallet AND h.experiment_id=r.experiment_id AND x.handoff_owner=h.owner
+               AND d.signal_id=h.intent_id AND d.client_order_id=h.owner",
+            params![facts.order_id, facts.tx_signature, facts.wallet_pubkey],
+            |r| r.get(0),
+        )
+        .optional()?
     } else {
         conn.query_row(
             "SELECT priority_fee FROM owner_exit_fee_reservations

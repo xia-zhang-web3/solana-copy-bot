@@ -185,6 +185,8 @@ config review, code review, local tests, devnet, or operator observability.
 
 Read-only operator rollout does not imply daemon config acceptance.
 
+For combined A→B packages, LOCAL verification must exercise A closure, the exact stopped-writer handoff, B execution and final wallet/accounting reconciliation through the actual controller and app. A closed A database may be checkpointed to DELETE journal mode only in its task-owned stopped volume, with logical contents and closure checked before and after, before read-only B consumers open it. Keep dirty LOCAL builds distinct from accepted CI artifacts; LOCAL completion does not authorize another financial attempt.
+
 ## 7. Production Install
 
 Production preflight for any install or rollback:

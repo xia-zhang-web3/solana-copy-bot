@@ -1,5 +1,8 @@
 //! Additive classification of confirmed receipt cash. The original fill remains a
 //! wallet cash basis; a component is known only with matching receipt evidence.
+#[path = "receipt_cash_buy.rs"]
+mod buy;
+
 use crate::{
     native_observations::storage, receipt_facts_identity, receipt_facts_rows,
     ExecutionCanaryReceiptFacts, NativeAccountObservations, NativeInstructionObservation,
@@ -169,7 +172,7 @@ pub fn derive_receipt_cash_components(
     let rent = target_ata_rent(facts, observations);
     let swap = if facts.side == "buy" {
         owner_buy_amount
-            .filter(|amount| confirmed_buy_input(facts, observations, *amount))
+            .filter(|amount| buy::confirmed_input(facts, observations, *amount))
             .map(|amount| -i128::from(amount))
     } else {
         confirmed_sell_output(facts, observations).map(i128::from)
@@ -271,50 +274,6 @@ fn target_ata_rent(f: &ExecutionCanaryReceiptFacts, o: &NativeAccountObservation
     None
 }
 
-fn confirmed_buy_input(
-    f: &ExecutionCanaryReceiptFacts,
-    o: &NativeAccountObservations,
-    amount: u64,
-) -> bool {
-    if amount == 0 || f.token_delta.is_none_or(|d| d.raw <= 0) {
-        return false;
-    }
-    let amount = amount.to_string();
-    let funded: Vec<_> = o
-        .instructions
-        .iter()
-        .filter(|ix| {
-            ix_is(ix, SYSTEM, "transfer")
-                && field(ix, "source") == Some(&f.wallet_pubkey)
-                && field(ix, "lamports") == Some(&amount)
-        })
-        .collect();
-    if funded.len() != 1 {
-        return false;
-    }
-    let Some(account) = field(funded[0], "destination") else {
-        return false;
-    };
-    count_ix(o, |ix| {
-        ix_is(ix, ATA, "createIdempotent")
-            && field(ix, "account") == Some(account)
-            && field(ix, "wallet") == Some(&f.wallet_pubkey)
-            && field(ix, "mint") == Some(WSOL)
-    }) == 1
-        && count_ix(o, |ix| {
-            matches!(ix.program_id.value.as_deref(), Some(TOKEN | TOKEN_2022))
-                && ix.instruction_type.value.as_deref() == Some("transfer")
-                && field(ix, "source") == Some(account)
-                && field(ix, "authority") == Some(&f.wallet_pubkey)
-                && field(ix, "amount") == Some(&amount)
-        }) == 1
-        && count_ix(o, |ix| {
-            matches!(ix.program_id.value.as_deref(), Some(TOKEN | TOKEN_2022))
-                && ix.instruction_type.value.as_deref() == Some("closeAccount")
-                && field(ix, "account") == Some(account)
-                && field(ix, "destination") == Some(&f.wallet_pubkey)
-        }) == 1
-}
 
 fn confirmed_sell_output(
     f: &ExecutionCanaryReceiptFacts,

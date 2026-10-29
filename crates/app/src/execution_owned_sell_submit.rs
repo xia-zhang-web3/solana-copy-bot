@@ -54,6 +54,9 @@ pub(crate) async fn run(
         .as_deref()
         .context("owned_sell_signed_payload_missing")?;
     guard::payload(&p, signed)?;
+    crate::execution_priority_fee_proof::persist(
+        store, &r, &plan, &envelope, adapter.priority_fee_cap(), Utc::now(),
+    )?;
     let url = crate::execution_owned_sell_rpc::endpoint(c)?.to_string();
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())

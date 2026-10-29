@@ -79,6 +79,8 @@ impl SqliteDiscoveryStore {
         ensure!(!conflict, "native_observation_conflict");
         if b.facts.order_id.starts_with("exec-canary:owner-buy:")
             || b.facts.order_id.starts_with("exec-canary:owner-exit:")
+            || (b.facts.side == "sell"
+                && b.facts.order_id.starts_with("exec-canary:rpc-owned-sell:"))
         {
             self.materialize_receipt_cash_components(&b.facts.order_id, now)?;
         }
