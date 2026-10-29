@@ -45,11 +45,11 @@ class StorageSemanticWorkflow(unittest.TestCase):
                          '  push:\n  workflow_dispatch:\n\npermissions:\n  contents: read\n\n')
         self.assertEqual(source.count('permissions:'), 1)
 
-    def test_one_unconditional_hosted_check_has_ten_minute_budget(self):
+    def test_one_unconditional_hosted_check_has_fifteen_minute_job_budget(self):
         source, _, settings, steps = parts()
         self.assertEqual(settings,
                          '  storage-semantic:\n    name: storage-semantic\n'
-                         '    runs-on: ubuntu-latest\n    timeout-minutes: 10\n'
+                         '    runs-on: ubuntu-latest\n    timeout-minutes: 15\n'
                          '    env:\n      CARGO_TERM_COLOR: always\n'
                          '      CARGO_TARGET_DIR: target/storage-semantic\n')
         self.assertEqual(re.findall(r'^      - (.+)$', steps, re.M),
