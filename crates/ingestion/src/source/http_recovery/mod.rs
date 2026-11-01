@@ -224,3 +224,7 @@ mod base58_equivalence_tests;
 #[cfg(test)]
 #[path = "../../source_tests/http_anchor_capture_tests.rs"]
 mod anchor_capture_tests;
+
+#[cfg(test)]
+#[path = "../../source_tests/http_estimated_block_time_tests.rs"]
+pub(crate) mod estimated_block_time_tests;

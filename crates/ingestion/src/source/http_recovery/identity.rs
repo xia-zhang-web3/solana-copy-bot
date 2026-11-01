@@ -81,6 +81,7 @@ pub(super) fn same_execution(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AnchorComparison {
     Exact,
+    EstimatedBlockTime,
     SuccessfulTerminalUnwind,
     Mismatch,
 }
@@ -91,6 +92,7 @@ impl AnchorComparison {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Exact => "EXACT",
+            Self::EstimatedBlockTime => "ESTIMATED_BLOCK_TIME_METADATA",
             Self::SuccessfulTerminalUnwind => "SUCCESSFUL_TERMINAL_UNWIND",
             Self::Mismatch => "MISMATCH",
         }
@@ -123,6 +125,9 @@ pub(crate) fn info_equivalent(a: &InfoIdentity, b: &InfoIdentity) -> bool {
     }
 }
 pub(super) fn headers_equal(a: &SubscribeUpdateBlock, b: &SubscribeUpdateBlock) -> bool {
+    a.block_time == b.block_time && execution_headers_equal(a, b)
+}
+fn execution_headers_equal(a: &SubscribeUpdateBlock, b: &SubscribeUpdateBlock) -> bool {
     // HTTP cannot report gRPC accounts/entries or their stream coverage counts.
     // Compare full transaction and parent/block evidence, never pretend those
     // coverage fields were fetched. The original gRPC/RPC inputs stay retained.
@@ -131,11 +136,33 @@ pub(super) fn headers_equal(a: &SubscribeUpdateBlock, b: &SubscribeUpdateBlock) 
         && a.parent_slot == b.parent_slot
         && a.blockhash == b.blockhash
         && a.parent_blockhash == b.parent_blockhash
-        && a.block_time == b.block_time
         && a.block_height == b.block_height
         && rewards(a) == rewards(b)
         && a.executed_transaction_count == b.executed_transaction_count
         && a.transactions.len() == b.transactions.len()
+}
+fn estimated_time_only(a: &SubscribeUpdateBlock, b: &SubscribeUpdateBlock) -> bool {
+    let (Some(at), Some(bt)) = (&a.block_time, &b.block_time) else {
+        return false;
+    };
+    if at == bt
+        || !execution_headers_equal(a, b)
+        || [at.timestamp, bt.timestamp]
+            .into_iter()
+            .any(|t| t < 0 || chrono::DateTime::from_timestamp(t, 0).is_none())
+    {
+        return false;
+    }
+    let (Ok(a), Ok(b)) = (
+        super::index_identity::execution_order(a),
+        super::index_identity::execution_order(b),
+    ) else {
+        return false;
+    };
+    a.into_iter().zip(b).all(|(a, b)| match (a, b) {
+        (Some(a), Some(b)) => info_equal(a, b),
+        _ => false,
+    })
 }
 pub(crate) fn block_comparison(
     a: &SubscribeUpdateBlock,
@@ -143,7 +170,15 @@ pub(crate) fn block_comparison(
 ) -> AnchorComparison {
     let headers_equal = headers_equal(a, b);
     if !headers_equal {
-        return AnchorComparison::Mismatch;
+        // Production-time estimates are not execution identity. Only complete
+        // Info equality permits this class; completion/terminal-log variance
+        // cannot be combined with it. CurrentAnchor retains the original live
+        // block and its time, while raw evidence retains both provider values.
+        return if estimated_time_only(a, b) {
+            AnchorComparison::EstimatedBlockTime
+        } else {
+            AnchorComparison::Mismatch
+        };
     }
     let (Ok(a), Ok(b)) = (
         super::index_identity::execution_order(a),

@@ -1,6 +1,7 @@
 //! Actual loopback transport -> association -> SQLite commit/readback ACK.
-//! SYNTHETIC reconstructed bodies, no provider, real transaction or market proof.
+//! Existing reconstructed bodies are SYNTHETIC; pair03 explicitly labels saved and LOCAL inputs.
 use super::*;
+mod estimated_time;
 mod fixture;
 mod lifecycle;
 

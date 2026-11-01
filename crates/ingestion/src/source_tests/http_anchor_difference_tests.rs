@@ -38,11 +38,19 @@ fn anchor_diagnostic_visitor_header_and_transaction_field_mutations() {
             let mut http = grpc.clone();
             let edit: fn(&mut SubscribeUpdateBlock) = $edit;
             edit(&mut http);
-            assert!(
-                !identity::block_equivalent(&grpc, &http),
-                "{} mutation not compared",
-                $path
-            );
+            if $path == "block_time.timestamp" {
+                assert_eq!(
+                    identity::block_comparison(&grpc, &http).label(),
+                    "ESTIMATED_BLOCK_TIME_METADATA"
+                );
+                assert!(!identity::headers_equal(&grpc, &http));
+            } else {
+                assert!(
+                    !identity::block_equivalent(&grpc, &http),
+                    "{} mutation not compared",
+                    $path
+                );
+            }
             let d = identity_difference::first(&grpc, &http)
                 .expect("false predicate must have a first difference");
             assert_eq!(d.path, $path);
