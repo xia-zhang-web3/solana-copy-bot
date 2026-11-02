@@ -112,7 +112,7 @@ pub(super) fn read(
         }
         ids.push(row.get::<_, i64>(0)?);
     }
-    let sell = evaluate::anchor(c, &b.sell.admission.facts.signature)?;
+    let sell = evaluate::anchor(c, &b.sell.admission.facts.signature, l)?;
     let mut result = ShadowEvidence {
         scan: ShadowScan::Complete,
         lots: vec![],
@@ -145,7 +145,7 @@ pub(super) fn read(
                     if let Err(Check::Unknown(r)) = graph.charge(size) {
                         return Ok(unknown(r));
                     }
-                    let a = evaluate::anchor(c, &o.signature)?;
+                    let a = evaluate::anchor(c, &o.signature, l)?;
                     if let Some(check) = identity(&o, &a, &sell, b) {
                         e.origin_to_sell = check.clone();
                         e.sell_to_origin = check;

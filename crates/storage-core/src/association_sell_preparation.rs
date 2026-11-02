@@ -94,6 +94,21 @@ pub(crate) fn parent(
     parent_graph::put(c, d, proof)
 }
 
+/// Called only after replay::record validates the full checkpoint in this same
+/// transaction. Previously unresolved anchors may have no hash wake dependency.
+pub(crate) fn checkpoint(
+    c: &Connection,
+    d: &copybot_core_types::association_delivery::Delivery,
+    proof: &mut Readback,
+) -> Result<()> {
+    if let copybot_core_types::association_delivery::DeliveryEvent::ParentCheckpoint(b) = &d.event {
+        for claim in &b.claims {
+            work::enqueue(c, &claim.signature, proof)?;
+        }
+    }
+    Ok(())
+}
+
 /// Shared evaluator; callers own exactly one transaction and its connection.
 pub(crate) fn on_connection(
     c: &Connection,

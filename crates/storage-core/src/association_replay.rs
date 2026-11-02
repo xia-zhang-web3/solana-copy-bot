@@ -4,10 +4,13 @@ use anyhow::{ensure, Context, Result};
 use copybot_core_types::association_delivery::{Delivery, DeliveryEvent};
 use copybot_core_types::association_recovery::{BlockCheckpoint, DurableCheckpoint, ReplayScope};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+#[path = "association_replay_refinement.rs"]
+mod refinement;
 #[path = "association_replay_schema.rs"]
 mod schema;
 #[path = "association_replay_validate.rs"]
 mod validate;
+pub(crate) use refinement::{defer as defer_reset_terminal, observed as observed_terminal};
 
 impl AssociationInbox {
     pub fn configure_replay_scope(&mut self, scope: &ReplayScope) -> Result<()> {
@@ -42,8 +45,8 @@ impl AssociationInbox {
         let tx = self.conn.unchecked_transaction()?;
         let mut value = read(&tx, scope, self.limits.bytes)?;
         if let Some(ref mut checkpoint) = value {
-            validate::block(&tx, &checkpoint.block, self.limits)?;
-            validate::event(&tx, checkpoint)?;
+            let event = validate::event(&tx, checkpoint)?;
+            validate::block(&tx, &checkpoint.block, self.limits, &event)?;
             checkpoint.from_slot =
                 checkpoint
                     .from_slot
@@ -92,11 +95,11 @@ pub(crate) fn record(
         return Ok(None);
     };
     schema::required(c)?;
-    validate::block(c, block, limits)?;
+    validate::block(c, block, limits, d)?;
     let prior = read(c, &block.scope, limits.bytes)?;
     if let Some(ref old) = prior {
-        validate::event(c, old)?;
-        validate::block(c, &old.block, limits)?;
+        let event = validate::event(c, old)?;
+        validate::block(c, &old.block, limits, &event)?;
         if block.observation.child.slot < old.block.observation.child.slot {
             return Ok(Some(serde_json::to_string(old)?));
         }

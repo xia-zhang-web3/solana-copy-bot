@@ -1,12 +1,17 @@
 use super::*;
 use rusqlite::{params, OptionalExtension};
 
-pub(super) fn anchor(c: &Connection, signature: &str) -> Result<AnchorEvidence> {
+pub(super) fn anchor(c: &Connection, signature: &str, l: InboxLimits) -> Result<AnchorEvidence> {
     let i = crate::association_inbox::identity(c, signature)?;
+    let terminal = i
+        .as_ref()
+        .map(|i| crate::association_replay::observed_terminal(c, i, l))
+        .transpose()?
+        .flatten();
     Ok(AnchorEvidence {
         signature: signature.into(),
         identity: i.as_ref().map(anchor_identity),
-        terminal: i.as_ref().and_then(|i| i.terminal.clone()),
+        terminal,
         conflict: i.as_ref().is_some_and(|i| i.conflict),
         recovery: i.as_ref().is_some_and(|i| i.recovery),
     })
@@ -53,7 +58,7 @@ pub(super) fn evaluate(c: &Connection, b: &FirstBinding, l: InboxLimits) -> Resu
     let signature = &b.sell.admission.facts.signature;
     let mut changed = false;
     for key in keys(b) {
-        let a = anchor(c, &key)?;
+        let a = anchor(c, &key, l)?;
         let pinned: Option<Option<String>> = c.query_row(
             "SELECT first_identity FROM association_sell_dependencies WHERE sell_signature=?1 AND anchor_signature=?2",
             params![signature,key], |r|r.get(0)).optional()?;
@@ -100,7 +105,7 @@ pub(super) fn evaluate(c: &Connection, b: &FirstBinding, l: InboxLimits) -> Resu
             .iter()
             .any(|a| a.signature == r.contributor.tx_signature)
         {
-            e.anchors.push(anchor(c, &r.contributor.tx_signature)?);
+            e.anchors.push(anchor(c, &r.contributor.tx_signature, l)?);
         }
     }
     let sell = e

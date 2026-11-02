@@ -99,10 +99,16 @@ fn check_row(
         ]))?),
     )
 }
-fn dependencies(c: &Connection, b: &FirstBinding, new: bool, proof: &mut Readback) -> Result<()> {
+fn dependencies(
+    c: &Connection,
+    b: &FirstBinding,
+    new: bool,
+    l: InboxLimits,
+    proof: &mut Readback,
+) -> Result<()> {
     let s = &b.sell.admission.facts.signature;
     for key in evaluate::keys(b) {
-        let a = evaluate::anchor(c, &key)?;
+        let a = evaluate::anchor(c, &key, l)?;
         let current = a.identity.as_ref().map(serde_json::to_string).transpose()?;
         let old: Option<Option<String>> =
             c.query_row(DEP, params![s, key], |r| r.get(0)).optional()?;
@@ -147,7 +153,7 @@ pub(super) fn prepare(
         return Ok(());
     }
     let b = financial::first(c, &sell, fresh, observed, l)?;
-    dependencies(c, &b, true, proof)?;
+    dependencies(c, &b, true, l, proof)?;
     let evaluation = evaluate::evaluate(c, &b, l)?;
     parent_graph::bind(c, s, &evaluation.parent_dependencies, proof)?;
     let e = serde_json::to_string(&evaluation)?;
@@ -157,7 +163,7 @@ pub(super) fn prepare(
 }
 pub(super) fn refresh(c: &Connection, s: &str, l: InboxLimits, proof: &mut Readback) -> Result<()> {
     let (b, i, _) = load(c, s)?.context("dependency without SELL preparation")?;
-    dependencies(c, &b, false, proof)?;
+    dependencies(c, &b, false, l, proof)?;
     let evaluation = evaluate::evaluate(c, &b, l)?;
     parent_graph::bind(c, s, &evaluation.parent_dependencies, proof)?;
     let e = serde_json::to_string(&evaluation)?;

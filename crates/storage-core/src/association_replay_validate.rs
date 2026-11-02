@@ -4,7 +4,12 @@ use copybot_core_types::association_delivery::{AdmissionFacts, Terminal};
 use copybot_core_types::association_parent::{BlockKey, ParentObservation};
 use std::collections::HashSet;
 
-pub(super) fn block(c: &Connection, b: &BlockCheckpoint, limits: InboxLimits) -> Result<()> {
+pub(super) fn block(
+    c: &Connection,
+    b: &BlockCheckpoint,
+    limits: InboxLimits,
+    d: &Delivery,
+) -> Result<()> {
     ensure!(
         b.scope.valid()
             && b.observation.issue.is_none()
@@ -38,8 +43,16 @@ pub(super) fn block(c: &Connection, b: &BlockCheckpoint, limits: InboxLimits) ->
                 && b.scope.wallets.contains(&row.admission.facts.wallet),
             "association_replay_claim_changed"
         );
+        let terminal = if row.terminal
+            == Some(Terminal::Unresolved(
+                copybot_core_types::association_delivery::Unresolved::SessionReset,
+            )) {
+            super::refinement::claim(c, d, b, claim, &row, limits)?.map(Terminal::ProviderAsserted)
+        } else {
+            row.terminal
+        };
         ensure!(
-            matches!(row.terminal,Some(Terminal::ProviderAsserted(ref a))
+            matches!(terminal,Some(Terminal::ProviderAsserted(ref a))
             if a.slot==b.observation.child.slot && a.blockhash==b.observation.child.hash
                 && a.transaction_index==claim.transaction_index && a.signature==claim.signature),
             "association_replay_claim_unresolved"
@@ -47,7 +60,7 @@ pub(super) fn block(c: &Connection, b: &BlockCheckpoint, limits: InboxLimits) ->
     }
     Ok(())
 }
-pub(super) fn event(c: &Connection, h: &DurableCheckpoint) -> Result<()> {
+pub(super) fn event(c: &Connection, h: &DurableCheckpoint) -> Result<Delivery> {
     let wire: String = c.query_row(
         "SELECT delivery FROM association_inbox_events WHERE session=?1 AND sequence=?2",
         params![h.session, i64::try_from(h.sequence)?],
@@ -62,7 +75,7 @@ pub(super) fn event(c: &Connection, h: &DurableCheckpoint) -> Result<()> {
             && h.from_slot <= h.block.observation.parent.slot,
         "association_replay_event_binding"
     );
-    Ok(())
+    Ok(d)
 }
 fn node(c: &Connection, k: &BlockKey, bytes: usize) -> Result<ParentObservation> {
     let key = serde_json::to_string(k)?;

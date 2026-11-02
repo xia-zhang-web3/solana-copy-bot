@@ -42,7 +42,9 @@ impl AssociationInbox {
             DeliveryEvent::Terminal { signature, .. } | DeliveryEvent::Late { signature, .. } => {
                 Some(signature.as_str())
             }
-            DeliveryEvent::Session(_) | DeliveryEvent::Parent(_) | DeliveryEvent::ParentCheckpoint(_) => None,
+            DeliveryEvent::Session(_)
+            | DeliveryEvent::Parent(_)
+            | DeliveryEvent::ParentCheckpoint(_) => None,
         };
         let fresh = signature
             .map(|s| identity(&tx, s))
@@ -60,7 +62,7 @@ impl AssociationInbox {
                 );
             }
         } else {
-            apply(&tx, d, candidate)?;
+            apply(&tx, d, candidate, self.limits)?;
             if fresh {
                 crate::native_buy::capture::at_admission(&tx, d, observed)?;
             }
@@ -69,7 +71,15 @@ impl AssociationInbox {
                     crate::native_buy::capture::mark_late(&tx, signature)?;
                 }
             }
-            if matches!(d.event, DeliveryEvent::Session(SessionGap::Reset | SessionGap::Rejected(_) | SessionGap::Transport | SessionGap::Recovery)) {
+            if matches!(
+                d.event,
+                DeliveryEvent::Session(
+                    SessionGap::Reset
+                        | SessionGap::Rejected(_)
+                        | SessionGap::Transport
+                        | SessionGap::Recovery
+                )
+            ) {
                 crate::native_buy::capture::close_session(&tx, &d.session)?;
             }
             tx.execute(
@@ -88,6 +98,7 @@ impl AssociationInbox {
             crate::association_sell_preparation::parent(&tx, d, &mut proof)?;
         }
         let checkpoint = crate::association_replay::record(&tx, d, self.limits)?;
+        crate::association_sell_preparation::checkpoint(&tx, d, &mut proof)?;
         crate::association_sell_preparation::event(
             &tx,
             signature,
@@ -120,7 +131,12 @@ impl AssociationInbox {
         Ok(())
     }
 }
-fn apply(c: &Connection, d: &Delivery, candidate: &CandidateGeneration) -> Result<()> {
+fn apply(
+    c: &Connection,
+    d: &Delivery,
+    candidate: &CandidateGeneration,
+    limits: InboxLimits,
+) -> Result<()> {
     match &d.event {
         DeliveryEvent::Admission(a) => {
             let s = &a.facts.signature;
@@ -179,8 +195,10 @@ fn apply(c: &Connection, d: &Delivery, candidate: &CandidateGeneration) -> Resul
                 set_conflict(c, signature)?;
                 return Ok(());
             }
-            if let Some(first) = row.terminal {
-                if first != *result {
+            if let Some(ref first) = row.terminal {
+                if first != result
+                    && !crate::association_replay::defer_reset_terminal(c, d, &row, limits)?
+                {
                     set_conflict(c, signature)?;
                 }
             } else {
@@ -200,13 +218,16 @@ fn apply(c: &Connection, d: &Delivery, candidate: &CandidateGeneration) -> Resul
             let row = identity(c, signature)?
                 .ok_or_else(|| anyhow::anyhow!("late before durable admission"))?;
             ensure!(row.terminal.is_some(), "late before durable terminal");
-            if row.terminal.as_ref() != Some(original)
-                || !matches!(evidence,Late::ProviderAssertion(a) if row.terminal==Some(Terminal::ProviderAsserted(a.clone())))
+            let observed = crate::association_replay::observed_terminal(c, &row, limits)?;
+            if observed.as_ref() != Some(original)
+                || !matches!(evidence,Late::ProviderAssertion(a) if observed==Some(Terminal::ProviderAsserted(a.clone())))
             {
                 set_conflict(c, signature)?;
             }
         }
-        DeliveryEvent::Session(_) | DeliveryEvent::Parent(_) | DeliveryEvent::ParentCheckpoint(_) => {}
+        DeliveryEvent::Session(_)
+        | DeliveryEvent::Parent(_)
+        | DeliveryEvent::ParentCheckpoint(_) => {}
     }
     Ok(())
 }
