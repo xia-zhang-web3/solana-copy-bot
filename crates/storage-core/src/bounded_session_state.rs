@@ -42,6 +42,9 @@ pub(crate) fn complete_position(c: &Connection, cycle: &str, position: Option<&s
     if !closed {
         return Ok(false);
     }
+    if crate::owner_bot_receipt_exit::normal::complete(c, cycle, position)? {
+        return Ok(true);
+    }
     let (all,done):(u64,u64)=c.query_row(&super::sql(c,"SELECT count(*),count(CASE WHEN o.status='execution_canary_confirmed'
         AND f.order_id IS NOT NULL AND p.reason='accounting_complete' AND a.order_id IS NOT NULL
         AND r.actual_fee IS NOT NULL AND r.outcome='successful' AND u.order_id IS NULL THEN 1 END)

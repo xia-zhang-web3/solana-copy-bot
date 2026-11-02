@@ -300,6 +300,7 @@ impl SqliteDiscoveryStore {
             );
             crate::owner_exit_fee::claim(conn, &intent, dispatch, budget)?;
             execution_canary_dispatch::insert(conn, dispatch, now)?;
+            crate::owner_bot_receipt_exit::normal::link(conn, &intent, dispatch, budget)?;
             execution_canary_dispatch::mark_submitted(conn, dispatch, now)?;
             ensure!(clock()? < intent.expires_at, "owner_exit_intent_expired");
             Ok(ExecutionDispatchClaim::New)

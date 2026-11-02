@@ -10,9 +10,10 @@ pub(crate) fn totals(c: &Connection) -> Result<(u64, u64)> {
     let held:u64=c.query_row("SELECT coalesce(sum(h.fee_reserve),0) FROM rpc_owned_sell_handoffs h WHERE h.experiment_id=?1
         AND NOT EXISTS(SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner)",
         [&a.model.session_id],|r|r.get(0))?;
+    let receipt_exit_fees = crate::owner_bot_receipt_exit::normal::fees(c, &a.model.session_id)?;
     Ok((
         buy,
-        fee.checked_add(held).context("local_session_overflow")?,
+        fee.checked_add(held).and_then(|v| v.checked_add(receipt_exit_fees)).context("local_session_overflow")?,
     ))
 }
 pub(crate) fn cycle_counts(c: &Connection) -> Result<(u64, u64, u64)> {

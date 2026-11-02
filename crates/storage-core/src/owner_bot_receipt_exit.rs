@@ -6,6 +6,8 @@ use rusqlite::{params, Connection};
 
 #[path = "owner_bot_receipt_exit_observations.rs"]
 mod observations;
+#[path = "owner_bot_receipt_exit_normal.rs"]
+pub(crate) mod normal;
 
 pub const MIGRATION: &str = "0093_bot_receipt_exit_zero_scope.sql";
 const PREFIX: &str = "bot-receipt-exit:";
@@ -42,7 +44,7 @@ pub(crate) fn historical(c: &Connection, i: &OwnerExitIntent) -> Result<OwnerBot
         && i.activated_at >= cohort.deadline && i.activated_at < i.expires_at
         && i.expires_at - i.activated_at <= Duration::seconds(300),
         "bot_receipt_exit_window_or_parent");
-    let bound: bool = c.query_row(
+    let sql = normal::binding_sql(c, i, &scope, &cohort,
         "SELECT EXISTS(SELECT 1 FROM orders o
          JOIN execution_order_sources s ON s.identity_id=o.signal_id AND s.copy_signal_id=o.signal_id
          JOIN copy_signals cs ON cs.signal_id=s.copy_signal_id
@@ -82,7 +84,8 @@ pub(crate) fn historical(c: &Connection, i: &OwnerExitIntent) -> Result<OwnerBot
            AND v.experiment_id=t.experiment_id AND v.wallet=?3 AND v.side='buy'
            AND v.tx_signature=?2 AND v.outcome='successful'
            AND v.message_sha256=d.message_sha256 AND v.transaction_sha256=d.transaction_sha256
-           AND v.actual_fee=CAST(r.transaction_fee AS INTEGER))",
+           AND v.actual_fee=CAST(r.transaction_fee AS INTEGER))")?;
+    let bound: bool = c.query_row(&sql,
         params![i.buy_order_id, i.buy_receipt_signature, i.wallet, i.genesis_hash, i.mint,
             i.position_id, i.amount_raw.to_string(), i.decimals, source, scope.source_wallet,
             i.run_id, cohort.policy_identity, i.route, cohort.deadline.to_rfc3339()], |r| r.get(0))?;
