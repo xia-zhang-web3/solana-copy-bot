@@ -14,7 +14,8 @@ use std::time::Duration;
 static COHORT_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 #[tokio::test]
 async fn cohort_source_sell_runs_through_actual_daemon_tick_and_settles_once() -> Result<()> {
-    cohort_source_sell_case(false, false).await
+    // The assembled fixture future is >500KiB; keep it off libtest's stack.
+    Box::pin(cohort_source_sell_case(false, false)).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

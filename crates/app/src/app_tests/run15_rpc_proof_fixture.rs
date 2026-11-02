@@ -199,13 +199,14 @@ pub(crate) fn model_follower_with_output_and_target(
         json!({
         "programIdIndex":program,"accounts":accounts,"data":bs58::encode(data).into_string(),"stackHeight":2})
     };
+    let mut initialize = vec![18];
+    initialize.extend(bs58::decode(wallet).into_vec()?);
     let creation_group = |account: u8, mint: usize, index: usize| {
         json!({"index":index,"instructions":[
             setup(token as usize,vec![mint],vec![21,7,0]),
             setup(system,vec![0,account as usize],create.clone()),
             setup(token as usize,vec![account as usize],vec![22]),
-            {"programIdIndex":token,"stackHeight":2,
-            "parsed":{"type":"initializeAccount3","info":{"account":keys[account as usize],"owner":wallet,"mint":keys[mint]}}}]})
+            setup(token as usize,vec![account as usize,mint],initialize.clone())]})
     };
     let mut event = vec![
         228, 69, 165, 46, 81, 203, 154, 29, 64, 198, 205, 232, 38, 8, 113, 226,

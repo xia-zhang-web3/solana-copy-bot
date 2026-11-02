@@ -19,7 +19,9 @@ fn count(c: &Cycle, table: &str) -> Result<i64> {
 async fn ready_sell(c: &mut Cycle, duplicate: bool) -> Result<String> {
     let signature = c.event(true, 1, duplicate).await?;
     tokio::time::timeout(Duration::from_secs(2), async {
-        while count(c, "ordered_source_sell_intents")? == 0 {
+        // SQL commit can be visible before the consumer reaps the writer and
+        // emits its post-ACK Notify. Keep driving that real continuation.
+        while count(c, "ordered_source_sell_intents")? == 0 || c.consumer.pending.is_some() {
             c.poll().await?;
         }
         Ok::<_, anyhow::Error>(())

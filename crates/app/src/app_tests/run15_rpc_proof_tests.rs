@@ -119,8 +119,10 @@ fn follower_gate_refuses_arbitrary_route_and_anchor_refuses_missing_temp_owner()
     assert!(crate::execution_owner_buy_wire::verify_cohort(&request, &payload).is_err());
     let (anchor, facts) = f::anchor(&tx, 100_000_000);
     let mut wrong = tx.clone();
-    wrong["meta"]["innerInstructions"][0]["instructions"][3]["parsed"]["info"]["owner"] =
-        json!(f::LEADER);
+    let init=&mut wrong["meta"]["innerInstructions"][0]["instructions"][3]["data"];
+    let mut data=bs58::decode(init.as_str().unwrap()).into_vec()?;
+    data[1]^=1;
+    *init=json!(bs58::encode(data).into_string());
     assert!(decode::buy(&wrong, &anchor, &facts).is_err());
     let mut wrong = tx;
     wrong["meta"]["postTokenBalances"][1]["owner"] = json!(f::LEADER);
