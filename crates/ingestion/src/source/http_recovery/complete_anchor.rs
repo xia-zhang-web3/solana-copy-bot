@@ -145,7 +145,41 @@ fn retained_unwind(http: &[String], gap: usize, tail: &[String]) -> bool {
     tail.len() <= closes.len() && tail.iter().zip(closes).all(|(a, b)| a == b)
 }
 
+/// Replay Agave's default LogCollector::log, not an arbitrary subsequence match.
+/// https://github.com/anza-xyz/agave/blob/master/svm-log-collector/src/lib.rs
+/// A rejected record does not consume bytes. Shorter later records can survive;
+/// the one warning itself is not charged. The limit is UTF-8 bytes, strictly <.
+pub(crate) fn collector_logs_agree(http: &[String], live: &[String]) -> bool {
+    const LIMIT: usize = 10_000;
+    let mut available = live.iter().map(String::as_str);
+    let mut bytes = 0usize;
+    let mut warned = false;
+    for line in http {
+        if line.starts_with(TRUNCATED) {
+            return false;
+        }
+        let next = bytes.saturating_add(line.len());
+        let emitted = if next >= LIMIT {
+            if warned {
+                continue;
+            }
+            warned = true;
+            TRUNCATED
+        } else {
+            bytes = next;
+            line.as_str()
+        };
+        if available.next() != Some(emitted) {
+            return false;
+        }
+    }
+    warned && available.next().is_none()
+}
+
 fn known_logs_agree(http: &[String], live: &[String]) -> bool {
+    if collector_logs_agree(http, live) {
+        return true;
+    }
     // Keep the contiguous-gap contract. A retained tail before further HTTP
     // instructions must instead close concrete observed prefix invocations.
     // Current HTTP supplies missing payload, never claimed equal to hidden live

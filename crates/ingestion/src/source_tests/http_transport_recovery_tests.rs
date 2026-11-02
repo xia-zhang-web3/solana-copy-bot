@@ -1,24 +1,26 @@
 //! Real local tonic + HTTP adapter and SQLite commits; no provider or finances.
+#[path = "anchor_complete_durable_tests.rs"]
+mod anchor_complete_durable_tests;
+#[path = "anchor_complete_fetch_tests.rs"]
+mod anchor_complete_fetch_tests;
+#[path = "anchor_complete_replay.rs"]
+mod anchor_complete_replay;
 #[path = "http_anchor_diagnostic_tests.rs"]
 mod anchor_diagnostic_tests;
 #[path = "http_anchor_saturation_tests.rs"]
 mod anchor_saturation_tests;
+#[path = "anchor_tail_replay.rs"]
+mod anchor_tail_replay;
+#[path = "full_cycle04_anchor_tests.rs"]
+mod full_cycle04_anchor_tests;
 #[path = "http_delivery_replay/mod.rs"]
 mod http_delivery_replay;
 #[path = "live_parent_gap/mod.rs"]
 mod live_parent_gap;
+#[path = "saved_collector_anchor_tests.rs"]
+mod saved_collector_anchor_tests;
 #[path = "saved_reward_replay/mod.rs"]
 mod saved_reward_replay;
-#[path = "anchor_tail_replay.rs"]
-mod anchor_tail_replay;
-#[path = "anchor_complete_replay.rs"]
-mod anchor_complete_replay;
-#[path = "anchor_complete_fetch_tests.rs"]
-mod anchor_complete_fetch_tests;
-#[path = "full_cycle04_anchor_tests.rs"]
-mod full_cycle04_anchor_tests;
-#[path = "anchor_complete_durable_tests.rs"]
-mod anchor_complete_durable_tests;
 use super::durable_transport_fixture::Fixture;
 use crate::{replay_scope, DeliveryEnvelope, DeliveryReceiver};
 use copybot_config::{

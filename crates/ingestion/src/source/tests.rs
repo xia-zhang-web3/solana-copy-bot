@@ -10,10 +10,10 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use yellowstone_grpc_proto::prelude::{CommitmentLevel, TransactionStatusMeta, UiTokenAmount};
 
-#[path = "../source_tests/anchor_tail_pair.rs"]
-pub(super) mod anchor_tail_pair;
 #[path = "../source_tests/anchor_tail_consumers.rs"]
 mod anchor_tail_consumers;
+#[path = "../source_tests/anchor_tail_pair.rs"]
+pub(super) mod anchor_tail_pair;
 
 fn token_balance(owner: &str, mint: &str, amount: &str) -> Value {
     let raw_amount = amount
@@ -93,36 +93,36 @@ mod capture_scope_bridge_tests;
 mod capture_scope_fixture;
 #[path = "../source_tests/capture_scope_tests.rs"]
 mod capture_scope_tests;
-#[path = "../source_tests/source_selection_rpc.rs"]
-mod source_selection_rpc;
-#[path = "../source_tests/source_selection_replay.rs"]
-mod source_selection_replay;
-#[path = "../source_tests/run15_mixed_rpc.rs"]
-mod run15_mixed_rpc;
-#[path = "../source_tests/run15_version_tests.rs"]
-mod run15_version_tests;
-#[path = "../source_tests/jupiter_raydium_fixture.rs"]
-mod jupiter_raydium_fixture;
-#[path = "../source_tests/jupiter_raydium_attribution_tests.rs"]
-mod jupiter_raydium_attribution_tests;
 #[path = "../source_tests/controlled_jupiter_sell_tests.rs"]
 mod controlled_jupiter_sell_tests;
 #[path = "../source_tests/copy12_saved_sell_tests.rs"]
 mod copy12_saved_sell_tests;
+#[path = "../source_tests/jupiter_raydium_attribution_tests.rs"]
+mod jupiter_raydium_attribution_tests;
+#[path = "../source_tests/jupiter_raydium_fixture.rs"]
+mod jupiter_raydium_fixture;
+#[path = "../source_tests/run15_mixed_rpc.rs"]
+mod run15_mixed_rpc;
+#[path = "../source_tests/run15_version_tests.rs"]
+mod run15_version_tests;
+#[path = "../source_tests/source_selection_replay.rs"]
+mod source_selection_replay;
+#[path = "../source_tests/source_selection_rpc.rs"]
+mod source_selection_rpc;
 
 #[path = "../source_tests/durable_transport_diagnostics_tests.rs"]
 mod durable_transport_diagnostics_tests;
 
+#[path = "../source_tests/durable_replay_checkpoint_tests.rs"]
+mod durable_replay_checkpoint_tests;
 #[path = "../source_tests/durable_transport_fixture.rs"]
 mod durable_transport_fixture;
 #[path = "../source_tests/durable_transport_relay_tests.rs"]
 mod durable_transport_relay_tests;
-#[path = "../source_tests/durable_replay_checkpoint_tests.rs"]
-mod durable_replay_checkpoint_tests;
-#[path = "../source_tests/reader_capture_scope_tests.rs"]
-mod reader_capture_scope_tests;
 #[path = "../source_tests/http_transport_recovery_tests.rs"]
 mod http_transport_recovery_tests;
+#[path = "../source_tests/reader_capture_scope_tests.rs"]
+mod reader_capture_scope_tests;
 
 #[path = "../source_tests/quote_sol/mod.rs"]
 mod quote_sol_tests;
@@ -133,10 +133,13 @@ mod ammv4_tests;
 #[path = "../source_tests/ingress_route/mod.rs"]
 mod ingress_route;
 
-#[path = "../source_tests/anchor_tail_tests.rs"]
-mod anchor_tail_tests;
 #[path = "../source_tests/anchor_complete_tests.rs"]
 mod anchor_complete_tests;
+#[path = "../source_tests/anchor_tail_tests.rs"]
+mod anchor_tail_tests;
 
 #[path = "../source_tests/copy11_completion_tests.rs"]
 mod copy11_completion_tests;
+
+#[path = "../source_tests/log_collector_tests.rs"]
+mod log_collector_tests;
