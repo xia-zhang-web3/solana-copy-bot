@@ -1,6 +1,7 @@
 //! Closed finalized AMM v4 operands: the exchange is proved by two classic SPL CPIs.
 //! Supports the saved direct source layout and the constrained Jupiter follower BUY.
 use anyhow::{ensure, Context, Result};
+use super::token_init::initialized;
 use serde_json::Value;
 
 pub(super) const AMM: &str = crate::execution_owner_buy_wire::RAYDIUM;
@@ -390,35 +391,4 @@ pub(super) fn buy_target_delta(
         }
     }
     Ok(())
-}
-fn initialized(v: &Value, keys: &[&str], account: &str, mint: &str, wallet: &str) -> Result<bool> {
-    let outer = v["transaction"]["message"]["instructions"]
-        .as_array()
-        .context("owned_sell_amm_instructions")?;
-    let inner = v["meta"]["innerInstructions"]
-        .as_array()
-        .context("owned_sell_amm_inner")?
-        .iter()
-        .map(|g| g["instructions"].as_array().context("owned_sell_amm_inner"))
-        .collect::<Result<Vec<_>>>()?;
-    for group in std::iter::once(outer).chain(inner) {
-        for i in group {
-            if program(i, keys)? == TOKEN
-                && i["parsed"]["type"].as_str().is_some_and(|t| {
-                    [
-                        "initializeAccount",
-                        "initializeAccount2",
-                        "initializeAccount3",
-                    ]
-                    .contains(&t)
-                })
-            {
-                let p = &i["parsed"]["info"];
-                if p["account"] == account && p["mint"] == mint && p["owner"] == wallet {
-                    return Ok(true);
-                }
-            }
-        }
-    }
-    Ok(false)
 }

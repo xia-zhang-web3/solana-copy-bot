@@ -1,9 +1,15 @@
 //! Typed controlled scenario glue; no operator command can become a native event.
+#[path="execution_local_bounded.rs"]
+pub(crate) mod bounded;
+#[path="execution_real_session.rs"]
+pub(crate) mod real;
 use anyhow::{ensure, Result};
 use copybot_config::ExecutionConfig;
 use copybot_storage_core::{controlled_receipt_lot::Scope, SqliteStore};
 pub(crate) fn scope(c: &ExecutionConfig) -> Result<Option<Scope>> {
     copybot_config::validate_controlled_receipt_lot(c)?;
+    if let Some(scope)=bounded::scope(c)? {return Ok(Some(scope))}
+    if let Some(scope)=real::scope(c)? {return Ok(Some(scope))}
     c.controlled_receipt_lot
         .as_ref()
         .map(|p| {
@@ -20,6 +26,8 @@ pub(crate) fn scope(c: &ExecutionConfig) -> Result<Option<Scope>> {
         .transpose()
 }
 pub(crate) fn register(c: &ExecutionConfig, store: &SqliteStore) -> Result<()> {
+    bounded::register(c,store)?;
+    real::register(c,store)?;
     if let Some(p) = scope(c)? {
         store.register_controlled_receipt_lot_scope(&p, &c.canary_wallet_pubkey)?;
     }
@@ -39,6 +47,8 @@ pub(crate) fn source_buy(
     wallet: &str,
     mint: &str,
 ) -> Result<()> {
+    if bounded::source_buy(c,signature,wallet,mint)? {return Ok(())}
+    if real::source_buy(c,signature,slot,wallet,mint)? {return Ok(())}
     let Some(p) = scope(c)? else { return Ok(()) };
     let buy = SqliteStore::controlled_source_buy(&p)?
         .ok_or_else(|| anyhow::anyhow!("receipt_lot_source_buy_pending"))?;

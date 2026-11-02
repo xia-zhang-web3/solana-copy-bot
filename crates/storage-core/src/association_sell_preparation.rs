@@ -11,6 +11,9 @@ mod automatic;
 mod evaluate;
 #[path = "association_sell_financial.rs"]
 mod financial;
+#[cfg(test)]
+#[path = "association_sell_pending_tests.rs"]
+mod pending_tests;
 #[path = "association_sell_order.rs"]
 mod order;
 #[path = "association_parent_graph.rs"]

@@ -3,6 +3,9 @@ name = "copybot-app"
 version.workspace = true
 edition.workspace = true
 
+[features]
+local-bounded-session = ["copybot-config/local-bounded-session", "copybot-storage-core/local-bounded-session"]
+
 [dependencies]
 anyhow.workspace = true
 base64 = "0.22.1"

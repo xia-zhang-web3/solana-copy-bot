@@ -61,7 +61,8 @@ impl SqliteDiscoveryStore {
         self.claim_quote_mode(limits, endpoint, clock, requested, false)
     }
     /// Same leases/cursor/three-attempt budget. A completed observation without
-    /// a financial owner can resume after a crash; an owned handoff cannot rearm.
+    /// a financial owner can resume after a crash. A durable unsigned simulation
+    /// refusal alone permits another quote within the same three-attempt budget.
     pub fn claim_strict_sell_quote_for_owned_preparation(
         &self,
         limits: InboxLimits,
@@ -104,13 +105,15 @@ impl SqliteDiscoveryStore {
             return Ok(QuoteClaimStep::Empty);
         };
         rows::cursor(&tx, &id)?;
-        if preparation
+        let owned = preparation
             && tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM rpc_owned_sell_handoffs WHERE intent_id=?1)",
                 [&id],
                 |r| r.get::<_, bool>(0),
-            )?
-        {
+            )?;
+        let recovering =
+            owned && crate::rpc_owned_sell_handoff::recovery::quote_allowed(&tx, &id, clock())?;
+        if owned && !recovering {
             tx.commit()?;
             return Ok(QuoteClaimStep::Skipped);
         }
@@ -135,6 +138,7 @@ impl SqliteDiscoveryStore {
                 let saved: QuoteObservation = serde_json::from_str(wire)?;
                 if saved.binding.as_ref() == Some(binding)
                     && ((saved.outcome == QuoteOutcome::Current
+                        && !recovering
                         && (!preparation || fresh(&saved, now)))
                         || old.binding_attempt >= 3)
                 {

@@ -54,6 +54,8 @@ impl Default for SystemConfig {
 #[derive(Clone, Deserialize)]
 #[serde(default)]
 pub struct ExecutionConfig {
+    pub real_session: Option<crate::RealSession>,
+    pub local_bounded_session: Option<crate::LocalBoundedSession>,
     pub controlled_receipt_lot: Option<crate::ControlledReceiptLotConfig>,
     pub native_fresh_buy: Option<crate::NativeFreshBuyConfig>,
     pub technical_cohort: Option<crate::TechnicalCohortConfig>,
@@ -124,6 +126,8 @@ impl Default for ExecutionConfig {
             controlled_receipt_lot: None,
             native_fresh_buy: None,
             technical_cohort: None,
+            local_bounded_session: None,
+            real_session: None,
             owner_technical_buy: None,
             owner_exit: None,
             prior_bot_receipt_exit: None,

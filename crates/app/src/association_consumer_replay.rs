@@ -51,9 +51,13 @@ pub(super) async fn open_and_start(
         .transpose()?;
     let controlled = execution.map(crate::execution_controlled_receipt_lot::scope).transpose()?.flatten();
     let controlled_wallet = execution.map(|e| e.canary_wallet_pubkey.clone());
+    let real=execution.map(crate::execution_controlled_receipt_lot::real::authority).transpose()?.flatten();
+    let bounded=execution.map(crate::execution_controlled_receipt_lot::bounded::authority).transpose()?.flatten();
     let setup_scope = replay_scope.clone();
     let (inbox, checkpoint) = tokio::task::spawn_blocking(move || {
         let mut inbox = AssociationInbox::open_ordered_sell_consumer(path, limits)?;
+        if let Some(a)=&bounded {inbox.register_local_bounded_session(a)?;}
+        if let Some(a)=&real {inbox.register_real_session(a,chrono::Utc::now())?;}
         if let Some(scope) = controlled.as_ref() {
             inbox.register_controlled_receipt_lot_scope(scope, controlled_wallet.as_deref().context("receipt_lot_wallet")?)?;
         }

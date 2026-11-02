@@ -34,7 +34,7 @@ pub(super) async fn bind<T: transport::Transport, C: readiness::Clock + Sync>(
         .context("fraction_collection_capacity")?;
     let snapshot = store.begin_fractional_sell(&claim, l, clock.now(), &producer)?;
     let event = &snapshot.sell.facts;
-    for observation in 0..readiness::OBSERVATIONS {
+    for observation in 0..if c.local_bounded_session.is_some() || c.real_session.is_some() {0}else{readiness::OBSERVATIONS} {
         readiness::guard(c, &claim, clock)?;
         if SqliteStore::controlled_source_receipts(&scope, &event.signature, event.slot)?.is_some()
         {
@@ -62,6 +62,16 @@ pub(super) async fn bind<T: transport::Transport, C: readiness::Clock + Sync>(
                 .genesis_hash,
         "receipt_lot_genesis"
     );
+    if c.local_bounded_session.is_some() || c.real_session.is_some() {
+        let parsed=reader.read("getTransaction",json!([event.signature,{"encoding":if c.real_session.is_some(){"json"}else{"jsonParsed"},"commitment":"finalized","maxSupportedTransactionVersion":0}])).await?;
+        crate::execution_owned_sell_rpc::decode::sell(&parsed,&snapshot.sell)?;
+        let wire=reader.read("getTransaction",json!([event.signature,{"encoding":"base64","commitment":"finalized","maxSupportedTransactionVersion":0}])).await?;
+        if c.real_session.is_some() {
+            crate::execution_controlled_receipt_lot::real::receipt::record(reader.store,c,&event.signature,event.slot,"sell",&parsed,&wire)?;
+        } else {
+            crate::execution_controlled_receipt_lot::bounded::receipt::record(reader.store,c,&event.signature,event.slot,"sell",&wire)?;
+        }
+    }
     let accounts=reader.read("getTokenAccountsByOwner",json!([c.canary_wallet_pubkey,{"mint":claim.binding.mint},{"encoding":"jsonParsed","commitment":"finalized","minContextSlot":event.slot}])).await?;
     let canonical = crate::execution_controlled_receipt_lot::canonical(c)?;
     let out =

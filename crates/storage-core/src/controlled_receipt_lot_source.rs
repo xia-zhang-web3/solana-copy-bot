@@ -99,6 +99,12 @@ impl SqliteStore {
         wallet: &str,
         mint: &str,
     ) -> Result<()> {
+        if crate::bounded_session::active(&self.conn)? {
+            let i=crate::association_inbox::identity(&self.conn,signature)?.context("local_session_source_identity")?;
+            ensure!(i.admission.facts.slot==slot && i.admission.facts.wallet==wallet && i.admission.facts.token_out==mint
+                && crate::bounded_session::source::event_allowed(&self.conn,&i.admission.facts,true)?,"local_session_source_candidate");
+            return Ok(());
+        }
         let buy = Self::controlled_source_buy(scope)?.context("receipt_lot_source_buy_pending")?;
         let raw: String = self.conn.query_row(
             "SELECT admission FROM association_inbox_identities WHERE signature=?1",
@@ -130,6 +136,7 @@ impl SqliteStore {
         Ok(())
     }
     pub fn controlled_source_buy(scope: &Scope) -> Result<Option<LotReceipt>> {
+        if let Some(result)=crate::bounded_session::source::buy(scope)? {return Ok(result)}
         let db = source(scope)?;
         let tx = db.conn.unchecked_transaction()?;
         buy_parent(&db, scope)?;
@@ -150,6 +157,7 @@ impl SqliteStore {
         signature: &str,
         slot: u64,
     ) -> Result<Option<SourceReceipts>> {
+        if let Some(result)=crate::bounded_session::source::pair(scope,signature,slot)? {return Ok(result)}
         let db = source(scope)?;
         let tx = db.conn.unchecked_transaction()?;
         let parent = buy_parent(&db, scope)?;
@@ -201,6 +209,7 @@ impl SqliteStore {
 /// Executed during the genuine native admission transaction. The SOURCE dispatch
 /// is durable before send; confirmation may arrive later, without retiming the event.
 pub(crate) fn event_allowed(c: &rusqlite::Connection, f: &CheckedFacts, buy: bool) -> Result<bool> {
+    if crate::bounded_session::active(c)? {return crate::bounded_session::source::event_allowed(c,f,buy)}
     let Some((wallet, _, s)) = load(c)? else {
         return Ok(true);
     };

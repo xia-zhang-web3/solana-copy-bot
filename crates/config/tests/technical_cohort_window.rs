@@ -26,6 +26,7 @@ fn cohort() -> ExecutionConfig {
         rpc_url: "http://127.0.0.1:9".into(),
         genesis_hash: "genesis".into(),
         identity: "bounded-cohort".into(),
+        protected_bot_usdc_baseline: None,
     });
     e.canary_max_signal_age_seconds = 120;
     e.canary_buy_size_sol = 0.01;

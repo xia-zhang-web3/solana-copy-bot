@@ -86,6 +86,14 @@ pub(crate) fn identity(c: &ExecutionConfig) -> Result<String> {
         c.pretrade_max_priority_fee_lamports,
         c.pretrade_min_sol_reserve,
     ))?);
+    let base=if let Some(p)=&c.local_bounded_session {
+        copybot_config::validate_local_bounded_session(c)?;
+        digest(serde_json::to_vec(&(&base,"local_bounded_session_v1",p))?)
+    }else{base};
+    let base=if let Some(p)=&c.real_session {
+        copybot_config::validate_real_session(c)?;
+        digest(serde_json::to_vec(&(&base,"real_bounded_usdc_session_v1",p))?)
+    }else{base};
     let base = match &p.fractional_inventory {
         Some(contract) => digest(serde_json::to_vec(&(
             &base,

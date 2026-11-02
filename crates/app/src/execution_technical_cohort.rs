@@ -27,7 +27,7 @@ pub(crate) fn authority(c: &ExecutionConfig) -> Result<Option<TechnicalCohortAut
         mint_policy: p.mint_policy.clone(),
         activated_at,
         deadline,
-        max_buy_count: p.max_buy_count,
+        max_buy_count: if c.local_bounded_session.is_some() {copybot_config::validate_local_bounded_session(c)?;2}else{p.max_buy_count},
         policy_identity: crate::execution_native_buy_rpc::policy_identity(c)?,
     }))
 }

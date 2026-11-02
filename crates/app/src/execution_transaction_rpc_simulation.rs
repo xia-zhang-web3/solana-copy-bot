@@ -80,6 +80,18 @@ pub(crate) async fn verify_serialized_transaction_rpc_simulation(
     parse_rpc_simulation_response(&value, source)
 }
 
+#[derive(Debug)]
+pub(crate) struct RpcSimulationRejected {
+    pub(crate) slot: u64,
+    message: String,
+}
+impl std::fmt::Display for RpcSimulationRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for RpcSimulationRejected {}
+
 pub(crate) fn parse_rpc_simulation_response(
     value: &Value,
     source: &str,
@@ -135,12 +147,16 @@ pub(crate) fn parse_rpc_simulation_response(
         } else {
             error.to_string()
         };
-        return Err(anyhow!(
-            "swap transaction RPC simulation failed source={} err={} logs={}",
-            source,
-            truncate_for_log(&error_text, 220),
-            logs
-        ));
+        return Err(RpcSimulationRejected {
+            slot,
+            message: format!(
+                "swap transaction RPC simulation failed source={} err={} logs={}",
+                source,
+                truncate_for_log(&error_text, 220),
+                logs
+            ),
+        }
+        .into());
     }
     Ok(RpcSimulationOutcome::Passed { slot })
 }

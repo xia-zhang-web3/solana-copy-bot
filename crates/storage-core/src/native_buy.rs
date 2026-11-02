@@ -21,7 +21,7 @@ pub const SPL_TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
 pub const CLASSIC_SPL_MINT_POLICY: &str = "classic_spl_mint_v1";
 
 /// Preselected, one-BUY test authority. This never represents Discovery GREEN.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TechnicalCohortAuthority {
     pub run_id: String,
     pub wallet_ids: Vec<String>,

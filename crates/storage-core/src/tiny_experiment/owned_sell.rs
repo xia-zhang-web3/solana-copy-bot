@@ -75,6 +75,10 @@ pub(crate) fn prepare_owned_sell(
     position: &str,
     now: DateTime<Utc>,
 ) -> Result<TinyExperiment> {
+    if crate::bounded_session::active(c)? {
+        let e=check_owned_sell_owner(c,id,wallet,token,position,now)?;
+        crate::bounded_session::budget::can_prepare_sell(c,now)?;return Ok(e);
+    }
     refresh(c, now)?;
     let e = check_owned_sell_owner(c, id, wallet, token, position, now)?;
     ensure!(e.state == "active", "tiny_budget_stopped");

@@ -42,8 +42,9 @@ fn complete_trace(info: &SubscribeUpdateTransactionInfo) -> bool {
         allowed.insert(key);
     }
     let mut stack = Vec::new();
+    let mut failed = false;
     for line in &meta.log_messages {
-        if line.starts_with(TRUNCATED) {
+        if failed || line.starts_with(TRUNCATED) {
             return false;
         }
         if line.starts_with("Program log:") || line.starts_with("Program data:") {
@@ -86,9 +87,11 @@ fn complete_trace(info: &SubscribeUpdateTransactionInfo) -> bool {
                 .strip_prefix("failed: ")
                 .is_some_and(|v| !v.is_empty())
         {
+            let root_failure = stack.len() == 1 && record != "success";
             if stack.pop() != Some(key) {
                 return false;
             }
+            failed = root_failure;
         } else if let Some(value) = record
             .strip_prefix("consumed ")
             .and_then(|v| v.strip_suffix(" compute units"))
@@ -105,14 +108,48 @@ fn complete_trace(info: &SubscribeUpdateTransactionInfo) -> bool {
             return false;
         }
     }
-    !meta.log_messages.is_empty() && stack.is_empty()
+    !meta.log_messages.is_empty() && stack.is_empty() && failed == meta.err.is_some()
+}
+
+fn retained_unwind(http: &[String], gap: usize, tail: &[String]) -> bool {
+    // Only closes of invocations already observed BEFORE the marker qualify.
+    // Program text may repeat later, so a substring/subsequence search cannot
+    // identify the retained close. The complete trace check validates this
+    // stack; invocation offsets disambiguate repeated calls to the same program.
+    if tail.is_empty() || tail.iter().any(|v| !v.ends_with(" success")) {
+        return false;
+    }
+    let mut stack = Vec::new();
+    let mut closes = Vec::new();
+    for (offset, line) in http.iter().enumerate() {
+        let Some((key, record)) = line
+            .strip_prefix("Program ")
+            .and_then(|s| s.split_once(' '))
+        else {
+            continue;
+        };
+        if program(key).is_none() {
+            continue;
+        }
+        if record.starts_with("invoke [") {
+            stack.push(offset);
+        } else if record == "success" || record.starts_with("failed: ") {
+            let Some(invocation) = stack.pop() else {
+                return false;
+            };
+            if invocation < gap && offset >= gap {
+                closes.push(line);
+            }
+        }
+    }
+    tail.len() <= closes.len() && tail.iter().zip(closes).all(|(a, b)| a == b)
 }
 
 fn known_logs_agree(http: &[String], live: &[String]) -> bool {
-    // A bare truncation marker replaces one nonempty contiguous range. Every
-    // available record on both sides must agree; absent records are supplied
-    // by the current trusted HTTP response, never claimed equal to hidden live
-    // data. Execution identity and the complete HTTP trace are checked separately.
+    // Keep the contiguous-gap contract. A retained tail before further HTTP
+    // instructions must instead close concrete observed prefix invocations.
+    // Current HTTP supplies missing payload, never claimed equal to hidden live
+    // data. Execution identity and the complete HTTP trace remain separate checks.
     let Some(gap) = live.iter().position(|v| v == TRUNCATED) else {
         return false;
     };
@@ -122,7 +159,7 @@ fn known_logs_agree(http: &[String], live: &[String]) -> bool {
         .any(|(i, v)| i != gap && v.starts_with(TRUNCATED))
         && http.len() >= live.len()
         && http.starts_with(&live[..gap])
-        && http.ends_with(&live[gap + 1..])
+        && (http.ends_with(&live[gap + 1..]) || retained_unwind(http, gap, &live[gap + 1..]))
 }
 /// Fresh HTTP is trusted for missing payload only after complete execution identity
 /// and every available live log record agree. This does not assert hidden equality.
@@ -160,8 +197,7 @@ pub(crate) fn eligible(http: &SubscribeUpdateBlock, live: &SubscribeUpdateBlock)
         let (Some(hm), Some(gm)) = (&h.meta, &g.meta) else {
             return false;
         };
-        if hm.err.is_some()
-            || gm.log_messages_none
+        if gm.log_messages_none
             || !known_logs_agree(&hm.log_messages, &gm.log_messages)
             || !complete_trace(h)
         {

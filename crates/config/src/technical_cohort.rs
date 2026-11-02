@@ -23,6 +23,8 @@ pub struct TechnicalCohortConfig {
 }
 
 pub fn validate_technical_cohort(e: &crate::ExecutionConfig) -> Result<()> {
+    crate::validate_local_bounded_session(e)?;
+    crate::validate_real_session(e)?;
     crate::validate_controlled_receipt_lot(e)?;
     let Some(p) = &e.technical_cohort else { return Ok(()); };
     let receipt_exit = e.owner_exit.as_ref().is_some_and(|exit|
@@ -43,7 +45,7 @@ pub fn validate_technical_cohort(e: &crate::ExecutionConfig) -> Result<()> {
     ensure!(p.route == "jupiter_swap_instructions" && e.canary_route == p.route,
         "technical_cohort_route");
     ensure!((121..=14_400).contains(&p.max_wait_seconds)
-        && p.max_buy_count == 1 && p.max_source_sell_count == 1,
+        && (e.real_session.as_ref().is_some_and(|s| p.max_buy_count==s.max_cycles && p.max_source_sell_count==s.max_cycles) || e.real_session.is_none() && p.max_buy_count == 1 && p.max_source_sell_count == 1),
         "technical_cohort_window_or_count");
     ensure!((e.native_fresh_buy.as_ref().is_some_and(|native|
             native.policy == crate::PROCESSED_SLOT_FENCE_AVAILABILITY_V1)

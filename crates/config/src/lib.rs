@@ -27,6 +27,10 @@ pub use execution_only_mode::{execution_only_mode, ExecutionOnlyMode};
 mod risk_validation;
 mod schema;
 mod technical_cohort;
+mod real_session;
+pub use real_session::{RealSession,REAL_SESSION_V1,MAINNET_GENESIS,validate_real_session};
+mod local_bounded_session;
+pub use local_bounded_session::{LocalBoundedSession,LocalSourceCycle,LOCAL_SESSION_GENESIS,validate_local_bounded_session};
 mod tiny_experiment;
 pub use native_fresh_buy::{
     native_first_buy_activation, NativeFreshBuyConfig, PROCESSED_SLOT_FENCE_AVAILABILITY_V1,

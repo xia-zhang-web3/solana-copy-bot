@@ -84,31 +84,31 @@ pub(super) fn read(c: &Connection, token: &str, l: InboxLimits) -> Result<Option
         }
         unproven = a.unproven_links.iter().map(|v| format!("{v:?}")).collect();
     }
-    // Missing signals/fills and non-confirmed BUYs remain pending after the status fix.
+    let pending=pending(c,token)?;
+    let fingerprint = serde_json::to_string(&(1u8, &attr, &contributors, &pending))?;
+    Ok(Some(Financial { generation,contributors,fingerprint,unproven,pending }))
+}
+pub(super) fn pending(c: &Connection, token: &str) -> Result<Vec<String>> {
+    // Unknown origins remain pending. Only fully settled, canonical LOCAL SELLs
+    // have a proven non-BUY origin despite intentionally having no copy signal.
     let mut q = c.prepare("SELECT o.order_id,o.status,o.tx_signature FROM orders o LEFT JOIN copy_signals s ON s.signal_id=o.signal_id WHERE (s.token=?1 OR s.signal_id IS NULL) AND (lower(s.side)='buy' OR s.signal_id IS NULL) AND (o.status!=?2 OR s.signal_id IS NULL OR NOT EXISTS(SELECT 1 FROM fills f WHERE f.order_id=o.order_id)) ORDER BY o.order_id")?;
     let pending = q
         .query_map(
             rusqlite::params![token, crate::EXECUTION_STATUS_CANARY_CONFIRMED],
             |r| {
-                Ok(format!(
-                    "{:?}",
-                    (
+                Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, String>(1)?,
                         r.get::<_, Option<String>>(2)?
-                    )
-                ))
+                    ))
             },
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let fingerprint = serde_json::to_string(&(1u8, &attr, &contributors, &pending))?;
-    Ok(Some(Financial {
-        generation,
-        contributors,
-        fingerprint,
-        unproven,
-        pending,
-    }))
+    let mut out=Vec::new();
+    for row in pending {
+        if !crate::bounded_session::state::settled_sell(c,&row.0)? {out.push(format!("{row:?}"));}
+    }
+    Ok(out)
 }
 pub(super) fn source_signature(c: &Connection, signal: &str, wallet: &str, token: &str) -> Result<Option<String>> {
     if let Some(signature) = signal.strip_prefix("native-buy-v1:") {

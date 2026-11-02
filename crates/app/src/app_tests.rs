@@ -762,6 +762,9 @@ mod shutdown_signal_tests;
 mod protected_usdc_fixture;
 mod protected_usdc_prepare;
 mod protected_usdc_tests;
+mod owned_sell_recovery_tests;
+mod local_source_receipt_tests;
+mod local_namespace_tests;
 mod receipt_lot_custody_fixture;
 mod receipt_lot_custody_migration_tests;
 mod receipt_lot_custody_native_tests;
@@ -784,3 +787,7 @@ mod source_recovery_fixture;
 mod source_recovery_submit_fixture;
 mod source_recovery_tests;
 mod copy09_native_safety_tests;
+
+mod provider_conformance;
+
+mod real_source_binding_tests;

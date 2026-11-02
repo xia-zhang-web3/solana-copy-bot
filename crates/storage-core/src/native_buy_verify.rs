@@ -115,9 +115,14 @@ fn valid_cohort(
     max_age_seconds: Option<u64>, need_finality: bool,
 ) -> Result<bool> {
     let Some(authority) = cohort::load(c)? else { return Ok(false); };
+    let bounded=crate::bounded_session::active(c)?;
+    if bounded {
+        let cycle=crate::bounded_session::state::current(c)?;
+        if cycle.state=="closed" || cycle.source_buy!=d.signature {return Ok(false)}
+    }
     let Some(epoch) = epoch_selection::pinned(c, &d.session, b.epoch_id, now, &authority)? else { return Ok(false); };
     if authority.run_id != b.run_id || authority.mint_policy != CLASSIC_SPL_MINT_POLICY
-        || authority.max_buy_count != 1 || !authority.wallet_ids.contains(&d.wallet)
+        || authority.max_buy_count != crate::bounded_session::native_limit(c)? || !authority.wallet_ids.contains(&d.wallet)
         || authority.policy_identity != b.policy_identity
         || b.wallet != d.wallet || b.mint != d.mint || b.admitted_at != d.admitted_at
         || d.follow_id != 0 || !d.follow_added_at.is_empty()

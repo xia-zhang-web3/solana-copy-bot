@@ -1,4 +1,6 @@
 //! Complete legacy bundle for tiny SELL, after existing direct route selection.
+#[path = "execution_owned_sell_simulation.rs"]
+pub(crate) mod owned_simulation;
 use crate::execution_guarded_generic_buy::GenericBuyOutcome;
 use crate::execution_instruction_bundle::{pubkey, MAX_RESPONSE_BYTES};
 use crate::execution_instruction_bundle_binding::{BoundInstructionBundle, BundleRequest};
@@ -248,11 +250,17 @@ pub(crate) async fn prepare_owned(
         &transaction.serialized_transaction_base64,
         snapshot.quote.raw,
     )?;
-    let rpc=crate::execution_owned_sell_rpc::exchange(http,config,&crate::execution_owned_sell_rpc::endpoint(config)?,serde_json::json!({"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","method":"simulateTransaction","params":[transaction.serialized_transaction_base64,{"encoding":"base64","sigVerify":false,"replaceRecentBlockhash":!copybot_config::owned_sell_dispatch(config),"commitment":"finalized"}]}),check).await?;
-    crate::execution_transaction_rpc_simulation::parse_rpc_simulation_response(
+    // Simulation is a bounded readonly request. Preserve a validated negative
+    // response even if CPU work consumed the old quote's remaining lifetime.
+    // A positive result still needs the full current authority/deadline fence.
+    check()?;
+    let rpc=crate::execution_owned_sell_rpc::exchange(http,config,&crate::execution_owned_sell_rpc::endpoint(config)?,serde_json::json!({"jsonrpc":"2.0","id":"execution-swap-transaction-simulate","method":"simulateTransaction","params":[transaction.serialized_transaction_base64,{"encoding":"base64","sigVerify":false,"replaceRecentBlockhash":!copybot_config::owned_sell_dispatch(config),"commitment":"finalized"}]}),&mut ||Ok(())).await?;
+    owned_simulation::verify(
         rpc.value(),
         &transaction.source,
+        &transaction.serialized_transaction_base64,
     )?;
+    check()?;
     crate::execution_wsol_lifecycle::collect_funding(
         http,
         config,

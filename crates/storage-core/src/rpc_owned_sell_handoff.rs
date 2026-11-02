@@ -1,5 +1,6 @@
 //! Unsigned reservation: no signal timestamp, fill, fee payment or cash write.
-//! There is deliberately no rearm/release API. Interrupted preparation stays owned.
+//! Only a durable simulation refusal before unsigned completion can recover.
+//! Interrupted, prepared and dispatched paths stay owned without resend.
 use crate::{
     association_inbox::InboxLimits,
     ordered_sell_quote::{QuoteObservation, QuoteOutcome},
@@ -12,6 +13,8 @@ use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 #[path = "rpc_owned_sell_dispatch.rs"]
 pub mod dispatch;
+#[path = "rpc_owned_sell_recovery.rs"]
+pub mod recovery;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Handoff {
     pub intent_id: String,
@@ -149,9 +152,10 @@ impl SqliteDiscoveryStore {
             now,
         )?;
         if cohort_deadline.is_some() {
+            let position=if crate::bounded_session::active(&tx)? {b.position_id.as_str()}else{""};
             let reserved: i64 = tx.query_row(
-                "SELECT count(*) FROM rpc_owned_sell_handoffs WHERE experiment_id=?1",
-                [experiment],
+                "SELECT count(*) FROM rpc_owned_sell_handoffs WHERE experiment_id=?1 AND (?2='' OR position_id=?2)",
+                params![experiment,position],
                 |r| r.get(0),
             )?;
             ensure!(reserved < 1, "technical_cohort_sell_limit");
@@ -175,10 +179,8 @@ impl SqliteDiscoveryStore {
         };
         let changed=tx.execute("INSERT INTO rpc_owned_sell_handoffs(intent_id,signature,position_id,order_id,owner,experiment_id,wallet,config_sha256,snapshot,authority,quote,reserved_at,deadline,fee_reserve,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,100000,'preparing')",params![h.intent_id,sig,b.position_id,h.order_id,h.owner,experiment,wallet,identity,serde_json::to_string(snapshot)?,authority,serde_json::to_string(quote)?,now.to_rfc3339(),deadline.to_rfc3339()])?;
         ensure!(changed == 1, "owned_sell_reservation_lost");
-        tx.execute(
-            "UPDATE execution_tiny_experiment SET last_decision_at=?1 WHERE singleton=1",
-            [now.to_rfc3339()],
-        )?;
+        if crate::bounded_session::active(&tx)? {crate::bounded_session::state::touch(&tx,now)?;}
+        else {tx.execute("UPDATE execution_tiny_experiment SET last_decision_at=?1 WHERE singleton=1",[now.to_rfc3339()])?;}
         ensure!(clock() < deadline, "owned_sell_deadline");
         tx.commit()?;
         self.recheck_owned_sell_handoff(&h, limits, clock())?;
@@ -268,6 +270,9 @@ fn recheck_state_common(
     verify_graph: bool,
 ) -> Result<()> {
     required(c)?;
+    if state == "preparing" {
+        recovery::ensure_not_refused(c, h)?;
+    }
     ensure!(
         now < h.deadline && crate::ordered_sell_quote::fresh(&h.quote, now),
         "owned_sell_deadline"
@@ -299,9 +304,10 @@ fn recheck_state_common(
             h.deadline <= deadline,
             "technical_cohort_sell_deadline_binding"
         );
+        let position=if crate::bounded_session::active(c)? {h.snapshot.quote.position_id.as_str()}else{""};
         let reserved: i64 = c.query_row(
-            "SELECT count(*) FROM rpc_owned_sell_handoffs WHERE experiment_id=?1",
-            [&h.experiment_id],
+            "SELECT count(*) FROM rpc_owned_sell_handoffs WHERE experiment_id=?1 AND (?2='' OR position_id=?2)",
+            params![h.experiment_id,position],
             |r| r.get(0),
         )?;
         ensure!(reserved <= 1, "technical_cohort_sell_limit");
@@ -321,11 +327,11 @@ fn cohort_sell_deadline(
     }
     let origin: Option<(String, String, String)> = c
         .query_row(
-            "SELECT b.run_id,b.mint,b.policy_identity FROM orders o
+            &format!("SELECT b.run_id,b.mint,b.policy_identity FROM orders o
          JOIN copy_signals s ON s.signal_id=o.signal_id AND s.side='buy'
          JOIN native_buy_decisions d ON d.signal_id=o.signal_id
-         JOIN native_buy_cohort_decisions b ON b.signature=d.signature
-         WHERE o.order_id=?1",
+         JOIN {} b ON b.signature=d.signature
+         WHERE o.order_id=?1",crate::bounded_session::native::table(c)?),
             [buy_order_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )

@@ -191,6 +191,8 @@ impl ExecutionCanaryRunner {
         store: &SqliteStore,
         now: DateTime<Utc>,
     ) -> Result<ExecutionCanaryTickSummary> {
+        crate::execution_controlled_receipt_lot::register(&self.config,store)?;
+        store.refresh_local_bounded_session(now)?;
         let mut summary = ExecutionCanaryTickSummary {
             enabled: self.config.canary_enabled,
             dry_run: self.config.canary_dry_run,

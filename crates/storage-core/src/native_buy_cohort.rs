@@ -35,6 +35,9 @@ impl TechnicalCohortAuthority {
 /// Call before opening source intake. It cannot reset a consumed BUY or deadline.
 impl AssociationInbox {
     pub fn register_technical_cohort_authority(&mut self, authority: &TechnicalCohortAuthority) -> Result<()> {
+        if let Some(a)=crate::bounded_session::load(&self.conn)? {
+            ensure!(a.cohort==*authority,"local_session_cohort_changed");return Ok(());
+        }
         ensure!(available(&self.conn)?, "technical_cohort_migration_required");
         authority.validate()?;
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -118,6 +121,7 @@ impl AssociationInbox {
 }
 
 pub(crate) fn load(c: &Connection) -> Result<Option<TechnicalCohortAuthority>> {
+    if let Some(a)=crate::bounded_session::load(c)? {return Ok(Some(a.cohort))}
     if !available(c)? { return Ok(None); }
     let row: Option<(String,String,String,String,String,i64,String)> = c.query_row(
         "SELECT run_id,wallet_ids_json,mint_policy,activated_at,deadline,max_buy_count,policy_identity FROM native_buy_technical_cohort WHERE singleton=1",
@@ -152,7 +156,7 @@ pub(crate) struct DecisionBinding {
 }
 pub(crate) fn binding(c: &Connection, signature: &str) -> Result<Option<DecisionBinding>> {
     if !available(c)? { return Ok(None); }
-    Ok(c.query_row("SELECT run_id,fence_epoch_id,wallet,mint,admitted_at,policy_identity FROM native_buy_cohort_decisions WHERE signature=?1",
+    Ok(c.query_row(&format!("SELECT run_id,fence_epoch_id,wallet,mint,admitted_at,policy_identity FROM {} WHERE signature=?1",crate::bounded_session::native::table(c)?),
         [signature], |r|Ok(DecisionBinding {
             run_id:r.get(0)?,epoch_id:r.get(1)?,wallet:r.get(2)?,mint:r.get(3)?,
             admitted_at:r.get(4)?,policy_identity:r.get(5)?

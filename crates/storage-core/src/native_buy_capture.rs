@@ -108,9 +108,8 @@ fn cohort_admission(
     if observed < authority.activated_at || observed >= authority.deadline
         || !authority.wallet_ids.contains(&f.wallet) { return Ok(()); }
     if !crate::controlled_receipt_lot::event_allowed(c, f, true)? { return Ok(()); }
-    let consumed: bool = c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM native_buy_cohort_decisions WHERE run_id=?1)",
-        [&authority.run_id], |r|r.get(0))?;
+    let count=crate::bounded_session::native::count(c,&authority.run_id)?;
+    let consumed= count>=u64::from(authority.max_buy_count);
     if consumed { return Ok(()); }
     let Some(epoch) = epoch_selection::select(c, &d.session, f.slot, observed, authority)? else { return Ok(()); };
     if epoch.session != d.session || epoch.slot <= 0 || f.slot <= epoch.slot as u64
@@ -129,9 +128,7 @@ fn cohort_admission(
             serde_json::to_string(a)?,observed.to_rfc3339(),f.wallet,f.token_out,
             i64::try_from(f.slot)?,amount])?;
     if inserted == 1 {
-        c.execute("INSERT INTO native_buy_cohort_decisions(signature,run_id,fence_epoch_id,wallet,mint,admitted_at,policy_identity) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            params![f.signature,authority.run_id,epoch.id,f.wallet,f.token_out,
-                observed.to_rfc3339(),authority.policy_identity])?;
+        crate::bounded_session::native::insert(c,&f.signature,authority,epoch.id,&f.wallet,&f.token_out,observed)?;
     }
     Ok(())
 }

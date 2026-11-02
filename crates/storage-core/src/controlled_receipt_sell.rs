@@ -58,6 +58,7 @@ fn proof(
         [&r.buy.signature],
         |row| row.get(0),
     )?;
+    let real=crate::real_session::active(c)?;
     let source: copybot_core_types::association_delivery::AdmissionFacts =
         serde_json::from_str(&source_raw)?;
     ensure!(
@@ -72,7 +73,7 @@ fn proof(
                 .as_ref()
                 .is_some_and(|x| x.amount_out_raw == r.buy.amount_raw.to_string()
                     && x.amount_out_decimals == 6
-                    && x.amount_in_raw == "10000000"
+                    && (if real {x.amount_in_raw.parse::<u64>().is_ok_and(|v|v>0)}else{x.amount_in_raw == "10000000"})
                     && x.amount_in_decimals == 9),
         "receipt_lot_source_buy_event_amount"
     );

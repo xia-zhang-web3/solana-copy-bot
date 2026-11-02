@@ -27,6 +27,9 @@ fn reserve_inner(
     now: DateTime<Utc>,
     transferred: bool,
 ) -> Result<()> {
+    if crate::bounded_session::active(conn)? {
+        return crate::bounded_session::budget::reserve(conn,d,p,now,transferred);
+    }
     // The legacy storage claim API cannot bypass a pinned experiment. Only app tiny
     // dispatch calls the proof-required API, including before any activation exists.
     let Some(p) = p else {
@@ -138,7 +141,7 @@ fn reserve_inner(
 
 /// Execution ownership is canonical receipt + confirmed fill, not knowledge of fee.
 /// This read-only guard never releases a reservation or enriches historical facts.
-pub(super) fn confirmed_buy_position(
+pub(crate) fn confirmed_buy_position(
     conn: &Connection,
     e: &TinyExperiment,
     wallet: &str,

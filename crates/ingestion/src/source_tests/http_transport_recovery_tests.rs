@@ -15,6 +15,8 @@ mod anchor_tail_replay;
 mod anchor_complete_replay;
 #[path = "anchor_complete_fetch_tests.rs"]
 mod anchor_complete_fetch_tests;
+#[path = "full_cycle04_anchor_tests.rs"]
+mod full_cycle04_anchor_tests;
 #[path = "anchor_complete_durable_tests.rs"]
 mod anchor_complete_durable_tests;
 use super::durable_transport_fixture::Fixture;

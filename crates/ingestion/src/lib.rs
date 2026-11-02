@@ -1,4 +1,6 @@
 pub mod capture_replay;
+mod source_wire_identity;
+pub use source_wire_identity::verify_source_legacy_wire;
 mod parser;
 mod source;
 

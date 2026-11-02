@@ -112,6 +112,17 @@ impl ExecutionCanaryRunner {
                 summary.last_error = Some("native_buy_finalized_source_denied".into());
                 continue;
             }
+            if crate::execution_controlled_receipt_lot::bounded::receipt::buy(store,&self.config,
+                rpc.as_mut(),&source.signature,source.slot,&mut check).await.is_err() {
+                summary.last_error=Some("local_source_finalized_wire_denied".into());continue;
+            }
+            if crate::execution_controlled_receipt_lot::real::receipt::buy(store,&self.config,
+                rpc.as_mut(),&source.signature,source.slot,&mut check).await.is_err() {
+                summary.last_error=Some("real_source_finalized_wire_denied".into());continue;
+            }
+            if crate::execution_controlled_receipt_lot::real::receipt::entry_inventory(&self.config,rpc.as_mut(),source.slot,&mut check).await.is_err() {
+                summary.last_error=Some("real_session_prior_inventory_obligation".into());continue;
+            }
             if !store.native_buy_record_finalized(
                 &source.signature,
                 source.slot,

@@ -8,6 +8,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 #[path = "execution_owned_sell_raydium.rs"]
 mod raydium;
+#[path="execution_owned_sell_token_init.rs"]
+pub(crate) mod token_init;
 const PUMP: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 const SOL: &str = "So11111111111111111111111111111111111111112";
 const TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -122,7 +124,7 @@ fn balances(
     }
     Ok(out)
 }
-fn delta(
+pub(crate) fn delta(
     v: &Value,
     keys: &[&str],
     wallet: &str,
@@ -302,4 +304,16 @@ pub(crate) fn sell(v: &Value, s: &AdmissionFacts) -> Result<u64> {
         "owned_sell_source_decoded_amount"
     );
     Ok(f.slot)
+}
+
+/// Same AMM v4 receipt proof as owned BUY; operands come from native SOURCE admission.
+pub(crate) fn source_buy(v:&Value,s:&AdmissionFacts)->Result<u64>{
+    let f=&s.facts;let e=f.exact_amounts.as_ref().context("source_buy_exact")?;
+    ensure!(f.token_in==SOL && f.token_out==copybot_storage_core::OWNER_EXIT_MINT && e.amount_in_decimals==9 && e.amount_out_decimals==6,"source_buy_side");
+    let keys=basic(v,&f.signature,&f.wallet,f.slot)?;
+    ensure!(raydium::supported(v,&keys)?,"source_buy_raydium_required");
+    let swap=raydium::prove(v,&keys,&f.wallet,&f.token_out,6,false)?;
+    ensure!(swap.input.to_string()==e.amount_in_raw && swap.output.to_string()==e.amount_out_raw,"source_buy_receipt_amount");
+    raydium::buy_target_delta(v,&keys,&f.wallet,&f.token_out,6,&swap)?;
+    Ok(swap.output)
 }

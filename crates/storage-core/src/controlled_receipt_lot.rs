@@ -1,6 +1,6 @@
 //! Immutable controlled scenario identity. Wallet balances never define its lots.
 use crate::{association_inbox::AssociationInbox, SqliteStore};
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 pub const POLICY: &str = "controlled_receipt_lot_custody_v1";
@@ -64,6 +64,9 @@ impl Scope {
     }
 }
 pub(crate) fn load(c: &Connection) -> Result<Option<(String, String, Scope)>> {
+    if let Some(s)=crate::bounded_session::state::scope(c)? {
+        return Ok(Some((s.bot_wallet.clone(),s.bot_run_id.clone(),s)));
+    }
     if !c.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='controlled_receipt_lot_scope')",
         [],
@@ -92,6 +95,10 @@ pub(crate) fn load(c: &Connection) -> Result<Option<(String, String, Scope)>> {
     .transpose()
 }
 fn register(c: &Connection, scope: &Scope, wallet: &str) -> Result<()> {
+    if let Some(a)=crate::bounded_session::load(c)? {
+        let current=crate::bounded_session::state::scope(c)?.context("local_session_scope_missing")?;
+        ensure!(wallet==a.scope.bot_wallet && (*scope==a.scope || *scope==current),"local_session_scope_changed");return Ok(());
+    }
     let run = scope.run(wallet)?;
     let wire = serde_json::to_string(scope)?;
     ensure!(

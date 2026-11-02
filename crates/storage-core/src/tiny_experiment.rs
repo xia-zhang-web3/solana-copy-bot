@@ -1,9 +1,9 @@
 //! Fixed variant A: one pinned experiment per database, never automatically rearmed.
-mod claim;
+pub(crate) mod claim;
 mod snapshot;
 pub(crate) use snapshot::read as owned_snapshot;
 pub use snapshot::OwnedExperimentSnapshot;
-mod protected;
+pub(crate) mod protected;
 pub use protected::{ProtectedCapitalClaim, ProtectedNativePolicy, TINY_NATIVE_ALLOWANCE};
 mod owned_sell;
 mod settlement;
@@ -54,6 +54,7 @@ pub struct TinyBudgetClaim {
 }
 
 pub(super) fn load(conn: &Connection) -> Result<Option<TinyExperiment>> {
+    if crate::bounded_session::active(conn)? {return crate::bounded_session::state::tiny(conn)}
     let row = conn.query_row("SELECT experiment_id,wallet,activated_at,deadline,last_decision_at,
         state,stop_reason,buy_order_id,token,position_id FROM execution_tiny_experiment WHERE singleton=1", [],
         |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,
@@ -105,11 +106,21 @@ pub(super) fn load(conn: &Connection) -> Result<Option<TinyExperiment>> {
 }
 
 pub(super) fn stop(conn: &Connection, reason: &str) -> Result<()> {
+    if let Some(a)=crate::bounded_session::load(conn)? {
+        conn.execute(&crate::bounded_session::sql(conn,"INSERT OR IGNORE INTO local_bounded_stops VALUES(?1,?2,?3)")?,params![a.model.session_id,reason,Utc::now().to_rfc3339()])?;
+        return Ok(());
+    }
     conn.execute("UPDATE execution_tiny_experiment SET state='stopped',stop_reason=?1 WHERE singleton=1 AND state='active'",[reason])?;
     Ok(())
 }
 
 pub(super) fn refresh(conn: &Connection, now: DateTime<Utc>) -> Result<Option<TinyExperiment>> {
+    if crate::bounded_session::active(conn)? {
+        crate::bounded_session::state::refresh(conn,now)?;
+        let e=crate::bounded_session::state::tiny(conn)?;
+        if e.as_ref().is_some_and(|v|now>=v.deadline) {stop(conn,"local_session_deadline")?;}
+        return crate::bounded_session::state::tiny(conn);
+    }
     let Some(e) = load(conn)? else {
         return Ok(None);
     };
@@ -144,6 +155,7 @@ impl SqliteDiscoveryStore {
         wallet: &str,
         now: DateTime<Utc>,
     ) -> Result<TinyExperiment> {
+        ensure!(!crate::bounded_session::active(&self.conn)?,"local_session_once_activation_forbidden");
         ensure!(
             !id.is_empty()
                 && id.len() <= 128
@@ -175,6 +187,7 @@ impl SqliteDiscoveryStore {
 }
 
 fn totals(conn: &Connection) -> Result<(u64, u64, u64)> {
+    if crate::bounded_session::active(conn)? {return crate::bounded_session::budget::cycle_counts(conn)}
     let (buys,sells,fees):(u64,u64,u64)=conn.query_row("SELECT COUNT(CASE WHEN side='buy' THEN 1 END),COUNT(CASE WHEN side='sell' THEN 1 END),COALESCE(SUM(COALESCE(actual_fee,fee_bound)),0) FROM execution_tiny_reservations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     let (unsigned, reserved) = owned_sell::unsigned_totals(conn)?;
     Ok((

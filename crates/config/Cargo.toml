@@ -3,6 +3,9 @@ name = "copybot-config"
 version.workspace = true
 edition.workspace = true
 
+[features]
+local-bounded-session = []
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true

@@ -43,11 +43,8 @@ pub(crate) async fn run(
             "fraction_producer_changed"
         );
     }
-    if store.has_owned_sell_handoff(&b.intent_id)? {
-        ensure!(
-            store.owned_sell_handoff_dispatched(&b.intent_id)?,
-            "owned_sell_preparation_held_no_resend"
-        );
+    let recovering = store.has_owned_sell_handoff(&b.intent_id)?;
+    if recovering && store.owned_sell_handoff_dispatched(&b.intent_id)? {
         return Ok(());
     }
     ensure!(
@@ -127,8 +124,8 @@ pub(crate) async fn run(
         .context("owned_sell_rpc_collect_deadline")?
         .context("owned_sell_rpc_collect")?;
     check()?;
-    let h = store
-        .reserve_owned_sell_handoff(
+    let h = if recovering {
+        store.recover_owned_sell_handoff(
             &s,
             &q,
             l,
@@ -137,8 +134,21 @@ pub(crate) async fn run(
             e,
             &c.canary_wallet_pubkey,
             Utc::now,
-        )
-        .context("owned_sell_reserve")?;
+        )?
+    } else {
+        store
+            .reserve_owned_sell_handoff(
+                &s,
+                &q,
+                l,
+                &rpc::identity(c)?,
+                &authority.binding(c, &s)?,
+                e,
+                &c.canary_wallet_pubkey,
+                Utc::now,
+            )
+            .context("owned_sell_reserve")?
+    };
     // Reserve has already checked the full graph atomically and read it back.
     // Parent-only commits after that point must not strand the durable hold.
     let experiment = if copybot_config::owned_sell_dispatch(c) {
@@ -209,7 +219,17 @@ pub(crate) async fn run(
         ),
     )
     .await
-    .context("owned_sell_build_deadline")??;
+    .context("owned_sell_build_deadline")?;
+    let prepared = match prepared {
+        Ok(value) => value,
+        Err(error) => {
+            if let Some(refusal)=error.downcast_ref::<crate::execution_guarded_generic_sell::owned_simulation::Rejection>() {
+                let (payload,slot)=refusal.proof();
+                store.record_owned_sell_simulation_refusal(&h,l,payload,slot,Utc::now())?;
+            }
+            return Err(error);
+        }
+    };
     check()?;
     let (message, priority) = crate::execution_priority_fee_wire::decode_priority_fee_message(
         &prepared.serialized_transaction_base64,

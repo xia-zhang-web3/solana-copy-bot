@@ -159,6 +159,7 @@ impl SqliteDiscoveryStore {
         );
         self.with_immediate_transaction_retry("prepare native anchor", |conn| {
             let now = clock()?;
+            ensure!(!crate::bounded_session::active(conn)? || binding.is_some() && owner.is_none(),"local_session_native_binding_required");
             if let Some((intent, order)) = owner {
                 crate::owner_technical_buy_protected::activation_current(
                     self, intent, order, id, wallet, reserve, now)?;
@@ -176,7 +177,10 @@ impl SqliteDiscoveryStore {
             let floor = if crate::controlled_receipt_lot::receipt_native_floor(conn,id,wallet)? {
                 ensure!(reserve==0 && balance>0,"receipt_lot_native_available"); 0
             } else {floor(balance,reserve)?};
-            let deadline = if let (Some(binding), Some(authority)) =
+            let deadline = if let Some(a)=crate::bounded_session::load(conn)? {
+                ensure!(a.model.session_id==id && a.scope.bot_wallet==wallet && now>=a.cohort.activated_at && now<a.cohort.deadline,"local_session_anchor_identity");
+                a.cohort.deadline
+            } else if let (Some(binding), Some(authority)) =
                 (binding, crate::native_buy::cohort::load(conn)?)
             {
                 ensure!(authority.run_id == id
@@ -214,7 +218,7 @@ impl SqliteDiscoveryStore {
         })
     }
 }
-pub(super) fn validate_claim(
+pub(crate) fn validate_claim(
     conn: &Connection,
     e: &TinyExperiment,
     p: &TinyBudgetClaim,
@@ -240,7 +244,7 @@ pub(super) fn validate_claim(
         _ => anyhow::bail!("tiny_capital_evidence_mode"),
     }
 }
-pub(super) fn record_claim(
+pub(crate) fn record_claim(
     conn: &Connection,
     d: &crate::ExecutionCanaryDispatch,
     p: &TinyBudgetClaim,
