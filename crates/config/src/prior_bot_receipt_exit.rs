@@ -51,7 +51,8 @@ pub fn validate_prior_bot_receipt_exit(c: &crate::ExecutionConfig) -> Result<()>
         p.buy_order_id
             .strip_prefix("exec-canary:native-buy-v1:")
             .is_some_and(|signature| !signature.is_empty()
-                && p.exit_intent_id == format!("bot-receipt-exit:{signature}"))
+                && (p.exit_intent_id == format!("bot-receipt-exit:{signature}")
+                    || p.exit_intent_id == format!("bot-receipt-child:{signature}")))
             && p.position_id == format!("exec-canary-pos:{}", p.buy_order_id),
         "prior_bot_exit_native_buy"
     );
