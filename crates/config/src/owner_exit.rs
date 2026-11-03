@@ -11,6 +11,8 @@ pub const OWNER_SOURCE_RECOVERY_EXIT_V1: &str = "owner_source_receipt_recovery_e
 pub struct OwnerExitConfig {
     #[serde(default)]
     pub source_recovery_parent_intent_id: Option<String>,
+    #[serde(default)]
+    pub bot_receipt_parent_intent_id: Option<String>,
     pub policy: String,
     #[serde(default)]
     pub activate: bool,
@@ -63,6 +65,8 @@ pub fn validate_owner_exit(e: &crate::ExecutionConfig) -> Result<()> {
     }
     ensure!(p.source_recovery_parent_intent_id.is_none()||p.policy==OWNER_SOURCE_RECOVERY_EXIT_V1,
         "owner_child_source_policy_required");
+    ensure!(p.bot_receipt_parent_intent_id.is_none() || p.policy==crate::OWNER_BOT_RECEIPT_EXIT_V1,
+        "owner_child_bot_policy_required");
     if p.policy == OWNER_ROUNDTRIP_EXIT_V1 {
         let b=e.owner_technical_buy.as_ref().ok_or_else(||anyhow::anyhow!("owner_roundtrip_exit_parent"))?;
         ensure!(b.policy == crate::OWNER_EXECUTION_ROUNDTRIP_V1

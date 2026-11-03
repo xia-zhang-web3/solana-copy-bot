@@ -1,6 +1,8 @@
 //! Add one explicit child origin while retaining every parent constraint and source row.
 use anyhow::{ensure, Context, Result};
 use rusqlite::{Connection, OptionalExtension};
+#[path = "owner_bot_child_migration.rs"]
+pub(crate) mod bot;
 pub const VERSION: &str = "0092_owner_exit_child_attempt.sql";
 pub fn required(c: &Connection, files: &[std::path::PathBuf]) -> Result<bool> {
     if !files

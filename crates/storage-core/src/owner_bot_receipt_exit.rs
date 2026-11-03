@@ -13,7 +13,10 @@ pub const MIGRATION: &str = "0093_bot_receipt_exit_zero_scope.sql";
 const PREFIX: &str = "bot-receipt-exit:";
 
 pub fn bot_receipt_exit_id(id: &str) -> bool {
-    id.strip_prefix(PREFIX).is_some_and(|s| !s.is_empty())
+    source(id).is_some_and(|s| !s.is_empty())
+}
+fn source(id: &str) -> Option<&str> {
+    id.strip_prefix(PREFIX).or_else(||id.strip_prefix(crate::owner_exit_child::BOT_PREFIX))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,7 +29,14 @@ pub struct OwnerBotReceiptExitProof {
 }
 
 pub(crate) fn historical(c: &Connection, i: &OwnerExitIntent) -> Result<OwnerBotReceiptExitProof> {
-    let source = i.intent_id.strip_prefix(PREFIX).context("bot_receipt_exit_origin")?;
+    if i.intent_id.starts_with(crate::owner_exit_child::BOT_PREFIX) {
+        crate::owner_exit_child::validate(c,i)?;
+    }
+    historical_parent(c,i)
+}
+
+fn historical_parent(c: &Connection, i: &OwnerExitIntent) -> Result<OwnerBotReceiptExitProof> {
+    let source = source(&i.intent_id).context("bot_receipt_exit_origin")?;
     let (wallet, run, scope) = crate::controlled_receipt_lot::load(c)?
         .context("bot_receipt_exit_scope")?;
     ensure!(wallet == i.wallet && run == i.run_id && scope.bot_wallet == wallet
@@ -111,10 +121,17 @@ pub(crate) fn historical(c: &Connection, i: &OwnerExitIntent) -> Result<OwnerBot
 }
 
 pub(crate) fn validate(c: &Connection, i: &OwnerExitIntent) -> Result<OwnerBotReceiptExitProof> {
+    if i.intent_id.starts_with(crate::owner_exit_child::BOT_PREFIX) {
+        crate::owner_exit_child::validate(c,i)?;
+    }
+    validate_parent(c,i)
+}
+
+pub(crate) fn validate_parent(c: &Connection, i: &OwnerExitIntent) -> Result<OwnerBotReceiptExitProof> {
     let migrated: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=?1)",
         [MIGRATION], |r| r.get(0))?;
     ensure!(migrated, "bot_receipt_exit_migration_required");
-    let proof = historical(c, i)?;
+    let proof = historical_parent(c, i)?;
     let bound: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM positions x JOIN fills f
         ON f.position_id=x.position_id AND f.order_id=?1 JOIN execution_canary_receipt_facts r
         ON r.order_id=f.order_id WHERE x.position_id=?2 AND x.token=?3

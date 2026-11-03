@@ -18,8 +18,13 @@ pub(crate) fn validate(e: &ExecutionConfig, p: &OwnerExitConfig) -> Result<()> {
         .strip_prefix("exec-canary:native-buy-v1:")
         .filter(|s| !s.is_empty())
         .context("bot_receipt_exit_native_origin")?;
+    let identity = match &p.bot_receipt_parent_intent_id {
+        None => p.intent_id == format!("bot-receipt-exit:{suffix}"),
+        Some(parent) => *parent == format!("bot-receipt-exit:{suffix}")
+            && p.intent_id == format!("bot-receipt-child:{suffix}"),
+    };
     ensure!(
-        p.intent_id == format!("bot-receipt-exit:{suffix}")
+        identity
             && p.position_id == format!("exec-canary-pos:{}", p.buy_order_id)
             && p.run_id == scope.bot_run_id
             && p.run_id == cohort.run_id

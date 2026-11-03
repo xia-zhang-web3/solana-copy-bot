@@ -3,7 +3,7 @@ use crate::{OwnerExitIntent, SqliteStore};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{params, Connection};
 
-pub fn source_recovery_exit_id(id: &str) -> bool { id.starts_with("source-recovery:")||crate::owner_exit_child::is_child(id) }
+pub fn source_recovery_exit_id(id: &str) -> bool { id.starts_with("source-recovery:")||id.starts_with(crate::owner_exit_child::PREFIX) }
 pub(crate) fn recovery(id: &str) -> bool { source_recovery_exit_id(id) }
 pub(crate) fn single_attempt(id: &str) -> bool {
     recovery(id) || id.starts_with("execution-only:") || crate::bot_receipt_exit_id(id)

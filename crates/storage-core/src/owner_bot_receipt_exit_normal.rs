@@ -28,7 +28,7 @@ pub(super) fn binding_sql(
             && p.scope == expected
             && *scope == p.scope
             && p.id == format!("session-cycle:{}", p.source_buy)
-            && i.intent_id == format!("bot-receipt-exit:{}", p.source_buy)
+            && super::source(&i.intent_id) == Some(p.source_buy.as_str())
             && p.buy.as_deref() == Some(&i.buy_order_id)
             && p.position.as_deref() == Some(&i.position_id)
             && p.token.as_deref() == Some(&i.mint),
@@ -120,9 +120,9 @@ pub(crate) fn complete(c: &Connection, cycle: &str, position: &str) -> Result<bo
     if !crate::real_session::active(c)? {
         return Ok(false);
     }
-    let id: Option<String> = c.query_row("SELECT s.owner_exit_intent_id FROM real_session_orders b
+    let id: Option<String> = c.query_row("SELECT COALESCE(s.owner_exit_child_id,s.owner_exit_intent_id) FROM real_session_orders b
         JOIN orders o ON o.order_id=b.order_id JOIN execution_order_sources s ON s.identity_id=o.signal_id
-        WHERE b.cycle_id=?1 AND b.side='sell' AND s.owner_exit_intent_id IS NOT NULL", [cycle], |r| r.get(0))
+        WHERE b.cycle_id=?1 AND b.side='sell' AND COALESCE(s.owner_exit_child_id,s.owner_exit_intent_id) IS NOT NULL", [cycle], |r| r.get(0))
         .optional()?;
     let Some(id) = id else { return Ok(false) };
     let i = crate::owner_exit_load::load(c, &id)?.context("normal_receipt_exit_intent_missing")?;

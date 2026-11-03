@@ -19,7 +19,7 @@ fn receipt_only(mut c: ExecutionConfig) -> ExecutionConfig {
     c.owner_exit = Some(OwnerExitConfig {
         policy: copybot_config::OWNER_BOT_RECEIPT_EXIT_V1.into(),
         activate: false,
-        source_recovery_parent_intent_id: None,
+        bot_receipt_parent_intent_id: None, source_recovery_parent_intent_id: None,
         run_id: run,
         intent_id: "bot-receipt-exit:SYNTHETIC-SOURCE".into(),
         buy_order_id: "exec-canary:native-buy-v1:SYNTHETIC-SOURCE".into(),

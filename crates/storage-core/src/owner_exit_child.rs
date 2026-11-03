@@ -6,10 +6,14 @@ use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 pub(crate) const PREFIX: &str = "source-child:";
+pub(crate) const BOT_PREFIX: &str = "bot-receipt-child:";
 pub(crate) fn is_child(id: &str) -> bool {
-    id.starts_with(PREFIX)
+    id.starts_with(PREFIX) || id.starts_with(BOT_PREFIX)
 }
 pub(crate) fn parent_id(id: &str) -> Result<String> {
+    if let Some(source) = id.strip_prefix(BOT_PREFIX) {
+        return Ok(format!("bot-receipt-exit:{source}"));
+    }
     Ok(format!(
         "source-recovery:{}",
         id.strip_prefix(PREFIX).context("owner_child_id")?
@@ -72,6 +76,14 @@ fn before_build(
       AND NOT EXISTS(SELECT 1 FROM execution_failed_expense_tasks WHERE status!='complete' AND order_id<>?3)",
       params![order,parent.run_id,crate::owner_exit_order_id(&child.intent_id)],|r|r.get(0))?;
     ensure!(clean, "owner_child_parent_has_obligation_or_build_evidence");
+    if child.intent_id.starts_with(BOT_PREFIX) {
+        ensure!(v["simulation_error"].as_str().is_some_and(|s| s.starts_with("owner_exit_fresh_quote:")),
+            "bot_child_parent_not_quote_failure");
+        let foreign: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM owner_exit_effective_intents
+          WHERE position_id=?1 AND intent_id NOT IN (?2,?3))",
+          params![child.position_id,parent.intent_id,child.intent_id], |r|r.get(0))?;
+        ensure!(!foreign, "bot_child_foreign_intent");
+    }
     ensure!(
         [
             "applied_tip_lamports",
@@ -139,7 +151,7 @@ impl SqliteDiscoveryStore {
         &self,
         i: &OwnerExitIntent,
     ) -> Result<OwnerExitIntentRecordOutcome> {
-        self.with_immediate_transaction_retry("register source owner child",|c|{
+        self.with_immediate_transaction_retry("register owner child",|c|{
             if let Some(old)=crate::owner_exit_load::load(c,&i.intent_id)?{
                 ensure!(old==*i,"owner_child_authority_conflict");
                 return Ok(OwnerExitIntentRecordOutcome::Existing)
@@ -150,7 +162,11 @@ impl SqliteDiscoveryStore {
             let snapshot=before_build(c,&parent,i)?;
             crate::owner_exit::validate(i,crate::controlled_receipt_lot::source_scoped(c,&i.run_id,&i.wallet)?)?;
             // Validate canonical finalized BUY and full unchanged own position, without requiring a child row yet.
-            crate::owner_source_recovery::validate_parent(c,i,&parent_id)?;
+            if i.intent_id.starts_with(BOT_PREFIX) {
+                crate::owner_bot_receipt_exit::validate_parent(c,i)?;
+            } else {
+                crate::owner_source_recovery::validate_parent(c,i,&parent_id)?;
+            }
             c.execute("INSERT INTO owner_exit_child_attempts(child_intent_id,parent_intent_id,parent_failed_order_id,
               parent_failed_order_json,parent_failed_order_sha256,intent_json,registered_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
               params![i.intent_id,parent_id,crate::owner_exit_order_id(&parent.intent_id),snapshot,

@@ -47,6 +47,9 @@ fn from_config(p: &OwnerExitConfig, config: &ExecutionConfig) -> Result<OwnerExi
     if let Some(parent)=&p.source_recovery_parent_intent_id {
         payload["source_recovery_parent_intent_id"]=serde_json::to_value(parent)?;
     }
+    if let Some(parent)=&p.bot_receipt_parent_intent_id {
+        payload["bot_receipt_parent_intent_id"]=serde_json::to_value(parent)?;
+    }
     Ok(OwnerExitIntent {
         intent_id: p.intent_id.clone(), run_id: p.run_id.clone(),
         buy_order_id: p.buy_order_id.clone(),

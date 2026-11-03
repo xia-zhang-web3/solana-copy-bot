@@ -109,7 +109,7 @@ pub(super) fn recovery(c:&mut ExecutionConfig,s:&SqliteStore)->Result<OwnerExitI
     let now=Utc::now();
     c.canary_entry_submit_enabled=false;c.native_fresh_buy=None;c.tiny_experiment.activate=false;
     c.max_confirm_seconds=1;
-    c.owner_exit=Some(OwnerExitConfig{ source_recovery_parent_intent_id: None,policy:OWNER_SOURCE_RECOVERY_EXIT_V1.into(),activate:true,
+    c.owner_exit=Some(OwnerExitConfig{ bot_receipt_parent_intent_id: None, source_recovery_parent_intent_id: None,policy:OWNER_SOURCE_RECOVERY_EXIT_V1.into(),activate:true,
         run_id:parent.run_id.clone(),intent_id:format!("source-recovery:{}",parent.intent_id),
         buy_order_id:buy_id.clone(),buy_receipt_signature:facts.tx_signature,
         position_id:format!("exec-canary-pos:{buy_id}"),wallet_pubkey:parent.wallet_pubkey.clone(),

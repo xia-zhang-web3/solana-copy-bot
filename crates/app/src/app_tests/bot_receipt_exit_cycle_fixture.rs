@@ -67,7 +67,7 @@ pub(super) fn old_exit(
         decimals: 6,
     };
     config.owner_exit = Some(OwnerExitConfig {
-        source_recovery_parent_intent_id: None,
+        bot_receipt_parent_intent_id: None, source_recovery_parent_intent_id: None,
         policy: copybot_config::OWNER_BOT_RECEIPT_EXIT_V1.into(),
         activate: true,
         run_id: config.tiny_experiment.id.clone().unwrap(),

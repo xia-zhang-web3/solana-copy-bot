@@ -11,7 +11,7 @@ fn malformed_receipt_policy_never_selects_a_mode() {
     let mut c = ExecutionConfig::default();
     c.owner_exit = Some(OwnerExitConfig {
         policy: copybot_config::OWNER_BOT_RECEIPT_EXIT_V1.into(),
-        activate: true, source_recovery_parent_intent_id: None,
+        activate: true, bot_receipt_parent_intent_id: None, source_recovery_parent_intent_id: None,
         run_id: "INVALID".into(), intent_id: "INVALID".into(),
         buy_order_id: "INVALID".into(), buy_receipt_signature: "INVALID".into(),
         position_id: "INVALID".into(), wallet_pubkey: "INVALID".into(),

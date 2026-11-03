@@ -46,7 +46,7 @@ fn configure(c: &mut ExecutionConfig, i: &OwnerExitIntent, url: &str, stop: &str
     c.priority_fee_canary_enabled = false;
     c.submit_timeout_ms = 1000;
     c.owner_exit = Some(OwnerExitConfig {
-        source_recovery_parent_intent_id: None,
+        bot_receipt_parent_intent_id: None, source_recovery_parent_intent_id: None,
         policy: OWNER_BOT_RECEIPT_EXIT_V1.into(),
         activate: true,
         run_id: i.run_id.clone(),
