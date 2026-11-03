@@ -15,11 +15,11 @@ pub(crate) fn unsigned_totals(c: &Connection) -> Result<(u64, u64)> {
     )?;
     let query = if transfer {
         crate::rpc_owned_sell_handoff::dispatch::required(c)?;
-        "SELECT COUNT(*),COALESCE(SUM(fee_reserve),0) FROM rpc_owned_sell_handoffs h WHERE NOT EXISTS(SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner)"
+        format!("SELECT COUNT(*),COALESCE(SUM(fee_reserve),0) FROM {} h WHERE NOT EXISTS(SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner)", crate::owner_bot_receipt_exit::unsigned::pending(c)?)
     } else {
-        "SELECT COUNT(*),COALESCE(SUM(fee_reserve),0) FROM rpc_owned_sell_handoffs"
+        "SELECT COUNT(*),COALESCE(SUM(fee_reserve),0) FROM rpc_owned_sell_handoffs".into()
     };
-    Ok(c.query_row(query, [], |r| Ok((r.get(0)?, r.get(1)?)))?)
+    Ok(c.query_row(&query, [], |r| Ok((r.get(0)?, r.get(1)?)))?)
 }
 pub(crate) fn check_owned_sell_owner(
     c: &Connection,

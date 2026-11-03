@@ -7,8 +7,8 @@ pub(crate) fn totals(c: &Connection) -> Result<(u64, u64)> {
         coalesce(sum(coalesce(r.actual_fee,r.fee_bound)),0) FROM execution_tiny_reservations r
         LEFT JOIN execution_tiny_capital_evidence e ON e.order_id=r.order_id WHERE r.experiment_id=?1",
         [&a.model.session_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
-    let held:u64=c.query_row("SELECT coalesce(sum(h.fee_reserve),0) FROM rpc_owned_sell_handoffs h WHERE h.experiment_id=?1
-        AND NOT EXISTS(SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner)",
+    let held:u64=c.query_row(&format!("SELECT coalesce(sum(h.fee_reserve),0) FROM {} h WHERE h.experiment_id=?1
+        AND NOT EXISTS(SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner)", crate::owner_bot_receipt_exit::unsigned::pending(c)?),
         [&a.model.session_id],|r|r.get(0))?;
     let receipt_exit_fees = crate::owner_bot_receipt_exit::normal::fees(c, &a.model.session_id)?;
     Ok((
@@ -24,8 +24,8 @@ pub(crate) fn cycle_counts(c: &Connection) -> Result<(u64, u64, u64)> {
         [&p.id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    let unsigned:u64=c.query_row("SELECT count(*) FROM rpc_owned_sell_handoffs h WHERE h.position_id=?1
-        AND NOT EXISTS(SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner)",
+    let unsigned:u64=c.query_row(&format!("SELECT count(*) FROM {} h WHERE h.position_id=?1
+        AND NOT EXISTS(SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner)", crate::owner_bot_receipt_exit::unsigned::pending(c)?),
         [p.position.as_deref().unwrap_or("")],|r|r.get(0))?;
     Ok((buys, sells + unsigned, totals(c)?.1))
 }

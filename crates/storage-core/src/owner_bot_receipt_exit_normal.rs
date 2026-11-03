@@ -105,7 +105,7 @@ pub(crate) fn link(
             && budget.total_fee <= a.total_fee_cap
             && bounded_session::budget::totals(c)?
                 .1
-                .checked_add(budget.total_fee)
+                .checked_add(super::unsigned::fee_bound(c, i, budget)?)
                 .is_some_and(|v| v <= a.fee_cap),
         "normal_receipt_exit_fee_or_cycle"
     );
@@ -131,7 +131,7 @@ pub(crate) fn complete(c: &Connection, cycle: &str, position: &str) -> Result<bo
         "normal_receipt_exit_position_identity"
     );
     super::historical(c, &i)?;
-    let done: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM real_session_orders b
+    let done: bool = c.query_row(&format!("SELECT EXISTS(SELECT 1 FROM real_session_orders b
         JOIN orders o ON o.order_id=b.order_id
         JOIN execution_canary_dispatch d ON d.order_id=o.order_id
         JOIN execution_canary_receipt_proofs p ON p.order_id=o.order_id
@@ -154,8 +154,8 @@ pub(crate) fn complete(c: &Connection, cycle: &str, position: &str) -> Result<bo
           AND NOT EXISTS(SELECT 1 FROM execution_canary_unresolved_dispatch)
           AND NOT EXISTS(SELECT 1 FROM execution_failed_expense_tasks WHERE status!='complete')
           AND NOT EXISTS(SELECT 1 FROM owner_exit_fee_reservations WHERE state='pending')
-          AND NOT EXISTS(SELECT 1 FROM rpc_owned_sell_handoffs h WHERE h.position_id=?6
-            AND NOT EXISTS(SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner)))",
+          AND NOT EXISTS(SELECT 1 FROM {} h WHERE h.position_id=?6
+            AND NOT EXISTS(SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner)))", super::unsigned::pending(c)?),
         params![cycle,crate::owner_exit_order_id(&id),i.wallet,i.mint,format!("-{}",i.amount_raw),position,i.amount_raw.to_string()],
         |r|r.get(0))?;
     Ok(done)

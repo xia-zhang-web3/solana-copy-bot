@@ -54,8 +54,8 @@ pub(crate) fn complete_position(c: &Connection, cycle: &str, position: Option<&s
         LEFT JOIN execution_tiny_reservations r ON r.order_id=o.order_id
         LEFT JOIN execution_canary_unresolved_dispatch u ON u.order_id=o.order_id WHERE b.cycle_id=?1")?,
         [cycle],|r|Ok((r.get(0)?,r.get(1)?)))?;
-    let unsigned:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM rpc_owned_sell_handoffs h WHERE h.position_id=?1
-        AND NOT EXISTS(SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner))",[position],|r|r.get(0))?;
+    let unsigned:bool=c.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {} h WHERE h.position_id=?1
+        AND NOT EXISTS(SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner))", crate::owner_bot_receipt_exit::unsigned::pending(c)?),[position],|r|r.get(0))?;
     Ok(all == 2 && done == 2 && !unsigned)
 }
 pub(crate) fn settled_sell(c: &Connection, order: &str) -> Result<bool> {

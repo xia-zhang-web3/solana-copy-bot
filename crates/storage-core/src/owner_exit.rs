@@ -298,10 +298,11 @@ impl SqliteDiscoveryStore {
                 .is_none(),
                 "owner_exit_receipt_blocked"
             );
+            crate::owner_bot_receipt_exit::unsigned::transfer(conn, &intent, now)?;
             crate::owner_exit_fee::claim(conn, &intent, dispatch, budget)?;
             execution_canary_dispatch::insert(conn, dispatch, now)?;
-            crate::owner_bot_receipt_exit::normal::link(conn, &intent, dispatch, budget)?;
             execution_canary_dispatch::mark_submitted(conn, dispatch, now)?;
+            crate::owner_bot_receipt_exit::normal::link(conn, &intent, dispatch, budget)?;
             ensure!(clock()? < intent.expires_at, "owner_exit_intent_expired");
             Ok(ExecutionDispatchClaim::New)
         })

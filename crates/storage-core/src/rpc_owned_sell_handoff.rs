@@ -79,7 +79,7 @@ impl SqliteDiscoveryStore {
     pub fn expired_owned_sell_preparation(&self, now: DateTime<Utc>) -> Result<bool> {
         required(&self.conn)?;
         Ok(self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM rpc_owned_sell_handoffs h LEFT JOIN rpc_owned_sell_dispatches d ON d.intent_id=h.intent_id WHERE d.intent_id IS NULL AND h.deadline<=?1)",
+            &format!("SELECT EXISTS(SELECT 1 FROM {} h LEFT JOIN rpc_owned_sell_dispatches d ON d.intent_id=h.intent_id WHERE d.intent_id IS NULL AND h.deadline<=?1)", crate::owner_bot_receipt_exit::unsigned::pending(&self.conn)?),
             [now.to_rfc3339()],
             |r| r.get(0),
         )?)

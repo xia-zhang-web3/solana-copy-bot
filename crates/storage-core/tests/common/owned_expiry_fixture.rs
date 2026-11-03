@@ -58,8 +58,8 @@ pub fn open() -> Result<Fixture> {
     }
     let mut store = SqliteStore::open(&path)?;
     ensure!(
-        store.run_migrations(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations"))? == 1,
-        "only 0099 upgrade expected"
+        store.run_migrations(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations"))? == 2,
+        "only 0099 and 0100 upgrades expected"
     );
     let c = Connection::open(&path)?;
     let handoff = c.query_row("SELECT intent_id,order_id,owner,snapshot,config_sha256,authority,quote,experiment_id,wallet,deadline FROM rpc_owned_sell_handoffs", [], |r| {

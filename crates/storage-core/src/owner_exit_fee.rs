@@ -10,6 +10,7 @@ pub(crate) fn claim(
     d: &ExecutionCanaryDispatch,
     b: &TinyBudgetClaim,
 ) -> Result<()> {
+    let bound = crate::owner_bot_receipt_exit::unsigned::fee_bound(conn, i, b)?;
     let committed: u64 = conn.query_row(
         "SELECT (SELECT COALESCE(SUM(COALESCE(actual_fee,fee_bound)),0)
                  FROM execution_tiny_reservations)
@@ -20,7 +21,7 @@ pub(crate) fn claim(
     )?;
     ensure!(
         committed
-            .checked_add(b.total_fee)
+            .checked_add(bound)
             .is_some_and(|v| v <= crate::tiny_experiment::TINY_TOTAL_FEE),
         "owner_exit_cumulative_fee_exhausted"
     );
@@ -33,7 +34,7 @@ pub(crate) fn claim(
             i.run_id,
             d.tx_signature,
             i.wallet,
-            i64::try_from(b.total_fee)?,
+            i64::try_from(crate::owner_bot_receipt_exit::unsigned::fee_bound(conn, i, b)?)?,
             i64::try_from(b.priority_fee)?,
             b.fee_slot.to_string()
         ],
@@ -56,7 +57,7 @@ pub(crate) fn existing(
             i.run_id,
             d.tx_signature,
             i.wallet,
-            i64::try_from(b.total_fee)?,
+            i64::try_from(crate::owner_bot_receipt_exit::unsigned::fee_bound(conn, i, b)?)?,
             i64::try_from(b.priority_fee)?,
             b.fee_slot.to_string()
         ],

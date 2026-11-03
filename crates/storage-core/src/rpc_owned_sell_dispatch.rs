@@ -34,6 +34,9 @@ impl Prepared {
     }
     pub(crate) fn matches_saved(&self, c: &Connection) -> Result<bool> {
         let h = &self.handoff;
+        if crate::owner_bot_receipt_exit::unsigned::transferred(c, &h.intent_id, &h.owner)? {
+            return Ok(false);
+        }
         Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM rpc_owned_sell_handoffs WHERE intent_id=?1 AND owner=?2 AND order_id=?3 AND config_sha256=?4 AND snapshot=?5 AND authority=?6 AND quote=?7 AND signature=?8 AND position_id=?9 AND experiment_id=?10 AND wallet=?11 AND deadline=?12 AND fee_reserve=100000 AND state='unsigned_prepared' AND unsigned_payload=?13 AND message_sha256=?14 AND total_fee=?15 AND priority_fee=?16)",params![h.intent_id,h.owner,h.order_id,h.config_sha256,serde_json::to_string(&h.snapshot)?,h.authority,serde_json::to_string(&h.quote)?,h.snapshot.sell.facts.signature,h.snapshot.quote.position_id,h.experiment_id,h.wallet,h.deadline.to_rfc3339(),self.payload,self.message_sha256,self.total_fee,self.priority_fee],|r|r.get(0))?)
     }
     pub(crate) fn recheck(&self, c: &Connection, now: DateTime<Utc>) -> Result<()> {

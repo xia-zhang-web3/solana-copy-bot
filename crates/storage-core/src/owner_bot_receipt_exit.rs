@@ -8,6 +8,8 @@ use rusqlite::{params, Connection};
 mod observations;
 #[path = "owner_bot_receipt_exit_normal.rs"]
 pub(crate) mod normal;
+#[path = "owner_bot_unsigned_exit.rs"]
+pub(crate) mod unsigned;
 
 pub const MIGRATION: &str = "0093_bot_receipt_exit_zero_scope.sql";
 const PREFIX: &str = "bot-receipt-exit:";
@@ -150,13 +152,14 @@ pub(crate) fn validate_parent(c: &Connection, i: &OwnerExitIntent) -> Result<Own
         && attribution.proven_contributors[0].tx_signature == i.buy_receipt_signature,
         "bot_receipt_exit_contributors_changed");
     let own = crate::owner_exit_order_id(&i.intent_id);
-    let clean: bool = c.query_row("SELECT
+    let transferable = unsigned::eligible(c, i)?.map(|v| v.0).unwrap_or_default();
+    let clean: bool = c.query_row(&format!("SELECT
         NOT EXISTS(SELECT 1 FROM execution_canary_unresolved_dispatch WHERE order_id<>?1)
         AND NOT EXISTS(SELECT 1 FROM execution_failed_expense_tasks WHERE status!='complete' AND order_id<>?1)
         AND NOT EXISTS(SELECT 1 FROM owner_exit_fee_reservations WHERE state='pending' AND order_id<>?1)
-        AND NOT EXISTS(SELECT 1 FROM rpc_owned_sell_handoffs h WHERE NOT EXISTS(
-            SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner))",
-        [&own], |r| r.get(0))?;
+        AND NOT EXISTS(SELECT 1 FROM {} h WHERE h.intent_id<>?2 AND NOT EXISTS(
+            SELECT 1 FROM rpc_owned_sell_dispatches d WHERE d.intent_id=h.intent_id AND d.handoff_owner=h.owner))", unsigned::pending(c)?),
+        params![own, transferable], |r| r.get(0))?;
     ensure!(clean, "bot_receipt_exit_foreign_obligation");
     Ok(proof)
 }
