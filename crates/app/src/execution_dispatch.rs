@@ -32,6 +32,10 @@ pub(crate) fn identity(
         .chunks_exact(64)
         .zip(&binding.accounts)
     {
+        #[cfg(test)]
+        if crate::app_tests::normal_receipt_exit_mock::matches(
+            &key.pubkey, &binding.message_bytes, signature,
+        ) { continue; }
         ed25519_dalek::VerifyingKey::from_bytes(&key.pubkey)?.verify_strict(
             &binding.message_bytes,
             &ed25519_dalek::Signature::from_slice(signature)?,

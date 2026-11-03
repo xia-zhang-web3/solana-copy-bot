@@ -56,9 +56,13 @@ impl ExecutionSubmitAdapter for SignedAdapter {
         }
         Ok(plan)
     }
-    fn simulate_transaction_plan<'a>(&'a self, _: &'a ExecutionTransactionPlan) -> ExecutionSimulationFuture<'a> {
+    fn simulate_transaction_plan<'a>(&'a self, plan: &'a ExecutionTransactionPlan) -> ExecutionSimulationFuture<'a> {
         Box::pin(async move {
             self.simulation_calls.fetch_add(1, Ordering::SeqCst);
+            if self.signature == super::normal_receipt_exit_mock::MARKER {
+                return JupiterMetisDryRunExecutionAdapter::new(self.config.clone())
+                    .simulate_transaction_plan(plan).await;
+            }
             if self.kill_during_simulation {
                 std::fs::write(&self.config.canary_kill_switch_path, "stop")?;
             }
@@ -72,12 +76,23 @@ impl ExecutionSubmitAdapter for SignedAdapter {
     }
     fn build_signing_envelope(&self, r: &ExecutionSubmitRequest, p: &ExecutionTransactionPlan) -> Result<ExecutionSigningEnvelope> {
         self.signing_calls.fetch_add(1, Ordering::SeqCst);
+        if self.signature == super::normal_receipt_exit_mock::MARKER {
+            return crate::execution_priority_fee_proof::build_envelope(self, r, p);
+        }
         let mut envelope = build_signed_transaction_execution_envelope(r, p,
             ExecutionSignedTransactionPayload { signed_transaction_base64:self.payload.clone(),
                 tx_signature_hint:Some(self.signature.clone()) })?;
         envelope.priority_fee_proof = Some(crate::execution_priority_fee_proof::prove(
             r, &self.payload, self.priority_fee_cap())?);
         Ok(envelope)
+    }
+    fn sign_serialized_transaction(
+        &self, _: &ExecutionSubmitRequest, _: &ExecutionTransactionPlan,
+        payload: &crate::execution_signing_envelope::ExecutionSerializedTransactionPayload,
+    ) -> Result<Option<ExecutionSignedTransactionPayload>> {
+        anyhow::ensure!(self.signature == super::normal_receipt_exit_mock::MARKER,
+            "LOCAL dynamic signer requires explicit mock marker");
+        Ok(Some(super::normal_receipt_exit_mock::signed(payload)?))
     }
     fn plan_submit(&self, r: &ExecutionSubmitRequest) -> Result<ExecutionSubmitPlan> {
         NoSubmitExecutionAdapter.plan_submit(r)

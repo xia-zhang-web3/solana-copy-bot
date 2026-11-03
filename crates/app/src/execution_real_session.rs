@@ -16,7 +16,15 @@ pub(crate) fn authority(c:&ExecutionConfig)->Result<Option<Authority>>{
 }
 pub(crate) fn register(c:&ExecutionConfig,s:&SqliteStore)->Result<()>{
     if let Some(a)=authority(c)? {s.register_real_session(&a,chrono::Utc::now())?}
-    else {ensure!(s.real_session_scope()?.is_none(),"real_session_profile_required")}
+    else if let Some(scope)=s.real_session_scope()? {
+        // A receipt exit consumes an existing cycle; it never registers or
+        // refreshes its expired normal-session BUY grant. Authority/receipt,
+        // position and fee checks remain in the ordinary owner EXIT path.
+        ensure!(copybot_config::execution_only_mode(c)?
+            == Some(copybot_config::ExecutionOnlyMode::BotReceiptExit)
+            && crate::execution_controlled_receipt_lot::scope(c)?.as_ref()==Some(&scope),
+            "real_session_profile_required");
+    }
     Ok(())
 }
 pub(crate) fn scope(c:&ExecutionConfig)->Result<Option<Scope>>{

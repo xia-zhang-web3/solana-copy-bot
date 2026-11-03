@@ -791,3 +791,7 @@ mod copy09_native_safety_tests;
 mod provider_conformance;
 
 mod real_source_binding_tests;
+pub(crate) mod normal_receipt_exit_mock;
+mod normal_receipt_exit_daemon_tests;
+
+mod normal_receipt_exit_saved_fixture;
