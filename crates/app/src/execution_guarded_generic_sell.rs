@@ -211,6 +211,17 @@ pub(crate) async fn prepare_owned(
     snapshot: &copybot_storage_core::rpc_owned_sell_snapshot::OwnedSellSnapshot,
     check: &mut impl FnMut() -> Result<()>,
 ) -> Result<SwapTransactionDryRunResult> {
+    prepare_owned_with_rent(http,config,plan,authority,snapshot,check,None).await
+}
+pub(crate) async fn prepare_owned_with_rent(
+    http: &reqwest::Client,
+    config: &ExecutionConfig,
+    plan: &ExecutionTransactionPlan,
+    authority: &crate::execution_owned_sell_rpc::Authority,
+    snapshot: &copybot_storage_core::rpc_owned_sell_snapshot::OwnedSellSnapshot,
+    check: &mut impl FnMut() -> Result<()>,
+    early_rent: Option<u64>,
+) -> Result<SwapTransactionDryRunResult> {
     ensure!(
         copybot_config::owned_sell_flags(config)
             && config.owned_sell_preparation.is_some()
@@ -237,7 +248,10 @@ pub(crate) async fn prepare_owned(
     );
     let request = binding.request().clone();
     let rent = if config.controlled_receipt_lot.is_some() {
-        Some(crate::execution_wsol_lifecycle::rent(http, config, check).await?)
+        Some(match early_rent {
+            Some(value)=>value,
+            None=>crate::execution_wsol_lifecycle::rent(http, config, check).await?,
+        })
     } else {
         None
     };

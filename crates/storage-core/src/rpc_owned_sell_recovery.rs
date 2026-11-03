@@ -1,4 +1,4 @@
-//! Retain the single fee hold while replacing only a proven refused preparation.
+//! Retain one fee hold across a typed refusal or proven pre-dispatch quote expiry.
 use super::{cohort_sell_deadline, Handoff};
 use crate::{
     association_inbox::InboxLimits, ordered_sell_quote::QuoteObservation,
@@ -7,6 +7,8 @@ use crate::{
 use anyhow::{ensure, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+#[path = "rpc_owned_sell_expiry.rs"]
+mod expiry;
 
 fn available(c: &Connection) -> Result<bool> {
     Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version='0094_owned_sell_simulation_recovery.sql')", [], |r| r.get(0))?)
@@ -63,8 +65,10 @@ fn unchanged(c: &Connection, h: &Handoff) -> Result<bool> {
         |r| r.get(0),
     )?)
 }
-/// Quote scheduling may revisit only this explicit pre-signing refusal.
+/// Revisit a typed simulation refusal or one proven normal-session expiry.
 pub(crate) fn quote_allowed(c: &Connection, id: &str, now: DateTime<Utc>) -> Result<bool> {
+    if expiry::exhausted(c,id)? {return Ok(false)}
+    if expiry::candidate(c,id,now)?.is_some() {return Ok(true)}
     let Some(h) = refused(c, id)? else {
         return Ok(false);
     };
@@ -137,8 +141,12 @@ impl SqliteDiscoveryStore {
     ) -> Result<Handoff> {
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let b = &s.quote;
-        let old = refused(&tx, &b.intent_id)?.context("owned_sell_refusal_missing")?;
         let now = clock();
+        let expired = expiry::candidate(&tx,&b.intent_id,now)?;
+        let old = match &expired {
+            Some(h)=>h.clone(),
+            None=>refused(&tx, &b.intent_id)?.context("owned_sell_refusal_missing")?,
+        };
         ensure!(
             quote_allowed(&tx, &b.intent_id, now)?,
             "owned_sell_no_send_unproven"
@@ -203,12 +211,23 @@ impl SqliteDiscoveryStore {
             deadline,
             ..old.clone()
         };
+        if expired.is_some() {
+            // Same writer transaction freezes old proof and invalidates its owner
+            // before any later financial claim can compete with the replacement.
+            expiry::archive(&tx,&old,&h,l,now)?;
+            let n=tx.execute("UPDATE rpc_owned_sell_handoffs SET owner=?1,snapshot=?2,authority=?3,quote=?4,deadline=?5,
+                state='preparing',unsigned_payload=NULL,message_sha256=NULL,total_fee=NULL,priority_fee=NULL
+                WHERE intent_id=?6 AND owner=?7 AND state='unsigned_prepared' AND fee_reserve=100000",
+                params![h.owner,serde_json::to_string(s)?,authority,serde_json::to_string(q)?,deadline.to_rfc3339(),b.intent_id,old.owner])?;
+            ensure!(n==1,"owned_sell_expiry_cas");
+        } else {
         let n=tx.execute("UPDATE rpc_owned_sell_handoffs SET owner=?1,snapshot=?2,authority=?3,quote=?4,deadline=?5
             WHERE intent_id=?6 AND owner=?7 AND state='preparing' AND unsigned_payload IS NULL",
             params![h.owner,serde_json::to_string(s)?,authority,serde_json::to_string(q)?,deadline.to_rfc3339(),b.intent_id,old.owner])?;
         ensure!(n == 1, "owned_sell_recovery_cas");
         tx.execute("INSERT INTO owned_sell_preparation_recoveries(old_owner,new_owner,handoff,recovered_at) VALUES(?1,?2,?3,?4)",
             params![old.owner,h.owner,serde_json::to_string(&h)?,now.to_rfc3339()])?;
+        }
         // No reservation release, new order, signal, spend or clock renewal.
         ensure!(clock() < deadline, "owned_sell_deadline");
         tx.commit()?;

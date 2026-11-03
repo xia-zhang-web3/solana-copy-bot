@@ -1,6 +1,6 @@
 //! Unsigned reservation: no signal timestamp, fill, fee payment or cash write.
-//! Only a durable simulation refusal before unsigned completion can recover.
-//! Interrupted, prepared and dispatched paths stay owned without resend.
+//! A typed refusal or one proven pre-dispatch normal-session expiry may refresh.
+//! Dispatched paths remain reconciliation-only; a replacement preserves the hold.
 use crate::{
     association_inbox::InboxLimits,
     ordered_sell_quote::{QuoteObservation, QuoteOutcome},

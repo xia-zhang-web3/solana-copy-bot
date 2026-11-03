@@ -1,6 +1,8 @@
 //! Actual strict runner: unsigned ownership, then explicit guarded tiny continuation.
 #[path = "execution_owned_sell_submit.rs"]
 pub(crate) mod submit;
+#[path = "execution_owned_sell_prequote.rs"]
+pub(crate) mod prequote;
 use crate::execution_owned_sell_rpc as rpc;
 use crate::execution_submit_adapter::{
     ExecutionBuildPlanMetadata, ExecutionSubmitAdapter, ExecutionSubmitRequest,
@@ -23,6 +25,7 @@ pub(crate) async fn run(
     q: QuoteObservation,
     body: String,
     live: submit::guard::Live,
+    early: Option<prequote::Prequote>,
 ) -> Result<()> {
     submit::guard::continuity(&live)?;
     ensure!(
@@ -119,10 +122,15 @@ pub(crate) async fn run(
     let left = (rpc_deadline - Utc::now())
         .to_std()
         .context("owned_sell_rpc_window")?;
-    let authority = tokio::time::timeout(left, rpc::collect(&http, c, &s, &mut check))
-        .await
-        .context("owned_sell_rpc_collect_deadline")?
-        .context("owned_sell_rpc_collect")?;
+    let rent=early.as_ref().and_then(|p|p.rent);
+    let authority = if let Some(early)=early {
+        early.authority.binding(c,&s)?;
+        early.authority
+    } else {
+        tokio::time::timeout(left, rpc::collect(&http, c, &s, &mut check))
+            .await.context("owned_sell_rpc_collect_deadline")?
+            .context("owned_sell_rpc_collect")?
+    };
     check()?;
     let h = if recovering {
         store.recover_owned_sell_handoff(
@@ -214,8 +222,8 @@ pub(crate) async fn run(
         .context("owned_sell_build_window")?;
     let prepared = tokio::time::timeout(
         left,
-        crate::execution_guarded_generic_sell::prepare_owned(
-            &http, c, &plan, &authority, &s, &mut check,
+        crate::execution_guarded_generic_sell::prepare_owned_with_rent(
+            &http, c, &plan, &authority, &s, &mut check, rent,
         ),
     )
     .await

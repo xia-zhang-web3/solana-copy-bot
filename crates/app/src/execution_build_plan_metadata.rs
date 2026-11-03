@@ -28,8 +28,7 @@ pub(crate) fn record_execution_build_plan_metadata(
         .as_ref()
         .map(serde_json::to_string)
         .transpose()?;
-    store.record_execution_canary_build_plan_metadata_with_sell_amount(
-        &ExecutionCanaryBuildPlanMetadata {
+    let record=ExecutionCanaryBuildPlanMetadata {
             http_request_started_ts: metadata.http_request_started_ts,
             quote_response_available_ts: metadata.quote_response_available_ts,
             order_id: plan.order_id.clone(),
@@ -53,9 +52,12 @@ pub(crate) fn record_execution_build_plan_metadata(
             slippage_bps: metadata.slippage_bps,
             decision_status: metadata.decision_status.clone(),
             decision_reason: metadata.decision_reason.clone(),
-        },
-        proof.as_deref(),
-    )
+        };
+    if let Some(prepared)=metadata.rpc_owned_sell.as_deref() {
+        store.record_owned_sell_build_plan_metadata(prepared,&record,proof.as_deref())
+    } else {
+        store.record_execution_canary_build_plan_metadata_with_sell_amount(&record,proof.as_deref())
+    }
 }
 
 fn metadata_recorded_ts(

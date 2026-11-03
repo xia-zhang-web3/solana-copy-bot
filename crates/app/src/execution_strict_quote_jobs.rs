@@ -209,6 +209,11 @@ impl ExecutionQuoteCanaryRunner {
                     claim
                 };
                 let binding = claim.binding.clone();
+                let early=if preparation {
+                    crate::execution_owned_sell_prepare::prequote::collect(
+                        &mut store,&config,&claim,limits,&owner,
+                    ).await.context("strict_quote_prequote_operands")?
+                }else{None};
                 let mut recheck = || {
                     // Mutable capture keeps the connection owned by this Send job.
                     let store = &mut store;
@@ -241,6 +246,7 @@ impl ExecutionQuoteCanaryRunner {
                             observation,
                             body.context("owned_sell_quote_body_missing")?,
                             owner,
+                            early,
                         ))
                     })
                     .await?.context("strict_quote_owned_prepare")?;

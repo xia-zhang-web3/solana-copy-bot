@@ -5,6 +5,12 @@ use std::{future::Future, pin::Pin};
 pub(crate) type Chunk<'a, C> = Pin<Box<dyn Future<Output = Result<Option<C>>> + Send + 'a>>;
 use tokio::time::Instant;
 
+pub(crate) fn closed_client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?)
+}
+
 pub(crate) const SMALL_RPC_BYTES: usize = 1 << 20;
 // Largest saved body 6,500,048 bytes; full blocks alone get 8 MiB, not unlimited.
 pub(crate) const FULL_BLOCK_BYTES: usize = 8 << 20;

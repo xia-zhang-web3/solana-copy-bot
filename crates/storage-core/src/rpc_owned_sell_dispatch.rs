@@ -82,6 +82,20 @@ pub(crate) fn required(c: &Connection) -> Result<()> {
     Ok(())
 }
 impl SqliteDiscoveryStore {
+    /// A queued old generation cannot overwrite the replacement's fee evidence.
+    pub fn record_owned_sell_build_plan_metadata(
+        &self,
+        p: &Prepared,
+        metadata: &crate::ExecutionCanaryBuildPlanMetadata,
+        amount_proof: Option<&str>,
+    ) -> Result<crate::ExecutionCanaryBuildPlanMetadataRecordOutcome> {
+        ensure!(metadata.order_id==p.order_id() && metadata.client_order_id==p.handoff.owner,
+            "owned_sell_metadata_identity");
+        self.with_immediate_transaction_retry("record owned SELL build proof",|conn| {
+            ensure!(p.matches_saved(conn)?,"owned_sell_prepared_changed");
+            self.record_execution_canary_build_plan_metadata_with_sell_amount(metadata,amount_proof)
+        })
+    }
     pub fn recheck_owned_sell_prepared(&self, p: &Prepared, now: DateTime<Utc>) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         p.recheck(&tx, now)?;
