@@ -163,6 +163,29 @@ impl Cycle {
             Box::pin(cycle.poll()).await?;
             cycle.consumer.next_fence_at = Some(tokio::time::Instant::now());
             Box::pin(cycle.poll()).await?;
+            // Pin SOURCE once to the session committed by the actual LOCAL consumer.
+            let bot = rusqlite::Connection::open_with_flags(
+                &cycle.case.path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
+            let session: String = bot
+                .query_row(
+                    "SELECT active_session FROM native_buy_session_state WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .context("LOCAL committed BOT session before SOURCE entry")?;
+            cycle
+                .case
+                .source
+                .config
+                .owner_technical_buy
+                .as_mut()
+                .unwrap()
+                .source_copy_exit_gate
+                .as_mut()
+                .unwrap()
+                .expected_native_session = Some(session);
             Ok(cycle)
         })
     }
