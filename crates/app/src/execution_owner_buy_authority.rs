@@ -4,6 +4,8 @@ use anyhow::{ensure, Context, Result};
 use chrono::{DateTime, Utc};
 use copybot_config::{ExecutionConfig, OwnerTechnicalBuyConfig};
 use copybot_storage_core::{OwnerTechnicalBuyIntent, SqliteStore};
+#[path = "execution_owner_buy_entry.rs"]
+mod entry;
 
 pub(crate) fn configured(config: &ExecutionConfig) -> Result<Option<OwnerTechnicalBuyIntent>> {
     let Some(_) = config.owner_technical_buy.as_ref() else { return Ok(None); };
@@ -86,6 +88,7 @@ pub(crate) fn current(
         "owner_buy_expired");
     ensure!(!std::path::Path::new(&config.canary_kill_switch_path).exists(),
         "owner_buy_kill_switch");
+    entry::current(config, now)?;
     Ok(())
 }
 

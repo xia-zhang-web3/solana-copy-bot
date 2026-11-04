@@ -15,6 +15,9 @@ pub(crate) mod cohort;
 #[path = "native_buy_epoch_selection.rs"]
 mod epoch_selection;
 pub(crate) use promote::activation_current;
+#[path = "native_buy_source_entry.rs"]
+mod source_entry;
+pub use source_entry::SourceEntryBinding;
 
 pub const STATUS: &str = "native_buy_fenced_v1";
 pub const SPL_TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";

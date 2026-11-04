@@ -13,6 +13,8 @@ pub struct OwnerSourceCopyGateConfig {
     pub bot_run_id: String,
     pub bot_policy_identity: String,
     pub bot_kill_switch_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_native_session: Option<String>,
 }
 
 pub fn validate_owner_source_copy_gate(p: &crate::OwnerTechnicalBuyConfig) -> Result<()> {
@@ -44,6 +46,15 @@ pub fn validate_owner_source_copy_gate(p: &crate::OwnerTechnicalBuyConfig) -> Re
         !p.activate || g.bot_policy_identity != "0".repeat(64),
         "source_copy_gate_unmaterialized"
     );
+    if let Some(session) = &g.expected_native_session {
+        ensure!(
+            (1..=128).contains(&session.len())
+                && session
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b)),
+            "source_copy_entry_session_identity"
+        );
+    }
     for path in [&g.bot_state_db_path, &g.bot_kill_switch_path] {
         ensure!(
             std::path::Path::new(path).is_absolute() && path.trim() == path && !path.contains('\0'),

@@ -138,6 +138,8 @@ impl Case {
         };
         copybot_config::validate_controlled_receipt_lot(&bot.config)?;
         if let Some(c) = &source_config {
+            // Replace only this test-owned pre-entry readiness snapshot with actual BOT receipts.
+            std::fs::remove_file(&c.owner_technical_buy.as_ref().unwrap().source_copy_exit_gate.as_ref().unwrap().bot_state_db_path)?;
             bot.db.sql.execute(
                 "VACUUM INTO ?1",
                 [&c.owner_technical_buy

@@ -67,6 +67,7 @@ impl GateCase {
             .as_mut()
             .unwrap()
             .source_copy_exit_gate = Some(OwnerSourceCopyGateConfig {
+        expected_native_session: None,
             policy: CONFIRMED_NATIVE_BOT_BUY_V1.into(),
             bot_state_db_path: path.to_string_lossy().into_owned(),
             bot_wallet_pubkey: wallet,

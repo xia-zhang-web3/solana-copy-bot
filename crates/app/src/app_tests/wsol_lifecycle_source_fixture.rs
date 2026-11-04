@@ -47,6 +47,7 @@ pub(super) fn config(
     p.activated_at = bot.technical_cohort.as_ref().unwrap().activated_at.clone();
     p.expires_at = bot.technical_cohort.as_ref().unwrap().deadline.clone();
     p.source_copy_exit_gate = Some(OwnerSourceCopyGateConfig {
+        expected_native_session: Some(super::full_cycle_reset_repair::fixture_readiness::FIXTURE_SESSION.into()),
         policy: CONFIRMED_NATIVE_BOT_BUY_V1.into(),
         bot_state_db_path: root
             .join("actual-bot-gate.db")
@@ -57,6 +58,7 @@ pub(super) fn config(
         bot_policy_identity: crate::execution_native_buy_rpc::policy_identity(bot)?,
         bot_kill_switch_path: root.join("BOTSTOP").to_string_lossy().into_owned(),
     });
+    super::full_cycle_reset_repair::fixture_readiness::ready(bot, &root.join("actual-bot-gate.db"))?;
     Ok(c)
 }
 pub(super) async fn buy(

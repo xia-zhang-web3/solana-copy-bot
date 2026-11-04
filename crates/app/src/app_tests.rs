@@ -795,3 +795,5 @@ pub(crate) mod normal_receipt_exit_mock;
 mod normal_receipt_exit_daemon_tests;
 
 mod normal_receipt_exit_saved_fixture;
+#[path = "app_tests/full_cycle_reset_repair/mod.rs"]
+mod full_cycle_reset_repair;

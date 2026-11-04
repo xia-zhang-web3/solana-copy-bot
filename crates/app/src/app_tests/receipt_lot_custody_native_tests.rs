@@ -44,6 +44,7 @@ async fn wsol_lifecycle_source_buy_and_sell_actual_producer_custody() -> Result<
     )? + chrono::Duration::seconds(60))
     .to_rfc3339();
     p.source_copy_exit_gate = Some(OwnerSourceCopyGateConfig {
+        expected_native_session: Some(rusqlite::Connection::open_with_flags(&bot_copy, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?.query_row("SELECT active_session FROM native_buy_session_state WHERE id=1", [], |r| r.get(0))?),
         policy: CONFIRMED_NATIVE_BOT_BUY_V1.into(),
         bot_state_db_path: bot_copy.to_string_lossy().into(),
         bot_wallet_pubkey: c.scope.bot_wallet.clone(),
