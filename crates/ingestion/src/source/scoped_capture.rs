@@ -1,5 +1,6 @@
 //! Opt-in scoped durability before legacy dedupe/reorder/best-effort persistence.
 //! A single awaited blocking task owns each receive; no unbounded work queue.
+use super::receive_stage_ledger::Stage;
 use super::{
     yellowstone::parse_yellowstone_update, YellowstoneParsedUpdate, YellowstoneRuntimeConfig,
 };
@@ -10,6 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use std::time::Instant;
 use yellowstone_grpc_proto::{
     prelude::{subscribe_update::UpdateOneof, SubscribeUpdate},
     prost::Message,
@@ -85,7 +87,13 @@ pub(crate) async fn refresh(runtime: Arc<YellowstoneRuntimeConfig>) -> Result<()
         return Ok(());
     };
     let owner = capture.clone();
+    let telemetry = runtime.telemetry.clone();
+    let queued_at = Instant::now();
     let result = tokio::task::spawn_blocking(move || -> Result<()> {
+        telemetry
+            .receive_stages
+            .record(Stage::CaptureRefreshBlockingQueueWait, queued_at.elapsed());
+        let _work = telemetry.receive_stages.timer(Stage::CaptureRefreshWork);
         owner.healthy()?;
         owner
             .store
@@ -129,16 +137,23 @@ pub(crate) async fn process(
     runtime: Arc<YellowstoneRuntimeConfig>,
 ) -> Result<Result<Option<YellowstoneParsedUpdate>>> {
     let Some(capture) = runtime.capture.clone() else {
+        let _span = runtime.telemetry.receive_stages.timer(Stage::DomainParse);
         return Ok(parse_yellowstone_update(update, &runtime));
     };
     let received_at = timestamp();
     let owner = capture.clone();
+    let queued_at = Instant::now();
     let result = tokio::task::spawn_blocking(move || -> Result<_> {
+        let stages = &runtime.telemetry.receive_stages;
+        stages.record(Stage::CaptureProcessBlockingQueueWait, queued_at.elapsed());
         owner.healthy()?;
-        let mut store = owner
-            .store
-            .lock()
-            .map_err(|_| anyhow::anyhow!("capture lock poisoned"))?;
+        let mut store = {
+            let _span = stages.timer(Stage::CaptureProcessLockWait);
+            owner
+                .store
+                .lock()
+                .map_err(|_| anyhow::anyhow!("capture lock poisoned"))?
+        };
         let mut receipt = None;
         if let Some(UpdateOneof::Transaction(tx)) = update.update_oneof.as_ref() {
             let info = tx.transaction.as_ref();
@@ -154,27 +169,42 @@ pub(crate) async fn process(
                     .created_at
                     .as_ref()
                     .map(|t| t.seconds as f64 + t.nanos as f64 / 1e9);
-                ensure!(
-                    update.encoded_len() <= 8_388_608,
-                    "capture envelope size bound exceeded"
-                );
-                receipt = store.receive(
-                    sig.as_deref(),
-                    &wallet,
-                    tx.slot,
-                    &update.encode_to_vec(),
-                    &format!("{:x}", Sha256::digest(tx.encode_to_vec())),
-                    received_at,
-                    source_at,
-                )?;
+                let (encoded, fingerprint) = {
+                    let _span = stages.timer(Stage::PayloadEncodeHash);
+                    ensure!(
+                        update.encoded_len() <= 8_388_608,
+                        "capture envelope size bound exceeded"
+                    );
+                    (
+                        update.encode_to_vec(),
+                        format!("{:x}", Sha256::digest(tx.encode_to_vec())),
+                    )
+                };
+                let received = {
+                    let _span = stages.timer(Stage::ReceiveEligibilityStore);
+                    store.receive(
+                        sig.as_deref(),
+                        &wallet,
+                        tx.slot,
+                        &encoded,
+                        &fingerprint,
+                        received_at,
+                        source_at,
+                    )
+                };
+                receipt = received?;
             } else {
                 // Cannot prove this unidentified frame is outside a protected wallet.
                 store.gap("unidentified_received_transaction", false)?;
             }
         }
-        let parsed = parse_yellowstone_update(update, &runtime);
+        let parsed = {
+            let _span = stages.timer(Stage::DomainParse);
+            parse_yellowstone_update(update, &runtime)
+        };
         if let Some(receipt) = receipt {
             if receipt.stage == "RECEIVED" {
+                let _span = stages.timer(Stage::CaptureFinish);
                 finish(&mut store, receipt.seq, &parsed, &runtime)?;
             }
         }

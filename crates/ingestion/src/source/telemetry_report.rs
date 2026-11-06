@@ -70,7 +70,10 @@ impl IngestionTelemetry {
             yellowstone_output_queue_depth as f64 / yellowstone_output_queue_capacity as f64
         };
 
+        let receive_stage_ledger =
+            super::super::receive_stage_measurement::snapshot_json(&self.receive_stages);
         info!(
+            receive_stage_ledger = %receive_stage_ledger,
             ws_notifications_seen = self.ws_notifications_seen.load(Ordering::Relaxed),
             ws_notifications_enqueued = self.ws_notifications_enqueued.load(Ordering::Relaxed),
             ws_notifications_backpressured =

@@ -127,15 +127,24 @@ pub(in crate::source) async fn yellowstone_stream_loop(
         next_backoff_ms = runtime_config.reconnect_initial_ms;
 
         loop {
-            if super::super::scoped_capture::refresh(runtime_config.clone())
-                .await
-                .is_err()
-            {
+            let stages = &runtime_config.telemetry.receive_stages;
+            let _turn = stages.timer(Stage::SerialLoopTurnTotal);
+            let refreshed = {
+                let _span = stages.timer(Stage::RefreshTotal);
+                super::super::scoped_capture::refresh(runtime_config.clone()).await
+            };
+            if refreshed.is_err() {
                 output_queue.close().await;
                 return;
             }
-            let next_message =
-                time::timeout(Duration::from_secs(WS_IDLE_TIMEOUT_SECS), stream.next()).await;
+            let next_message = {
+                let _span = stages.timer(Stage::NextNetworkDecodeSchedulingWait);
+                time::timeout(
+                    Duration::from_secs(WS_IDLE_TIMEOUT_SECS),
+                    future::poll_fn(|cx| stages.measure_poll(|| stream.poll_next_unpin(cx))),
+                )
+                .await
+            };
             match next_message {
                 Ok(Some(Ok(update))) => {
                     let is_transaction_update = matches!(
@@ -153,16 +162,19 @@ pub(in crate::source) async fn yellowstone_stream_loop(
                             .fetch_add(1, Ordering::Relaxed);
                     }
 
-                    let parsed =
-                        match super::super::scoped_capture::process(update, runtime_config.clone())
-                            .await
-                        {
-                            Ok(parsed) => parsed,
-                            Err(_) => {
-                                output_queue.close().await;
-                                return;
-                            }
-                        };
+                    let frame_age = decoded_frame_age(&update, &runtime_config.telemetry);
+                    let processed = {
+                        let _span = stages.timer(Stage::ScopedProcessTotal);
+                        super::super::scoped_capture::process(update, runtime_config.clone()).await
+                    };
+                    let after_process_age = frame_age.after_process();
+                    let parsed = match processed {
+                        Ok(parsed) => parsed,
+                        Err(_) => {
+                            output_queue.close().await;
+                            return;
+                        }
+                    };
                     match parsed {
                         Ok(Some(YellowstoneParsedUpdate::Observation(raw))) => {
                             let now = Instant::now();
@@ -192,7 +204,11 @@ pub(in crate::source) async fn yellowstone_stream_loop(
                                 enqueued_at: Instant::now(),
                             };
 
-                            match output_queue.push(fetched, queue_overflow_policy).await {
+                            let pushed = {
+                                let _span = stages.timer(Stage::OutputPushWait);
+                                output_queue.push(fetched, queue_overflow_policy).await
+                            };
+                            match pushed {
                                 Some(QueuePushResult::Enqueued { backpressured }) => {
                                     mark_seen_signature(
                                         &mut seen_signatures_map,
@@ -217,6 +233,10 @@ pub(in crate::source) async fn yellowstone_stream_loop(
                                             .fetch_add(1, Ordering::Relaxed);
                                     }
                                     increment_atomic_usize(&output_queue_depth);
+                                    stages.enqueued_age_pair(
+                                        frame_age.before_process,
+                                        after_process_age,
+                                    );
                                 }
                                 Some(QueuePushResult::ReplacedOldest) => {
                                     mark_seen_signature(
@@ -243,6 +263,10 @@ pub(in crate::source) async fn yellowstone_stream_loop(
                                         .telemetry
                                         .ws_notifications_replaced_oldest
                                         .fetch_add(1, Ordering::Relaxed);
+                                    stages.enqueued_age_pair(
+                                        frame_age.before_process,
+                                        after_process_age,
+                                    );
                                 }
                                 None => {
                                     runtime_config

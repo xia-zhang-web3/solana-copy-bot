@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Debug)]
 pub(in crate::source) struct IngestionTelemetry {
+    pub(in crate::source) receive_stages: super::super::receive_stage_ledger::StageLedger,
     pub(in crate::source) ws_notifications_seen: AtomicU64,
     pub(in crate::source) ws_notifications_enqueued: AtomicU64,
     pub(in crate::source) ws_notifications_backpressured: AtomicU64,
@@ -39,6 +40,7 @@ pub(in crate::source) struct IngestionTelemetry {
 impl Default for IngestionTelemetry {
     fn default() -> Self {
         Self {
+            receive_stages: super::super::receive_stage_ledger::StageLedger::default(),
             ws_notifications_seen: AtomicU64::new(0),
             ws_notifications_enqueued: AtomicU64::new(0),
             ws_notifications_backpressured: AtomicU64::new(0),
