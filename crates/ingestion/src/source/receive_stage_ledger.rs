@@ -95,7 +95,7 @@ pub(crate) struct Distribution {
     pub histogram: [u64; 8],
 }
 impl Distribution {
-    fn record(&mut self, value: u64, bounds: &[u64; 7]) {
+    pub(crate) fn record(&mut self, value: u64, bounds: &[u64; 7]) {
         self.count = self.count.saturating_add(1);
         self.sum = self.sum.saturating_add(value);
         self.max = self.max.max(value);
@@ -171,6 +171,7 @@ pub(crate) struct Snapshot {
 #[derive(Debug, Default)]
 pub(crate) struct StageLedger {
     state: Mutex<Snapshot>,
+    pub(crate) wake: super::receive_wake_metrics::WakeMetrics,
 }
 impl StageLedger {
     pub fn record(&self, stage: Stage, duration: Duration) {

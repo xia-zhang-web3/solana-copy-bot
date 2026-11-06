@@ -1,4 +1,4 @@
-use futures_util::{future, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -13,6 +13,7 @@ use super::core::{
     increment_atomic_usize, is_seen_signature, mark_seen_signature, prune_seen_signatures,
     sleep_with_backoff,
 };
+use super::receive_wake::WakeObserver;
 use super::yellowstone::build_yellowstone_subscribe_request;
 use super::{receive_stage_ledger::Stage, receive_stage_measurement::decoded_frame_age};
 use super::{

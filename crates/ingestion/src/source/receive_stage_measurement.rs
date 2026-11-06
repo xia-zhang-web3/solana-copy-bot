@@ -55,6 +55,26 @@ fn age(value: AgeSummary) -> Value {
         "available_ms":distribution(value.available_ms),"future_ahead_ms":distribution(value.future_ahead_ms)})
 }
 
+fn wake(ledger: &StageLedger) -> Value {
+    let Some(s) = ledger.wake.snapshot() else {
+        return json!({"available":false,"reason":"poisoned_wake_metrics"});
+    };
+    let counts: serde_json::Map<String, Value> = super::receive_wake_metrics::COUNTER_NAMES
+        .iter()
+        .zip(s.counts)
+        .map(|(name, value)| ((*name).into(), json!(value)))
+        .collect();
+    json!({"available":true,"schema":1,"basis":"consumer notification, not socket/message readiness or provider send",
+        "registration_pool_size":super::receive_wake::SLOT_COUNT,
+        "counts":counts,"active_pending":s.active_pending,"snapshot_atomic_with_stage_rows":false,
+        "first_wake_basis":"first notification serialized by observer state lock; immutable registration epoch",
+        "pending_to_first_wake_ns":distribution(s.pending_to_first_wake_ns),
+        "first_wake_to_repoll_ns":distribution(s.first_wake_to_repoll_ns),
+        "pre_pending_wake_to_repoll_ns":distribution(s.pre_pending_wake_to_repoll_ns),
+        "missing_or_ambiguous_intervals":"excluded from valid pairs; see counters; pre-Pending separate",
+        "repoll_boundary":"next external poll entry; result counted Pending/Ready; no cause attribution"})
+}
+
 pub(super) fn snapshot_json(ledger: &StageLedger) -> String {
     let Some(snapshot) = ledger.snapshot() else {
         return json!({"schema":1,"available":false,"reason":"poisoned_ledger_mutex"}).to_string();
@@ -72,6 +92,7 @@ pub(super) fn snapshot_json(ledger: &StageLedger) -> String {
         "next_total_basis":"combined network/decode/scheduling wait",
         "next_poll_execution_basis":"one delegated poll invocation wall execution including preemption, not CPU/protobuf only",
         "stage_rows":stages,"poll_pending":snapshot.poll_pending,"poll_ready":snapshot.poll_ready,
+        "consumer_wake":wake(ledger),
         "provider_timestamp_basis":"SubscribeUpdate.created_at metadata, not chain blocktime",
         "age_units":"ms","decoded_updates_age":age(snapshot.decoded_updates_age),
         "decoded_transactions_age":age(snapshot.decoded_transactions_age),

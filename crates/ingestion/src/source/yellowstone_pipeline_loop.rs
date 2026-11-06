@@ -125,6 +125,8 @@ pub(in crate::source) async fn yellowstone_stream_loop(
                 }
             };
         next_backoff_ms = runtime_config.reconnect_initial_ms;
+        let mut receive_wake =
+            WakeObserver::new(runtime_config.telemetry.receive_stages.wake.clone());
 
         loop {
             let stages = &runtime_config.telemetry.receive_stages;
@@ -141,7 +143,7 @@ pub(in crate::source) async fn yellowstone_stream_loop(
                 let _span = stages.timer(Stage::NextNetworkDecodeSchedulingWait);
                 time::timeout(
                     Duration::from_secs(WS_IDLE_TIMEOUT_SECS),
-                    future::poll_fn(|cx| stages.measure_poll(|| stream.poll_next_unpin(cx))),
+                    receive_wake.observe(|cx| stages.measure_poll(|| stream.poll_next_unpin(cx))),
                 )
                 .await
             };

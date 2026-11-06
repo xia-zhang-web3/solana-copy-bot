@@ -30,6 +30,8 @@ mod rate_limit;
 mod reorder;
 mod receive_stage_ledger;
 mod receive_stage_measurement;
+mod receive_wake;
+mod receive_wake_metrics;
 mod rpc_backfill;
 pub(crate) mod http_recovery;
 mod target_balance_rows;
