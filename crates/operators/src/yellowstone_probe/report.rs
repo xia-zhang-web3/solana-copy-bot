@@ -7,6 +7,8 @@ use super::{REASON_FIRST_MESSAGE_RECEIVED, REASON_OK};
 #[derive(Debug, Serialize)]
 pub(crate) struct ProbeReport {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) delivery: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) capture: Option<serde_json::Value>,
     pub(crate) probe_mode: String,
     pub(crate) config_loaded: bool,
@@ -31,6 +33,7 @@ impl ProbeReport {
         elapsed_ms: u64,
     ) -> Self {
         Self {
+            delivery: None,
             capture: None,
             probe_mode: "unknown".to_string(),
             config_loaded: false,
@@ -51,7 +54,11 @@ impl ProbeReport {
 
     pub(crate) fn exit_code(&self) -> i32 {
         match self.reason_class.as_str() {
-            REASON_OK | REASON_FIRST_MESSAGE_RECEIVED | "capture_complete" => 0,
+            REASON_OK
+            | REASON_FIRST_MESSAGE_RECEIVED
+            | "capture_complete"
+            | "transaction_delivery_observed"
+            | "transaction_delivery_observed_external_stop" => 0,
             _ => 1,
         }
     }

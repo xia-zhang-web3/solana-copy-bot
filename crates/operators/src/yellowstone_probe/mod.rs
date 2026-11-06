@@ -6,6 +6,11 @@ mod capture_persist;
 mod capture_terminal;
 mod client;
 mod config;
+mod delivery;
+mod delivery_config;
+mod delivery_output;
+mod delivery_report;
+mod delivery_stream;
 mod report;
 mod request;
 
@@ -54,6 +59,9 @@ pub async fn run_from_env() -> i32 {
 }
 
 async fn run(cli: config::Cli, started: Instant) -> ProbeReport {
+    if let Some(limits) = &cli.delivery {
+        return delivery::run(&cli, limits, started).await;
+    }
     let loaded = match config::load_probe_config(&cli) {
         Ok(config) => config,
         Err(error) => {

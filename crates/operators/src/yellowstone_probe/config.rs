@@ -7,6 +7,7 @@ use super::REASON_CONFIG_MISSING_YELLOWSTONE;
 #[derive(Debug, Clone)]
 pub(crate) struct Cli {
     pub(crate) capture: Option<super::capture_config::CaptureConfig>,
+    pub(crate) delivery: Option<super::delivery_config::DeliveryConfig>,
     pub(crate) config_path: PathBuf,
     pub(crate) json: bool,
     pub(crate) mode: ProbeMode,
@@ -26,6 +27,7 @@ pub(crate) struct ProbeConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeMode {
+    TransactionDelivery,
     TransactionFilter,
     SlotsOnly,
     BlocksMeta,
@@ -36,19 +38,21 @@ pub enum ProbeMode {
 impl ProbeMode {
     pub(crate) fn parse(value: &str) -> Result<Self> {
         match value {
+            "transaction-delivery" => Ok(Self::TransactionDelivery),
             "association-capture" => Ok(Self::AssociationCapture),
             "transaction-filter" => Ok(Self::TransactionFilter),
             "slots-only" => Ok(Self::SlotsOnly),
             "blocks-meta" => Ok(Self::BlocksMeta),
             "empty-then-send" => Ok(Self::EmptyThenSend),
             other => Err(anyhow!(
-                "--mode must be one of transaction-filter, slots-only, blocks-meta, empty-then-send; got {other}"
+                "--mode must be transaction-delivery, transaction-filter, slots-only, blocks-meta, empty-then-send or association-capture; got {other}"
             )),
         }
     }
 
     pub(crate) fn as_str(self) -> &'static str {
         match self {
+            Self::TransactionDelivery => "transaction-delivery",
             Self::AssociationCapture => "association-capture",
             Self::TransactionFilter => "transaction-filter",
             Self::SlotsOnly => "slots-only",
@@ -107,7 +111,7 @@ pub(crate) fn build_probe_config(
         ));
     }
 
-    let program_ids = if !ingestion.yellowstone_program_ids.is_empty() {
+    let mut program_ids = if !ingestion.yellowstone_program_ids.is_empty() {
         ingestion.yellowstone_program_ids.clone()
     } else if !ingestion.subscribe_program_ids.is_empty() {
         ingestion.subscribe_program_ids.clone()
@@ -116,9 +120,15 @@ pub(crate) fn build_probe_config(
         fallback.extend(ingestion.pumpswap_program_ids.iter().cloned());
         fallback
     };
+    if mode == ProbeMode::TransactionDelivery {
+        program_ids.sort();
+        program_ids.dedup();
+    }
     if matches!(
         mode,
-        ProbeMode::TransactionFilter | ProbeMode::AssociationCapture
+        ProbeMode::TransactionFilter
+            | ProbeMode::AssociationCapture
+            | ProbeMode::TransactionDelivery
     ) && program_ids.is_empty()
     {
         return Err(anyhow!(
@@ -131,10 +141,18 @@ pub(crate) fn build_probe_config(
         x_token: x_token.to_string(),
         connect_timeout_ms: connect_timeout_override_ms
             .unwrap_or(ingestion.yellowstone_connect_timeout_ms)
-            .max(1),
+            .max(if mode == ProbeMode::TransactionDelivery {
+                500
+            } else {
+                1
+            }),
         subscribe_timeout_ms: subscribe_timeout_override_ms
             .unwrap_or(ingestion.yellowstone_subscribe_timeout_ms)
-            .max(1),
+            .max(if mode == ProbeMode::TransactionDelivery {
+                1_000
+            } else {
+                1
+            }),
         program_ids,
         mode,
     })
@@ -146,6 +164,7 @@ where
     I::Item: Into<String>,
 {
     let mut capture = super::capture_config::CaptureArgs::default();
+    let mut delivery = super::delivery_config::DeliveryArgs::default();
     let mut config_path = None;
     let mut json = false;
     let mut mode = ProbeMode::TransactionFilter;
@@ -180,13 +199,16 @@ where
                     .ok_or_else(|| anyhow!("--subscribe-timeout-ms requires a value"))?;
                 subscribe_timeout_ms = Some(parse_positive_u64("--subscribe-timeout-ms", &value)?);
             }
+            other if delivery.accepts(other) => delivery.set(other, iter.next())?,
             other if capture.accepts(other) => capture.set(other, iter.next())?,
             other => return Err(anyhow!("unknown argument: {other}")),
         }
     }
 
+    let delivery = delivery.finish(mode, &mut capture)?;
     Ok(Cli {
         capture: capture.finish(mode)?,
+        delivery,
         config_path: config_path.ok_or_else(|| anyhow!("--config is required"))?,
         json,
         mode,

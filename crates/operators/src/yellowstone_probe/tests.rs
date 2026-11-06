@@ -11,6 +11,9 @@ use super::report::{redact_error, redacted_endpoint_host};
 use super::request::build_subscribe_request;
 use super::{classify_config_error, REASON_CONFIG_MISSING_YELLOWSTONE};
 
+#[path = "delivery_tests.rs"]
+mod transaction_delivery;
+
 fn yellowstone_ingestion_config() -> IngestionConfig {
     let mut config = IngestionConfig::default();
     config.source = "yellowstone_grpc".to_string();

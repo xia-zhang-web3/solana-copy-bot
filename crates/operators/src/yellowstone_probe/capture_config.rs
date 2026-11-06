@@ -50,7 +50,7 @@ impl CaptureConfig {
 }
 
 #[derive(Default)]
-pub(crate) struct CaptureArgs(BTreeMap<String, String>);
+pub(crate) struct CaptureArgs(pub(super) BTreeMap<String, String>);
 impl CaptureArgs {
     pub fn accepts(&self, flag: &str) -> bool {
         matches!(
