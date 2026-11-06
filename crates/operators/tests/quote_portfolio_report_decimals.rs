@@ -1,4 +1,5 @@
 mod quote_portfolio_report_decimals_support;
+use chrono::{DateTime, Utc};
 use quote_portfolio_report_decimals_support::*;
 use serde_json::{json, Value};
 
@@ -157,11 +158,94 @@ fn no_input_is_identical_to_accepted76_including_portfolio_unavailable() {
             serde_json::to_vec(&old).unwrap(),
         )
         .unwrap();
+        let current_day = report_utc_day_start(&current);
+        // Checked-in reports already omit as_of. Pin their two exact captured
+        // day values, not an invented historical as_of. Raw binaries retain it.
+        let old_day = if baseline.is_some() {
+            report_utc_day_start(&old)
+        } else {
+            "2026-09-23T00:00:00+00:00".to_string()
+        };
+        normalize_daily_cost_since(&mut current, &current_day);
+        normalize_daily_cost_since(&mut old, &old_day);
         strip_time(&mut current);
         strip_time(&mut old);
         assert_eq!(current, old);
     }
 }
+
+const DAILY_SINCE: [&str; 2] = [
+    "/current_entry_cost/since",
+    "/current_entry_cost/failed_expenses/since",
+];
+const DAILY_START: &str = "<validated_UTC_day_start>";
+
+fn report_utc_day_start(v: &Value) -> String {
+    DateTime::parse_from_rfc3339(v["as_of"].as_str().expect("raw report as_of"))
+        .expect("RFC3339 report as_of")
+        .with_timezone(&Utc)
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+        .to_rfc3339()
+}
+
+fn normalize_daily_cost_since(v: &mut Value, expected_day: &str) {
+    if v.get("current_entry_cost").is_none_or(Value::is_null) {
+        return;
+    }
+    // Validate both operands before changing either; missing/wrong-day fields
+    // remain failures. All other timestamps and economic fields stay compared.
+    for path in DAILY_SINCE {
+        assert_eq!(
+            v.pointer(path).expect("daily field present"),
+            expected_day,
+            "{path}"
+        );
+    }
+    for path in DAILY_SINCE {
+        *v.pointer_mut(path).unwrap() = json!(DAILY_START);
+    }
+}
+
+#[test]
+fn daily_since_is_utc_as_of_derived_and_other_fields_remain_compared() {
+    let mut report = json!({"as_of":"2026-11-07T01:00:00+02:00","since":TS,
+        "current_entry_cost":{"since":"2026-11-06T00:00:00+00:00","known_total_lamports":"17",
+            "policy":"unchanged","error":null,"schema_version":1,
+            "failed_expenses":{"since":"2026-11-06T00:00:00+00:00","total_orders":2}},
+        "other":{"since":"2026-09-23T00:00:00+00:00"}});
+    let mut expected = report.clone();
+    for path in DAILY_SINCE {
+        *expected.pointer_mut(path).unwrap() = json!(DAILY_START);
+    }
+    let day = report_utc_day_start(&report);
+    assert_eq!(day, "2026-11-06T00:00:00+00:00");
+    normalize_daily_cost_since(&mut report, &day);
+    assert_eq!(report, expected);
+}
+
+#[test]
+fn wrong_day_at_either_daily_since_is_rejected_without_partial_normalization() {
+    for path in DAILY_SINCE {
+        let mut report = json!({"as_of":"2026-11-06T12:00:00Z",
+            "current_entry_cost":{"since":"2026-11-06T00:00:00+00:00",
+                "failed_expenses":{"since":"2026-11-06T00:00:00+00:00"}}});
+        *report.pointer_mut(path).unwrap() = json!("2026-11-05T00:00:00+00:00");
+        let day = report_utc_day_start(&report);
+        let before = report.clone();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                normalize_daily_cost_since(&mut report, &day);
+            }))
+            .is_err(),
+            "wrong day accepted at {path}"
+        );
+        assert_eq!(report, before);
+    }
+}
+
 fn strip_time(v: &mut Value) {
     match v {
         Value::Object(o) => {
