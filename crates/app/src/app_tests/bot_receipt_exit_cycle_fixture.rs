@@ -13,7 +13,11 @@ pub(super) async fn bot_buy(c: &Cycle) -> Result<()> {
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
             c.check_peers()?;
-            let s = Box::pin(runner.process_tick(&c.case.bot, Utc::now())).await?;
+            let s = Box::pin(runner.process_tick(&c.case.bot, Utc::now()))
+                .await
+                .map_err(|error| {
+                    super::post_error_context("BOT_buy_tick", &c.case.path, &c.case.bot, error)
+                })?;
             if c.case
                 .bot
                 .load_execution_canary_open_position(frames::USDC)?
@@ -67,7 +71,8 @@ pub(super) fn old_exit(
         decimals: 6,
     };
     config.owner_exit = Some(OwnerExitConfig {
-        bot_receipt_parent_intent_id: None, source_recovery_parent_intent_id: None,
+        bot_receipt_parent_intent_id: None,
+        source_recovery_parent_intent_id: None,
         policy: copybot_config::OWNER_BOT_RECEIPT_EXIT_V1.into(),
         activate: true,
         run_id: config.tiny_experiment.id.clone().unwrap(),
@@ -110,7 +115,11 @@ pub(super) async fn phase_b_held(b: &Cycle) -> Result<()> {
     );
     // Recreate the runner and open the BOT store anew: restarts cannot release B.
     let restarted = SqliteStore::open(&b.case.path)?;
-    Box::pin(b.runner()?.process_tick(&restarted, Utc::now())).await?;
+    Box::pin(b.runner()?.process_tick(&restarted, Utc::now()))
+        .await
+        .map_err(|error| {
+            super::post_error_context("B_held_native_tick", &b.case.path, &restarted, error)
+        })?;
     ensure!(
         !crate::execution_canary_safety::prior_bot_receipt_exit::ready(&b.app.execution)?
             && b.source.sends() == 0
@@ -144,7 +153,16 @@ pub(super) async fn full_b_cycle(b: &mut Cycle) -> Result<(String, String, Strin
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
             b.check_peers()?;
-            let s = Box::pin(runner.process_tick(&b.case.bot, Utc::now())).await?;
+            let s = Box::pin(runner.process_tick(&b.case.bot, Utc::now()))
+                .await
+                .map_err(|error| {
+                    super::post_error_context(
+                        "B_automatic_sell_tick",
+                        &b.case.path,
+                        &b.case.bot,
+                        error,
+                    )
+                })?;
             if b.bot.sends() == 2
                 && b.case
                     .bot

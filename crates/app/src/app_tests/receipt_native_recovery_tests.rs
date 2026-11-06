@@ -6,6 +6,79 @@ use copybot_storage_core::ObservationCoverage as Cov;
 use serde_json::json;
 
 #[tokio::test]
+async fn receipt_native_primary_rejection_and_pending_readback_refusal_remain_visible() -> Result<()>
+{
+    use super::owned_sell_queue_fixture::Queue;
+    let mut q = Queue::new(1, 2).await?;
+    q.allow_blocker_receipt("6000");
+    let before = q.intake.counts()?;
+    q.intake.conn()?.execute_batch(&format!(
+        "CREATE TRIGGER reject_primary BEFORE INSERT ON execution_receipt_native_observations
+         WHEN NEW.order_id='{}' BEGIN SELECT RAISE(ABORT,'CI_RECEIPT_PRIMARY_SENTINEL'); END;
+         CREATE TRIGGER reject_pending BEFORE UPDATE ON execution_canary_receipt_proofs
+         WHEN NEW.order_id='{}' AND NEW.reason='receipt_facts_write_failed'
+         BEGIN SELECT RAISE(IGNORE); END;",
+        q.blocker, q.blocker
+    ))?;
+    let error = q.intake.tick().await.unwrap_err();
+    let error = super::bot_receipt_exit_cycle_tests::post_error_context(
+        "forced_observation_pending_ignore",
+        &q.intake.f.dir.join("test.db"),
+        &q.intake.f.store,
+        error,
+    );
+    let context = error.to_string();
+    let snapshot: serde_json::Value =
+        serde_json::from_str(context.split_once("post_error_readback=").unwrap().1)?;
+    let row = snapshot["orders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["order_id"] == q.blocker)
+        .unwrap();
+    for flag in [
+        "order_is_pending",
+        "fill_absent",
+        "accounting_pending",
+        "token_accounting_pending",
+    ] {
+        assert_eq!(row[flag]["Ok"], true, "{snapshot}");
+    }
+    assert_eq!(row["proof_readback"]["Ok"]["reason"], "receipt_unavailable");
+    assert!(row["proof_equals_expected"]["UNKNOWN"].is_string());
+    let chain = format!("{error:#}");
+    assert!(
+        chain.contains("receipt observation failure pending proof not preserved"),
+        "{chain}"
+    );
+    assert!(
+        chain.contains("observation_rejection=") && chain.contains("CI_RECEIPT_PRIMARY_SENTINEL"),
+        "{chain}"
+    );
+    assert!(
+        chain.contains("expected_proof=ExecutionCanaryReceiptProof")
+            && chain.contains("receipt_facts_write_failed"),
+        "{chain}"
+    );
+    assert!(
+        chain.contains("phase=forced_observation_pending_ignore")
+            && chain.contains("post_error_not_atomic"),
+        "{chain}"
+    );
+    assert!(
+        chain.contains("proof_equals_expected")
+            && chain.contains("UNKNOWN")
+            && chain.contains("receipt_unavailable"),
+        "{chain}"
+    );
+    assert_eq!(q.intake.f.sends(), 0);
+    assert_eq!(q.intake.counts()?, before);
+    q.assert_a_pending()?;
+    q.finish().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn receipt_native_write_rejection_rolls_back_bundle_before_cash_then_reopens() -> Result<()> {
     for action in [
         "RAISE(ABORT,'synthetic native observations write')",

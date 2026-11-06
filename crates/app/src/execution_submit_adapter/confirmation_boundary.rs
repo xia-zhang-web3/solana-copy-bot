@@ -283,7 +283,7 @@ pub(crate) async fn record_execution_rpc_confirmation_boundary_inner(
                 && !store.execution_canary_fill_exists(order_id)?
                 && store.execution_canary_accounting_pending()?
                 && store.execution_canary_token_accounting_pending(&proof.token)?,
-            "receipt observation failure pending proof not preserved"
+            "receipt observation failure pending proof not preserved; observation_rejection={error:#}; expected_proof={proof:?}"
         );
         return Ok(pending_accounting(&proof));
     }
