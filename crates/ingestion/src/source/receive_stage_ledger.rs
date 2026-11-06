@@ -178,10 +178,6 @@ impl StageLedger {
             state.stages[stage as usize].record(nanoseconds(duration), &DURATION_BOUNDS_NS);
         }
     }
-    #[cfg(test)]
-    pub fn record_span(&self, stage: Stage, started: Duration, ended: Duration) {
-        self.record(stage, ended.saturating_sub(started));
-    }
     pub fn timer(&self, stage: Stage) -> StageTimer<'_> {
         if let Ok(mut state) = self.state.lock() {
             state.active[stage as usize] = state.active[stage as usize].saturating_add(1);

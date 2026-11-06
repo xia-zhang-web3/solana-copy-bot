@@ -1,6 +1,13 @@
 use super::*;
 use std::cell::Cell;
 
+impl StageLedger {
+    #[cfg(test)]
+    pub fn record_span(&self, stage: Stage, started: Duration, ended: Duration) {
+        self.record(stage, ended.saturating_sub(started));
+    }
+}
+
 #[test]
 fn fake_monotonic_slow_refresh_process_and_output_remain_separate() {
     let ledger = StageLedger::default();
