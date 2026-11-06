@@ -59,3 +59,13 @@ Production-local builds must be recorded here if artifact deploy is unavailable:
 ## Temporary Operator Dependency Waivers
 
 No active waiver.
+
+## One-artifact checked app pipeline exception — 2026-11-06
+
+- Owner: root curator of app-stage-cpu-measurement-preparation-01.
+- Path/scope: normal Actions42274908523, copybot-app artifact13534580632, SHA ba9d3dc76defc626fd44b8f5ebb5bbfb7c431b06; only the current stopped nontrading preparation.
+- Rule: BUILD_POLICY.md §2, cold checked app artifact pipeline≤1200s. Actual build/test/package1254s, excess54s; release compile209s, test compile158s, tests875.89s. Overall status OVER_BUDGET; no false budget PASS.
+- Reason/no smaller immediate cut: all required checks/binset/migrations/install/rollback passed. Rebuilding unchanged accepted code adds no proof; an immediate shorter path would require changing/skipping the required profile. No checks, timeout or assertions are relaxed.
+- Expiry: next copybot-app artifact dispatch or 2026-11-07T23:59:59Z, whichever first. No future build or production/provider/financial authority is covered.
+- Removal task before next app publication: restore the full cold checked pipeline≤1200s, preserving the full locked profile, both guards, bins/migrations/install/rollback; measure/reduce avoidable fixture/setup/cache duplication without broader runtime refactor.
+- Exact sealed proposal: audit/2026-11-06/app-stage-cpu-measurement-preparation-01/stopped-package/BUILD_BUDGET_WAIVER.json, SHA256178566892b2d1e95683792203f0e909a1ad209f3c3ecb3dbab623903e1c5890d. Independent acceptance is recorded separately in this package's PRESTART_DECISION.json.
