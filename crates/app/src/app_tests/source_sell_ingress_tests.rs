@@ -4,6 +4,9 @@ use anyhow::Result;
 use copybot_storage_core::ExecutionSourceSellReject as Reject;
 use std::sync::Arc;
 
+#[path = "membership_disposition_tests.rs"]
+mod membership_disposition_tests;
+
 #[tokio::test]
 async fn source_sell_ingress_captures_position_before_durable_ack_changes_state() -> Result<()> {
     let mut f = Ingress::new()?;

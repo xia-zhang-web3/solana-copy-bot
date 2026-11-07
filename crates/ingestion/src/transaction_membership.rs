@@ -15,6 +15,17 @@ pub const MAX_ROWS_PER_RECEIPT: usize = 4096;
 pub const MAX_OUTPUT_BYTES: usize = 512 * 1024;
 const CLOSED: u64 = 1 << 63;
 static GLOBAL: OnceLock<Capture> = OnceLock::new();
+#[path = "transaction_membership_disposition.rs"]
+mod disposition;
+pub use disposition::{disposition, enabled, raw_receipt, Disposition};
+
+#[derive(Clone, Copy)]
+enum RecordStage {
+    Decoded,
+    JournalInserted,
+    JournalUnattributed,
+    Disposition(Disposition),
+}
 
 #[derive(Clone, Copy)]
 pub enum JournalReceipt {
@@ -36,6 +47,9 @@ struct Row {
     decoded: Seen,
     journal_inserted: Seen,
     journal_batch_unattributed: Seen,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    outcomes: BTreeMap<u8, u64>,
+    pre_raw_resolution: u8,
 }
 
 #[derive(Default)]
@@ -115,7 +129,7 @@ impl Capture {
     }
 
     pub(crate) fn decoded(&self, signature: &str, slot: u64) {
-        self.record(signature, slot, 0);
+        self.record(signature, slot, RecordStage::Decoded);
     }
 
     pub fn observe_journal(&self, swaps: &[SwapEvent], receipt: JournalReceipt) {
@@ -140,13 +154,17 @@ impl Capture {
         }
         // All submitted rows inserted proves each prefix identity; OR IGNORE otherwise
         // cannot distinguish duplicate, conflicting slot, or which individual row inserted.
-        let stage = if inserted == processed { 1 } else { 2 };
+        let stage = if inserted == processed {
+            RecordStage::JournalInserted
+        } else {
+            RecordStage::JournalUnattributed
+        };
         for swap in &swaps[..processed] {
             self.record(&swap.signature, swap.slot, stage);
         }
     }
 
-    fn record(&self, signature: &str, slot: u64, stage: u8) {
+    fn record(&self, signature: &str, slot: u64, stage: RecordStage) {
         let Some(key) = identity(signature, slot) else {
             self.gap();
             return;
@@ -165,7 +183,9 @@ impl Capture {
             self.overflow.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        state.sequence += 1;
+        if !matches!(stage, RecordStage::Disposition(_)) {
+            state.sequence += 1;
+        }
         let sequence = state.sequence;
         let row = state.rows.entry(key).or_insert_with(|| Row {
             signature: signature.to_owned(),
@@ -173,17 +193,25 @@ impl Capture {
             decoded: Seen::default(),
             journal_inserted: Seen::default(),
             journal_batch_unattributed: Seen::default(),
+            outcomes: BTreeMap::new(),
+            pre_raw_resolution: 0,
         });
         let seen = match stage {
-            0 => &mut row.decoded,
-            1 => &mut row.journal_inserted,
-            _ => &mut row.journal_batch_unattributed,
+            RecordStage::Decoded => &mut row.decoded,
+            RecordStage::JournalInserted => &mut row.journal_inserted,
+            RecordStage::JournalUnattributed => &mut row.journal_batch_unattributed,
+            RecordStage::Disposition(outcome) => {
+                *row.outcomes.entry(outcome.code()).or_default() += 1;
+                row.resolve();
+                return;
+            }
         };
         if seen.count == 0 {
             seen.first_sequence = sequence;
             seen.first_elapsed_ms = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
         }
         seen.count += 1;
+        row.resolve();
     }
 
     /// Closes this observation window, not the producer/DB lifecycle. Never waits.
@@ -221,6 +249,13 @@ impl Capture {
             "complete":self.enabled && include_records && closed && gaps==0 && overflow==0 && self.started_unix_ms.is_some(),
             "sequence_cut":state.sequence,"gaps":gaps,"overflow":overflow,
             "absence_is_loss":false,"row_outcome_unknown_is_insert":false,
+            "disposition_schema":1,"disposition_codes":include_records.then(Disposition::legend),
+            "outcomes_do_not_advance_legacy_sequence":true,
+            "pre_raw_resolution_codes":{"0":"unresolved","1":"outcome_observed","2":"ambiguous_repeated_id","3":"unknown"},
+            "pre_raw_complete":self.enabled && include_records && closed && gaps==0 && overflow==0 && state.rows.values().all(|r|r.decoded.count==1 && r.pre_raw_resolution==1),
+            "pre_raw_complete_scope":"selected_ids_one_decoded_one_observed_terminal; not_market_or_drain",
+            "unresolved_at_cut_is_queue_residency":false,
+            "dispositions_are_counts_not_delivery_attribution":true,"complete_is_market_completeness_or_full_drain":false,
             "record_count":state.rows.len(),"records_included":include_records,
             "records":include_records.then(|| state.rows.values().collect::<Vec<_>>())})
     }
@@ -265,6 +300,10 @@ pub fn journal_receipt(swaps: &[SwapEvent], receipt: JournalReceipt) {
 pub fn snapshot_json() -> String {
     let value = GLOBAL.get().map(Capture::snapshot).unwrap_or_else(||
         serde_json::json!({"schema":1,"enabled":false,"complete":false,"reason":"not_initialized"}));
+    bounded_json(value)
+}
+
+fn bounded_json(value: serde_json::Value) -> String {
     let text = value.to_string();
     if text.len() <= MAX_OUTPUT_BYTES {
         text
@@ -290,3 +329,7 @@ pub fn finish() {
 #[cfg(test)]
 #[path = "transaction_membership_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "transaction_membership_disposition_tests.rs"]
+mod disposition_tests;

@@ -7,6 +7,7 @@ use tracing::{debug, info, warn};
 use super::*;
 use crate::app_loop_irrelevant_swap::handle_irrelevant_observed_swap;
 use crate::app_loop_relevant_swap::handle_relevant_observed_swap;
+use copybot_ingestion::transaction_membership::{disposition, Disposition};
 
 pub(super) async fn handle_ingestion_swap_poll(
     store: &SqliteStore,
@@ -84,6 +85,7 @@ pub(super) async fn handle_ingestion_swap_poll(
     app_consumer_loop_telemetry.note_swap_seen();
 
     if let Err(error) = observed_swap_writer.ensure_running() {
+        disposition(&swap.signature, swap.slot, Disposition::AppUnknown);
         app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
         return Err(error).context(
             "observed swap writer is no longer running; restarting app to avoid silent stale ingestion",
@@ -109,6 +111,7 @@ pub(super) async fn handle_ingestion_swap_poll(
         crate::source_sell_ingress::SourceSellIngress::NotCandidate => None,
         crate::source_sell_ingress::SourceSellIngress::Durable(ack) => Some(ack),
         crate::source_sell_ingress::SourceSellIngress::Refused => {
+            disposition(&swap.signature, swap.slot, Disposition::AppAdmissionRefused);
             app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
             return Ok(());
         }
@@ -116,6 +119,7 @@ pub(super) async fn handle_ingestion_swap_poll(
     // A staging retry bypasses only its own recent/DB dedupe boundary. Legacy
     // consumers still see at most the original fresh, durably inserted delivery.
     if !delivery.is_fresh() {
+        disposition(&swap.signature, swap.slot, Disposition::AppDedup);
         app_consumer_loop_telemetry.note_processing_started_at(swap_processing_started_at);
         debug!(signature = %swap.signature, "duplicate swap ignored by recent signature dedupe");
         return Ok(());
@@ -195,7 +199,10 @@ pub(super) async fn handle_ingestion_swap_poll(
             .await?;
             return Ok(());
         }
-        ObservedSwapShadowRelevance::Relevant(side) => side,
+        ObservedSwapShadowRelevance::Relevant(side) => {
+            disposition(&swap.signature, swap.slot, Disposition::ContextRelevant);
+            side
+        }
     };
 
     handle_relevant_observed_swap(

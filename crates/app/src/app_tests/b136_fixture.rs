@@ -4,7 +4,6 @@ use super::{
 use anyhow::Result;
 use chrono::Utc;
 use copybot_config::AppConfig;
-use copybot_storage_core::SqliteStore;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 pub(super) struct Fixture {
@@ -22,9 +21,7 @@ impl Fixture {
     pub async fn with_protected(protected: bool) -> Result<Self> {
         let root = super::temporary_output_fixture::OutputRoot::new("b136")?;
         let path = root.path().join("state.db");
-        let mut store = SqliteStore::open(&path)?;
-        store
-            .run_migrations(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations"))?;
+        let store = super::receipt_reconciliation_fixture::migrated_empty::open(&path)?;
         let db = f::Db {
             sql: rusqlite::Connection::open(&path)?,
             store,

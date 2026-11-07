@@ -193,6 +193,12 @@ pub(crate) async fn process(
                     )
                 };
                 receipt = received?;
+                if receipt.is_some() {
+                    super::transaction_membership::transaction_outcome(
+                        tx,
+                        crate::transaction_membership::Disposition::ContextProtectedCapture,
+                    );
+                }
             } else {
                 // Cannot prove this unidentified frame is outside a protected wallet.
                 store.gap("unidentified_received_transaction", false)?;

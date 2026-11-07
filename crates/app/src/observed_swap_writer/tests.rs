@@ -84,6 +84,8 @@ mod startup_recent_raw_b;
 
 use helpers_core::*;
 
+#[path = "tests_pre_raw_disposition.rs"]
+mod pre_raw_disposition;
 #[path = "transaction_membership_tests.rs"]
 mod transaction_membership;
 use helpers_scenarios::*;

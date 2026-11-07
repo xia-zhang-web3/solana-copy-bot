@@ -189,9 +189,9 @@ pub(in crate::source) async fn yellowstone_stream_loop(
                                 now,
                             );
 
-                            if is_seen_signature(
+                            if super::super::transaction_membership::signature_is_seen(
                                 &seen_signatures_map,
-                                &raw.signature,
+                                &raw,
                                 runtime_config.seen_signatures_ttl,
                                 now,
                             ) {
@@ -209,7 +209,13 @@ pub(in crate::source) async fn yellowstone_stream_loop(
 
                             let pushed = {
                                 let _span = stages.timer(Stage::OutputPushWait);
-                                output_queue.push(fetched, queue_overflow_policy).await
+                                output_queue
+                                    .push_observed(
+                                        fetched,
+                                        queue_overflow_policy,
+                                        super::super::transaction_membership::output_discarded,
+                                    )
+                                    .await
                             };
                             match pushed {
                                 Some(QueuePushResult::Enqueued { backpressured }) => {

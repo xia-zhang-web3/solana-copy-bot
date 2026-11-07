@@ -1,4 +1,5 @@
 use super::*;
+use copybot_ingestion::transaction_membership::raw_receipt;
 
 pub(in crate::observed_swap_writer) fn observed_swap_writer_loop(
     sqlite_path: String,
@@ -67,6 +68,7 @@ pub(in crate::observed_swap_writer) fn observed_swap_writer_loop(
         let (swaps, candidates, replies, queued_at) = unpack_observed_swap_write_batch(batch);
 
         if let Some(message) = load_terminal_failure_message(&terminal_failure_message) {
+            raw_receipt(&swaps, None);
             send_observed_swap_write_error_replies(replies, &message);
             telemetry.note_batch_completed(&queued_at);
             return Err(anyhow!(message))
@@ -79,6 +81,7 @@ pub(in crate::observed_swap_writer) fn observed_swap_writer_loop(
         let mut retryable_lock_attempts = 0u64;
         loop {
             if let Some(message) = load_terminal_failure_message(&terminal_failure_message) {
+                raw_receipt(&swaps, None);
                 send_observed_swap_write_error_replies(replies, &message);
                 telemetry.note_batch_completed(&queued_at);
                 return Err(anyhow!(message)).context(
@@ -107,6 +110,7 @@ pub(in crate::observed_swap_writer) fn observed_swap_writer_loop(
                         );
                     }
                     let results = batch_metrics.inserted;
+                    raw_receipt(&swaps, Some(&results));
                     for (reply_tx, inserted) in replies.into_iter().zip(results.iter().copied()) {
                         if let Some(reply_tx) = reply_tx {
                             let _ = reply_tx.send(Ok(inserted));
@@ -181,6 +185,7 @@ pub(in crate::observed_swap_writer) fn observed_swap_writer_loop(
 
                     telemetry.note_worker_busy_completed(elapsed_ms_ceil(batch_started.elapsed()));
                     let message = format!("{error:#}");
+                    raw_receipt(&swaps, None);
                     warn!(
                         error = %error,
                         batch_swaps = swaps.len(),

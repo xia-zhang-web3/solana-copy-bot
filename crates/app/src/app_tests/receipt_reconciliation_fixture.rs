@@ -6,6 +6,8 @@ use copybot_core_types::{CopySignalRow, Lamports};
 use copybot_storage_core::{ExecutionCanaryBuildPlanMetadata, SqliteStore};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+#[path = "migrated_empty_fixture.rs"]
+pub(super) mod migrated_empty;
 
 pub(super) const WALLET: &str = "ReceiptWallet";
 pub(super) const TOKEN: &str = "ReceiptMint";
@@ -28,11 +30,7 @@ impl Fixture {
         let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path =
             std::env::temp_dir().join(format!("receipt-{}-{stamp}-{seq}.db", std::process::id()));
-        let mut store = SqliteStore::open(&path)?;
-        store.run_migrations(Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../migrations"
-        )))?;
+        let store = migrated_empty::open(&path)?;
         let now = Utc::now();
         let order_id = add_order(&store, "receipt", side, TOKEN, now, true)?;
         let order = store.load_execution_canary_order(&order_id)?.unwrap();

@@ -2,6 +2,7 @@ use crate::source_sell_staging::{record, SourceSellAdmission, SourceSellStaging,
 use crate::{observed_swap_writer::ObservedSwapWriter, RelevantObservedSwapPersistence};
 use anyhow::{Context, Result};
 use copybot_core_types::SwapEvent;
+use copybot_ingestion::transaction_membership::{disposition, Disposition};
 use copybot_storage_core::{is_fatal_sqlite_anyhow_error, SqliteStore};
 use std::collections::{HashSet, VecDeque};
 
@@ -69,6 +70,7 @@ pub(crate) async fn persist_and_schedule(
     };
     #[cfg(test)]
     crate::app_tests::b70_hooks::mark("capture_proven", &swap.signature);
+    disposition(&swap.signature, swap.slot, Disposition::ContextOwnedSell);
     let inserted =
         match crate::irrelevant_persistence::persist_relevant_observed_swap_with_candidate(
             writer,

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use copybot_ingestion::transaction_membership::{disposition, Disposition};
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -30,6 +31,15 @@ pub(super) async fn handle_irrelevant_observed_swap(
             shadow_strategy_fail_closed,
             discovery_critical_target_buy_mints,
         );
+    disposition(
+        &swap.signature,
+        swap.slot,
+        if discovery_critical_irrelevant_persistence {
+            Disposition::ContextDiscoveryCritical
+        } else {
+            Disposition::ContextBestEffort
+        },
+    );
     zero_universe_empty_target_noncritical_best_effort.refresh_after_writer_pressure_clears(
         follow_snapshot,
         open_shadow_lots,
@@ -46,6 +56,7 @@ pub(super) async fn handle_irrelevant_observed_swap(
         discovery_critical_target_buy_mints,
         zero_universe_empty_target_noncritical_best_effort.exhausted(),
     ) {
+        disposition(&swap.signature, swap.slot, Disposition::BestEffortBudget);
         forget_recent_swap_signature(
             recent_swap_signatures,
             recent_swap_signature_order,
@@ -65,6 +76,11 @@ pub(super) async fn handle_irrelevant_observed_swap(
         shadow_strategy_fail_closed,
         ingestion_snapshot,
     ) {
+        disposition(
+            &swap.signature,
+            swap.slot,
+            Disposition::BestEffortOutputPressure,
+        );
         forget_recent_swap_signature(
             recent_swap_signatures,
             recent_swap_signature_order,
@@ -111,6 +127,15 @@ pub(super) async fn handle_irrelevant_observed_swap(
                     discovery_critical_target_buy_mints,
                     discovery_critical_target_buy_mints_backpressure_refresh_state,
                 )?;
+            disposition(
+                &swap.signature,
+                swap.slot,
+                if discovery_critical_irrelevant_persistence {
+                    Disposition::ContextDiscoveryCritical
+                } else {
+                    Disposition::ContextBestEffort
+                },
+            );
             reset_zero_universe_empty_target_noncritical_best_effort_exhaustion_if_context_changed(
                 zero_universe_empty_target_noncritical_best_effort,
                 follow_snapshot,
@@ -124,6 +149,11 @@ pub(super) async fn handle_irrelevant_observed_swap(
                 open_shadow_lots,
                 shadow_strategy_fail_closed,
             ) {
+                disposition(
+                    &swap.signature,
+                    swap.slot,
+                    Disposition::BestEffortWriterPressure,
+                );
                 forget_recent_swap_signature(
                     recent_swap_signatures,
                     recent_swap_signature_order,
@@ -163,6 +193,15 @@ pub(super) async fn handle_irrelevant_observed_swap(
             if should_drop_backpressured_discovery_critical_irrelevant_observed_swap(
                 pending_irrelevant_swaps,
             ) {
+                disposition(
+                    &swap.signature,
+                    swap.slot,
+                    if discovery_critical_irrelevant_persistence {
+                        Disposition::CriticalBacklogFull
+                    } else {
+                        Disposition::BacklogFull
+                    },
+                );
                 forget_recent_swap_signature(
                     recent_swap_signatures,
                     recent_swap_signature_order,
@@ -188,6 +227,7 @@ pub(super) async fn handle_irrelevant_observed_swap(
                 );
                 return Ok(());
             }
+            disposition(&swap.signature, swap.slot, Disposition::Buffered);
             pending_irrelevant_swaps.push_back(PendingIrrelevantObservedSwap {
                 swap,
                 discovery_critical: discovery_critical_irrelevant_persistence,

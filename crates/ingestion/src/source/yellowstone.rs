@@ -44,12 +44,27 @@ fn parse_yellowstone_transaction_update(
             .telemetry
             .note_parse_fallback("missing_program_ids_fallback");
     }
-    let Some(facts) = decoded.facts? else {
-        return Ok(None);
+    let facts = match decoded.facts {
+        Ok(Some(facts)) => facts,
+        Ok(None) => {
+            super::transaction_membership::refused(&tx_update, decoded.miss);
+            return Ok(None);
+        }
+        Err(error) => {
+            super::transaction_membership::transaction_outcome(
+                &tx_update,
+                crate::transaction_membership::Disposition::ParseError,
+            );
+            return Err(error);
+        }
     };
     let YellowstoneMessageTime::AvailableCreatedAt(ts_utc) =
         YellowstoneMessageTime::from_created_at(created_at.as_ref())
     else {
+        super::transaction_membership::transaction_outcome(
+            &tx_update,
+            crate::transaction_membership::Disposition::CreatedAtUnavailable,
+        );
         return Ok(None);
     };
     // Legacy compatibility only: created_at remains the observation timestamp.

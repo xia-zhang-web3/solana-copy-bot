@@ -20,6 +20,11 @@ impl SwapParser {
             || raw.token_in.is_empty()
             || raw.token_out.is_empty()
         {
+            crate::transaction_membership::disposition(
+                &raw.signature,
+                raw.slot,
+                crate::transaction_membership::Disposition::SwapParserRefused,
+            );
             return None;
         }
         if !raw.amount_in.is_finite()
@@ -27,10 +32,22 @@ impl SwapParser {
             || raw.amount_in <= 0.0
             || raw.amount_out <= 0.0
         {
+            crate::transaction_membership::disposition(
+                &raw.signature,
+                raw.slot,
+                crate::transaction_membership::Disposition::SwapParserRefused,
+            );
             return None;
         }
 
-        let dex = self.detect_dex(&raw)?;
+        let Some(dex) = self.detect_dex(&raw) else {
+            crate::transaction_membership::disposition(
+                &raw.signature,
+                raw.slot,
+                crate::transaction_membership::Disposition::SwapParserRefused,
+            );
+            return None;
+        };
         Some(SwapEvent {
             wallet: raw.signer,
             dex,

@@ -101,6 +101,8 @@ mod copy12_saved_sell_tests;
 mod jupiter_raydium_attribution_tests;
 #[path = "../source_tests/jupiter_raydium_fixture.rs"]
 mod jupiter_raydium_fixture;
+#[path = "../source_tests/membership_disposition_tests.rs"]
+mod membership_disposition;
 #[path = "../source_tests/run15_mixed_rpc.rs"]
 mod run15_mixed_rpc;
 #[path = "../source_tests/run15_version_tests.rs"]

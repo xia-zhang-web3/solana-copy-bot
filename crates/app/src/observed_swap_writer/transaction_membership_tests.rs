@@ -1,13 +1,17 @@
 use super::*;
 use copybot_ingestion::transaction_membership::{selected, Capture};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(std::path::PathBuf);
 impl Fixture {
     fn new() -> Self {
         let folder = std::env::temp_dir().join(format!(
-            "copybot-membership-{}-{}",
+            "copybot-membership-{}-{}-{}",
             std::process::id(),
+            FIXTURE_ID.fetch_add(1, Ordering::Relaxed),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

@@ -1,4 +1,5 @@
 use crate::*;
+use copybot_ingestion::transaction_membership::{disposition, Disposition};
 
 pub(crate) fn prune_noncritical_zero_universe_pending_irrelevant_swaps(
     pending_irrelevant_swaps: &mut VecDeque<PendingIrrelevantObservedSwap>,
@@ -35,6 +36,12 @@ pub(crate) fn prune_noncritical_zero_universe_pending_irrelevant_swaps(
             continue;
         }
 
+        disposition(
+            &pending.swap.signature,
+            pending.swap.slot,
+            Disposition::BestEffortBacklogPruned,
+        );
+
         forget_recent_swap_signature(
             recent_signatures,
             recent_signature_order,
@@ -63,6 +70,7 @@ pub(crate) fn enqueue_irrelevant_observed_swap_immediately(
         Ok(true) => Ok(IrrelevantObservedSwapEnqueueOutcome::Enqueued),
         Ok(false) => Ok(IrrelevantObservedSwapEnqueueOutcome::PendingWriterBackpressure),
         Err(error) => {
+            disposition(&swap.signature, swap.slot, Disposition::AppUnknown);
             forget_recent_swap_signature(
                 recent_signatures,
                 recent_signature_order,
@@ -102,6 +110,7 @@ pub(crate) async fn persist_relevant_observed_swap_with_candidate(
     {
         Ok(inserted) => Ok(inserted),
         Err(error) => {
+            disposition(&swap.signature, swap.slot, Disposition::AppUnknown);
             forget_recent_swap_signature(
                 recent_signatures,
                 recent_signature_order,

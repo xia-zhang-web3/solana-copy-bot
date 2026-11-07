@@ -29,6 +29,12 @@ pub(super) enum QueuePushResult {
     ReplacedOldest,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum QueueDiscard {
+    Replaced,
+    Closed,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct OverflowQueueSnapshot<U> {
     pub(super) len: usize,
@@ -68,11 +74,26 @@ impl<T> OverflowQueue<T> {
         item: T,
         policy: QueueOverflowPolicy,
     ) -> Option<QueuePushResult> {
+        self.push_observed(item, policy, |_, _| {}).await
+    }
+
+    pub(super) async fn push_observed(
+        &self,
+        item: T,
+        policy: QueueOverflowPolicy,
+        on_discard: impl FnOnce(&T, QueueDiscard),
+    ) -> Option<QueuePushResult> {
         let mut pending = Some(item);
+        let mut on_discard = Some(on_discard);
         let mut was_backpressured = false;
         loop {
             let mut guard = self.state.lock().await;
             if guard.closed {
+                drop(guard);
+                on_discard.take().expect("one discard")(
+                    pending.as_ref().expect("pending item"),
+                    QueueDiscard::Closed,
+                );
                 return None;
             }
             if guard.deque.len() < self.capacity {
@@ -87,7 +108,7 @@ impl<T> OverflowQueue<T> {
             }
 
             if matches!(policy, QueueOverflowPolicy::DropOldest) {
-                let _ = guard.deque.pop_front();
+                let replaced = guard.deque.pop_front();
                 guard.deque.push_back(
                     pending
                         .take()
@@ -96,6 +117,9 @@ impl<T> OverflowQueue<T> {
                 drop(guard);
                 self.not_empty.notify_one();
                 self.not_full.notify_one();
+                if let Some(replaced) = replaced {
+                    on_discard.take().expect("one discard")(&replaced, QueueDiscard::Replaced);
+                }
                 return Some(QueuePushResult::ReplacedOldest);
             }
 
