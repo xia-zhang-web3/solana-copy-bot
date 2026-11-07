@@ -43,6 +43,7 @@ impl YellowstoneGrpcSource {
     }
 
     pub fn new(config: &IngestionConfig) -> Result<Self> {
+        crate::transaction_membership::initialize_from_env();
         let mut interested_program_ids: HashSet<String> =
             config.yellowstone_program_ids.iter().cloned().collect();
         if interested_program_ids.is_empty() {

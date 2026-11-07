@@ -62,12 +62,37 @@ pub(in crate::observed_swap_writer) fn write_recent_raw_journal_batch_with_deadl
 >(
     telemetry: &ObservedSwapWriterTelemetry,
     inserted_swaps: &[SwapEvent],
-    mut deadline_for_attempt: DeadlineFn,
-    mut write_attempt: WriteFn,
+    deadline_for_attempt: DeadlineFn,
+    write_attempt: WriteFn,
 ) -> Result<()>
 where
     DeadlineFn: FnMut() -> Instant,
     WriteFn: FnMut(&[SwapEvent], Instant) -> Result<(RecentRawJournalWriteSummary, bool)>,
+{
+    write_recent_raw_journal_batch_with_membership(
+        telemetry,
+        inserted_swaps,
+        deadline_for_attempt,
+        write_attempt,
+        copybot_ingestion::transaction_membership::journal_receipt,
+    )
+}
+
+pub(in crate::observed_swap_writer) fn write_recent_raw_journal_batch_with_membership<
+    DeadlineFn,
+    WriteFn,
+    ObserveFn,
+>(
+    telemetry: &ObservedSwapWriterTelemetry,
+    inserted_swaps: &[SwapEvent],
+    mut deadline_for_attempt: DeadlineFn,
+    mut write_attempt: WriteFn,
+    mut observe: ObserveFn,
+) -> Result<()>
+where
+    DeadlineFn: FnMut() -> Instant,
+    WriteFn: FnMut(&[SwapEvent], Instant) -> Result<(RecentRawJournalWriteSummary, bool)>,
+    ObserveFn: FnMut(&[SwapEvent], copybot_ingestion::transaction_membership::JournalReceipt),
 {
     let batch_rows = inserted_swaps.len();
     let mut batch_offset = 0usize;
@@ -76,9 +101,26 @@ where
         attempt_index = attempt_index.saturating_add(1);
         let suffix = &inserted_swaps[batch_offset..];
         let write_started = Instant::now();
-        let (summary, time_budget_exhausted) = write_attempt(suffix, deadline_for_attempt())?;
+        let (summary, time_budget_exhausted) = match write_attempt(suffix, deadline_for_attempt()) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                observe(
+                    suffix,
+                    copybot_ingestion::transaction_membership::JournalReceipt::Unknown,
+                );
+                return Err(error);
+            }
+        };
         let elapsed_ms = elapsed_ms_ceil(write_started.elapsed());
         let processed_rows = recent_raw_journal_summary_processed_rows(&summary).min(suffix.len());
+        // The store's Ok is post-COMMIT; only this processed prefix belongs to it.
+        observe(
+            suffix,
+            copybot_ingestion::transaction_membership::JournalReceipt::Committed {
+                processed: processed_rows,
+                inserted: summary.inserted_rows,
+            },
+        );
         if time_budget_exhausted {
             let committed_rows = batch_offset.saturating_add(processed_rows);
             let unproven_rows = batch_rows.saturating_sub(committed_rows);
@@ -115,6 +157,10 @@ where
                 "recent raw journal write deadline exhausted"
             );
             if processed_rows == 0 {
+                observe(
+                    suffix,
+                    copybot_ingestion::transaction_membership::JournalReceipt::Unknown,
+                );
                 return Err(anyhow!(
                     "{OBSERVED_SWAP_RECENT_RAW_JOURNAL_WRITE_DEADLINE_EXHAUSTED}: batch_rows={batch_rows} committed_rows={committed_rows} inserted_rows={} unproven_rows={unproven_rows} elapsed_ms={elapsed_ms}",
                     summary.inserted_rows
@@ -127,6 +173,10 @@ where
             continue;
         }
         if processed_rows != suffix.len() {
+            observe(
+                &suffix[processed_rows..],
+                copybot_ingestion::transaction_membership::JournalReceipt::Unknown,
+            );
             let committed_rows = batch_offset.saturating_add(processed_rows);
             let unproven_rows = batch_rows.saturating_sub(committed_rows);
             return Err(anyhow!(

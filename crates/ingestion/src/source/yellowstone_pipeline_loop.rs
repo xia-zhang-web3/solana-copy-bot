@@ -149,6 +149,7 @@ pub(in crate::source) async fn yellowstone_stream_loop(
             };
             match next_message {
                 Ok(Some(Ok(update))) => {
+                    crate::transaction_membership::decoded_update(&update);
                     let is_transaction_update = matches!(
                         update.update_oneof.as_ref(),
                         Some(subscribe_update::UpdateOneof::Transaction(_))

@@ -36,6 +36,7 @@ mod rpc_backfill;
 pub(crate) mod http_recovery;
 mod target_balance_rows;
 mod telemetry;
+pub(crate) mod transaction_membership;
 mod yellowstone;
 #[allow(dead_code)]
 mod yellowstone_association;

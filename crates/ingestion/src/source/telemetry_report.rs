@@ -73,6 +73,7 @@ impl IngestionTelemetry {
         let receive_stage_ledger =
             super::super::receive_stage_measurement::snapshot_json(&self.receive_stages);
         info!(
+            transaction_membership_status = %crate::transaction_membership::status_json(),
             receive_stage_ledger = %receive_stage_ledger,
             ws_notifications_seen = self.ws_notifications_seen.load(Ordering::Relaxed),
             ws_notifications_enqueued = self.ws_notifications_enqueued.load(Ordering::Relaxed),

@@ -19,6 +19,7 @@ pub(super) fn shutdown_app_loop_tasks(
     observed_swap_writer
         .shutdown()
         .context("failed to shut down observed swap writer")?;
+    copybot_ingestion::transaction_membership::finish();
 
     system_event_store
         .record_heartbeat("copybot-app", "shutdown")

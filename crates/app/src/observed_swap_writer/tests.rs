@@ -83,6 +83,9 @@ mod retention_run;
 mod startup_recent_raw_b;
 
 use helpers_core::*;
+
+#[path = "transaction_membership_tests.rs"]
+mod transaction_membership;
 use helpers_scenarios::*;
 
 #[path = "tests_handoff_ack.rs"]
