@@ -271,7 +271,7 @@ fn b35_legacy_incomplete_or_inconsistent_price_proof_requires_rebuild() -> Resul
                     .remove("live_valuation");
             }
             "version" => {
-                value["wallet_metrics"][index]["live_valuation"]["contract_version"] = json!(2)
+                value["wallet_metrics"][index]["live_valuation"]["contract_version"] = json!(99)
             }
             "truncated" => {
                 value["wallet_metrics"][index]["live_valuation"]["classic_positions"] = json!([])

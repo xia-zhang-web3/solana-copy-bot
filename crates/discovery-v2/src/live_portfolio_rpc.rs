@@ -4,6 +4,7 @@ use crate::live_inventory_parse::{valid_pubkey, InventoryParser};
 use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
+use std::io::Read;
 use std::time::Duration;
 
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
@@ -42,9 +43,11 @@ impl LivePortfolioRpcClient {
             self.fetch_program(wallet, TokenProgram::Classic, &mut parser)?;
         let (token_2022_accounts, token_2022_slot) =
             self.fetch_program(wallet, TokenProgram::Token2022, &mut parser)?;
+        let mut token_positions = parser.finish()?;
+        crate::token2022_profile_rpc::collect(self, wallet, token_2022_slot, &mut token_positions);
         Ok(LivePortfolioSnapshot {
             sol_balance: lamports as f64 / LAMPORTS_PER_SOL,
-            token_positions: parser.finish()?,
+            token_positions,
             classic_accounts,
             token_2022_accounts,
             sol_slot,
@@ -66,7 +69,7 @@ impl LivePortfolioRpcClient {
         Ok((parser.append(&response, wallet, program)?, slot))
     }
 
-    fn post_rpc(&self, method: &str, params: Value) -> Result<Value, Failure> {
+    pub(crate) fn post_rpc(&self, method: &str, params: Value) -> Result<Value, Failure> {
         let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
         let response: Value = self
             .client
@@ -86,6 +89,39 @@ impl LivePortfolioRpcClient {
             return Err(Failure::Protocol);
         }
         Ok(response)
+    }
+
+    /// Only the new profile reads use this limit; legacy inventory behavior is unchanged.
+    pub(crate) fn post_profile_rpc(&self, params: Value) -> Result<Value, Failure> {
+        const LIMIT: u64 = 256 * 1024;
+        let response = self
+            .client
+            .post(&self.rpc_url)
+            .json(&json!({"jsonrpc":"2.0","id":1,"method":"getMultipleAccounts","params":params}))
+            .send()
+            .map_err(|_| Failure::Transport)?
+            .error_for_status()
+            .map_err(|_| Failure::Transport)?;
+        if response.content_length().is_some_and(|size| size > LIMIT) {
+            return Err(Failure::Budget);
+        }
+        let mut body = Vec::new();
+        response
+            .take(LIMIT + 1)
+            .read_to_end(&mut body)
+            .map_err(|_| Failure::Transport)?;
+        if body.len() as u64 > LIMIT {
+            return Err(Failure::Budget);
+        }
+        let value: Value = serde_json::from_slice(&body).map_err(|_| Failure::Protocol)?;
+        if value.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+            || value.get("id").and_then(Value::as_u64) != Some(1)
+            || value.get("error").is_some()
+            || !value.get("result").is_some_and(Value::is_object)
+        {
+            return Err(Failure::Protocol);
+        }
+        Ok(value)
     }
 }
 

@@ -88,8 +88,8 @@ fn status(now: DateTime<Utc>) -> DiscoveryV2Status {
             rpc_failures: 0,
             max_wallets: 10,
             rpc_missing: false,
-            inventory_contract_version: Some(1),
-            valuation_contract_version: Some(1),
+            inventory_contract_version: Some(2),
+            valuation_contract_version: Some(2),
             complete_inventory_wallets: 2,
             unknown_valuation_wallets: 0,
             failure_breakdown: Default::default(),
@@ -158,11 +158,13 @@ fn metric(
         live_sol_balance: Some(0.08),
         live_token_value_sol: Some(0.35),
         live_inventory: Some(copybot_discovery_v2::DiscoveryV2LiveInventoryEvidence {
-            contract_version: 1, classic_accounts: 2, token_2022_accounts: 0,
+            contract_version: 2, classic_accounts: 2, token_2022_accounts: 0,
             sol_slot: 10, classic_slot: 10, token_2022_slot: 11,
             token_2022_positive_positions: 0, unvalued_token_positions: 0,
             known_classic_value_sol: 0.35,
-            valuation_basis: copybot_discovery_v2::DiscoveryV2LiveValuationBasis::ClassicObservedPriceQualitySubtotal,
+            known_token_2022_value_sol: 0.0, known_supported_token_value_sol: 0.35,
+            valued_token_2022_positions: 0, valued_supported_positions: 2,
+            valuation_basis: copybot_discovery_v2::DiscoveryV2LiveValuationBasis::SupportedObservedPriceQualitySubtotal,
         }),
         live_valuation: Some(proof::valuation(now)),
         live_token_positions: Some(2),
@@ -310,3 +312,6 @@ fn wallet_report_rejects_candidate_missing_metric() -> Result<()> {
 
 #[path = "wallet_report/proof.rs"]
 mod proof;
+
+#[path = "wallet_report/v2_validation.rs"]
+mod v2_validation;

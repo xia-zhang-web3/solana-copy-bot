@@ -1,14 +1,17 @@
-use crate::live_inventory::INVENTORY_CONTRACT_VERSION;
+use crate::live_inventory::{DiscoveryV2LiveValuationBasis, INVENTORY_CONTRACT_VERSION};
 use crate::{DiscoveryV2Status, DiscoveryV2WalletMetric};
 use anyhow::{bail, Result};
 
 pub(crate) const COVERAGE_UNVERIFIED: &str = "discovery_v2_live_inventory_coverage_unverified";
 
 pub(crate) fn metric_has_inventory_coverage(metric: &DiscoveryV2WalletMetric) -> bool {
-    metric
-        .live_inventory
-        .as_ref()
-        .is_some_and(|evidence| evidence.contract_version == INVENTORY_CONTRACT_VERSION)
+    metric.live_inventory.as_ref().is_some_and(|evidence| {
+        evidence.contract_version == INVENTORY_CONTRACT_VERSION
+            && matches!(
+                evidence.valuation_basis,
+                DiscoveryV2LiveValuationBasis::SupportedObservedPriceQualitySubtotal
+            )
+    })
 }
 
 /// Legacy serde defaults mean unknown, never proof of both account programs.

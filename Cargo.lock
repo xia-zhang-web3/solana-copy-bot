@@ -335,6 +335,7 @@ name = "copybot-discovery-v2"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "copybot-config",
  "copybot-core-types",

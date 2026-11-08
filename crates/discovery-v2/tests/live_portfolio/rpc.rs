@@ -146,12 +146,16 @@ impl Drop for RpcStub {
 }
 
 pub fn assert_requests(calls: &[Value], wallet: &str, expected: usize) {
+    let inventory: Vec<_> = calls
+        .iter()
+        .filter(|r| r["method"] != "getMultipleAccounts")
+        .collect();
     assert_eq!(
-        calls.len(),
+        inventory.len(),
         expected,
-        "one balance + both programs; no retries"
+        "one balance + both programs; no inventory retries"
     );
-    for (i, request) in calls.iter().enumerate() {
+    for (i, request) in inventory.into_iter().enumerate() {
         assert_eq!(request["params"][0], wallet);
         assert_eq!(request["jsonrpc"], "2.0");
         if i == 0 {
@@ -169,4 +173,22 @@ pub fn assert_requests(calls: &[Value], wallet: &str, expected: usize) {
             );
         }
     }
+    let mut keys = std::collections::HashSet::new();
+    let profiles: Vec<_> = calls
+        .iter()
+        .filter(|r| r["method"] == "getMultipleAccounts")
+        .collect();
+    assert!(profiles.len() <= 8);
+    for request in profiles {
+        let batch = request["params"][0].as_array().unwrap();
+        assert!(!batch.is_empty() && batch.len() <= 32);
+        assert_eq!(
+            request["params"][1],
+            json!({"encoding":"base64", "commitment":"confirmed", "minContextSlot":123})
+        );
+        for key in batch {
+            assert!(keys.insert(key.as_str().unwrap()));
+        }
+    }
+    assert!(keys.len() <= 256);
 }

@@ -25,6 +25,9 @@ mod rug_feedback_report;
 mod shadow_feedback;
 mod slow_hold;
 mod status;
+mod token2022_profile;
+mod token2022_profile_metadata;
+mod token2022_profile_rpc;
 mod token_market;
 mod tradability;
 mod wallet_filter_impact;
@@ -63,9 +66,17 @@ pub use decision_context::DiscoveryV2DecisionContext;
 pub use live_valuation_validate::revalidate_discovery_v2_status;
 pub use metric::DiscoveryV2WalletMetric;
 
-pub use live_inventory::{DiscoveryV2LiveInventoryEvidence, DiscoveryV2LiveValuationBasis};
+pub use live_inventory::{
+    DiscoveryV2LiveInventoryEvidence, DiscoveryV2LiveValuationBasis,
+    Token2022ProfileCollectionFailure,
+};
 
 pub use live_valuation::{
     DiscoveryV2LiveValuationEvidence, DiscoveryV2PriceContribution, DiscoveryV2PriceUnknownReason,
     DiscoveryV2ValuationDecision,
+};
+pub use token2022_profile::{
+    validate_profile, ProfileAmount, ProfileFailure, Token2022BoundAccount,
+    Token2022PositionProfile, Token2022RawAccount, MAX_PROFILE_ACCOUNTS, PROFILE_VERSION,
+    TOKEN_2022_PROGRAM,
 };

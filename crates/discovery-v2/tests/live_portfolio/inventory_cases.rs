@@ -103,7 +103,7 @@ fn token_2022_presence_is_unknown_and_known_capital_controls_publish() -> Result
         println!("B29 control={label}");
         assert_outcome(&status, reason, false);
         let row = metric(&status);
-        assert_eq!(row["live_inventory"]["contract_version"], 1);
+        assert_eq!(row["live_inventory"]["contract_version"], 2);
         assert!(
             (row["live_inventory"]["known_classic_value_sol"]
                 .as_f64()
@@ -115,7 +115,7 @@ fn token_2022_presence_is_unknown_and_known_capital_controls_publish() -> Result
         assert_eq!(row["live_inventory"]["unvalued_token_positions"], unvalued);
         assert_eq!(
             row["live_inventory"]["valuation_basis"],
-            "classic_observed_price_quality_subtotal"
+            "supported_observed_price_quality_subtotal"
         );
         let published = publish_discovery_v2_status(
             &f.store,
@@ -351,5 +351,24 @@ fn ui_display_values_cannot_replace_positive_or_zero_raw_inventory() -> Result<(
         assert_outcome(&status, reason, false);
         assert_eq!(metric(&status)["live_token_value_sol"], value);
     }
+    Ok(())
+}
+
+#[test]
+fn same_mint_cannot_belong_to_both_token_programs() -> Result<()> {
+    let f = Fixture::new()?;
+    let classic = token(CLASSIC, "10000000");
+    let modern = rpc::account(
+        &rpc::key('A'),
+        &rpc::key('D'),
+        &rpc::key('K'),
+        TOKEN_2022,
+        "10000000",
+        6,
+    );
+    let server = responses(1_000_000_000, json!([classic]), json!([modern]));
+    let status = f.build(&server)?;
+    assert_outcome(&status, Some("live_portfolio_inventory_conflict"), true);
+    rpc::assert_requests(&server.finish(), &rpc::key('A'), 3);
     Ok(())
 }

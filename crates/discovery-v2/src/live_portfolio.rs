@@ -1,8 +1,6 @@
 use crate::candidate_selection::{candidate_wallets_without_live_gate, stable_candidate_wallets};
 use crate::live_inventory::LivePortfolioSnapshot;
-use crate::live_inventory::{
-    DiscoveryV2LiveInventoryEvidence, TokenProgram, INVENTORY_CONTRACT_VERSION,
-};
+use crate::live_inventory::{DiscoveryV2LiveInventoryEvidence, INVENTORY_CONTRACT_VERSION};
 use crate::live_portfolio_selection::process_live_portfolio_candidate_rows;
 use crate::metric::{reject_wallet_metric, DiscoveryV2WalletMetric};
 use crate::slow_hold::{SOURCE_BASELINE, SOURCE_SLOW_HOLD};
@@ -201,10 +199,7 @@ pub(super) fn load_live_token_quality(
 ) -> Result<HashMap<String, TokenQualityCacheRow>> {
     let mut rows = HashMap::new();
     for position in &snapshot.token_positions {
-        if position.program != TokenProgram::Classic
-            || rows.contains_key(&position.mint)
-            || position.amount <= 0.0
-        {
+        if rows.contains_key(&position.mint) || position.amount <= 0.0 {
             continue;
         }
         if let Some(row) = store.get_token_quality_cache(&position.mint)? {

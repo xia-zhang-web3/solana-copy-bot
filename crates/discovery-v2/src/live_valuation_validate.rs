@@ -1,9 +1,12 @@
 use crate::live_inventory_parse::valid_pubkey;
 use crate::live_valuation::{
-    contribution_reason, decide_valuation, DiscoveryV2LiveValuationEvidence,
-    DiscoveryV2PriceUnknownReason as Reason, PRICE_EXPIRED, PROOF_UNVERIFIED, VALUATION_VERSION,
+    contribution_reason, decide_valuation, profile_reason, DiscoveryV2LiveValuationEvidence,
+    DiscoveryV2PriceContribution, DiscoveryV2PriceUnknownReason as Reason, PRICE_EXPIRED,
+    PROOF_UNVERIFIED, VALUATION_VERSION,
 };
-use crate::live_valuation_numbers::{normalize_numbers, numeric_alias_matches};
+use crate::live_valuation_numbers::{
+    normalize_numbers, normalize_subtotals, numeric_alias_matches,
+};
 use crate::{
     discovery_v2_policy_fingerprint, DiscoveryV2DecisionContext, DiscoveryV2Status,
     DiscoveryV2WalletMetric,
@@ -96,10 +99,11 @@ pub fn revalidate_discovery_v2_status(
             options.window_minutes,
             discovery.live_portfolio_max_token_accounts.max(1),
             options.now,
+            context.shadow.quality_gates_enabled,
         )?;
         let decision = decide_valuation(
             &proof.classic_positions,
-            proof.token_2022_positive_positions,
+            &proof.token_2022_positions,
             window_start,
             options.now,
         );
@@ -113,7 +117,7 @@ pub fn revalidate_discovery_v2_status(
         metric.live_sol_balance = Some(sol);
         if candidate
             && sol < discovery.min_live_sol_balance
-            && decision.known_classic_value_sol < discovery.min_live_portfolio_value_sol
+            && decision.known_supported_token_value_sol < discovery.min_live_portfolio_value_sol
         {
             expired += 1;
         }
@@ -124,6 +128,10 @@ pub fn revalidate_discovery_v2_status(
         metric.live_tradable_token_positions = Some(decision.valued_classic_positions);
         let inventory = metric.live_inventory.as_mut().expect("proof validated");
         inventory.known_classic_value_sol = decision.known_classic_value_sol;
+        inventory.known_token_2022_value_sol = decision.known_token_2022_value_sol;
+        inventory.known_supported_token_value_sol = decision.known_supported_token_value_sol;
+        inventory.valued_token_2022_positions = decision.valued_token_2022_positions;
+        inventory.valued_supported_positions = decision.valued_supported_positions;
         inventory.unvalued_token_positions = decision.unvalued_positions;
         proof.decision = decision;
         metric.live_valuation = Some(proof);
@@ -153,6 +161,7 @@ fn validate_proof(
     window_minutes: u64,
     max_accounts: usize,
     now: chrono::DateTime<chrono::Utc>,
+    quality_gate_enabled: bool,
 ) -> Result<DiscoveryV2LiveValuationEvidence> {
     let inventory = metric
         .live_inventory
@@ -186,14 +195,15 @@ fn validate_proof(
         account_count <= max_accounts
             && proof.positive_positions as usize <= account_count
             && proof.classic_positions.len() <= inventory.classic_accounts
-            && proof.token_2022_positive_positions as usize <= inventory.token_2022_accounts,
+            && proof.token_2022_positions.len() <= inventory.token_2022_accounts
+            && proof.token_2022_positive_positions as usize == proof.token_2022_positions.len(),
         PROOF_UNVERIFIED
     );
     ensure!(
         proof
             .classic_positions
             .len()
-            .checked_add(proof.token_2022_positive_positions as usize)
+            .checked_add(proof.token_2022_positions.len())
             == Some(proof.positive_positions as usize)
             && metric.live_token_positions == Some(proof.positive_positions)
             && inventory.token_2022_positive_positions == proof.token_2022_positive_positions,
@@ -201,7 +211,19 @@ fn validate_proof(
     );
     normalize_numbers(&mut proof)?;
     let mut mints = HashSet::new();
-    for row in &proof.classic_positions {
+    let mut profile_accounts = 0usize;
+    let mut account_keys = HashSet::new();
+    for (row, program) in proof
+        .classic_positions
+        .iter()
+        .map(|r| (r, crate::live_inventory::TokenProgram::Classic.id()))
+        .chain(
+            proof
+                .token_2022_positions
+                .iter()
+                .map(|r| (r, crate::token2022_profile::TOKEN_2022_PROGRAM)),
+        )
+    {
         ensure!(
             valid_pubkey(&row.mint)
                 && mints.insert(row.mint.as_str())
@@ -209,42 +231,30 @@ fn validate_proof(
                 && row.token_amount > 0.0,
             PROOF_UNVERIFIED
         );
-        if let Some(price) = &row.observation {
-            ensure!(
-                !price.signature.is_empty() && price.signature.len() <= 128,
-                PROOF_UNVERIFIED
-            );
-            let mut original = row.clone();
-            original.initial_unknown_reason = None;
-            ensure!(
-                row.initial_unknown_reason
-                    == contribution_reason(&original, original_start, original_now),
-                PROOF_UNVERIFIED
-            );
-        } else {
-            ensure!(
-                matches!(
-                    row.initial_unknown_reason,
-                    Some(Reason::PriceMissing | Reason::PriceSourceUnverified)
-                ),
-                PROOF_UNVERIFIED
-            );
-        }
+        profile_accounts = profile_accounts
+            .checked_add(validate_row(
+                row,
+                program,
+                &metric.wallet_id,
+                original_start,
+                original_now,
+                quality_gate_enabled,
+                inventory.token_2022_slot,
+                &mut account_keys,
+            )?)
+            .ok_or_else(|| anyhow::anyhow!(PROOF_UNVERIFIED))?;
     }
+    ensure!(
+        profile_accounts <= inventory.token_2022_accounts,
+        PROOF_UNVERIFIED
+    );
     let expected = decide_valuation(
         &proof.classic_positions,
-        proof.token_2022_positive_positions,
+        &proof.token_2022_positions,
         proof.decision.window_start,
         proof.decision.as_of,
     );
-    ensure!(
-        numeric_alias_matches(
-            proof.decision.known_classic_value_sol,
-            expected.known_classic_value_sol
-        ),
-        PROOF_UNVERIFIED
-    );
-    proof.decision.known_classic_value_sol = expected.known_classic_value_sol;
+    normalize_subtotals(&mut proof.decision, &expected)?;
     ensure!(
         proof.decision == expected
             && metric
@@ -258,8 +268,106 @@ fn validate_proof(
                 inventory.known_classic_value_sol,
                 expected.known_classic_value_sol
             )
+            && numeric_alias_matches(
+                inventory.known_token_2022_value_sol,
+                expected.known_token_2022_value_sol
+            )
+            && numeric_alias_matches(
+                inventory.known_supported_token_value_sol,
+                expected.known_supported_token_value_sol
+            )
+            && inventory.valued_token_2022_positions == expected.valued_token_2022_positions
+            && inventory.valued_supported_positions == expected.valued_supported_positions
             && inventory.unvalued_token_positions == expected.unvalued_positions,
         PROOF_UNVERIFIED
     );
     Ok(proof)
+}
+
+fn validate_row(
+    row: &DiscoveryV2PriceContribution,
+    program: &str,
+    wallet: &str,
+    original_start: chrono::DateTime<chrono::Utc>,
+    original_now: chrono::DateTime<chrono::Utc>,
+    quality_gate_enabled: bool,
+    inventory_slot: u64,
+    account_keys: &mut HashSet<String>,
+) -> Result<usize> {
+    ensure!(
+        row.token_program == program && row.quality_gate_enabled == quality_gate_enabled,
+        PROOF_UNVERIFIED
+    );
+    ensure!(
+        !quality_gate_enabled || !row.quality_eligible || row.quality_fetched_at.is_some(),
+        PROOF_UNVERIFIED
+    );
+    let mut profile_accounts = 0;
+    let profile_failure = if program == crate::token2022_profile::TOKEN_2022_PROGRAM {
+        match &row.token_2022_profile {
+            Some(profile) => {
+                ensure!(
+                    row.token_2022_collection_failure.is_none(),
+                    PROOF_UNVERIFIED
+                );
+                match crate::token2022_profile::validate_profile(profile, wallet, &row.mint) {
+                    Ok(amount) => {
+                        ensure!(
+                            amount.amount.to_bits() == row.token_amount_bits,
+                            PROOF_UNVERIFIED
+                        );
+                        ensure!(
+                            profile.mint_account.context_slot >= inventory_slot,
+                            PROOF_UNVERIFIED
+                        );
+                        for account in &profile.accounts {
+                            ensure!(
+                                account.raw.context_slot >= inventory_slot
+                                    && account_keys.insert(account.pubkey.clone()),
+                                PROOF_UNVERIFIED
+                            );
+                        }
+                        profile_accounts = profile.accounts.len();
+                        None
+                    }
+                    Err(reason) => Some(profile_reason(reason)),
+                }
+            }
+            None => {
+                ensure!(
+                    row.token_2022_collection_failure.is_some(),
+                    PROOF_UNVERIFIED
+                );
+                Some(Reason::Token2022ProfileMissing)
+            }
+        }
+    } else {
+        ensure!(
+            row.token_2022_profile.is_none() && row.token_2022_collection_failure.is_none(),
+            PROOF_UNVERIFIED
+        );
+        None
+    };
+    if let Some(price) = &row.observation {
+        ensure!(
+            !price.signature.is_empty() && price.signature.len() <= 128,
+            PROOF_UNVERIFIED
+        );
+    }
+    let mut original = row.clone();
+    original.initial_unknown_reason = None;
+    let expected =
+        profile_failure.or_else(|| contribution_reason(&original, original_start, original_now));
+    if row.observation.is_none() && expected == Some(Reason::PriceMissing) {
+        ensure!(
+            matches!(
+                row.initial_unknown_reason,
+                Some(Reason::PriceMissing | Reason::PriceSourceUnverified)
+            ),
+            PROOF_UNVERIFIED
+        );
+    } else {
+        ensure!(row.initial_unknown_reason == expected, PROOF_UNVERIFIED);
+    }
+    Ok(profile_accounts)
 }

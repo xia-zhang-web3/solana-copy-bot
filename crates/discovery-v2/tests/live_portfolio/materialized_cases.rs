@@ -225,7 +225,7 @@ fn legacy_inventory_status_requires_rebuild_before_reuse_or_publish() -> Result<
             }
         }
         if case == "future-contract" {
-            value["live_portfolio"]["inventory_contract_version"] = json!(2);
+            value["live_portfolio"]["inventory_contract_version"] = json!(99);
         }
         if case == "missing-global-proof" {
             value.as_object_mut().unwrap().remove("live_portfolio");

@@ -29,22 +29,22 @@ pub(crate) fn evaluate_live_portfolio_snapshot(
     // Public build validates the window before any scan or RPC.
     let window_start = options.window_start();
     let mut rows = Vec::new();
+    let mut token_2022_rows = Vec::new();
     let token_2022 = snapshot
         .token_positions
         .iter()
         .filter(|p| p.program == TokenProgram::Token2022)
         .count() as u32;
-    for position in snapshot
-        .token_positions
-        .iter()
-        .filter(|p| p.program == TokenProgram::Classic)
-    {
+    for position in &snapshot.token_positions {
         let (observation, failure) = match prices.get(&position.mint) {
             Some(Ok(Some(price))) => (Some(price.clone()), None),
             Some(Err(())) => (None, Some(Reason::PriceSourceUnverified)),
             _ => (None, Some(Reason::PriceMissing)),
         };
         let mut row = DiscoveryV2PriceContribution {
+            token_program: position.program.id().to_string(),
+            token_2022_profile: position.token_2022_profile.clone(),
+            token_2022_collection_failure: position.token_2022_collection_failure,
             mint: position.mint.clone(),
             token_amount: position.amount,
             token_amount_bits: position.amount.to_bits(),
@@ -55,13 +55,19 @@ pub(crate) fn evaluate_live_portfolio_snapshot(
                 shadow,
                 options.now,
             ),
+            quality_gate_enabled: shadow.quality_gates_enabled,
+            quality_fetched_at: quality.get(&position.mint).map(|q| q.fetched_at),
             initial_unknown_reason: failure,
         };
         row.initial_unknown_reason = contribution_reason(&row, window_start, options.now);
-        rows.push(row);
+        if position.program == TokenProgram::Classic {
+            rows.push(row);
+        } else {
+            token_2022_rows.push(row);
+        }
     }
-    let decision = decide_valuation(&rows, token_2022, window_start, options.now);
-    let value = decision.known_classic_value_sol;
+    let decision = decide_valuation(&rows, &token_2022_rows, window_start, options.now);
+    let value = decision.known_supported_token_value_sol;
     let valued = decision.valued_classic_positions;
     let accepted = snapshot.sol_balance >= discovery.min_live_sol_balance
         || value >= discovery.min_live_portfolio_value_sol;
@@ -73,7 +79,7 @@ pub(crate) fn evaluate_live_portfolio_snapshot(
     });
     let reject_reason = if accepted {
         None
-    } else if token_2022 > 0 {
+    } else if token_2022 > decision.valued_token_2022_positions {
         Some(UNKNOWN_TOKEN_2022_VALUE)
     } else if price_unknown {
         Some(PRICE_UNKNOWN)
@@ -92,13 +98,15 @@ pub(crate) fn evaluate_live_portfolio_snapshot(
         token_2022_positive_positions: token_2022,
         positive_positions: snapshot.token_positions.len() as u32,
         classic_positions: rows,
+        token_2022_positions: token_2022_rows,
         decision,
     };
+    let classic_value = valuation.decision.known_classic_value_sol;
     evaluation(
         accepted,
         reject_reason,
         snapshot.sol_balance,
-        value,
+        classic_value,
         snapshot,
         valued,
         valuation,
@@ -112,7 +120,7 @@ pub(crate) fn load_live_token_prices(
 ) -> Result<HashMap<String, PriceRead>> {
     let mut rows = HashMap::new();
     for position in &snapshot.token_positions {
-        if position.program == TokenProgram::Classic && !rows.contains_key(&position.mint) {
+        if !rows.contains_key(&position.mint) {
             // Source/parse failures are valuation unknown, never a fabricated zero
             // observation and never an RPC failure. Raw DB errors are not serialized.
             rows.insert(
@@ -176,7 +184,6 @@ fn evaluation(
     valuation: crate::DiscoveryV2LiveValuationEvidence,
 ) -> LivePortfolioEvaluation {
     LivePortfolioEvaluation {
-        valuation,
         inventory: DiscoveryV2LiveInventoryEvidence {
             contract_version: INVENTORY_CONTRACT_VERSION,
             classic_accounts: snapshot.classic_accounts,
@@ -189,11 +196,15 @@ fn evaluation(
                 .iter()
                 .filter(|p| p.program == TokenProgram::Token2022)
                 .count() as u32,
-            unvalued_token_positions: (snapshot.token_positions.len() as u32)
-                .saturating_sub(tradable_token_positions),
+            unvalued_token_positions: valuation.decision.unvalued_positions,
             known_classic_value_sol: token_value_sol,
-            valuation_basis: DiscoveryV2LiveValuationBasis::ClassicObservedPriceQualitySubtotal,
+            known_token_2022_value_sol: valuation.decision.known_token_2022_value_sol,
+            known_supported_token_value_sol: valuation.decision.known_supported_token_value_sol,
+            valued_token_2022_positions: valuation.decision.valued_token_2022_positions,
+            valued_supported_positions: valuation.decision.valued_supported_positions,
+            valuation_basis: DiscoveryV2LiveValuationBasis::SupportedObservedPriceQualitySubtotal,
         },
+        valuation,
         accepted,
         reject_reason,
         sol_balance,

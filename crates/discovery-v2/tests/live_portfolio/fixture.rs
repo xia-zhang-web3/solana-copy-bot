@@ -66,7 +66,7 @@ impl Fixture {
 pub fn token(program: &str, raw: &str) -> Value {
     rpc::account(
         &rpc::key('A'),
-        &rpc::key('D'),
+        &rpc::key(if program == CLASSIC { 'D' } else { 'E' }),
         &rpc::key(if program == CLASSIC { 'J' } else { 'K' }),
         program,
         raw,
@@ -76,7 +76,12 @@ pub fn token(program: &str, raw: &str) -> Value {
 
 pub fn responses(sol: u64, classic: Value, token_2022: Value) -> RpcStub {
     RpcStub::start(move |request| -> Reply {
-        let value = if request["method"] == "getBalance" {
+        let value = if request["method"] == "getMultipleAccounts" {
+            json!(vec![
+                Value::Null;
+                request["params"][0].as_array().unwrap().len()
+            ])
+        } else if request["method"] == "getBalance" {
             json!(sol)
         } else if request["params"][1]["programId"] == CLASSIC {
             classic.clone()

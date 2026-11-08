@@ -382,5 +382,9 @@ fn live_portfolio_value_satisfies(
     discovery: &DiscoveryConfig,
 ) -> bool {
     metric.live_sol_balance.unwrap_or(0.0) >= discovery.min_live_sol_balance
-        || metric.live_token_value_sol.unwrap_or(0.0) >= discovery.min_live_portfolio_value_sol
+        || metric.live_inventory.as_ref().is_some_and(|inventory| {
+            crate::live_inventory_status::metric_has_inventory_coverage(metric)
+                && inventory.known_supported_token_value_sol
+                    >= discovery.min_live_portfolio_value_sol
+        })
 }

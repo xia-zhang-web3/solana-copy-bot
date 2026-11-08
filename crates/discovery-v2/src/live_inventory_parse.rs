@@ -1,5 +1,5 @@
-use crate::live_inventory::LiveTokenPosition;
 use crate::live_inventory::{InventoryFailure as Failure, TokenProgram};
+use crate::live_inventory::{LiveTokenPosition, Token2022InventoryAccount};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -47,6 +47,13 @@ impl InventoryParser {
         let mut unique = 0;
         for row in rows {
             let (pubkey, account) = parse_account(row, wallet, program)?;
+            // A mint has one program owner; accepting both would double-value
+            // contradictory program inventories before publish revalidation.
+            if self.accounts.values().any(|previous| {
+                previous.mint == account.mint && previous.program != account.program
+            }) {
+                return Err(Failure::Conflict);
+            }
             if let Some(previous) = self.accounts.get(&pubkey) {
                 if previous != &account {
                     return Err(Failure::Conflict);
@@ -60,11 +67,13 @@ impl InventoryParser {
     }
 
     pub(crate) fn finish(self) -> Result<Vec<LiveTokenPosition>, Failure> {
-        let mut totals = BTreeMap::<(TokenProgram, String), (u8, u128)>::new();
-        for row in self.accounts.into_values() {
-            let total = totals
-                .entry((row.program, row.mint))
-                .or_insert((row.decimals, 0));
+        let mut totals =
+            BTreeMap::<(TokenProgram, String), (u8, u128, Vec<Token2022InventoryAccount>)>::new();
+        for (pubkey, row) in self.accounts {
+            let total =
+                totals
+                    .entry((row.program, row.mint))
+                    .or_insert((row.decimals, 0, Vec::new()));
             if total.0 != row.decimals {
                 return Err(Failure::Conflict);
             }
@@ -72,11 +81,19 @@ impl InventoryParser {
                 .1
                 .checked_add(u128::from(row.raw))
                 .ok_or(Failure::Malformed)?;
+            if row.program == TokenProgram::Token2022 && row.raw > 0 {
+                total.2.push(Token2022InventoryAccount {
+                    pubkey,
+                    raw_amount: row.raw,
+                    decimals: row.decimals,
+                    state: row.state,
+                });
+            }
         }
         totals
             .into_iter()
-            .filter(|(_, (_, raw))| *raw > 0)
-            .map(|((program, mint), (decimals, raw))| {
+            .filter(|(_, (_, raw, _))| *raw > 0)
+            .map(|((program, mint), (decimals, raw, accounts))| {
                 let amount = raw as f64 / 10f64.powi(i32::from(decimals));
                 if !amount.is_finite() || amount <= 0.0 {
                     return Err(Failure::Malformed);
@@ -85,6 +102,11 @@ impl InventoryParser {
                     mint,
                     amount,
                     program,
+                    token_2022_accounts: accounts,
+                    token_2022_profile: None,
+                    token_2022_collection_failure: (program == TokenProgram::Token2022).then_some(
+                        crate::live_inventory::Token2022ProfileCollectionFailure::Missing,
+                    ),
                 })
             })
             .collect()
