@@ -1,4 +1,6 @@
 pub mod capture_replay;
+pub mod protected_delivery;
+pub mod protected_capture;
 pub mod transaction_membership;
 mod source_wire_identity;
 pub use source_wire_identity::verify_source_legacy_wire;
@@ -16,7 +18,7 @@ use std::collections::HashSet;
 pub use source::durable::{
     ContinuityPrecheck, ContinuitySnapshot, ContinuityTransition, PreviousRelation, TransitionKind,
     replay_scope,
-    DeliveryEnvelope, DeliveryReceiver, DurableIngressSnapshot, HttpRecoverySnapshot, IngressProcessingSnapshot, TimingSnapshot, ReplayInput, TransportClass,
+    DeliveryEnvelope, DeliveryReceiver, DurableIngressSnapshot, HttpRecoverySnapshot, IngressProcessingSnapshot, TimingSnapshot, ReplayInput, ProtectedReplayInput, TransportClass,
     TransportStage,
 };
 pub use source::IngestionRuntimeSnapshot;

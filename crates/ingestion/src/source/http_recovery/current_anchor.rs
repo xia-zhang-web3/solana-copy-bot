@@ -10,6 +10,7 @@ pub(crate) struct CurrentAnchor<'a> {
     live: &'a SubscribeUpdateBlock,
     context: String,
     http_selected: bool,
+    comparison: String,
 }
 pub(crate) struct SelectedAnchor<'a>(CurrentAnchor<'a>);
 impl<'a> CurrentAnchor<'a> {
@@ -23,6 +24,26 @@ impl<'a> CurrentAnchor<'a> {
     }
 }
 impl SelectedAnchor<'_> {
+    pub(crate) fn live_block(&self) -> &SubscribeUpdateBlock {
+        self.0.live
+    }
+    pub(crate) fn selected_http(&self) -> bool {
+        self.0.http_selected
+    }
+    pub(crate) fn comparison(&self) -> &str {
+        &self.0.comparison
+    }
+    pub(crate) fn raw_response(&self) -> &[u8] {
+        &self.0.recovered.raw_response
+    }
+    pub(crate) fn http_block_time(&self) -> Option<i64> {
+        self.0
+            .recovered
+            .block
+            .block_time
+            .as_ref()
+            .map(|t| t.timestamp)
+    }
     pub(crate) fn block(&self) -> &SubscribeUpdateBlock {
         if self.0.http_selected {
             &self.0.recovered.block
@@ -46,6 +67,13 @@ impl ConfirmedHttpRecovery {
         let mut recovered = self.anchor_block(slot, live, directory).await?;
         // The existing request validates response id, full getBlock shape, bounds,
         // broker clock and post-body deadline. No retained response is reloaded here.
+        let comparison = identity::block_comparison(&recovered.block, live);
+        let comparison = if comparison.admitted() {
+            comparison.label()
+        } else {
+            "HTTP_COMPLETES_LIVE_PAYLOAD"
+        }
+        .to_owned();
         let http_selected = if identity::block_equivalent(&recovered.block, live) {
             anchor_diagnostic::admit_recovered(directory, live, &mut recovered)?;
             false
@@ -62,6 +90,7 @@ impl ConfirmedHttpRecovery {
             live,
             context,
             http_selected,
+            comparison,
         })
     }
 }

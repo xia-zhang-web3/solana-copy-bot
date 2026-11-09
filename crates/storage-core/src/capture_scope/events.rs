@@ -15,6 +15,7 @@ impl CaptureStore {
         received_at: f64,
         source_at: Option<f64>,
     ) -> Result<Option<CaptureReceipt>> {
+        self.known()?;
         ensure!(
             raw.len() <= 8_388_608,
             "capture envelope size bound exceeded"
@@ -66,9 +67,16 @@ impl CaptureStore {
             [(raw.len() + 16_384) as i64],
             |r| r.get(0),
         )?;
+        let full = full
+            || (super::recovery_write::enabled(&tx)?
+                && super::recovery_write::full(&tx, raw.len() + 16_384, 1)?);
         if full {
             tx.execute("UPDATE capture_meta SET gap=gap+1,status='failed',reason='capture_capacity' WHERE id=1", [])?;
-            tx.commit()?;
+            let result = tx.commit().map_err(anyhow::Error::from);
+            if result.is_err() {
+                self.uncertain = true;
+            }
+            result?;
             bail!("capture capacity reached; incomplete coverage");
         }
         tx.execute("INSERT INTO capture_events(signature,wallet,slot,epoch,request_id,received_at,source_at,raw,fingerprint)
@@ -78,13 +86,18 @@ impl CaptureStore {
             "UPDATE capture_meta SET used_bytes=used_bytes+? WHERE id=1",
             [(raw.len() + 16_384) as i64],
         )?;
-        tx.commit()?;
-        Ok(Some(CaptureReceipt {
-            seq,
-            stage: "RECEIVED".into(),
-        }))
+        let result=tx.commit().map_err(anyhow::Error::from).and_then(|_| {
+            let saved:(Option<String>,String,String,Vec<u8>,String,i64,f64,Option<f64>,String)=self.db.query_row("SELECT signature,wallet,slot,raw,fingerprint,epoch,received_at,source_at,stage FROM capture_events WHERE seq=?",[seq],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?)))?;
+            ensure!(saved==(signature.map(str::to_owned),wallet.to_owned(),slot.to_string(),raw.to_vec(),fingerprint.to_owned(),self.epoch,received_at,source_at,"RECEIVED".into()),"capture receive durable readback mismatch");
+            Ok(Some(CaptureReceipt{seq,stage:"RECEIVED".into()}))
+        });
+        if result.is_err() {
+            self.uncertain = true;
+        }
+        result
     }
     pub fn finish(&mut self, seq: i64, event: Option<&SwapEvent>, reason: &str) -> Result<()> {
+        self.known()?;
         let payload = event.map(serde_json::to_string).transpose()?;
         ensure!(
             payload.as_ref().map_or(0, |p| p.len()) <= 16_384,
@@ -119,16 +132,21 @@ impl CaptureStore {
         }
         tx.execute("UPDATE capture_events SET stage=?,event_json=?,reason=? WHERE seq=? AND stage='RECEIVED'",
             params![stage,payload,reason,seq])?;
-        tx.commit()?;
-        let actual: (String, Option<String>) = self.db.query_row(
-            "SELECT stage,event_json FROM capture_events WHERE seq=?",
-            [seq],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        ensure!(
-            actual == (stage.into(), payload),
-            "capture durable readback mismatch"
-        );
-        Ok(())
+        let result = tx.commit().map_err(anyhow::Error::from).and_then(|_| {
+            let actual: (String, Option<String>) = self.db.query_row(
+                "SELECT stage,event_json FROM capture_events WHERE seq=?",
+                [seq],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            ensure!(
+                actual == (stage.into(), payload),
+                "capture durable readback mismatch"
+            );
+            Ok(())
+        });
+        if result.is_err() {
+            self.uncertain = true;
+        }
+        result
     }
 }

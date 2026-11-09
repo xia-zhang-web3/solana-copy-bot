@@ -6,6 +6,7 @@ impl CaptureStore {
     /// Fences any previous consumer. Persisted members/pins remain protection rules;
     /// old admissions cannot authorize new BUYs in this epoch.
     pub fn start(&mut self) -> Result<()> {
+        self.known()?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -17,10 +18,27 @@ impl CaptureStore {
         self.epoch = tx.query_row("SELECT epoch FROM capture_meta WHERE id=1", [], |r| {
             r.get(0)
         })?;
-        tx.commit()?;
-        Ok(())
+        let expected_gap: i64 =
+            tx.query_row("SELECT gap FROM capture_meta WHERE id=1", [], |r| r.get(0))?;
+        let result = tx.commit().map_err(anyhow::Error::from).and_then(|_| {
+            let actual: (i64, i64, String) = self.db.query_row(
+                "SELECT epoch,gap,status FROM capture_meta WHERE id=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            ensure!(
+                actual == (self.epoch, expected_gap, "running".into()),
+                "capture consumer start readback mismatch"
+            );
+            Ok(())
+        });
+        if result.is_err() {
+            self.uncertain = true;
+        }
+        result
     }
     pub fn accept_pending(&mut self, now: f64) -> Result<()> {
+        self.known()?;
         ensure!(
             self.pending()?.is_empty(),
             "restore pending capture before admission"
@@ -68,9 +86,24 @@ impl CaptureStore {
         Ok(())
     }
     pub fn gap(&mut self, reason: &str, fatal: bool) -> Result<()> {
-        self.db.execute("UPDATE capture_meta SET gap=gap+1,reason=CASE WHEN status='failed' THEN reason ELSE ? END,
+        self.known()?;
+        let prior: (i64, String, String) = self.db.query_row(
+            "SELECT gap,status,reason FROM capture_meta WHERE id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let result=self.db.execute("UPDATE capture_meta SET gap=gap+1,reason=CASE WHEN status='failed' THEN reason ELSE ? END,
             status=CASE WHEN ? THEN 'failed' ELSE status END WHERE id=1 AND epoch=?",
-            params![reason, fatal, self.epoch])?;
-        Ok(())
+            params![reason, fatal, self.epoch]).map_err(anyhow::Error::from).and_then(|count| {
+                ensure!(count==1,"capture consumer fenced while recording gap");
+                let actual:(i64,String,String)=self.db.query_row("SELECT gap,status,reason FROM capture_meta WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+                let expected_status=if fatal {"failed".into()} else {prior.1.clone()};
+                let expected_reason=if prior.1=="failed" {prior.2} else {reason.into()};
+                ensure!(actual==(prior.0+1,expected_status,expected_reason),"capture gap readback mismatch"); Ok(())
+            });
+        if result.is_err() {
+            self.uncertain = true;
+        }
+        result
     }
 }

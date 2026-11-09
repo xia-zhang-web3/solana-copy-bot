@@ -6,6 +6,7 @@ import time
 import uuid
 
 from .control import encoded, epoch
+from . import recovery
 
 WSOL = "So11111111111111111111111111111111111111112"
 IDENTITY_KEY = "capture_identity"
@@ -139,9 +140,27 @@ class CaptureVirtualAdapter:
                                     (delivered["id"], seq))
         return {"capture_seq": seq, "status": "DELIVERED", "ledger_event": delivered}
 
+    def next_recovery(self):
+        return recovery.next_recovery(self.control)
+
+    def observe_recovery(self, recovery_id):
+        return recovery.observe_recovery(self.control, recovery_id)
+
     def next_sequence(self):
-        """Earliest unfinished receive/durable row; RECEIVED waits for its decoder."""
+        """Existing observer polls also durably drain one historical outbox item.
+
+        Recovery never enters the live sequence namespace or ledger.observe.
+        Bounded work keeps the real CaptureSession observer responsive.
+        """
+        recovery_id = self.next_recovery()
+        if recovery_id is not None:
+            self.observe_recovery(recovery_id)
+        return self._next_live_sequence()
+
+    def _next_live_sequence(self):
+        """Earliest unfinished live row; RECEIVED waits for its decoder."""
         with self.control.lock:
+            self.control.require_committed_read()
             row = self.control.db.execute("""SELECT e.seq FROM capture_events e
                 LEFT JOIN capture_delivery d ON d.event_seq=e.seq
                 WHERE e.stage IN ('RECEIVED','DURABLE')
@@ -156,7 +175,7 @@ class CaptureVirtualAdapter:
             delivery = self.control.db.execute("SELECT * FROM capture_delivery WHERE event_seq=?", (seq,)).fetchone()
             if delivery and delivery["state"] == "SKIPPED":
                 return {"capture_seq": seq, "status": "SKIPPED", "reason": delivery["reason"]}
-            if (not delivery or delivery["state"] != "DONE") and self.next_sequence() != seq:
+            if (not delivery or delivery["state"] != "DONE") and self._next_live_sequence() != seq:
                 raise ValueError("capture_prior_event_unfinished")
             if delivery:
                 existing = self._existing_ledger_event(event)
@@ -164,6 +183,8 @@ class CaptureVirtualAdapter:
                     return self._record_delivery(seq, event, existing)
                 if delivery["state"] == "DONE":
                     raise ValueError("capture_committed_ledger_event_missing")
+            if recovery.recovered_live_duplicate(self.control, seq, event):
+                return self._skip(seq, "capture_recovered_identity_not_fresh")
             if event["side"] == "BUY":
                 refusal = self._buy_refusal(row, event)
                 if refusal:
@@ -183,6 +204,8 @@ class CaptureVirtualAdapter:
             existing = self._existing_ledger_event(event)
             if existing:
                 return self._record_delivery(seq, event, existing)
+            if recovery.recovered_live_duplicate(self.control, seq, event):
+                return self._skip(seq, "capture_recovered_identity_not_fresh")
             if event["side"] == "BUY":
                 refusal = self._buy_refusal(row, event)
                 if refusal:

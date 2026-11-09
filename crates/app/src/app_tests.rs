@@ -6,6 +6,9 @@ mod b61_tests;
 mod b96_consumer_tests;
 mod capture_scope_baseline_tests;
 mod capture_scope_pipeline_tests;
+mod r1_protected_bootstrap_tests;
+mod r1_protected_quiesce_tests;
+mod r1_protected_transport_fixture;
 mod root_hot_arrival_fairness;
 mod source_sell_handoff_fixture;
 mod source_sell_handoff_recovery_tests;
@@ -44,7 +47,6 @@ use copybot_storage_core::{
 use rusqlite::{params, Connection};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-
 mod association_consumer_tests;
 mod association_fixture;
 mod association_frozen_tests;
@@ -255,10 +257,8 @@ mod restart_recovery;
 mod shadow_risk_rug_rate_sample_floor;
 #[path = "app_tests/79.rs"]
 mod tiny_submit_confirmed_fill_backfill;
-
 #[path = "app_tests/receipt_reconciliation_risk_tests.rs"]
 mod receipt_reconciliation_risk_tests;
-
 #[path = "app_tests/receipt_legacy_fixture.rs"]
 mod receipt_legacy_fixture;
 

@@ -21,25 +21,30 @@ pub(super) fn admission(
     c: &a::CheckedTransaction,
     i: &SubscribeUpdateTransactionInfo,
 ) -> AdmissionFacts {
-    let f = &c.facts;
-    let mut programs = f.program_ids.clone();
-    programs.sort();
     AdmissionFacts {
-        facts: CheckedFacts {
-            signature: f.signature.clone(),
-            slot: f.slot,
-            wallet: f.signer.clone(),
-            token_in: f.token_in.clone(),
-            token_out: f.token_out.clone(),
-            amount_in_bits: f.amount_in.to_bits(),
-            amount_out_bits: f.amount_out.to_bits(),
-            exact_amounts: f.exact_amounts.clone(),
-            programs,
-            dex: f.dex_hint.clone(),
-            program_fallback: c.used_program_fallback,
-        },
+        facts: checked_facts(&c.facts, c.used_program_fallback),
         info: info(i),
         message_time: message_time(c.message_time),
+    }
+}
+pub(super) fn checked_facts(
+    f: &crate::source::yellowstone_facts::YellowstoneSwapFacts,
+    program_fallback: bool,
+) -> CheckedFacts {
+    let mut programs = f.program_ids.clone();
+    programs.sort();
+    CheckedFacts {
+        signature: f.signature.clone(),
+        slot: f.slot,
+        wallet: f.signer.clone(),
+        token_in: f.token_in.clone(),
+        token_out: f.token_out.clone(),
+        amount_in_bits: f.amount_in.to_bits(),
+        amount_out_bits: f.amount_out.to_bits(),
+        exact_amounts: f.exact_amounts.clone(),
+        programs,
+        dex: f.dex_hint.clone(),
+        program_fallback,
     }
 }
 fn assertion(v: &a::ProviderContainingBlock, t: &a::ProviderBlockTime) -> ProviderAssertion {

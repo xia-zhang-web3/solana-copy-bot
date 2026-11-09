@@ -1,5 +1,6 @@
 pub mod association_delivery;
 pub mod association_parent;
+pub mod association_protected;
 pub mod association_recovery;
 
 use chrono::{DateTime, Utc};

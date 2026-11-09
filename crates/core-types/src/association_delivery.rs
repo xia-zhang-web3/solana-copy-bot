@@ -1,4 +1,8 @@
 //! Observation inbox contract, version 1. No event time, canonicality or trade permission.
+pub use crate::association_protected::{
+    OrdinaryLive, ProtectedAnchorLink, ProtectedBlockIdentity, ProtectedEvidence,
+    ProtectedObservation, ProtectedSourceKind, ProtectedTokenQuantity,
+};
 use crate::ExactSwapAmounts;
 use serde::{Deserialize, Serialize};
 
@@ -89,6 +93,18 @@ pub enum SessionGap {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeliveryEvent {
+    /// Ordinary decoded live input for the existing app/Discovery handler.
+    OrdinaryLive(OrdinaryLive),
+    /// Inbox projection after the separate capture database's commit/readback.
+    /// Source envelopes retain their exact raw evidence in CaptureStore.
+    ProtectedHandoff {
+        capture_identity: String,
+        scope_revision: i64,
+        evidence_sha256: String,
+        observation_id: Option<i64>,
+    },
+    ProtectedEvidence(ProtectedEvidence),
+    ProtectedObservation(ProtectedObservation),
     Parent(crate::association_parent::ParentObservation),
     ParentCheckpoint(crate::association_recovery::BlockCheckpoint),
     Admission(AdmissionFacts),

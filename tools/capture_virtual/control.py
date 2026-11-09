@@ -40,6 +40,7 @@ class CaptureControl:
     def __init__(self, path):
         self.path = Path(path).resolve(strict=True)
         self.lock = threading.RLock()
+        self._outcome_unknown = False
         self.db = sqlite3.connect(self.path.as_uri() + "?mode=rw", uri=True,
                                   timeout=2, isolation_level=None, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
@@ -67,7 +68,7 @@ class CaptureControl:
         db = None
         try:
             db = sqlite3.connect(path, isolation_level=None)
-            db.executescript(SCHEMA.read_text())
+            db.executescript(SCHEMA.read_text() + "\n" + SCHEMA.with_name("recovery_schema.sql").read_text())
             db.execute("INSERT INTO capture_meta(id,max_rows,max_bytes) VALUES(1,?,?)",
                        (max_rows, max_bytes))
         except BaseException:
@@ -79,15 +80,30 @@ class CaptureControl:
         db.close()
         return cls(path)
 
+    def require_committed_read(self):
+        if self._outcome_unknown:
+            raise RuntimeError("capture_transaction_outcome_unknown_reopen_and_reconcile")
+
     @contextmanager
     def atomic(self):
         with self.lock:
+            self.require_committed_read()
             self.db.execute("BEGIN IMMEDIATE")
+            committing = False
             try:
                 yield
+                committing = True
                 self.db.execute("COMMIT")
             except BaseException:
-                self.db.execute("ROLLBACK")
+                # Preserve the primary error. A failed reply after COMMIT cannot
+                # establish whether it committed; this connection stays fenced.
+                if committing and not self.db.in_transaction:
+                    self._outcome_unknown = True
+                if self.db.in_transaction:
+                    try:
+                        self.db.execute("ROLLBACK")
+                    except BaseException:
+                        self._outcome_unknown = True
                 raise
 
     def close(self):

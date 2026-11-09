@@ -13,8 +13,14 @@ pub struct ReplayScope {
 }
 impl ReplayScope {
     pub fn valid(&self) -> bool {
-        self.policy == "durable_checkpoint_replay_v1"
-            && sorted_nonempty(&self.wallets, 16)
+        let bound = match self.policy.as_str() {
+            "durable_checkpoint_replay_v1" => 16,
+            "protected_complete_recovery_v1" => 128,
+            _ => return false,
+        };
+        (if self.policy == "protected_complete_recovery_v1" {
+            sorted_partition(&self.wallets, bound)
+        } else { sorted_nonempty(&self.wallets, bound) })
             && sorted_nonempty(&self.programs, 256)
             && sorted_partition(&self.raydium_programs, 256)
             && sorted_partition(&self.pumpswap_programs, 256)

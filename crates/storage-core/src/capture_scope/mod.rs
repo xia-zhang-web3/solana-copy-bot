@@ -1,15 +1,31 @@
 //! Separate observation-only database. No runtime followlist or financial authority.
 mod consumer;
 mod events;
+mod recovery;
+mod recovery_anchor;
+mod recovery_checkpoint;
+mod recovery_forward;
+mod recovery_links;
+mod recovery_restore;
+pub use recovery_restore::UnboundStreamReceipt;
+mod recovery_scope;
+mod recovery_write;
 use anyhow::{ensure, Result};
+pub use recovery::{ProtectedReceipt, StoredProtectedObservation};
+pub use recovery_scope::ProtectedScope;
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use std::time::Duration;
 
-pub const SCHEMA: &str = include_str!("schema.sql");
+pub const SCHEMA: &str = concat!(
+    include_str!("schema.sql"),
+    "\n",
+    include_str!("recovery_schema.sql")
+);
 pub struct CaptureStore {
     pub(super) db: Connection,
     pub(super) epoch: i64,
+    pub(super) uncertain: bool,
 }
 #[derive(Debug)]
 pub struct CaptureReceipt {
@@ -32,9 +48,14 @@ impl CaptureStore {
             rows > 0 && rows <= 4_000_000 && bytes > 0 && bytes <= 68_719_476_736,
             "capture bounds invalid"
         );
-        Ok(Self { db, epoch: 0 })
+        Ok(Self {
+            db,
+            epoch: 0,
+            uncertain: false,
+        })
     }
     pub fn pending(&self) -> Result<Vec<(i64, Vec<u8>, Option<f64>)>> {
+        self.known()?;
         // A single in-flight receive is allowed. Restore it before installing new scopes.
         let mut q = self.db.prepare(
             "SELECT seq,raw,source_at FROM capture_events WHERE stage='RECEIVED' ORDER BY seq LIMIT 2")?;

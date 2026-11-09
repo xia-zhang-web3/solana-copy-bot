@@ -4,6 +4,7 @@ use super::*;
 mod estimated_time;
 mod fixture;
 mod lifecycle;
+mod protected;
 
 fn identity_snapshot(path: &std::path::Path) -> Value {
     let sql = rusqlite::Connection::open(path).unwrap();

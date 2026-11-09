@@ -21,7 +21,9 @@ pub fn replay_scope(config: &IngestionConfig, wallets: &HashSet<String>) -> Resu
         v
     };
     let scope = ReplayScope {
-        policy: "durable_checkpoint_replay_v1".into(),
+        policy: if config.capture_recovery.is_some() {
+            "protected_complete_recovery_v1"
+        } else { "durable_checkpoint_replay_v1" }.into(),
         wallets: sorted(wallets),
         programs: sorted(&runtime.interested_program_ids),
         raydium_programs: sorted(&runtime.raydium_program_ids),
@@ -34,11 +36,28 @@ pub fn replay_scope(config: &IngestionConfig, wallets: &HashSet<String>) -> Resu
 pub(super) struct RecoveryCursor {
     pub(super) scope: ReplayScope,
     head: Arc<Mutex<Option<DurableCheckpoint>>>,
+    // Prior revision's chain anchor is not a committed checkpoint for new wallets.
+    bootstrap: Option<DurableCheckpoint>,
     limits: copybot_config::DeliveryBudget,
     pub(super) http_hold: Option<Arc<AtomicBool>>,
     pub(super) observation: Option<Arc<super::hold_observation::HoldTracker>>,
 }
 impl RecoveryCursor {
+    pub(super) fn transition(
+        scope: ReplayScope,
+        anchor: DurableCheckpoint,
+        limits: copybot_config::DeliveryBudget,
+    ) -> Result<Self> {
+        ensure!(scope.policy == "protected_complete_recovery_v1", "transition_policy");
+        validate(&anchor.block.scope, &anchor, &limits)?;
+        ensure!(anchor.block.scope.programs == scope.programs
+            && anchor.block.scope.raydium_programs == scope.raydium_programs
+            && anchor.block.scope.pumpswap_programs == scope.pumpswap_programs,
+            "transition_decoder_scope_changed");
+        let mut cursor = Self::new(scope, None, limits)?;
+        cursor.bootstrap = Some(anchor);
+        Ok(cursor)
+    }
     pub(super) fn new(
         scope: ReplayScope,
         head: Option<DurableCheckpoint>,
@@ -51,6 +70,7 @@ impl RecoveryCursor {
         Ok(Self {
             scope,
             head: Arc::new(Mutex::new(head)),
+            bootstrap: None,
             limits,
             http_hold: None,
             observation: None,
@@ -70,7 +90,7 @@ impl RecoveryCursor {
             .head
             .lock()
             .map_err(|_| anyhow::anyhow!("replay_cursor_poisoned"))?
-            .clone())
+            .clone().or_else(|| self.bootstrap.clone()))
     }
     pub(super) fn committed_slot(&self) -> Result<Option<u64>> {
         Ok(self

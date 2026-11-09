@@ -8,6 +8,7 @@ pub struct IngestionConfig {
     pub source: String,
     /// Separate, pre-created observation-only scope database. None preserves legacy behavior.
     pub capture_scope_db: Option<String>,
+    pub capture_recovery: Option<crate::ProtectedRecoveryConfig>,
     pub yellowstone_delivery_mode: String,
     pub yellowstone_association: Option<crate::AssociationDeliveryConfig>,
     pub yellowstone_http_recovery: Option<crate::HttpRecoveryConfig>,
@@ -54,6 +55,7 @@ impl Default for IngestionConfig {
         Self {
             source: "mock".to_string(),
             capture_scope_db: None,
+            capture_recovery: None,
             yellowstone_delivery_mode: "legacy".into(),
             yellowstone_association: None,
             yellowstone_http_recovery: None,

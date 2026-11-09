@@ -99,9 +99,17 @@ pub fn validate_delivery_source(c: &IngestionConfig) -> Result<()> {
         ensure!(
             !path.trim().is_empty()
                 && c.source == "yellowstone_grpc"
-                && c.yellowstone_delivery_mode == "legacy",
-            "scoped capture requires legacy Yellowstone and an explicit database path"
+                && (c.yellowstone_delivery_mode == "legacy" || c.capture_recovery.is_some()),
+            "scoped capture requires an explicit supported delivery contract"
         );
+    }
+    if let Some(protected) = &c.capture_recovery {
+        protected.validate()?;
+        ensure!(c.capture_scope_db.is_some()
+            && c.yellowstone_delivery_mode == "durable_association_v1"
+            && c.yellowstone_http_recovery.is_some()
+            && c.yellowstone_replay_wallets.is_empty(),
+            "protected_recovery_requires_dynamic_scope_http_and_durable_limits");
     }
     match c.yellowstone_delivery_mode.as_str() {
         "legacy" => Ok(()),
@@ -154,6 +162,13 @@ pub fn validate_association_delivery(c: &AppConfig) -> Result<()> {
                 && !c.execution.tiny_experiment.activate,
             "observation-only capture requires execution, tiny and activation flags=false"
         );
+        if c.ingestion.capture_recovery.is_some() {
+            let e = &c.execution;
+            ensure!(!e.canary_entry_submit_enabled && e.native_fresh_buy.is_none()
+                && e.owner_technical_buy.is_none() && e.owner_exit.is_none()
+                && e.technical_cohort.is_none(),
+                "protected_recovery_financial_authority_forbidden");
+        }
     }
     crate::validate_owned_sell_preparation(&c.execution, &c.ingestion)?;
     crate::validate_owner_technical_buy(&c.execution)?;

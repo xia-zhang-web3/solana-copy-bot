@@ -332,3 +332,10 @@ async fn chosen_older_checkpoint_ack_checks_hash_and_retires_only_covered_prefix
     }
     Ok(())
 }
+
+#[path = "protected_default_tests.rs"]
+mod protected_default_tests;
+#[path = "ordinary_buffered_tests.rs"]
+mod ordinary_buffered_tests;
+#[path = "ordinary_quiesce_tests.rs"]
+mod ordinary_quiesce_tests;

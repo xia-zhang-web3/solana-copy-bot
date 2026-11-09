@@ -17,6 +17,8 @@ mod full_cycle04_anchor_tests;
 mod http_delivery_replay;
 #[path = "live_parent_gap/mod.rs"]
 mod live_parent_gap;
+#[path = "protected_anchor_tests.rs"]
+mod protected_anchor_tests;
 #[path = "saved_collector_anchor_tests.rs"]
 mod saved_collector_anchor_tests;
 #[path = "saved_reward_replay/mod.rs"]

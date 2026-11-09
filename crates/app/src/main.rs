@@ -34,6 +34,7 @@ use tracing::{debug, info, warn};
 
 mod alerts;
 mod app_loop_ingestion;
+mod app_live_ingress;
 mod app_loop_irrelevant_backlog;
 mod app_loop_irrelevant_swap;
 mod app_loop_maintenance;
@@ -41,6 +42,7 @@ mod app_loop_relevant_swap;
 mod app_loop_shadow;
 mod app_loop_shutdown;
 mod association_consumer;
+mod protected_capture_consumer;
 mod association_ingress_telemetry;
 mod config_contract;
 mod discovery_runtime;

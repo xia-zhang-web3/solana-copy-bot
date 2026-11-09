@@ -246,3 +246,22 @@ fn finish(
     };
     store.finish(seq, event.as_ref(), reason)
 }
+
+/// Restore a committed raw receive using the same decoder/finish boundary.
+/// The owning actor starts/fences the store before calling this helper.
+pub(crate) fn restore_stream(
+    config: &copybot_config::IngestionConfig,
+    store: &mut CaptureStore,
+) -> Result<()> {
+    let runtime = super::YellowstoneGrpcSource::new(config)?.runtime_config;
+    for (seq, raw, _) in store.pending()? {
+        let update = SubscribeUpdate::decode(raw.as_slice())?;
+        finish(
+            store,
+            seq,
+            &parse_yellowstone_update(update, &runtime),
+            &runtime,
+        )?;
+    }
+    Ok(())
+}

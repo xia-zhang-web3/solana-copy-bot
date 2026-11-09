@@ -7,7 +7,15 @@ use copybot_core_types::association_delivery::*;
 use std::{sync::Arc, time::Duration};
 #[path = "checkpoint.rs"]
 mod checkpoint;
+#[path = "protected.rs"]
+pub mod protected;
+#[path = "protected_checkpoint.rs"]
+mod protected_checkpoint;
+#[path = "ordinary.rs"]
+mod ordinary;
 pub(super) struct Bridge<'a> {
+    runtime: &'a YellowstoneRuntimeConfig,
+    protected: bool,
     adapter: a::YellowstoneAssociation<'a>,
     session: a::Session,
     name: String,
@@ -58,10 +66,15 @@ impl<'a> Bridge<'a> {
         )
         .map_err(|e| anyhow::anyhow!("association limits {e:?}"))?;
         if let Some(wallets) = runtime.admission_wallets.as_ref() {
-            anyhow::ensure!(!wallets.is_empty(), "empty admission wallet scope");
+            anyhow::ensure!(
+                !wallets.is_empty() || runtime.capture.is_some(),
+                "empty admission wallet scope"
+            );
             adapter.restrict_wallets(wallets);
         }
         Ok(Self {
+            runtime,
+            protected: runtime.capture.is_some(),
             adapter,
             session,
             name: format!("{name}:0"),
@@ -220,20 +233,36 @@ impl<'a> Bridge<'a> {
         update: &yellowstone_grpc_proto::prelude::SubscribeUpdate,
     ) -> Result<()> {
         use yellowstone_grpc_proto::prelude::subscribe_update::UpdateOneof;
+        self.protected_stream(at, update).await?;
         let time = super::super::yellowstone_message_time::YellowstoneMessageTime::from_created_at(
             update.created_at.as_ref(),
         );
         match update.update_oneof.as_ref() {
             Some(UpdateOneof::Transaction(tx)) => {
                 if self.recovery.is_some() {
-                    self.recovery_transaction(at, tx, time).await
+                    self.recovery_transaction(at, tx, time).await?;
                 } else {
-                    self.push(at, a::Input::Transaction(tx, time)).await
+                    self.push(at, a::Input::Transaction(tx, time)).await?;
                 }
+                self.ordinary_stream(at, update).await
             }
             Some(UpdateOneof::Block(b)) => {
                 if self.recovery.is_some() {
-                    self.recovery_block(at, b).await
+                    if self.protected {
+                        self.recovery_block_with_evidence(
+                            at,
+                            b,
+                            Some(protected::evidence(
+                                ProtectedSourceKind::CompleteLiveBlock,
+                                b.slot,
+                                prost::Message::encode_to_vec(b),
+                                b.block_time.as_ref().map(|t| t.timestamp),
+                            )),
+                        )
+                        .await
+                    } else {
+                        self.recovery_block(at, b).await
+                    }
                 } else {
                     self.push(at, a::Input::Block(b)).await
                 }

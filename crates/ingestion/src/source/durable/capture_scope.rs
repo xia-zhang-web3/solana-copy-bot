@@ -8,6 +8,7 @@ use std::{
 };
 use yellowstone_grpc_proto::prelude::SubscribeUpdateTransactionInfo;
 pub(in crate::source) struct CaptureScope {
+    ordinary_live: bool,
     wallets: HashSet<Vec<u8>>,
     durable: Mutex<HashSet<Vec<u8>>>,
     known: Mutex<HashSet<Vec<u8>>>,
@@ -24,6 +25,7 @@ impl CaptureScope {
         hold: Option<Arc<std::sync::atomic::AtomicBool>>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            ordinary_live: false,
             wallets: wallets
                 .iter()
                 .filter_map(|s| bs58::decode(s).into_vec().ok())
@@ -35,6 +37,10 @@ impl CaptureScope {
             interrupted: std::sync::atomic::AtomicBool::new(false),
             observation: None,
         })
+    }
+    pub fn retain_ordinary_live(mut self: Arc<Self>, enabled: bool) -> Arc<Self> {
+        Arc::get_mut(&mut self).expect("new capture scope").ordinary_live = enabled;
+        self
     }
     pub fn observed(mut self: Arc<Self>, observation: ReaderObservation) -> Arc<Self> {
         Arc::get_mut(&mut self)
@@ -129,6 +135,11 @@ impl CaptureScope {
             })
     }
     pub fn keep(&self, info: &SubscribeUpdateTransactionInfo) -> bool {
+        // Protected complete delivery still shares the ordinary program stream.
+        // Retention here is bounded by Reader's existing count/byte/input limits.
+        if self.ordinary_live {
+            return true;
+        }
         let malformed = info.signature.len() != 64
             || info
                 .transaction

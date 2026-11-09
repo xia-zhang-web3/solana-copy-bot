@@ -235,12 +235,10 @@ pub(super) async fn run(
                 // Confirmed full blocks already cover older processed messages.
                 // Re-admitting them would invent a fresh observation after HTTP.
                 for mut value in before_anchor {
-                    if matches!(value.update()?.update_oneof.as_ref(),
-                        Some(subscribe_update::UpdateOneof::Transaction(t)) if t.slot > anchor_slot)
-                    {
-                        value.dequeue();
-                        process(&mut bridge, ns(start), value.update()?, &telemetry).await?;
-                    }
+                    value.dequeue();
+                    let stage = Instant::now();
+                    bridge.buffered_original_update(ns(start), anchor_slot, value.update()?).await?;
+                    telemetry.processing.update_kind(false, stage.elapsed());
                 }
             } else {
                 finish(
@@ -349,7 +347,14 @@ async fn catch_up(
                 .http_normalization(transformed.execution, transformed.waiting);
             let recovered = transformed.result?;
             let stage = Instant::now();
-            bridge.http_block(ns(start), &recovered.block).await?;
+            bridge
+                .http_block_with_evidence(
+                    ns(start),
+                    &recovered.block,
+                    &recovered.raw_response,
+                    recovered.block.block_time.as_ref().map(|t| t.timestamp),
+                )
+                .await?;
             telemetry.processing.update_kind(true, stage.elapsed());
             last = Some(recovered.block.slot);
             progress.note(telemetry, recovered.block.slot, false);
@@ -370,7 +375,17 @@ async fn catch_up(
                 .await?;
             let selected = selected.for_context(&bridge.anchor_context())?;
             let stage = Instant::now();
-            bridge.http_block(ns(start), selected.block()).await?;
+            bridge
+                .http_anchor_with_evidence(
+                    ns(start),
+                    selected.block(),
+                    selected.live_block(),
+                    selected.raw_response(),
+                    selected.http_block_time(),
+                    selected.selected_http(),
+                    selected.comparison(),
+                )
+                .await?;
             telemetry.processing.update_kind(true, stage.elapsed());
             last = Some(anchor.slot);
             progress.note(telemetry, anchor.slot, false);

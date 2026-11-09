@@ -43,6 +43,10 @@ impl AssociationInbox {
                 Some(signature.as_str())
             }
             DeliveryEvent::Session(_)
+            | DeliveryEvent::ProtectedEvidence(_)
+            | DeliveryEvent::ProtectedObservation(_)
+            | DeliveryEvent::ProtectedHandoff { .. }
+            | DeliveryEvent::OrdinaryLive(_)
             | DeliveryEvent::Parent(_)
             | DeliveryEvent::ParentCheckpoint(_) => None,
         };
@@ -226,6 +230,10 @@ fn apply(
             }
         }
         DeliveryEvent::Session(_)
+        | DeliveryEvent::ProtectedEvidence(_)
+        | DeliveryEvent::ProtectedObservation(_)
+        | DeliveryEvent::ProtectedHandoff { .. }
+        | DeliveryEvent::OrdinaryLive(_)
         | DeliveryEvent::Parent(_)
         | DeliveryEvent::ParentCheckpoint(_) => {}
     }

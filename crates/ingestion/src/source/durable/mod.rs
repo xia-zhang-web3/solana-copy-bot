@@ -4,6 +4,7 @@ pub(in crate::source) mod diagnostic_clock;
 pub(in crate::source) mod recovery;
 mod replay;
 pub use recovery::replay_scope;
+pub use replay::ProtectedReplayInput;
 pub use replay::ReplayInput;
 mod continuity_telemetry;
 mod hold_observation;
@@ -23,6 +24,7 @@ pub use processing_telemetry::{HttpRecoverySnapshot, IngressProcessingSnapshot, 
 pub use reader_diagnostics::{ReaderDiagnosticEvent, ReaderDiagnosticSnapshot};
 pub use telemetry::{DurableIngressSnapshot, TransportClass, TransportStage};
 mod bridge;
+pub use bridge::protected as protected_equivalence;
 pub(in crate::source) mod capture_scope;
 mod convert;
 mod parent;
@@ -102,6 +104,18 @@ impl DeliveryReceiver {
         bot_signer: Option<String>,
         restored: Option<copybot_core_types::association_recovery::DurableCheckpoint>,
     ) -> Result<Self> {
+        Self::start_protected_transition(config, session, wallet_scope, bot_signer, restored, None)
+    }
+    /// Prior revision anchor proves only the chain. New scope has no committed
+    /// coverage until its own complete-block checkpoint is persisted and ACKed.
+    pub fn start_protected_transition(
+        config: &IngestionConfig,
+        session: String,
+        wallet_scope: HashSet<String>,
+        bot_signer: Option<String>,
+        restored: Option<copybot_core_types::association_recovery::DurableCheckpoint>,
+        prior_anchor: Option<copybot_core_types::association_recovery::DurableCheckpoint>,
+    ) -> Result<Self> {
         copybot_config::validate_delivery_source(config)?;
         diagnostic_clock::initialize();
         let scope = replay_scope(config, &wallet_scope)?;
@@ -117,11 +131,21 @@ impl DeliveryReceiver {
             .context("association limits")?;
         let mut runtime = (*super::YellowstoneGrpcSource::new(config)?.runtime_config).clone();
         runtime.admission_wallets = Some(wallet_scope.clone());
-        let hold = config
-            .yellowstone_http_recovery
-            .as_ref()
-            .map(|_| Arc::new(std::sync::atomic::AtomicBool::new(restored.is_some())));
-        let mut cursor = recovery::RecoveryCursor::new(scope, restored, limits.pending.clone())?;
+        let hold = config.yellowstone_http_recovery.as_ref().map(|_| {
+            Arc::new(std::sync::atomic::AtomicBool::new(
+                restored.is_some() || prior_anchor.is_some(),
+            ))
+        });
+        anyhow::ensure!(
+            restored.is_none() || prior_anchor.is_none(),
+            "two_recovery_baselines"
+        );
+        let mut cursor = match prior_anchor {
+            Some(anchor) => {
+                recovery::RecoveryCursor::transition(scope, anchor, limits.pending.clone())?
+            }
+            None => recovery::RecoveryCursor::new(scope, restored, limits.pending.clone())?,
+        };
         cursor.http_hold = hold;
         let (tx, rx) = queue::channel(limits.queue.count, limits.queue.bytes);
         let telemetry = Arc::new(DurableIngressTelemetry::default());
@@ -250,6 +274,37 @@ impl DeliveryReceiver {
             task.abort();
         }
         while self.rx.try_recv().is_ok() {}
+    }
+    /// Stop and join the one producer while retaining already charged deliveries.
+    /// The scope owner drains these in order before replacing the source.
+    pub async fn quiesce(&mut self) -> Result<()> {
+        if let Some(cursor) = &self.recovery {
+            cursor.set_http_hold(true);
+        }
+        self.rx.close();
+        if let Some(task) = self.task.take() {
+            task.abort();
+            match task.await {
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => {
+                    return Err(error).context("delivery producer failed during quiescence")
+                }
+                Ok(result) => result?,
+            }
+        }
+        Ok(())
+    }
+    pub fn try_next_buffered(&mut self) -> Result<Option<DeliveryEnvelope>> {
+        anyhow::ensure!(
+            self.task.is_none(),
+            "quiesce producer before draining deliveries"
+        );
+        match self.rx.try_recv() {
+            Ok(delivery) => Ok(Some(delivery)),
+            Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                Ok(None)
+            }
+        }
     }
     pub async fn next(&mut self) -> Result<Option<DeliveryEnvelope>> {
         if let Some(v) = self.rx.recv().await {

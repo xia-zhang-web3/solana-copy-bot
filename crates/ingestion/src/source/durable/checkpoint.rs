@@ -138,6 +138,7 @@ impl Bridge<'_> {
             self.adapter.known_signatures_bytes(),
             r.cursor.http_hold.clone(),
         )
+        .retain_ordinary_live(self.protected)
         .observed(
             self.telemetry
                 .continuity
@@ -215,7 +216,7 @@ impl Bridge<'_> {
         }
         self.push(at, a::Input::Transaction(tx, time)).await
     }
-    async fn verify_known(
+    pub(super) async fn verify_known(
         &mut self,
         at: u64,
         slot: u64,
@@ -279,33 +280,12 @@ impl Bridge<'_> {
         r.held.push((tx.clone(), time));
         Ok(())
     }
-    pub(super) async fn recovery_block(
-        &mut self,
-        at: u64,
-        block: &SubscribeUpdateBlock,
-    ) -> Result<()> {
-        self.recovery_block_time(at, block, YellowstoneMessageTime::from_created_at(None))
-            .await
-    }
-    pub(in crate::source::durable) async fn http_block(
-        &mut self,
-        at: u64,
-        block: &SubscribeUpdateBlock,
-    ) -> Result<()> {
-        self.recovery_block_time(
-            at,
-            block,
-            YellowstoneMessageTime::RecoveredBlock {
-                block_time: block.block_time.as_ref().map(|t| t.timestamp),
-            },
-        )
-        .await
-    }
-    async fn recovery_block_time(
+    pub(super) async fn recovery_block_time(
         &mut self,
         at: u64,
         block: &SubscribeUpdateBlock,
         time: YellowstoneMessageTime,
+        proof: Option<ProtectedEvidence>,
     ) -> Result<()> {
         // Reject partial/ambiguous producer blocks before association can emit
         // provider assertions for previously pending transactions.
@@ -343,6 +323,7 @@ impl Bridge<'_> {
             .expect("recovery")
             .gate
             .block(block)?;
+        self.protected_block(at, block, proof).await?;
         // Full original input first: retained signatures must see changed Info,
         // even when that changed Info now belongs to an unrelated signer.
         self.push(at, a::Input::Block(block)).await?;

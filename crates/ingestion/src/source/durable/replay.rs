@@ -1,11 +1,14 @@
 //! Deterministic transport seam: callers supply already validated captures in
 //! arrival order. It uses the same bridge, queue, service and app consumer as tonic.
 //! This does not validate capture manifests or assert provider continuity.
+#[path = "replay_protected.rs"]
+mod protected_replay;
 use super::{bridge::Bridge, queue, DeliveryReceiver};
 use anyhow::{ensure, Context, Result};
 use copybot_config::IngestionConfig;
 use copybot_core_types::association_delivery::{DeliveryEvent, SessionGap};
 use prost::Message;
+pub use protected_replay::ProtectedReplayInput;
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 use yellowstone_grpc_proto::prelude::SubscribeUpdate;

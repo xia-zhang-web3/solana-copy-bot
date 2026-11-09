@@ -172,6 +172,7 @@ pub(super) async fn run_app_loop(
         }
     }
 
+    let mut protected_consumer = crate::protected_capture_consumer::ProtectedConsumer::start(&ingestion_config)?;
     let mut association_consumer = crate::association_consumer::AssociationConsumer::start_with_execution(
         &mut ingestion,
         &ingestion_config,
@@ -182,7 +183,8 @@ pub(super) async fn run_app_loop(
     let execution_canary_runner = execution_canary_runner.with_ingress_hold(
         association_consumer.as_ref().and_then(|c| c.http_continuity_hold()));
     execution_scheduler.bind(association_consumer.as_ref());
-    let association_mode = association_consumer.is_some();
+    let association_mode = association_consumer.is_some() || protected_consumer.is_some();
+    let protected_mode = protected_consumer.is_some();
     let shadow_wake = association_consumer.as_ref().map(|c| c.shadow_wake.clone());
     #[cfg(test)]
     let mut ingestion = crate::app_tests::b70_hooks::consumer(&mut ingestion);
@@ -209,8 +211,18 @@ pub(super) async fn run_app_loop(
             &mut shadow_queue_full_outcome_counts,
         )?;
 
+        let (protected_task, ordinary_live) = match protected_consumer.as_mut() {
+            Some(consumer) => {
+                let (task, live) = consumer.parts();
+                (Some(task), Some(live))
+            }
+            None => (None, None),
+        };
         tokio::select! {
-            result=crate::association_consumer::poll(&mut association_consumer,&store), if association_mode=>{
+            result=crate::protected_capture_consumer::poll(protected_task), if protected_mode=>{
+                result?;
+            }
+            result=crate::association_consumer::poll(&mut association_consumer,&store), if association_consumer.is_some()=>{
                 result?;
             }
             _ = async {}, if deferred_hot_buy.is_some() => {
@@ -378,7 +390,9 @@ pub(super) async fn run_app_loop(
                 )
                 .await?;
             }
-            maybe_swap = ingestion.next_swap(), if ingestion_backoff_until.is_none() && !association_mode => {
+            maybe_swap = crate::app_live_ingress::next_swap(ingestion.next_swap(), ordinary_live),
+                if ingestion_backoff_until.is_none()
+                    && crate::app_live_ingress::ordinary_enabled(association_mode, protected_mode) => {
                 let ingestion_snapshot = ingestion.runtime_snapshot();
                 handle_ingestion_swap_poll(
                     &store,
@@ -442,6 +456,7 @@ pub(super) async fn run_app_loop(
     Ok(())
     }.await;
     drop(association_consumer);
+    drop(protected_consumer);
     if let Some(origin) = deferred_hot_buy.take() {
         crate::telemetry::hot_quote::record(
             &origin.signal_id(),

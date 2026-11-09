@@ -88,7 +88,7 @@ impl AssociationConsumer {
         execution: Option<&ExecutionConfig>,
         path: &str,
     ) -> Result<Option<Self>> {
-        if c.yellowstone_delivery_mode != "durable_association_v1" {
+        if c.yellowstone_delivery_mode != "durable_association_v1" || c.capture_recovery.is_some() {
             return Ok(None);
         }
         let l = c

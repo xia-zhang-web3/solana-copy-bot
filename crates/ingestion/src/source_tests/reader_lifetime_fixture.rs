@@ -16,6 +16,48 @@ impl Reader {
 }
 
 #[tokio::test]
+async fn protected_reader_keeps_empty_scope_ordinary_frames_with_same_capacity_limits() {
+    let update = SubscribeUpdate::decode(
+        include_bytes!("../../../app/tests/fixtures/capture/quote_sol_wallet_11_buy.pb").as_slice(),
+    )
+    .unwrap();
+    let charge = update.encoded_len() + 512;
+    for ordinary in [false, true] {
+        let scope = CaptureScope::new(&[], std::iter::empty(), Default::default(), None)
+            .retain_ordinary_live(ordinary);
+        let mut reader = Reader::start(
+            futures_util::stream::iter([Ok(update.clone())]),
+            futures_util::sink::drain(),
+            1,
+            charge,
+            charge,
+            Arc::new(Default::default()),
+            scope,
+        )
+        .unwrap();
+        assert!(matches!(reader.end().await.unwrap(), End::Eof));
+        assert_eq!(reader.next().await.is_some(), ordinary);
+    }
+    let mut reader = Reader::start(
+        futures_util::stream::iter([Ok(update.clone()), Ok(update)]),
+        futures_util::sink::drain(),
+        1,
+        charge,
+        charge,
+        Arc::new(Default::default()),
+        CaptureScope::new(&[], std::iter::empty(), Default::default(), None)
+            .retain_ordinary_live(true),
+    )
+    .unwrap();
+    assert!(matches!(
+        reader.end().await.unwrap(),
+        End::Budget("LiveCaptureBytes")
+    ));
+    assert!(reader.next().await.is_some());
+    assert!(reader.next().await.is_none());
+}
+
+#[tokio::test]
 async fn ordinary_full_block_is_queued_as_bytes_then_reconstructed() {
     let block = SubscribeUpdateBlock {
         slot: 42,

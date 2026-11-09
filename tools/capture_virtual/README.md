@@ -109,3 +109,40 @@ Without these environment variables, the test uses two saved supported envelopes
 and a distinct missing-time rejection. This oracle complements the controller's
 ACK/receive timing, interval, config/artifact and shutdown evidence; it does not
 establish upstream completeness or economic results.
+
+## Complete-block recovery consumer
+
+The protected complete-delivery integration adds separate `capture_recovery`,
+`capture_recovery_evidence` and `capture_recovery_outbox` records. Original stream
+sequences, epochs and source clocks remain in `capture_events`. Recovery evidence
+has its own identity: checked facts and normalized Info bytes, exact complete-block
+or HTTP response hash, immutable scope revision, block identity and actual evidence
+availability. Block time is stored separately and never becomes stream created-at.
+Fresh database creation includes the recovery schema; opening an existing database
+never migrates or rewrites it.
+
+The existing observer's `next_sequence()` call drains at most one pending recovery
+outbox entry before returning the next live sequence. The explicit
+`next_recovery()`/`observe_recovery(id)` methods use that same implementation for
+bounded replay and reconciliation. Recovery IDs never become stream sequences.
+The consumer verifies canonical identity, raw and source evidence hashes, block and
+message-time provenance, then commits and reads back an immutable disposition:
+
+- Supported historical SELL: `MISSED_UNEXECUTED`, exact debit retained,
+  `recovered_historical_sell_unexecuted`.
+- Historical BUY: `MISSED_UNEXECUTED`, `recovered_historical_buy_no_admission`.
+- Stream observations without current protected admission:
+  `protected_stream_no_admission`, with their actual stream message-time evidence.
+- Non-swap or undecodable input: explicit `EVIDENCE_ONLY`/`REJECTED` disposition.
+
+None calls `ledger.observe`, creates a quote/job/lot, changes balances/proceeds,
+adds a signature to `known_sells`, or releases a HISTORY/UNKNOWN barrier. An exact
+late stream duplicate of a recovery-first identity is not a new fresh admission.
+An original stream-first identity keeps its existing live delivery; block/HTTP
+re-observation supplies evidence without a second delivery.
+
+A malformed/conflicting receipt remains pending. Commit failure preserves the
+primary exception; an uncertain commit or readback fences the connection.
+Reopening must reconcile the immutable receipt/disposition before a positive
+return. It does not reset, retry or rewrite ledger jobs. These local checks do not
+prove historical provider completeness, live latency, execution or profitability.
