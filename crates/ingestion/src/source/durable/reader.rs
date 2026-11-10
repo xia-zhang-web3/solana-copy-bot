@@ -203,8 +203,18 @@ impl Reader {
                 let Ok(permit) = permits.clone().try_acquire_many_owned(charge_u32) else {
                     return End::Budget("LiveCaptureBytes");
                 };
-                let Ok(count_permit) = counts.clone().try_acquire_owned() else {
-                    return End::Budget("LiveCaptureCount");
+                let count_permit = match counts.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        // A ready stream can fill the queue in one task poll.
+                        // Give its ready consumer one turn, without waiting for
+                        // held/pre-anchor permits or changing the hard bound.
+                        tokio::task::yield_now().await;
+                        let Ok(permit) = counts.clone().try_acquire_owned() else {
+                            return End::Budget("LiveCaptureCount");
+                        };
+                        permit
+                    }
                 };
                 telemetry.processing.input_enqueued(charge);
                 let pending = match update.update_oneof.as_ref() {
@@ -308,6 +318,10 @@ mod raw_memory_tests;
 #[cfg(test)]
 #[path = "../../source_tests/ingress42_correlation_tests.rs"]
 mod ingress42_correlation_tests;
+
+#[cfg(test)]
+#[path = "../../source_tests/reader_ready_consumer_tests.rs"]
+mod ready_consumer_tests;
 
 #[cfg(test)]
 #[path = "../../source_tests/reader_diagnostic_tests.rs"]
